@@ -1,0 +1,21 @@
+{
+  "name": "nr-ai-mcp-server",
+  "version": "0.1.0",
+  "description": "New Relic MCP server for observing AI coding assistants (Claude Code)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "nr-ai-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@nr-ai-observatory/shared": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
