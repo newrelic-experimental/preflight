@@ -1,0 +1,189 @@
+import { readFileSync } from 'node:fs';
+import type { TokenUsage } from './tokens.js';
+import { DEFAULT_PRICING_TABLE } from './pricing-data.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('pricing');
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ModelPricing {
+  inputPerMTok: number;
+  outputPerMTok: number;
+  thinkingPerMTok?: number;
+  cacheReadPerMTok?: number;
+  cacheCreationPerMTok?: number;
+  contextWindow: number;
+  /** Token count above which tier rates apply (entire request billed at tier rate). */
+  tierThreshold?: number;
+  tierInputPerMTok?: number;
+  tierOutputPerMTok?: number;
+  tierThinkingPerMTok?: number;
+}
+
+export interface CostBreakdown {
+  inputUsd: number;
+  outputUsd: number;
+  thinkingUsd: number;
+  cacheReadUsd: number;
+  cacheCreationUsd: number;
+  totalUsd: number;
+  savingsFromCacheUsd: number;
+}
+
+const ZERO_COST: CostBreakdown = Object.freeze({
+  inputUsd: 0,
+  outputUsd: 0,
+  thinkingUsd: 0,
+  cacheReadUsd: 0,
+  cacheCreationUsd: 0,
+  totalUsd: 0,
+  savingsFromCacheUsd: 0,
+});
+
+// ---------------------------------------------------------------------------
+// Merged table (built-in + custom overrides)
+// ---------------------------------------------------------------------------
+
+let mergedTable: Record<string, ModelPricing> = { ...DEFAULT_PRICING_TABLE };
+
+// ---------------------------------------------------------------------------
+// Custom pricing file
+// ---------------------------------------------------------------------------
+
+export function loadCustomPricing(filePath: string): Record<string, ModelPricing> | null {
+  try {
+    const raw = readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, ModelPricing>;
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      logger.warn('Custom pricing file is not a JSON object', { filePath });
+      return null;
+    }
+
+    return parsed;
+  } catch (err) {
+    logger.warn('Failed to load custom pricing file', {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * (Re-)initialize the merged pricing table. Call with a custom file path to
+ * overlay user-provided prices on top of the built-in table. Call with
+ * `null`/`undefined` to reset to the built-in defaults.
+ */
+export function initPricing(customFilePath?: string | null): void {
+  mergedTable = { ...DEFAULT_PRICING_TABLE };
+
+  if (customFilePath) {
+    const custom = loadCustomPricing(customFilePath);
+    if (custom) {
+      Object.assign(mergedTable, custom);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Model resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a model name to its pricing entry.
+ *
+ * 1. Exact match (e.g. `claude-sonnet-4-20250514`)
+ * 2. Prefix match — find table keys that start with `modelName`, pick the
+ *    longest key (most specific dated version).
+ * 3. Return `null` and log a warning if nothing matches.
+ */
+export function resolveModelPricing(modelName: string): ModelPricing | null {
+  // Exact match
+  if (mergedTable[modelName]) {
+    return mergedTable[modelName];
+  }
+
+  // Prefix match: find all keys that start with the given name
+  let bestKey: string | null = null;
+  for (const key of Object.keys(mergedTable)) {
+    if (key.startsWith(modelName) && (bestKey === null || key.length > bestKey.length)) {
+      bestKey = key;
+    }
+  }
+
+  if (bestKey) {
+    return mergedTable[bestKey];
+  }
+
+  logger.warn('Unknown model, pricing not available', { model: modelName });
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Cost calculation
+// ---------------------------------------------------------------------------
+
+function tokensToUsd(tokens: number, ratePerMTok: number): number {
+  return (tokens * ratePerMTok) / 1_000_000;
+}
+
+/**
+ * Calculate a cost breakdown for the given model and token usage.
+ *
+ * If the model is unknown, returns an all-zero breakdown and logs a warning.
+ * When tiered pricing applies (input tokens exceed the tier threshold),
+ * the entire request is billed at the tier rate.
+ */
+export function calculateCost(model: string, usage: TokenUsage): CostBreakdown {
+  const pricing = resolveModelPricing(model);
+  if (!pricing) {
+    return { ...ZERO_COST };
+  }
+
+  // Determine whether tiered pricing applies
+  const useTier =
+    pricing.tierThreshold !== undefined && usage.inputTokens > pricing.tierThreshold;
+
+  const inputRate = useTier && pricing.tierInputPerMTok !== undefined
+    ? pricing.tierInputPerMTok
+    : pricing.inputPerMTok;
+
+  const outputRate = useTier && pricing.tierOutputPerMTok !== undefined
+    ? pricing.tierOutputPerMTok
+    : pricing.outputPerMTok;
+
+  const thinkingRate = useTier && pricing.tierThinkingPerMTok !== undefined
+    ? pricing.tierThinkingPerMTok
+    : (pricing.thinkingPerMTok ?? 0);
+
+  const cacheReadRate = pricing.cacheReadPerMTok ?? 0;
+  const cacheCreationRate = pricing.cacheCreationPerMTok ?? 0;
+
+  const inputUsd = tokensToUsd(usage.inputTokens, inputRate);
+  const outputUsd = tokensToUsd(usage.outputTokens, outputRate);
+  const thinkingUsd = tokensToUsd(usage.thinkingTokens, thinkingRate);
+  const cacheReadUsd = tokensToUsd(usage.cacheReadTokens, cacheReadRate);
+  const cacheCreationUsd = tokensToUsd(usage.cacheCreationTokens, cacheCreationRate);
+
+  const totalUsd = inputUsd + outputUsd + thinkingUsd + cacheReadUsd + cacheCreationUsd;
+
+  // Savings: what those cache-read tokens would have cost at the full input rate
+  const savingsFromCacheUsd = tokensToUsd(
+    usage.cacheReadTokens,
+    inputRate - cacheReadRate,
+  );
+
+  return {
+    inputUsd,
+    outputUsd,
+    thinkingUsd,
+    cacheReadUsd,
+    cacheCreationUsd,
+    totalUsd,
+    savingsFromCacheUsd,
+  };
+}

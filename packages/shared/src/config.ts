@@ -14,6 +14,7 @@ export interface AgentConfig {
   readonly highSecurity: boolean;
   readonly logLevel: LogLevel;
   readonly collectorHost: string | null;
+  readonly accountId: string | null;
 }
 
 function envBool(key: string, defaultValue: boolean): boolean {
@@ -79,6 +80,7 @@ export function loadConfig(overrides?: Partial<AgentConfig>): Readonly<AgentConf
     highSecurity,
     logLevel: overrides?.logLevel ?? envLogLevel('NEW_RELIC_AI_LOG_LEVEL', 'info'),
     collectorHost: overrides?.collectorHost ?? process.env.NEW_RELIC_HOST ?? null,
+    accountId: overrides?.accountId ?? process.env.NEW_RELIC_ACCOUNT_ID ?? null,
   };
 
   return Object.freeze(config);
