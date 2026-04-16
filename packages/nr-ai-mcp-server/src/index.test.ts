@@ -92,10 +92,10 @@ describe('stdio integration', () => {
       '@modelcontextprotocol/sdk/client/stdio.js'
     );
     const { resolve } = await import('node:path');
-    const { fileURLToPath } = await import('node:url');
 
-    const dir = resolve(fileURLToPath(import.meta.url), '..', '..');
-    const binPath = resolve(dir, 'dist', 'index.js');
+    // Use process.cwd() to locate the package root — avoids import.meta.url
+    // which ts-jest does not reliably support in its ESM transform.
+    const binPath = resolve(process.cwd(), 'packages', 'nr-ai-mcp-server', 'dist', 'index.js');
 
     const transport = new StdioClientTransport({
       command: 'node',

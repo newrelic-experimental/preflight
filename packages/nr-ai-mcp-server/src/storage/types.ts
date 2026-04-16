@@ -19,6 +19,22 @@ export interface SessionSummary {
   readonly [key: string]: unknown;
 }
 
+export interface ToolCallRecord {
+  readonly id: string;
+  readonly sessionId: string | null;
+  readonly toolName: string;
+  readonly toolUseId: string;
+  readonly timestamp: number;
+  readonly durationMs: number | null;
+  readonly success: boolean;
+  readonly errorType?: string;
+  readonly error?: string;
+  readonly inputSizeBytes?: number;
+  readonly outputSizeBytes?: number;
+  readonly inputHash?: string;
+  readonly [key: string]: unknown;
+}
+
 export interface AuditEntry {
   readonly timestamp: number;
   readonly action: string;

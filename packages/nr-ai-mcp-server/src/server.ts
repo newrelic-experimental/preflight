@@ -10,6 +10,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VERSION, createLogger } from '@nr-ai-observatory/shared';
 import type { ServerOptions } from './types.js';
+import { registerSessionTools } from './tools/session-stats.js';
 
 const logger = createLogger('mcp-server');
 
@@ -26,21 +27,26 @@ export class NrMcpServer {
       },
     );
 
-    this.registerHandlers();
+    this.registerHandlers(options);
     logger.info('MCP server created', { name: options.name, version: options.version });
   }
 
-  private registerHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [],
-    }));
+  private registerHandlers(options: ServerOptions): void {
+    // Session tools (when a tracker is provided)
+    if (options.sessionTracker) {
+      registerSessionTools(this.server, options.sessionTracker);
+    } else {
+      this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+        tools: [],
+      }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      throw new McpError(
-        ErrorCode.MethodNotFound,
-        `Unknown tool: ${request.params.name}`,
-      );
-    });
+      this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        throw new McpError(
+          ErrorCode.MethodNotFound,
+          `Unknown tool: ${request.params.name}`,
+        );
+      });
+    }
 
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: [],
@@ -70,6 +76,7 @@ export function createServer(options?: Partial<ServerOptions>): NrMcpServer {
   const resolved: ServerOptions = {
     name: options?.name ?? 'nr-ai-observability',
     version: options?.version ?? VERSION,
+    sessionTracker: options?.sessionTracker,
   };
   return new NrMcpServer(resolved);
 }

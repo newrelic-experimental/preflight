@@ -134,7 +134,7 @@
 
 > **Goal**: Capture all built-in tool calls and report to New Relic.
 
-### 1.1 — Hook Collector Script (`nr-ai-observe` CLI)
+### ☑️ 1.1 — Hook Collector Script (`nr-ai-observe` CLI)
 
 **Implementation:**
 
@@ -166,7 +166,7 @@
 
 ---
 
-### 1.2 — Hook Event Processing & Tool Call Pairing
+### ✅ 1.2 — Hook Event Processing & Tool Call Pairing
 
 **Implementation:**
 
@@ -199,7 +199,7 @@
 
 ---
 
-### 1.3 — Tool-Specific Field Parsing (Read, Write, Edit, Bash, Grep, Glob, Agent)
+### ✅ 1.3 — Tool-Specific Field Parsing (Read, Write, Edit, Bash, Grep, Glob, Agent)
 
 **Implementation:**
 
@@ -237,7 +237,7 @@
 
 ---
 
-### 1.4 — Session Metrics Aggregation (Tool Counts, Durations, Success Rates)
+### ✅ 1.4 — Session Metrics Aggregation (Tool Counts, Durations, Success Rates)
 
 **Implementation:**
 
@@ -280,7 +280,7 @@
 
 ---
 
-### 1.5 — New Relic Event Ingestion (Tool Call Events + Session Metrics)
+### ✅ 1.5 — New Relic Event Ingestion (Tool Call Events + Session Metrics)
 
 **Implementation:**
 
@@ -324,7 +324,7 @@
 
 ---
 
-### 1.6 — MCP Tools: `get_session_stats` and `get_session_timeline`
+### ✅ 1.6 — MCP Tools: `get_session_stats` and `get_session_timeline`
 
 **Implementation:**
 
@@ -394,7 +394,7 @@
 
 ---
 
-### 1.7 — Pre-Built Dashboard: "AI Coding Assistant — Overview"
+### ✅ 1.7 — Pre-Built Dashboard: "AI Coding Assistant — Overview"
 
 **Implementation:**
 
@@ -425,7 +425,7 @@
 
 ---
 
-### 1.8 — Installation Instructions & Hook Configuration Generator
+### ✅ 1.8 — Installation Instructions & Hook Configuration Generator
 
 **Implementation:**
 

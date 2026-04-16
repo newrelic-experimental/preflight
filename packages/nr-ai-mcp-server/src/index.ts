@@ -62,6 +62,13 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
+  // Exit when the client disconnects (closes the stdin pipe).
+  // StdioServerTransport doesn't listen for stdin 'end', so we handle it here.
+  process.stdin.on('end', () => {
+    logger.info('stdin closed, shutting down');
+    shutdown();
+  });
+
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

@@ -1,0 +1,141 @@
+{
+  "name": "AI Coding Assistant — Overview",
+  "description": "Pre-built dashboard for nr-ai-mcp-server observability. Requires AiToolCall custom events and ai.* metrics sent by the MCP server hook collector. Widgets will show 'No data' until the server is actively sending telemetry.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "AI Coding Assistant — Overview",
+      "description": "Session metrics, tool usage, code changes, and timeline for AI coding assistant sessions",
+      "widgets": [
+        {
+          "title": "Session Duration",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT latest(ai.session.duration_ms) / 60000 AS 'Minutes' FROM Metric SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Total Tool Calls",
+          "layout": { "column": 5, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) AS 'Tool Calls' FROM AiToolCall SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Success Rate",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT percentage(count(*), WHERE success = true) AS 'Success %' FROM AiToolCall SINCE 1 hour ago"
+              }
+            ],
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 80 },
+              { "alertSeverity": "CRITICAL", "value": 50 }
+            ]
+          }
+        },
+
+        {
+          "title": "Tool Call Distribution",
+          "layout": { "column": 1, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.pie" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET tool SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Success Rate by Tool",
+          "layout": { "column": 5, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT percentage(count(*), WHERE success = true) FROM AiToolCall FACET tool SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Average Latency by Tool",
+          "layout": { "column": 9, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(duration_ms) FROM AiToolCall FACET tool SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Files Read vs Modified",
+          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT uniqueCount(filePath) AS 'Files Read' FROM AiToolCall WHERE tool = 'Read' SINCE 1 hour ago"
+              },
+              {
+                "accountIds": [],
+                "query": "SELECT uniqueCount(filePath) AS 'Files Modified' FROM AiToolCall WHERE tool IN ('Write', 'Edit') SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Test Results Timeline",
+          "layout": { "column": 7, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Bash' AND isTestCommand = true FACET CASES(WHERE success = true AS 'Pass', WHERE success = false AS 'Fail') TIMESERIES SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Tool Calls Over Time",
+          "layout": { "column": 1, "row": 10, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET tool TIMESERIES 1 minute SINCE 1 hour ago"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

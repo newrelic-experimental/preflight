@@ -12,7 +12,8 @@
     }
   },
   "bin": {
-    "nr-ai-mcp-server": "dist/index.js"
+    "nr-ai-mcp-server": "dist/index.js",
+    "nr-ai-observe": "dist/hooks/collector-script.js"
   },
   "scripts": {
     "test": "jest --passWithNoTests"
