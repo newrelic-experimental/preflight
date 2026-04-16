@@ -10,7 +10,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VERSION, createLogger } from '@nr-ai-observatory/shared';
 import type { ServerOptions } from './types.js';
-import { registerSessionTools } from './tools/session-stats.js';
+import { registerTools } from './tools/session-stats.js';
 
 const logger = createLogger('mcp-server');
 
@@ -23,7 +23,8 @@ export class NrMcpServer {
       {
         capabilities: { tools: {}, resources: {}, logging: {} },
         instructions:
-          'This server monitors tool usage for observability purposes. Metrics are sent to New Relic.',
+          'This server monitors tool usage for observability purposes. Metrics are sent to New Relic. ' +
+          'When token usage data is available after API calls, report it via nr_observe_report_tokens to enable cost tracking.',
       },
     );
 
@@ -32,9 +33,24 @@ export class NrMcpServer {
   }
 
   private registerHandlers(options: ServerOptions): void {
-    // Session tools (when a tracker is provided)
-    if (options.sessionTracker) {
-      registerSessionTools(this.server, options.sessionTracker);
+    // Register tools when any tracker is provided
+    const hasTrackers =
+      options.sessionTracker ||
+      options.costTracker ||
+      options.taskDetector ||
+      options.antiPatternDetector ||
+      options.efficiencyScorer ||
+      options.feedbackCollector;
+
+    if (hasTrackers) {
+      registerTools(this.server, {
+        sessionTracker: options.sessionTracker,
+        costTracker: options.costTracker,
+        taskDetector: options.taskDetector,
+        antiPatternDetector: options.antiPatternDetector,
+        efficiencyScorer: options.efficiencyScorer,
+        feedbackCollector: options.feedbackCollector,
+      });
     } else {
       this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: [],
@@ -77,6 +93,11 @@ export function createServer(options?: Partial<ServerOptions>): NrMcpServer {
     name: options?.name ?? 'nr-ai-observability',
     version: options?.version ?? VERSION,
     sessionTracker: options?.sessionTracker,
+    costTracker: options?.costTracker,
+    taskDetector: options?.taskDetector,
+    antiPatternDetector: options?.antiPatternDetector,
+    efficiencyScorer: options?.efficiencyScorer,
+    feedbackCollector: options?.feedbackCollector,
   };
   return new NrMcpServer(resolved);
 }

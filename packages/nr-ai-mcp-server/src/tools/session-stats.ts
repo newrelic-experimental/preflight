@@ -1,9 +1,10 @@
 /**
- * MCP tool handlers for session observability data.
+ * MCP tool handlers for session observability and cost tracking.
  *
- * Registers two read-only tools:
+ * Registers tools based on which trackers are provided:
  *   - nr_observe_get_session_stats  — current session metrics snapshot
  *   - nr_observe_get_session_timeline — recent tool call timeline
+ *   - nr_observe_report_tokens — self-report token usage for cost tracking
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -14,6 +15,23 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
+import type { CostTracker } from '../metrics/cost-tracker.js';
+import type { TaskDetector } from '../metrics/task-detector.js';
+import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
+import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import { REPORT_TOKENS_TOOL, handleReportTokens, COST_BREAKDOWN_TOOL, handleGetCostBreakdown } from './cost-tools.js';
+import type { TokenReport } from './cost-tools.js';
+import {
+  WORKFLOW_TRACE_TOOL,
+  ANTI_PATTERNS_TOOL,
+  EFFICIENCY_SCORE_TOOL,
+  REPORT_FEEDBACK_TOOL,
+  handleGetWorkflowTrace,
+  handleGetAntiPatterns,
+  handleGetEfficiencyScore,
+  handleReportFeedback,
+} from './workflow-tools.js';
+import type { FeedbackCollector } from './workflow-tools.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
@@ -103,25 +121,78 @@ export function handleGetSessionTimeline(
 }
 
 // ---------------------------------------------------------------------------
+// Registration options
+// ---------------------------------------------------------------------------
+
+export interface ToolRegistrationOptions {
+  sessionTracker?: SessionTracker;
+  costTracker?: CostTracker;
+  taskDetector?: TaskDetector;
+  antiPatternDetector?: AntiPatternDetector;
+  efficiencyScorer?: EfficiencyScorer;
+  feedbackCollector?: FeedbackCollector;
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
+/**
+ * @deprecated Use `registerTools()` instead. Kept for backward compatibility.
+ */
 export function registerSessionTools(
   server: Server,
   sessionTracker: SessionTracker,
 ): void {
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [SESSION_STATS_TOOL, SESSION_TIMELINE_TOOL],
-  }));
+  registerTools(server, { sessionTracker });
+}
+
+export function registerTools(
+  server: Server,
+  options: ToolRegistrationOptions,
+): void {
+  const {
+    sessionTracker,
+    costTracker,
+    taskDetector,
+    antiPatternDetector,
+    efficiencyScorer,
+    feedbackCollector,
+  } = options;
+
+  // Build combined tool list
+  const tools: typeof SESSION_STATS_TOOL[] = [];
+  if (sessionTracker) {
+    tools.push(SESSION_STATS_TOOL, SESSION_TIMELINE_TOOL);
+  }
+  if (costTracker) {
+    tools.push(REPORT_TOKENS_TOOL, COST_BREAKDOWN_TOOL);
+  }
+  if (taskDetector) {
+    tools.push(WORKFLOW_TRACE_TOOL);
+  }
+  if (antiPatternDetector && taskDetector) {
+    tools.push(ANTI_PATTERNS_TOOL);
+  }
+  if (efficiencyScorer) {
+    tools.push(EFFICIENCY_SCORE_TOOL);
+  }
+  if (feedbackCollector) {
+    tools.push(REPORT_FEEDBACK_TOOL);
+  }
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
     switch (name) {
       case 'nr_observe_get_session_stats':
+        if (!sessionTracker) break;
         return handleGetSessionStats(sessionTracker);
 
       case 'nr_observe_get_session_timeline': {
+        if (!sessionTracker) break;
         const lastN = (args as Record<string, unknown> | undefined)?.last_n;
         return handleGetSessionTimeline(
           sessionTracker,
@@ -129,8 +200,39 @@ export function registerSessionTools(
         );
       }
 
-      default:
-        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+      case 'nr_observe_report_tokens':
+        if (!costTracker) break;
+        return handleReportTokens(costTracker, args as unknown as TokenReport);
+
+      case 'nr_observe_get_cost_breakdown':
+        if (!costTracker) break;
+        return handleGetCostBreakdown(costTracker, taskDetector);
+
+      case 'nr_observe_get_workflow_trace': {
+        if (!taskDetector) break;
+        const taskId = (args as Record<string, unknown> | undefined)?.task_id as string | undefined;
+        return handleGetWorkflowTrace(taskDetector, antiPatternDetector, efficiencyScorer, taskId);
+      }
+
+      case 'nr_observe_get_anti_patterns':
+        if (!antiPatternDetector || !taskDetector) break;
+        return handleGetAntiPatterns(taskDetector, antiPatternDetector);
+
+      case 'nr_observe_get_efficiency_score':
+        if (!efficiencyScorer) break;
+        return handleGetEfficiencyScore(efficiencyScorer);
+
+      case 'nr_observe_report_feedback': {
+        if (!feedbackCollector) break;
+        const feedbackArgs = args as unknown as {
+          quality: 'good' | 'bad' | 'neutral';
+          notes?: string;
+          task_id?: string;
+        };
+        return handleReportFeedback(feedbackCollector, feedbackArgs);
+      }
     }
+
+    throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
   });
 }

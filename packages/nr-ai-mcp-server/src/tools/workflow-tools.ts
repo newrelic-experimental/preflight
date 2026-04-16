@@ -1,0 +1,284 @@
+/**
+ * MCP tool handlers for workflow analysis.
+ *
+ * Defines:
+ *   - `nr_observe_get_workflow_trace`  — tool call trace for a completed task
+ *   - `nr_observe_get_anti_patterns`   — detected anti-patterns
+ *   - `nr_observe_get_efficiency_score` — composite efficiency score
+ *   - `nr_observe_report_feedback`     — record user quality feedback
+ */
+
+import type { MetricAggregator } from '@nr-ai-observatory/shared';
+import type { TaskDetector, AiCodingTask } from '../metrics/task-detector.js';
+import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
+import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface FeedbackRecord {
+  readonly quality: 'good' | 'bad' | 'neutral';
+  readonly notes?: string;
+  readonly taskId?: string;
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
+// FeedbackCollector
+// ---------------------------------------------------------------------------
+
+export class FeedbackCollector {
+  private records: FeedbackRecord[] = [];
+
+  record(feedback: Omit<FeedbackRecord, 'timestamp'>): FeedbackRecord {
+    const entry: FeedbackRecord = { ...feedback, timestamp: Date.now() };
+    this.records.push(entry);
+    return entry;
+  }
+
+  getRecords(): FeedbackRecord[] {
+    return [...this.records];
+  }
+
+  emitMetrics(aggregator: MetricAggregator): void {
+    for (const record of this.records) {
+      aggregator.record('ai.feedback.count', 1, { quality: record.quality });
+    }
+  }
+
+  reset(): void {
+    this.records = [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions (for tools/list)
+// ---------------------------------------------------------------------------
+
+export const WORKFLOW_TRACE_TOOL = {
+  name: 'nr_observe_get_workflow_trace',
+  description:
+    'Get the complete tool call trace for a task, including sequence, duration, and anti-pattern/efficiency analysis.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      task_id: {
+        type: 'string',
+        description: 'ID of the task to trace (default: most recent completed task)',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const ANTI_PATTERNS_TOOL = {
+  name: 'nr_observe_get_anti_patterns',
+  description:
+    'Get detected anti-patterns (thrashing, re-reading, stuck loops, blind editing, over-delegation) for the most recent task.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const EFFICIENCY_SCORE_TOOL = {
+  name: 'nr_observe_get_efficiency_score',
+  description:
+    'Get the AI coding efficiency score for the most recent task or the session-wide rolling average.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const REPORT_FEEDBACK_TOOL = {
+  name: 'nr_observe_report_feedback',
+  description:
+    'Record user quality feedback for a task. Helps correlate efficiency metrics with perceived quality.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      quality: {
+        type: 'string',
+        enum: ['good', 'bad', 'neutral'],
+        description: 'Quality rating for the task output',
+      },
+      notes: {
+        type: 'string',
+        description: 'Optional free-text notes about the task quality',
+      },
+      task_id: {
+        type: 'string',
+        description: 'Task ID to attach feedback to (default: most recent)',
+      },
+    },
+    required: ['quality'],
+  },
+  annotations: { readOnlyHint: false },
+};
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+export function handleGetWorkflowTrace(
+  taskDetector: TaskDetector,
+  antiPatternDetector?: AntiPatternDetector,
+  efficiencyScorer?: EfficiencyScorer,
+  taskId?: string,
+) {
+  const completed = taskDetector.getCompletedTasks();
+
+  let task: AiCodingTask | undefined;
+  if (taskId) {
+    task = completed.find((t) => t.taskId === taskId);
+  } else {
+    task = completed[completed.length - 1];
+  }
+
+  if (!task) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ error: 'No matching task found', task_id: taskId ?? null }, null, 2),
+      }],
+    };
+  }
+
+  const toolCalls = task.toolCalls.map((call, index) => {
+    const entry: Record<string, unknown> = {
+      seq: index + 1,
+      tool: call.toolName,
+      target: (call.filePath as string | undefined) ?? (call.command as string | undefined) ?? null,
+      duration_ms: call.durationMs,
+      success: call.success,
+    };
+
+    if (call.toolName === 'Bash' && call.exitCode != null) {
+      entry.exit_code = call.exitCode;
+    }
+
+    return entry;
+  });
+
+  const antiPatterns = antiPatternDetector
+    ? antiPatternDetector.analyze(task.toolCalls).patterns
+    : [];
+
+  const efficiencyScore = efficiencyScorer
+    ? efficiencyScorer.computeScore(task, antiPatterns).score
+    : null;
+
+  const result = {
+    task_id: task.taskId,
+    duration_ms: task.durationMs,
+    estimated_cost_usd: task.estimatedCostUsd,
+    tool_calls: toolCalls,
+    anti_patterns: antiPatterns.map((p) => ({
+      type: p.type,
+      ...(p.file != null && { file: p.file }),
+      ...(p.command != null && { command: p.command }),
+      ...(p.iterations != null && { iterations: p.iterations }),
+      ...(p.readCount != null && { read_count: p.readCount }),
+      ...(p.repeatCount != null && { repeat_count: p.repeatCount }),
+      ...(p.editCount != null && { edit_count: p.editCount }),
+      ...(p.agentCount != null && { agent_count: p.agentCount }),
+      suggestion: p.suggestion,
+    })),
+    efficiency_score: efficiencyScore,
+  };
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+  };
+}
+
+export function handleGetAntiPatterns(
+  taskDetector: TaskDetector,
+  antiPatternDetector: AntiPatternDetector,
+) {
+  const completed = taskDetector.getCompletedTasks();
+  const task = completed[completed.length - 1];
+
+  if (!task) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify([], null, 2) }],
+    };
+  }
+
+  const { patterns } = antiPatternDetector.analyze(task.toolCalls);
+
+  const result = patterns.map((p) => ({
+    type: p.type,
+    ...(p.file != null && { file: p.file }),
+    ...(p.command != null && { command: p.command }),
+    ...(p.iterations != null && { iterations: p.iterations }),
+    ...(p.readCount != null && { read_count: p.readCount }),
+    ...(p.repeatCount != null && { repeat_count: p.repeatCount }),
+    ...(p.editCount != null && { edit_count: p.editCount }),
+    ...(p.agentCount != null && { agent_count: p.agentCount }),
+    suggestion: p.suggestion,
+  }));
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+  };
+}
+
+export function handleGetEfficiencyScore(efficiencyScorer: EfficiencyScorer) {
+  const avg = efficiencyScorer.getSessionAverage();
+  const scores = efficiencyScorer.getScores();
+  const latest = scores[scores.length - 1] ?? null;
+
+  const result = {
+    latest: latest
+      ? {
+          score: latest.score,
+          components: latest.components,
+          task_id: latest.taskId,
+          timestamp: latest.timestamp,
+        }
+      : null,
+    session_average: avg
+      ? {
+          score: avg.score,
+          components: avg.components,
+          tasks_scored: scores.length,
+        }
+      : null,
+  };
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+  };
+}
+
+export function handleReportFeedback(
+  feedbackCollector: FeedbackCollector,
+  args: { quality: 'good' | 'bad' | 'neutral'; notes?: string; task_id?: string },
+) {
+  const record = feedbackCollector.record({
+    quality: args.quality,
+    notes: args.notes,
+    taskId: args.task_id,
+  });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(
+        {
+          recorded: true,
+          quality: record.quality,
+          task_id: record.taskId ?? null,
+          timestamp: record.timestamp,
+        },
+        null,
+        2,
+      ),
+    }],
+  };
+}

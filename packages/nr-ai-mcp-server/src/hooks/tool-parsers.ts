@@ -12,6 +12,14 @@
 type ToolFields = Record<string, string | number | boolean>;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function countLines(text: string): number {
+  return (text.match(/\n/g) || []).length + 1;
+}
+
+// ---------------------------------------------------------------------------
 // Bash command classification heuristics
 // ---------------------------------------------------------------------------
 
@@ -39,15 +47,24 @@ function parseRead(input: Record<string, unknown>): ToolFields {
 function parseWrite(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.file_path === 'string') fields.filePath = input.file_path;
-  if (typeof input.content === 'string') fields.contentLength = input.content.length;
+  if (typeof input.content === 'string') {
+    fields.contentLength = input.content.length;
+    fields.lineCount = countLines(input.content);
+  }
   return fields;
 }
 
 function parseEdit(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.file_path === 'string') fields.filePath = input.file_path;
-  if (typeof input.old_string === 'string') fields.oldStringLength = input.old_string.length;
-  if (typeof input.new_string === 'string') fields.newStringLength = input.new_string.length;
+  if (typeof input.old_string === 'string') {
+    fields.oldStringLength = input.old_string.length;
+    fields.oldLineCount = countLines(input.old_string);
+  }
+  if (typeof input.new_string === 'string') {
+    fields.newStringLength = input.new_string.length;
+    fields.newLineCount = input.new_string.length > 0 ? countLines(input.new_string) : 0;
+  }
   if (typeof input.replace_all === 'boolean') fields.replaceAll = input.replace_all;
   fields.isDelete =
     typeof input.new_string === 'string' && input.new_string.length === 0;

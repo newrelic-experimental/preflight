@@ -30,6 +30,20 @@ describe('parseToolSpecificFields', () => {
       expect(fields.filePath).toBe('/src/new-file.ts');
       expect(fields.contentLength).toBe(11);
     });
+
+    it('extracts lineCount from content', () => {
+      const input = { file_path: '/src/new-file.ts', content: 'line1\nline2\nline3' };
+      const fields = parseToolSpecificFields('Write', input, undefined);
+
+      expect(fields.lineCount).toBe(3);
+    });
+
+    it('counts single line with no newlines', () => {
+      const input = { file_path: '/f.ts', content: 'single line' };
+      const fields = parseToolSpecificFields('Write', input, undefined);
+
+      expect(fields.lineCount).toBe(1);
+    });
   });
 
   describe('Edit parser', () => {
@@ -59,6 +73,30 @@ describe('parseToolSpecificFields', () => {
 
       expect(fields.isDelete).toBe(true);
       expect(fields.newStringLength).toBe(0);
+    });
+
+    it('extracts oldLineCount and newLineCount', () => {
+      const input = {
+        file_path: '/src/index.ts',
+        old_string: 'line1\nline2',
+        new_string: 'line1\nline2\nline3\nline4',
+      };
+      const fields = parseToolSpecificFields('Edit', input, undefined);
+
+      expect(fields.oldLineCount).toBe(2);
+      expect(fields.newLineCount).toBe(4);
+    });
+
+    it('sets newLineCount to 0 for deletions (empty new_string)', () => {
+      const input = {
+        file_path: '/src/index.ts',
+        old_string: 'line1\nline2\nline3',
+        new_string: '',
+      };
+      const fields = parseToolSpecificFields('Edit', input, undefined);
+
+      expect(fields.oldLineCount).toBe(3);
+      expect(fields.newLineCount).toBe(0);
     });
   });
 

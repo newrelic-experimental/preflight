@@ -1,2 +1,10 @@
 export { SessionTracker } from './session-tracker.js';
 export type { SessionMetrics, DurationStats, TimelineEntry } from './session-tracker.js';
+export { CostTracker } from './cost-tracker.js';
+export type { CostMetrics } from './cost-tracker.js';
+export { TaskDetector } from './task-detector.js';
+export type { AiCodingTask, TaskMetrics, TaskDetectorOptions } from './task-detector.js';
+export { AntiPatternDetector } from './anti-patterns.js';
+export type { AntiPattern, AntiPatternType, AntiPatternMetrics, AntiPatternOptions } from './anti-patterns.js';
+export { EfficiencyScorer } from './efficiency-score.js';
+export type { EfficiencyScore, EfficiencyScoreComponents, EfficiencyScoreOptions } from './efficiency-score.js';

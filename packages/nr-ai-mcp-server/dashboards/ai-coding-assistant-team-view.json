@@ -1,0 +1,206 @@
+{
+  "name": "AI Coding Assistant — Team View",
+  "description": "Team-level dashboard for AI coding assistant observability. Shows cost rollups, efficiency scores by developer, trend lines, and optimization insights across sessions. Requires AiToolCall, AiCodingTask, AiAntiPattern custom events and ai.* metrics.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "AI Coding Assistant — Team View",
+      "description": "Team summary, developer comparison, trends, and optimization insights",
+      "widgets": [
+        {
+          "title": "Total Team AI Spend (7d)",
+          "layout": { "column": 1, "row": 1, "width": 2, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(ai.cost.session_total_usd) AS 'USD' FROM Metric SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Average Efficiency Score (7d)",
+          "layout": { "column": 3, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(ai.efficiency.score) AS 'Score' FROM Metric SINCE 7 days ago"
+              }
+            ],
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 0.5 },
+              { "alertSeverity": "CRITICAL", "value": 0.3 }
+            ]
+          }
+        },
+        {
+          "title": "Total Tasks Completed (7d)",
+          "layout": { "column": 6, "row": 1, "width": 2, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) AS 'Tasks' FROM AiCodingTask SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Average Cost per Task (7d)",
+          "layout": { "column": 8, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(estimatedCostUsd) AS 'USD / Task' FROM AiCodingTask SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Task Success Rate (7d)",
+          "layout": { "column": 11, "row": 1, "width": 2, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT percentage(count(*), WHERE testsPassed > 0) AS 'Success %' FROM AiCodingTask SINCE 7 days ago"
+              }
+            ],
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 70 },
+              { "alertSeverity": "CRITICAL", "value": 50 }
+            ]
+          }
+        },
+
+        {
+          "title": "Efficiency Score by Developer",
+          "layout": { "column": 1, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(ai.efficiency.score) FROM Metric FACET developer SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Cost per Developer",
+          "layout": { "column": 5, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(ai.cost.session_total_usd) FROM Metric FACET developer SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Tasks Completed per Developer",
+          "layout": { "column": 9, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiCodingTask FACET developer SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Efficiency Score Trend (30d)",
+          "layout": { "column": 1, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(ai.efficiency.score) FROM Metric FACET developer TIMESERIES 1 day SINCE 30 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Cost Trend (30d)",
+          "layout": { "column": 5, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(ai.cost.session_total_usd) FROM Metric TIMESERIES 1 day SINCE 30 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Anti-Pattern Frequency (30d)",
+          "layout": { "column": 9, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiAntiPattern FACET type TIMESERIES 1 day SINCE 30 days ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Top 10 Most Expensive Tasks",
+          "layout": { "column": 1, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT max(estimatedCostUsd) FROM AiCodingTask FACET taskId SINCE 7 days ago LIMIT 10"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Most Common Anti-Patterns",
+          "layout": { "column": 5, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiAntiPattern FACET type SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Tool Call Patterns by Developer",
+          "layout": { "column": 9, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET tool, developer SINCE 7 days ago"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

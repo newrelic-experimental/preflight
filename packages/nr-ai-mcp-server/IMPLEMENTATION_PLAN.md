@@ -486,7 +486,7 @@
 
 > **Goal**: Add cost estimation and tool pattern analysis.
 
-### 2.1 — Token Counting from Hook Data & Self-Reporting Tool
+### ✅ 2.1 — Token Counting from Hook Data & Self-Reporting Tool
 
 **Implementation:**
 
@@ -526,7 +526,7 @@
 
 ---
 
-### 2.2 — Task Boundary Detection (User Message -> Tool Sequence -> Response)
+### ✅ 2.2 — Task Boundary Detection (User Message -> Tool Sequence -> Response)
 
 **Implementation:**
 
@@ -569,7 +569,7 @@
 
 ---
 
-### 2.3 — Anti-Pattern Detection (Thrashing, Re-Reading, Stuck Loops, Blind Editing)
+### ✅ 2.3 — Anti-Pattern Detection (Thrashing, Re-Reading, Stuck Loops, Blind Editing)
 
 **Implementation:**
 
@@ -613,7 +613,7 @@
 
 ---
 
-### 2.4 — AI Coding Efficiency Score
+### ✅ 2.4 — AI Coding Efficiency Score
 
 **Implementation:**
 
@@ -656,7 +656,7 @@
 
 ---
 
-### 2.5 — Cost & Workflow MCP Tools
+### ✅ 2.5 — Cost & Workflow MCP Tools
 
 **Implementation:**
 
@@ -757,7 +757,7 @@
 
 ---
 
-### 2.6 — Pre-Built Dashboard: "AI Coding Assistant — Team View"
+### ✅ 2.6 — Pre-Built Dashboard: "AI Coding Assistant — Team View"
 
 **Implementation:**
 

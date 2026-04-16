@@ -1,9 +1,17 @@
 #!/usr/bin/env npx tsx
 /**
- * Deploy the AI Coding Assistant dashboard to a New Relic account.
+ * Deploy an AI Coding Assistant dashboard to a New Relic account.
  *
  * Usage:
- *   NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 npx tsx scripts/deploy-dashboard.ts
+ *   NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 npx tsx scripts/deploy-dashboard.ts [dashboard-file]
+ *
+ * Arguments:
+ *   dashboard-file  Name of the JSON file in the dashboards/ directory.
+ *                   Defaults to "ai-coding-assistant-overview.json".
+ *
+ * Examples:
+ *   npx tsx scripts/deploy-dashboard.ts
+ *   npx tsx scripts/deploy-dashboard.ts ai-coding-assistant-team-view.json
  *
  * Requires a New Relic User API key (not a license key).
  */
@@ -69,7 +77,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const dashboardPath = resolve(__dirname, '..', 'dashboards', 'ai-coding-assistant-overview.json');
+  const dashboardFile = process.argv[2] || 'ai-coding-assistant-overview.json';
+  const dashboardPath = resolve(__dirname, '..', 'dashboards', dashboardFile);
   const raw = readFileSync(dashboardPath, 'utf-8');
   const dashboard: DashboardJson = JSON.parse(raw);
 

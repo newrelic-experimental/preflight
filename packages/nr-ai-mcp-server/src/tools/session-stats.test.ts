@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer, NrMcpServer } from '../server.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
+import { CostTracker } from '../metrics/cost-tracker.js';
 import { handleGetSessionStats, handleGetSessionTimeline } from './session-stats.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
@@ -267,10 +268,99 @@ describe('MCP protocol integration', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Backward compatibility — server without sessionTracker
+// MCP protocol integration — cost tools
 // ---------------------------------------------------------------------------
 
-describe('Server without sessionTracker', () => {
+describe('MCP protocol integration — cost tools', () => {
+  let server: NrMcpServer;
+  let client: Client;
+  let costTracker: CostTracker;
+
+  beforeEach(async () => {
+    costTracker = new CostTracker();
+
+    server = createServer({
+      name: 'cost-mcp',
+      version: '0.0.1',
+      costTracker,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    client = new Client({ name: 'test-client', version: '1.0.0' });
+
+    await Promise.all([
+      server.server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+  });
+
+  afterEach(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  it('tools/list includes nr_observe_report_tokens when costTracker provided', async () => {
+    const result = await client.listTools();
+
+    const names = result.tools.map(t => t.name);
+    expect(names).toContain('nr_observe_report_tokens');
+  });
+
+  it('tools/list includes both session and cost tools when both trackers provided', async () => {
+    // Clean up the cost-only server
+    await client.close();
+    await server.close();
+
+    const sessionTracker = new SessionTracker('both-session');
+    const bothServer = createServer({
+      name: 'both-mcp',
+      version: '0.0.1',
+      sessionTracker,
+      costTracker: new CostTracker(sessionTracker),
+    });
+
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const bothClient = new Client({ name: 'test-client', version: '1.0.0' });
+    await Promise.all([bothServer.server.connect(st), bothClient.connect(ct)]);
+
+    const result = await bothClient.listTools();
+    const names = result.tools.map(t => t.name);
+
+    expect(names).toContain('nr_observe_get_session_stats');
+    expect(names).toContain('nr_observe_get_session_timeline');
+    expect(names).toContain('nr_observe_report_tokens');
+    expect(names).toContain('nr_observe_get_cost_breakdown');
+    expect(result.tools).toHaveLength(4);
+
+    await bothClient.close();
+    await bothServer.close();
+  });
+
+  it('calling nr_observe_report_tokens returns cost data', async () => {
+    const result = await client.callTool({
+      name: 'nr_observe_report_tokens',
+      arguments: {
+        input_tokens: 10_000,
+        output_tokens: 2_000,
+        model: 'claude-sonnet-4',
+      },
+    });
+
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+
+    expect(body.recorded).toBe(true);
+    expect(body.model).toBe('claude-sonnet-4');
+    expect(body.cost_this_report_usd).toBeCloseTo(0.06, 6);
+    expect(body.session_total_cost_usd).toBeCloseTo(0.06, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Backward compatibility — server without any trackers
+// ---------------------------------------------------------------------------
+
+describe('Server without any trackers', () => {
   let server: NrMcpServer;
   let client: Client;
 
@@ -291,7 +381,7 @@ describe('Server without sessionTracker', () => {
     await server.close();
   });
 
-  it('returns empty tools list when no sessionTracker provided', async () => {
+  it('returns empty tools list when no trackers provided', async () => {
     const result = await client.listTools();
     expect(result.tools).toEqual([]);
   });
