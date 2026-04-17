@@ -1,0 +1,381 @@
+/**
+ * MCP tool definitions and handlers for cross-session analytics.
+ *
+ * Defines 7 tools:
+ *   - nr_observe_get_session_history     — paginated session list
+ *   - nr_observe_get_weekly_summary      — weekly aggregate report
+ *   - nr_observe_get_trends              — metric trends over time
+ *   - nr_observe_get_collaboration_profile — developer collaboration dimensions
+ *   - nr_observe_get_claudemd_impact     — CLAUDE.md change impact
+ *   - nr_observe_get_cost_per_outcome    — cost attribution by outcome type
+ *   - nr_observe_get_recommendations     — unified recommendations
+ *
+ * Tool defs and handlers are exported for integration into the main
+ * registerTools() in session-stats.ts.
+ */
+
+import type { SessionStore } from '../storage/session-store.js';
+import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
+import { getIsoWeekId } from '../storage/weekly-summary.js';
+import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
+import type { CollaborationProfiler } from '../metrics/collaboration-profile.js';
+import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
+import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
+import type { TaskDetector } from '../metrics/task-detector.js';
+import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
+
+// ---------------------------------------------------------------------------
+// Tool definitions
+// ---------------------------------------------------------------------------
+
+export const SESSION_HISTORY_TOOL = {
+  name: 'nr_observe_get_session_history',
+  description:
+    'Get a list of past sessions with summary metrics (efficiency, cost, tool calls, outcome).',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      since: {
+        type: 'string',
+        description: 'ISO date string to filter sessions from (e.g., "2026-04-01")',
+      },
+      developer: {
+        type: 'string',
+        description: 'Filter by developer name',
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum number of sessions to return (default: 20)',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const WEEKLY_SUMMARY_TOOL = {
+  name: 'nr_observe_get_weekly_summary',
+  description:
+    'Get a weekly summary report with per-developer breakdown, cost, efficiency, and anti-pattern counts.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      week: {
+        type: 'string',
+        description: 'ISO week (e.g., "2026-W16") or "latest" for the most recent summary',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const TRENDS_TOOL = {
+  name: 'nr_observe_get_trends',
+  description:
+    'Get trend data for a metric over time: weekly efficiency, cost, task success rate, or tool call counts.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      metric: {
+        type: 'string',
+        description: 'Metric to trend: "efficiency", "cost", "task_success", or "tool_calls" (default: "efficiency")',
+      },
+      developer: {
+        type: 'string',
+        description: 'Filter by developer name',
+      },
+      weeks: {
+        type: 'number',
+        description: 'Number of weeks to include (default: 8)',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const COLLABORATION_PROFILE_TOOL = {
+  name: 'nr_observe_get_collaboration_profile',
+  description:
+    'Get a developer\'s collaboration profile: specificity, autonomy, correction rate, task complexity, and classification.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      developer: {
+        type: 'string',
+        description: 'Developer name (default: current developer)',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const CLAUDEMD_IMPACT_TOOL = {
+  name: 'nr_observe_get_claudemd_impact',
+  description:
+    'Get the impact report for the most recent CLAUDE.md change: before/after comparison with deltas and verdict.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const COST_PER_OUTCOME_TOOL = {
+  name: 'nr_observe_get_cost_per_outcome',
+  description:
+    'Get cost breakdown by outcome type (bug fix, feature, refactor, etc.) with waste ratio and ROI estimate.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      since: {
+        type: 'string',
+        description: 'ISO date string to filter from (e.g., "2026-04-01")',
+      },
+      developer: {
+        type: 'string',
+        description: 'Filter by developer name',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+export const RECOMMENDATIONS_TOOL = {
+  name: 'nr_observe_get_recommendations',
+  description:
+    'Get personalized optimization recommendations covering cost, efficiency, prompt engineering, CLAUDE.md impact, and model selection.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      developer: {
+        type: 'string',
+        description: 'Developer name (default: current developer)',
+      },
+      topN: {
+        type: 'number',
+        description: 'Maximum number of recommendations to return',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
+// ---------------------------------------------------------------------------
+// All tool definitions (for conditional registration)
+// ---------------------------------------------------------------------------
+
+export const CROSS_SESSION_TOOLS = [
+  SESSION_HISTORY_TOOL,
+  WEEKLY_SUMMARY_TOOL,
+  TRENDS_TOOL,
+  COLLABORATION_PROFILE_TOOL,
+  CLAUDEMD_IMPACT_TOOL,
+  COST_PER_OUTCOME_TOOL,
+  RECOMMENDATIONS_TOOL,
+];
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+export function handleGetSessionHistory(
+  sessionStore: SessionStore,
+  args: { since?: string; developer?: string; limit?: number },
+) {
+  const since = args.since ? new Date(args.since) : undefined;
+  const sessions = sessionStore.loadAllSessions({
+    since,
+    developer: args.developer,
+  });
+
+  const limit = args.limit ?? 20;
+  const limited = sessions.slice(-limit);
+
+  const result = limited.map((s) => ({
+    session_id: s.sessionId,
+    developer: s.developer,
+    start_time: new Date(s.startTime).toISOString(),
+    duration_ms: s.durationMs,
+    tool_calls: s.toolCallCount,
+    efficiency_score: s.efficiencyScore,
+    estimated_cost_usd: s.estimatedCostUsd,
+    task_count: s.taskCount,
+    outcome: s.outcome,
+    model: s.model,
+  }));
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({ sessions: result, count: result.length }, null, 2),
+    }],
+  };
+}
+
+export function handleGetWeeklySummary(
+  weeklySummaryGenerator: WeeklySummaryGenerator,
+  args: { week?: string },
+) {
+  if (!args.week || args.week === 'latest') {
+    const latest = weeklySummaryGenerator.getLatest();
+    if (!latest) {
+      // Generate current week
+      const currentWeek = getIsoWeekId(new Date());
+      const generated = weeklySummaryGenerator.generate(currentWeek);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(generated, null, 2),
+        }],
+      };
+    }
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify(latest, null, 2),
+      }],
+    };
+  }
+
+  const summary = weeklySummaryGenerator.generate(args.week);
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(summary, null, 2),
+    }],
+  };
+}
+
+export function handleGetTrends(
+  trendAnalyzer: TrendAnalyzer,
+  args: { metric?: string; developer?: string; weeks?: number },
+) {
+  const weeks = args.weeks ?? 8;
+  const since = new Date(Date.now() - weeks * 7 * 86_400_000);
+
+  const trends = trendAnalyzer.computeTrends({
+    since,
+    developer: args.developer,
+  });
+
+  const metric = args.metric ?? 'efficiency';
+  let data;
+  switch (metric) {
+    case 'cost':
+      data = trends.weeklyCostTrend;
+      break;
+    case 'task_success':
+      data = trends.weeklyTaskSuccessTrend;
+      break;
+    case 'tool_calls':
+      data = trends.weeklyToolCallTrend;
+      break;
+    case 'efficiency':
+    default:
+      data = trends.weeklyEfficiencyTrend;
+      break;
+  }
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({ metric, weeks, data_points: data }, null, 2),
+    }],
+  };
+}
+
+export function handleGetCollaborationProfile(
+  collaborationProfiler: CollaborationProfiler,
+  args: { developer?: string },
+) {
+  const developer = args.developer ?? 'unknown';
+  const profile = collaborationProfiler.computeProfile(developer);
+  const comparison = collaborationProfiler.compareToTeam(developer);
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        developer: profile.developer,
+        classification: profile.classification,
+        dimensions: profile.dimensions,
+        session_count: profile.sessionCount,
+        team_comparison: comparison.deltas,
+      }, null, 2),
+    }],
+  };
+}
+
+export function handleGetClaudeMdImpact(claudeMdTracker: ClaudeMdTracker) {
+  const changes = claudeMdTracker.getChanges();
+
+  if (changes.length === 0) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ message: 'No CLAUDE.md changes detected' }, null, 2),
+      }],
+    };
+  }
+
+  const latestChange = changes[changes.length - 1]!;
+  const impact = claudeMdTracker.computeImpact(latestChange.timestamp);
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        change: {
+          file: latestChange.filePath,
+          type: latestChange.changeType,
+          timestamp: new Date(latestChange.timestamp).toISOString(),
+        },
+        before: impact.beforeMetrics,
+        after: impact.afterMetrics,
+        deltas: impact.deltas,
+        context_tokens: impact.contextTokensForClaudeMd,
+        verdict: impact.verdict,
+      }, null, 2),
+    }],
+  };
+}
+
+export function handleGetCostPerOutcome(
+  costPerOutcomeAnalyzer: CostPerOutcomeAnalyzer,
+  taskDetector: TaskDetector,
+  args: { since?: string; developer?: string },
+) {
+  const tasks = taskDetector.getCompletedTasks();
+
+  const attribution = costPerOutcomeAnalyzer.attributeCosts(tasks);
+  const roi = costPerOutcomeAnalyzer.estimateROI(attribution, 75); // default $75/hr
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        outcome_distribution: attribution.outcomeDistribution,
+        waste_ratio: attribution.wasteRatio,
+        total_cost: attribution.totalCost,
+        total_tasks: attribution.totalTasks,
+        roi_estimate: roi,
+      }, null, 2),
+    }],
+  };
+}
+
+export function handleGetRecommendations(
+  recommendationEngine: RecommendationEngine,
+  args: { developer?: string; topN?: number },
+) {
+  const developer = args.developer ?? 'unknown';
+  const recs = recommendationEngine.generateAllRecommendations(developer, {
+    topN: args.topN,
+  });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({ recommendations: recs, count: recs.length }, null, 2),
+    }],
+  };
+}

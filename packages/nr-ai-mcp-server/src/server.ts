@@ -40,7 +40,14 @@ export class NrMcpServer {
       options.taskDetector ||
       options.antiPatternDetector ||
       options.efficiencyScorer ||
-      options.feedbackCollector;
+      options.feedbackCollector ||
+      options.sessionStore ||
+      options.weeklySummaryGenerator ||
+      options.trendAnalyzer ||
+      options.collaborationProfiler ||
+      options.claudeMdTracker ||
+      options.costPerOutcomeAnalyzer ||
+      options.recommendationEngine;
 
     if (hasTrackers) {
       registerTools(this.server, {
@@ -50,6 +57,13 @@ export class NrMcpServer {
         antiPatternDetector: options.antiPatternDetector,
         efficiencyScorer: options.efficiencyScorer,
         feedbackCollector: options.feedbackCollector,
+        sessionStore: options.sessionStore,
+        weeklySummaryGenerator: options.weeklySummaryGenerator,
+        trendAnalyzer: options.trendAnalyzer,
+        collaborationProfiler: options.collaborationProfiler,
+        claudeMdTracker: options.claudeMdTracker,
+        costPerOutcomeAnalyzer: options.costPerOutcomeAnalyzer,
+        recommendationEngine: options.recommendationEngine,
       });
     } else {
       this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -120,6 +134,13 @@ export function createServer(options?: Partial<ServerOptions>): NrMcpServer {
     efficiencyScorer: options?.efficiencyScorer,
     feedbackCollector: options?.feedbackCollector,
     auditTrailManager: options?.auditTrailManager,
+    sessionStore: options?.sessionStore,
+    weeklySummaryGenerator: options?.weeklySummaryGenerator,
+    trendAnalyzer: options?.trendAnalyzer,
+    collaborationProfiler: options?.collaborationProfiler,
+    claudeMdTracker: options?.claudeMdTracker,
+    costPerOutcomeAnalyzer: options?.costPerOutcomeAnalyzer,
+    recommendationEngine: options?.recommendationEngine,
   };
   return new NrMcpServer(resolved);
 }

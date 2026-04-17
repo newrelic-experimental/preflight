@@ -19,6 +19,13 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { SessionStore } from '../storage/session-store.js';
+import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
+import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
+import type { CollaborationProfiler } from '../metrics/collaboration-profile.js';
+import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
+import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
+import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 import { REPORT_TOKENS_TOOL, handleReportTokens, COST_BREAKDOWN_TOOL, handleGetCostBreakdown } from './cost-tools.js';
 import type { TokenReport } from './cost-tools.js';
 import {
@@ -32,6 +39,16 @@ import {
   handleReportFeedback,
 } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
+import {
+  CROSS_SESSION_TOOLS,
+  handleGetSessionHistory,
+  handleGetWeeklySummary,
+  handleGetTrends,
+  handleGetCollaborationProfile,
+  handleGetClaudeMdImpact,
+  handleGetCostPerOutcome,
+  handleGetRecommendations,
+} from './cross-session-tools.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
@@ -131,6 +148,13 @@ export interface ToolRegistrationOptions {
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
   feedbackCollector?: FeedbackCollector;
+  sessionStore?: SessionStore;
+  weeklySummaryGenerator?: WeeklySummaryGenerator;
+  trendAnalyzer?: TrendAnalyzer;
+  collaborationProfiler?: CollaborationProfiler;
+  claudeMdTracker?: ClaudeMdTracker;
+  costPerOutcomeAnalyzer?: CostPerOutcomeAnalyzer;
+  recommendationEngine?: RecommendationEngine;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +182,13 @@ export function registerTools(
     antiPatternDetector,
     efficiencyScorer,
     feedbackCollector,
+    sessionStore,
+    weeklySummaryGenerator,
+    trendAnalyzer,
+    collaborationProfiler,
+    claudeMdTracker,
+    costPerOutcomeAnalyzer,
+    recommendationEngine,
   } = options;
 
   // Build combined tool list
@@ -179,6 +210,15 @@ export function registerTools(
   }
   if (feedbackCollector) {
     tools.push(REPORT_FEEDBACK_TOOL);
+  }
+
+  // Cross-session tools (registered when their dependencies are available)
+  const hasCrossSession =
+    sessionStore || weeklySummaryGenerator || trendAnalyzer ||
+    collaborationProfiler || claudeMdTracker || costPerOutcomeAnalyzer ||
+    recommendationEngine;
+  if (hasCrossSession) {
+    tools.push(...CROSS_SESSION_TOOLS);
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -230,6 +270,65 @@ export function registerTools(
           task_id?: string;
         };
         return handleReportFeedback(feedbackCollector, feedbackArgs);
+      }
+
+      // Cross-session tools
+      case 'nr_observe_get_session_history': {
+        if (!sessionStore) break;
+        const historyArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetSessionHistory(sessionStore, {
+          since: historyArgs.since as string | undefined,
+          developer: historyArgs.developer as string | undefined,
+          limit: historyArgs.limit as number | undefined,
+        });
+      }
+
+      case 'nr_observe_get_weekly_summary': {
+        if (!weeklySummaryGenerator) break;
+        const weekArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetWeeklySummary(weeklySummaryGenerator, {
+          week: weekArgs.week as string | undefined,
+        });
+      }
+
+      case 'nr_observe_get_trends': {
+        if (!trendAnalyzer) break;
+        const trendArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetTrends(trendAnalyzer, {
+          metric: trendArgs.metric as string | undefined,
+          developer: trendArgs.developer as string | undefined,
+          weeks: trendArgs.weeks as number | undefined,
+        });
+      }
+
+      case 'nr_observe_get_collaboration_profile': {
+        if (!collaborationProfiler) break;
+        const profileArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetCollaborationProfile(collaborationProfiler, {
+          developer: profileArgs.developer as string | undefined,
+        });
+      }
+
+      case 'nr_observe_get_claudemd_impact':
+        if (!claudeMdTracker) break;
+        return handleGetClaudeMdImpact(claudeMdTracker);
+
+      case 'nr_observe_get_cost_per_outcome': {
+        if (!costPerOutcomeAnalyzer || !taskDetector) break;
+        const costArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetCostPerOutcome(costPerOutcomeAnalyzer, taskDetector, {
+          since: costArgs.since as string | undefined,
+          developer: costArgs.developer as string | undefined,
+        });
+      }
+
+      case 'nr_observe_get_recommendations': {
+        if (!recommendationEngine) break;
+        const recArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetRecommendations(recommendationEngine, {
+          developer: recArgs.developer as string | undefined,
+          topN: recArgs.topN as number | undefined,
+        });
       }
     }
 
