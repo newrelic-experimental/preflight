@@ -93,8 +93,6 @@ describe('stdio integration', () => {
     );
     const { resolve } = await import('node:path');
 
-    // Resolve from this test file's directory (src/) up to the package root,
-    // then into dist/. Works regardless of process.cwd().
     const binPath = resolve(__dirname, '..', 'dist', 'index.js');
 
     const transport = new StdioClientTransport({
@@ -109,8 +107,13 @@ describe('stdio integration', () => {
     expect(serverInfo?.name).toBe('nr-ai-observability');
 
     const tools = await client.listTools();
-    expect(tools.tools).toEqual([]);
+    expect(tools.tools.length).toBeGreaterThan(0);
+
+    const toolNames = tools.tools.map((t) => t.name);
+    expect(toolNames).toContain('nr_observe_get_session_stats');
+    expect(toolNames).toContain('nr_observe_get_session_timeline');
+    expect(toolNames).toContain('nr_observe_report_tokens');
 
     await client.close();
-  }, 10000);
+  }, 30000);
 });

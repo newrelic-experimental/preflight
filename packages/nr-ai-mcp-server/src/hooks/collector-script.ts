@@ -175,26 +175,35 @@ function processHook(raw: string): void {
 export { processHook, redact, hashInput, sizeOf, truncate };
 
 // ---------------------------------------------------------------------------
-// Entry point — only when run directly
+// Entry point — only when run directly (not when imported by the MCP server)
 // ---------------------------------------------------------------------------
 
-const _subcommand = process.argv[2];
-if (_subcommand === 'install' || _subcommand === 'uninstall') {
-  // Dynamic import keeps the hook path lightweight — commander and friends
-  // are only loaded when the user explicitly runs install/uninstall.
-  import('../install/cli.js')
-    .then((mod) => mod.runInstallCli(process.argv.slice(2)))
-    .catch((err: unknown) => {
-      process.stderr.write(`Error: ${String(err)}\n`);
-      process.exitCode = 1;
-    });
-} else {
-  try {
-    const stdin = readFileSync('/dev/stdin', 'utf-8');
-    if (stdin.trim()) {
-      processHook(stdin);
+import { realpathSync } from 'node:fs';
+
+const _resolvedScript = (() => {
+  try { return realpathSync(process.argv[1]); } catch { return process.argv[1]; }
+})();
+const _isDirectExecution = _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
+
+if (_isDirectExecution) {
+  const _subcommand = process.argv[2];
+  if (_subcommand === 'install' || _subcommand === 'uninstall') {
+    // Dynamic import keeps the hook path lightweight — commander and friends
+    // are only loaded when the user explicitly runs install/uninstall.
+    import('../install/cli.js')
+      .then((mod) => mod.runInstallCli(process.argv.slice(2)))
+      .catch((err: unknown) => {
+        process.stderr.write(`Error: ${String(err)}\n`);
+        process.exitCode = 1;
+      });
+  } else {
+    try {
+      const stdin = readFileSync('/dev/stdin', 'utf-8');
+      if (stdin.trim()) {
+        processHook(stdin);
+      }
+    } catch {
+      // Silent failure — never block Claude Code
     }
-  } catch {
-    // Silent failure — never block Claude Code
   }
 }
