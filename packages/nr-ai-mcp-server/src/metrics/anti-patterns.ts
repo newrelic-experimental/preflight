@@ -244,12 +244,20 @@ export class AntiPatternDetector {
             flagged.set(file, count);
           }
         }
+      } else if (call.toolName === 'Read') {
+        const file = call.filePath as string | undefined;
+        if (file) {
+          editStreaks.delete(file);
+          flagged.delete(file);
+        }
       } else if (
         call.toolName === 'Bash' &&
         (call.isTestCommand || call.isBuildCommand || call.isLintCommand)
       ) {
-        // Verification command resets all edit streaks
-        editStreaks.clear();
+        if (call.success) {
+          editStreaks.clear();
+          flagged.clear();
+        }
       }
     }
 

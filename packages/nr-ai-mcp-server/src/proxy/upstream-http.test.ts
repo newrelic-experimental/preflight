@@ -355,6 +355,31 @@ describe('HttpUpstream.forward()', () => {
     expect(result.upstreamLatencyMs).toBeLessThan(5000);
   });
 
+  it('destroys socket when upstream errors after partial data', async () => {
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write('{"partial":');
+        setTimeout(() => {
+          res.socket?.destroy();
+        }, 10);
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+    let socketDestroyed = false;
+    (fakeRes as any).socket = { destroy() { socketDestroyed = true; } };
+
+    const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+
+    expect(socketDestroyed).toBe(true);
+    expect(result.responseSizeBytes).toBeGreaterThan(0);
+    expect(result.responseSizeBytes).toBe(Buffer.byteLength('{"partial":'));
+  });
+
   it('returns 502 when upstream is unreachable', async () => {
     const upstream = new HttpUpstream({
       name: 'dead',
@@ -368,6 +393,34 @@ describe('HttpUpstream.forward()', () => {
 
     expect(result.statusCode).toBe(502);
     expect(result.isStreaming).toBe(false);
+  });
+
+  it('returns 502 when upstream times out', async () => {
+    // Server that never responds
+    ({ server: mockServer, port } = await createMockServer((_req, _res) => {
+      _req.on('data', () => {});
+      // Intentionally never respond
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port, { timeoutMs: 300 }));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+
+    const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+
+    expect(result.statusCode).toBe(502);
+    expect(result.isStreaming).toBe(false);
+    expect(Buffer.concat(fakeRes._body).toString()).toContain('timed out');
+  });
+
+  it('default timeout is 30 seconds', () => {
+    const upstream = new HttpUpstream({
+      name: 'default-timeout',
+      url: 'http://localhost:1234',
+      transportType: 'http',
+    });
+    // Access private field via any cast for testing
+    expect((upstream as any).timeoutMs).toBe(30_000);
   });
 
   it('proxy overhead is <10ms for a localhost round-trip', async () => {

@@ -256,6 +256,67 @@ describe('Blind editing detection', () => {
     // First streak is 3, at threshold (not above), so not flagged
     expect(blind).toHaveLength(0);
   });
+
+  it('Read resets streak for the specific file only', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const blind = result.patterns.filter(p => p.type === 'blind_editing');
+
+    // /a.ts: 3 edits, then Read resets, then 1 edit → streak max 3, not flagged
+    // /b.ts: 4 edits without verification → flagged
+    expect(blind).toHaveLength(1);
+    expect(blind[0].file).toBe('/b.ts');
+  });
+
+  it('passing test clears all streaks', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: true }),
+    ];
+
+    const result = detector.analyze(calls);
+    const blind = result.patterns.filter(p => p.type === 'blind_editing');
+    expect(blind).toHaveLength(0);
+  });
+
+  it('failing test does NOT clear streaks', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }),
+    ];
+
+    const result = detector.analyze(calls);
+    const blind = result.patterns.filter(p => p.type === 'blind_editing');
+
+    expect(blind).toHaveLength(1);
+    expect(blind[0].file).toBe('/a.ts');
+  });
 });
 
 // ---------------------------------------------------------------------------

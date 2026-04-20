@@ -53,6 +53,18 @@ export class FeedbackCollector {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Return completed tasks plus the current active task (if any). */
+function getAllTasks(taskDetector: TaskDetector): AiCodingTask[] {
+  const tasks = taskDetector.getCompletedTasks();
+  const current = taskDetector.getCurrentTask();
+  if (current) tasks.push(current);
+  return tasks;
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
 // ---------------------------------------------------------------------------
 
@@ -200,8 +212,8 @@ export function handleGetAntiPatterns(
   taskDetector: TaskDetector,
   antiPatternDetector: AntiPatternDetector,
 ) {
-  const completed = taskDetector.getCompletedTasks();
-  const task = completed[completed.length - 1];
+  const tasks = getAllTasks(taskDetector);
+  const task = tasks[tasks.length - 1];
 
   if (!task) {
     return {
@@ -228,7 +240,26 @@ export function handleGetAntiPatterns(
   };
 }
 
-export function handleGetEfficiencyScore(efficiencyScorer: EfficiencyScorer) {
+export function handleGetEfficiencyScore(
+  efficiencyScorer: EfficiencyScorer,
+  taskDetector?: TaskDetector,
+  antiPatternDetector?: AntiPatternDetector,
+) {
+  // Compute scores on demand for any unscored tasks
+  if (taskDetector) {
+    const scoredIds = new Set(efficiencyScorer.getScores().map((s) => s.taskId));
+    const tasks = getAllTasks(taskDetector);
+
+    for (const task of tasks) {
+      if (!scoredIds.has(task.taskId)) {
+        const patterns = antiPatternDetector
+          ? antiPatternDetector.analyze(task.toolCalls).patterns
+          : [];
+        efficiencyScorer.computeScore(task, patterns);
+      }
+    }
+  }
+
   const avg = efficiencyScorer.getSessionAverage();
   const scores = efficiencyScorer.getScores();
   const latest = scores[scores.length - 1] ?? null;
@@ -256,10 +287,24 @@ export function handleGetEfficiencyScore(efficiencyScorer: EfficiencyScorer) {
   };
 }
 
+const VALID_QUALITY_VALUES = new Set(['good', 'bad', 'neutral']);
+
 export function handleReportFeedback(
   feedbackCollector: FeedbackCollector,
   args: { quality: 'good' | 'bad' | 'neutral'; notes?: string; task_id?: string },
 ) {
+  if (!VALID_QUALITY_VALUES.has(args.quality)) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          error: `Invalid quality value: "${args.quality}". Must be one of: good, bad, neutral`,
+        }),
+      }],
+      isError: true,
+    };
+  }
+
   const record = feedbackCollector.record({
     quality: args.quality,
     notes: args.notes,

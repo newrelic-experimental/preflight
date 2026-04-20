@@ -70,6 +70,7 @@ const DEFAULT_LOG_HARVEST_MS = 5_000;
 
 export class LogIngestManager {
   private buffer: NrLogEntry[] = [];
+  private readonly maxBufferSize = 1_000;
   private readonly licenseKey: string;
   private readonly transportOptions: TransportOptions;
   private readonly developer: string;
@@ -127,17 +128,28 @@ export class LogIngestManager {
     try {
       const result = await this.sendLogsFn(batch, this.licenseKey, this.transportOptions);
       if (!result.success) {
-        logger.warn('Failed to send logs — batch dropped', {
-          droppedCount: batch.length,
+        logger.warn('Failed to send logs — re-queuing batch for retry', {
+          batchSize: batch.length,
           error: result.error,
         });
+        this.requeueBatch(batch);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.warn('Unexpected error sending logs — batch dropped', {
-        droppedCount: batch.length,
+      logger.warn('Unexpected error sending logs — re-queuing batch for retry', {
+        batchSize: batch.length,
         error: message,
       });
+      this.requeueBatch(batch);
+    }
+  }
+
+  private requeueBatch(batch: NrLogEntry[]): void {
+    this.buffer = [...batch, ...this.buffer];
+    if (this.buffer.length > this.maxBufferSize) {
+      const dropped = this.buffer.length - this.maxBufferSize;
+      this.buffer = this.buffer.slice(0, this.maxBufferSize);
+      logger.warn('Log buffer overflow — oldest entries dropped', { dropped });
     }
   }
 }

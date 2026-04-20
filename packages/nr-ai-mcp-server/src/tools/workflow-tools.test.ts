@@ -284,7 +284,7 @@ describe('handleGetEfficiencyScore()', () => {
     expect(body.session_average.tasks_scored).toBe(2);
   });
 
-  it('returns null when no tasks have been scored', () => {
+  it('returns null when no tasks have been scored and no taskDetector provided', () => {
     const scorer = new EfficiencyScorer();
 
     const result = handleGetEfficiencyScore(scorer);
@@ -292,6 +292,44 @@ describe('handleGetEfficiencyScore()', () => {
 
     expect(body.latest).toBeNull();
     expect(body.session_average).toBeNull();
+  });
+
+  it('computes scores on demand from active task via taskDetector', () => {
+    const scorer = new EfficiencyScorer();
+    const detector = new TaskDetector();
+    const antiPatterns = new AntiPatternDetector();
+
+    // Record tool calls to create an active task
+    detector.recordToolCall(makeRecord({ toolName: 'Read', timestamp: 1000 }));
+    detector.recordToolCall(makeRecord({ toolName: 'Edit', timestamp: 2000 }));
+    detector.recordToolCall(makeRecord({ toolName: 'Bash', timestamp: 3000 }));
+
+    // No completed tasks yet — but there IS an active task
+    expect(detector.getCompletedTasks()).toHaveLength(0);
+
+    const result = handleGetEfficiencyScore(scorer, detector, antiPatterns);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.latest).not.toBeNull();
+    expect(body.latest.score).toBeGreaterThanOrEqual(0);
+    expect(body.session_average).not.toBeNull();
+    expect(body.session_average.tasks_scored).toBe(1);
+  });
+
+  it('does not double-score already-scored tasks', () => {
+    const scorer = new EfficiencyScorer();
+    const detector = new TaskDetector();
+    const antiPatterns = new AntiPatternDetector();
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read', timestamp: 1000 }));
+
+    // First call scores the active task
+    handleGetEfficiencyScore(scorer, detector, antiPatterns);
+    expect(scorer.getScores()).toHaveLength(1);
+
+    // Second call should not add a duplicate
+    handleGetEfficiencyScore(scorer, detector, antiPatterns);
+    expect(scorer.getScores()).toHaveLength(1);
   });
 });
 
@@ -327,6 +365,31 @@ describe('handleReportFeedback()', () => {
     expect(body.recorded).toBe(true);
     expect(body.quality).toBe('neutral');
     expect(body.task_id).toBeNull();
+  });
+
+  it('rejects invalid quality values', () => {
+    const collector = new FeedbackCollector();
+
+    const result = handleReportFeedback(collector, { quality: 'excellent' as 'good' });
+    const body = JSON.parse(result.content[0].text);
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(body.error).toContain('Invalid quality value');
+    expect(body.error).toContain('excellent');
+    expect(collector.getRecords()).toHaveLength(0);
+  });
+
+  it('accepts all valid quality values', () => {
+    const collector = new FeedbackCollector();
+
+    for (const quality of ['good', 'bad', 'neutral'] as const) {
+      const result = handleReportFeedback(collector, { quality });
+      const body = JSON.parse(result.content[0].text);
+      expect(body.recorded).toBe(true);
+      expect(body.quality).toBe(quality);
+    }
+
+    expect(collector.getRecords()).toHaveLength(3);
   });
 });
 

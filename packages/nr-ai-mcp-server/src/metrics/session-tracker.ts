@@ -157,6 +157,10 @@ export class SessionTracker {
     // Bash tracking
     if (tool === 'Bash') {
       this.bashCommandsRun++;
+      const exitCode = record.exitCode as number | undefined;
+      if (exitCode != null) {
+        this.bashExitCodes.set(exitCode, (this.bashExitCodes.get(exitCode) ?? 0) + 1);
+      }
     }
 
     // Search tracking

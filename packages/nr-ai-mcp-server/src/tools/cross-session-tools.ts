@@ -130,10 +130,6 @@ export const COST_PER_OUTCOME_TOOL = {
         type: 'string',
         description: 'ISO date string to filter from (e.g., "2026-04-01")',
       },
-      developer: {
-        type: 'string',
-        description: 'Filter by developer name',
-      },
     },
   },
   annotations: { readOnlyHint: true },
@@ -363,9 +359,21 @@ export function handleGetClaudeMdImpact(claudeMdTracker: ClaudeMdTracker) {
 export function handleGetCostPerOutcome(
   costPerOutcomeAnalyzer: CostPerOutcomeAnalyzer,
   taskDetector: TaskDetector,
-  args: { since?: string; developer?: string },
+  args: { since?: string },
 ) {
-  const tasks = taskDetector.getCompletedTasks();
+  let tasks = taskDetector.getCompletedTasks();
+
+  const current = taskDetector.getCurrentTask();
+  if (current) {
+    tasks = [...tasks, current];
+  }
+
+  if (args.since) {
+    const sinceMs = new Date(args.since).getTime();
+    if (!isNaN(sinceMs)) {
+      tasks = tasks.filter((t) => t.startTime >= sinceMs);
+    }
+  }
 
   const attribution = costPerOutcomeAnalyzer.attributeCosts(tasks);
   const roi = costPerOutcomeAnalyzer.estimateROI(attribution, 75); // default $75/hr

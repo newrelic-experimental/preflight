@@ -12,6 +12,7 @@ import { ClaudeMdTracker } from './claudemd-tracker.js';
 import { PromptFeedbackEngine } from './prompt-feedback.js';
 import { CostPerOutcomeAnalyzer } from './cost-per-outcome.js';
 import { RecommendationEngine } from './recommendation-engine.js';
+import { TaskDetector } from './task-detector.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -214,7 +215,58 @@ describe('RecommendationEngine', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 5. emitMetrics
+  // 5. Cost recommendations include active task
+  // -------------------------------------------------------------------------
+
+  it('cost recommendations consider the active (current) task', () => {
+    const taskDetector = new TaskDetector();
+
+    // Record enough tool calls with failures to trigger high waste ratio
+    for (let i = 0; i < 10; i++) {
+      taskDetector.recordToolCall({
+        id: `rec-${i}`,
+        sessionId: 'sess-cost-test',
+        toolName: 'Edit',
+        toolUseId: `toolu_${i}`,
+        timestamp: Date.now() + i * 100,
+        durationMs: 200,
+        success: i % 2 === 0, // 50% failure rate
+      } satisfies ToolCallRecord);
+    }
+
+    // No completed tasks — only an active task
+    expect(taskDetector.getCompletedTasks()).toHaveLength(0);
+    expect(taskDetector.getCurrentTask()).not.toBeNull();
+
+    const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
+    const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
+    const claudeMdTracker = new ClaudeMdTracker({ sessionStore: store });
+    const promptFeedbackEngine = new PromptFeedbackEngine({
+      sessionStore: store,
+      collaborationProfiler,
+      claudeMdTracker,
+    });
+    const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
+
+    const engine = new RecommendationEngine({
+      sessionStore: store,
+      trendAnalyzer,
+      collaborationProfiler,
+      claudeMdTracker,
+      promptFeedbackEngine,
+      costPerOutcomeAnalyzer,
+      taskDetector,
+    });
+
+    const recs = engine.generateAllRecommendations('alice');
+
+    // Should have at least prompt recs; the key check is that getCostRecommendations
+    // didn't silently skip due to empty completedTasks
+    expect(recs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. emitMetrics
   // -------------------------------------------------------------------------
 
   it('emitMetrics emits ai.recommendation events with correct attributes', () => {

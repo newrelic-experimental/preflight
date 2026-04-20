@@ -194,8 +194,8 @@ export class ProxyMetricsTracker {
     // Tool popularity — sorted descending by count
     const toolPopularity: Array<{ tool: string; server: string; count: number }> = [];
     for (const [key, count] of this.toolServerCounts) {
-      const [tool, server] = key.split('|');
-      toolPopularity.push({ tool: tool!, server: server!, count });
+      const [tool = 'unknown', server = 'unknown'] = key.split('|');
+      toolPopularity.push({ tool, server, count });
     }
     toolPopularity.sort((a, b) => b.count - a.count);
 
@@ -237,8 +237,8 @@ export class ProxyMetricsTracker {
 
     // Tool popularity
     for (const [key, count] of this.toolServerCounts) {
-      const [tool, server] = key.split('|');
-      aggregator.record('ai.mcp.tool_popularity', count, { tool: tool!, server: server! });
+      const [tool = 'unknown', server = 'unknown'] = key.split('|');
+      aggregator.record('ai.mcp.tool_popularity', count, { tool, server });
     }
   }
 

@@ -141,4 +141,63 @@ describe('LogIngestManager', () => {
     const sentLogs = (mockSendLogs.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
     expect(sentLogs).toHaveLength(15);
   });
+
+  it('re-queues batch when sendLogsFn returns failure', async () => {
+    mockSendLogs
+      .mockResolvedValueOnce({ success: false, statusCode: 500, retryCount: 0 })
+      .mockResolvedValueOnce({ success: true, statusCode: 200, retryCount: 0 });
+
+    const manager = new LogIngestManager(makeLogIngestOptions());
+    manager.addAuditRecord(makeAuditRecord({ detail: 'important log' }));
+
+    await manager.flush();
+    expect(mockSendLogs).toHaveBeenCalledTimes(1);
+
+    // Batch should be re-queued — flush again succeeds
+    await manager.flush();
+    expect(mockSendLogs).toHaveBeenCalledTimes(2);
+    const sentLogs = (mockSendLogs.mock.calls[1] as unknown[])[0] as Array<Record<string, unknown>>;
+    expect(sentLogs).toHaveLength(1);
+    expect(sentLogs[0]!.message).toBe('important log');
+  });
+
+  it('re-queues batch when sendLogsFn throws', async () => {
+    mockSendLogs
+      .mockRejectedValueOnce(new Error('network timeout'))
+      .mockResolvedValueOnce({ success: true, statusCode: 200, retryCount: 0 });
+
+    const manager = new LogIngestManager(makeLogIngestOptions());
+    manager.addAuditRecord(makeAuditRecord({ detail: 'critical event' }));
+
+    await manager.flush();
+    expect(mockSendLogs).toHaveBeenCalledTimes(1);
+
+    // Re-queued batch retries successfully
+    await manager.flush();
+    expect(mockSendLogs).toHaveBeenCalledTimes(2);
+    const sentLogs = (mockSendLogs.mock.calls[1] as unknown[])[0] as Array<Record<string, unknown>>;
+    expect(sentLogs).toHaveLength(1);
+    expect(sentLogs[0]!.message).toBe('critical event');
+  });
+
+  it('caps buffer at maxBufferSize on overflow', async () => {
+    mockSendLogs.mockResolvedValue({ success: false, statusCode: 500, retryCount: 0 });
+
+    const manager = new LogIngestManager(makeLogIngestOptions());
+
+    // Add entries well beyond the 1000 cap
+    for (let i = 0; i < 1100; i++) {
+      manager.addLog({ timestamp: Date.now(), message: `entry-${i}`, attributes: {} });
+    }
+
+    // Flush fails → re-queues, but cap should keep only 1000
+    await manager.flush();
+
+    // Now make send succeed and flush to verify capped buffer
+    mockSendLogs.mockResolvedValue({ success: true, statusCode: 200, retryCount: 0 });
+    await manager.flush();
+
+    const sentLogs = (mockSendLogs.mock.calls[1] as unknown[])[0] as Array<Record<string, unknown>>;
+    expect(sentLogs).toHaveLength(1000);
+  });
 });

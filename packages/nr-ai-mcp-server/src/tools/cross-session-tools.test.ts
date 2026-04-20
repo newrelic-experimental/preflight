@@ -268,6 +268,78 @@ describe('Cross-session tool handlers', () => {
     expect(parsed).toHaveProperty('roi_estimate');
   });
 
+  it('handleGetCostPerOutcome filters tasks by since parameter', () => {
+    const analyzer = new CostPerOutcomeAnalyzer();
+    const taskDetector = new TaskDetector();
+
+    const now = Date.now();
+    // Create an old completed task
+    taskDetector.recordToolCall(makeToolCall({
+      toolName: 'Write',
+      filePath: '/src/old.ts',
+      timestamp: now - 100_000,
+    } as Partial<ToolCallRecord>));
+    // Close old task via AskUserQuestion boundary signal
+    taskDetector.recordToolCall(makeToolCall({
+      toolName: 'AskUserQuestion',
+      timestamp: now - 50_000,
+    }));
+    // Create a recent task (active, not completed)
+    taskDetector.recordToolCall(makeToolCall({
+      toolName: 'Edit',
+      filePath: '/src/new.ts',
+      timestamp: now - 5_000,
+    } as Partial<ToolCallRecord>));
+
+    // Filter to only include tasks starting after 60s ago
+    const sinceDate = new Date(now - 10_000).toISOString();
+    const result = handleGetCostPerOutcome(analyzer, taskDetector, { since: sinceDate });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.total_tasks).toBe(1);
+  });
+
+  it('handleGetCostPerOutcome includes active task', () => {
+    const analyzer = new CostPerOutcomeAnalyzer();
+    const taskDetector = new TaskDetector();
+
+    // Only an active task (no completed)
+    taskDetector.recordToolCall(makeToolCall({
+      toolName: 'Edit',
+      filePath: '/src/active.ts',
+      timestamp: Date.now(),
+    } as Partial<ToolCallRecord>));
+
+    expect(taskDetector.getCompletedTasks()).toHaveLength(0);
+    expect(taskDetector.getCurrentTask()).not.toBeNull();
+
+    const result = handleGetCostPerOutcome(analyzer, taskDetector, {});
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.total_tasks).toBe(1);
+  });
+
+  it('handleGetCostPerOutcome handles invalid since date gracefully', () => {
+    const analyzer = new CostPerOutcomeAnalyzer();
+    const taskDetector = new TaskDetector();
+
+    taskDetector.recordToolCall(makeToolCall({
+      toolName: 'Write',
+      filePath: '/src/file.ts',
+      timestamp: Date.now() - 5000,
+    } as Partial<ToolCallRecord>));
+    taskDetector.recordToolCall(makeToolCall({
+      toolName: 'Read',
+      timestamp: Date.now() + 60_000,
+    }));
+
+    // Invalid date string — should not crash, returns all tasks
+    const result = handleGetCostPerOutcome(analyzer, taskDetector, { since: 'not-a-date' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.total_tasks).toBe(1);
+  });
+
   // -------------------------------------------------------------------------
   // 7. get_recommendations
   // -------------------------------------------------------------------------

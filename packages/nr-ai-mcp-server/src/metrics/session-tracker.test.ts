@@ -179,6 +179,37 @@ describe('SessionTracker', () => {
       const metrics = tracker.getMetrics();
       expect(metrics.bashCommandsRun).toBe(2);
     });
+
+    it('populates bashExitCodes for Bash commands with exit codes', () => {
+      const tracker = new SessionTracker('test-session');
+
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', exitCode: 0 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', exitCode: 0 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', exitCode: 1 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash', exitCode: 127 }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.bashExitCodes).toEqual({ 0: 2, 1: 1, 127: 1 });
+    });
+
+    it('ignores exitCode on non-Bash tools', () => {
+      const tracker = new SessionTracker('test-session');
+
+      tracker.recordToolCall(makeRecord({ toolName: 'Edit', exitCode: 0 }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.bashExitCodes).toEqual({});
+    });
+
+    it('handles Bash commands without exitCode field', () => {
+      const tracker = new SessionTracker('test-session');
+
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.bashCommandsRun).toBe(1);
+      expect(metrics.bashExitCodes).toEqual({});
+    });
   });
 
   describe('search tracking', () => {

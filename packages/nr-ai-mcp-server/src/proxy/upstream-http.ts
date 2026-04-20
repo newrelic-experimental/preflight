@@ -41,6 +41,7 @@ export class HttpUpstream implements ProxyUpstream {
   readonly name: string;
   readonly transportType = 'http' as const;
   private readonly url: URL;
+  private readonly timeoutMs: number;
 
   constructor(config: UpstreamConfig) {
     if (!config.url) {
@@ -48,6 +49,7 @@ export class HttpUpstream implements ProxyUpstream {
     }
     this.name = config.name;
     this.url = new URL(config.url);
+    this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
   async connect(): Promise<void> {
@@ -86,6 +88,7 @@ export class HttpUpstream implements ProxyUpstream {
         {
           method: req.method ?? 'POST',
           headers,
+          timeout: this.timeoutMs,
         },
         (upstreamRes) => {
           const upstreamLatencyMs = performance.now() - start;
@@ -108,7 +111,9 @@ export class HttpUpstream implements ProxyUpstream {
 
             counter.on('error', (err) => {
               logger.error('Stream error in ByteCountTransform', { error: String(err) });
-              if (!res.writableEnded) res.end();
+              if (!res.writableEnded) {
+                res.socket?.destroy();
+              }
             });
 
             upstreamRes
@@ -151,17 +156,26 @@ export class HttpUpstream implements ProxyUpstream {
             });
             upstreamRes.on('error', (err) => {
               logger.error('Upstream response error', { error: String(err) });
-              if (!res.writableEnded) res.end();
+              const bytesAlreadySent = chunks.reduce((sum, c) => sum + c.length, 0);
+              if (bytesAlreadySent > 0 && !res.writableEnded) {
+                res.socket?.destroy();
+              } else if (!res.writableEnded) {
+                res.end();
+              }
               resolve({
                 statusCode,
                 isStreaming: false,
-                responseSizeBytes: 0,
+                responseSizeBytes: bytesAlreadySent,
                 upstreamLatencyMs,
               });
             });
           }
         },
       );
+
+      upstreamReq.on('timeout', () => {
+        upstreamReq.destroy(new Error(`Upstream "${this.name}" timed out after ${this.timeoutMs}ms`));
+      });
 
       upstreamReq.on('error', (err) => {
         const upstreamLatencyMs = performance.now() - start;

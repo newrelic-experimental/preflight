@@ -217,10 +217,10 @@ function computeSpecificity(toolCalls: number, userMessages: number): number {
 
 /**
  * Autonomy: 1 - (corrections / messages). Low corrections = high autonomy.
- * When userMessages is 0, falls back to 0.8 (assumed autonomous).
+ * When userMessages is 0, falls back to 0.5 (neutral/unknown).
  */
 function computeAutonomy(corrections: number, userMessages: number): number {
-  if (userMessages === 0) return 0.8;
+  if (userMessages === 0) return 0.5;
   return clamp(round(1 - corrections / userMessages, 3), 0, 1);
 }
 

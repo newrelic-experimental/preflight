@@ -386,3 +386,121 @@ describe('Server without any trackers', () => {
     expect(result.tools).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-session tool registration — individual dependency gating
+// ---------------------------------------------------------------------------
+
+describe('Cross-session tool registration', () => {
+  it('registers only session_history and platform_comparison when only sessionStore provided', async () => {
+    const server = createServer({
+      name: 'cs-test',
+      version: '0.0.1',
+      sessionStore: {} as any,
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    await Promise.all([server.server.connect(st), client.connect(ct)]);
+
+    const result = await client.listTools();
+    const names = result.tools.map(t => t.name);
+
+    expect(names).toContain('nr_observe_get_session_history');
+    expect(names).toContain('nr_observe_get_platform_comparison');
+    expect(names).not.toContain('nr_observe_get_weekly_summary');
+    expect(names).not.toContain('nr_observe_get_trends');
+    expect(names).not.toContain('nr_observe_get_collaboration_profile');
+    expect(names).not.toContain('nr_observe_get_claudemd_impact');
+    expect(names).not.toContain('nr_observe_get_cost_per_outcome');
+    expect(names).not.toContain('nr_observe_get_recommendations');
+
+    await client.close();
+    await server.close();
+  });
+
+  it('registers all cross-session tools when all dependencies provided', async () => {
+    const server = createServer({
+      name: 'cs-all',
+      version: '0.0.1',
+      sessionStore: {} as any,
+      weeklySummaryGenerator: {} as any,
+      trendAnalyzer: {} as any,
+      collaborationProfiler: {} as any,
+      claudeMdTracker: {} as any,
+      costPerOutcomeAnalyzer: {} as any,
+      taskDetector: {} as any,
+      recommendationEngine: {} as any,
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    await Promise.all([server.server.connect(st), client.connect(ct)]);
+
+    const result = await client.listTools();
+    const names = result.tools.map(t => t.name);
+
+    expect(names).toContain('nr_observe_get_session_history');
+    expect(names).toContain('nr_observe_get_platform_comparison');
+    expect(names).toContain('nr_observe_get_weekly_summary');
+    expect(names).toContain('nr_observe_get_trends');
+    expect(names).toContain('nr_observe_get_collaboration_profile');
+    expect(names).toContain('nr_observe_get_claudemd_impact');
+    expect(names).toContain('nr_observe_get_cost_per_outcome');
+    expect(names).toContain('nr_observe_get_recommendations');
+
+    await client.close();
+    await server.close();
+  });
+
+  it('does not register cross-session tools when only sessionTracker provided', async () => {
+    const tracker = new SessionTracker('no-cs-session');
+    const server = createServer({
+      name: 'cs-none',
+      version: '0.0.1',
+      sessionTracker: tracker,
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    await Promise.all([server.server.connect(st), client.connect(ct)]);
+
+    const result = await client.listTools();
+    const names = result.tools.map(t => t.name);
+
+    const crossSessionTools = [
+      'nr_observe_get_session_history',
+      'nr_observe_get_weekly_summary',
+      'nr_observe_get_trends',
+      'nr_observe_get_collaboration_profile',
+      'nr_observe_get_claudemd_impact',
+      'nr_observe_get_cost_per_outcome',
+      'nr_observe_get_recommendations',
+      'nr_observe_get_platform_comparison',
+    ];
+
+    for (const tool of crossSessionTools) {
+      expect(names).not.toContain(tool);
+    }
+
+    await client.close();
+    await server.close();
+  });
+
+  it('cost_per_outcome requires both costPerOutcomeAnalyzer and taskDetector', async () => {
+    const server = createServer({
+      name: 'cs-cost-no-task',
+      version: '0.0.1',
+      costPerOutcomeAnalyzer: {} as any,
+      // no taskDetector
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    await Promise.all([server.server.connect(st), client.connect(ct)]);
+
+    const result = await client.listTools();
+    const names = result.tools.map(t => t.name);
+
+    expect(names).not.toContain('nr_observe_get_cost_per_outcome');
+
+    await client.close();
+    await server.close();
+  });
+});

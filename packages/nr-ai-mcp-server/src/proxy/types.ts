@@ -16,6 +16,8 @@ export interface UpstreamConfig {
   /** Extra environment variables for stdio process */
   readonly env?: Record<string, string>;
   readonly transportType: 'http' | 'stdio';
+  /** Timeout in ms for upstream HTTP requests (default: 30000) */
+  readonly timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------

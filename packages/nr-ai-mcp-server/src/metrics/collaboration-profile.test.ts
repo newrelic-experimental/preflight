@@ -423,4 +423,24 @@ describe('CollaborationProfiler', () => {
       expect(r.value).toBeLessThanOrEqual(1);
     }
   });
+
+  // -------------------------------------------------------------------------
+  // 9. Neutral autonomy for zero-message sessions
+  // -------------------------------------------------------------------------
+
+  it('returns 0.5 autonomy for sessions with zero user messages', () => {
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+
+    store.saveSession(makeSummary({
+      sessionId: 's1',
+      toolCallCount: 50,
+      userMessages: 0,
+      userCorrections: 0,
+    }));
+
+    const profile = profiler.computeProfile('alice');
+
+    expect(profile.dimensions.autonomy).toBe(0.5);
+    expect(profile.dimensions.specificity).toBe(0.5);
+  });
 });

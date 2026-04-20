@@ -40,7 +40,14 @@ import {
 } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
 import {
-  CROSS_SESSION_TOOLS,
+  SESSION_HISTORY_TOOL,
+  WEEKLY_SUMMARY_TOOL,
+  TRENDS_TOOL,
+  COLLABORATION_PROFILE_TOOL,
+  CLAUDEMD_IMPACT_TOOL,
+  COST_PER_OUTCOME_TOOL,
+  RECOMMENDATIONS_TOOL,
+  PLATFORM_COMPARISON_TOOL,
   handleGetSessionHistory,
   handleGetWeeklySummary,
   handleGetTrends,
@@ -213,13 +220,27 @@ export function registerTools(
     tools.push(REPORT_FEEDBACK_TOOL);
   }
 
-  // Cross-session tools (registered when their dependencies are available)
-  const hasCrossSession =
-    sessionStore || weeklySummaryGenerator || trendAnalyzer ||
-    collaborationProfiler || claudeMdTracker || costPerOutcomeAnalyzer ||
-    recommendationEngine;
-  if (hasCrossSession) {
-    tools.push(...CROSS_SESSION_TOOLS);
+  // Cross-session tools — each registered only when its specific dependencies exist
+  if (sessionStore) {
+    tools.push(SESSION_HISTORY_TOOL, PLATFORM_COMPARISON_TOOL);
+  }
+  if (weeklySummaryGenerator) {
+    tools.push(WEEKLY_SUMMARY_TOOL);
+  }
+  if (trendAnalyzer) {
+    tools.push(TRENDS_TOOL);
+  }
+  if (collaborationProfiler) {
+    tools.push(COLLABORATION_PROFILE_TOOL);
+  }
+  if (claudeMdTracker) {
+    tools.push(CLAUDEMD_IMPACT_TOOL);
+  }
+  if (costPerOutcomeAnalyzer && taskDetector) {
+    tools.push(COST_PER_OUTCOME_TOOL);
+  }
+  if (recommendationEngine) {
+    tools.push(RECOMMENDATIONS_TOOL);
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -261,7 +282,7 @@ export function registerTools(
 
       case 'nr_observe_get_efficiency_score':
         if (!efficiencyScorer) break;
-        return handleGetEfficiencyScore(efficiencyScorer);
+        return handleGetEfficiencyScore(efficiencyScorer, taskDetector, antiPatternDetector);
 
       case 'nr_observe_report_feedback': {
         if (!feedbackCollector) break;
@@ -319,7 +340,6 @@ export function registerTools(
         const costArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetCostPerOutcome(costPerOutcomeAnalyzer, taskDetector, {
           since: costArgs.since as string | undefined,
-          developer: costArgs.developer as string | undefined,
         });
       }
 

@@ -183,7 +183,9 @@ export class RecommendationEngine {
     _options?: { since?: Date },
   ): Recommendation[] {
     const recs: Recommendation[] = [];
-    const tasks = this.taskDetector?.getCompletedTasks() ?? [];
+    const completed = this.taskDetector?.getCompletedTasks() ?? [];
+    const current = this.taskDetector?.getCurrentTask();
+    const tasks = current ? [...completed, current] : completed;
 
     if (tasks.length === 0) return recs;
 

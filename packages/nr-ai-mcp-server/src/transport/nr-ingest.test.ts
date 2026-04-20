@@ -260,6 +260,43 @@ describe('NrIngestManager', () => {
       expect(metricNames).toContain('ai.session.unique_files_read.count');
       expect(metricNames).toContain('ai.session.unique_files_written.count');
     });
+
+    it('emitSessionGauges is a no-op after stop()', async () => {
+      const sessionTracker = new SessionTracker('stopped-session');
+      sessionTracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTracker }));
+
+      manager.start();
+      await manager.stop();
+
+      // At this point running=false. Calling emitSessionGauges should be a no-op.
+      const recordMetricSpy = jest.spyOn(
+        (manager as unknown as { scheduler: { recordMetric: (...args: unknown[]) => void } }).scheduler,
+        'recordMetric',
+      );
+
+      (manager as unknown as { emitSessionGauges(): void }).emitSessionGauges();
+
+      expect(recordMetricSpy).not.toHaveBeenCalled();
+      recordMetricSpy.mockRestore();
+    });
+
+    it('stop() emits final session gauges before marking as stopped', async () => {
+      const sessionTracker = new SessionTracker('final-gauge-session');
+      sessionTracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/x.ts' }));
+
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTracker }));
+
+      manager.start();
+      await manager.stop();
+
+      expect(mockSendMetrics).toHaveBeenCalled();
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+      const metricNames = sentMetrics.map(m => m.name);
+      expect(metricNames).toContain('ai.session.duration_ms.count');
+      expect(metricNames).toContain('ai.session.unique_files_read.count');
+    });
   });
 
   describe('error handling', () => {

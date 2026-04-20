@@ -60,16 +60,32 @@ export class LocalStore {
    * This avoids data loss from concurrent hook writes during drain.
    */
   drainBuffer(): HookEvent[] {
+    const tmpPath = this.bufferPath + '.drain';
+
+    // Recover from a previous failed drain — the .drain file has events that
+    // were never processed.
+    if (existsSync(tmpPath)) {
+      try {
+        if (existsSync(this.bufferPath)) {
+          const drainData = readFileSync(tmpPath, 'utf-8');
+          const bufferData = readFileSync(this.bufferPath, 'utf-8');
+          writeFileSync(this.bufferPath, drainData + bufferData);
+          unlinkSync(tmpPath);
+        } else {
+          renameSync(tmpPath, this.bufferPath);
+        }
+      } catch {
+        logger.warn('Failed to recover .drain file — will retry next poll');
+      }
+    }
+
     if (!existsSync(this.bufferPath)) {
       return [];
     }
 
-    const tmpPath = this.bufferPath + '.drain';
-
     try {
       renameSync(this.bufferPath, tmpPath);
     } catch {
-      // File may have been removed between the check and the rename
       return [];
     }
 
@@ -92,7 +108,7 @@ export class LocalStore {
       }
       return events;
     } catch (err) {
-      logger.warn('Failed to drain buffer', { error: String(err) });
+      logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
       return [];
     }
   }

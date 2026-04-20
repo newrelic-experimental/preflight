@@ -196,6 +196,7 @@ export class NrIngestManager {
   private readonly appName: string;
   private readonly metricHarvestIntervalMs: number;
   private sessionGaugeIntervalId: ReturnType<typeof setInterval> | null = null;
+  private running = false;
 
   constructor(options: NrIngestOptions) {
     this.developer = options.developer;
@@ -300,6 +301,7 @@ export class NrIngestManager {
   }
 
   start(): void {
+    this.running = true;
     this.scheduler.start();
     this.logIngest.start();
 
@@ -317,13 +319,15 @@ export class NrIngestManager {
       this.sessionGaugeIntervalId = null;
     }
 
-    // Emit final session gauges before shutdown
+    // Emit final session gauges before marking as stopped
     this.emitSessionGauges();
+    this.running = false;
 
     await Promise.all([this.scheduler.stop(), this.logIngest.stop()]);
   }
 
   private emitSessionGauges(): void {
+    if (!this.running) return;
     const metrics = this.sessionTracker.getMetrics();
     this.scheduler.recordMetric('ai.session.duration_ms', metrics.sessionDurationMs);
     this.scheduler.recordMetric('ai.session.unique_files_read', metrics.uniqueFilesRead);

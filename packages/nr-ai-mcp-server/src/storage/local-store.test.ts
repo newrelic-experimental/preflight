@@ -169,6 +169,53 @@ describe('LocalStore', () => {
       expect(drained[0]!.tool).toBe('Read');
       expect(drained[1]!.tool).toBe('Write');
     });
+
+    it('recovers orphaned .drain file when buffer does not exist', () => {
+      const store = new LocalStore(tmpDir);
+      mkdirSync(tmpDir, { recursive: true });
+
+      const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
+      const event = makeEvent({ tool: 'Orphaned' });
+      writeFileSync(drainPath, JSON.stringify(event) + '\n');
+
+      const drained = store.drainBuffer();
+      expect(drained).toHaveLength(1);
+      expect(drained[0]!.tool).toBe('Orphaned');
+      expect(existsSync(drainPath)).toBe(false);
+    });
+
+    it('merges .drain and buffer when both exist', () => {
+      const store = new LocalStore(tmpDir);
+      mkdirSync(tmpDir, { recursive: true });
+
+      const bufferPath = resolve(tmpDir, 'buffer.jsonl');
+      const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
+
+      const olderEvent = makeEvent({ tool: 'FromDrain', timestamp: 1 });
+      const newerEvent = makeEvent({ tool: 'FromBuffer', timestamp: 2 });
+
+      writeFileSync(drainPath, JSON.stringify(olderEvent) + '\n');
+      writeFileSync(bufferPath, JSON.stringify(newerEvent) + '\n');
+
+      const drained = store.drainBuffer();
+      expect(drained).toHaveLength(2);
+      expect(drained[0]!.tool).toBe('FromDrain');
+      expect(drained[1]!.tool).toBe('FromBuffer');
+      expect(existsSync(drainPath)).toBe(false);
+    });
+
+    it('handles corrupt .drain file gracefully', () => {
+      const store = new LocalStore(tmpDir);
+      mkdirSync(tmpDir, { recursive: true });
+
+      const drainPath = resolve(tmpDir, 'buffer.jsonl.drain');
+      const validEvent = makeEvent({ tool: 'Valid' });
+      writeFileSync(drainPath, 'CORRUPT DATA\n' + JSON.stringify(validEvent) + '\n');
+
+      const drained = store.drainBuffer();
+      expect(drained).toHaveLength(1);
+      expect(drained[0]!.tool).toBe('Valid');
+    });
   });
 
   describe('saveSession() + loadRecentSessions()', () => {
