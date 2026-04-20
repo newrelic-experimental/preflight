@@ -112,6 +112,20 @@ describe('toolCallToNrEvent()', () => {
     expect(event.isBuildCommand).toBe(false);
   });
 
+  it('includes platform attribute defaulting to claude-code', () => {
+    const record = makeRecord();
+    const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+    expect(event.platform).toBe('claude-code');
+  });
+
+  it('uses explicit platform from record when present', () => {
+    const record = makeRecord({ platform: 'cursor' } as Partial<ToolCallRecord>);
+    const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+    expect(event.platform).toBe('cursor');
+  });
+
   it('skips null and undefined values', () => {
     const record = makeRecord({
       durationMs: null,

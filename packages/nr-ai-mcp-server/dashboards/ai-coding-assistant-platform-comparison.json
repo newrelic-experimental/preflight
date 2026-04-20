@@ -1,0 +1,213 @@
+{
+  "name": "AI Coding Assistant — Platform Comparison",
+  "description": "Cross-platform comparison dashboard for AI coding assistants (Claude Code, Cursor, Windsurf, Copilot). All widgets FACET by platform for side-by-side metrics. Requires platform attribute on AiToolCall events.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "AI Coding Assistant — Platform Comparison",
+      "description": "Compare AI coding assistant platforms across efficiency, cost, tool usage, and anti-patterns",
+      "widgets": [
+        {
+          "title": "Active Platforms",
+          "layout": { "column": 1, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT uniqueCount(platform) AS 'Platforms' FROM AiToolCall SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Tool Calls by Platform",
+          "layout": { "column": 4, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Sessions by Platform",
+          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT uniqueCount(session_id) FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Success Rate by Platform",
+          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT percentage(count(*), WHERE success = true) FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Average Duration by Platform (ms)",
+          "layout": { "column": 1, "row": 4, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(duration_ms) FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Error Rate by Platform",
+          "layout": { "column": 4, "row": 4, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT percentage(count(*), WHERE success = false) FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Avg Tool Calls per Session by Platform",
+          "layout": { "column": 7, "row": 4, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) / uniqueCount(session_id) AS 'Calls/Session' FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Weekly Tool Call Trend by Platform",
+          "layout": { "column": 10, "row": 4, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET platform TIMESERIES 1 week SINCE 4 weeks ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Estimated Cost by Platform",
+          "layout": { "column": 1, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(estimated_cost_usd) FROM AiCodingTask FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Avg Cost per Task by Platform",
+          "layout": { "column": 5, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(estimated_cost_usd) FROM AiCodingTask FACET platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Weekly Cost Trend by Platform",
+          "layout": { "column": 9, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(estimated_cost_usd) FROM AiCodingTask FACET platform TIMESERIES 1 week SINCE 4 weeks ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Tool Distribution by Platform",
+          "layout": { "column": 1, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET tool, platform SINCE 7 days ago LIMIT 20"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Anti-Pattern Frequency by Platform",
+          "layout": { "column": 5, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiAntiPattern FACET anti_pattern_type, platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Model Usage by Platform",
+          "layout": { "column": 9, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.pie" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET model, platform SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Platform Feature Coverage",
+          "layout": { "column": 1, "row": 13, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.markdown" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall FACET platform SINCE 7 days ago"
+              }
+            ],
+            "text": "## Platform Feature Coverage\n\n| Feature | Claude Code | Cursor | Windsurf | Copilot | Generic MCP |\n|---|---|---|---|---|---|\n| Built-in tool calls | ✅ Native hooks | ✅ MCP proxy | ✅ MCP proxy | ✅ VS Code extension | ✅ Manual reporting |\n| MCP proxy data | ✅ | ✅ | ✅ | ✅ | ✅ |\n| Token counts | ✅ Hook events | ⚠️ Limited | ⚠️ Limited | ⚠️ API usage | ❌ Manual only |\n| Timing data | ✅ Pre/post hooks | ✅ Inferred | ✅ Inferred | ✅ Event timestamps | ⚠️ If reported |\n| Session metadata | ✅ Model, version | ✅ Session ID | ✅ Context ID | ✅ Extension data | ⚠️ Manual |"
+          }
+        }
+      ]
+    }
+  ]
+}

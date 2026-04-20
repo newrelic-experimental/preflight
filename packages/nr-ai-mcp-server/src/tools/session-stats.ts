@@ -48,6 +48,7 @@ import {
   handleGetClaudeMdImpact,
   handleGetCostPerOutcome,
   handleGetRecommendations,
+  handleGetPlatformComparison,
 } from './cross-session-tools.js';
 
 // ---------------------------------------------------------------------------
@@ -328,6 +329,15 @@ export function registerTools(
         return handleGetRecommendations(recommendationEngine, {
           developer: recArgs.developer as string | undefined,
           topN: recArgs.topN as number | undefined,
+        });
+      }
+
+      case 'nr_observe_get_platform_comparison': {
+        if (!sessionStore) break;
+        const pcArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetPlatformComparison(sessionStore, {
+          metric: pcArgs.metric as string | undefined,
+          weeks: pcArgs.weeks as number | undefined,
         });
       }
     }

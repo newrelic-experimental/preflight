@@ -97,6 +97,15 @@ describe.each(dashboards)('Dashboard: $file', ({ file, dashboard }) => {
     }
   });
 
+  it('all widget titles are non-empty strings', () => {
+    for (const page of dashboard.pages) {
+      for (const widget of page.widgets) {
+        expect(typeof widget.title).toBe('string');
+        expect(widget.title.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
   it('all accountIds arrays are empty (deploy script injects them)', () => {
     for (const page of dashboard.pages) {
       for (const widget of page.widgets) {
@@ -186,6 +195,46 @@ describe('Security Audit dashboard', () => {
     const queries = getAllQueries(security!.dashboard);
     const severityQueries = queries.filter(q => q.includes('audit.severity'));
     expect(severityQueries.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('Platform Comparison dashboard', () => {
+  const platformComparison = dashboards.find(d => d.file === 'ai-coding-assistant-platform-comparison.json');
+
+  it('exists', () => {
+    expect(platformComparison).toBeDefined();
+  });
+
+  it('has the correct name', () => {
+    expect(platformComparison!.dashboard.name).toBe('AI Coding Assistant — Platform Comparison');
+  });
+
+  it('has 5 rows of widgets (15 total)', () => {
+    expect(platformComparison!.dashboard.pages[0].widgets).toHaveLength(15);
+  });
+
+  it('all non-billboard NRQL queries include FACET platform for cross-platform comparison', () => {
+    const widgets = platformComparison!.dashboard.pages[0].widgets.filter(
+      w => w.visualization.id !== 'viz.billboard' && w.visualization.id !== 'viz.markdown'
+    );
+    for (const widget of widgets) {
+      for (const nrql of widget.rawConfiguration.nrqlQueries) {
+        expect(nrql.query).toMatch(/FACET.*platform/i);
+      }
+    }
+  });
+
+  it('includes TIMESERIES queries for trend analysis', () => {
+    const queries = getAllQueries(platformComparison!.dashboard);
+    const timeseriesQueries = queries.filter(q => q.includes('TIMESERIES'));
+    expect(timeseriesQueries.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('includes a markdown widget for platform feature coverage', () => {
+    const markdownWidgets = platformComparison!.dashboard.pages[0].widgets.filter(
+      w => w.visualization.id === 'viz.markdown'
+    );
+    expect(markdownWidgets.length).toBeGreaterThanOrEqual(1);
   });
 });
 

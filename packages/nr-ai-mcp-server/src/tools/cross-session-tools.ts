@@ -159,6 +159,26 @@ export const RECOMMENDATIONS_TOOL = {
   annotations: { readOnlyHint: true },
 };
 
+export const PLATFORM_COMPARISON_TOOL = {
+  name: 'nr_observe_get_platform_comparison',
+  description:
+    'Compare AI coding assistant platforms side-by-side on a given metric: efficiency, cost, task_success, tool_calls, or error_rate.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      metric: {
+        type: 'string',
+        description: 'Metric to compare: "efficiency", "cost", "task_success", "tool_calls", or "error_rate" (default: "efficiency")',
+      },
+      weeks: {
+        type: 'number',
+        description: 'Number of weeks to include (default: 4)',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
 // ---------------------------------------------------------------------------
 // All tool definitions (for conditional registration)
 // ---------------------------------------------------------------------------
@@ -171,6 +191,7 @@ export const CROSS_SESSION_TOOLS = [
   CLAUDEMD_IMPACT_TOOL,
   COST_PER_OUTCOME_TOOL,
   RECOMMENDATIONS_TOOL,
+  PLATFORM_COMPARISON_TOOL,
 ];
 
 // ---------------------------------------------------------------------------
@@ -376,6 +397,79 @@ export function handleGetRecommendations(
     content: [{
       type: 'text' as const,
       text: JSON.stringify({ recommendations: recs, count: recs.length }, null, 2),
+    }],
+  };
+}
+
+export function handleGetPlatformComparison(
+  sessionStore: SessionStore,
+  args: { metric?: string; weeks?: number },
+) {
+  const weeks = args.weeks ?? 4;
+  const since = new Date(Date.now() - weeks * 7 * 86_400_000);
+  const metric = args.metric ?? 'efficiency';
+
+  const sessions = sessionStore.loadAllSessions({ since });
+
+  // Group sessions by platform (uses 'claude-code' as default)
+  const byPlatform = new Map<string, typeof sessions>();
+  for (const s of sessions) {
+    const platform = (s as Record<string, unknown>).platform as string ?? 'claude-code';
+    const list = byPlatform.get(platform) ?? [];
+    list.push(s);
+    byPlatform.set(platform, list);
+  }
+
+  const comparison: Record<string, unknown> = {};
+
+  for (const [platform, platformSessions] of byPlatform) {
+    const count = platformSessions.length;
+    if (count === 0) continue;
+
+    let value: number;
+    switch (metric) {
+      case 'cost': {
+        const total = platformSessions.reduce((sum, s) => sum + (s.estimatedCostUsd ?? 0), 0);
+        value = Math.round((total / count) * 100) / 100;
+        break;
+      }
+      case 'task_success': {
+        const total = platformSessions.reduce((sum, s) => sum + (s.taskSuccessRate ?? 0), 0);
+        value = Math.round((total / count) * 100) / 100;
+        break;
+      }
+      case 'tool_calls': {
+        const total = platformSessions.reduce((sum, s) => sum + (s.toolCallCount ?? 0), 0);
+        value = Math.round(total / count);
+        break;
+      }
+      case 'error_rate': {
+        const total = platformSessions.reduce((sum, s) => {
+          const tc = s.toolCallCount ?? 0;
+          const successRate = s.taskSuccessRate ?? 1;
+          return sum + (tc > 0 ? (1 - successRate) : 0);
+        }, 0);
+        value = Math.round((total / count) * 100) / 100;
+        break;
+      }
+      case 'efficiency':
+      default: {
+        const total = platformSessions.reduce((sum, s) => sum + (s.efficiencyScore ?? 0), 0);
+        value = Math.round((total / count) * 100) / 100;
+        break;
+      }
+    }
+
+    comparison[platform] = {
+      session_count: count,
+      average: value,
+    };
+  }
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({ metric, weeks, platforms: comparison }, null, 2),
     }],
   };
 }

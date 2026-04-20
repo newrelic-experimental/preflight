@@ -93,9 +93,9 @@ describe('stdio integration', () => {
     );
     const { resolve } = await import('node:path');
 
-    // Use process.cwd() to locate the package root — avoids import.meta.url
-    // which ts-jest does not reliably support in its ESM transform.
-    const binPath = resolve(process.cwd(), 'packages', 'nr-ai-mcp-server', 'dist', 'index.js');
+    // Resolve from this test file's directory (src/) up to the package root,
+    // then into dist/. Works regardless of process.cwd().
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
 
     const transport = new StdioClientTransport({
       command: 'node',

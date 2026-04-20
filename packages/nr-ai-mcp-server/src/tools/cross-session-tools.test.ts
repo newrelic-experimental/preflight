@@ -21,6 +21,7 @@ import {
   handleGetClaudeMdImpact,
   handleGetCostPerOutcome,
   handleGetRecommendations,
+  handleGetPlatformComparison,
 } from './cross-session-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -311,5 +312,73 @@ describe('Cross-session tool handlers', () => {
     expect(rec).toHaveProperty('priority');
     expect(rec).toHaveProperty('detail');
     expect(rec).toHaveProperty('evidence');
+  });
+
+  // -------------------------------------------------------------------------
+  // 8. get_platform_comparison — efficiency
+  // -------------------------------------------------------------------------
+
+  it('handleGetPlatformComparison returns per-platform efficiency data', () => {
+    store.saveSession(makeSummary({
+      sessionId: 'cc-1',
+      efficiencyScore: 0.8,
+      platform: 'claude-code',
+    } as Partial<FullSessionSummary>));
+    store.saveSession(makeSummary({
+      sessionId: 'cur-1',
+      efficiencyScore: 0.6,
+      platform: 'cursor',
+    } as Partial<FullSessionSummary>));
+
+    const result = handleGetPlatformComparison(store, { metric: 'efficiency' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.metric).toBe('efficiency');
+    expect(parsed.platforms).toHaveProperty('claude-code');
+    expect(parsed.platforms).toHaveProperty('cursor');
+    expect(parsed.platforms['claude-code'].session_count).toBe(1);
+    expect(parsed.platforms['claude-code'].average).toBe(0.8);
+    expect(parsed.platforms['cursor'].average).toBe(0.6);
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. get_platform_comparison — cost
+  // -------------------------------------------------------------------------
+
+  it('handleGetPlatformComparison returns per-platform cost data', () => {
+    store.saveSession(makeSummary({
+      sessionId: 'cc-cost',
+      estimatedCostUsd: 1.50,
+      platform: 'claude-code',
+    } as Partial<FullSessionSummary>));
+    store.saveSession(makeSummary({
+      sessionId: 'ws-cost',
+      estimatedCostUsd: 0.75,
+      platform: 'windsurf',
+    } as Partial<FullSessionSummary>));
+
+    const result = handleGetPlatformComparison(store, { metric: 'cost' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.metric).toBe('cost');
+    expect(parsed.platforms).toHaveProperty('windsurf');
+    expect(parsed.platforms['windsurf'].average).toBe(0.75);
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. get_platform_comparison — defaults
+  // -------------------------------------------------------------------------
+
+  it('handleGetPlatformComparison defaults sessions without platform to claude-code', () => {
+    store.saveSession(makeSummary({
+      sessionId: 'no-platform',
+      efficiencyScore: 0.7,
+    }));
+
+    const result = handleGetPlatformComparison(store, {});
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.metric).toBe('efficiency');
+    expect(parsed.platforms).toHaveProperty('claude-code');
   });
 });

@@ -79,6 +79,7 @@ const STANDARD_KEYS = new Set([
   'inputSizeBytes',
   'outputSizeBytes',
   'inputHash',
+  'platform',
 ]);
 
 /**
@@ -108,6 +109,9 @@ export function toolCallToNrEvent(
   if (record.inputSizeBytes != null) event.input_size_bytes = record.inputSizeBytes;
   if (record.outputSizeBytes != null) event.output_size_bytes = record.outputSizeBytes;
   if (record.inputHash != null) event.input_hash = record.inputHash;
+
+  // Platform attribution — defaults to 'claude-code' for backward compatibility
+  event.platform = typeof record.platform === 'string' ? record.platform : 'claude-code';
 
   // Include tool-specific fields from parsers
   for (const [key, value] of Object.entries(record)) {

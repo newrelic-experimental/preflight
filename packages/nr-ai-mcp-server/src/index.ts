@@ -15,6 +15,29 @@ export type { HookEvent, SessionSummary, AuditEntry } from './storage/index.js';
 export type { CliOptions, ServerOptions } from './types.js';
 export { ProxyManager } from './proxy/index.js';
 export type { ProxyToolCallRecord, ProxyRequestRecord, UpstreamConfig } from './proxy/index.js';
+export {
+  ClaudeCodeAdapter,
+  CursorAdapter,
+  WindsurfAdapter,
+  CopilotAdapter,
+  parseCopilotUsageResponse,
+  GenericMcpAdapter,
+  validateReportToolCallInput,
+  REPORT_TOOL_CALL_TOOL,
+  REPORT_SESSION_START_TOOL,
+  REPORT_SESSION_END_TOOL,
+  PlatformRegistry,
+  createDefaultRegistry,
+} from './platforms/index.js';
+export type {
+  NormalizedToolCall,
+  PlatformConfig,
+  PlatformSessionMetadata,
+  PlatformAdapter,
+  ReportToolCallInput,
+  ReportSessionStartInput,
+  ReportSessionEndInput,
+} from './platforms/index.js';
 
 const logger = createLogger('mcp-cli');
 
