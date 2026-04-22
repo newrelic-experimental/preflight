@@ -203,6 +203,36 @@ describe('resolveModelPricing', () => {
 
     stderrSpy.mockRestore();
   });
+
+  // 12. Reverse prefix match for versioned model names
+  it('resolves versioned model names via reverse prefix match', () => {
+    // claude-opus-4-7 should match claude-opus-4-20250514 (base: claude-opus-4)
+    const opus = resolveModelPricing('claude-opus-4-7');
+    expect(opus).not.toBeNull();
+    expect(opus!.inputPerMTok).toBe(15);
+    expect(opus!.outputPerMTok).toBe(75);
+
+    // claude-sonnet-4-6 should match claude-sonnet-4-20250514 (base: claude-sonnet-4)
+    const sonnet = resolveModelPricing('claude-sonnet-4-6');
+    expect(sonnet).not.toBeNull();
+    expect(sonnet!.inputPerMTok).toBe(3);
+    expect(sonnet!.outputPerMTok).toBe(15);
+
+    // claude-haiku-3-5 should match claude-haiku-3-5-20241022 (base: claude-haiku-3-5)
+    const haiku = resolveModelPricing('claude-haiku-3-5');
+    expect(haiku).not.toBeNull();
+    expect(haiku!.inputPerMTok).toBe(0.8);
+  });
+
+  // 13. Reverse prefix does not match unrelated models
+  it('does not false-match via reverse prefix on unrelated models', () => {
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const pricing = resolveModelPricing('claude-opus-5-1');
+    expect(pricing).toBeNull();
+
+    stderrSpy.mockRestore();
+  });
 });
 
 // ---------------------------------------------------------------------------

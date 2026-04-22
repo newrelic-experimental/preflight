@@ -66,8 +66,8 @@ export class CopilotAdapter implements PlatformAdapter {
 
     const timestamp = event.timestamp ?? Date.now();
     const durationMs =
-      event.endTimestamp !== undefined && event.timestamp !== undefined
-        ? event.endTimestamp - event.timestamp
+      event.endTimestamp !== undefined
+        ? Math.max(0, event.endTimestamp - timestamp)
         : null;
 
     return {

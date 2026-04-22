@@ -12,7 +12,7 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import { readFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, openSync, closeSync, mkdirSync, existsSync, constants as fsConstants } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -22,6 +22,9 @@ import { createHash } from 'node:crypto';
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BUFFER_PATH = resolve(homedir(), '.nr-ai-observe', 'buffer.jsonl');
+
+/** POSIX PIPE_BUF — writes at or below this size are atomic with O_APPEND. */
+const PIPE_BUF = 4096;
 
 function getBufferPath(): string {
   return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH ?? DEFAULT_BUFFER_PATH;
@@ -43,7 +46,7 @@ function getMaxContentLength(): number {
 // ---------------------------------------------------------------------------
 
 const REDACTION_PATTERNS: RegExp[] = [
-  /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)[\s]*[=:]\s*\S+/gi,
+  /\b(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)\b[\s]*[=:]\s*\S+/gi,
   /(?:sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-|Bearer\s+)\S+/g,
   /-----BEGIN[\s\S]*?-----END[^\n]*-----/g,
 ];
@@ -77,6 +80,10 @@ function truncate(value: string, maxLen: number): string {
   return value.slice(0, maxLen) + '...[truncated]';
 }
 
+function countLines(text: string): number {
+  return (text.match(/\n/g) || []).length + 1;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -91,6 +98,100 @@ interface HookInput {
   error?: string;
   is_interrupt?: boolean;
   [key: string]: unknown;
+}
+
+/**
+ * Extract only the metadata fields from tool_input that the tool-specific
+ * parsers need. Full content strings are replaced with their lengths to
+ * avoid writing sensitive data to the JSONL buffer on disk.
+ */
+function extractInputMeta(toolName: string, input: unknown): Record<string, unknown> | undefined {
+  if (input === null || input === undefined || typeof input !== 'object') return undefined;
+  const obj = input as Record<string, unknown>;
+  const meta: Record<string, unknown> = {};
+
+  // Common field: file_path (Read, Write, Edit)
+  if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
+
+  switch (toolName) {
+    case 'Read':
+      if (typeof obj.offset === 'number') meta.offset = obj.offset;
+      if (typeof obj.limit === 'number') meta.limit = obj.limit;
+      break;
+    case 'Write':
+      if (typeof obj.content === 'string') {
+        meta.contentLength = obj.content.length;
+        meta.lineCount = countLines(obj.content);
+      }
+      break;
+    case 'Edit':
+      if (typeof obj.old_string === 'string') {
+        meta.oldStringLength = obj.old_string.length;
+        meta.oldLineCount = countLines(obj.old_string);
+      }
+      if (typeof obj.new_string === 'string') {
+        meta.newStringLength = obj.new_string.length;
+        meta.newLineCount = obj.new_string.length > 0 ? countLines(obj.new_string) : 0;
+        meta.isDelete = obj.new_string.length === 0;
+      }
+      if (typeof obj.replace_all === 'boolean') meta.replace_all = obj.replace_all;
+      break;
+    case 'Bash':
+      if (typeof obj.command === 'string') meta.command = obj.command;
+      if (typeof obj.description === 'string') meta.description = obj.description;
+      if (typeof obj.timeout === 'number') meta.timeout = obj.timeout;
+      if (typeof obj.run_in_background === 'boolean') meta.run_in_background = obj.run_in_background;
+      break;
+    case 'Grep':
+      if (typeof obj.pattern === 'string') meta.pattern = obj.pattern;
+      if (typeof obj.path === 'string') meta.path = obj.path;
+      if (typeof obj.output_mode === 'string') meta.output_mode = obj.output_mode;
+      break;
+    case 'Glob':
+      if (typeof obj.pattern === 'string') meta.pattern = obj.pattern;
+      if (typeof obj.path === 'string') meta.path = obj.path;
+      break;
+    case 'Agent':
+      if (typeof obj.description === 'string') meta.description = obj.description;
+      if (typeof obj.subagent_type === 'string') meta.subagent_type = obj.subagent_type;
+      if (typeof obj.prompt === 'string') meta.promptLength = obj.prompt.length;
+      if (typeof obj.run_in_background === 'boolean') meta.run_in_background = obj.run_in_background;
+      break;
+    case 'AskUserQuestion':
+      if (Array.isArray(obj.questions)) meta.questions = new Array(obj.questions.length);
+      break;
+    case 'TaskCreate':
+      if (typeof obj.subject === 'string') meta.subject = obj.subject;
+      break;
+    case 'TaskUpdate':
+      if (typeof obj.taskId === 'string') meta.taskId = obj.taskId;
+      if (typeof obj.status === 'string') meta.status = obj.status;
+      if (typeof obj.subject === 'string') meta.subject = obj.subject;
+      break;
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
+}
+
+/**
+ * Extract only the metadata fields from tool_response that the tool-specific
+ * parsers need.
+ */
+function extractOutputMeta(toolName: string, output: unknown): Record<string, unknown> | undefined {
+  if (output === null || output === undefined || typeof output !== 'object') return undefined;
+  const obj = output as Record<string, unknown>;
+
+  if (toolName === 'Bash') {
+    if (typeof obj.exitCode === 'number') {
+      return { exitCode: obj.exitCode };
+    }
+    if (typeof obj.exitCode === 'string') {
+      const parsed = Number(obj.exitCode);
+      if (!Number.isNaN(parsed)) return { exitCode: parsed };
+    }
+  }
+
+  return undefined;
 }
 
 function processHook(raw: string): void {
@@ -113,8 +214,9 @@ function processHook(raw: string): void {
       inputHash: hashInput(data.tool_input),
     };
 
-    // Always store raw tool_input for tool-specific field parsing
-    if (data.tool_input !== undefined) event.toolInput = data.tool_input;
+    // Store only the metadata fields needed for tool-specific parsing
+    const inputMeta = extractInputMeta(toolName, data.tool_input);
+    if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
       const content = typeof data.tool_input === 'string'
@@ -131,8 +233,9 @@ function processHook(raw: string): void {
       success: true,
     };
 
-    // Always store raw tool_response for tool-specific field parsing
-    if (data.tool_response !== undefined) event.toolOutput = data.tool_response;
+    // Store only the metadata fields needed for tool-specific parsing
+    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && data.tool_response !== undefined) {
       const content = typeof data.tool_response === 'string'
@@ -158,14 +261,35 @@ function processHook(raw: string): void {
   if (data.session_id) event.sessionId = data.session_id;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
 
-  // Write to buffer — wrapped in try/catch for resilience
+  // Write to buffer — wrapped in try/catch for resilience.
+  // Uses O_APPEND + single write to guarantee atomicity for lines <= PIPE_BUF.
   try {
     const bufferPath = getBufferPath();
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync(bufferDir, { recursive: true });
     }
-    appendFileSync(bufferPath, JSON.stringify(event) + '\n');
+
+    let line = JSON.stringify(event) + '\n';
+
+    // If the line exceeds PIPE_BUF, trim toolInput to fit — concurrent
+    // writers can interleave larger writes on POSIX systems.
+    if (line.length > PIPE_BUF && event.toolInput !== undefined) {
+      const overhead = line.length - JSON.stringify(event.toolInput).length;
+      const budget = PIPE_BUF - overhead - 20; // margin for truncation suffix
+      event.toolInput = truncate(
+        typeof event.toolInput === 'string' ? event.toolInput : JSON.stringify(event.toolInput),
+        Math.max(budget, 64),
+      );
+      line = JSON.stringify(event) + '\n';
+    }
+
+    const fd = openSync(bufferPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND);
+    try {
+      writeFileSync(fd, line);
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     // Silent failure — never block Claude Code
   }

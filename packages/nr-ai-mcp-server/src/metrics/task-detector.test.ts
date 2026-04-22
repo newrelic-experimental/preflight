@@ -217,6 +217,8 @@ describe('Task data accumulation', () => {
     expect(task.filesRead).toEqual(['/a.ts', '/b.ts']); // sorted, unique
     expect(task.filesModified).toEqual(['/a.ts', '/c.ts']); // sorted, unique
     expect(task.linesChanged).toBe(55); // 50 (Write) + |15-10| (Edit)
+    expect(task.linesAdded).toBe(55); // 50 (Write) + max(0, 15-10) (Edit)
+    expect(task.linesRemoved).toBe(0); // no lines removed
 
     detector.dispose();
   });
@@ -313,6 +315,8 @@ describe('Task data accumulation', () => {
 
     const task = detector.getCompletedTasks()[0];
     expect(task.linesChanged).toBe(5); // |0 - 5|
+    expect(task.linesAdded).toBe(0);
+    expect(task.linesRemoved).toBe(5);
 
     detector.dispose();
   });
@@ -367,6 +371,33 @@ describe('Cost tracking integration', () => {
     const task = detector.getCompletedTasks()[0];
     expect(task.estimatedCostUsd).toBeCloseTo(expectedDelta, 6);
     expect(task.tokensUsed).toBe(12000); // 10000 input + 2000 output
+
+    detector.dispose();
+  });
+
+  it('estimatedCostUsd is clamped to 0 if CostTracker is reset mid-task', () => {
+    const costTracker = new CostTracker();
+    const detector = new TaskDetector({ costTracker });
+
+    // Accumulate cost before the task starts
+    costTracker.recordTokenUsage(
+      { inputTokens: 5000, outputTokens: 1000, thinkingTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 6000 },
+      'claude-sonnet-4',
+    );
+
+    // Start task — costAtTaskStart is snapshot here
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+    // Reset wipes the cumulative total to 0 while the task is still active
+    costTracker.reset();
+
+    // Close task
+    jest.advanceTimersByTime(30_000);
+
+    const task = detector.getCompletedTasks()[0];
+    // Before fix this would be negative; after fix it must be >= 0
+    expect(task!.estimatedCostUsd).toBeGreaterThanOrEqual(0);
+    expect(task!.tokensUsed).toBeGreaterThanOrEqual(0);
 
     detector.dispose();
   });

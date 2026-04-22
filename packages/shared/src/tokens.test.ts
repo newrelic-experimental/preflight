@@ -21,7 +21,7 @@ describe('extractAnthropicTokens', () => {
     expect(result.thinkingTokens).toBe(0);
     expect(result.cacheReadTokens).toBe(20);
     expect(result.cacheCreationTokens).toBe(10);
-    expect(result.totalTokens).toBe(150); // 100 + 50 + 0
+    expect(result.totalTokens).toBe(180); // 100 + 50 + 0 + 20 + 10
   });
 
   it('defaults missing optional fields to 0', () => {
@@ -168,7 +168,7 @@ describe('TokenAccumulator', () => {
       expect(result.thinkingTokens).toBe(0);
       expect(result.cacheReadTokens).toBe(15);
       expect(result.cacheCreationTokens).toBe(8);
-      expect(result.totalTokens).toBe(142); // 100 + 42 + 0
+      expect(result.totalTokens).toBe(165); // 100 + 42 + 0 + 15 + 8
     });
 
     it('ignores chunks after finalize', () => {

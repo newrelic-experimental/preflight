@@ -77,6 +77,11 @@ describe('CursorAdapter', () => {
       expect(normalized.toolName).toBe('Glob');
     });
 
+    it('maps "delete_file" to "Delete" not "Write"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'delete_file', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Delete');
+    });
+
     it('maps unknown tool to "Unknown" with platformToolName preserved', () => {
       const normalized = adapter.normalizeToolCall({
         tool: 'custom_cursor_tool',

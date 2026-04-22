@@ -110,22 +110,45 @@ describe('collector-script', () => {
       expect(event.outputContent).toBeUndefined();
     });
 
-    it('stores raw toolInput on pre events', () => {
+    it('stores only metadata fields from toolInput on pre events', () => {
       const input = { file_path: '/tmp/test.ts', limit: 100 };
       processHook(makePreToolUse({ tool_input: input }));
 
       const event = readBufferEvents()[0]!;
-      expect(event.toolInput).toEqual(input);
+      // Only the metadata fields needed for parsing are stored, not raw content
+      expect(event.toolInput).toEqual({ file_path: '/tmp/test.ts', limit: 100 });
+    });
+
+    it('does not store raw content strings in toolInput', () => {
+      const input = { file_path: '/a.ts', content: 'line1\nline2\nline3' };
+      processHook(makePreToolUse({ tool_name: 'Write', tool_input: input }));
+
+      const event = readBufferEvents()[0]!;
+      const toolInput = event.toolInput as Record<string, unknown>;
+      // Content is replaced with numeric metadata
+      expect(toolInput.content).toBeUndefined();
+      expect(toolInput.contentLength).toBe(17);
+      expect(toolInput.lineCount).toBe(3);
+      expect(toolInput.file_path).toBe('/a.ts');
     });
   });
 
   describe('processHook() — PostToolUse (toolOutput)', () => {
-    it('stores raw toolOutput on post events', () => {
+    it('stores output metadata fields when available', () => {
+      const response = { exitCode: 0, stdout: 'lots of output here' };
+      processHook(makePostToolUse({ tool_name: 'Bash', tool_response: response }));
+
+      const event = readBufferEvents()[0]!;
+      // Only exitCode is extracted, not raw stdout
+      expect(event.toolOutput).toEqual({ exitCode: 0 });
+    });
+
+    it('omits toolOutput when no parseable output fields exist', () => {
       const response = { filePath: '/tmp/out.ts', success: true };
       processHook(makePostToolUse({ tool_response: response }));
 
       const event = readBufferEvents()[0]!;
-      expect(event.toolOutput).toEqual(response);
+      expect(event.toolOutput).toBeUndefined();
     });
   });
 

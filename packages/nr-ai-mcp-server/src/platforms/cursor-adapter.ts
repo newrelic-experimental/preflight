@@ -14,7 +14,7 @@ const CURSOR_TOOL_MAP: Record<string, string> = {
   file_search: 'Glob',
   grep_search: 'Grep',
   codebase_search: 'Grep',
-  delete_file: 'Write',
+  delete_file: 'Delete',
   create_file: 'Write',
 };
 

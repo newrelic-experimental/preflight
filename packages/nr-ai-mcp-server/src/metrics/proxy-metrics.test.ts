@@ -324,4 +324,69 @@ describe('ProxyMetricsTracker', () => {
 
     expect(metrics).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------
+  // Array cap (MAX_SAMPLES = 1000)
+  // -------------------------------------------------------------------------
+
+  it('latency array for a server never exceeds 1000 entries', () => {
+    for (let i = 0; i < 1005; i++) {
+      tracker.recordProxyCall(makeToolCallRecord({ durationMs: i, serverName: 'server-cap' }));
+    }
+
+    // p95 computation would fail / be very slow on large arrays;
+    // verify getMetrics() still returns valid stats (not hanging or throwing)
+    const metrics = tracker.getMetrics();
+    expect(metrics.perServer['server-cap']).toBeDefined();
+    // Call count is accurate even though samples are capped
+    expect(metrics.perServer['server-cap']!.callCount).toBe(1005);
+  });
+
+  it('request size array for a server never exceeds 1000 entries', () => {
+    for (let i = 0; i < 1002; i++) {
+      tracker.recordProxyCall(makeToolCallRecord({
+        serverName: 'server-req',
+        inputSizeBytes: i + 1,
+        durationMs: null as unknown as number,
+        proxyOverheadMs: null as unknown as number,
+        outputSizeBytes: null as unknown as number,
+      }));
+    }
+
+    const metrics = tracker.getMetrics();
+    // avgRequestSizeBytes reflects the 1000 most recent values (3..1002)
+    // average of 3..1002 = (3+1002)/2 = 502.5
+    expect(metrics.perServer['server-req']!.avgRequestSizeBytes).toBeCloseTo(502.5, 0);
+  });
+
+  it('proxyOverheadValues array never exceeds 1000 entries', () => {
+    for (let i = 0; i < 1003; i++) {
+      tracker.recordProxyCall(makeToolCallRecord({
+        proxyOverheadMs: i + 1,
+        durationMs: null as unknown as number,
+        inputSizeBytes: null as unknown as number,
+        outputSizeBytes: null as unknown as number,
+      }));
+    }
+
+    const metrics = tracker.getMetrics();
+    // avgProxyOverheadMs reflects the 1000 most recent values (4..1003)
+    // average of 4..1003 = (4+1003)/2 = 503.5
+    expect(metrics.avgProxyOverheadMs).toBeCloseTo(503.5, 0);
+  });
+
+  it('response size cap applies via recordProxyRequest too', () => {
+    for (let i = 0; i < 1002; i++) {
+      tracker.recordProxyRequest(makeRequestRecord({
+        serverName: 'server-resp',
+        responseSizeBytes: i + 1,
+        durationMs: null as unknown as number,
+        proxyOverheadMs: null as unknown as number,
+      }));
+    }
+
+    const metrics = tracker.getMetrics();
+    // avgResponseSizeBytes reflects the 1000 most recent values (3..1002)
+    expect(metrics.perServer['server-resp']!.avgResponseSizeBytes).toBeCloseTo(502.5, 0);
+  });
 });

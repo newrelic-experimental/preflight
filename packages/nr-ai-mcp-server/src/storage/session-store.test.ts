@@ -215,6 +215,8 @@ describe('buildSessionSummary', () => {
             filesRead: ['/src/a.ts', '/src/b.ts'],
             filesModified: ['/src/a.ts'],
             linesChanged: 25,
+            linesAdded: 20,
+            linesRemoved: 5,
             bashCommandsRun: 1,
             testsRun: 1,
             testsPassed: 1,
@@ -236,6 +238,8 @@ describe('buildSessionSummary', () => {
             filesRead: ['/src/b.ts', '/src/c.ts'],
             filesModified: ['/src/b.ts'],
             linesChanged: 15,
+            linesAdded: 12,
+            linesRemoved: 3,
             bashCommandsRun: 2,
             testsRun: 2,
             testsPassed: 1,
@@ -275,7 +279,8 @@ describe('buildSessionSummary', () => {
     expect(summary.toolBreakdown).toEqual({ Read: 5, Edit: 7, Bash: 3 });
     expect(summary.filesRead).toEqual(['/src/a.ts', '/src/b.ts', '/src/c.ts']);
     expect(summary.filesModified).toEqual(['/src/a.ts', '/src/b.ts']);
-    expect(summary.linesAdded).toBe(40); // 25 + 15
+    expect(summary.linesAdded).toBe(32); // 20 + 12
+    expect(summary.linesRemoved).toBe(8); // 5 + 3
     expect(summary.bashCommandCount).toBe(3);
     expect(summary.testRunCount).toBe(3); // 1 + 2
     expect(summary.testPassCount).toBe(2); // 1 + 1
@@ -323,6 +328,8 @@ describe('buildSessionSummary', () => {
       filesRead: ['/src/active.ts'],
       filesModified: ['/src/active.ts'],
       linesChanged: 30,
+      linesAdded: 25,
+      linesRemoved: 5,
       bashCommandsRun: 0,
       testsRun: 2,
       testsPassed: 2,
@@ -355,7 +362,8 @@ describe('buildSessionSummary', () => {
 
     expect(summary.filesRead).toEqual(['/src/active.ts']);
     expect(summary.filesModified).toEqual(['/src/active.ts']);
-    expect(summary.linesAdded).toBe(30);
+    expect(summary.linesAdded).toBe(25);
+    expect(summary.linesRemoved).toBe(5);
     expect(summary.testRunCount).toBe(2);
     expect(summary.testPassCount).toBe(2);
     expect(summary.buildRunCount).toBe(1);
@@ -400,7 +408,7 @@ describe('buildSessionSummary', () => {
     expect(summary.tokensThinking).toBe(0);
     expect(summary.efficiencyScore).toBeNull();
     expect(summary.taskCount).toBe(0);
-    expect(summary.taskSuccessRate).toBe(1);
+    expect(summary.taskSuccessRate).toBeNull();
     expect(summary.antiPatterns).toEqual([]);
     expect(summary.filesRead).toEqual([]);
     expect(summary.filesModified).toEqual([]);

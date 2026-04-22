@@ -52,6 +52,11 @@ describe('WindsurfAdapter', () => {
       expect(normalized.toolName).toBe('Edit');
     });
 
+    it('maps delete_file to "Delete" not "Write"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'delete_file', timestamp: 3000 });
+      expect(normalized.toolName).toBe('Delete');
+    });
+
     it('maps "Run Command" to "Bash"', () => {
       const normalized = adapter.normalizeToolCall({
         tool: 'Run Command',

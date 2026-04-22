@@ -61,7 +61,9 @@ export function handleReportTokens(costTracker: CostTracker, args: TokenReport) 
     totalTokens:
       args.input_tokens +
       args.output_tokens +
-      (args.thinking_tokens ?? 0),
+      (args.thinking_tokens ?? 0) +
+      (args.cache_read_tokens ?? 0) +
+      (args.cache_creation_tokens ?? 0),
   };
 
   const breakdown = costTracker.recordTokenUsage(usage, args.model);

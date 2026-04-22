@@ -428,7 +428,8 @@ export function handleGetPlatformComparison(
   // Group sessions by platform (uses 'claude-code' as default)
   const byPlatform = new Map<string, typeof sessions>();
   for (const s of sessions) {
-    const platform = (s as Record<string, unknown>).platform as string ?? 'claude-code';
+    const rawPlatform = (s as Record<string, unknown>).platform;
+    const platform = typeof rawPlatform === 'string' ? rawPlatform : 'claude-code';
     const list = byPlatform.get(platform) ?? [];
     list.push(s);
     byPlatform.set(platform, list);

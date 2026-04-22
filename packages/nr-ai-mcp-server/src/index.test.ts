@@ -30,6 +30,14 @@ describe('parseArgs()', () => {
     expect(opts.port).toBe(4000);
   });
 
+  it('throws on non-numeric port', () => {
+    expect(() => parseArgs([...base, '--port', 'foo'])).toThrow(/Invalid port/);
+  });
+
+  it('throws on out-of-range port', () => {
+    expect(() => parseArgs([...base, '--port', '99999'])).toThrow(/Invalid port/);
+  });
+
   it('defaults stdio to false', () => {
     const opts = parseArgs([...base]);
     expect(opts.stdio).toBe(false);

@@ -105,6 +105,26 @@ describe('PlatformRegistry', () => {
       expect(registry.detect()).toBeNull();
     });
 
+    it('preserves previously cached adapter when re-detect finds nothing', () => {
+      let isSupported = true;
+      const mutableAdapter: PlatformAdapter = {
+        platformName: 'mutable',
+        async initialize() {},
+        normalizeToolCall() { return { toolName: 'T', platformToolName: 't', platform: 'mutable', timestamp: 0, durationMs: null, success: true }; },
+        getSessionMetadata() { return { platform: 'mutable' }; },
+        getHookInstallInstructions() { return ''; },
+        isSupported() { return isSupported; },
+      };
+      const registry = new PlatformRegistry();
+      registry.register(mutableAdapter);
+
+      registry.detect();
+      isSupported = false;
+      registry.detect();
+
+      expect(registry.getActive().platformName).toBe('mutable');
+    });
+
     it('returns null for an empty registry', () => {
       const registry = new PlatformRegistry();
       expect(registry.detect()).toBeNull();

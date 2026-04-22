@@ -93,13 +93,18 @@ export function initPricing(customFilePath?: string | null): void {
 // Model resolution
 // ---------------------------------------------------------------------------
 
+// Strip a trailing dated suffix (-YYYYMMDD) to get the model family base name.
+const DATED_SUFFIX_RE = /-\d{8}$/;
+
 /**
  * Resolve a model name to its pricing entry.
  *
  * 1. Exact match (e.g. `claude-sonnet-4-20250514`)
- * 2. Prefix match — find table keys that start with `modelName`, pick the
- *    longest key (most specific dated version).
- * 3. Return `null` and log a warning if nothing matches.
+ * 2. Forward prefix — table key starts with modelName
+ *    (e.g. `claude-sonnet-4` matches `claude-sonnet-4-20250514`)
+ * 3. Reverse prefix — modelName starts with table key's base (date stripped)
+ *    (e.g. `claude-opus-4-7` matches base `claude-opus-4` from `claude-opus-4-20250514`)
+ * 4. Return `null` and log a warning if nothing matches.
  */
 export function resolveModelPricing(modelName: string): ModelPricing | null {
   // Exact match
@@ -107,7 +112,7 @@ export function resolveModelPricing(modelName: string): ModelPricing | null {
     return mergedTable[modelName];
   }
 
-  // Prefix match: find all keys that start with the given name
+  // Forward prefix: find table keys that start with the given name
   let bestKey: string | null = null;
   for (const key of Object.keys(mergedTable)) {
     if (key.startsWith(modelName) && (bestKey === null || key.length > bestKey.length)) {
@@ -117,6 +122,25 @@ export function resolveModelPricing(modelName: string): ModelPricing | null {
 
   if (bestKey) {
     return mergedTable[bestKey];
+  }
+
+  // Reverse prefix: strip date suffix from table keys and check if modelName
+  // starts with the resulting base. Handles versioned names like "claude-opus-4-7"
+  // matching the base "claude-opus-4" from key "claude-opus-4-20250514".
+  let bestBase: string | null = null;
+  let bestBaseKey: string | null = null;
+  for (const key of Object.keys(mergedTable)) {
+    const base = key.replace(DATED_SUFFIX_RE, '');
+    if (base !== key && modelName.startsWith(base)) {
+      if (bestBase === null || base.length > bestBase.length) {
+        bestBase = base;
+        bestBaseKey = key;
+      }
+    }
+  }
+
+  if (bestBaseKey) {
+    return mergedTable[bestBaseKey];
   }
 
   logger.warn('Unknown model, pricing not available', { model: modelName });

@@ -27,7 +27,6 @@ export class PlatformRegistry {
     }
 
     logger.debug('No platform detected');
-    this.active = null;
     return null;
   }
 

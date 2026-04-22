@@ -71,7 +71,9 @@ export const DEFAULT_SENSITIVE_FILE_PATTERNS: RegExp[] = [
 ];
 
 export const DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
-  /\brm\s+-rf\b/i,
+  // rm with recursive + force flags in any combination or order:
+  // combined (-rf, -fr, -rfv, -rvf, -Rf, etc.) or separate (-r -f, -f -r, -r -v -f, etc.)
+  /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*|-[rR][a-zA-Z]*(?:\s+-[a-zA-Z]+)*\s+-[fF]|-[fF][a-zA-Z]*(?:\s+-[a-zA-Z]+)*\s+-[rR])/,
   /\bgit\s+push\s+--force\b/i,
   /\bgit\s+push\s+-f\b/i,
   /\bgit\s+reset\s+--hard\b/i,
@@ -79,8 +81,9 @@ export const DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
   /\bDROP\s+DATABASE\b/i,
   /\bDELETE\s+FROM\b/i,
   /\bchmod\s+777\b/,
-  /\bcurl\b.*\|\s*\bsh\b/i,
-  /\bwget\b.*\|\s*\bsh\b/i,
+  // Pipe to shell — matches sh, bash, zsh, ksh, dash, and absolute paths (/bin/bash, /usr/bin/zsh, etc.)
+  /\bcurl\b.*\|\s*(?:\/(?:usr\/(?:local\/)?)?bin\/)?(?:ba|z|k|da)?sh\b/i,
+  /\bwget\b.*\|\s*(?:\/(?:usr\/(?:local\/)?)?bin\/)?(?:ba|z|k|da)?sh\b/i,
 ];
 
 export const DEFAULT_NETWORK_COMMAND_PATTERNS: RegExp[] = [
@@ -290,6 +293,15 @@ export class AuditTrailManager {
 
   recordProxyCall(record: ProxyToolCallRecord): AuditRecord {
     const detail = `McpToolCall: ${record.serverName}/${record.toolName}`;
+    const filePath = record.filePath as string | undefined;
+    const command = record.command as string | undefined;
+
+    const alert = detectSecurityAlert(
+      record,
+      this.sensitivePatterns,
+      this.destructivePatterns,
+      this.networkPatterns,
+    );
 
     const auditRecord: AuditRecord = {
       timestamp: record.timestamp,
@@ -298,9 +310,22 @@ export class AuditTrailManager {
       tool: record.toolName,
       detail,
       developer: this.developer,
+      filePath,
+      command,
+      securityAlert: alert,
     };
 
     this.entries.push(auditRecord);
+    if (alert) {
+      this.sensitiveAccessLog.push(auditRecord);
+      logger.warn('Security alert', {
+        severity: alert.severity,
+        alertType: alert.alertType,
+        tool: record.toolName,
+        detail,
+      });
+    }
+
     return auditRecord;
   }
 

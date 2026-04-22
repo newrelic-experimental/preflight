@@ -216,7 +216,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   // 6. Re-queued events are capped to prevent unbounded growth
   // ---------------------------------------------------------------------------
-  it('caps re-queued events to maxEventBufferSize', async () => {
+  it('caps re-queued events to maxEventBufferSize, keeping newest', async () => {
     const sendEventsFn = jest
       .fn<Promise<TransportResult>, any>()
       .mockResolvedValue(failureResult);
@@ -226,7 +226,7 @@ describe('HarvestScheduler', () => {
       maxEventBufferSize: 5,
     });
 
-    // Add 5 events and fail
+    // Add 5 events (seq 0-4) and fail
     for (let i = 0; i < 5; i++) {
       scheduler.addEvent({ eventType: 'Test', seq: i });
     }
@@ -235,18 +235,34 @@ describe('HarvestScheduler', () => {
     // First harvest — fails, 5 events re-queued (at capacity)
     await jest.advanceTimersByTimeAsync(5_000);
 
-    // Add 3 more events
+    // Add 3 newer events (seq 10-12)
     for (let i = 10; i < 13; i++) {
       scheduler.addEvent({ eventType: 'Test', seq: i });
     }
 
-    // Second harvest — 5 retry + 3 new = 8, capped to 5
+    // Second harvest — 5 retry + 3 new = 8, sent and fails again, capped to 5
     await jest.advanceTimersByTimeAsync(5_000);
     expect(sendEventsFn).toHaveBeenCalledTimes(2);
-    // The second call should have at most 8 events (5 retry + 3 new)
-    // After re-queue, the retry buffer is capped to 5
     const logOutput = stderrSpy.mock.calls.map((c: unknown[]) => c[0] as string).join('');
     expect(logOutput).toContain('overflow');
+
+    // Third harvest — the retry buffer should contain the 5 newest events.
+    // Newest are the 3 fresh (seq 10,11,12) plus the last 2 old retries (seq 3,4).
+    // The oldest retries (seq 0,1,2) should have been dropped.
+    const thirdSendFn = jest.fn<Promise<TransportResult>, any>().mockResolvedValue(successResult);
+    // We can't swap the fn mid-test, but we can check the 3rd call's batch
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(sendEventsFn).toHaveBeenCalledTimes(3);
+    const thirdBatch = sendEventsFn.mock.calls[2][0];
+    expect(thirdBatch).toHaveLength(5);
+    // Should contain seq 3,4,10,11,12 (newest 5) — not seq 0,1,2 (oldest 3)
+    const seqs = thirdBatch.map((e: { seq: number }) => e.seq);
+    expect(seqs).not.toContain(0);
+    expect(seqs).not.toContain(1);
+    expect(seqs).not.toContain(2);
+    expect(seqs).toContain(10);
+    expect(seqs).toContain(11);
+    expect(seqs).toContain(12);
 
     await scheduler.stop();
   });
@@ -311,7 +327,35 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 9. Events re-queued on thrown exception
+  // 9. Restart+stop flushes data from second session (stopPromise cleared)
+  // ---------------------------------------------------------------------------
+  it('flushes data from second session after restart', async () => {
+    const { scheduler, sendEventsFn, sendMetricsFn } = makeScheduler();
+
+    // First session
+    scheduler.addEvent({ eventType: 'Session1', seq: 1 });
+    scheduler.recordMetric('ai.duration', 100);
+    scheduler.start();
+    await scheduler.stop();
+
+    expect(sendEventsFn).toHaveBeenCalledTimes(1);
+    expect(sendEventsFn.mock.calls[0][0][0].eventType).toBe('Session1');
+    expect(sendMetricsFn).toHaveBeenCalledTimes(1);
+
+    // Second session — start again, add new data, stop
+    scheduler.addEvent({ eventType: 'Session2', seq: 2 });
+    scheduler.recordMetric('ai.duration', 200);
+    scheduler.start();
+    await scheduler.stop();
+
+    // Second stop must trigger its own final flush
+    expect(sendEventsFn).toHaveBeenCalledTimes(2);
+    expect(sendEventsFn.mock.calls[1][0][0].eventType).toBe('Session2');
+    expect(sendMetricsFn).toHaveBeenCalledTimes(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 10. Events re-queued on thrown exception
   // ---------------------------------------------------------------------------
   it('re-queues events when sendEventsFn throws', async () => {
     const sendEventsFn = jest

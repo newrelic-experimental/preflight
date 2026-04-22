@@ -125,6 +125,13 @@ describe('GenericMcpAdapter', () => {
       const meta = adapter.getSessionMetadata();
       expect(meta.platform).toBe('custom-assistant');
       expect(meta.model).toBe('gpt-4o');
+      expect(meta.developer).toBe('alice');
+    });
+
+    it('omits developer from metadata when not provided', () => {
+      adapter.handleSessionStart({ platform: 'custom-assistant' });
+      const meta = adapter.getSessionMetadata();
+      expect('developer' in meta).toBe(false);
     });
 
     it('defaults platform to "generic-mcp" when empty string provided', () => {

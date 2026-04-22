@@ -148,7 +148,7 @@ export class LogIngestManager {
     this.buffer = [...batch, ...this.buffer];
     if (this.buffer.length > this.maxBufferSize) {
       const dropped = this.buffer.length - this.maxBufferSize;
-      this.buffer = this.buffer.slice(0, this.maxBufferSize);
+      this.buffer = this.buffer.slice(-this.maxBufferSize);
       logger.warn('Log buffer overflow — oldest entries dropped', { dropped });
     }
   }

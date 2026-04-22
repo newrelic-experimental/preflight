@@ -18,6 +18,8 @@ function makeTask(overrides?: Partial<AiCodingTask>): AiCodingTask {
     filesRead: [],
     filesModified: [],
     linesChanged: 50,
+    linesAdded: 50,
+    linesRemoved: 0,
     bashCommandsRun: 2,
     testsRun: 4,
     testsPassed: 4,
@@ -449,6 +451,34 @@ describe('updateScore()', () => {
     expect(scorer.getScores()).toHaveLength(2);
     expect(scorer.getScores().map(s => s.taskId)).toEqual(['t1', 't2']);
   });
+
+  it('computeScore replaces an existing preview entry from updateScore, not duplicates it', () => {
+    const scorer = new EfficiencyScorer();
+
+    // updateScore previews the task while it is still active
+    scorer.updateScore(makeTask({ taskId: 'active-1', linesChanged: 10 }));
+    expect(scorer.getScores()).toHaveLength(1);
+
+    // computeScore is called when the task completes — should replace, not append
+    scorer.computeScore(makeTask({ taskId: 'active-1', linesChanged: 50 }));
+    expect(scorer.getScores()).toHaveLength(1);
+
+    // The final score reflects the computeScore values, not the preview
+    expect(scorer.getScores()[0].components.speed).toBeCloseTo(0.833, 2);
+  });
+
+  it('getSessionAverage does not double-weight a task previewed via updateScore', () => {
+    const scorer = new EfficiencyScorer();
+
+    scorer.updateScore(makeTask({ taskId: 't1', linesChanged: 60, durationMs: 60_000 })); // speed=1.0
+    scorer.computeScore(makeTask({ taskId: 't1', linesChanged: 60, durationMs: 60_000 })); // same task finalised
+    scorer.computeScore(makeTask({ taskId: 't2', linesChanged: 0, durationMs: 60_000 })); // speed=0.0
+
+    // Only 2 tasks, so average speed = (1.0 + 0.0) / 2 = 0.5
+    const avg = scorer.getSessionAverage();
+    expect(avg).not.toBeNull();
+    expect(avg!.components.speed).toBeCloseTo(0.5, 2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -473,5 +503,69 @@ describe('Autonomy edge cases', () => {
     const result = scorer.computeScore(task);
 
     expect(result.components.autonomy).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scores cap / appendScore
+// ---------------------------------------------------------------------------
+
+describe('scores cap (MAX_SCORES = 1000)', () => {
+  it('never holds more than 1000 scores', () => {
+    const scorer = new EfficiencyScorer();
+
+    for (let i = 0; i < 1005; i++) {
+      scorer.computeScore(makeTask({ taskId: `t${i}` }));
+    }
+
+    expect(scorer.getScores()).toHaveLength(1000);
+  });
+
+  it('drops oldest scores when cap is exceeded', () => {
+    const scorer = new EfficiencyScorer();
+
+    for (let i = 0; i < 1002; i++) {
+      scorer.computeScore(makeTask({ taskId: `t${i}` }));
+    }
+
+    const scores = scorer.getScores();
+    expect(scores[0].taskId).toBe('t2');
+    expect(scores[999].taskId).toBe('t1001');
+  });
+
+  it('emitMetrics does not re-emit already-harvested scores', () => {
+    const scorer = new EfficiencyScorer();
+
+    scorer.computeScore(makeTask({ taskId: 't1' }));
+    scorer.computeScore(makeTask({ taskId: 't2' }));
+
+    const recorded1: string[] = [];
+    const agg1 = { record(name: string) { recorded1.push(name); } } as unknown as import('@nr-ai-observatory/shared').MetricAggregator;
+    scorer.emitMetrics(agg1);
+    expect(recorded1).toHaveLength(10); // 2 tasks × 5 metrics
+
+    scorer.computeScore(makeTask({ taskId: 't3' }));
+
+    const recorded2: string[] = [];
+    const agg2 = { record(name: string) { recorded2.push(name); } } as unknown as import('@nr-ai-observatory/shared').MetricAggregator;
+    scorer.emitMetrics(agg2);
+    expect(recorded2).toHaveLength(5); // only t3
+  });
+
+  it('reset clears lastEmittedIndex so subsequent emits work correctly', () => {
+    const scorer = new EfficiencyScorer();
+
+    scorer.computeScore(makeTask({ taskId: 't1' }));
+    const agg1 = { record() {} } as unknown as import('@nr-ai-observatory/shared').MetricAggregator;
+    scorer.emitMetrics(agg1);
+
+    scorer.reset();
+
+    scorer.computeScore(makeTask({ taskId: 't2' }));
+
+    const recorded: string[] = [];
+    const agg2 = { record(name: string) { recorded.push(name); } } as unknown as import('@nr-ai-observatory/shared').MetricAggregator;
+    scorer.emitMetrics(agg2);
+    expect(recorded).toHaveLength(5); // only t2, not t1 again
   });
 });

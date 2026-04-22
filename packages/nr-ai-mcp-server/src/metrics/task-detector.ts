@@ -30,6 +30,8 @@ export interface AiCodingTask {
   readonly filesRead: string[];
   readonly filesModified: string[];
   readonly linesChanged: number;
+  readonly linesAdded: number;
+  readonly linesRemoved: number;
   readonly bashCommandsRun: number;
   readonly testsRun: number;
   readonly testsPassed: number;
@@ -71,6 +73,8 @@ class ActiveTask {
   private readonly filesModifiedSet = new Set<string>();
   private readonly rawToolCalls: ToolCallRecord[] = [];
   linesChanged = 0;
+  linesAdded = 0;
+  linesRemoved = 0;
   bashCommandsRun = 0;
   testsRun = 0;
   testsPassed = 0;
@@ -105,11 +109,14 @@ class ActiveTask {
     if (tool === 'Write') {
       const lineCount = record.lineCount as number | undefined;
       if (lineCount != null) {
+        this.linesAdded += lineCount;
         this.linesChanged += lineCount;
       }
     } else if (tool === 'Edit') {
       const newLines = (record.newLineCount as number | undefined) ?? 0;
       const oldLines = (record.oldLineCount as number | undefined) ?? 0;
+      this.linesAdded += Math.max(0, newLines - oldLines);
+      this.linesRemoved += Math.max(0, oldLines - newLines);
       this.linesChanged += Math.abs(newLines - oldLines);
     }
 
@@ -157,6 +164,8 @@ class ActiveTask {
       filesRead: [...this.filesReadSet].sort(),
       filesModified: [...this.filesModifiedSet].sort(),
       linesChanged: this.linesChanged,
+      linesAdded: this.linesAdded,
+      linesRemoved: this.linesRemoved,
       bashCommandsRun: this.bashCommandsRun,
       testsRun: this.testsRun,
       testsPassed: this.testsPassed,
@@ -349,8 +358,8 @@ export class TaskDetector {
       metrics.totalThinkingTokens;
 
     return {
-      costUsd: currentCost - this.costAtTaskStart,
-      tokens: currentTokens - this.tokensAtTaskStart,
+      costUsd: Math.max(0, currentCost - this.costAtTaskStart),
+      tokens: Math.max(0, currentTokens - this.tokensAtTaskStart),
     };
   }
 

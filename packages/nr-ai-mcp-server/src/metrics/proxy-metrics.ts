@@ -29,6 +29,12 @@ export interface ProxyMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MAX_SAMPLES = 1_000;
+
+// ---------------------------------------------------------------------------
 // ProxyMetricsTracker
 // ---------------------------------------------------------------------------
 
@@ -58,7 +64,7 @@ export class ProxyMetricsTracker {
     if (record.durationMs != null) {
       const latencies = this.serverLatencies.get(server);
       if (latencies) {
-        latencies.push(record.durationMs);
+        appendBounded(latencies, record.durationMs);
       } else {
         this.serverLatencies.set(server, [record.durationMs]);
       }
@@ -83,7 +89,7 @@ export class ProxyMetricsTracker {
     if (record.inputSizeBytes != null) {
       const sizes = this.serverRequestSizes.get(server);
       if (sizes) {
-        sizes.push(record.inputSizeBytes);
+        appendBounded(sizes, record.inputSizeBytes);
       } else {
         this.serverRequestSizes.set(server, [record.inputSizeBytes]);
       }
@@ -91,7 +97,7 @@ export class ProxyMetricsTracker {
     if (record.outputSizeBytes != null) {
       const sizes = this.serverResponseSizes.get(server);
       if (sizes) {
-        sizes.push(record.outputSizeBytes);
+        appendBounded(sizes, record.outputSizeBytes);
       } else {
         this.serverResponseSizes.set(server, [record.outputSizeBytes]);
       }
@@ -103,7 +109,7 @@ export class ProxyMetricsTracker {
 
     // Proxy overhead
     if (record.proxyOverheadMs != null) {
-      this.proxyOverheadValues.push(record.proxyOverheadMs);
+      appendBounded(this.proxyOverheadValues, record.proxyOverheadMs);
     }
   }
 
@@ -122,7 +128,7 @@ export class ProxyMetricsTracker {
     if (record.durationMs != null) {
       const latencies = this.serverLatencies.get(server);
       if (latencies) {
-        latencies.push(record.durationMs);
+        appendBounded(latencies, record.durationMs);
       } else {
         this.serverLatencies.set(server, [record.durationMs]);
       }
@@ -147,7 +153,7 @@ export class ProxyMetricsTracker {
     if (record.responseSizeBytes != null) {
       const sizes = this.serverResponseSizes.get(server);
       if (sizes) {
-        sizes.push(record.responseSizeBytes);
+        appendBounded(sizes, record.responseSizeBytes);
       } else {
         this.serverResponseSizes.set(server, [record.responseSizeBytes]);
       }
@@ -155,7 +161,7 @@ export class ProxyMetricsTracker {
 
     // Proxy overhead
     if (record.proxyOverheadMs != null) {
-      this.proxyOverheadValues.push(record.proxyOverheadMs);
+      appendBounded(this.proxyOverheadValues, record.proxyOverheadMs);
     }
   }
 
@@ -254,4 +260,13 @@ export class ProxyMetricsTracker {
     this.proxyOverheadValues = [];
     this.totalCalls = 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function appendBounded(arr: number[], value: number): void {
+  arr.push(value);
+  if (arr.length > MAX_SAMPLES) arr.splice(0, arr.length - MAX_SAMPLES);
 }

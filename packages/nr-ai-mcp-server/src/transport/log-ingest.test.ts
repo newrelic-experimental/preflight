@@ -199,5 +199,11 @@ describe('LogIngestManager', () => {
 
     const sentLogs = (mockSendLogs.mock.calls[1] as unknown[])[0] as Array<Record<string, unknown>>;
     expect(sentLogs).toHaveLength(1000);
+    // Newest entries (highest indices) should survive, oldest dropped
+    const messages = sentLogs.map((l) => l.message as string);
+    expect(messages).toContain('entry-1099');
+    expect(messages).toContain('entry-1098');
+    expect(messages).not.toContain('entry-0');
+    expect(messages).not.toContain('entry-1');
   });
 });

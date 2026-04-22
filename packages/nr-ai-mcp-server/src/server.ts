@@ -16,6 +16,7 @@ const logger = createLogger('mcp-server');
 
 export class NrMcpServer {
   readonly server: Server;
+  auditTrailManager: import('./security/audit-trail.js').AuditTrailManager | undefined;
 
   constructor(options: ServerOptions) {
     this.server = new Server(
@@ -28,6 +29,7 @@ export class NrMcpServer {
       },
     );
 
+    this.auditTrailManager = options.auditTrailManager;
     this.registerHandlers(options);
     logger.info('MCP server created', { name: options.name, version: options.version });
   }
@@ -80,7 +82,7 @@ export class NrMcpServer {
 
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const resources: Array<{ uri: string; name: string; description: string; mimeType: string }> = [];
-      if (options.auditTrailManager) {
+      if (this.auditTrailManager) {
         resources.push({
           uri: 'nr-observe://session/audit-log',
           name: 'Session Audit Log',
@@ -92,8 +94,8 @@ export class NrMcpServer {
     });
 
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      if (request.params.uri === 'nr-observe://session/audit-log' && options.auditTrailManager) {
-        const entries = options.auditTrailManager.getAuditLog();
+      if (request.params.uri === 'nr-observe://session/audit-log' && this.auditTrailManager) {
+        const entries = this.auditTrailManager.getAuditLog();
         return {
           contents: [
             {

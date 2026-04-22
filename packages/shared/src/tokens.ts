@@ -56,7 +56,7 @@ export function extractAnthropicTokens(response: AnthropicResponse): TokenUsage 
     thinkingTokens,
     cacheReadTokens,
     cacheCreationTokens,
-    totalTokens: inputTokens + outputTokens + thinkingTokens,
+    totalTokens: inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens,
   };
 }
 
@@ -94,7 +94,7 @@ export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
     totalTokens:
       meta.totalTokenCount !== undefined
         ? safeInt(meta.totalTokenCount)
-        : inputTokens + outputTokens + thinkingTokens,
+        : inputTokens + outputTokens + thinkingTokens + cacheReadTokens,
   };
 }
 
@@ -170,7 +170,9 @@ export class TokenAccumulator {
     this.latestUsage.totalTokens =
       this.latestUsage.inputTokens +
       this.latestUsage.outputTokens +
-      this.latestUsage.thinkingTokens;
+      this.latestUsage.thinkingTokens +
+      this.latestUsage.cacheReadTokens +
+      this.latestUsage.cacheCreationTokens;
   }
 
   private addGeminiChunk(chunk: GeminiStreamChunk): void {
@@ -186,7 +188,8 @@ export class TokenAccumulator {
           ? safeInt(meta.totalTokenCount)
           : this.latestUsage.inputTokens +
             this.latestUsage.outputTokens +
-            this.latestUsage.thinkingTokens;
+            this.latestUsage.thinkingTokens +
+            this.latestUsage.cacheReadTokens;
     }
   }
 }

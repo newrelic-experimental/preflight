@@ -326,13 +326,14 @@ export class RecommendationEngine {
         const effB = comparison.modelBEfficiency ?? 0;
         const effDiff = round(Math.abs(effA - effB) * 100, 0);
 
-        if (costRatio > 2 && effDiff < 15) {
+        const actualRatio = costRatio > 1 ? costRatio : 1 / costRatio;
+        if (actualRatio > 2 && effDiff < 15) {
           const cheaper = costRatio > 1 ? modelArr[1] : modelArr[0];
           recs.push(makeRec(
             'model_selection',
             'medium',
             'Cost-inefficient model usage',
-            `One model costs ${costRatio}x more but only improves efficiency by ${effDiff}%. Consider using ${cheaper} for routine tasks.`,
+            `One model costs ${actualRatio}x more but only improves efficiency by ${effDiff}%. Consider using ${cheaper} for routine tasks.`,
             `${modelArr[0]}: $${round(comparison.modelACost, 2)}/session, ${modelArr[1]}: $${round(comparison.modelBCost, 2)}/session`,
           ));
         }

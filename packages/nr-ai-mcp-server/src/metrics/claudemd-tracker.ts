@@ -45,7 +45,7 @@ export interface AggregateMetrics {
   readonly avgCostUsd: number;
   readonly avgCorrectionRate: number;
   readonly avgToolCallsPerTask: number;
-  readonly avgTaskSuccessRate: number;
+  readonly avgTaskSuccessRate: number | null;
   readonly sessionCount: number;
 }
 
@@ -94,6 +94,8 @@ const AVG_TURNS_PER_SESSION = 10;
 /** Regex matching CLAUDE.md files and .claude/ directory contents. */
 const CLAUDEMD_PATTERN = /(?:^|\/)CLAUDE\.md$|(?:^|\/)\.claude\//;
 
+const MAX_CHANGES = 1_000;
+
 // ---------------------------------------------------------------------------
 // ClaudeMdTracker
 // ---------------------------------------------------------------------------
@@ -101,6 +103,8 @@ const CLAUDEMD_PATTERN = /(?:^|\/)CLAUDE\.md$|(?:^|\/)\.claude\//;
 export class ClaudeMdTracker {
   private readonly sessionStore: SessionStore;
   private readonly changes: ClaudeMdChange[] = [];
+  private lastEmittedIndex = 0;
+  private cachedImpact: { timestamp: number; report: ClaudeMdImpactReport } | null = null;
 
   constructor(options: { sessionStore: SessionStore }) {
     this.sessionStore = options.sessionStore;
@@ -151,7 +155,8 @@ export class ClaudeMdTracker {
       linesRemoved,
     };
 
-    this.changes.push(change);
+    this.appendChange(change);
+    this.cachedImpact = null;
     logger.debug('CLAUDE.md change detected', { filePath, changeType });
 
     return change;
@@ -223,8 +228,8 @@ export class ClaudeMdTracker {
         false, // lower is better
       ),
       taskSuccessRate: computeDelta(
-        beforeMetrics.avgTaskSuccessRate,
-        afterMetrics.avgTaskSuccessRate,
+        beforeMetrics.avgTaskSuccessRate ?? 0,
+        afterMetrics.avgTaskSuccessRate ?? 0,
         true, // higher is better
       ),
     };
@@ -260,6 +265,22 @@ export class ClaudeMdTracker {
     };
   }
 
+  private appendChange(change: ClaudeMdChange): void {
+    this.changes.push(change);
+    if (this.changes.length > MAX_CHANGES) {
+      const dropped = this.changes.length - MAX_CHANGES;
+      this.changes.splice(0, dropped);
+      this.lastEmittedIndex = Math.max(0, this.lastEmittedIndex - dropped);
+    }
+  }
+
+  private getCachedImpact(timestamp: number): ClaudeMdImpactReport {
+    if (!this.cachedImpact || this.cachedImpact.timestamp !== timestamp) {
+      this.cachedImpact = { timestamp, report: this.computeImpact(timestamp) };
+    }
+    return this.cachedImpact.report;
+  }
+
   /**
    * Estimate the per-session and per-turn cost of loading a CLAUDE.md file
    * into context. Reads the file and computes token estimate.
@@ -281,10 +302,12 @@ export class ClaudeMdTracker {
   }
 
   /**
-   * Emit custom events and delta metrics for all detected changes.
+   * Emit custom events and delta metrics for newly detected changes only.
+   * Impact report is cached and only recomputed when a new change arrives.
    */
   emitMetrics(aggregator: MetricAggregator): void {
-    for (const change of this.changes) {
+    for (let i = this.lastEmittedIndex; i < this.changes.length; i++) {
+      const change = this.changes[i]!;
       aggregator.record('ai.claudemd.change', 1, {
         filePath: change.filePath,
         changeType: change.changeType,
@@ -292,11 +315,12 @@ export class ClaudeMdTracker {
         linesRemoved: change.linesRemoved,
       });
     }
+    this.lastEmittedIndex = this.changes.length;
 
     // Emit impact deltas for the latest change if we have one
     if (this.changes.length > 0) {
       const latest = this.changes[this.changes.length - 1]!;
-      const report = this.computeImpact(latest.timestamp);
+      const report = this.getCachedImpact(latest.timestamp);
 
       aggregator.record(
         'ai.claudemd.post_change_efficiency_delta',
@@ -312,6 +336,12 @@ export class ClaudeMdTracker {
 
     logger.debug('CLAUDE.md change metrics emitted', { changeCount: this.changes.length });
   }
+
+  reset(): void {
+    this.changes.length = 0;
+    this.lastEmittedIndex = 0;
+    this.cachedImpact = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +355,7 @@ function aggregateSessions(sessions: FullSessionSummary[]): AggregateMetrics {
       avgCostUsd: 0,
       avgCorrectionRate: 0,
       avgToolCallsPerTask: 0,
-      avgTaskSuccessRate: 0,
+      avgTaskSuccessRate: null,
       sessionCount: 0,
     };
   }
@@ -349,7 +379,9 @@ function aggregateSessions(sessions: FullSessionSummary[]): AggregateMetrics {
     totalUserMessages += s.userMessages;
     totalToolCalls += s.toolCallCount;
     totalTasks += s.taskCount;
-    taskSuccessSum += s.taskSuccessRate;
+    if (s.taskSuccessRate !== null) {
+      taskSuccessSum += s.taskSuccessRate * s.taskCount;
+    }
   }
 
   return {
@@ -363,7 +395,9 @@ function aggregateSessions(sessions: FullSessionSummary[]): AggregateMetrics {
     avgToolCallsPerTask: totalTasks > 0
       ? round(totalToolCalls / totalTasks, 1)
       : 0,
-    avgTaskSuccessRate: round(taskSuccessSum / sessions.length, 3),
+    avgTaskSuccessRate: totalTasks > 0
+      ? round(taskSuccessSum / totalTasks, 3)
+      : null,
     sessionCount: sessions.length,
   };
 }

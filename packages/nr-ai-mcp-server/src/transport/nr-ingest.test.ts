@@ -221,6 +221,20 @@ describe('NrIngestManager', () => {
       await manager.stop();
     });
 
+    it('calling start() twice does not create a second session-gauge interval', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.start();
+      const intervalIdAfterFirst = (manager as unknown as { sessionGaugeIntervalId: unknown }).sessionGaugeIntervalId;
+
+      manager.start(); // second call — should be a no-op
+      const intervalIdAfterSecond = (manager as unknown as { sessionGaugeIntervalId: unknown }).sessionGaugeIntervalId;
+
+      expect(intervalIdAfterSecond).toBe(intervalIdAfterFirst);
+
+      await manager.stop();
+    });
+
     it('stop() triggers final flush of events and metrics', async () => {
       const manager = new NrIngestManager(makeIngestOptions());
 

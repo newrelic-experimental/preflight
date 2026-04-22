@@ -57,8 +57,8 @@ const MAX_TIMELINE_ENTRIES = 10_000;
 export function computeP95(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.floor(sorted.length * 0.95);
-  return sorted[Math.min(index, sorted.length - 1)]!;
+  const index = Math.floor((sorted.length - 1) * 0.95);
+  return sorted[index]!;
 }
 
 export function computeDurationStats(durations: number[]): DurationStats {
@@ -237,9 +237,8 @@ export class SessionTracker {
     }
 
     for (const [tool, durations] of this.toolDurationsByTool) {
-      if (durations.length > 0) {
-        const stats = computeDurationStats(durations);
-        aggregator.record('ai.tool.duration_ms', stats.sum / stats.count, { tool });
+      for (const d of durations) {
+        aggregator.record('ai.tool.duration_ms', d, { tool });
       }
     }
 

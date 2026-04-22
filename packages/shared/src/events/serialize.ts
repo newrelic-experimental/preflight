@@ -19,7 +19,7 @@ export function aiRequestToNrEvent(event: AiRequest): NrEventData {
   if (event.temperature !== null) data.temperature = event.temperature;
   if (event.topP !== null) data.topP = event.topP;
   if (event.systemPromptLength !== null) data.systemPromptLength = event.systemPromptLength;
-  if (event.toolNames.length > 0) data.toolNames = event.toolNames.join(',');
+  if (event.toolNames.length > 0) data.toolNames = JSON.stringify(event.toolNames);
   if (event.thinkingBudgetTokens !== null) data.thinkingBudgetTokens = event.thinkingBudgetTokens;
   if (event['nr.entityGuid'] !== null) data['nr.entityGuid'] = event['nr.entityGuid'];
 
@@ -51,7 +51,7 @@ export function aiResponseToNrEvent(event: AiResponse): NrEventData {
   if (event.tokensPerSecond !== null) data.tokensPerSecond = event.tokensPerSecond;
   if (event.stopReason !== null) data.stopReason = event.stopReason;
   if (event.contentBlockTypes.length > 0) {
-    data.contentBlockTypes = event.contentBlockTypes.join(',');
+    data.contentBlockTypes = JSON.stringify(event.contentBlockTypes);
   }
 
   if (event.costInputUsd !== null) data['cost.inputUsd'] = event.costInputUsd;

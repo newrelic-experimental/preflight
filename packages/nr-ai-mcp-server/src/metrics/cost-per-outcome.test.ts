@@ -39,6 +39,8 @@ function makeTask(overrides?: Partial<AiCodingTask>): AiCodingTask {
     filesRead: [],
     filesModified: [],
     linesChanged: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
     bashCommandsRun: 0,
     testsRun: 0,
     testsPassed: 0,
@@ -68,6 +70,23 @@ describe('CostPerOutcomeAnalyzer', () => {
       toolCalls: [
         makeToolCall({ toolName: 'Bash', isTestCommand: true, success: false } as Partial<ToolCallRecord>),
         makeToolCall({ toolName: 'Edit', filePath: '/src/utils.ts' } as Partial<ToolCallRecord>),
+        makeToolCall({ toolName: 'Bash', isTestCommand: true, success: true } as Partial<ToolCallRecord>),
+      ],
+    });
+
+    expect(analyzer.classifyOutcome(task)).toBe('bug_fix');
+  });
+
+  it('classifies bug_fix when Write (not Edit) is used to fix failing tests', () => {
+    const analyzer = new CostPerOutcomeAnalyzer();
+
+    const task = makeTask({
+      filesModified: ['/src/utils.ts'],
+      testsRun: 2,
+      testsPassed: 1,
+      toolCalls: [
+        makeToolCall({ toolName: 'Bash', isTestCommand: true, success: false } as Partial<ToolCallRecord>),
+        makeToolCall({ toolName: 'Write', filePath: '/src/utils.ts' } as Partial<ToolCallRecord>),
         makeToolCall({ toolName: 'Bash', isTestCommand: true, success: true } as Partial<ToolCallRecord>),
       ],
     });

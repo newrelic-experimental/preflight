@@ -301,6 +301,7 @@ export class NrIngestManager {
   }
 
   start(): void {
+    if (this.running) return;
     this.running = true;
     this.scheduler.start();
     this.logIngest.start();

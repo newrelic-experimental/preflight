@@ -124,13 +124,24 @@ describe('CopilotAdapter', () => {
       expect(normalized.durationMs).toBeNull();
     });
 
-    it('sets durationMs to null when timestamp is missing', () => {
+    it('computes durationMs from endTimestamp and defaulted timestamp when timestamp is missing', () => {
+      const before = Date.now();
       const event: CopilotToolCallEvent = {
         type: 'file_edit',
-        endTimestamp: 5500,
+        endTimestamp: before + 300,
       };
       const normalized = adapter.normalizeToolCall(event);
-      expect(normalized.durationMs).toBeNull();
+      expect(normalized.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('clamps durationMs to 0 when clock skew makes endTimestamp earlier than timestamp', () => {
+      const event: CopilotToolCallEvent = {
+        type: 'file_edit',
+        timestamp: 5500,
+        endTimestamp: 5000,
+      };
+      const normalized = adapter.normalizeToolCall(event);
+      expect(normalized.durationMs).toBe(0);
     });
 
     it('defaults success to true', () => {

@@ -257,14 +257,14 @@ describe('handleGetEfficiencyScore()', () => {
     scorer.computeScore({
       taskId: 't1', startTime: 1000, endTime: 61000, durationMs: 60000,
       toolCallCount: 10, toolCallsByType: {}, filesRead: [], filesModified: [],
-      linesChanged: 50, bashCommandsRun: 1, testsRun: 4, testsPassed: 4,
+      linesChanged: 50, linesAdded: 50, linesRemoved: 0, bashCommandsRun: 1, testsRun: 4, testsPassed: 4,
       buildRun: 0, buildPassed: 0, estimatedCostUsd: null, tokensUsed: 0,
       askedUserQuestions: 0, subAgentsSpawned: 0, toolCalls: [],
     });
     scorer.computeScore({
       taskId: 't2', startTime: 1000, endTime: 61000, durationMs: 60000,
       toolCallCount: 10, toolCallsByType: {}, filesRead: [], filesModified: [],
-      linesChanged: 30, bashCommandsRun: 1, testsRun: 4, testsPassed: 2,
+      linesChanged: 30, linesAdded: 30, linesRemoved: 0, bashCommandsRun: 1, testsRun: 4, testsPassed: 2,
       buildRun: 0, buildPassed: 0, estimatedCostUsd: null, tokensUsed: 0,
       askedUserQuestions: 0, subAgentsSpawned: 0, toolCalls: [],
     });

@@ -1392,3 +1392,909 @@ Duration is computed as `event.timestamp - preEvent.timestamp`. Both timestamps 
 - **#19** (metric type) — affects all NR metric queries using `sum()` or `rate()`.
 
 **Low priority:** #28-32 are real but unlikely to cause visible issues in a demo.
+
+---
+---
+
+# Code Review — Round 3
+
+**Date:** 2026-04-21
+**Scope:** Final deep review of `packages/nr-ai-mcp-server/src/` and `packages/shared/src/`
+**Method:** 5-agent parallel review covering hooks/events, metrics trackers, tools/transport/storage, shared package, and entry points/platforms
+**Focus:** Real bugs not already found in Rounds 1 or 2
+
+---
+
+## Summary
+
+| # | Severity | Package | File | Issue |
+|---|----------|---------|------|-------|
+| 33 | CRITICAL | shared | harvest-scheduler.ts | `stopPromise` never cleared — restart+stop cycle skips final flush |
+| 34 | CRITICAL | shared | pricing-data.ts | Pricing table missing current model names — $0 costs for newer models |
+| 35 | HIGH | shared | tokens.ts | `totalTokens` excludes cache tokens — undercounts by 10-90% |
+| 36 | HIGH | shared | harvest-scheduler.ts | Retry buffers drop newest events on overflow, keep oldest — log says opposite |
+| 37 | HIGH | mcp-server | collector-script.ts | Raw tool input/output written to disk regardless of `recordContent` setting |
+| 38 | HIGH | mcp-server | session-store.ts | `linesRemoved` hardcoded to 0 in session summaries |
+| 39 | HIGH | mcp-server | proxy-manager.ts | Silent upstream connection failures — proxy starts with no working upstreams |
+| 40 | MEDIUM | shared | http-client.ts | HTTP success range 200-209 instead of 200-299 |
+| 41 | MEDIUM | shared | errors.ts | Missing undici timeout codes — timeouts misclassified as UNKNOWN |
+| 42 | MEDIUM | shared | serialize.ts | CSV-joined tool names unescaped — commas in names corrupt parsing |
+| 43 | MEDIUM | mcp-server | cost-tools.ts | `totalTokens` in `report_tokens` handler excludes cache tokens |
+| 44 | MEDIUM | mcp-server | weekly-summary.ts | Task success rate averages rates instead of recomputing from totals |
+| 45 | MEDIUM | mcp-server | log-ingest.ts | `requeueBatch` drops newest entries, log message says "oldest" |
+| 46 | MEDIUM | mcp-server | cross-session-tools.ts | Platform field type coercion fails silently |
+| 47 | MEDIUM | mcp-server | claudemd-tracker.ts | Unweighted rate averaging across sessions |
+| 48 | MEDIUM | mcp-server | recommendation-engine.ts | Model comparison only checks one direction |
+| 49 | MEDIUM | mcp-server | proxy-manager.ts | `decodeURIComponent` throws on malformed URL percent-encoding |
+| 50 | MEDIUM | mcp-server | config.ts | Malformed JSON config file returns `{}` — misleading error |
+| 51 | MEDIUM | mcp-server | collector-script.ts | `appendFileSync` not atomic for writes > PIPE_BUF |
+| 52 | LOW | mcp-server | tool-parsers.ts | `countLines('')` returns 1 instead of 0 |
+| 53 | LOW | mcp-server | tool-parsers.ts | Bash `exitCode` as string silently dropped |
+| 54 | LOW | mcp-server | collector-script.ts | Token redaction regex lacks word boundary — over-redacts |
+
+---
+
+## Critical Severity
+
+### ✅ 33. `stopPromise` never cleared — restart+stop cycle skips final flush
+
+**File:** `packages/shared/src/harvest/harvest-scheduler.ts:112-118`
+
+```typescript
+async stop(): Promise<void> {
+  if (this.stopPromise) return this.stopPromise;  // ← returns stale resolved promise
+  if (!this.running) return;
+  this.stopPromise = this.doStop();
+  return this.stopPromise;
+}
+```
+
+After `doStop()` completes, `this.stopPromise` is never set back to `null`. If the scheduler is restarted via `start()` and then `stop()` is called again, the second `stop()` returns the already-resolved promise from the first call. The second session's final flush never executes — events and metrics are silently dropped.
+
+**Impact:** Any restart+shutdown cycle (e.g., reconnecting after a transient error) loses all buffered data from the second session. The `start()` method does not clear `stopPromise`.
+
+**Fix:** Clear `stopPromise` at the end of `doStop()` or at the beginning of `start()`:
+
+```typescript
+start(): void {
+  this.stopPromise = null;
+  // ... rest of start
+}
+```
+
+---
+
+### ✅ 34. Pricing table missing current model names — $0 costs for newer models
+
+**File:** `packages/shared/src/pricing-data.ts`
+
+The pricing table contains only dated model IDs:
+- `claude-sonnet-4-20250514`
+- `claude-opus-4-20250514`
+- `claude-haiku-3-5-20241022`
+
+The pricing resolver (`pricing.ts:110-116`) uses prefix matching: `key.startsWith(modelName)`. For current model names like `claude-opus-4-7` or `claude-sonnet-4-6`, the check tests whether `claude-opus-4-20250514`.startsWith(`claude-opus-4-7`) — which is **false** (the key starts with `claude-opus-4-2`, not `claude-opus-4-7`).
+
+**Impact:** All cost tracking for current model names returns $0. The `nr_observe_get_cost_breakdown` tool, cost-per-outcome analysis, and all NR cost events show zero costs. This is the primary cost tracking feature.
+
+**Fix:** Add entries for current model names, or reverse the prefix match direction so the model name's prefix is checked against table keys:
+
+```typescript
+// Current: key.startsWith(modelName) — fails for "claude-opus-4-7" vs "claude-opus-4-20250514"
+// Better: modelName.startsWith(key_prefix) where key_prefix strips the date suffix
+```
+
+Or simply add the new model IDs to the pricing table alongside the dated versions.
+
+---
+
+## High Severity
+
+### ✅ 35. `totalTokens` excludes cache tokens — undercounts by 10-90%
+
+**File:** `packages/shared/src/tokens.ts:59`
+
+```typescript
+totalTokens: inputTokens + outputTokens + thinkingTokens,
+```
+
+`cacheReadTokens` and `cacheCreationTokens` are extracted (lines 42-47) but not included in the sum. For heavily cached requests (common in Claude Code with prompt caching), cache tokens can represent the majority of token usage.
+
+**Impact:** Token counts reported to NR (`AiResponse.totalTokens`) are systematically undercounted. Cost calculations are NOT affected (they use individual token fields), but any analysis based on `totalTokens` (dashboard queries, trend analysis) shows incorrect data.
+
+**Fix:**
+
+```typescript
+totalTokens: inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens,
+```
+
+---
+
+### ✅ 36. Retry buffers drop newest events on overflow, keep oldest — log says opposite
+
+**File:** `packages/shared/src/harvest/harvest-scheduler.ts:195-211`
+
+In `harvestEvents()`, the batch sent to NR is constructed as `[...this.retryEventBatch, ...fresh]` — old retries first, then fresh events. When the send fails and `requeueEvents(batch)` is called:
+
+```typescript
+private requeueEvents(batch: NrEventData[]): void {
+  this.retryEventBatch = [...batch, ...this.retryEventBatch];
+  // retryEventBatch was cleared to [] earlier, so this is just [...batch]
+  // batch = [old retries, fresh events]
+  if (this.retryEventBatch.length > this.maxRetryEvents) {
+    this.retryEventBatch = this.retryEventBatch.slice(0, this.maxRetryEvents);
+    logger.warn('Event retry buffer overflow — oldest entries dropped', { dropped });
+  }
+}
+```
+
+`slice(0, max)` keeps the first N items — the old retries. The fresh events at the end are dropped. The log says "oldest entries dropped" but it's actually the **newest** events being dropped.
+
+The same bug exists in `requeueMetrics()` (line 204-211).
+
+**Impact:** On sustained send failures, fresh events are dropped while stale retries accumulate. This is backwards — you'd want to keep fresh data and drop entries that have been failing repeatedly.
+
+**Fix:** Either (a) reverse the prepend order so fresh events are first, or (b) use `slice(-maxRetryEvents)` to keep the newest entries.
+
+---
+
+### ✅ 37. Raw tool input/output written to disk regardless of `recordContent` setting
+
+**File:** `packages/nr-ai-mcp-server/src/hooks/collector-script.ts:116-117, 134-135`
+
+```typescript
+// Line 117 — ALWAYS stored, no recordContent check
+if (data.tool_input !== undefined) event.toolInput = data.tool_input;
+
+// Line 119 — correctly gated by recordContent
+if (recordContent && data.tool_input !== undefined) {
+  event.inputContent = redact(truncate(content, maxContentLen));
+}
+```
+
+The `toolInput` and `toolOutput` fields are stored unconditionally (for tool-specific field parsing). The `inputContent` and `outputContent` fields respect `recordContent`. Both are written to the JSONL buffer on disk via `appendFileSync(bufferPath, JSON.stringify(event))`.
+
+**Impact:** When `recordContent=false`, the JSONL buffer still contains full raw tool inputs/outputs — file contents, command outputs, API responses. The `recordContent` flag provides a false sense of privacy control. The raw fields are used by `parseToolSpecificFields()` to extract structured fields (filePath, command), which is legitimate, but the full raw content shouldn't persist on disk.
+
+**Fix:** After parsing tool-specific fields in `event-processor.ts`, delete the raw `toolInput`/`toolOutput` from the event before further processing. Or, in the collector script, extract only the fields needed for parsing (e.g., `filePath`, `command`) rather than storing the entire raw input.
+
+---
+
+### ✅ 38. `linesRemoved` hardcoded to 0 in session summaries
+
+**File:** `packages/nr-ai-mcp-server/src/storage/session-store.ts:275-276`
+
+```typescript
+linesAdded: totalLinesChanged,
+linesRemoved: 0,
+```
+
+The aggregation logic (line 228) only sums `task.linesChanged`, which represents net changes. `linesRemoved` is always zero.
+
+**Impact:** Session summaries, weekly summaries, and any analysis depending on `linesRemoved` always show zero. Code churn metrics are incomplete — only additions are tracked.
+
+**Fix:** Either track removed lines separately through the tool parser pipeline (Edit tool operations can distinguish additions from deletions), or rename the field to make it clear only net changes are tracked.
+
+---
+
+### ✅ 39. Silent upstream connection failures — proxy starts with no working upstreams
+
+**File:** `packages/nr-ai-mcp-server/src/proxy/proxy-manager.ts:96-105`
+
+In `start()`, upstream connection failures are logged but swallowed:
+
+```typescript
+for (const upstream of this.upstreams.values()) {
+  try {
+    await upstream.connect();
+  } catch (err) {
+    logger.error('Failed to connect upstream', { name: upstream.name, error: String(err) });
+    // continues to next upstream — no failure propagation
+  }
+}
+// HTTP server starts on line 122 regardless
+```
+
+If ALL upstreams fail to connect, the HTTP server starts successfully. All proxied requests will return 404 "upstream_not_found" errors.
+
+**Impact:** The proxy appears to be running but cannot actually proxy anything. No indication to the user that the system is non-functional. Difficult to debug since the server process is healthy.
+
+**Fix:** Track which upstreams connected successfully. If zero upstreams connected, either reject the start promise or log a prominent warning.
+
+---
+
+## Medium Severity
+
+### ✅ 40. HTTP success range 200-209 instead of 200-299
+
+**File:** `packages/shared/src/transport/http-client.ts:94`
+
+```typescript
+if (status >= 200 && status <= 209) {
+  return { success: true, statusCode: status, retryCount: attempt };
+}
+```
+
+HTTP 2xx success codes range from 200-299. The NR APIs currently return 200 or 202, but limiting to 209 is unnecessarily restrictive and inconsistent with HTTP semantics.
+
+**Fix:** `if (status >= 200 && status < 300)`
+
+---
+
+### ✅ 41. Missing undici timeout codes in retry classification
+
+**File:** `packages/shared/src/errors.ts:17`
+
+```typescript
+const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT']);
+```
+
+Missing `UND_ERR_HEADERS_TIMEOUT` and `UND_ERR_BODY_TIMEOUT`. Node.js's built-in fetch (undici) throws these on header/body timeouts. Currently classified as UNKNOWN instead of TIMEOUT, so they won't be retried.
+
+**Fix:** Add to the set:
+
+```typescript
+const TIMEOUT_CODES = new Set([
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+```
+
+---
+
+### ✅ 42. CSV-joined tool names unescaped — commas in names corrupt parsing
+
+**File:** `packages/shared/src/events/serialize.ts:22, 54`
+
+```typescript
+data.toolNames = event.toolNames.join(',');        // line 22
+data.contentBlockTypes = event.contentBlockTypes.join(',');  // line 54
+```
+
+If a tool name or content block type contains a comma, the joined string becomes ambiguous when parsed. While standard MCP tool names don't contain commas, custom tools or third-party MCP servers could.
+
+**Fix:** Use a delimiter that's less likely to appear in names (e.g., `|`) or JSON-encode the array.
+
+---
+
+### ✅ 43. `totalTokens` in `report_tokens` handler excludes cache tokens
+
+**File:** `packages/nr-ai-mcp-server/src/tools/cost-tools.ts:61-64`
+
+```typescript
+totalTokens:
+  args.input_tokens +
+  args.output_tokens +
+  (args.thinking_tokens ?? 0),
+  // missing: (args.cache_read_tokens ?? 0) + (args.cache_creation_tokens ?? 0)
+```
+
+Same issue as #35 but in the MCP tool handler rather than the token extraction library. When users manually report tokens via `nr_observe_report_tokens`, cache tokens are excluded from `totalTokens`.
+
+**Fix:** Include cache tokens in the sum:
+
+```typescript
+totalTokens:
+  args.input_tokens +
+  args.output_tokens +
+  (args.thinking_tokens ?? 0) +
+  (args.cache_read_tokens ?? 0) +
+  (args.cache_creation_tokens ?? 0),
+```
+
+---
+
+### ✅ 44. Task success rate averages rates instead of recomputing from totals
+
+**File:** `packages/nr-ai-mcp-server/src/storage/weekly-summary.ts:233, 279`
+
+```typescript
+taskSuccessRate: totalTestsRun > 0 ? round(totalTestsPassed / totalTestsRun, 3) : 1,
+```
+
+When no tests are run (`totalTestsRun === 0`), the success rate defaults to `1` (100%). A week with zero testing shows as 100% success, inflating trend analysis. The same pattern appears at line 279 in `aggregateDeveloperSessions()`.
+
+**Impact:** Weeks/developers with no testing activity show perfect success rates, biasing comparisons and trend lines.
+
+**Fix:** Return `null` when `totalTestsRun === 0` and handle null downstream.
+
+---
+
+### ✅ 45. `requeueBatch` drops newest entries, log message says "oldest"
+
+**File:** `packages/nr-ai-mcp-server/src/transport/log-ingest.ts:147-153`
+
+```typescript
+private requeueBatch(batch: NrLogEntry[]): void {
+  this.buffer = [...batch, ...this.buffer];
+  if (this.buffer.length > this.maxBufferSize) {
+    this.buffer = this.buffer.slice(0, this.maxBufferSize);
+    logger.warn('Log buffer overflow — oldest entries dropped', { dropped });
+  }
+}
+```
+
+`batch` (the failed send) is prepended, then `slice(0, max)` keeps the first entries. New buffer entries added since the flush started are at the end and get dropped. The log says "oldest entries dropped" but the newest are actually dropped. Same pattern as #36 in the shared package.
+
+---
+
+### ✅ 46. Platform field type coercion fails silently
+
+**File:** `packages/nr-ai-mcp-server/src/tools/cross-session-tools.ts:431`
+
+```typescript
+const platform = (s as Record<string, unknown>).platform as string ?? 'claude-code';
+```
+
+The `as string` cast happens before `??`, so if `platform` is `undefined`, the cast produces `undefined` (not a string), and `??` triggers the fallback. However, if `platform` is `null`, the `??` correctly falls back. But if `platform` is a non-string truthy value (e.g., a number), it silently passes through the cast, producing incorrect grouping in platform comparisons.
+
+**Fix:** Use `typeof` check:
+
+```typescript
+const platform = typeof (s as Record<string, unknown>).platform === 'string'
+  ? (s as Record<string, unknown>).platform as string
+  : 'claude-code';
+```
+
+---
+
+### ✅ 47. Unweighted rate averaging in CLAUDE.md impact tracker
+
+**File:** `packages/nr-ai-mcp-server/src/metrics/claudemd-tracker.ts:352`
+
+```typescript
+taskSuccessSum += s.taskSuccessRate;
+// later: taskSuccessSum / sessions.length
+```
+
+Averages per-session task success rates without weighting by task count. A session with 1 task at 100% weighs the same as a session with 50 tasks at 60%. The aggregate rate doesn't reflect actual task outcomes.
+
+**Fix:** Weight by task count: `taskSuccessSum += s.taskSuccessRate * s.taskCount`, then divide by total tasks.
+
+---
+
+### ✅ 48. Model comparison only checks one cost direction
+
+**File:** `packages/nr-ai-mcp-server/src/metrics/recommendation-engine.ts:329-330`
+
+```typescript
+if (costRatio > 2 && effDiff < 15) {
+  const cheaper = costRatio > 1 ? modelArr[1] : modelArr[0];
+```
+
+`costRatio = modelACost / modelBCost`. The check `costRatio > 2` only triggers when modelA is significantly more expensive. If modelB is 3x more expensive (`costRatio = 0.33`), no recommendation is generated.
+
+**Fix:** Also check the inverse:
+
+```typescript
+const actualRatio = costRatio > 1 ? costRatio : 1 / costRatio;
+if (actualRatio > 2 && effDiff < 15) {
+  const cheaper = costRatio > 1 ? modelArr[1] : modelArr[0];
+```
+
+---
+
+### ✅ 49. `decodeURIComponent` throws on malformed URL percent-encoding
+
+**File:** `packages/nr-ai-mcp-server/src/proxy/proxy-manager.ts:166`
+
+```typescript
+const serverName = decodeURIComponent(match[1]);
+```
+
+`decodeURIComponent()` throws `URIError` on invalid percent-encoding (e.g., `%ZZ`). Not caught at this level — bubbles to the outer catch block which returns a 500 error.
+
+**Fix:** Wrap in try-catch and return 400:
+
+```typescript
+let serverName: string;
+try {
+  serverName = decodeURIComponent(match[1]);
+} catch {
+  res.writeHead(400).end(JSON.stringify({ error: 'Invalid server name encoding' }));
+  return;
+}
+```
+
+---
+
+### ✅ 50. Malformed JSON config file returns `{}` — misleading error
+
+**File:** `packages/nr-ai-mcp-server/src/config.ts:67-74`
+
+When the config file exists but contains malformed JSON, `loadConfigFile()` catches the parse error and returns `{}`. Downstream, the empty config merges with defaults, and the user gets a "Missing required configuration: licenseKey" error — not "your config file is broken."
+
+**Fix:** Log a warning when JSON parsing fails:
+
+```typescript
+} catch (err) {
+  logger.warn('Failed to parse config file — ignoring', {
+    filePath,
+    error: err instanceof Error ? err.message : String(err),
+  });
+  return {};
+}
+```
+
+---
+
+### ✅ 51. `appendFileSync` not atomic for writes > PIPE_BUF
+
+**File:** `packages/nr-ai-mcp-server/src/hooks/collector-script.ts:168`
+
+```typescript
+appendFileSync(bufferPath, JSON.stringify(event) + '\n');
+```
+
+On POSIX systems, `write()` calls of `PIPE_BUF` bytes or less (typically 4096 bytes on macOS/Linux) are atomic when the file was opened with `O_APPEND`. Larger writes can be interleaved with writes from other processes. If two concurrent Claude Code hook invocations produce large events (e.g., with raw tool input), their JSONL lines can be interleaved, producing corrupt JSON.
+
+**Impact:** Rare in practice — most events are small. Only affects concurrent sessions writing to the same buffer file with large tool inputs.
+
+---
+
+## Low Severity
+
+### ✅ 52. `countLines('')` returns 1 instead of 0
+
+**File:** `packages/nr-ai-mcp-server/src/hooks/tool-parsers.ts:18`
+
+If the implementation counts lines by splitting on newlines, `''.split('\n')` produces `['']` (length 1). An empty string has zero lines.
+
+**Impact:** Minor inflation of line counts for empty files or empty content blocks.
+
+---
+
+### ✅ 53. Bash `exitCode` as string silently dropped
+
+**File:** `packages/nr-ai-mcp-server/src/hooks/tool-parsers.ts:152`
+
+If `exitCode` arrives as a string (e.g., `"0"` from JSON), a `typeof === 'number'` check would silently drop it. Should coerce strings to numbers.
+
+---
+
+### ✅ 54. Token redaction regex lacks word boundary — over-redacts
+
+**File:** `packages/nr-ai-mcp-server/src/hooks/collector-script.ts:47`
+
+The redaction pattern for tokens/keys matches substrings without word boundaries. A field like `tokenizer` or `tokenize` would trigger redaction of content that isn't sensitive.
+
+**Impact:** Over-redaction of benign content in stored events when `recordContent=true`.
+
+---
+
+## Round 3 — Additional Findings (Team Agent Reports)
+
+The following bugs were identified by the original review team agents and are not duplicates of findings #33-54 above.
+
+### ✅ 55. Security alerts bypassed for ALL proxied MCP tool calls
+
+**Severity: CRITICAL**
+**File:** `packages/nr-ai-mcp-server/src/security/audit-trail.ts:291-305`
+
+`recordProxyCall()` creates an `AuditRecord` for proxied MCP tool calls but never calls `detectSecurityAlert()` and never extracts `filePath`/`command` from the tool arguments. A proxied MCP tool that executes `rm -rf /` or reads `.env` files generates no security alert.
+
+**Impact:** The proxy is marketed as an observability layer for MCP traffic, but provides zero security oversight of that traffic. The same destructive command flagged as "critical" through the Bash tool is invisible through a proxied MCP server.
+
+**Fix:** Extract tool-specific fields from the proxy call arguments and run `detectSecurityAlert()` before returning the audit record.
+
+---
+
+### ✅ 56. `rm -fr` and `curl | bash` bypass destructive-command detection
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/security/audit-trail.ts:73-84`
+
+`DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS` matches `rm -rf` but not common variants: `rm -fr`, `rm -r -f`, `rm -rvf`. The pipe-to-shell pattern matches `| sh` but not `| bash`, `| zsh`, or `| /bin/sh` — and `curl ... | bash` is the dominant real-world form.
+
+**Impact:** The most common evasions of the documented security controls go undetected.
+
+**Fix:** Broaden the `rm` pattern to match any combination of `-r` and `-f` flags. Broaden the pipe-to-shell pattern to match `bash`, `zsh`, `ksh`, `dash`, and absolute paths.
+
+---
+
+### ✅ 57. `NrIngestManager.start()` has no double-start guard — leaks intervals
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts:303-313`
+
+Calling `start()` twice creates two `setInterval` handles; the first reference is overwritten and never cleared. `stop()` only clears the latest interval. `LogIngestManager.start()` correctly guards with an early return — this class doesn't.
+
+**Impact:** Any restart or test harness reuse leaks intervals and emits session gauges at 2x+ rate.
+
+**Fix:** Add `if (this.running) return;` at top of `start()`.
+
+---
+
+### ✅ 58. Proxy forwards hop-by-hop headers from upstream to client
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/proxy/upstream-http.ts:97-103`
+
+`Object.entries(upstreamRes.headers)` copies ALL headers to the client response, including `transfer-encoding`, `connection`, `keep-alive`, and `content-length`. For the non-SSE branch (which buffers the full body and calls `res.end(buf)`), a forwarded `transfer-encoding: chunked` conflicts with Node's computed `content-length`. An incorrect `content-length` from upstream is forwarded as-is even though the proxy re-buffered the body.
+
+**Impact:** Response corruption when clients or intermediary proxies interpret the conflicting framing headers differently.
+
+**Fix:** Filter hop-by-hop headers (`connection`, `keep-alive`, `transfer-encoding`, `upgrade`, `te`, `trailers`) before `setHeader`. For the non-SSE branch, remove `transfer-encoding` and recompute `content-length` from the buffered body.
+
+---
+
+### ✅ 59. Proxy writes JSON error body into active SSE stream
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/proxy/proxy-manager.ts:109-117`
+
+When `res.headersSent` is true and `res.writableEnded` is false (SSE stream mid-flow), the error handler calls `res.end(JSON.stringify({...}))`. Writing JSON into an `text/event-stream` response produces a malformed SSE event.
+
+**Fix:** If `res.headersSent && !res.writableEnded`, call `res.socket?.destroy()` instead of writing data.
+
+---
+
+### ✅ 60. Stdio upstream `disconnect()` hangs if `client.close()` hangs
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/proxy/upstream-stdio.ts:119-126`
+
+`client.close()` is awaited with no timeout. If the upstream MCP server ignores the close request, `disconnect()` hangs forever and the parent process can't exit cleanly.
+
+**Fix:** Race `client.close()` against a timeout (e.g., 5s), then force-kill the child process.
+
+---
+
+### ✅ 61. `EfficiencyScorer.scores` array grows unboundedly — memory leak + duplicate NR emission
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/metrics/efficiency-score.ts:64`
+
+```typescript
+private readonly scores: EfficiencyScore[] = [];
+```
+
+No cap on the array. `emitMetrics()` iterates ALL historical scores on every harvest, re-emitting them to NR. Over long sessions this is both a memory leak and a source of duplicate metric points.
+
+**Fix:** Cap `scores` (e.g., 1000 entries) and track a `lastEmittedIndex` so `emitMetrics()` only sends new scores.
+
+---
+
+### ✅ 62. `ClaudeMdTracker.changes` array grows unboundedly — no reset method
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/metrics/claudemd-tracker.ts:103`
+
+```typescript
+private readonly changes: ClaudeMdChange[] = [];
+```
+
+No reset method, no bound. Every detected CLAUDE.md write is appended forever. `emitMetrics()` emits a metric per change on every harvest, and every harvest recomputes `computeImpact()` which reads ALL session files from disk.
+
+**Fix:** Bound `changes`, add `lastEmittedIndex`, cache `computeImpact()` until a new change arrives.
+
+---
+
+### ✅ 63. Unbounded latency/size arrays in `ProxyMetricsTracker`
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/metrics/proxy-metrics.ts:37-43`
+
+Per-server latency, request size, and response size arrays grow without limit. `getMetrics()` sorts copies for p95 computation — O(n log n) per call.
+
+**Fix:** Cap per-server arrays (e.g., 1000 entries, keep most recent).
+
+---
+
+### ✅ 64. p95 calculation returns max for small arrays
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/session-tracker.ts:57-62`
+
+```typescript
+const index = Math.floor(sorted.length * 0.95);
+return sorted[Math.min(index, sorted.length - 1)]!;
+```
+
+For n=10: `floor(10 * 0.95) = 9` → returns the 10th element (max). For n=20: `floor(20 * 0.95) = 19` → returns max. For n=100: `floor(100 * 0.95) = 95` → returns index 95 (the 96th value, which is p96, not p95).
+
+**Impact:** p95 is systematically too high, especially for small arrays where it equals max.
+
+**Fix:** Use `Math.floor((sorted.length - 1) * 0.95)` for nearest-rank.
+
+---
+
+### ✅ 65. `emitMetrics` records mean duration — loses distribution semantics
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/session-tracker.ts:239-244`
+
+```typescript
+aggregator.record('ai.tool.duration_ms', stats.sum / stats.count, { tool });
+```
+
+Records the **mean** as a single sample to `MetricAggregator`. NR receives one synthetic value per harvest rather than individual durations. Percentiles and histograms in NR dashboards reflect the sequence of means, not the actual distribution.
+
+**Fix:** Either record each duration individually, or emit `stats.sum` as a summary metric with a separate counter.
+
+---
+
+### ✅ 66. Cost-per-outcome: `Write` tool not recognized as code modification
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/cost-per-outcome.ts:124`
+
+```typescript
+if (tc.toolName === 'Edit' && hasTestFailure) {
+  sawEditAfterFailure = true;
+}
+```
+
+Only `Edit` triggers the "edit after test failure" flag. `Write` (which replaces an entire file) is ignored. A test-fail → Write → test-pass sequence is misclassified as `failed_attempt` instead of `bug_fix`.
+
+**Fix:** `if ((tc.toolName === 'Edit' || tc.toolName === 'Write') && hasTestFailure)`.
+
+---
+
+### ✅ 67. Negative cost delta if `CostTracker` reset mid-task
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/task-detector.ts:339-355`
+
+```typescript
+return {
+  costUsd: currentCost - this.costAtTaskStart,
+  tokens: currentTokens - this.tokensAtTaskStart,
+};
+```
+
+If `CostTracker.reset()` is called while a task is active, `currentCost` drops to 0 while `costAtTaskStart` retains the pre-reset snapshot. The task's `estimatedCostUsd` becomes negative, corrupting downstream cost-per-outcome and efficiency calculations.
+
+**Fix:** `costUsd: Math.max(0, currentCost - this.costAtTaskStart)`.
+
+---
+
+### ✅ 68. Duplicate efficiency scores when `updateScore` precedes `computeScore`
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/efficiency-score.ts:79-99`
+
+`computeScore()` always pushes to `this.scores`. If `updateScore()` was called first (creating an intermediate entry with the same `taskId`), both entries remain. `getSessionAverage()` averages over both, double-weighting tasks that were previewed live.
+
+**Fix:** Use the same `findIndex` dedup logic in `computeScore` as `updateScore` uses.
+
+---
+
+## Round 3 Recommendation
+
+**Blockers before sharing:**
+- **#33** (stopPromise) and **#34** (pricing table) are critical — they render the two main value props (data delivery and cost tracking) non-functional in common scenarios.
+- **#55** (proxy security bypass) is a critical gap — proxied MCP tool calls receive no security audit.
+- **#35** (totalTokens) and **#36** (retry overflow) affect data correctness in the primary pipeline.
+- **#37** (content on disk) is a privacy concern if the tool is shared with users who expect `recordContent=false` to mean no content is stored.
+
+**Before production use:**
+- **#38-39** (linesRemoved, silent proxy), **#56** (rm -fr evasion), **#57** (double-start), **#58** (hop-by-hop headers) — incorrect data, security gaps, or operational issues.
+- **#40-51, #59-68** (medium severity) — correctness issues in secondary features, memory leaks, error handling gaps, and misleading diagnostics.
+- **#61-63** (unbounded arrays) — memory leaks that worsen over long sessions.
+
+**Low priority:** #52-54 are real but have minimal user-visible impact.
+
+---
+
+## Cumulative Statistics
+
+| Round | Date | Critical | High | Medium | Low | Total |
+|-------|------|----------|------|--------|-----|-------|
+| 1 | 2026-04-20 | 0 | 4 | 6 | 2 | 12 |
+| 2 | 2026-04-21 | 0 | 2 | 14 | 4 | 20 |
+| 3 | 2026-04-21 | 3 | 10 | 19 | 3 | 35 |
+| **Total** | | **3** | **16** | **39** | **9** | **67** |
+
+---
+
+## Round 4 — Entry Points, Config, and Platform Adapters (2026-04-21)
+
+**Scope:** `src/server.ts`, `src/index.ts`, `src/config.ts`, `src/platforms/*` (6 files)
+**Reviewers:** 1 agent focused on startup, shutdown, config loading, and cross-platform adapters
+
+### ✅ 69. Audit-log MCP resource unreachable in stdio mode
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/server.ts:81-91`, `src/index.ts:98`
+
+In stdio mode, `createServer()` is called on line 98 with no options. The resource handlers (lines 81-91) close over `options.auditTrailManager`, which is `undefined` at that point. Later, `registerTools()` is called with the real `AuditTrailManager`, but only the tool handlers (`ListToolsRequestSchema`, `CallToolRequestSchema`) are overwritten — the resource handlers are never re-registered.
+
+```typescript
+// server.ts:81-83 — captures options at construction time
+this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  const resources = [];
+  if (options.auditTrailManager) {  // always undefined in stdio mode
+```
+
+**Impact:** `resources/list` always returns an empty array in stdio mode. The `nr-observe://session/audit-log` resource is dead code.
+
+**Fix:** Either pass `auditTrailManager` into `createServer()` (requires constructing it earlier), re-register resource handlers alongside `registerTools()`, or use a lazy getter.
+
+---
+
+### ✅ 70. `--log-level` CLI flag has no effect
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/index.ts:79`, `src/config.ts:186-192`, `packages/shared/src/logger.ts:10`
+
+`parseArgs` reads `--log-level` and stores it in `config.logLevel`. But `createLogger()` in shared reads a different env var: `NEW_RELIC_AI_LOG_LEVEL` (line 10). Config reads `NEW_RELIC_AI_MCP_LOG_LEVEL` (different name). The resolved `config.logLevel` is never passed to any `createLogger()` call and never written back to the environment.
+
+```typescript
+// shared/src/logger.ts:10
+const envLevel = process.env.NEW_RELIC_AI_LOG_LEVEL?.toLowerCase();  // reads this
+
+// nr-ai-mcp-server/src/config.ts
+logLevel: envLogLevel('NEW_RELIC_AI_MCP_LOG_LEVEL', ...),  // stores from this
+```
+
+**Impact:** `--log-level debug` silently does nothing. Documented feature broken.
+
+**Fix:** In `main()`, set `process.env.NEW_RELIC_AI_LOG_LEVEL = config.logLevel` before creating loggers. Or use `createLogger(name, config.logLevel)` — the `levelOverride` parameter already exists but is never used.
+
+---
+
+### ✅ 71. Signal handlers registered after initialization — SIGTERM during startup skips cleanup
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/index.ts:204-205, 257-258`
+
+SIGINT/SIGTERM handlers are registered at lines 204-205 (stdio mode) and 257-258 (proxy mode), AFTER all heavy initialization. If SIGTERM arrives during `connectStdio()`, `loadMcpConfig()`, `localStore.initialize()`, or `nrIngest.start()`, Node uses the default handler and kills the process without cleanup.
+
+In proxy mode, if SIGTERM arrives during `proxyManager.start()` (which can block on stdio child-process spawns for upstream connections), the child processes are leaked.
+
+**Impact:** Lost telemetry on graceful restart during startup window. Leaked child processes in proxy mode.
+
+**Fix:** Register signal handlers first, before any async work, with a guard flag that checks which resources exist before cleaning them up.
+
+---
+
+### ✅ 72. `parseInt` on `--port` produces silent NaN, Node binds random port
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/index.ts:77`
+
+```typescript
+port: parseInt(opts.port, 10),
+```
+
+If user passes `--port foo`, `parseInt` returns `NaN`. NaN is truthy to `??`, so it wins over env/file defaults. `httpServer.listen(NaN, '127.0.0.1')` — Node treats NaN as 0 and binds a random ephemeral port.
+
+**Impact:** Silent mis-configuration. User asks for a specific port, gets a random one, external integrations fail.
+
+**Fix:** Validate with `Number.isFinite(parsed) && parsed >= 0 && parsed <= 65535`; throw a clear error otherwise.
+
+---
+
+### ✅ 73. Non-array JSON for proxy upstreams silently falls through
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/config.ts:87-103`
+
+`parseProxyUpstreams` tries `JSON.parse(envValue)`. If the env var contains a valid JSON object (not array), the function silently falls through to the file value — the `catch` only fires on parse errors, not on type mismatch. No warning logged.
+
+```typescript
+const parsed = JSON.parse(envValue);
+if (Array.isArray(parsed)) return parsed;
+// else: silently ignored, no warning
+```
+
+A user who sets `NEW_RELIC_AI_MCP_PROXY_UPSTREAMS='{"name":"foo",...}'` (forgot the array wrapper) gets zero upstreams and no warning.
+
+**Impact:** Silent config fallback. User hits "No proxy upstreams configured" error despite having set the env var.
+
+**Fix:** Add a warning log when `parsed` is not an array. Also add schema validation on upstream objects (check `name`, `transportType`, `url`/`command` are present).
+
+---
+
+### ✅ 74. CopilotAdapter computes durationMs using raw event.timestamp instead of defaulted value
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/platforms/copilot-adapter.ts:67-71`
+
+```typescript
+const timestamp = event.timestamp ?? Date.now();   // defaulted
+const durationMs =
+  event.endTimestamp !== undefined && event.timestamp !== undefined  // checks raw value
+    ? event.endTimestamp - event.timestamp
+    : null;
+```
+
+If `endTimestamp` exists but `timestamp` is missing, the defaulted `timestamp` (Date.now()) is set on line 67, but the duration calc checks raw `event.timestamp` and returns `null`. Conversely, if `timestamp > endTimestamp` (clock skew), a negative duration is emitted.
+
+**Impact:** Copilot latency metrics missing or negative for events that don't populate `timestamp`.
+
+**Fix:** Use the defaulted `timestamp` variable in the subtraction. Clamp result to `Math.max(0, ...)`.
+
+---
+
+### ✅ 75. CursorAdapter maps `delete_file` to `Write`
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/platforms/cursor-adapter.ts:8-19`
+
+`delete_file: 'Write'` is semantically wrong — Write creates/overwrites files, it doesn't delete. The Windsurf adapter has the same mapping. This skews write-count metrics: every file deletion is counted as a file write.
+
+Additionally, `CursorAdapter` and `WindsurfAdapter` never set `toolUseId` or `inputHash` on normalized events, so re-read detection and thrashing detection in `AntiPatternDetector` cannot work for non-Claude-Code platforms.
+
+**Impact:** Incorrect write counts in cross-platform metrics. Anti-pattern detection non-functional for Cursor/Windsurf.
+
+**Fix:** Either leave `delete_file` unmapped (returns `Unknown`), or add a distinct `'Delete'` normalized name and update consumers.
+
+---
+
+### ✅ 76. GenericMcpAdapter `handleSessionStart` silently drops `developer` field
+
+**Severity: LOW**
+**File:** `packages/nr-ai-mcp-server/src/platforms/generic-mcp-adapter.ts:120-125`
+
+The `ReportSessionStartInput` schema accepts `developer` as a field, but `handleSessionStart` only copies `platform` and `model` into `sessionMetadata`. The `developer` field is silently dropped despite being documented in the tool schema.
+
+**Impact:** Documented-but-unimplemented field. Confusing for integrators.
+
+**Fix:** Persist `developer` onto sessionMetadata, or remove it from the schema.
+
+---
+
+### ✅ 77. `loadConfigFile` swallows JSON parse errors
+
+**Severity: LOW**
+**File:** `packages/nr-ai-mcp-server/src/config.ts:67-74`
+
+```typescript
+function loadConfigFile(path: string): Record<string, unknown> {
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return {};  // file-not-found AND malformed JSON both return {}
+  }
+}
+```
+
+If the config file exists but contains malformed JSON, the error is silently swallowed. User edits `config.json`, introduces a typo, server starts with defaults.
+
+**Impact:** Silent config loss.
+
+**Fix:** Distinguish "file not found" (`ENOENT`) from "parse error" (log warning for malformed JSON).
+
+---
+
+### ✅ 78. PlatformRegistry.detect() can reset cached `active` to null
+
+**Severity: LOW**
+**File:** `packages/nr-ai-mcp-server/src/platforms/platform-registry.ts:20-32`
+
+`detect()` unconditionally sets `this.active = null` when no adapter's `isSupported()` returns true. If `getActive()` previously cached a valid adapter, and `detect()` is called later in a context where env vars have changed, the cache is silently invalidated.
+
+**Impact:** Minor — recomputed detection on cache miss.
+
+**Fix:** Only set `active = null` if detection has never succeeded, or make `detect()` idempotent.
+
+---
+
+## Round 4 Recommendation
+
+**Before sharing:**
+- **#70** (dead `--log-level` flag) is easy to fix and user-facing — set `process.env.NEW_RELIC_AI_LOG_LEVEL` from the resolved config value.
+- **#69** (audit-log resource) — users who try to browse MCP resources get nothing. Fix by re-registering resources alongside tools.
+- **#71** (signal race) — register handlers early, before async init.
+
+**Before production use:**
+- **#72** (NaN port), **#73** (silent proxy config fallback), **#74** (Copilot duration), **#75** (delete_file mapping) — correctness issues in config and platform adapters.
+
+**Low priority:** #76-78 are real but have minimal user-visible impact.
+
+---
+
+## Cumulative Statistics
+
+| Round | Date | Critical | High | Medium | Low | Total |
+|-------|------|----------|------|--------|-----|-------|
+| 1 | 2026-04-20 | 0 | 4 | 6 | 2 | 12 |
+| 2 | 2026-04-21 | 0 | 2 | 14 | 4 | 20 |
+| 3 | 2026-04-21 | 3 | 10 | 19 | 3 | 35 |
+| 4 | 2026-04-21 | 0 | 3 | 4 | 3 | 10 |
+| **Total** | | **3** | **19** | **43** | **12** | **77** |

@@ -89,6 +89,7 @@ export class HarvestScheduler {
     }
 
     this.running = true;
+    this.stopPromise = null;
 
     this.eventIntervalId = setInterval(() => {
       void this.harvestEvents();
@@ -196,7 +197,7 @@ export class HarvestScheduler {
     this.retryEventBatch = [...batch, ...this.retryEventBatch];
     if (this.retryEventBatch.length > this.maxRetryEvents) {
       const dropped = this.retryEventBatch.length - this.maxRetryEvents;
-      this.retryEventBatch = this.retryEventBatch.slice(0, this.maxRetryEvents);
+      this.retryEventBatch = this.retryEventBatch.slice(-this.maxRetryEvents);
       logger.warn('Event retry buffer overflow — oldest entries dropped', { dropped });
     }
   }
@@ -205,7 +206,7 @@ export class HarvestScheduler {
     this.retryMetricBatch = [...batch, ...this.retryMetricBatch];
     if (this.retryMetricBatch.length > this.maxRetryMetrics) {
       const dropped = this.retryMetricBatch.length - this.maxRetryMetrics;
-      this.retryMetricBatch = this.retryMetricBatch.slice(0, this.maxRetryMetrics);
+      this.retryMetricBatch = this.retryMetricBatch.slice(-this.maxRetryMetrics);
       logger.warn('Metric retry buffer overflow — oldest entries dropped', { dropped });
     }
   }

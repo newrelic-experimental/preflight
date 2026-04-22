@@ -424,6 +424,57 @@ describe('HttpUpstream.forward()', () => {
     expect(result.responseSizeBytes).toBeGreaterThan(0);
   });
 
+  it('strips hop-by-hop headers from upstream response', async () => {
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'transfer-encoding': 'chunked',
+          'connection': 'keep-alive',
+          'keep-alive': 'timeout=5',
+          'x-custom-header': 'should-pass',
+        });
+        res.end('{"ok":true}');
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+
+    await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+
+    expect(fakeRes._headers['transfer-encoding']).toBeUndefined();
+    expect(fakeRes._headers['connection']).toBeUndefined();
+    expect(fakeRes._headers['keep-alive']).toBeUndefined();
+    // Safe headers must still pass through
+    expect(fakeRes._headers['content-type']).toBe('application/json');
+    expect(fakeRes._headers['x-custom-header']).toBe('should-pass');
+  });
+
+  it('sets content-length on proxy response from the buffered body size', async () => {
+    const actualBody = '{"result":"hello"}';
+
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        // Upstream sends no content-length (e.g. chunked-encoded response)
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(actualBody);
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+
+    await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+
+    expect(fakeRes._headers['content-length']).toBe(Buffer.byteLength(actualBody));
+    expect(Buffer.concat(fakeRes._body).toString()).toBe(actualBody);
+  });
+
   it('returns 502 when upstream is unreachable', async () => {
     const upstream = new HttpUpstream({
       name: 'dead',

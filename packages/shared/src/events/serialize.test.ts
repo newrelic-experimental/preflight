@@ -47,7 +47,7 @@ describe('aiRequestToNrEvent', () => {
     expect(nrEvent.topP).toBe(0.9);
     expect(nrEvent.systemPromptLength).toBe(500);
     expect(nrEvent.toolCount).toBe(2);
-    expect(nrEvent.toolNames).toBe('calc,search'); // joined string
+    expect(nrEvent.toolNames).toBe('["calc","search"]');
     expect(nrEvent.thinkingEnabled).toBe(true);
     expect(nrEvent.thinkingBudgetTokens).toBe(10000);
     expect(nrEvent['nr.entityGuid']).toBe('guid-123');
@@ -117,7 +117,7 @@ describe('aiResponseToNrEvent', () => {
     expect(nrEvent.thinkingTokens).toBe(300);
     expect(nrEvent.totalTokens).toBe(450);
     expect(nrEvent.stopReason).toBe('end_turn');
-    expect(nrEvent.contentBlockTypes).toBe('text,tool_use');
+    expect(nrEvent.contentBlockTypes).toBe('["text","tool_use"]');
     expect(nrEvent['cost.inputUsd']).toBe(0.001);
     expect(nrEvent['cost.totalUsd']).toBe(0.0066);
     expect(nrEvent['error.type']).toBe('api_error');

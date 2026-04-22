@@ -450,4 +450,148 @@ describe('ClaudeMdTracker', () => {
     expect(changeEvent!.attrs?.filePath).toBe('/project/CLAUDE.md');
     expect(changeEvent!.attrs?.changeType).toBe('created');
   });
+
+  // -------------------------------------------------------------------------
+  // 11. changes cap (MAX_CHANGES = 1000)
+  // -------------------------------------------------------------------------
+
+  it('never holds more than 1000 changes', () => {
+    const tracker = new ClaudeMdTracker({ sessionStore: store });
+
+    for (let i = 0; i < 1005; i++) {
+      tracker.detectChange(makeToolCall({
+        toolName: 'Write',
+        filePath: '/project/.claude/settings.json',
+        lineCount: 1,
+        timestamp: 1000 + i,
+      } as Partial<ToolCallRecord>));
+    }
+
+    expect(tracker.getChanges()).toHaveLength(1000);
+  });
+
+  it('drops oldest changes when cap is exceeded', () => {
+    const tracker = new ClaudeMdTracker({ sessionStore: store });
+
+    for (let i = 0; i < 1002; i++) {
+      tracker.detectChange(makeToolCall({
+        toolName: 'Write',
+        filePath: `/project/.claude/config${i}.json`,
+        lineCount: 1,
+        timestamp: 1000 + i,
+      } as Partial<ToolCallRecord>));
+    }
+
+    const changes = tracker.getChanges();
+    expect(changes[0].filePath).toBe('/project/.claude/config2.json');
+    expect(changes[999].filePath).toBe('/project/.claude/config1001.json');
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. emitMetrics does not re-emit already-harvested changes
+  // -------------------------------------------------------------------------
+
+  it('emitMetrics only emits new changes on subsequent harvests', () => {
+    const tracker = new ClaudeMdTracker({ sessionStore: store });
+
+    tracker.detectChange(makeToolCall({
+      toolName: 'Write',
+      filePath: '/project/CLAUDE.md',
+      lineCount: 10,
+      timestamp: Date.now(),
+    } as Partial<ToolCallRecord>));
+
+    const recorded1: string[] = [];
+    const agg1 = {
+      record(name: string) { recorded1.push(name); },
+    } as unknown as MetricAggregator;
+    tracker.emitMetrics(agg1);
+    const changeCount1 = recorded1.filter((n) => n === 'ai.claudemd.change').length;
+    expect(changeCount1).toBe(1);
+
+    // Second harvest with no new changes — should emit 0 change events
+    const recorded2: string[] = [];
+    const agg2 = {
+      record(name: string) { recorded2.push(name); },
+    } as unknown as MetricAggregator;
+    tracker.emitMetrics(agg2);
+    const changeCount2 = recorded2.filter((n) => n === 'ai.claudemd.change').length;
+    expect(changeCount2).toBe(0);
+
+    // After a new change, should emit exactly 1
+    tracker.detectChange(makeToolCall({
+      toolName: 'Edit',
+      filePath: '/project/CLAUDE.md',
+      oldLineCount: 10,
+      newLineCount: 12,
+      timestamp: Date.now() + 1000,
+    } as Partial<ToolCallRecord>));
+
+    const recorded3: string[] = [];
+    const agg3 = {
+      record(name: string) { recorded3.push(name); },
+    } as unknown as MetricAggregator;
+    tracker.emitMetrics(agg3);
+    const changeCount3 = recorded3.filter((n) => n === 'ai.claudemd.change').length;
+    expect(changeCount3).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 13. getCachedImpact avoids redundant computeImpact calls
+  // -------------------------------------------------------------------------
+
+  it('emitMetrics reuses the cached impact report when no new change arrives', () => {
+    const tracker = new ClaudeMdTracker({ sessionStore: store });
+    const changeTimestamp = Date.now();
+
+    tracker.detectChange(makeToolCall({
+      toolName: 'Write',
+      filePath: '/project/CLAUDE.md',
+      lineCount: 10,
+      timestamp: changeTimestamp,
+    } as Partial<ToolCallRecord>));
+
+    store.saveSession(makeSummary({
+      sessionId: 'before-1',
+      startTime: changeTimestamp - 86_400_000,
+    }));
+
+    const agg = { record() {} } as unknown as MetricAggregator;
+
+    // Spy on loadAllSessions to count disk reads
+    const loadSpy = jest.spyOn(store, 'loadAllSessions');
+
+    tracker.emitMetrics(agg); // first harvest — cache miss → 1 disk read
+    tracker.emitMetrics(agg); // second harvest — cache hit → 0 additional reads
+
+    // loadAllSessions called once via computeImpact, not twice
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+
+    loadSpy.mockRestore();
+  });
+
+  // -------------------------------------------------------------------------
+  // 14. reset clears all state
+  // -------------------------------------------------------------------------
+
+  it('reset clears changes, lastEmittedIndex, and impact cache', () => {
+    const tracker = new ClaudeMdTracker({ sessionStore: store });
+
+    tracker.detectChange(makeToolCall({
+      toolName: 'Write',
+      filePath: '/project/CLAUDE.md',
+      lineCount: 5,
+      timestamp: Date.now(),
+    } as Partial<ToolCallRecord>));
+    expect(tracker.getChanges()).toHaveLength(1);
+
+    tracker.reset();
+    expect(tracker.getChanges()).toHaveLength(0);
+
+    // After reset, emitMetrics should emit 0 events
+    const recorded: string[] = [];
+    const agg = { record(name: string) { recorded.push(name); } } as unknown as MetricAggregator;
+    tracker.emitMetrics(agg);
+    expect(recorded.filter((n) => n === 'ai.claudemd.change')).toHaveLength(0);
+  });
 });

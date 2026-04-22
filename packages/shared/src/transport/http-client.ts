@@ -91,7 +91,7 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
 
       const status = response.status;
 
-      if (status >= 200 && status <= 209) {
+      if (status >= 200 && status < 300) {
         return { success: true, statusCode: status, retryCount: attempt };
       }
 

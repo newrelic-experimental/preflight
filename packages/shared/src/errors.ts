@@ -14,7 +14,12 @@ export enum AiErrorClassification {
 }
 
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EPIPE', 'EHOSTUNREACH']);
-const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT']);
+const TIMEOUT_CODES = new Set([
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
 
 const RETRYABLE = new Set<AiErrorClassification>([
   AiErrorClassification.RATE_LIMIT,

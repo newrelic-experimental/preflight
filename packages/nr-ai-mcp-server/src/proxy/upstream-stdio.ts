@@ -16,6 +16,8 @@ import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 
 const logger = createLogger('proxy-stdio');
 
+const DISCONNECT_TIMEOUT_MS = 5_000;
+
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
 // ---------------------------------------------------------------------------
@@ -117,12 +119,34 @@ export class StdioUpstream implements ProxyUpstream {
   }
 
   async disconnect(): Promise<void> {
-    if (this.client) {
-      await this.client.close();
-      this.client = null;
-      this.transport = null;
-      logger.info(`Stdio upstream "${this.name}" disconnected`);
+    if (!this.client) return;
+
+    const client = this.client;
+    const transport = this.transport;
+    this.client = null;
+    this.transport = null;
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        client.close(),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error('disconnect timeout')),
+            DISCONNECT_TIMEOUT_MS,
+          );
+          timeoutId.unref();
+        }),
+      ]);
+    } catch {
+      logger.warn(`Stdio upstream "${this.name}" close timed out after ${DISCONNECT_TIMEOUT_MS}ms — force-killing process`);
+      const proc = (transport as unknown as { _process?: { kill(signal?: string): void } })._process;
+      proc?.kill('SIGKILL');
+    } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
     }
+
+    logger.info(`Stdio upstream "${this.name}" disconnected`);
   }
 
   async forward(

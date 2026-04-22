@@ -75,6 +75,14 @@ describe('classifyError', () => {
     (err as any).code = 'ETIMEDOUT';
     expect(classifyError(err, 'google')).toBe(AiErrorClassification.TIMEOUT);
   });
+
+  it('classifies undici timeout codes as TIMEOUT', () => {
+    for (const code of ['UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+      const err = new Error(`undici ${code}`);
+      (err as any).code = code;
+      expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.TIMEOUT);
+    }
+  });
 });
 
 describe('isRetryable', () => {

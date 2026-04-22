@@ -121,7 +121,7 @@ export class CostPerOutcomeAnalyzer {
         }
       }
 
-      if (tc.toolName === 'Edit' && hasTestFailure) {
+      if ((tc.toolName === 'Edit' || tc.toolName === 'Write') && hasTestFailure) {
         sawEditAfterFailure = true;
       }
 

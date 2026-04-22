@@ -29,7 +29,7 @@ export interface McpServerConfig {
 const DEFAULT_STORAGE_PATH = resolve(homedir(), '.nr-ai-observe');
 
 const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
-  /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)[\s]*[=:]\s*\S+/gi,
+  /\b(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)\b[\s]*[=:]\s*\S+/gi,
   /(?:sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-|Bearer\s+)\S+/g,
   /-----BEGIN[\s\S]*?-----END[^\n]*-----/g,
 ];
@@ -64,11 +64,20 @@ function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
   return defaultValue;
 }
 
-function loadConfigFile(path: string): Record<string, unknown> {
+function loadConfigFile(filePath: string): Record<string, unknown> {
+  let raw: string;
   try {
-    const raw = readFileSync(path, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
+    raw = readFileSync(filePath, 'utf-8');
   } catch {
+    return {};
+  }
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    logger.warn('Failed to parse config file — ignoring', {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {};
   }
 }
@@ -84,6 +93,16 @@ function resolveCollectorHost(
   return null;
 }
 
+function isValidUpstream(u: unknown): u is UpstreamConfig {
+  if (typeof u !== 'object' || u === null) return false;
+  const obj = u as Record<string, unknown>;
+  if (typeof obj.name !== 'string') return false;
+  if (obj.transportType !== 'http' && obj.transportType !== 'stdio') return false;
+  if (obj.transportType === 'http' && typeof obj.url !== 'string') return false;
+  if (obj.transportType === 'stdio' && typeof obj.command !== 'string') return false;
+  return true;
+}
+
 function parseProxyUpstreams(
   envValue: string | undefined,
   fileValue: unknown,
@@ -92,13 +111,31 @@ function parseProxyUpstreams(
   if (envValue) {
     try {
       const parsed = JSON.parse(envValue);
-      if (Array.isArray(parsed)) return parsed as UpstreamConfig[];
+      if (!Array.isArray(parsed)) {
+        logger.warn(
+          'NEW_RELIC_AI_MCP_PROXY_UPSTREAMS must be a JSON array — ignoring env var value',
+        );
+      } else {
+        const valid = parsed.filter((u: unknown) => {
+          if (isValidUpstream(u)) return true;
+          logger.warn('Skipping invalid proxy upstream entry (missing name, transportType, or url/command)', { entry: u });
+          return false;
+        });
+        return valid as UpstreamConfig[];
+      }
     } catch {
       logger.warn('Invalid JSON in NEW_RELIC_AI_MCP_PROXY_UPSTREAMS env var');
     }
   }
   // Config file
-  if (Array.isArray(fileValue)) return fileValue as UpstreamConfig[];
+  if (Array.isArray(fileValue)) {
+    const valid = fileValue.filter((u: unknown) => {
+      if (isValidUpstream(u)) return true;
+      logger.warn('Skipping invalid proxy upstream entry (missing name, transportType, or url/command)', { entry: u });
+      return false;
+    });
+    return valid as UpstreamConfig[];
+  }
   return [];
 }
 

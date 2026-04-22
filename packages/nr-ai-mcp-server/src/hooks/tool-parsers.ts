@@ -16,6 +16,7 @@ type ToolFields = Record<string, string | number | boolean>;
 // ---------------------------------------------------------------------------
 
 function countLines(text: string): number {
+  if (text === '') return 0;
   return (text.match(/\n/g) || []).length + 1;
 }
 
@@ -47,7 +48,10 @@ function parseRead(input: Record<string, unknown>): ToolFields {
 function parseWrite(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.file_path === 'string') fields.filePath = input.file_path;
-  if (typeof input.content === 'string') {
+  if (typeof input.contentLength === 'number') {
+    fields.contentLength = input.contentLength;
+    if (typeof input.lineCount === 'number') fields.lineCount = input.lineCount;
+  } else if (typeof input.content === 'string') {
     fields.contentLength = input.content.length;
     fields.lineCount = countLines(input.content);
   }
@@ -57,17 +61,23 @@ function parseWrite(input: Record<string, unknown>): ToolFields {
 function parseEdit(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.file_path === 'string') fields.filePath = input.file_path;
-  if (typeof input.old_string === 'string') {
+  if (typeof input.oldStringLength === 'number') {
+    fields.oldStringLength = input.oldStringLength;
+    if (typeof input.oldLineCount === 'number') fields.oldLineCount = input.oldLineCount;
+  } else if (typeof input.old_string === 'string') {
     fields.oldStringLength = input.old_string.length;
     fields.oldLineCount = countLines(input.old_string);
   }
-  if (typeof input.new_string === 'string') {
+  if (typeof input.newStringLength === 'number') {
+    fields.newStringLength = input.newStringLength;
+    if (typeof input.newLineCount === 'number') fields.newLineCount = input.newLineCount;
+    if (typeof input.isDelete === 'boolean') fields.isDelete = input.isDelete;
+  } else if (typeof input.new_string === 'string') {
     fields.newStringLength = input.new_string.length;
     fields.newLineCount = input.new_string.length > 0 ? countLines(input.new_string) : 0;
+    fields.isDelete = input.new_string.length === 0;
   }
   if (typeof input.replace_all === 'boolean') fields.replaceAll = input.replace_all;
-  fields.isDelete =
-    typeof input.new_string === 'string' && input.new_string.length === 0;
   return fields;
 }
 
@@ -104,7 +114,11 @@ function parseAgent(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.description === 'string') fields.agentDescription = input.description;
   if (typeof input.subagent_type === 'string') fields.subagentType = input.subagent_type;
-  if (typeof input.prompt === 'string') fields.promptLength = input.prompt.length;
+  if (typeof input.promptLength === 'number') {
+    fields.promptLength = input.promptLength;
+  } else if (typeof input.prompt === 'string') {
+    fields.promptLength = input.prompt.length;
+  }
   if (typeof input.run_in_background === 'boolean') fields.runInBackground = input.run_in_background;
   return fields;
 }
@@ -151,6 +165,9 @@ const OUTPUT_PARSERS: Record<string, (output: Record<string, unknown>) => ToolFi
     const fields: ToolFields = {};
     if (typeof output.exitCode === 'number') {
       fields.exitCode = output.exitCode;
+    } else if (typeof output.exitCode === 'string') {
+      const parsed = Number(output.exitCode);
+      if (!Number.isNaN(parsed)) fields.exitCode = parsed;
     }
     return fields;
   },

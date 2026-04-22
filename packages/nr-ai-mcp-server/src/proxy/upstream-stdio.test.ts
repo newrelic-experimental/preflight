@@ -330,4 +330,44 @@ describe('StdioUpstream.disconnect()', () => {
     });
     await expect(upstream.disconnect()).resolves.toBeUndefined();
   });
+
+  it('force-kills the process and resolves if client.close() hangs past timeout', async () => {
+    jest.useFakeTimers();
+
+    const upstream = new StdioUpstream({ name: 'hanging', command: 'node', transportType: 'stdio' });
+
+    // client.close() never resolves — simulates a hung upstream
+    const mockClose = jest.fn<() => Promise<void>>().mockReturnValue(new Promise(() => {}));
+    const mockKill = jest.fn<(signal?: string) => void>();
+    (upstream as unknown as Record<string, unknown>).client = { close: mockClose };
+    (upstream as unknown as Record<string, unknown>).transport = { _process: { kill: mockKill } };
+
+    const disconnectPromise = upstream.disconnect();
+
+    // Advance past the 5-second disconnect timeout
+    await jest.runAllTimersAsync();
+    await disconnectPromise;
+
+    expect(mockKill).toHaveBeenCalledWith('SIGKILL');
+
+    jest.useRealTimers();
+  });
+
+  it('clears the timeout handle when client.close() resolves promptly', async () => {
+    jest.useFakeTimers();
+
+    const upstream = new StdioUpstream({ name: 'fast', command: 'node', transportType: 'stdio' });
+    const mockClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const mockKill = jest.fn<(signal?: string) => void>();
+    (upstream as unknown as Record<string, unknown>).client = { close: mockClose };
+    (upstream as unknown as Record<string, unknown>).transport = { _process: { kill: mockKill } };
+
+    await upstream.disconnect();
+
+    // Advancing past the timeout should NOT trigger kill (it was cleared)
+    await jest.runAllTimersAsync();
+    expect(mockKill).not.toHaveBeenCalled();
+
+    jest.useRealTimers();
+  });
 });

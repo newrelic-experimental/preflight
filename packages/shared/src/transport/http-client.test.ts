@@ -164,6 +164,19 @@ describe('sendWithRetry', () => {
     });
   });
 
+  // 5b. 202 response — success (NR APIs return 202 Accepted)
+  it('returns success for 202 response', async () => {
+    fetchSpy.mockResolvedValue(new Response('{}', { status: 202 }));
+
+    const result = await sendWithRetry(baseOptions());
+
+    expect(result).toEqual({
+      success: true,
+      statusCode: 202,
+      retryCount: 0,
+    });
+  });
+
   // 6. 403 response — no retry
   it('returns failure for 403 and does not retry', async () => {
     fetchSpy.mockResolvedValue(new Response('Forbidden', { status: 403 }));

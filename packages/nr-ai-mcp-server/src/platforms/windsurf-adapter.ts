@@ -17,7 +17,7 @@ const WINDSURF_TOOL_MAP: Record<string, string> = {
   run_command: 'Bash',
   search: 'Grep',
   create_file: 'Write',
-  delete_file: 'Write',
+  delete_file: 'Delete',
   list_directory: 'Glob',
 };
 

@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { SessionTracker } from './session-tracker.js';
+import { SessionTracker, computeP95 } from './session-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { MetricAggregator } from '@nr-ai-observatory/shared';
 
@@ -69,8 +69,8 @@ describe('SessionTracker', () => {
       expect(stats.sum).toBe(550);
       expect(stats.min).toBe(10);
       expect(stats.max).toBe(100);
-      // p95 of [10,20,30,40,50,60,70,80,90,100]: index = floor(10*0.95) = 9 → 100
-      expect(stats.p95).toBe(100);
+      // p95 of [10,20,30,40,50,60,70,80,90,100]: index = floor(9*0.95) = floor(8.55) = 8 → 90
+      expect(stats.p95).toBe(90);
     });
 
     it('handles records with null durationMs gracefully', () => {
@@ -347,5 +347,62 @@ describe('SessionTracker', () => {
       expect(names).toContain('ai.session.unique_files_read.count');
       expect(names).toContain('ai.session.unique_files_written.count');
     });
+
+    it('emits individual durations so aggregator count/sum/min/max reflect the real distribution', () => {
+      const tracker = new SessionTracker('test-session');
+
+      // 3 Read calls: 10ms, 90ms, 200ms
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 10 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 90 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 200 }));
+
+      const aggregator = new MetricAggregator();
+      tracker.emitMetrics(aggregator);
+      const metrics = aggregator.harvest();
+
+      const durationMetrics = metrics.filter(m => m.name.startsWith('ai.tool.duration_ms') && m.attributes?.tool === 'Read');
+      const byName = Object.fromEntries(durationMetrics.map(m => [m.name, m.value]));
+
+      // count = 3 (one record() call per duration, not one call with the mean)
+      expect(byName['ai.tool.duration_ms.count']).toBe(3);
+      // sum = 300 (actual total, not mean * 1)
+      expect(byName['ai.tool.duration_ms.sum']).toBe(300);
+      // min and max reflect the actual distribution
+      expect(byName['ai.tool.duration_ms.min']).toBe(10);
+      expect(byName['ai.tool.duration_ms.max']).toBe(200);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeP95 — nearest-rank formula
+// ---------------------------------------------------------------------------
+
+describe('computeP95()', () => {
+  it('returns 0 for an empty array', () => {
+    expect(computeP95([])).toBe(0);
+  });
+
+  it('returns the single value for a one-element array', () => {
+    expect(computeP95([42])).toBe(42);
+  });
+
+  it('n=10: returns index 8 (value 90), not index 9 (max 100)', () => {
+    // [10,20,30,40,50,60,70,80,90,100]
+    // floor((10-1) * 0.95) = floor(8.55) = 8 → sorted[8] = 90
+    const values = [100, 10, 50, 30, 80, 20, 70, 60, 40, 90];
+    expect(computeP95(values)).toBe(90);
+  });
+
+  it('n=20: returns index 18, not index 19 (max)', () => {
+    // Values 1..20; floor((20-1)*0.95) = floor(18.05) = 18 → sorted[18] = 19
+    const values = Array.from({ length: 20 }, (_, i) => i + 1);
+    expect(computeP95(values)).toBe(19);
+  });
+
+  it('n=100: returns index 94 (p95 nearest-rank), not index 95', () => {
+    // Values 1..100; floor((100-1)*0.95) = floor(94.05) = 94 → sorted[94] = 95
+    const values = Array.from({ length: 100 }, (_, i) => i + 1);
+    expect(computeP95(values)).toBe(95);
   });
 });

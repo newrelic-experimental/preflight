@@ -50,6 +50,8 @@ const DEFAULT_AUTONOMY_WEIGHT = 0.25;
 const DEFAULT_FIRST_ATTEMPT_QUALITY_WEIGHT = 0.25;
 const DEFAULT_SPEED_BASELINE_LPS = 1; // 1 line per second = perfect speed
 
+const MAX_SCORES = 1_000;
+
 // ---------------------------------------------------------------------------
 // EfficiencyScorer
 // ---------------------------------------------------------------------------
@@ -62,6 +64,7 @@ export class EfficiencyScorer {
   private readonly speedBaselineLps: number;
 
   private readonly scores: EfficiencyScore[] = [];
+  private lastEmittedIndex = 0;
 
   constructor(options?: EfficiencyScoreOptions) {
     this.speedWeight = options?.speedWeight ?? DEFAULT_SPEED_WEIGHT;
@@ -93,7 +96,12 @@ export class EfficiencyScorer {
       timestamp: task.endTime,
     };
 
-    this.scores.push(result);
+    const idx = this.scores.findIndex((s) => s.taskId === task.taskId);
+    if (idx >= 0) {
+      this.scores[idx] = result;
+    } else {
+      this.appendScore(result);
+    }
 
     return result;
   }
@@ -157,7 +165,7 @@ export class EfficiencyScorer {
     if (idx >= 0) {
       this.scores[idx] = result;
     } else {
-      this.scores.push(result);
+      this.appendScore(result);
     }
 
     return result;
@@ -168,17 +176,20 @@ export class EfficiencyScorer {
   }
 
   emitMetrics(aggregator: MetricAggregator): void {
-    for (const s of this.scores) {
+    for (let i = this.lastEmittedIndex; i < this.scores.length; i++) {
+      const s = this.scores[i]!;
       aggregator.record('ai.efficiency.score', s.score);
       aggregator.record('ai.efficiency.speed', s.components.speed);
       aggregator.record('ai.efficiency.correctness', s.components.correctness);
       aggregator.record('ai.efficiency.autonomy', s.components.autonomy);
       aggregator.record('ai.efficiency.first_attempt_quality', s.components.firstAttemptQuality);
     }
+    this.lastEmittedIndex = this.scores.length;
   }
 
   reset(): void {
     this.scores.length = 0;
+    this.lastEmittedIndex = 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -243,6 +254,15 @@ export class EfficiencyScorer {
 
     if (maxIterations === 0) return 1;
     return clamp(1 - maxIterations / 3, 0, 1);
+  }
+
+  private appendScore(score: EfficiencyScore): void {
+    this.scores.push(score);
+    if (this.scores.length > MAX_SCORES) {
+      const dropped = this.scores.length - MAX_SCORES;
+      this.scores.splice(0, dropped);
+      this.lastEmittedIndex = Math.max(0, this.lastEmittedIndex - dropped);
+    }
   }
 }
 

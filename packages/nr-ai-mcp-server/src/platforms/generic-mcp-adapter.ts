@@ -121,6 +121,7 @@ export class GenericMcpAdapter implements PlatformAdapter {
     this.sessionMetadata = {
       platform: input.platform || 'generic-mcp',
       ...(input.model !== undefined && { model: input.model }),
+      ...(input.developer !== undefined && { developer: input.developer }),
     };
   }
 

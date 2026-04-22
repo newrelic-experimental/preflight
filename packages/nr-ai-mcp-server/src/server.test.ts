@@ -2,6 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer, NrMcpServer } from './server.js';
+import { AuditTrailManager } from './security/audit-trail.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -70,5 +71,30 @@ describe('MCP protocol via InMemoryTransport', () => {
     const info = client.getServerVersion();
     expect(info?.name).toBe('test-mcp');
     expect(info?.version).toBe('0.0.1');
+  });
+
+  it('resources/list returns empty when auditTrailManager is not set', async () => {
+    const result = await client.listResources();
+    expect(result.resources).toHaveLength(0);
+  });
+
+  it('resources/list includes audit-log resource after auditTrailManager is assigned post-construction', async () => {
+    // Simulate the stdio startup sequence: server created first, auditTrailManager wired later
+    server.auditTrailManager = new AuditTrailManager({ developer: 'test', sessionId: null });
+
+    const result = await client.listResources();
+    const uris = result.resources.map((r) => r.uri);
+    expect(uris).toContain('nr-observe://session/audit-log');
+  });
+
+  it('resources/read returns audit log entries after auditTrailManager is assigned', async () => {
+    server.auditTrailManager = new AuditTrailManager({ developer: 'test', sessionId: null });
+
+    const result = await client.readResource({ uri: 'nr-observe://session/audit-log' });
+    expect(result.contents).toHaveLength(1);
+    const content = result.contents[0];
+    const text = 'text' in content ? content.text : '';
+    const parsed = JSON.parse(text) as unknown[];
+    expect(Array.isArray(parsed)).toBe(true);
   });
 });

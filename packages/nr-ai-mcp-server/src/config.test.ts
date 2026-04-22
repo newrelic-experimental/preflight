@@ -194,13 +194,25 @@ describe('loadMcpConfig()', () => {
     expect(config.licenseKey).toBe('test-key');
   });
 
-  it('gracefully handles invalid JSON in config file', () => {
+  it('gracefully handles invalid JSON in config file and logs a warning', () => {
     const path = resolve(tmpDir, 'bad.json');
     writeFileSync(path, 'not json{{{');
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     const config = loadMcpConfig({ config: path });
     expect(config.licenseKey).toBe('test-key');
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/warn/);
+    expect(stderrOutput).toMatch(/Failed to parse config file/);
+  });
+
+  it('silently ignores missing config file without a warning', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: resolve(tmpDir, 'nonexistent.json') });
+    expect(config.licenseKey).toBe('test-key');
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/Failed to parse config file/);
   });
 
   it('harvest interval env vars override file', () => {
@@ -257,6 +269,31 @@ describe('loadMcpConfig()', () => {
     const configPath = writeConfigFile({ proxyUpstreams: upstreams });
     const config = loadMcpConfig({ config: configPath });
     expect(config.proxyUpstreams).toEqual(upstreams);
+  });
+
+  it('non-array JSON in proxyUpstreams env var falls back to file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_PROXY_UPSTREAMS = JSON.stringify({ name: 'forgot-brackets' });
+    const upstreams = [{ name: 'file-server', url: 'http://localhost:3001', transportType: 'http' }];
+    const configPath = writeConfigFile({ proxyUpstreams: upstreams });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.proxyUpstreams).toEqual(upstreams);
+  });
+
+  it('filters out upstream entries missing required fields', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const upstreams = [
+      { name: 'valid', url: 'http://localhost:3000', transportType: 'http' },
+      { name: 'missing-type' },
+      { transportType: 'http', url: 'http://localhost:3001' },
+    ];
+    const configPath = writeConfigFile({ proxyUpstreams: upstreams });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.proxyUpstreams).toEqual([
+      { name: 'valid', url: 'http://localhost:3000', transportType: 'http' },
+    ]);
   });
 });
 

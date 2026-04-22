@@ -73,8 +73,13 @@ export function parseArgs(argv: string[]): CliOptions {
   program.parse(argv);
   const opts = program.opts();
 
+  const parsed = parseInt(opts.port, 10);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 65535) {
+    throw new Error(`Invalid port "${opts.port as string}": must be an integer between 0 and 65535`);
+  }
+
   return {
-    port: parseInt(opts.port, 10),
+    port: parsed,
     config: opts.config ?? null,
     logLevel: opts.logLevel as CliOptions['logLevel'],
     stdio: opts.stdio ?? false,
@@ -84,6 +89,10 @@ export function parseArgs(argv: string[]): CliOptions {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv);
 
+  // Propagate --log-level into the env var that createLogger() reads.
+  // Must be set before any subsystem loggers are constructed.
+  process.env.NEW_RELIC_AI_LOG_LEVEL = options.logLevel;
+
   logger.info('Starting nr-ai-mcp-server', {
     version: VERSION,
     stdio: options.stdio,
@@ -91,18 +100,40 @@ async function main(): Promise<void> {
     logLevel: options.logLevel,
   });
 
+  // Declare resource holders before any async work so the shutdown handler
+  // safely cleans up whatever was initialized before a signal arrives.
+  let mcpServer: import('./server.js').NrMcpServer | undefined;
+  let eventProcessor: HookEventProcessor | undefined;
+  let nrIngest: NrIngestManager | undefined;
+  let proxyManager: ProxyManager | undefined;
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info('Shutting down...');
+    eventProcessor?.stop();
+    if (nrIngest) await nrIngest.stop();
+    if (mcpServer) await mcpServer.close();
+    if (proxyManager) await proxyManager.stop();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
   if (options.stdio) {
     // Connect stdio FIRST so the MCP handshake can complete immediately.
     // Tools are registered after initialization; tool calls before that
     // will return MethodNotFound (which the SDK handles gracefully).
-    const server = createServer();
-    await server.connectStdio();
+    mcpServer = createServer();
+    await mcpServer.connectStdio();
 
     const config = loadMcpConfig(options);
 
     if (!config.enabled) {
       logger.info('Server disabled via config — exiting');
-      await server.close();
+      await mcpServer.close();
       process.exit(0);
     }
 
@@ -141,7 +172,7 @@ async function main(): Promise<void> {
       taskDetector,
     });
 
-    const nrIngest = new NrIngestManager({
+    nrIngest = new NrIngestManager({
       licenseKey: config.licenseKey,
       transportOptions: {
         accountId: config.accountId,
@@ -155,17 +186,21 @@ async function main(): Promise<void> {
       metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
     });
 
-    const eventProcessor = new HookEventProcessor({
+    const capturedNrIngest = nrIngest;
+    eventProcessor = new HookEventProcessor({
       store: localStore,
       onRecord: (record) => {
         sessionTracker.recordToolCall(record);
         taskDetector.recordToolCall(record);
-        nrIngest.ingestToolCall(record);
+        capturedNrIngest.ingestToolCall(record);
       },
     });
 
+    // Wire audit trail into resource handlers (was undefined at createServer() time)
+    mcpServer.auditTrailManager = nrIngest.auditTrail;
+
     // Re-register tools with full dependencies (replaces empty handlers)
-    registerTools(server.server, {
+    registerTools(mcpServer.server, {
       sessionTracker,
       costTracker,
       taskDetector,
@@ -185,24 +220,10 @@ async function main(): Promise<void> {
     nrIngest.start();
     logger.info('Server running on stdio transport');
 
-    let shuttingDown = false;
-    const shutdown = async () => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      logger.info('Shutting down...');
-      eventProcessor.stop();
-      await nrIngest.stop();
-      await server.close();
-      process.exit(0);
-    };
-
     process.stdin.on('end', () => {
       logger.info('stdin closed, shutting down');
       void shutdown();
     });
-
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
   } else {
     // Proxy mode: start HTTP proxy server that forwards to upstream MCP servers
     const config = loadMcpConfig(options);
@@ -220,7 +241,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    const proxyManager = new ProxyManager({
+    proxyManager = new ProxyManager({
       port: config.port,
       onToolCall: (record) => {
         logger.debug('Proxy tool call', {
@@ -244,18 +265,6 @@ async function main(): Promise<void> {
 
     await proxyManager.start();
     logger.info('Proxy server running', { port: config.port, upstreams: proxyManager.getUpstreamNames() });
-
-    let shuttingDown = false;
-    const shutdown = async () => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      logger.info('Shutting down proxy...');
-      await proxyManager.stop();
-      process.exit(0);
-    };
-
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
   }
 }
 

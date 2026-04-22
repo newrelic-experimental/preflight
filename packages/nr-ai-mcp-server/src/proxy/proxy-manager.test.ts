@@ -223,6 +223,19 @@ describe('ProxyManager HTTP server', () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it('returns 400 for malformed percent-encoding in server name', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer());
+    await setupProxy(proxyPort);
+
+    const response = await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/%ZZbad`, {
+      body: '{}',
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('bad_request');
+  });
+
   it('forwards tools/list to upstream and returns response unchanged', async () => {
     const expectedResponse = { jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'read_file', inputSchema: { type: 'object' } }] } };
 
@@ -535,6 +548,67 @@ describe('ProxyManager performance', () => {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+describe('ProxyManager unhandled request error handler', () => {
+  it('sends 500 JSON when handleRequest rejects before headers are sent', async () => {
+    const manager = new ProxyManager({ port: 0 });
+    (manager as unknown as { handleRequest: () => Promise<void> }).handleRequest = async () => {
+      throw new Error('test error before headers');
+    };
+    await manager.start();
+    const addr = (manager as unknown as { httpServer: { address: () => { port: number } } }).httpServer?.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    try {
+      const res = await httpRequest(`http://127.0.0.1:${port}/any`, { method: 'POST', body: '{}' });
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it('destroys socket (not writing JSON) when handleRequest rejects after headers are sent', async () => {
+    const manager = new ProxyManager({ port: 0 });
+    (manager as unknown as { handleRequest: (req: IncomingMessage, res: ServerResponse) => Promise<void> }).handleRequest =
+      async (_req: IncomingMessage, res: ServerResponse) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        throw new Error('error mid-stream');
+      };
+    await manager.start();
+    const addr = (manager as unknown as { httpServer: { address: () => { port: number } } }).httpServer?.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    try {
+      const result = await new Promise<{ statusCode: number; body: string; connectionReset: boolean }>(
+        (resolve) => {
+          const { request } = require('node:http') as typeof import('node:http');
+          const req = request(
+            { hostname: '127.0.0.1', port, method: 'POST', path: '/any' },
+            (res) => {
+              const chunks: Buffer[] = [];
+              res.on('data', (c: Buffer) => chunks.push(c));
+              res.on('end', () =>
+                resolve({ statusCode: res.statusCode ?? 0, body: Buffer.concat(chunks).toString(), connectionReset: false }),
+              );
+              res.on('close', () =>
+                resolve({ statusCode: res.statusCode ?? 0, body: Buffer.concat(chunks).toString(), connectionReset: true }),
+              );
+            },
+          );
+          req.on('error', () => resolve({ statusCode: 0, body: '', connectionReset: true }));
+          req.end();
+        },
+      );
+
+      // Socket was destroyed — connection reset, no JSON error body written
+      expect(result.connectionReset).toBe(true);
+      expect(result.body).not.toContain('internal_error');
+    } finally {
+      await manager.stop();
+    }
+  });
+});
+
 describe('ProxyManager error handling', () => {
   it('rejects with EADDRINUSE when port is already taken', async () => {
     // Occupy a port
@@ -551,6 +625,54 @@ describe('ProxyManager error handling', () => {
       await expect(manager.start()).rejects.toThrow(/EADDRINUSE/);
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+});
+
+describe('ProxyManager upstream connection failures', () => {
+  it('throws when all upstreams fail to connect', async () => {
+    const manager = new ProxyManager({ port: 0 });
+    manager.registerUpstream({
+      name: 'bad-server',
+      url: 'http://127.0.0.1:1',
+      transportType: 'stdio',
+      command: '/nonexistent/binary',
+    });
+    // Override the upstream's connect to throw
+    const upstream = manager.getUpstream('bad-server')!;
+    upstream.connect = async () => { throw new Error('spawn failed'); };
+
+    await expect(manager.start()).rejects.toThrow('All upstreams failed to connect');
+  });
+
+  it('starts in degraded mode when some upstreams fail', async () => {
+    const { server: mockServer, port: mockPort } = await createMockMcpServer();
+
+    try {
+      const manager = new ProxyManager({ port: 0 });
+      manager.registerUpstream({
+        name: 'good-server',
+        url: `http://127.0.0.1:${mockPort}`,
+        transportType: 'http',
+      });
+      manager.registerUpstream({
+        name: 'bad-server',
+        url: 'http://127.0.0.1:1',
+        transportType: 'stdio',
+        command: '/nonexistent/binary',
+      });
+      const badUpstream = manager.getUpstream('bad-server')!;
+      badUpstream.connect = async () => { throw new Error('spawn failed'); };
+
+      // Should not throw — one upstream succeeded
+      await manager.start();
+
+      const logOutput = stderrSpy.mock.calls.map((c: unknown[]) => c[0] as string).join('');
+      expect(logOutput).toContain('degraded');
+
+      await manager.stop();
+    } finally {
+      await closeServer(mockServer);
     }
   });
 });

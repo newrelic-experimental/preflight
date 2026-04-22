@@ -16,6 +16,18 @@ import { shouldForwardHeader } from './types.js';
 
 const logger = createLogger('proxy-http');
 
+// Hop-by-hop headers that must never be forwarded between proxy and client.
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'upgrade',
+  'te',
+  'trailers',
+  'proxy-authorization',
+  'proxy-authenticate',
+]);
+
 // ---------------------------------------------------------------------------
 // ByteCountTransform — counts bytes flowing through without modification
 // ---------------------------------------------------------------------------
@@ -94,18 +106,18 @@ export class HttpUpstream implements ProxyUpstream {
           const upstreamLatencyMs = performance.now() - start;
           const statusCode = upstreamRes.statusCode ?? 502;
 
-          // Copy response headers to proxy response
-          for (const [key, value] of Object.entries(upstreamRes.headers)) {
-            if (value != null) {
-              res.setHeader(key, value);
-            }
-          }
-          res.writeHead(statusCode);
-
           const contentType = upstreamRes.headers['content-type'] ?? '';
           const isStreaming = contentType.includes('text/event-stream');
 
+          // Copy response headers, skipping hop-by-hop headers
+          for (const [key, value] of Object.entries(upstreamRes.headers)) {
+            if (value != null && !HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+              res.setHeader(key, value);
+            }
+          }
+
           if (isStreaming) {
+            res.writeHead(statusCode);
             // SSE: pipe chunk-by-chunk through ByteCountTransform
             const counter = new ByteCountTransform();
             let sseResolved = false;
@@ -146,13 +158,15 @@ export class HttpUpstream implements ProxyUpstream {
               resolveSSE();
             });
           } else {
-            // Non-SSE: collect body, write to response
+            // Non-SSE: buffer full body, then write with recomputed content-length
             const chunks: Buffer[] = [];
             upstreamRes.on('data', (chunk: Buffer) => {
               chunks.push(chunk);
             });
             upstreamRes.on('end', () => {
               const responseBody = Buffer.concat(chunks);
+              res.setHeader('content-length', responseBody.length);
+              res.writeHead(statusCode);
               res.end(responseBody);
               resolve({
                 statusCode,

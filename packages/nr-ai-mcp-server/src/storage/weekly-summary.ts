@@ -33,7 +33,7 @@ export interface DeveloperWeeklyStats {
   readonly totalToolCalls: number;
   readonly toolBreakdown: Record<string, number>;
   readonly totalTasksCompleted: number;
-  readonly taskSuccessRate: number;
+  readonly taskSuccessRate: number | null;
   readonly antiPatternCounts: Record<string, number>;
 }
 
@@ -48,7 +48,7 @@ export interface WeeklySummary {
   readonly totalToolCalls: number;
   readonly toolBreakdown: Record<string, number>;
   readonly totalTasksCompleted: number;
-  readonly taskSuccessRate: number;
+  readonly taskSuccessRate: number | null;
   readonly antiPatternCounts: Record<string, number>;
   readonly perDeveloper: Record<string, DeveloperWeeklyStats>;
 }
@@ -230,7 +230,7 @@ function aggregateSessions(weekId: string, sessions: FullSessionSummary[]): Week
     totalToolCalls,
     toolBreakdown,
     totalTasksCompleted,
-    taskSuccessRate: totalTestsRun > 0 ? round(totalTestsPassed / totalTestsRun, 3) : 1,
+    taskSuccessRate: totalTestsRun > 0 ? round(totalTestsPassed / totalTestsRun, 3) : null,
     antiPatternCounts,
     perDeveloper: devStats,
   };
@@ -276,7 +276,7 @@ function aggregateDeveloperSessions(sessions: FullSessionSummary[]): DeveloperWe
     totalToolCalls,
     toolBreakdown,
     totalTasksCompleted,
-    taskSuccessRate: totalTestsRun > 0 ? round(totalTestsPassed / totalTestsRun, 3) : 1,
+    taskSuccessRate: totalTestsRun > 0 ? round(totalTestsPassed / totalTestsRun, 3) : null,
     antiPatternCounts,
   };
 }

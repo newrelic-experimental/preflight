@@ -95,13 +95,29 @@ export class ProxyManager {
   /** Connect all upstreams and start the HTTP proxy server. */
   async start(): Promise<void> {
     // Connect all upstreams
+    const upstreamNames = Array.from(this.upstreams.keys());
     const connectResults = await Promise.allSettled(
       Array.from(this.upstreams.values()).map((u) => u.connect()),
     );
-    for (const result of connectResults) {
-      if (result.status === 'rejected') {
-        logger.error('Failed to connect upstream', { error: String(result.reason) });
+    const failedNames: string[] = [];
+    for (let i = 0; i < connectResults.length; i++) {
+      if (connectResults[i].status === 'rejected') {
+        const name = upstreamNames[i];
+        const reason = (connectResults[i] as PromiseRejectedResult).reason;
+        logger.error('Failed to connect upstream', { name, error: String(reason) });
+        failedNames.push(name);
       }
+    }
+    if (failedNames.length > 0 && failedNames.length === this.upstreams.size) {
+      throw new Error(
+        `All upstreams failed to connect (${failedNames.join(', ')}). Proxy cannot start.`,
+      );
+    }
+    if (failedNames.length > 0) {
+      logger.warn('Some upstreams failed to connect — proxy starting in degraded mode', {
+        failed: failedNames,
+        total: this.upstreams.size,
+      });
     }
 
     // Start HTTP server
@@ -110,9 +126,11 @@ export class ProxyManager {
         logger.error('Unhandled request error', { error: String(err) });
         if (!res.headersSent) {
           res.writeHead(500, { 'content-type': 'application/json' });
-        }
-        if (!res.writableEnded) {
           res.end(JSON.stringify({ error: 'internal_error' }));
+        } else if (!res.writableEnded) {
+          // Headers already sent (e.g. mid-SSE stream) — writing JSON would corrupt
+          // the stream; destroy the socket to signal an abnormal close instead.
+          res.socket?.destroy();
         }
       });
     });
@@ -170,7 +188,14 @@ export class ProxyManager {
       return;
     }
 
-    const serverName = decodeURIComponent(match[1]);
+    let serverName: string;
+    try {
+      serverName = decodeURIComponent(match[1]);
+    } catch {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'bad_request', message: 'Invalid server name encoding' }));
+      return;
+    }
     const upstream = this.upstreams.get(serverName);
     if (!upstream) {
       res.writeHead(404, { 'content-type': 'application/json' });
@@ -222,6 +247,18 @@ export class ProxyManager {
 
     const toolName = typeof rpc.params?.name === 'string' ? rpc.params.name : 'unknown';
 
+    const args =
+      typeof rpc.params?.arguments === 'object' && rpc.params.arguments !== null
+        ? (rpc.params.arguments as Record<string, unknown>)
+        : {};
+    const filePath =
+      typeof args.file_path === 'string'
+        ? args.file_path
+        : typeof args.path === 'string'
+          ? args.path
+          : undefined;
+    const command = typeof args.command === 'string' ? args.command : undefined;
+
     const record: ProxyToolCallRecord = {
       id: randomUUID(),
       sessionId: null,
@@ -235,6 +272,8 @@ export class ProxyManager {
       proxyOverheadMs,
       inputSizeBytes: body.length,
       outputSizeBytes: result.responseSizeBytes ?? undefined,
+      ...(filePath !== undefined && { filePath }),
+      ...(command !== undefined && { command }),
     };
 
     this.onToolCall(record);

@@ -53,7 +53,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly efficiencyScore: number | null;
   readonly antiPatterns: Array<{ type: string; count: number }>;
   readonly taskCount: number;
-  readonly taskSuccessRate: number;
+  readonly taskSuccessRate: number | null;
   readonly contextCompressions: number;
   readonly agentSpawns: number;
   readonly userMessages: number;
@@ -209,7 +209,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   // Aggregate task-level data
   const allFilesRead = new Set<string>();
   const allFilesModified = new Set<string>();
-  let totalLinesChanged = 0;
+  let totalLinesAdded = 0;
+  let totalLinesRemoved = 0;
   let totalTestsRun = 0;
   let totalTestsPassed = 0;
   let totalBuildsRun = 0;
@@ -225,7 +226,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     for (const task of allTasks) {
       for (const f of task.filesRead) allFilesRead.add(f);
       for (const f of task.filesModified) allFilesModified.add(f);
-      totalLinesChanged += task.linesChanged;
+      totalLinesAdded += task.linesAdded;
+      totalLinesRemoved += task.linesRemoved;
       totalTestsRun += task.testsRun;
       totalTestsPassed += task.testsPassed;
       totalBuildsRun += task.buildRun;
@@ -257,7 +259,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   // Task success rate: ratio of test passes to test runs across all tasks
   const taskSuccessRate = totalTestsRun > 0
     ? Math.round((totalTestsPassed / totalTestsRun) * 1000) / 1000
-    : 1;
+    : null;
 
   const now = Date.now();
 
@@ -272,8 +274,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     toolBreakdown: { ...sessionMetrics.toolCallCountByTool },
     filesRead: [...allFilesRead].sort(),
     filesModified: [...allFilesModified].sort(),
-    linesAdded: totalLinesChanged,
-    linesRemoved: 0,
+    linesAdded: totalLinesAdded,
+    linesRemoved: totalLinesRemoved,
     bashCommandCount: sessionMetrics.bashCommandsRun,
     testRunCount: totalTestsRun,
     testPassCount: totalTestsPassed,
