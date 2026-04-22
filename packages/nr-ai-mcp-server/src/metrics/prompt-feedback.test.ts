@@ -201,7 +201,40 @@ describe('PromptFeedbackEngine', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 4. Recommendation: high correction rate
+  // 4. Zero-variance Cohen's d (pooled SD = 0)
+  // -------------------------------------------------------------------------
+
+  it('compareClaudeMdVersions labels zero-variance groups as noise (not Infinity)', () => {
+    const { engine } = createEngine();
+    const changeTimestamp = Date.now();
+
+    // All sessions have identical efficiency scores — pooled SD = 0
+    for (let i = 0; i < 3; i++) {
+      store.saveSession(makeSummary({
+        sessionId: `before-${i}`,
+        startTime: changeTimestamp - 86_400_000 * (i + 1),
+        efficiencyScore: 0.5,
+      }));
+    }
+    for (let i = 0; i < 3; i++) {
+      store.saveSession(makeSummary({
+        sessionId: `after-${i}`,
+        startTime: changeTimestamp + 86_400_000 * (i + 1),
+        efficiencyScore: 0.9,
+      }));
+    }
+
+    const comparison = engine.compareClaudeMdVersions(changeTimestamp);
+
+    const effSize = comparison.effectSizes.find((e) => e.metric === 'efficiency');
+    expect(effSize).toBeDefined();
+    expect(Number.isFinite(effSize!.cohensD)).toBe(true);
+    expect(effSize!.cohensD).toBe(0);
+    expect(effSize!.label).toBe('noise');
+  });
+
+  // -------------------------------------------------------------------------
+  // 5. Recommendation: high correction rate
   // -------------------------------------------------------------------------
 
   it('recommends more context for developer with high correction rate', () => {
@@ -238,7 +271,8 @@ describe('PromptFeedbackEngine', () => {
     // e.g. 15 files/task + 40 toolCalls/task + 2 agents/task
     // = (15/20 + 40/50 + 2/3) / 3 = (0.75 + 0.8 + 0.667) / 3 = 0.739 ≥ 0.5 ✓
     //
-    // Low autonomy: 1 - corrections/messages < 0.5 → corrections/messages > 0.5
+    // Low autonomy: toolCalls / assistantMessages / 5 < 0.5 → need assistantMessages > toolCalls/2.5
+    // e.g. 40 toolCalls / 25 assistantMessages / 5 = 0.32 < 0.5 ✓
     store.saveSession(makeSummary({
       sessionId: 's1',
       filesRead: Array.from({ length: 10 }, (_, i) => `/f${i}.ts`),
@@ -247,7 +281,7 @@ describe('PromptFeedbackEngine', () => {
       agentSpawns: 2,
       taskCount: 1,
       userMessages: 10,
-      userCorrections: 6,
+      assistantMessages: 25,
     }));
 
     const recommendations = engine.generatePromptRecommendations('alice');

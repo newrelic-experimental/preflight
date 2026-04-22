@@ -2289,6 +2289,231 @@ If the config file exists but contains malformed JSON, the error is silently swa
 
 ---
 
+## Round 5 — Final Pre-Share Review (2026-04-22)
+
+Five parallel agents performed a comprehensive scan of all source files in `packages/shared/src/` and `packages/nr-ai-mcp-server/src/`. Eleven additional bugs were confirmed.
+
+---
+
+### ✅ 79. `totalTokens` in AiResponse event excludes cache tokens
+
+**Severity: CRITICAL**
+**File:** `packages/shared/src/events/factory.ts:109`
+
+`cacheReadTokens` and `cacheCreationTokens` are extracted (lines 107–108) but never added to `totalTokens`:
+
+```typescript
+const cacheReadTokens = params.cacheReadTokens ?? 0;         // extracted
+const cacheCreationTokens = params.cacheCreationTokens ?? 0; // extracted
+const totalTokens = inputTokens + outputTokens + thinkingTokens; // cache tokens missing
+```
+
+Every `AiResponse` event sent to New Relic underreports token usage when cache is active. Cost dashboards and per-session cost calculations are wrong for all cache-using requests.
+
+**Fix:** `const totalTokens = inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens;`
+
+---
+
+### ✅ 80. `requeueEvents`/`requeueMetrics` drop the newly-failed batch on overflow (LIFO bug) — FALSE POSITIVE
+
+**Severity: HIGH**
+**File:** `packages/shared/src/harvest/harvest-scheduler.ts:197-212`
+
+Both requeue helpers prepend the failed batch then use `slice(-N)` to cap:
+
+```typescript
+this.retryEventBatch = [...batch, ...this.retryEventBatch]; // batch at HEAD
+this.retryEventBatch = this.retryEventBatch.slice(-this.maxRetryEvents); // keeps TAIL
+```
+
+`slice(-N)` keeps the TAIL of the array (the existing old items) and silently drops the HEAD (the newly-failed `batch`). The log message "oldest entries dropped" is incorrect — it is the newest failures that are dropped. On a sustained send outage the retry buffer quickly fills with old data while every newly-failed batch is discarded.
+
+**Investigation result:** This is a false positive. `harvestEvents` unconditionally clears `retryEventBatch = []` (line 147) _before_ the async send, so when `requeueEvents(batch)` is called, the second spread is always empty. The combined array is just `batch` itself — there are no "existing old items" in the tail. `slice(-N)` therefore correctly keeps the newest events within the failed batch, which is the intended behaviour for observability data (confirmed by the existing test: `'caps re-queued events to maxEventBufferSize, keeping newest'`). No code change required.
+
+---
+
+### ✅ 81. MetricAggregator emits `.sum` with `type: 'count'` instead of `type: 'gauge'`
+
+**Severity: MEDIUM**
+**File:** `packages/shared/src/harvest/metric-aggregator.ts:60`
+
+```typescript
+metrics.push({ ...baseAttrs, type: 'count', name: `${bucket.name}.sum`, value: bucket.sum });
+```
+
+New Relic `count` is for monotonically-increasing delta values (requests processed since last flush). A harvest-window sum is a point-in-time aggregation and should be `type: 'gauge'`. New Relic treats them differently: it rate-normalises `count` metrics, making the `.sum` value meaningless in dashboards.
+
+**Fix:** Change `type: 'count'` to `type: 'gauge'` for the `.sum` push on line 60.
+
+---
+
+### ✅ 82. `LogIngestManager.requeueBatch` drops the newly-failed batch on overflow (LIFO bug) — FALSE POSITIVE
+
+**Severity: CRITICAL**
+**File:** `packages/nr-ai-mcp-server/src/transport/log-ingest.ts:147-151`
+
+Same LIFO pattern as #80, in the log buffer:
+
+```typescript
+this.buffer = [...batch, ...this.buffer];
+this.buffer = this.buffer.slice(-this.maxBufferSize); // keeps TAIL, drops newly-failed batch
+logger.warn('Log buffer overflow — oldest entries dropped', { dropped }); // message is wrong
+```
+
+On overflow, `slice(-N)` keeps the existing buffer (tail) and discards the just-failed `batch` (head). The warning message is wrong — the newest (just-failed) entries are dropped, not the oldest. During a NR API outage, logs accumulate in the existing buffer while every re-queued batch is immediately discarded.
+
+**Fix:** `this.buffer = [...batch, ...this.buffer].slice(0, this.maxBufferSize);` — keeps the failed batch and drops the oldest end of the existing buffer.
+
+**Investigation result:** This is a false positive, for the same reason as #80. `flush()` sets `this.buffer = []` before the async send. Any entries in `this.buffer` when `requeueBatch(batch)` is called are genuinely newer than the failed `batch` — they arrived via `addLog()` while the send was in flight. `slice(-N)` correctly keeps the newest entries (recent arrivals + newer failed items) and drops the oldest, matching the log message and the explicitly documented test assertion: `'Newest entries (highest indices) should survive, oldest dropped'`. No code change required.
+
+---
+
+### ✅ 83. `loadSession` uses substring matching — can return the wrong session
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/storage/session-store.ts:109`
+
+```typescript
+if (!file.includes(sessionId)) continue;
+```
+
+`String.includes` is a substring check. A session ID of `"abc"` matches `"2024-01-01_abcdef.json"` — a completely different session. If session IDs ever share a common prefix or substring, `loadSession` silently returns the first lexicographic match instead of the intended session.
+
+**Fix:** Use exact-match against the parsed filename: `parseSessionFilename(file)?.sessionId === sessionId`.
+
+---
+
+### ✅ 84. `ByteCountTransform` error handler never resolves the SSE promise — proxy hangs forever
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/proxy/upstream-http.ts:136-141`
+
+```typescript
+counter.on('error', (err) => {
+  logger.error('Stream error in ByteCountTransform', { error: String(err) });
+  if (!res.writableEnded) {
+    res.socket?.destroy();
+  }
+  // resolveSSE() is never called
+});
+```
+
+All other terminal paths for SSE (`end`, `upstreamRes.on('error')`, `res.on('close')`) call `resolveSSE()`. The `counter` error path destroys the socket but leaves the `forward()` Promise unsettled. Any component awaiting `forward()` hangs indefinitely — including `forwardWithInterception()` and ultimately `handleRequest()`.
+
+**Fix:** Add `resolveSSE();` at the end of the `counter.on('error', ...)` handler.
+
+---
+
+### ✅ 85. `CopilotAdapter` maps `file_delete` to `'Write'` instead of `'Delete'`
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/platforms/copilot-adapter.ts:31`
+
+```typescript
+const COPILOT_EVENT_TYPE_MAP: Record<string, string> = {
+  file_create: 'Write',
+  file_delete: 'Write',   // should be 'Delete'
+  ...
+};
+```
+
+This is the same bug that was fixed in `cursor-adapter.ts` and `windsurf-adapter.ts` as part of fix #75, but it was missed in the Copilot adapter. Every Copilot file deletion is counted as a file write, inflating write metrics and suppressing delete metrics.
+
+**Fix:** `file_delete: 'Delete'`
+
+---
+
+### ✅ 86. `cohensD()` returns `Infinity` for zero-variance groups — propagates to effect-size labels
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/prompt-feedback.ts:347`
+
+```typescript
+if (pooledSd === 0) return meanA === meanB ? 0 : Infinity;
+```
+
+`labelEffectSize(Infinity)` returns `'significant'` because `Math.abs(Infinity) > 0.5` is `true`. When a developer has only identical scores in each group (e.g., all `1`s vs all `2`s — zero within-group variance), Cohen's d is mathematically undefined, yet the code classifies the effect as "significant". This can generate misleading improvement recommendations from zero real data.
+
+**Fix:** Cap the return value: `if (pooledSd === 0) return 0;` — zero-variance groups provide no meaningful effect-size information and should not trigger recommendations.
+
+---
+
+### ✅ 87. `sawEditAfterFailure` reset on subsequent test failures — bug-fix detection broken for multi-failure sequences
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/metrics/cost-per-outcome.ts:115-120`
+
+```typescript
+if (tc.success === false) {
+  hasTestFailure = true;
+  sawEditAfterFailure = false;  // reset on every failure
+}
+```
+
+For the common real-world pattern `fail → edit → fail → edit → pass`, the second test failure resets `sawEditAfterFailure = false`. The final pass is then never recognized as `bug_fix` (because `sawEditAfterFailure` is `false`), so the task is misclassified as `failed_attempt`. Any session involving more than one test failure before a fix is systematically mislabelled.
+
+**Fix:** Remove the `sawEditAfterFailure = false;` reset. The flag only needs to be set by edits; resetting it on each failure prevents correct detection of multi-failure sequences.
+
+---
+
+### ✅ 88. `pairingKey()` fallback collides for parallel same-tool calls with no `toolUseId`
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/hooks/event-processor.ts:258-263`
+
+```typescript
+private pairingKey(event: HookEvent): string {
+  const toolUseId = event.toolUseId as string | undefined;
+  if (toolUseId) return toolUseId;
+  return `${event.tool}:${event.timestamp}`;  // collision risk
+}
+```
+
+When Claude issues parallel tool calls (e.g., two simultaneous `Read` calls), both `PreToolUse` events may share the same tool name and millisecond timestamp. They get the same key; the second event silently overwrites the first in `this.pending`. One tool call is permanently lost from all metrics, cost calculations, and anti-pattern detection.
+
+**Fix:** Append a monotonically-increasing fallback counter: `${event.tool}:${event.timestamp}:${this.fallbackSeq++}` (initialize `private fallbackSeq = 0` in the class).
+
+---
+
+### ✅ 89. `CallToolRequestSchema` handler has no top-level try-catch — unhandled exceptions crash the MCP server
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/tools/session-stats.ts:248`
+
+```typescript
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  switch (name) {
+    // 20+ case branches, each calling getMetrics() on optional trackers
+  }
+  // no surrounding try-catch
+});
+```
+
+If any branch throws (unexpected tracker state, type error, etc.), the exception escapes to the MCP SDK. Depending on SDK version it may close the stdio transport, crashing the server and ending the Claude Code session. The handler is the single point of failure for all MCP tool calls.
+
+**Fix:** Wrap the switch body in a try-catch that returns `{ content: [{ type: 'text', text: JSON.stringify({ error: String(err) }) }] }`.
+
+---
+
+## Round 5 Recommendation
+
+**Critical (fix before sharing):**
+- **#79** (`totalTokens` missing cache terms) — every cache-heavy session reports wrong token counts in New Relic. One-line fix.
+- **#82** (log requeue LIFO) — logs are silently discarded on API outage rather than retried.
+
+**High (fix before production):**
+- **#80** (event/metric requeue LIFO) — same data-loss pattern in the core harvest path.
+- **#84** (SSE promise hang) — proxy can deadlock on stream errors in production.
+- **#87** (bug-fix detection) — most real bug-fix sessions are misclassified as failed.
+- **#88** (pairingKey collision) — parallel tool calls (common in Claude Code) lose data.
+- **#83** (substring session match) — wrong session data returned on ID prefix collision.
+
+**Medium (nice-to-have):**
+- **#81** (`.sum` metric type), **#85** (Copilot delete mapping), **#86** (Infinity Cohen's d), **#89** (no try-catch in tool handler).
+
+---
+
 ## Cumulative Statistics
 
 | Round | Date | Critical | High | Medium | Low | Total |
@@ -2297,4 +2522,5 @@ If the config file exists but contains malformed JSON, the error is silently swa
 | 2 | 2026-04-21 | 0 | 2 | 14 | 4 | 20 |
 | 3 | 2026-04-21 | 3 | 10 | 19 | 3 | 35 |
 | 4 | 2026-04-21 | 0 | 3 | 4 | 3 | 10 |
-| **Total** | | **3** | **19** | **43** | **12** | **77** |
+| 5 | 2026-04-22 | 1 | 4 | 4 | 0 | 9 |
+| **Total** | | **4** | **23** | **47** | **12** | **86** |

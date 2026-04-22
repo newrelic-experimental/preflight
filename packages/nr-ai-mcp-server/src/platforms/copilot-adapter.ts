@@ -28,7 +28,7 @@ const COPILOT_EVENT_TYPE_MAP: Record<string, string> = {
   file_edit: 'Edit',
   file_open: 'Read',
   file_create: 'Write',
-  file_delete: 'Write',
+  file_delete: 'Delete',
   terminal_command: 'Bash',
   task: 'Bash',
 };

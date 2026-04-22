@@ -336,19 +336,35 @@ describe('HookEventProcessor', () => {
   });
 
   describe('missing toolUseId fallback', () => {
-    it('falls back to tool:timestamp key for events without toolUseId', () => {
+    it('pairs pre and post events without toolUseId via FIFO tool-name search', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
-      // Events without toolUseId — fallback pairing by tool:timestamp
+      // Events without toolUseId — fallback pairing via oldest-pending-by-tool FIFO
       processor.processEvents([
         { mode: 'pre', tool: 'Read', timestamp: 5000, inputSize: 10 } as HookEvent,
-        { mode: 'post', tool: 'Read', timestamp: 5000, outputSize: 100, success: true } as HookEvent,
+        { mode: 'post', tool: 'Read', timestamp: 5100, outputSize: 100, success: true } as HookEvent,
       ]);
 
-      // They share the same fallback key 'Read:5000', so they pair
       expect(records).toHaveLength(1);
       expect(records[0]!.toolName).toBe('Read');
-      expect(records[0]!.durationMs).toBe(0);
+      expect(records[0]!.durationMs).toBe(100);
+    });
+
+    it('does not drop parallel same-tool pre-events that share a timestamp', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      // Two Read pre-events at the same millisecond — previously the second
+      // overwrote the first in this.pending (collision on the fallback key).
+      processor.processEvents([
+        { mode: 'pre', tool: 'Read', timestamp: 5000, inputSize: 10 } as HookEvent,
+        { mode: 'pre', tool: 'Read', timestamp: 5000, inputSize: 20 } as HookEvent,
+        { mode: 'post', tool: 'Read', timestamp: 5100, outputSize: 100, success: true } as HookEvent,
+        { mode: 'post', tool: 'Read', timestamp: 5200, outputSize: 200, success: true } as HookEvent,
+      ]);
+
+      // Both pre-events survive; each pairs with one post-event
+      expect(records).toHaveLength(2);
+      expect(records.every((r) => r.toolName === 'Read')).toBe(true);
     });
   });
 

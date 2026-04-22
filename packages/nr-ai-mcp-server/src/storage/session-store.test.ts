@@ -98,6 +98,23 @@ describe('SessionStore', () => {
     expect(loaded).toBeNull();
   });
 
+  it('loadSession does not return a session whose ID is a prefix of the requested ID', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(makeSummary({ sessionId: 'abc' }));
+
+    // 'abcdef' shares 'abc' as a prefix — substring match would incorrectly return the 'abc' session
+    const loaded = store.loadSession('abcdef');
+    expect(loaded).toBeNull();
+  });
+
+  it('loadSession does not return a session whose ID contains the requested ID as a substring', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    store.saveSession(makeSummary({ sessionId: 'xabcx' }));
+
+    const loaded = store.loadSession('abc');
+    expect(loaded).toBeNull();
+  });
+
   it('listSessions filters by date range', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 

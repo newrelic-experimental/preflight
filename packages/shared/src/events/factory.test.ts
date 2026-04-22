@@ -127,13 +127,15 @@ describe('createAiResponse', () => {
     expect(event.timestamp).toBeLessThanOrEqual(after);
   });
 
-  it('computes totalTokens as inputTokens + outputTokens + thinkingTokens', () => {
+  it('computes totalTokens as inputTokens + outputTokens + thinkingTokens + cache tokens', () => {
     const event = createAiResponse({
       ...baseParams,
       thinkingTokens: 200,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 20,
     });
 
-    expect(event.totalTokens).toBe(350); // 100 + 50 + 200
+    expect(event.totalTokens).toBe(400); // 100 + 50 + 200 + 30 + 20
   });
 
   it('computes tokensPerSecond from outputTokens and durationMs', () => {

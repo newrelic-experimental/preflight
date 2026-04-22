@@ -98,7 +98,7 @@ describe('ProxyMetricsTracker', () => {
     expect(stats.min).toBe(10);
     expect(stats.max).toBe(100);
     expect(stats.sum).toBe(550);
-    expect(stats.p95).toBe(100);
+    expect(stats.p95).toBe(90);
   });
 
   // -------------------------------------------------------------------------

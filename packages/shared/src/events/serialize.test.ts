@@ -115,7 +115,7 @@ describe('aiResponseToNrEvent', () => {
     expect(nrEvent.inputTokens).toBe(100);
     expect(nrEvent.outputTokens).toBe(50);
     expect(nrEvent.thinkingTokens).toBe(300);
-    expect(nrEvent.totalTokens).toBe(450);
+    expect(nrEvent.totalTokens).toBe(465);
     expect(nrEvent.stopReason).toBe('end_turn');
     expect(nrEvent.contentBlockTypes).toBe('["text","tool_use"]');
     expect(nrEvent['cost.inputUsd']).toBe(0.001);

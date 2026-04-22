@@ -102,7 +102,7 @@ describe('MetricAggregator', () => {
 
     const byName = Object.fromEntries(metrics.map((m) => [m.name, m.type]));
     expect(byName['ai.cost.count']).toBe('count');
-    expect(byName['ai.cost.sum']).toBe('count');
+    expect(byName['ai.cost.sum']).toBe('gauge');
     expect(byName['ai.cost.min']).toBe('gauge');
     expect(byName['ai.cost.max']).toBe('gauge');
   });

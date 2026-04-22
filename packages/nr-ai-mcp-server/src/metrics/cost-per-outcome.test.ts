@@ -94,6 +94,23 @@ describe('CostPerOutcomeAnalyzer', () => {
     expect(analyzer.classifyOutcome(task)).toBe('bug_fix');
   });
 
+  it('classifies bug_fix for fail → edit → fail → edit → pass sequence', () => {
+    const analyzer = new CostPerOutcomeAnalyzer();
+
+    const task = makeTask({
+      filesModified: ['/src/utils.ts'],
+      toolCalls: [
+        makeToolCall({ toolName: 'Bash', isTestCommand: true, success: false } as Partial<ToolCallRecord>),
+        makeToolCall({ toolName: 'Edit', filePath: '/src/utils.ts' } as Partial<ToolCallRecord>),
+        makeToolCall({ toolName: 'Bash', isTestCommand: true, success: false } as Partial<ToolCallRecord>),
+        makeToolCall({ toolName: 'Edit', filePath: '/src/utils.ts' } as Partial<ToolCallRecord>),
+        makeToolCall({ toolName: 'Bash', isTestCommand: true, success: true } as Partial<ToolCallRecord>),
+      ],
+    });
+
+    expect(analyzer.classifyOutcome(task)).toBe('bug_fix');
+  });
+
   // -------------------------------------------------------------------------
   // 2. feature: Write creating new files
   // -------------------------------------------------------------------------

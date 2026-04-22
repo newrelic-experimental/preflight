@@ -344,7 +344,7 @@ function cohensD(groupA: number[], groupB: number[]): number {
     ((nA - 1) * sdA * sdA + (nB - 1) * sdB * sdB) / (nA + nB - 2);
   const pooledSd = Math.sqrt(pooledVariance);
 
-  if (pooledSd === 0) return meanA === meanB ? 0 : Infinity;
+  if (pooledSd === 0) return 0;
 
   return Math.abs(meanB - meanA) / pooledSd;
 }

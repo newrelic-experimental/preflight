@@ -106,7 +106,7 @@ export class SessionStore {
 
     for (const file of readdirSync(this.sessionsDir)) {
       if (!file.endsWith('.json')) continue;
-      if (!file.includes(sessionId)) continue;
+      if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');

@@ -14,6 +14,9 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import { createLogger } from '@nr-ai-observatory/shared';
+
+const logger = createLogger('session-stats');
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
@@ -248,6 +251,7 @@ export function registerTools(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
+    try {
     switch (name) {
       case 'nr_observe_get_session_stats':
         if (!sessionTracker) break;
@@ -363,5 +367,16 @@ export function registerTools(
     }
 
     throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+    } catch (err) {
+      if (err instanceof McpError) throw err;
+      logger.error('Tool handler threw unexpectedly', {
+        tool: name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) }],
+        isError: true,
+      };
+    }
   });
 }

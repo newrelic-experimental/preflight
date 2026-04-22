@@ -255,6 +255,18 @@ describe('MCP protocol integration', () => {
     ).rejects.toThrow();
   });
 
+  it('returns isError content block when a tool handler throws unexpectedly', async () => {
+    jest.spyOn(tracker, 'getMetrics').mockImplementation(() => {
+      throw new Error('tracker exploded');
+    });
+
+    const result = await client.callTool({ name: 'nr_observe_get_session_stats', arguments: {} });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content).toHaveLength(1);
+    expect(JSON.parse(content[0]!.text)).toMatchObject({ error: 'tracker exploded' });
+  });
+
   it('MCP initialize response includes transparency disclosure', () => {
     const info = client.getServerVersion();
     expect(info?.name).toBe('test-mcp');

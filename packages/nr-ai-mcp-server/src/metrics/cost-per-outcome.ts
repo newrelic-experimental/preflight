@@ -115,7 +115,6 @@ export class CostPerOutcomeAnalyzer {
       if (rec.isTestCommand === true) {
         if (tc.success === false) {
           hasTestFailure = true;
-          sawEditAfterFailure = false;
         } else if (tc.success === true && hasTestFailure && sawEditAfterFailure) {
           hasTestPassAfterEdit = true;
         }

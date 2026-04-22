@@ -138,6 +138,7 @@ export class HttpUpstream implements ProxyUpstream {
               if (!res.writableEnded) {
                 res.socket?.destroy();
               }
+              resolveSSE();
             });
 
             upstreamRes

@@ -79,12 +79,12 @@ describe('CopilotAdapter', () => {
       expect(normalized.toolName).toBe('Write');
     });
 
-    it('converts a "file_delete" event to type "Write"', () => {
+    it('converts a "file_delete" event to type "Delete"', () => {
       const normalized = adapter.normalizeToolCall({
         type: 'file_delete',
         timestamp: 5000,
       });
-      expect(normalized.toolName).toBe('Write');
+      expect(normalized.toolName).toBe('Delete');
     });
 
     it('converts a "task" event to type "Bash"', () => {

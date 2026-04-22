@@ -57,7 +57,7 @@ export class MetricAggregator {
       const baseAttrs = { timestamp, attributes: bucket.attributes };
 
       metrics.push({ ...baseAttrs, type: 'count', name: `${bucket.name}.count`, value: bucket.count });
-      metrics.push({ ...baseAttrs, type: 'count', name: `${bucket.name}.sum`, value: bucket.sum });
+      metrics.push({ ...baseAttrs, type: 'gauge', name: `${bucket.name}.sum`, value: bucket.sum });
       metrics.push({ ...baseAttrs, type: 'gauge', name: `${bucket.name}.min`, value: bucket.min });
       metrics.push({ ...baseAttrs, type: 'gauge', name: `${bucket.name}.max`, value: bucket.max });
     }
