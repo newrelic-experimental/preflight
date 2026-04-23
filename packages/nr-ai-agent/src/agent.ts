@@ -25,6 +25,17 @@ import type {
 
 const logger = createLogger('agent');
 
+const DEFAULT_REDACTION_PATTERNS: readonly RegExp[] = [
+  /\b(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)\b[\s]*[=:]\s*\S+/gi,
+  /(?:sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-|Bearer\s+)\S+/g,
+  /-----BEGIN[\s\S]{0,65536}?-----END[^\n]{0,256}-----/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
+  /\bxox[a-z]-[0-9A-Za-z-]+/g,
+];
+
 export interface AgentStats {
   enabled: boolean;
   eventsBuffered: number;
@@ -33,17 +44,21 @@ export interface AgentStats {
   uptimeMs: number;
 }
 
-let instance: NrAiAgent | null = null;
+let initPromise: Promise<NrAiAgent> | null = null;
 
-export function init(options?: Partial<AgentConfig>): NrAiAgent {
-  if (instance) {
-    logger.warn('init() called multiple times — returning existing instance');
-    return instance;
+export async function init(options?: Partial<AgentConfig>): Promise<NrAiAgent> {
+  if (!initPromise) {
+    const p = Promise.resolve().then(() => {
+      const config = loadConfig(options);
+      return new NrAiAgent(config);
+    });
+    // Reset on failure so callers can retry after a config error
+    p.catch(() => {
+      if (initPromise === p) initPromise = null;
+    });
+    initPromise = p;
   }
-
-  const config = loadConfig(options);
-  instance = new NrAiAgent(config);
-  return instance;
+  return initPromise;
 }
 
 export class NrAiAgent {
@@ -61,6 +76,7 @@ export class NrAiAgent {
       recordContent: config.recordContent,
       highSecurity: config.highSecurity,
       contentMaxLength: config.contentMaxLength,
+      redactionPatterns: DEFAULT_REDACTION_PATTERNS,
     };
 
     if (!config.enabled) {
@@ -120,7 +136,7 @@ export class NrAiAgent {
     if (this.scheduler) {
       await this.scheduler.stop();
     }
-    instance = null;
+    initPromise = null;
     logger.info('Agent shut down');
   }
 

@@ -36,7 +36,7 @@ export interface SessionMetrics {
   toolCallCount: number;
   toolCallCountByTool: Record<string, number>;
   toolDurationMsByTool: Record<string, DurationStats>;
-  toolSuccessRate: number;
+  toolSuccessRate: number | null;
   toolSuccessRateByTool: Record<string, number>;
   toolErrorCount: number;
   toolErrorsByType: Record<string, number>;
@@ -208,7 +208,7 @@ export class SessionTracker {
 
     const overallSuccessRate = this.toolCallCount > 0
       ? this.successCount / this.toolCallCount
-      : 1;
+      : null;
 
     return {
       sessionId: this.sessionId,

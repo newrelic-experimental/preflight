@@ -145,7 +145,7 @@ export class LogIngestManager {
   }
 
   private requeueBatch(batch: NrLogEntry[]): void {
-    this.buffer = [...batch, ...this.buffer];
+    this.buffer = [...this.buffer, ...batch];
     if (this.buffer.length > this.maxBufferSize) {
       const dropped = this.buffer.length - this.maxBufferSize;
       this.buffer = this.buffer.slice(-this.maxBufferSize);

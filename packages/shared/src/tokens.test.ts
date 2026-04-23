@@ -268,3 +268,51 @@ describe('TokenAccumulator', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// S-05: safeInt rejects Infinity, -Infinity, negative values, and floats
+// ---------------------------------------------------------------------------
+describe('safeInt guard (S-05)', () => {
+  it('clamps Infinity token counts to 0', () => {
+    const result = extractAnthropicTokens({
+      usage: { input_tokens: Infinity, output_tokens: 50 },
+    });
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(50);
+    expect(result.totalTokens).toBe(50);
+  });
+
+  it('clamps negative token counts to 0', () => {
+    const result = extractAnthropicTokens({
+      usage: { input_tokens: -100, output_tokens: -50 },
+    });
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(0);
+    expect(result.totalTokens).toBe(0);
+  });
+
+  it('floors fractional token counts', () => {
+    const result = extractAnthropicTokens({
+      usage: { input_tokens: 10.9, output_tokens: 5.1 },
+    });
+    expect(result.inputTokens).toBe(10);
+    expect(result.outputTokens).toBe(5);
+    expect(result.totalTokens).toBe(15);
+  });
+
+  it('clamps Infinity in Gemini usageMetadata to 0', () => {
+    const result = extractGeminiTokens({
+      usageMetadata: { promptTokenCount: Infinity, candidatesTokenCount: 20 },
+    });
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(20);
+  });
+
+  it('clamps negative Gemini token counts to 0', () => {
+    const result = extractGeminiTokens({
+      usageMetadata: { promptTokenCount: -999, candidatesTokenCount: 10 },
+    });
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(10);
+  });
+});

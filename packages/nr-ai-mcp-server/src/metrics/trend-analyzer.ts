@@ -41,13 +41,13 @@ export interface WeekComparison {
   readonly weekA: string;
   readonly weekB: string;
   readonly efficiencyDelta: number;
-  readonly efficiencyPctChange: number;
+  readonly efficiencyPctChange: number | null;
   readonly costDelta: number;
-  readonly costPctChange: number;
+  readonly costPctChange: number | null;
   readonly taskSuccessDelta: number;
-  readonly taskSuccessPctChange: number;
+  readonly taskSuccessPctChange: number | null;
   readonly toolCallDelta: number;
-  readonly toolCallPctChange: number;
+  readonly toolCallPctChange: number | null;
 }
 
 export interface DeveloperComparison {
@@ -98,10 +98,11 @@ export function movingAverage(values: number[], windowSize: number): number[] {
 
 /**
  * Percentage change from old to new value.
- * Returns 0 if oldValue is 0 (avoids division by zero).
+ * Returns null when oldValue is 0 and newValue is non-zero (undefined growth from zero baseline).
+ * Returns 0 when both are 0.
  */
-export function percentChange(oldValue: number, newValue: number): number {
-  if (oldValue === 0) return 0;
+export function percentChange(oldValue: number, newValue: number): number | null {
+  if (oldValue === 0) return newValue === 0 ? 0 : null;
   return round(((newValue - oldValue) / Math.abs(oldValue)) * 100, 1);
 }
 
@@ -323,8 +324,10 @@ export class TrendAnalyzer {
       let effStr = `avg efficiency ${agg.efficiency}`;
       if (hasPrev && prevAgg.efficiency !== null) {
         const pct = percentChange(prevAgg.efficiency, agg.efficiency);
-        const arrow = pct >= 0 ? '\u2191' : '\u2193';
-        effStr += ` (${arrow}${Math.abs(pct)}% vs prev)`;
+        if (pct !== null) {
+          const arrow = pct >= 0 ? '\u2191' : '\u2193';
+          effStr += ` (${arrow}${Math.abs(pct)}% vs prev)`;
+        }
       }
       parts.push(effStr);
     }
@@ -334,9 +337,11 @@ export class TrendAnalyzer {
       let costStr = `total cost $${agg.cost}`;
       if (hasPrev && prevAgg.cost > 0) {
         const pct = percentChange(prevAgg.cost, agg.cost);
-        // Lower cost = improvement, so flip arrow
-        const arrow = pct <= 0 ? '\u2191' : '\u2193';
-        costStr += ` (${arrow}${Math.abs(pct)}% vs prev)`;
+        if (pct !== null) {
+          // Lower cost = improvement, so flip arrow
+          const arrow = pct <= 0 ? '\u2191' : '\u2193';
+          costStr += ` (${arrow}${Math.abs(pct)}% vs prev)`;
+        }
       }
       parts.push(costStr);
     }

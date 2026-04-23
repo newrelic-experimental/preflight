@@ -194,6 +194,7 @@ export class TaskDetector {
 
   private activeTask: ActiveTask | null = null;
   private completedTasks: AiCodingTask[] = [];
+  private pendingEmission: AiCodingTask[] = [];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Cost/token snapshots at task start for computing deltas
@@ -249,6 +250,16 @@ export class TaskDetector {
     return [...this.completedTasks];
   }
 
+  /**
+   * Returns tasks completed since the last drain and clears the emission queue.
+   * Safe to call on every poll cycle — each task is returned exactly once.
+   */
+  drainNewlyCompletedTasks(): AiCodingTask[] {
+    const tasks = [...this.pendingEmission];
+    this.pendingEmission = [];
+    return tasks;
+  }
+
   getMetrics(): TaskMetrics {
     const completed = this.completedTasks;
 
@@ -293,6 +304,7 @@ export class TaskDetector {
     this.clearIdleTimer();
     this.activeTask = null;
     this.completedTasks = [];
+    this.pendingEmission = [];
     this.costAtTaskStart = 0;
     this.tokensAtTaskStart = 0;
   }
@@ -320,6 +332,7 @@ export class TaskDetector {
 
     const completed = this.activeTask.toCompleted(endTime, costUsd, tokens);
     this.completedTasks.push(completed);
+    this.pendingEmission.push(completed);
 
     // Cap completed tasks to prevent unbounded memory
     while (this.completedTasks.length > this.maxCompletedTasks) {

@@ -2554,6 +2554,10 @@ req.on('close', () => settle(Buffer.concat(chunks)));
 req.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
 ```
 
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/proxy/proxy-manager.ts` — Replace the `readBody()` implementation with the settled-flag pattern. Add `let settled = false` and a `settle` helper that only resolves once. Wire `end` and `close` through `settle`, and check `!settled` in the `error` handler before rejecting.
+2. `packages/nr-ai-mcp-server/src/proxy/proxy-manager.test.ts` — Add a test that simulates a client abort mid-request: emit `close` without `end` and assert the promise resolves (rather than hanging) with the partial chunks received so far.
+
 ---
 
 ### ✅ 91. `local-store.ts` drain recovery concatenates files without newline separator — data loss
@@ -2574,6 +2578,10 @@ writeFileSync(
   drainData + (drainData.endsWith('\n') ? '' : '\n') + bufferData,
 );
 ```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/storage/local-store.ts` (line 72) — Change the drain recovery concatenation to insert a newline between `drainData` and `bufferData` when `drainData` does not already end with `\n`, using the ternary from the fix.
+2. `packages/nr-ai-mcp-server/src/storage/local-store.test.ts` — Add a test: write two JSONL events to the drain file without a trailing newline, trigger drain recovery, and assert both events parse cleanly (no malformed-line skips).
 
 ---
 
@@ -2607,6 +2615,10 @@ meta.lineCount    = obj.content.length    > 0 ? countLines(obj.content)    : 0;
 meta.oldLineCount = obj.old_string.length > 0 ? countLines(obj.old_string) : 0;
 ```
 
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/hooks/collector-script.ts` — Fix the `countLines` function to return `0` for an empty string (change `return (text.match(/\n/g) || []).length + 1` to `return text.length === 0 ? 0 : (text.match(/\n/g) || []).length + 1`). Also add the `> 0` guard to lines 124 and 130 for `meta.lineCount` and `meta.oldLineCount`, matching the guard already present at line 134 for `meta.newLineCount`.
+2. `packages/nr-ai-mcp-server/src/hooks/collector-script.test.ts` — Add tests: `countLines('')` returns 0; a Write event with empty content yields `lineCount = 0`; an Edit event with empty `old_string` yields `oldLineCount = 0`.
+
 ---
 
 ### ✅ 93. `lastEditFile` not cleared when Edit/Write lacks `filePath` — thrashing mis-attributed
@@ -2637,6 +2649,10 @@ if (file) {
 }
 ```
 
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/anti-patterns.ts` (`detectThrashing`) — In the `Edit`/`Write` branch, add an `else` clause that sets `lastEditFile = null` when `filePath` is absent.
+2. `packages/nr-ai-mcp-server/src/metrics/anti-patterns.test.ts` — Add a test: Edit fileA (with filePath) → Edit fileB (no filePath) → Bash test FAIL × threshold. Assert no thrashing pattern is emitted for fileA (because the no-filePath edit cleared `lastEditFile`).
+
 ---
 
 ### ✅ 94. Investigation classification boundary off-by-one: `> 0.8` should be `>= 0.8`
@@ -2653,6 +2669,10 @@ if (readCount / task.toolCallCount > 0.8) {
 A task with exactly 80% read/search tool calls (e.g., 4 Read + 1 Write = 5 total, ratio = 0.8) fails the `> 0.8` test and falls through to `'feature'`. The design intent is "mostly read/search tools", which 80% clearly satisfies. Using `> 0.8` silently misclassifies exact-boundary tasks.
 
 **Fix:** `if (readCount / task.toolCallCount >= 0.8) {`
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/cost-per-outcome.ts` (line 166) — Change `> 0.8` to `>= 0.8` in the investigation classification condition.
+2. `packages/nr-ai-mcp-server/src/metrics/cost-per-outcome.test.ts` — Add a boundary test: a task with exactly 4 Read + 1 Write (ratio = 0.8) should be classified as `'investigation'`, not `'feature'`.
 
 ---
 
@@ -2671,6 +2691,10 @@ When a week has no test runs, `taskSuccess` is set to `1` (100%). This value pro
 ```typescript
 taskSuccess: totalTestsRun > 0 ? round(totalTestsPassed / totalTestsRun, 3) : 0,
 ```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/trend-analyzer.ts` (line 175) — Change the default from `: 1` to `: 0` in the `taskSuccess` ternary.
+2. `packages/nr-ai-mcp-server/src/metrics/trend-analyzer.test.ts` — Add a test: a week aggregate with `totalTestsRun = 0` should have `taskSuccess = 0`, not `1`. Also verify the trend delta for two no-test-run weeks is `0` rather than `0` masking a `1 - 1` calculation.
 
 ---
 
@@ -2715,6 +2739,10 @@ const shutdown = async () => {
 };
 ```
 
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/index.ts` (lines 111–120) — Wrap the three `await` calls inside `shutdown()` in a `try/catch`. Move `process.exit(0)` into a `finally` block so it is always reached regardless of which cleanup step throws.
+2. `packages/nr-ai-mcp-server/src/index.test.ts` (or integration test) — Add a test: mock `nrIngest.stop()` to throw, call `shutdown()`, and assert that `process.exit` is still called with code 0 and the error is logged.
+
 ---
 
 ### ✅ 97. `GenericMcpAdapter` missing `input_size_bytes` — input size metrics silently lost
@@ -2728,6 +2756,10 @@ The `ReportToolCallInput` interface and the `REPORT_TOOL_CALL_TOOL` schema do no
 ```typescript
 ...(input.input_size_bytes !== undefined && { inputSizeBytes: input.input_size_bytes }),
 ```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/platforms/generic-mcp-adapter.ts` — Add `readonly input_size_bytes?: number;` to `ReportToolCallInput`. Add the `input_size_bytes` property to `REPORT_TOOL_CALL_TOOL.inputSchema.properties`. In `normalizeToolCall()`, spread `inputSizeBytes` from `input.input_size_bytes` using the optional spread pattern.
+2. `packages/nr-ai-mcp-server/src/platforms/generic-mcp-adapter.test.ts` — Add a test: call `normalizeToolCall` with `input_size_bytes: 512` and assert `normalized.inputSizeBytes === 512`. Also assert it is `undefined` when `input_size_bytes` is omitted.
 
 ---
 
@@ -2751,6 +2783,10 @@ The Anthropic path (line 59) sums all five token types including `cacheCreationT
 
 **Fix:** Add the missing term: `+ this.latestUsage.cacheCreationTokens`
 
+**Implementation Plan:**
+1. `packages/shared/src/tokens.ts` (line ~190) — In the Gemini fallback `totalTokens` calculation, add `+ this.latestUsage.cacheCreationTokens` to match the Anthropic path formula.
+2. `packages/shared/src/tokens.test.ts` — Add a test: provide Gemini usage metadata with `cacheCreationTokens > 0` and no `totalTokenCount` from the API, and assert the computed `totalTokens` equals `inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens`.
+
 ---
 
 ## Round 6 Recommendation
@@ -2772,6 +2808,437 @@ The Anthropic path (line 59) sums all five token types including `cacheCreationT
 
 ---
 
+---
+
+## Round 7 — Final Comprehensive Review (2026-04-22)
+
+**Scope:** All source files in `packages/nr-ai-mcp-server/src/` and `packages/shared/src/` not exhaustively covered in prior rounds
+**Reviewers:** 6 parallel agents covering shared/transport, shared/events+pricing, metrics analytics, metrics core, tools+storage, transport+security+platforms
+**Finding numbers:** #99–110
+
+### ✅ 99. `res.end()` without `res.writeHead()` on non-SSE upstream error with no data
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/proxy/upstream-http.ts:207-213`
+
+In the non-SSE response error handler, when an upstream error fires before any data chunks arrive, the code calls `res.end()` without first calling `res.writeHead(statusCode)`. Node.js auto-generates a 200 OK response header, so the client receives a successful 200 empty response for a failed upstream request.
+
+```typescript
+upstreamRes.on('error', (err) => {
+  const bytesAlreadySent = chunks.reduce((sum, c) => sum + c.length, 0);
+  if (bytesAlreadySent > 0 && !res.writableEnded) {
+    res.socket?.destroy();
+  } else if (!res.writableEnded) {
+    res.end();   // ← no writeHead — Node auto-sends 200 OK
+  }
+  ...
+});
+```
+
+Note: the related finding #7 covers the case where chunks WERE already received (data loss). This covers the no-data case (wrong status).
+
+**Impact:** Clients cannot distinguish upstream failure from empty success. Errors appear as successful responses.
+
+**Fix:**
+```typescript
+} else if (!res.writableEnded) {
+  res.writeHead(statusCode, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ error: 'upstream_error', message: String(err) }));
+}
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/proxy/upstream-http.ts` (lines 207–213) — In the `upstreamRes.on('error', ...)` handler, in the `bytesAlreadySent === 0` branch, call `res.writeHead(statusCode, { 'content-type': 'application/json' })` before `res.end(JSON.stringify({ error: 'upstream_error', message: String(err) }))`. Ensure `statusCode` is the upstream response status code captured at connection time (typically 502 or the upstream's code).
+2. `packages/nr-ai-mcp-server/src/proxy/upstream-http.test.ts` — Add a test: simulate an upstream error before any data chunks arrive, assert the client response has a non-200 status code and a JSON body with an `error` field.
+
+---
+
+### ✅ 100. `requeueBatch` in `LogIngestManager` prepends failed batch then drops it on overflow
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/transport/log-ingest.ts:147-153`
+**Fixed by:** commit `ed83a16` (Fix B-01)
+
+When a log batch fails to send and is re-queued, the failed batch is prepended to `this.buffer`, then `.slice(-maxBufferSize)` keeps only the LAST `maxBufferSize` items. The prepended failed batch ends up at the front and is the first to be dropped when overflow occurs.
+
+```typescript
+private requeueBatch(batch: NrLogEntry[]): void {
+  this.buffer = [...batch, ...this.buffer];                    // ← prepend (now at front = oldest)
+  if (this.buffer.length > this.maxBufferSize) {
+    this.buffer = this.buffer.slice(-this.maxBufferSize);      // ← keeps last N — drops the front (the failed batch)
+    logger.warn('Log buffer overflow — oldest entries dropped', { dropped });
+  }
+}
+```
+
+The same pattern exists in `harvest-scheduler.ts` `requeueEvents()` (documented in security audit B-01). This is the second occurrence.
+
+**Impact:** Under buffer pressure, the batch that just failed to reach New Relic is silently dropped, defeating the retry mechanism.
+
+**Fix applied:** Changed prepend to append; `slice(-N)` is correct with the append order — the failed batch is at the tail and `slice(-N)` keeps the tail. (The implementation plan's suggestion to change `slice(-N)` to `slice(0, N)` would have been incorrect and dropped the batch; it was not applied.)
+
+**Tests:** `log-ingest.test.ts` — "caps buffer at maxBufferSize on overflow" verifies that the 1100-entry buffer is capped at 1000, newest entries survive, and oldest are dropped.
+
+---
+
+### ✅ 101. `error_rate` platform comparison uses `taskSuccessRate` (test pass rate) instead of tool call success rate
+
+**Severity: HIGH**
+**File:** `packages/nr-ai-mcp-server/src/tools/cross-session-tools.ts:461-467`
+
+The `error_rate` metric in `handleGetPlatformComparison` uses `s.taskSuccessRate` (the fraction of test runs that passed) as a proxy for tool error rate. These are unrelated: a session where all tools succeed but no tests pass would report high error_rate, and a session with many tool failures but no tests run would report 0% error_rate (because `taskSuccessRate ?? 1` defaults to 1.0 when no tests were run).
+
+```typescript
+case 'error_rate': {
+  const total = platformSessions.reduce((sum, s) => {
+    const tc = s.toolCallCount ?? 0;
+    const successRate = s.taskSuccessRate ?? 1;   // ← taskSuccessRate is TEST pass rate, not tool success
+    return sum + (tc > 0 ? (1 - successRate) : 0);
+  }, 0);
+  value = Math.round((total / count) * 100) / 100;  // ← also unweighted by tc
+  break;
+}
+```
+
+Note: the unweighted formula was independently documented in security audit B-02. The wrong-field issue is distinct.
+
+**Impact:** Platform comparison error_rate metric is meaningless. Platforms with no test runs always appear to have 0% error rate.
+
+**Fix:** Use a tool-level success field (e.g., `s.overallSuccessRate`) and weight by tool call count:
+```typescript
+case 'error_rate': {
+  let weightedErrors = 0, totalTc = 0;
+  for (const s of platformSessions) {
+    const tc = s.toolCallCount ?? 0;
+    const errorRate = 1 - (s.overallSuccessRate ?? 1);
+    weightedErrors += tc * errorRate;
+    totalTc += tc;
+  }
+  value = totalTc > 0 ? Math.round((weightedErrors / totalTc) * 100) / 100 : 0;
+  break;
+}
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/storage/session-store.ts` — Ensure `FullSessionSummary` includes an `overallSuccessRate` field (the tool call-level success rate). If `SessionTracker.getMetrics().toolSuccessRate` is already persisted per session, map it to `overallSuccessRate` when saving. If not, add it.
+2. `packages/nr-ai-mcp-server/src/tools/cross-session-tools.ts` (`error_rate` case) — Replace the `taskSuccessRate`-based calculation with a weighted tool-call success rate using `s.overallSuccessRate ?? 1` and weight by `s.toolCallCount ?? 0`, matching the fix code above.
+3. `packages/nr-ai-mcp-server/src/tools/cross-session-tools.test.ts` — Add a test: two platforms where one has 0 test runs (previously showing 0% error despite 50% tool failure) now correctly shows tool-level error rate. Assert the metric reflects tool failures, not test outcomes.
+
+---
+
+### ✅ 102. `generationDurationMs` can be negative when thinking exceeds total duration
+
+**Severity: MEDIUM**
+**File:** `packages/shared/src/timing.ts:75`
+
+```typescript
+const generationDurationMs = durationMs - (thinkingDurationMs ?? 0);
+```
+
+If `markThinkingEnd()` is called after `stop()` (e.g., due to ordering issues in streaming callbacks), `thinkingDurationMs` can exceed `durationMs`, producing a negative `generationDurationMs`. The adjacent `overheadMs` calculation already guards against this with `Math.max(0, ...)` at line 82 — but `generationDurationMs` has no such guard.
+
+**Impact:** Negative `generationDurationMs` emitted to New Relic corrupts the generation time metric, and any code dividing by this value would produce incorrect results.
+
+**Fix:**
+```typescript
+const generationDurationMs = Math.max(0, durationMs - (thinkingDurationMs ?? 0));
+```
+
+**Implementation Plan:**
+1. `packages/shared/src/timing.ts` (line 75) — Wrap the `generationDurationMs` assignment in `Math.max(0, ...)` to match the guard already applied to `overheadMs` at line 82.
+2. `packages/shared/src/timing.test.ts` — Add a test: call `markThinkingEnd()` after `stop()` so that `thinkingDurationMs > durationMs`, and assert `generationDurationMs === 0` (not negative).
+
+---
+
+### ✅ 103. `percentChange(0, X)` returns 0 instead of representing infinite growth
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/trend-analyzer.ts:103-106`
+
+```typescript
+export function percentChange(oldValue: number, newValue: number): number {
+  if (oldValue === 0) return 0;   // ← reports "no change" when going from $0 to $50
+  return round(((newValue - oldValue) / Math.abs(oldValue)) * 100, 1);
+}
+```
+
+When `oldValue === 0` and `newValue > 0`, the function returns 0 (0% change). This is used in trend reports comparing week-over-week cost and efficiency: a team that went from $0 to $50 spend, or from 0 sessions to 10 sessions, appears to have no trend change.
+
+**Impact:** Trend comparisons from a zero baseline are silently suppressed. New adopters or teams resuming after a break show 0% change in all trend metrics.
+
+**Fix:**
+```typescript
+export function percentChange(oldValue: number, newValue: number): number {
+  if (oldValue === 0) return newValue === 0 ? 0 : null as unknown as number; // caller should handle null
+  return round(((newValue - oldValue) / Math.abs(oldValue)) * 100, 1);
+}
+```
+
+Or return a sentinel value and update callers to display "N/A" when `oldValue === 0 && newValue !== 0`.
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/trend-analyzer.ts` — Change `percentChange` to return `null` (typed `number | null`) when `oldValue === 0 && newValue !== 0`. Update the return type signature and all callers that render trend deltas to display `"N/A"` or omit the field when the result is `null`.
+2. `packages/nr-ai-mcp-server/src/metrics/trend-analyzer.test.ts` — Add tests: `percentChange(0, 50)` returns `null`; `percentChange(0, 0)` returns `0`; `percentChange(10, 20)` returns `100`.
+
+---
+
+### ✅ 104. `classify()` misclassifies "Learning" — missing autonomy check
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/collaboration-profile.ts:274`
+
+```typescript
+function classify(dimensions: ProfileDimensions): string {
+  const { specificity, autonomy, correctionRate } = dimensions;
+
+  if (specificity >= 0.6 && autonomy >= 0.6) return 'Power User';
+  if (specificity < 0.6 && autonomy >= 0.6) return 'Delegator';
+  if (specificity < 0.6 && correctionRate < 0.6) return 'Learning';  // ← missing: && autonomy < 0.6
+  return 'Collaborative';
+}
+```
+
+A developer with low specificity (0.4), HIGH autonomy (0.8), and low correction rate (0.3) falls through the "Power User" and "Delegator" checks (second branch requires `specificity < 0.6 && autonomy >= 0.6` → true, so this is actually caught). But a developer with specificity = 0.5, autonomy = 0.7, correctionRate = 0.4:
+- Branch 1: `0.5 >= 0.6` → false
+- Branch 2: `0.5 < 0.6 && 0.7 >= 0.6` → **true → "Delegator"**
+
+Actually the real gap is: specificity = 0.5, autonomy = 0.59, correctionRate = 0.4:
+- Branch 1: false
+- Branch 2: `0.5 < 0.6 && 0.59 >= 0.6` → false
+- Branch 3: `0.5 < 0.6 && 0.4 < 0.6` → **true → "Learning"** ← but autonomy = 0.59 is near-high autonomy, should be "Collaborative"
+
+**Impact:** Developers with moderate-to-high autonomy but low specificity and correction rate are incorrectly labelled "Learning" instead of "Collaborative". Coaching recommendations for "Learning" profiles are inappropriate for these users.
+
+**Fix:**
+```typescript
+if (specificity < 0.6 && autonomy < 0.6 && correctionRate < 0.6) return 'Learning';
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/collaboration-profile.ts` (line 274, `classify()`) — Add `&& autonomy < 0.6` to the "Learning" branch condition so that users with moderate-to-high autonomy fall through to "Collaborative" instead.
+2. `packages/nr-ai-mcp-server/src/metrics/collaboration-profile.test.ts` — Add a test: specificity = 0.5, autonomy = 0.59, correctionRate = 0.4 should classify as `'Collaborative'`, not `'Learning'`. Also verify the existing "Learning" classification still fires for specificity = 0.4, autonomy = 0.3, correctionRate = 0.3.
+
+---
+
+### ✅ 105. Empty `effectSizes` array causes `overallLabel` to default to `'significant'`
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/metrics/prompt-feedback.ts:198-203`
+
+When there are insufficient sessions before or after a CLAUDE.md change (e.g., the change was made in the very first session), `effectSizes` is empty. The majority-vote logic then evaluates `0 >= 0 && 0 >= 0 === true` and sets `overallLabel = 'significant'`:
+
+```typescript
+const labelCounts = { significant: 0, moderate: 0, noise: 0 };
+for (const es of effectSizes) labelCounts[es.label]++;   // no-op for empty array
+
+let overallLabel: EffectSize['label'] = 'noise';
+if (labelCounts.significant >= labelCounts.moderate && labelCounts.significant >= labelCounts.noise) {
+  overallLabel = 'significant';    // ← 0 >= 0 && 0 >= 0 → true
+} else if (labelCounts.moderate >= labelCounts.noise) {
+  overallLabel = 'moderate';
+}
+```
+
+**Impact:** CLAUDE.md impact reports return "significant" when there is literally no data to support the claim. Users may act on the recommendation (revert CLAUDE.md, keep CLAUDE.md) based on a phantom significance verdict.
+
+**Fix:**
+```typescript
+let overallLabel: EffectSize['label'] = 'noise';
+if (effectSizes.length > 0) {
+  if (labelCounts.significant >= labelCounts.moderate && labelCounts.significant >= labelCounts.noise) {
+    overallLabel = 'significant';
+  } else if (labelCounts.moderate >= labelCounts.noise) {
+    overallLabel = 'moderate';
+  }
+}
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/prompt-feedback.ts` (lines 198–203) — Wrap the entire `if`/`else if` majority-vote block in `if (effectSizes.length > 0) { ... }`, so that an empty array leaves `overallLabel` at its `'noise'` default rather than entering the `0 >= 0` branch.
+2. `packages/nr-ai-mcp-server/src/metrics/prompt-feedback.test.ts` — Add a test: call the CLAUDE.md impact analysis with a change that has no sessions before or after it (empty `effectSizes`), and assert `overallLabel === 'noise'`, not `'significant'`.
+
+---
+
+### ✅ 106. `listSessions()` sort is unstable for same-day sessions
+
+**Severity: MEDIUM**
+**File:** `packages/nr-ai-mcp-server/src/storage/session-store.ts:149`
+
+```typescript
+return results.sort((a, b) => a.date.localeCompare(b.date));
+```
+
+Multiple sessions on the same calendar day produce equal sort keys. JavaScript's `Array.sort` is not guaranteed to be stable across all engines for equal elements (and even in engines where it is stable, the order depends on the order files were read from the directory — which is filesystem-dependent). Callers relying on consistent ordering (pagination, trend analysis using "most recent N sessions") may see different results across runs.
+
+**Impact:** Trend analysis and weekly summaries can include different sessions depending on filesystem readdir order, producing non-deterministic metrics.
+
+**Fix:** Add `sessionId` as a secondary sort key (session IDs contain timestamps):
+```typescript
+return results.sort(
+  (a, b) => a.date.localeCompare(b.date) || a.sessionId.localeCompare(b.sessionId),
+);
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/storage/session-store.ts` (line 149) — Change the sort comparator to use `a.date.localeCompare(b.date) || a.sessionId.localeCompare(b.sessionId)` so same-day sessions are sorted deterministically by session ID as a tiebreaker.
+2. `packages/nr-ai-mcp-server/src/storage/session-store.test.ts` — Add a test: create three sessions with the same `date` field but different `sessionId` values, call `listSessions()`, and assert they are returned in consistent lexicographic session ID order on repeated calls.
+
+---
+
+## Low Severity
+
+### ✅ 107. `truncateErrorMessage` violates its length contract when `maxLength < 4`
+
+**Severity: LOW**
+**File:** `packages/shared/src/errors.ts:185-188`
+
+```typescript
+export function truncateErrorMessage(message: string, maxLength = 1024): string {
+  if (message.length <= maxLength) return message;
+  return message.slice(0, maxLength - 3) + '...';
+}
+```
+
+When `maxLength < 4`, `maxLength - 3` is 0 or negative. `'hello'.slice(0, -1)` returns `'hell'`, so the result `'hell' + '...'` is 7 characters — longer than the requested `maxLength = 2`. The function's stated contract (truncate to `maxLength`) is violated.
+
+**Impact:** Low in practice since the default is 1024 and callers rarely pass small values. But any defensive caller checking the returned length against `maxLength` will see unexpected behavior.
+
+**Fix:**
+```typescript
+export function truncateErrorMessage(message: string, maxLength = 1024): string {
+  const safeMax = Math.max(4, maxLength);
+  if (message.length <= safeMax) return message;
+  return message.slice(0, safeMax - 3) + '...';
+}
+```
+
+**Implementation Plan:**
+1. `packages/shared/src/errors.ts` (`truncateErrorMessage`) — Add `const safeMax = Math.max(4, maxLength);` and replace all uses of `maxLength` in the function body with `safeMax`.
+2. `packages/shared/src/errors.test.ts` — Add tests: `truncateErrorMessage('hello', 2)` returns a string of length ≤ 4 (clamped to `safeMax`); `truncateErrorMessage('hello', 4)` returns `'h...'`; the default behavior with a long string is unchanged.
+
+---
+
+### ✅ 108. Token estimation in `recordEstimatedTokens` independently rounds each component, accumulating drift in `totalTokens`
+
+**Severity: LOW**
+**File:** `packages/nr-ai-mcp-server/src/metrics/cost-tracker.ts:72-80`
+
+```typescript
+const usage: TokenUsage = {
+  inputTokens:  Math.round(inputChars / 4),
+  outputTokens: Math.round(outputChars / 4),
+  ...
+  totalTokens: Math.round(inputChars / 4) + Math.round(outputChars / 4),  // ← rounding applied twice
+};
+```
+
+`Math.round(inputChars / 4) + Math.round(outputChars / 4)` is not guaranteed to equal `Math.round((inputChars + outputChars) / 4)`. For example, `Math.round(1/4) + Math.round(1/4) = 0 + 0 = 0` while `Math.round(2/4) = 1`. Over thousands of estimated calls, `totalTokens` can drift from the sum of its components.
+
+**Impact:** `totalTokens` is used to derive cost; small rounding errors accumulate into reportable cost discrepancies across long sessions.
+
+**Fix:**
+```typescript
+const inputTokens = Math.round(inputChars / 4);
+const outputTokens = Math.round(outputChars / 4);
+const usage: TokenUsage = {
+  inputTokens,
+  outputTokens,
+  thinkingTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+  totalTokens: inputTokens + outputTokens,
+};
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/cost-tracker.ts` (`recordEstimatedTokens`) — Hoist `Math.round(inputChars / 4)` and `Math.round(outputChars / 4)` into named `const` variables before constructing the `TokenUsage` object. Set `totalTokens` to `inputTokens + outputTokens` (sum of the already-rounded variables) instead of re-calling `Math.round` twice.
+2. `packages/nr-ai-mcp-server/src/metrics/cost-tracker.test.ts` — Add a test: call `recordEstimatedTokens` with `inputChars = 1, outputChars = 1` (each rounds to 0 independently, but together `Math.round(2/4) = 1`). Assert `totalTokens === inputTokens + outputTokens` (i.e., the components and total are always consistent).
+
+---
+
+### ✅ 109. Session-average `EfficiencyScore` uses last task's timestamp instead of computation time
+
+**Severity: LOW**
+**File:** `packages/nr-ai-mcp-server/src/metrics/efficiency-score.ts:140`
+
+```typescript
+return {
+  score: ...,
+  components: { ... },
+  taskId: 'session-average',
+  timestamp: this.scores[this.scores.length - 1].timestamp,  // ← last task's end time, not now
+};
+```
+
+The `getSessionAverage()` method returns an aggregate score whose `timestamp` is set to the last scored task's end time. If the session has been running for hours since the last completed task, the session average appears time-anchored to that old task. Dashboard queries that filter by timestamp (e.g., "efficiency in the last 5 minutes") will miss the session average.
+
+**Impact:** Session-average metrics may be attributed to the wrong time window in NR dashboards, making them invisible in recent-data queries.
+
+**Fix:**
+```typescript
+timestamp: Date.now(),
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/metrics/efficiency-score.ts` (`getSessionAverage()`, line 140) — Replace `this.scores[this.scores.length - 1].timestamp` with `Date.now()` so the session-average metric is always time-anchored to when it was computed, not to the last task's end time.
+2. `packages/nr-ai-mcp-server/src/metrics/efficiency-score.test.ts` — Add a test: score one task, wait a tick (or advance fake timers), call `getSessionAverage()`, and assert `average.timestamp >= task.timestamp` (i.e., the session average is not anchored to the old task's timestamp).
+
+---
+
+### ✅ 110. Cost breakdown response omits cache token counts
+
+**Severity: LOW**
+**File:** `packages/nr-ai-mcp-server/src/tools/cost-tools.ts:126-130`
+
+```typescript
+tokens: {
+  input: metrics.totalInputTokens,
+  output: metrics.totalOutputTokens,
+  thinking: metrics.totalThinkingTokens,
+  // ← cache_read and cache_creation absent
+},
+```
+
+`CostTracker` tracks `totalCacheReadTokens` and `totalCacheCreationTokens` separately, and they contribute to the session cost via `calculateCost()`. The `handleGetCostBreakdown` response exposes three of five token categories. Users cannot verify their cache token usage or understand why their reported cost differs from what they expect based on input+output alone.
+
+**Impact:** Cost breakdowns are incomplete for sessions with prompt caching. Users cannot audit cache costs through the MCP tool.
+
+**Fix:**
+```typescript
+tokens: {
+  input: metrics.totalInputTokens,
+  output: metrics.totalOutputTokens,
+  thinking: metrics.totalThinkingTokens,
+  cache_read: metrics.totalCacheReadTokens,
+  cache_creation: metrics.totalCacheCreationTokens,
+},
+```
+
+**Implementation Plan:**
+1. `packages/nr-ai-mcp-server/src/tools/cost-tools.ts` (lines 126–130) — Add `cache_read: metrics.totalCacheReadTokens` and `cache_creation: metrics.totalCacheCreationTokens` to the `tokens` object in `handleGetCostBreakdown`.
+2. `packages/nr-ai-mcp-server/src/tools/cost-tools.test.ts` — Add a test: provide a `CostTracker` with recorded cache tokens, call `handleGetCostBreakdown`, and assert the JSON response includes `tokens.cache_read` and `tokens.cache_creation` with the expected values.
+
+---
+
+## Round 7 Recommendation
+
+**Fix before wider sharing:**
+- **#99** (`res.end()` without `res.writeHead()`) — upstream errors silently appear as 200 OK to proxy clients.
+- **#100** (`requeueBatch` drops failed batch) — log delivery failures compound: the batch that failed is the first dropped on overflow, making retries ineffective.
+- **#101** (`error_rate` uses test pass rate) — the platform comparison error_rate metric is semantically wrong; all platforms show artificially low error rates when developers don't run tests.
+
+**Fix before production use:**
+- **#102** (negative `generationDurationMs`) — corrupts a core timing metric for streaming sessions with thinking.
+- **#103** (`percentChange` zero baseline) — trend reports suppress all week-over-week changes from zero baselines, making the trend feature useless for new adopters.
+- **#104** ("Learning" classification) — misclassified developers receive wrong coaching recommendations.
+- **#105** (empty effectSizes → "significant") — phantom significance verdicts on CLAUDE.md impact when session count is too low.
+- **#106** (unstable `listSessions` sort) — non-deterministic session ordering affects trend analysis and weekly summaries.
+
+**Low priority:**
+- **#107–110** — contract violations and incomplete data that have minimal user-visible impact in typical use.
+
+---
+
 ## Cumulative Statistics
 
 | Round | Date | Critical | High | Medium | Low | Total |
@@ -2782,4 +3249,5 @@ The Anthropic path (line 59) sums all five token types including `cacheCreationT
 | 4 | 2026-04-21 | 0 | 3 | 4 | 3 | 10 |
 | 5 | 2026-04-22 | 1 | 4 | 4 | 0 | 9 |
 | 6 | 2026-04-22 | 0 | 2 | 6 | 1 | 9 |
-| **Total** | | **4** | **25** | **53** | **13** | **95** |
+| 7 | 2026-04-22 | 0 | 3 | 5 | 4 | 12 |
+| **Total** | | **4** | **28** | **58** | **17** | **107** |

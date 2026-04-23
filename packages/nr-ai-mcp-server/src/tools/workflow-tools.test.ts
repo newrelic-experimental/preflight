@@ -111,6 +111,21 @@ describe('handleGetCostBreakdown()', () => {
     expect(body.by_task).toEqual([]);
     expect(body.tokens.input).toBe(0);
   });
+
+  it('includes cache_read and cache_creation token counts in the response', () => {
+    const costTracker = new CostTracker();
+
+    costTracker.recordTokenUsage(
+      { inputTokens: 1000, outputTokens: 500, thinkingTokens: 0, cacheReadTokens: 200, cacheCreationTokens: 300, totalTokens: 2000 },
+      'claude-sonnet-4',
+    );
+
+    const result = handleGetCostBreakdown(costTracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.tokens.cache_read).toBe(200);
+    expect(body.tokens.cache_creation).toBe(300);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -331,6 +346,46 @@ describe('handleGetEfficiencyScore()', () => {
     handleGetEfficiencyScore(scorer, detector, antiPatterns);
     expect(scorer.getScores()).toHaveLength(1);
   });
+
+  it('latest reflects the active task after updateScore, not a later-inserted completed task (B-05)', () => {
+    const scorer = new EfficiencyScorer();
+
+    // Score active task first (inserted at index 0), endTime = 1000
+    scorer.computeScore({
+      taskId: 'active', startTime: 0, endTime: 1000, durationMs: 1000,
+      toolCallCount: 5, toolCallsByType: {}, filesRead: [], filesModified: [],
+      linesChanged: 10, linesAdded: 10, linesRemoved: 0, bashCommandsRun: 0, testsRun: 0, testsPassed: 0,
+      buildRun: 0, buildPassed: 0, estimatedCostUsd: null, tokensUsed: 0,
+      askedUserQuestions: 0, subAgentsSpawned: 0, toolCalls: [],
+    });
+
+    // Score a completed task second (inserted at index 1), endTime = 500 (earlier)
+    scorer.computeScore({
+      taskId: 'completed', startTime: 0, endTime: 500, durationMs: 500,
+      toolCallCount: 3, toolCallsByType: {}, filesRead: [], filesModified: [],
+      linesChanged: 5, linesAdded: 5, linesRemoved: 0, bashCommandsRun: 0, testsRun: 0, testsPassed: 0,
+      buildRun: 0, buildPassed: 0, estimatedCostUsd: null, tokensUsed: 0,
+      askedUserQuestions: 0, subAgentsSpawned: 0, toolCalls: [],
+    });
+
+    // Update the active task with a newer timestamp (endTime = 2000, more recent than both)
+    scorer.updateScore({
+      taskId: 'active', startTime: 0, endTime: 2000, durationMs: 2000,
+      toolCallCount: 8, toolCallsByType: {}, filesRead: [], filesModified: [],
+      linesChanged: 20, linesAdded: 20, linesRemoved: 0, bashCommandsRun: 1, testsRun: 1, testsPassed: 1,
+      buildRun: 0, buildPassed: 0, estimatedCostUsd: null, tokensUsed: 0,
+      askedUserQuestions: 0, subAgentsSpawned: 0, toolCalls: [],
+    });
+
+    // scores array is [active(ts=2000, idx=0), completed(ts=500, idx=1)]
+    // scores[last] would return 'completed' (wrong); reduce by timestamp returns 'active' (correct)
+    const result = handleGetEfficiencyScore(scorer);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.latest).not.toBeNull();
+    expect(body.latest.task_id).toBe('active');
+    expect(body.latest.timestamp).toBe(2000);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -390,6 +445,22 @@ describe('handleReportFeedback()', () => {
     }
 
     expect(collector.getRecords()).toHaveLength(3);
+  });
+
+  // N-08: unbounded free-text inputs
+  it('truncates notes longer than 1024 chars (N-08)', () => {
+    const collector = new FeedbackCollector();
+    const longNotes = 'x'.repeat(2000);
+    handleReportFeedback(collector, { quality: 'good', notes: longNotes });
+    const records = collector.getRecords();
+    expect(records[0].notes?.length).toBe(1024);
+  });
+
+  it('passes notes shorter than 1024 chars unchanged (N-08)', () => {
+    const collector = new FeedbackCollector();
+    const notes = 'short note';
+    handleReportFeedback(collector, { quality: 'good', notes });
+    expect(collector.getRecords()[0].notes).toBe('short note');
   });
 });
 

@@ -54,6 +54,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 0,
@@ -188,10 +189,10 @@ describe('CollaborationProfiler', () => {
     }));
     expect(profiler.computeProfile('delegator-user').classification).toBe('Delegator');
 
-    // Learning: low specificity (<0.6) + correctionRate < 0.6
+    // Learning: low specificity (<0.6) + low autonomy (<0.6) + correctionRate < 0.6
     // specificity: 5/10/10 = 0.05
     // correctionRate: 1 - 8/10 = 0.2
-    // autonomy: 5/10/5 = 0.1 (doesn't matter, Learning is checked before Collaborative)
+    // autonomy: 5/10/5 = 0.1 (<0.6)
     store.saveSession(makeSummary({
       sessionId: 'learning',
       developer: 'learning-user',
@@ -215,6 +216,35 @@ describe('CollaborationProfiler', () => {
       userCorrections: 1,
     }));
     expect(profiler.computeProfile('collab-user').classification).toBe('Collaborative');
+  });
+
+  it('classify() requires low autonomy for Learning — near-threshold autonomy with low correction still needs autonomy < 0.6', () => {
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+
+    // specificity: 5/10/10 = 0.05 (<0.6)
+    // autonomy: 5 toolCalls / 5 assistantMessages / 5 = 0.2 (<0.6) — low enough for Learning
+    // correctionRate: 1 - 4/10 = 0.6 — at threshold, NOT < 0.6, so should be Collaborative
+    store.saveSession(makeSummary({
+      sessionId: 'boundary',
+      developer: 'boundary-user',
+      toolCallCount: 5,
+      userMessages: 10,
+      assistantMessages: 5,
+      userCorrections: 4,
+    }));
+    expect(profiler.computeProfile('boundary-user').classification).toBe('Collaborative');
+
+    // Verify Learning still fires when all three conditions are met:
+    // specificity: 5/10/10 = 0.05, autonomy: 5/5/5 = 0.2, correctionRate: 1 - 7/10 = 0.3
+    store.saveSession(makeSummary({
+      sessionId: 'learning2',
+      developer: 'learning2-user',
+      toolCallCount: 5,
+      userMessages: 10,
+      assistantMessages: 5,
+      userCorrections: 7,
+    }));
+    expect(profiler.computeProfile('learning2-user').classification).toBe('Learning');
   });
 
   // -------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore, buildSessionSummary } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
@@ -49,6 +49,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 0,
@@ -143,6 +144,24 @@ describe('SessionStore', () => {
     expect(results[0]!.sessionId).toBe('alice-sess');
   });
 
+  it('listSessions sorts same-day sessions deterministically by sessionId', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    // All three sessions share the same calendar date
+    const sameDay = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'zzz-last', startTime: sameDay + 2000 }));
+    store.saveSession(makeSummary({ sessionId: 'aaa-first', startTime: sameDay + 1000 }));
+    store.saveSession(makeSummary({ sessionId: 'mmm-mid', startTime: sameDay }));
+
+    const results = store.listSessions();
+    const ids = results.map((r) => r.sessionId);
+    expect(ids).toEqual(['aaa-first', 'mmm-mid', 'zzz-last']);
+
+    // Second call must return the same order regardless of readdir ordering
+    const results2 = store.listSessions();
+    expect(results2.map((r) => r.sessionId)).toEqual(ids);
+  });
+
   it('loadAllSessions returns all matching sessions', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 
@@ -153,6 +172,31 @@ describe('SessionStore', () => {
     const all = store.loadAllSessions();
     expect(all).toHaveLength(3);
     expect(all.map(s => s.sessionId)).toEqual(['s1', 's3', 's2']);
+  });
+
+  it('saveSession rejects sessionId containing path traversal and writes no file (N-01)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    store.saveSession(makeSummary({ sessionId: '../../etc/passwd' }));
+
+    expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
+  });
+
+  it('saveSession rejects sessionId containing a forward slash (N-01)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    store.saveSession(makeSummary({ sessionId: 'a/b' }));
+
+    expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
+  });
+
+  it('saveSession accepts a valid UUID-style sessionId (N-01)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    store.saveSession(makeSummary({ sessionId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }));
+
+    const files = readdirSync(resolve(tmpDir, 'sessions'));
+    expect(files).toHaveLength(1);
   });
 
   it('session file naming follows YYYY-MM-DD_sessionId.json pattern', () => {
@@ -310,6 +354,7 @@ describe('buildSessionSummary', () => {
     expect(summary.efficiencyScore).toBe(0.82);
     expect(summary.taskCount).toBe(2);
     expect(summary.agentSpawns).toBe(1);
+    expect(summary.toolSuccessRate).toBe(0.9);
     expect(summary.outcome).toBe('completed');
   });
 
@@ -429,5 +474,66 @@ describe('buildSessionSummary', () => {
     expect(summary.antiPatterns).toEqual([]);
     expect(summary.filesRead).toEqual([]);
     expect(summary.filesModified).toEqual([]);
+  });
+});
+
+// N-06: deserializeSession — explicit field extraction
+describe('SessionStore deserialization (N-06)', () => {
+  it('loads a session with prototype-shadowing toolBreakdown keys safely', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const sessionsDir = join(tmpDir, 'sessions');
+
+    const raw = JSON.stringify({
+      sessionId: 'proto-test',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 3,
+      developer: 'alice',
+      toolBreakdown: { __proto__: 1, constructor: 2, Read: 3 },
+      antiPatterns: [],
+      filesRead: [],
+      filesModified: [],
+    });
+    writeFileSync(join(sessionsDir, '2026-01-01_proto-test.json'), raw + '\n');
+
+    const session = store.loadSession('proto-test');
+    expect(session).not.toBeNull();
+    expect(session!.toolBreakdown['Read']).toBe(3);
+    // Object.prototype must have no unexpected own enumerable properties from pollution
+    expect(Object.keys(Object.prototype)).toEqual([]);
+  });
+
+  it('returns null for a session file with non-object JSON', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const sessionsDir = join(tmpDir, 'sessions');
+    writeFileSync(join(sessionsDir, '2026-01-01_bad-sess.json'), '"just a string"\n');
+
+    const session = store.loadSession('bad-sess');
+    expect(session).toBeNull();
+  });
+
+  it('applies defaults for missing optional fields', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const sessionsDir = join(tmpDir, 'sessions');
+
+    const raw = JSON.stringify({
+      sessionId: 'minimal',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 0,
+      developer: 'bob',
+    });
+    writeFileSync(join(sessionsDir, '2026-01-01_minimal.json'), raw + '\n');
+
+    const session = store.loadSession('minimal');
+    expect(session).not.toBeNull();
+    expect(session!.toolCallCount).toBe(0);
+    expect(session!.estimatedCostUsd).toBeNull();
+    expect(session!.efficiencyScore).toBeNull();
+    expect(session!.antiPatterns).toEqual([]);
+    expect(session!.filesRead).toEqual([]);
+    expect(session!.outcome).toBe('unknown');
   });
 });

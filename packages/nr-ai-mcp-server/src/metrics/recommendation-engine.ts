@@ -284,7 +284,7 @@ export class RecommendationEngine {
           'high',
           'Negative CLAUDE.md impact',
           'Recent CLAUDE.md change degraded metrics. Consider reverting or refining the changes.',
-          `${impact.verdict}. Efficiency delta: ${impact.deltas.efficiencyScore.percentChange}%`,
+          `${impact.verdict}. Efficiency delta: ${impact.deltas.efficiencyScore.percentChange ?? 'N/A'}%`,
         ));
       }
 

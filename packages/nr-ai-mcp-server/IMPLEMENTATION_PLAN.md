@@ -12,6 +12,7 @@
 - [Phase 3: MCP Proxy + Security Audit (3-4 weeks)](#phase-3-mcp-proxy--security-audit-3-4-weeks)
 - [Phase 4: Cross-Session Intelligence (3-4 weeks)](#phase-4-cross-session-intelligence-3-4-weeks)
 - [Phase 5: Multi-Platform Support (4-6 weeks)](#phase-5-multi-platform-support-4-6-weeks)
+- [Phase 6: Dashboard Data Completeness (1-2 weeks)](#phase-6-dashboard-data-completeness-1-2-weeks)
 
 ---
 
@@ -1632,4 +1633,120 @@
 - Unit test: `platform` attribute defaults to "claude-code" for backwards compatibility
 - Unit test: `get_platform_comparison` tool returns per-platform data for "efficiency" metric
 - Unit test: `get_platform_comparison` tool returns per-platform data for "cost" metric
+
+---
+
+## Phase 6: Dashboard Data Completeness (1-2 weeks)
+
+> The Team View and Platform Comparison dashboards reference `AiCodingTask` and `AiAntiPattern` custom event types, but neither is currently emitted to New Relic — both types exist only as in-memory analysis structures. This phase closes that gap by wiring each tracker's output into the `NrIngestManager` ingest path. It also resolves the field-naming inconsistencies between the two dashboards, establishing snake_case as the canonical convention for all NR event attributes emitted by this package (consistent with `AiToolCall` and `AiAuditEvent`).
+
+---
+
+### ✅ 6.1 — AiCodingTask NR Event Emission
+
+**Implementation:**
+
+- Add `ingestCodingTask(task: AiCodingTask, context: { developer: string; sessionId: string; platform: string }): void` to `NrIngestManager` in `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts`:
+  - Translate `AiCodingTask` camelCase fields to snake_case NR event attributes, matching the convention of `AiToolCall` (`duration_ms`, `session_id`, etc.):
+    ```
+    eventType:             'AiCodingTask'
+    timestamp:             Math.floor(task.endTime / 1000)
+    task_id:               task.taskId
+    session_id:            context.sessionId
+    developer:             context.developer
+    platform:              context.platform
+    start_time:            Math.floor(task.startTime / 1000)
+    end_time:              Math.floor(task.endTime / 1000)
+    duration_ms:           task.durationMs
+    tool_call_count:       task.toolCallCount
+    files_read:            task.filesRead.length
+    files_modified:        task.filesModified.length
+    lines_added:           task.linesAdded
+    lines_removed:         task.linesRemoved
+    bash_commands_run:     task.bashCommandsRun
+    tests_run:             task.testsRun
+    tests_passed:          task.testsPassed
+    build_run:             task.buildRun
+    build_passed:          task.buildPassed
+    estimated_cost_usd:    task.estimatedCostUsd ?? 0
+    tokens_used:           task.tokensUsed
+    asked_user_questions:  task.askedUserQuestions
+    sub_agents_spawned:    task.subAgentsSpawned
+    ```
+  - Note: `filesRead` and `filesModified` are arrays in the source but emitted as counts — the full path lists are not sent to NR to keep event size small
+  - Queue the event via `this.eventBuffer.add(event)` (same pattern as `AiToolCall`)
+- In the event processing loop (wherever `ToolCallRecord`s are fed to trackers), drain completed tasks from `TaskDetector` after each batch and emit them:
+  ```typescript
+  const completedTasks = taskDetector.getCompletedTasks();
+  for (const task of completedTasks) {
+    nrIngestManager.ingestCodingTask(task, { developer, sessionId, platform });
+  }
+  ```
+  `TaskDetector.getCompletedTasks()` returns and clears the completed list, so calling it on every poll cycle is safe and idempotent.
+- Update `packages/nr-ai-mcp-server/dashboards/ai-coding-assistant-team-view.json` to use snake_case field names in all `AiCodingTask` NRQL queries:
+  - `estimatedCostUsd` → `estimated_cost_usd`
+  - `testsPassed` → `tests_passed`
+  - `taskId` → `task_id`
+- Verify `packages/nr-ai-mcp-server/dashboards/ai-coding-assistant-platform-comparison.json` already uses `estimated_cost_usd` — no change needed there
+
+**Testing:**
+
+- Unit test: `ingestCodingTask()` queues an event with `eventType: 'AiCodingTask'` and all expected snake_case fields
+- Unit test: `task_id`, `session_id`, `developer`, `platform` are all present on the emitted event
+- Unit test: `estimated_cost_usd` is `0` when `task.estimatedCostUsd` is `null`
+- Unit test: `files_read` and `files_modified` are emitted as counts (numbers), not path arrays
+- Unit test: `timestamp` is in seconds (not milliseconds)
+- Unit test: the event processing loop drains `getCompletedTasks()` on each poll cycle and calls `ingestCodingTask()` for each result
+- Dashboard test: update `dashboard.test.ts` to assert Team View `AiCodingTask` queries use `estimated_cost_usd`, `tests_passed`, and `task_id` (snake_case)
+
+---
+
+### ✅ 6.2 — AiAntiPattern NR Event Emission
+
+**Implementation:**
+
+- Add `ingestAntiPattern(pattern: AntiPattern, context: { developer: string; sessionId: string; platform: string; taskId: string }): void` to `NrIngestManager` in `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts`:
+  - Build a NR event from the pattern and context:
+    ```
+    eventType:    'AiAntiPattern'
+    timestamp:    Math.floor(Date.now() / 1000)
+    type:         pattern.type
+    session_id:   context.sessionId
+    developer:    context.developer
+    platform:     context.platform
+    task_id:      context.taskId
+    suggestion:   pattern.suggestion
+    file:         pattern.file          (omit if undefined)
+    command:      pattern.command       (omit if undefined)
+    iterations:   pattern.iterations    (omit if undefined)
+    read_count:   pattern.readCount     (omit if undefined)
+    repeat_count: pattern.repeatCount   (omit if undefined)
+    edit_count:   pattern.editCount     (omit if undefined)
+    agent_count:  pattern.agentCount    (omit if undefined)
+    ```
+  - Do not emit undefined optional fields — omit the key entirely rather than sending `null`
+- Emit anti-patterns at task completion time by calling `AntiPatternDetector.analyze()` with the completed task's `toolCalls` array inside the same loop added in 6.1:
+  ```typescript
+  const completedTasks = taskDetector.getCompletedTasks();
+  for (const task of completedTasks) {
+    nrIngestManager.ingestCodingTask(task, { developer, sessionId, platform });
+    const { patterns } = antiPatternDetector.analyze(task.toolCalls);
+    for (const pattern of patterns) {
+      nrIngestManager.ingestAntiPattern(pattern, { developer, sessionId, platform, taskId: task.taskId });
+    }
+  }
+  ```
+  `AntiPatternDetector.analyze()` is stateless and takes any slice of tool calls, so calling it per-task is consistent with how it is already used in the MCP tool handlers.
+- Update `packages/nr-ai-mcp-server/dashboards/ai-coding-assistant-platform-comparison.json`:
+  - Change `anti_pattern_type` → `type` in the "Anti-Pattern Frequency by Platform" widget NRQL query to match the emitted field name
+- Verify `packages/nr-ai-mcp-server/dashboards/ai-coding-assistant-team-view.json` already uses `type` for its `AiAntiPattern` query — no change needed there
+
+**Testing:**
+
+- Unit test: `ingestAntiPattern()` queues an event with `eventType: 'AiAntiPattern'` and all required fields
+- Unit test: `type`, `session_id`, `developer`, `platform`, `task_id`, `suggestion` are all present
+- Unit test: optional fields (`file`, `command`, `iterations`, `read_count`, etc.) are only present on the event when defined on the source pattern
+- Unit test: a completed task with no detected patterns emits zero `AiAntiPattern` events
+- Unit test: the integration loop correctly calls `analyze()` on each completed task's `toolCalls` and passes each detected pattern to `ingestAntiPattern()`
+- Dashboard test: update `dashboard.test.ts` to assert the Platform Comparison dashboard uses `type` (not `anti_pattern_type`) in its anti-pattern widget NRQL
 - Manual test: deploy to test NR account; verify all widgets render with mock multi-platform data

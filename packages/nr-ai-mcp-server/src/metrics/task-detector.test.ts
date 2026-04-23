@@ -632,3 +632,73 @@ describe('maxCompletedTasks cap', () => {
     detector.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// drainNewlyCompletedTasks()
+// ---------------------------------------------------------------------------
+
+describe('drainNewlyCompletedTasks()', () => {
+  it('returns completed tasks and clears the queue', () => {
+    const detector = new TaskDetector();
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    detector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion' }));
+
+    const firstDrain = detector.drainNewlyCompletedTasks();
+    expect(firstDrain).toHaveLength(1);
+    expect(firstDrain[0].toolCallCount).toBe(2);
+
+    // Second drain — queue is already empty
+    const secondDrain = detector.drainNewlyCompletedTasks();
+    expect(secondDrain).toHaveLength(0);
+
+    detector.dispose();
+  });
+
+  it('does not remove tasks from getCompletedTasks() history', () => {
+    const detector = new TaskDetector();
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    detector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion' }));
+
+    detector.drainNewlyCompletedTasks(); // drain it
+
+    // History is still intact
+    expect(detector.getCompletedTasks()).toHaveLength(1);
+
+    detector.dispose();
+  });
+
+  it('each task is returned exactly once across multiple drains', () => {
+    const detector = new TaskDetector();
+
+    // Task 1
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    detector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion' }));
+
+    const drain1 = detector.drainNewlyCompletedTasks();
+    expect(drain1).toHaveLength(1);
+
+    // Task 2
+    detector.recordToolCall(makeRecord({ toolName: 'Edit' }));
+    detector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion' }));
+
+    const drain2 = detector.drainNewlyCompletedTasks();
+    expect(drain2).toHaveLength(1);
+    expect(drain2[0].toolCallsByType).toHaveProperty('Edit');
+
+    detector.dispose();
+  });
+
+  it('reset() clears the pending emission queue', () => {
+    const detector = new TaskDetector();
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read' }));
+    detector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion' }));
+
+    detector.reset();
+
+    expect(detector.drainNewlyCompletedTasks()).toHaveLength(0);
+    expect(detector.getCompletedTasks()).toHaveLength(0);
+  });
+});

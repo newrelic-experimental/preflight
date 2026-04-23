@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadMcpConfig, redactSensitive } from './config.js';
+import { loadMcpConfig, redactSensitive, sanitizeDeveloper } from './config.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let savedEnv: NodeJS.ProcessEnv;
@@ -29,6 +29,7 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_METRICS_MS;
   delete process.env.NEW_RELIC_HOST;
   delete process.env.NEW_RELIC_AI_MCP_PROXY_UPSTREAMS;
+  delete process.env.NEW_RELIC_AI_HIGH_SECURITY;
 });
 
 afterEach(() => {
@@ -59,6 +60,32 @@ describe('loadMcpConfig()', () => {
     );
   });
 
+  // S-03: accountId format validation
+  it('throws when accountId contains path-traversal characters', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '123/../other';
+    const configPath = writeConfigFile({});
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /accountId must be 1–12 decimal digits/,
+    );
+  });
+
+  it('throws when accountId is non-numeric', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    const configPath = writeConfigFile({ accountId: 'not-a-number' });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /accountId must be 1–12 decimal digits/,
+    );
+  });
+
+  it('throws when accountId exceeds 12 digits', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    const configPath = writeConfigFile({ accountId: '1234567890123' });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /accountId must be 1–12 decimal digits/,
+    );
+  });
+
   it('loads required fields from config file', () => {
     const configPath = writeConfigFile({
       licenseKey: 'file-key-123',
@@ -67,6 +94,61 @@ describe('loadMcpConfig()', () => {
     const config = loadMcpConfig({ config: configPath });
     expect(config.licenseKey).toBe('file-key-123');
     expect(config.accountId).toBe('99999');
+  });
+
+  // S-06: envInt bounds clamping for harvest intervals and port
+  it('clamps harvest events interval to minimum 100ms', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS = '-1';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.harvestIntervalMs.events).toBe(100);
+  });
+
+  it('clamps harvest metrics interval to minimum 100ms', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_HARVEST_METRICS_MS = '0';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.harvestIntervalMs.metrics).toBe(100);
+  });
+
+  it('clamps harvest interval to maximum 3_600_000ms', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS = '999999999';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.harvestIntervalMs.events).toBe(3_600_000);
+  });
+
+  it('clamps port to valid TCP range 1–65535', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_PORT = '99999';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.port).toBe(65535);
+  });
+
+  it('clamps port to minimum 1', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_PORT = '0';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.port).toBe(1);
+  });
+
+  it('accepts a valid port within range', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_PORT = '8080';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.port).toBe(8080);
   });
 
   it('env vars override config file', () => {
@@ -295,6 +377,63 @@ describe('loadMcpConfig()', () => {
       { name: 'valid', url: 'http://localhost:3000', transportType: 'http' },
     ]);
   });
+
+  // N-10: highSecurity mode
+  it('highSecurity defaults to false', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.highSecurity).toBe(false);
+  });
+
+  it('highSecurity=true set via env var', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.highSecurity).toBe(true);
+  });
+
+  it('highSecurity=true from config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ highSecurity: true });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.highSecurity).toBe(true);
+  });
+
+  it('highSecurity forces recordContent to false even when env var says true (N-10)', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
+    process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.highSecurity).toBe(true);
+    expect(config.recordContent).toBe(false);
+  });
+
+  it('highSecurity env var overrides highSecurity=false in config file (N-10)', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
+    const configPath = writeConfigFile({ highSecurity: false, recordContent: true });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.highSecurity).toBe(true);
+    expect(config.recordContent).toBe(false);
+  });
+
+  it('recordContent is respected when highSecurity is false (N-10)', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.highSecurity).toBe(false);
+    expect(config.recordContent).toBe(true);
+  });
 });
 
 describe('redactSensitive()', () => {
@@ -360,5 +499,138 @@ describe('redactSensitive()', () => {
     expect(result).not.toContain('first');
     expect(result).not.toContain('second');
     expect(result).not.toContain('third');
+  });
+
+  it('redacts AWS access key IDs', () => {
+    const input = 'key: AKIAIOSFODNN7EXAMPLE and more';
+    const result = redactSensitive(input);
+    expect(result).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it('redacts Google API keys', () => {
+    // AIzaSy (6) + exactly 33 chars = 39 char key
+    const input = 'apiKey: AIzaSyDEFGHIJKLMNOPQRSTUVWXYZabcdefghij';
+    const result = redactSensitive(input);
+    expect(result).not.toContain('AIzaSy');
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it('redacts bare JWT tokens', () => {
+    const input = 'token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const result = redactSensitive(input);
+    expect(result).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it('redacts npm auth tokens', () => {
+    const input = 'npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij';
+    const result = redactSensitive(input);
+    expect(result).not.toContain('npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij');
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it('redacts all Slack token types', () => {
+    const inputs = [
+      'xoxa-123-456-789-abc',
+      'xoxb-123-456-789-abc',
+      'xoxp-123-456-789-abc',
+      'xoxr-123-456-789-abc',
+    ];
+    for (const input of inputs) {
+      const result = redactSensitive(input);
+      expect(result).not.toContain(input);
+      expect(result).toContain('[REDACTED]');
+    }
+  });
+
+  // N-02: ReDoS protection
+  it('truncates input over 1 MB before applying patterns (N-02)', () => {
+    const overLimit = 'A'.repeat(1_048_577);
+    const result = redactSensitive(overLimit);
+    expect(result.length).toBeLessThanOrEqual(1_048_576);
+  });
+
+  it('still redacts secrets that appear within the first 1 MB of a large input (N-02)', () => {
+    const secret = 'sk-secretvalue12345';
+    const padding = 'x'.repeat(100_000);
+    const result = redactSensitive(`${padding}${secret}${padding}`);
+    expect(result).not.toContain(secret);
+  });
+
+  it('does not match an unterminated PEM block — bounded pattern prevents ReDoS (N-02)', () => {
+    const input = '-----BEGIN RSA PRIVATE KEY-----' + 'A'.repeat(200);
+    const result = redactSensitive(input);
+    expect(result).toBe(input);
+  });
+});
+
+describe('sanitizeDeveloper() (N-07)', () => {
+  it('strips ASCII control characters', () => {
+    expect(sanitizeDeveloper('alice\x00bob')).toBe('alicebob');
+    expect(sanitizeDeveloper('user\x1fname')).toBe('username');
+    expect(sanitizeDeveloper('name\x7f!')).toBe('name!');
+  });
+
+  it('trims leading and trailing whitespace', () => {
+    expect(sanitizeDeveloper('  alice  ')).toBe('alice');
+    expect(sanitizeDeveloper('\t bob \n')).toBe('bob');
+  });
+
+  it('truncates to 128 characters', () => {
+    const long = 'a'.repeat(200);
+    expect(sanitizeDeveloper(long)).toBe('a'.repeat(128));
+  });
+
+  it('returns "unknown" for an empty string', () => {
+    expect(sanitizeDeveloper('')).toBe('unknown');
+  });
+
+  it('returns "unknown" for a control-character-only string', () => {
+    expect(sanitizeDeveloper('\x00\x01\x02\x1f\x7f')).toBe('unknown');
+  });
+
+  it('leaves normal names unchanged', () => {
+    expect(sanitizeDeveloper('alice')).toBe('alice');
+    expect(sanitizeDeveloper('John Doe')).toBe('John Doe');
+  });
+});
+
+describe('developer sanitization via loadMcpConfig() (N-07)', () => {
+  it('strips control characters from NEW_RELIC_AI_MCP_DEVELOPER env var', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_DEVELOPER = 'alice\x00\x1f';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.developer).toBe('alice');
+  });
+
+  it('truncates a developer name over 128 chars from env var', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_DEVELOPER = 'a'.repeat(200);
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.developer).toBe('a'.repeat(128));
+  });
+
+  it('strips control characters from developer in config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.USER = 'ignored';
+    const configPath = writeConfigFile({ developer: 'bob\x0d\x0a' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.developer).toBe('bob');
+  });
+
+  it('strips control characters from $USER env var path', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.USER = 'charlie\x07';
+    delete process.env.NEW_RELIC_AI_MCP_DEVELOPER;
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.developer).toBe('charlie');
   });
 });

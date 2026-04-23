@@ -137,7 +137,7 @@ export class EfficiencyScorer {
         firstAttemptQuality: Math.round((totalFirstAttempt / n) * 1000) / 1000,
       },
       taskId: 'session-average',
-      timestamp: this.scores[this.scores.length - 1].timestamp,
+      timestamp: Date.now(),
     };
   }
 

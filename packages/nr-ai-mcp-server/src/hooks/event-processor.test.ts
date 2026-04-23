@@ -399,4 +399,88 @@ describe('HookEventProcessor', () => {
       expect(records[0]!.success).toBe(true);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending map size cap (M-04)
+  // ---------------------------------------------------------------------------
+
+  describe('pending map size cap (M-04)', () => {
+    it('does not exceed maxPendingEvents entries in the pending map', () => {
+      const processor = new HookEventProcessor({ store, onRecord, maxPendingEvents: 5 });
+
+      for (let i = 0; i < 10; i++) {
+        processor.processEvents([
+          makePreEvent({ toolUseId: `toolu_${i}`, timestamp: 1000 + i }),
+        ]);
+      }
+
+      expect(processor.pendingCount).toBe(5);
+    });
+
+    it('evicts the oldest entry when the cap is reached', () => {
+      const processor = new HookEventProcessor({ store, onRecord, maxPendingEvents: 3 });
+
+      // Fill to cap with toolUseIds 0, 1, 2
+      for (let i = 0; i < 3; i++) {
+        processor.processEvents([
+          makePreEvent({ toolUseId: `toolu_${i}`, timestamp: 1000 + i }),
+        ]);
+      }
+
+      // Adding a 4th evicts toolu_0 (the oldest)
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_3', timestamp: 1003 }),
+      ]);
+
+      expect(processor.pendingCount).toBe(3);
+
+      // toolu_0 was evicted, so its post produces an orphaned-post record
+      processor.processEvents([
+        makePostEvent({ toolUseId: 'toolu_0', timestamp: 2000 }),
+      ]);
+      expect(records).toHaveLength(1);
+      expect(records[0]!.durationMs).toBeNull();  // orphaned post — no matching pre
+
+      // toolu_1 through toolu_3 still pair normally
+      records.length = 0;
+      for (let i = 1; i <= 3; i++) {
+        processor.processEvents([
+          makePostEvent({ toolUseId: `toolu_${i}`, timestamp: 2000 + i }),
+        ]);
+      }
+      expect(records).toHaveLength(3);
+      expect(records.every((r) => r.durationMs !== null)).toBe(true);
+    });
+
+    it('logs a warning when the cap is exceeded', () => {
+      const processor = new HookEventProcessor({ store, onRecord, maxPendingEvents: 2 });
+
+      processor.processEvents([makePreEvent({ toolUseId: 'a', timestamp: 1000 })]);
+      processor.processEvents([makePreEvent({ toolUseId: 'b', timestamp: 1001 })]);
+      // Third event triggers eviction
+      processor.processEvents([makePreEvent({ toolUseId: 'c', timestamp: 1002 })]);
+
+      const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(output).toContain('Pending map overflow');
+    });
+
+    it('uses DEFAULT_MAX_PENDING (2000) when maxPendingEvents is not specified', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      // Fill to just under the default cap
+      for (let i = 0; i < 2000; i++) {
+        processor.processEvents([
+          makePreEvent({ toolUseId: `toolu_${i}`, timestamp: 1000 + i }),
+        ]);
+      }
+
+      expect(processor.pendingCount).toBe(2000);
+
+      // Adding one more should evict the oldest and keep it at 2000
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_overflow', timestamp: 3001 }),
+      ]);
+      expect(processor.pendingCount).toBe(2000);
+    }, 10_000);
+  });
 });

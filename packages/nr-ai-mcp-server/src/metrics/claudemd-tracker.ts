@@ -51,7 +51,7 @@ export interface AggregateMetrics {
 
 export interface MetricDelta {
   readonly value: number;
-  readonly percentChange: number;
+  readonly percentChange: number | null;
   readonly improved: boolean;
 }
 
@@ -435,13 +435,14 @@ function generateVerdict(deltas: ClaudeMdImpactReport['deltas']): string {
   const degraded = entries.filter((e) => !e.delta.improved && e.delta.value !== 0);
 
   const formatMetric = (e: { name: string; delta: MetricDelta }) => {
+    if (e.delta.percentChange === null) return `${e.name} ${e.delta.value > 0 ? '+' : ''}${e.delta.value}`;
     const sign = e.delta.percentChange >= 0 ? '+' : '';
     return `${e.name} ${sign}${e.delta.percentChange}%`;
   };
 
-  // Sort by absolute percent change for most significant first
+  // Sort by absolute percent change for most significant first (null treated as 0)
   const sortByImpact = (a: { delta: MetricDelta }, b: { delta: MetricDelta }) =>
-    Math.abs(b.delta.percentChange) - Math.abs(a.delta.percentChange);
+    Math.abs(b.delta.percentChange ?? 0) - Math.abs(a.delta.percentChange ?? 0);
 
   if (improved.length >= 3) {
     const top = improved.sort(sortByImpact).slice(0, 2).map(formatMetric);

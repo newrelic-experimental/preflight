@@ -90,6 +90,20 @@ describe('createLogger', () => {
     expect(stderrSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('does not throw and emits a fallback when data contains a circular reference', () => {
+    const logger = createLogger('test');
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    expect(() => logger.warn('circular', circular)).not.toThrow();
+
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const output = (stderrSpy.mock.calls[0][0] as string).trim();
+    const parsed = JSON.parse(output);
+    expect(parsed.data).toBe('[unserializable]');
+    expect(parsed.message).toBe('circular');
+  });
+
   it('writes to stderr, not stdout', () => {
     const stdoutSpy = jest.spyOn(process.stdout, 'write').mockReturnValue(true);
     const logger = createLogger('test');

@@ -8,6 +8,8 @@ import { createLogger } from '@nr-ai-observatory/shared';
 import type { NrEventData } from '@nr-ai-observatory/shared';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
+import type { LocalStore } from '../storage/local-store.js';
+import { redactSensitive } from '../config.js';
 
 const logger = createLogger('audit-trail');
 
@@ -151,7 +153,7 @@ function detectSecurityAlert(
     return {
       severity: 'critical',
       alertType: 'destructive_command',
-      description: `Destructive command detected: ${command}`,
+      description: `Destructive command detected: ${redactSensitive(command)}`,
     };
   }
 
@@ -160,7 +162,7 @@ function detectSecurityAlert(
     return {
       severity: 'high',
       alertType: 'sensitive_file',
-      description: `Sensitive file accessed: ${filePath}`,
+      description: `Sensitive file accessed: ${redactSensitive(filePath)}`,
     };
   }
 
@@ -169,7 +171,7 @@ function detectSecurityAlert(
     return {
       severity: 'medium',
       alertType: 'external_network',
-      description: `External network request: ${command}`,
+      description: `External network request: ${redactSensitive(command)}`,
     };
   }
 
@@ -191,8 +193,8 @@ export function auditRecordToNrEvent(record: AuditRecord): NrEventData {
   };
 
   if (record.sessionId != null) event.session_id = record.sessionId;
-  if (record.filePath != null) event.file_path = record.filePath;
-  if (record.command != null) event.command = record.command;
+  if (record.filePath != null) event.file_path = redactSensitive(record.filePath);
+  if (record.command  != null) event.command   = redactSensitive(record.command);
 
   if (record.securityAlert) {
     event['audit.security_alert'] = true;
@@ -218,8 +220,8 @@ export function securityAlertToNrEvent(record: AuditRecord): NrEventData {
   };
 
   if (record.sessionId != null) event.session_id = record.sessionId;
-  if (record.filePath != null) event.file_path = record.filePath;
-  if (record.command != null) event.command = record.command;
+  if (record.filePath != null) event.file_path = redactSensitive(record.filePath);
+  if (record.command  != null) event.command   = redactSensitive(record.command);
 
   return event;
 }
@@ -234,6 +236,8 @@ export interface AuditTrailManagerOptions {
   sensitivePatterns?: RegExp[];
   destructivePatterns?: RegExp[];
   networkPatterns?: RegExp[];
+  /** Optional local store for persisting each audit record to disk immediately. */
+  localStore?: LocalStore;
 }
 
 export class AuditTrailManager {
@@ -242,6 +246,7 @@ export class AuditTrailManager {
   private readonly sensitivePatterns: readonly RegExp[];
   private readonly destructivePatterns: readonly RegExp[];
   private readonly networkPatterns: readonly RegExp[];
+  private readonly localStore: LocalStore | null;
 
   private entries: AuditRecord[] = [];
   private sensitiveAccessLog: AuditRecord[] = [];
@@ -252,6 +257,7 @@ export class AuditTrailManager {
     this.sensitivePatterns = options.sensitivePatterns ?? DEFAULT_SENSITIVE_FILE_PATTERNS;
     this.destructivePatterns = options.destructivePatterns ?? DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS;
     this.networkPatterns = options.networkPatterns ?? DEFAULT_NETWORK_COMMAND_PATTERNS;
+    this.localStore = options.localStore ?? null;
   }
 
   recordToolCall(record: ToolCallRecord): AuditRecord {
@@ -288,6 +294,7 @@ export class AuditTrailManager {
       });
     }
 
+    this.persistToDisk(auditRecord);
     return auditRecord;
   }
 
@@ -326,6 +333,7 @@ export class AuditTrailManager {
       });
     }
 
+    this.persistToDisk(auditRecord);
     return auditRecord;
   }
 
@@ -362,5 +370,21 @@ export class AuditTrailManager {
     if (sessionId !== undefined) {
       this.sessionId = sessionId;
     }
+  }
+
+  private persistToDisk(record: AuditRecord): void {
+    if (!this.localStore) return;
+    this.localStore.appendAuditLog({
+      timestamp: record.timestamp,
+      action: record.action,
+      tool: record.tool,
+      detail: record.detail,
+      developer: record.developer,
+      filePath: record.filePath,
+      command: record.command,
+      securityAlert: record.securityAlert
+        ? { severity: record.securityAlert.severity, alertType: record.securityAlert.alertType }
+        : undefined,
+    });
   }
 }

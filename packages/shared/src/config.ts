@@ -24,11 +24,14 @@ function envBool(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
-function envInt(key: string, defaultValue: number): number {
+function envInt(key: string, defaultValue: number, bounds?: { min?: number; max?: number }): number {
   const val = process.env[key];
   if (val === undefined) return defaultValue;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? defaultValue : parsed;
+  if (Number.isNaN(parsed)) return defaultValue;
+  if (bounds?.min !== undefined && parsed < bounds.min) return bounds.min;
+  if (bounds?.max !== undefined && parsed > bounds.max) return bounds.max;
+  return parsed;
 }
 
 function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
@@ -54,6 +57,14 @@ export function loadConfig(overrides?: Partial<AgentConfig>): Readonly<AgentConf
     );
   }
 
+  const accountId = overrides?.accountId ?? process.env.NEW_RELIC_ACCOUNT_ID ?? null;
+  if (accountId !== null && !/^\d{1,12}$/.test(accountId)) {
+    throw new Error(
+      'Invalid configuration: NEW_RELIC_ACCOUNT_ID must be 1–12 decimal digits. ' +
+        `Received: "${accountId}"`,
+    );
+  }
+
   const highSecurity = overrides?.highSecurity ?? envBool('NEW_RELIC_AI_HIGH_SECURITY', false);
 
   const recordContent = highSecurity
@@ -76,11 +87,11 @@ export function loadConfig(overrides?: Partial<AgentConfig>): Readonly<AgentConf
     customPricingFile:
       overrides?.customPricingFile ?? process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ?? null,
     contentMaxLength:
-      overrides?.contentMaxLength ?? envInt('NEW_RELIC_AI_CONTENT_MAX_LENGTH', 4096),
+      overrides?.contentMaxLength ?? envInt('NEW_RELIC_AI_CONTENT_MAX_LENGTH', 4096, { min: 1, max: 1_048_576 }),
     highSecurity,
     logLevel: overrides?.logLevel ?? envLogLevel('NEW_RELIC_AI_LOG_LEVEL', 'info'),
     collectorHost: overrides?.collectorHost ?? process.env.NEW_RELIC_HOST ?? null,
-    accountId: overrides?.accountId ?? process.env.NEW_RELIC_ACCOUNT_ID ?? null,
+    accountId,
   };
 
   return Object.freeze(config);

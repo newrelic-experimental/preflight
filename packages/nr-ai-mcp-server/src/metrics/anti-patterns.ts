@@ -170,7 +170,7 @@ export class AntiPatternDetector {
 
     const patterns: AntiPattern[] = [];
     for (const [file, count] of readCounts) {
-      if (count > this.reReadThreshold) {
+      if (count >= this.reReadThreshold) {
         patterns.push({
           type: 're_reading',
           file,
@@ -242,7 +242,7 @@ export class AntiPatternDetector {
         if (file) {
           const count = (editStreaks.get(file) ?? 0) + 1;
           editStreaks.set(file, count);
-          if (count > this.blindEditThreshold) {
+          if (count >= this.blindEditThreshold) {
             flagged.set(file, count);
           }
         }

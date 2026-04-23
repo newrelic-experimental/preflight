@@ -43,6 +43,7 @@ function makeConfig(port: number, overrides?: Partial<UpstreamConfig>): Upstream
     name: 'test-upstream',
     url: `http://127.0.0.1:${port}`,
     transportType: 'http',
+    allowPrivateHosts: true,
     ...overrides,
   };
 }
@@ -167,7 +168,7 @@ describe('HttpUpstream', () => {
   it('stores name and transportType', () => {
     const upstream = new HttpUpstream({
       name: 'my-server',
-      url: 'http://localhost:1234',
+      url: 'https://example.com',
       transportType: 'http',
     });
     expect(upstream.name).toBe('my-server');
@@ -177,11 +178,51 @@ describe('HttpUpstream', () => {
   it('connect and disconnect are no-ops for HTTP', async () => {
     const upstream = new HttpUpstream({
       name: 'test',
-      url: 'http://localhost:1234',
+      url: 'https://example.com',
       transportType: 'http',
     });
     await expect(upstream.connect()).resolves.toBeUndefined();
     await expect(upstream.disconnect()).resolves.toBeUndefined();
+  });
+
+  describe('SSRF protection', () => {
+    const ssrfCases: Array<[string, string]> = [
+      ['loopback IPv4', 'http://127.0.0.1:8080'],
+      ['localhost', 'http://localhost:8080'],
+      ['RFC-1918 10.x', 'http://10.0.0.1/mcp'],
+      ['RFC-1918 172.16.x', 'http://172.16.5.1/mcp'],
+      ['RFC-1918 172.31.x', 'http://172.31.255.1/mcp'],
+      ['RFC-1918 192.168.x', 'http://192.168.1.1/mcp'],
+      ['link-local', 'http://169.254.169.254/latest/meta-data/'],
+      ['IPv6 loopback', 'http://[::1]/mcp'],
+      ['all-zeros', 'http://0.0.0.0/mcp'],
+      ['disallowed scheme', 'file:///etc/passwd'],
+      ['ftp scheme', 'ftp://example.com/file'],
+    ];
+
+    it.each(ssrfCases)('blocks %s (%s)', (_label, url) => {
+      expect(
+        () => new HttpUpstream({ name: 'test', url, transportType: 'http' }),
+      ).toThrow();
+    });
+
+    it('allows public HTTPS URLs', () => {
+      expect(
+        () => new HttpUpstream({ name: 'test', url: 'https://my-mcp-server.example.com', transportType: 'http' }),
+      ).not.toThrow();
+    });
+
+    it('allows public HTTP URLs', () => {
+      expect(
+        () => new HttpUpstream({ name: 'test', url: 'http://my-mcp-server.example.com:3000', transportType: 'http' }),
+      ).not.toThrow();
+    });
+
+    it('allows private hosts when allowPrivateHosts is set', () => {
+      expect(
+        () => new HttpUpstream({ name: 'test', url: 'http://127.0.0.1:3000', transportType: 'http', allowPrivateHosts: true }),
+      ).not.toThrow();
+    });
   });
 });
 
@@ -480,6 +521,7 @@ describe('HttpUpstream.forward()', () => {
       name: 'dead',
       url: 'http://127.0.0.1:1',
       transportType: 'http',
+      allowPrivateHosts: true,
     });
     const fakeReq = makeFakeRequest();
     const fakeRes = makeFakeResponse();
@@ -508,14 +550,73 @@ describe('HttpUpstream.forward()', () => {
     expect(Buffer.concat(fakeRes._body).toString()).toContain('timed out');
   });
 
+  it('returns upstream status and JSON error body when upstream errors before sending data', async () => {
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.flushHeaders();
+        setTimeout(() => res.socket?.destroy(), 10);
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+
+    const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+
+    expect(result.statusCode).toBe(502);
+    expect(fakeRes._statusCode).toBe(502);
+    expect(fakeRes._headers['content-type']).toBe('application/json');
+    const body = JSON.parse(Buffer.concat(fakeRes._body).toString());
+    expect(body.error).toBe('upstream_error');
+  });
+
   it('default timeout is 30 seconds', () => {
     const upstream = new HttpUpstream({
       name: 'default-timeout',
-      url: 'http://localhost:1234',
+      url: 'https://example.com',
       transportType: 'http',
     });
     // Access private field via any cast for testing
     expect((upstream as any).timeoutMs).toBe(30_000);
+  });
+
+  // M-10: SSE detection must parse the media type, not just substring-match
+  it('treats text/event-stream with charset parameter as streaming', async () => {
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });
+        res.end();
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+    (fakeRes as any).socket = { destroy() {} };
+
+    const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+    expect(result.isStreaming).toBe(true);
+  });
+
+  it('does not treat a JSON response whose description contains "text/event-stream" as streaming', async () => {
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json; description="not-text/event-stream"' });
+        res.end('{"ok":true}');
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+
+    const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
+    expect(result.isStreaming).toBe(false);
   });
 
   it('proxy overhead is <10ms for a localhost round-trip', async () => {

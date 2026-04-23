@@ -103,7 +103,22 @@ describe('RequestTimer', () => {
     expect(metrics.timeToFirstTokenMs!).toBeLessThan(metrics.durationMs / 2);
   });
 
-  // 8. overheadMs calculation
+  // 8. generationDurationMs clamped to 0 when markThinkingEnd() called after stop()
+  it('clamps generationDurationMs to 0 when thinkingDurationMs exceeds durationMs', () => {
+    const timer = new RequestTimer();
+    timer.start();
+    timer.markThinkingStart();
+    busyWait(5);
+    timer.stop(); // stop before thinking ends — durationMs < eventual thinkingDurationMs
+    busyWait(5);
+    timer.markThinkingEnd(); // now thinkingDurationMs > durationMs
+
+    const metrics = timer.getMetrics();
+    expect(metrics.thinkingDurationMs!).toBeGreaterThan(metrics.durationMs);
+    expect(metrics.generationDurationMs).toBe(0);
+  });
+
+  // 9. overheadMs calculation
   it('computes overheadMs as TTFT minus thinking duration, clamped to >= 0', () => {
     const timer = new RequestTimer();
     timer.start();

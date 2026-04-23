@@ -72,7 +72,7 @@ export class RequestTimer {
         ? this.thinkingEndAt - this.thinkingStartAt
         : null;
 
-    const generationDurationMs = durationMs - (thinkingDurationMs ?? 0);
+    const generationDurationMs = Math.max(0, durationMs - (thinkingDurationMs ?? 0));
 
     const tokensPerSecond =
       outputTokens !== undefined && durationMs > 0

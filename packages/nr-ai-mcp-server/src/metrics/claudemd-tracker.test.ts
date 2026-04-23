@@ -54,6 +54,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 0,

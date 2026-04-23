@@ -97,6 +97,27 @@ describe('handleReportTokens()', () => {
     expect(metrics.totalCacheCreationTokens).toBe(500);
   });
 
+  it('totalTokens excludes cache tokens to match Anthropic dashboard convention (B-03)', () => {
+    const tracker = new CostTracker();
+    const args: TokenReport = {
+      input_tokens: 1_000,
+      output_tokens: 500,
+      thinking_tokens: 200,
+      cache_read_tokens: 3_000,
+      cache_creation_tokens: 400,
+      model: 'claude-sonnet-4',
+    };
+
+    handleReportTokens(tracker, args);
+
+    const metrics = tracker.getMetrics();
+    // totalTokens should be input + output + thinking only (not cache)
+    expect(metrics.totalInputTokens + metrics.totalOutputTokens + metrics.totalThinkingTokens).toBe(1_700);
+    // Cache tokens are still tracked individually for accurate cost calculation
+    expect(metrics.totalCacheReadTokens).toBe(3_000);
+    expect(metrics.totalCacheCreationTokens).toBe(400);
+  });
+
   it('defaults optional tokens to 0', () => {
     const tracker = new CostTracker();
     const args: TokenReport = {
@@ -111,5 +132,48 @@ describe('handleReportTokens()', () => {
     expect(metrics.totalThinkingTokens).toBe(0);
     expect(metrics.totalCacheReadTokens).toBe(0);
     expect(metrics.totalCacheCreationTokens).toBe(0);
+  });
+
+  // N-05: token clamping and model truncation
+  describe('N-05: unbounded token validation', () => {
+    it('clamps negative token counts to 0', () => {
+      const tracker = new CostTracker();
+      handleReportTokens(tracker, { input_tokens: -999, output_tokens: -1, model: 'x' });
+      const metrics = tracker.getMetrics();
+      expect(metrics.totalInputTokens).toBe(0);
+      expect(metrics.totalOutputTokens).toBe(0);
+    });
+
+    it('clamps token counts above 10_000_000 to 10_000_000', () => {
+      const tracker = new CostTracker();
+      handleReportTokens(tracker, { input_tokens: 999_999_999, output_tokens: 500_000_000, model: 'x' });
+      const metrics = tracker.getMetrics();
+      expect(metrics.totalInputTokens).toBe(10_000_000);
+      expect(metrics.totalOutputTokens).toBe(10_000_000);
+    });
+
+    it('floors fractional token counts to integers', () => {
+      const tracker = new CostTracker();
+      handleReportTokens(tracker, { input_tokens: 1000.9, output_tokens: 500.1, model: 'x' });
+      const metrics = tracker.getMetrics();
+      expect(metrics.totalInputTokens).toBe(1000);
+      expect(metrics.totalOutputTokens).toBe(500);
+    });
+
+    it('clamps NaN token counts to 0', () => {
+      const tracker = new CostTracker();
+      handleReportTokens(tracker, { input_tokens: NaN, output_tokens: NaN, model: 'x' });
+      const metrics = tracker.getMetrics();
+      expect(metrics.totalInputTokens).toBe(0);
+      expect(metrics.totalOutputTokens).toBe(0);
+    });
+
+    it('truncates model string longer than 256 chars', () => {
+      const tracker = new CostTracker();
+      const longModel = 'a'.repeat(300);
+      const result = handleReportTokens(tracker, { input_tokens: 100, output_tokens: 50, model: longModel });
+      const body = JSON.parse(result.content[0].text);
+      expect(body.model.length).toBe(256);
+    });
   });
 });

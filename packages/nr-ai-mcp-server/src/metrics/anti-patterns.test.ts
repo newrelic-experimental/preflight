@@ -117,11 +117,25 @@ describe('Re-reading detection', () => {
     expect(reReading[0].readCount).toBe(4);
   });
 
-  it('does not detect when file read only 3 times (at threshold)', () => {
+  it('detects when file read exactly at threshold (3 times) (B-04)', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [
       makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const reReading = result.patterns.filter(p => p.type === 're_reading');
+    expect(reReading).toHaveLength(1);
+    expect(reReading[0].readCount).toBe(3);
+  });
+
+  it('does not detect when file read fewer times than threshold (2 times)', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
       makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
     ];
@@ -209,6 +223,21 @@ describe('Blind editing detection', () => {
     expect(blind[0].editCount).toBe(4);
   });
 
+  it('detects exactly at threshold (3 edits) without verification (B-04)', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const blind = result.patterns.filter(p => p.type === 'blind_editing');
+    expect(blind).toHaveLength(1);
+    expect(blind[0].editCount).toBe(3);
+  });
+
   it('does not detect when verification happens between edits', () => {
     const detector = new AntiPatternDetector();
 
@@ -246,14 +275,13 @@ describe('Blind editing detection', () => {
     const calls: ToolCallRecord[] = [
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
-      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Bash', isLintCommand: true }),
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
     ];
 
     const result = detector.analyze(calls);
     const blind = result.patterns.filter(p => p.type === 'blind_editing');
-    // First streak is 3, at threshold (not above), so not flagged
+    // First streak is 2 edits — below threshold of 3; lint resets it
     expect(blind).toHaveLength(0);
   });
 
@@ -261,7 +289,6 @@ describe('Blind editing detection', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [
-      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
@@ -275,7 +302,7 @@ describe('Blind editing detection', () => {
     const result = detector.analyze(calls);
     const blind = result.patterns.filter(p => p.type === 'blind_editing');
 
-    // /a.ts: 3 edits, then Read resets, then 1 edit → streak max 3, not flagged
+    // /a.ts: 2 edits (below threshold), then Read resets, then 1 edit → not flagged
     // /b.ts: 4 edits without verification → flagged
     expect(blind).toHaveLength(1);
     expect(blind[0].file).toBe('/b.ts');
@@ -285,7 +312,6 @@ describe('Blind editing detection', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [
-      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
@@ -301,8 +327,8 @@ describe('Blind editing detection', () => {
     const result = detector.analyze(calls);
     const blind = result.patterns.filter(p => p.type === 'blind_editing');
 
-    // /b.ts was flagged (4 edits > threshold) before the test — preserved
-    // /a.ts had 3 edits (at threshold, not above) before test, then 2 after reset — not flagged
+    // /b.ts was flagged (4 edits >= threshold) before the test — preserved
+    // /a.ts had 2 edits (below threshold) before test, then 2 after reset — not flagged
     expect(blind).toHaveLength(1);
     expect(blind[0].file).toBe('/b.ts');
   });

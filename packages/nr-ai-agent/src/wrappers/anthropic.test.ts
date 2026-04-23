@@ -38,6 +38,7 @@ function makeConfig(overrides: Partial<WrapperConfig> = {}): WrapperConfig {
     recordContent: true,
     highSecurity: false,
     contentMaxLength: 4096,
+    redactionPatterns: [],
     ...overrides,
   };
 }
@@ -363,6 +364,20 @@ describe('wrapAnthropicClient', () => {
       expect(records[0].error!.type).toBe('TypeError');
       expect(records[0].error!.statusCode).toBeNull();
     });
+
+    it('redacts secret patterns from error messages before storing', async () => {
+      const apiError = new Error('auth failed: Bearer sk-secret12345 was rejected');
+      const client = makeMockClient();
+      client.messages.create.mockRejectedValue(apiError);
+
+      const config = makeConfig({ redactionPatterns: [/Bearer\s+\S+/g] });
+      const { records, handler } = makeRecorder();
+      wrapAnthropicClient(client, config, handler);
+
+      await expect(client.messages.create(makeCreateParams())).rejects.toThrow();
+
+      expect(records[0].error!.message).toBe('auth failed: [REDACTED] was rejected');
+    });
   });
 
   describe('messages.create({ stream: true }) — raw stream', () => {
@@ -535,17 +550,35 @@ describe('wrapAnthropicClient', () => {
   });
 
   describe('messages.stream() — MessageStream', () => {
-    it('measures TTFT and captures record on finalMessage', () => {
-      const finalMsg = makeMessage();
+    function makeMockMessageStream() {
       const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
-
-      const mockMessageStream = {
+      // Defined as a standalone variable to avoid circular-reference implicit-any errors
+      const removeAllListenersSpy: jest.Mock = jest.fn(() => {
+        for (const key of Object.keys(listeners)) {
+          delete listeners[key];
+        }
+      });
+      const stream = {
         on(event: string, cb: (...args: unknown[]) => void) {
           if (!listeners[event]) listeners[event] = [];
           listeners[event].push(cb);
-          return mockMessageStream;
+          return stream;
         },
+        once(event: string, cb: (...args: unknown[]) => void) {
+          if (!listeners[event]) listeners[event] = [];
+          listeners[event].push(cb);
+          return stream;
+        },
+        removeAllListeners: removeAllListenersSpy,
+        listeners,
+        removeAllListenersSpy,
       };
+      return stream;
+    }
+
+    it('measures TTFT and captures record on finalMessage', () => {
+      const finalMsg = makeMessage();
+      const mockMessageStream = makeMockMessageStream();
 
       const client = makeMockClient();
       client.messages.stream.mockReturnValue(mockMessageStream);
@@ -558,12 +591,12 @@ describe('wrapAnthropicClient', () => {
       expect(stream).toBe(mockMessageStream);
 
       // Simulate text event for TTFT
-      expect(listeners['text']).toBeDefined();
-      listeners['text'][0]('Hello');
+      expect(mockMessageStream.listeners['text']).toBeDefined();
+      mockMessageStream.listeners['text'][0]('Hello');
 
       // Simulate finalMessage
-      expect(listeners['finalMessage']).toBeDefined();
-      listeners['finalMessage'][0](finalMsg);
+      expect(mockMessageStream.listeners['finalMessage']).toBeDefined();
+      mockMessageStream.listeners['finalMessage'][0](finalMsg);
 
       expect(records).toHaveLength(1);
       const record = records[0];
@@ -576,15 +609,7 @@ describe('wrapAnthropicClient', () => {
     });
 
     it('captures error record on stream error', () => {
-      const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
-
-      const mockMessageStream = {
-        on(event: string, cb: (...args: unknown[]) => void) {
-          if (!listeners[event]) listeners[event] = [];
-          listeners[event].push(cb);
-          return mockMessageStream;
-        },
-      };
+      const mockMessageStream = makeMockMessageStream();
 
       const client = makeMockClient();
       client.messages.stream.mockReturnValue(mockMessageStream);
@@ -597,7 +622,7 @@ describe('wrapAnthropicClient', () => {
 
       // Simulate error event
       const err = new Error('connection reset');
-      listeners['error'][0](err);
+      mockMessageStream.listeners['error'][0](err);
 
       expect(records).toHaveLength(1);
       expect(records[0].error).not.toBeNull();
@@ -606,15 +631,7 @@ describe('wrapAnthropicClient', () => {
 
     it('only records TTFT from the first text event', () => {
       const finalMsg = makeMessage();
-      const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
-
-      const mockMessageStream = {
-        on(event: string, cb: (...args: unknown[]) => void) {
-          if (!listeners[event]) listeners[event] = [];
-          listeners[event].push(cb);
-          return mockMessageStream;
-        },
-      };
+      const mockMessageStream = makeMockMessageStream();
 
       const client = makeMockClient();
       client.messages.stream.mockReturnValue(mockMessageStream);
@@ -626,15 +643,45 @@ describe('wrapAnthropicClient', () => {
       client.messages.stream(makeCreateParams());
 
       // Fire text multiple times
-      listeners['text'][0]('Hello');
-      listeners['text'][0](' world');
-      listeners['finalMessage'][0](finalMsg);
+      mockMessageStream.listeners['text'][0]('Hello');
+      mockMessageStream.listeners['text'][0](' world');
+      mockMessageStream.listeners['finalMessage'][0](finalMsg);
 
       const ttft = records[0].timeToFirstTokenMs;
       expect(ttft).toBeGreaterThan(0);
       // TTFT should be from first text event — we can't test exact equality
       // but we verify it was set (non-null)
       expect(ttft).not.toBeNull();
+    });
+
+    // A-04: listener cleanup to prevent GC-prevention memory leak
+    it('calls removeAllListeners after finalMessage to release listener closures', () => {
+      const finalMsg = makeMessage();
+      const mockMessageStream = makeMockMessageStream();
+
+      const client = makeMockClient();
+      client.messages.stream.mockReturnValue(mockMessageStream);
+
+      wrapAnthropicClient(client, makeConfig(), makeRecorder().handler);
+      client.messages.stream(makeCreateParams());
+
+      expect(mockMessageStream.removeAllListenersSpy).not.toHaveBeenCalled();
+      mockMessageStream.listeners['finalMessage'][0](finalMsg);
+      expect(mockMessageStream.removeAllListenersSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls removeAllListeners after stream error to release listener closures', () => {
+      const mockMessageStream = makeMockMessageStream();
+
+      const client = makeMockClient();
+      client.messages.stream.mockReturnValue(mockMessageStream);
+
+      wrapAnthropicClient(client, makeConfig(), makeRecorder().handler);
+      client.messages.stream(makeCreateParams());
+
+      expect(mockMessageStream.removeAllListenersSpy).not.toHaveBeenCalled();
+      mockMessageStream.listeners['error'][0](new Error('boom'));
+      expect(mockMessageStream.removeAllListenersSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -724,6 +771,47 @@ describe('wrapAnthropicClient', () => {
 
       expect(records[0].contentBlockTypes).toEqual(expect.arrayContaining(['text', 'tool_use']));
       expect(records[0].contentBlockTypes).toHaveLength(2);
+    });
+  });
+
+  // A-03: tool name sanitization
+  describe('tool name sanitization', () => {
+    it('truncates tool names longer than 256 characters', async () => {
+      const longName = 'a'.repeat(300);
+      const message = makeMessage();
+      const client = makeMockClient();
+      client.messages.create.mockResolvedValue(message);
+
+      const config = makeConfig();
+      const { records, handler } = makeRecorder();
+      wrapAnthropicClient(client, config, handler);
+
+      await client.messages.create({
+        ...makeCreateParams(),
+        tools: [{ name: longName, description: 'long', input_schema: { type: 'object' as const } }],
+      });
+
+      expect(records[0].toolNames[0]).toHaveLength(256);
+      expect(records[0].toolNames[0]).toBe('a'.repeat(256));
+    });
+
+    it('strips control characters (newlines, NUL bytes) from tool names', async () => {
+      const message = makeMessage();
+      const client = makeMockClient();
+      client.messages.create.mockResolvedValue(message);
+
+      const config = makeConfig();
+      const { records, handler } = makeRecorder();
+      wrapAnthropicClient(client, config, handler);
+
+      await client.messages.create({
+        ...makeCreateParams(),
+        tools: [
+          { name: 'tool\x00with\nnewline', description: 'bad', input_schema: { type: 'object' as const } },
+        ],
+      });
+
+      expect(records[0].toolNames[0]).toBe('toolwithnewline');
     });
   });
 

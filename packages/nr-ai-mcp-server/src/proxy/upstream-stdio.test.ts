@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { StdioUpstream } from './upstream-stdio.js';
+import { StdioUpstream, sanitizeEnv, validateCommand, DANGEROUS_ENV_KEYS } from './upstream-stdio.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -369,5 +369,109 @@ describe('StdioUpstream.disconnect()', () => {
     expect(mockKill).not.toHaveBeenCalled();
 
     jest.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeEnv
+// ---------------------------------------------------------------------------
+
+describe('sanitizeEnv', () => {
+  it('returns undefined when env is undefined', () => {
+    expect(sanitizeEnv(undefined, 'test')).toBeUndefined();
+  });
+
+  it('returns empty object for empty env', () => {
+    expect(sanitizeEnv({}, 'test')).toEqual({});
+  });
+
+  it('passes through safe env vars unchanged', () => {
+    const env = { CUSTOM_VAR: 'value', API_KEY: 'abc123', HOME: '/home/user' };
+    expect(sanitizeEnv(env, 'test')).toEqual(env);
+  });
+
+  it.each([...DANGEROUS_ENV_KEYS])('strips %s', (key) => {
+    const env: Record<string, string> = { [key]: 'evil', SAFE: 'ok' };
+    expect(sanitizeEnv(env, 'test')).toEqual({ SAFE: 'ok' });
+  });
+
+  it('strips multiple dangerous keys at once', () => {
+    const result = sanitizeEnv(
+      {
+        LD_PRELOAD: '/evil/lib.so',
+        LD_LIBRARY_PATH: '/evil',
+        DYLD_INSERT_LIBRARIES: '/evil/lib.dylib',
+        DYLD_LIBRARY_PATH: '/evil',
+        PATH: '/tmp/evil:/usr/bin',
+        NODE_OPTIONS: '--require /evil/code.js',
+        SAFE_VAR: 'hello',
+      },
+      'test',
+    );
+    expect(result).toEqual({ SAFE_VAR: 'hello' });
+  });
+
+  it('logs a warning when dangerous keys are stripped', () => {
+    sanitizeEnv({ LD_PRELOAD: 'evil.so', SAFE: 'ok' }, 'my-server');
+    const output = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('');
+    expect(output).toContain('LD_PRELOAD');
+    expect(output).toContain('my-server');
+  });
+
+  it('does not log when no dangerous keys are present', () => {
+    sanitizeEnv({ SAFE: 'ok' }, 'test');
+    const output = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('');
+    expect(output).not.toContain('stripped dangerous');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateCommand
+// ---------------------------------------------------------------------------
+
+describe('validateCommand', () => {
+  it('throws for bare command names when allowBareCommand is false', () => {
+    expect(() => validateCommand('test', 'node', false)).toThrow('must be an absolute path');
+    expect(() => validateCommand('test', 'python3', false)).toThrow('must be an absolute path');
+    expect(() => validateCommand('test', './relative/path', false)).toThrow('must be an absolute path');
+  });
+
+  it('does not throw for absolute paths', () => {
+    expect(() => validateCommand('test', '/usr/bin/node', false)).not.toThrow();
+    expect(() => validateCommand('test', '/usr/local/bin/python3', false)).not.toThrow();
+  });
+
+  it('does not throw for bare commands when allowBareCommand is true', () => {
+    expect(() => validateCommand('test', 'node', true)).not.toThrow();
+    expect(() => validateCommand('test', 'python3', true)).not.toThrow();
+  });
+
+  it('includes the upstream name and command in the error message', () => {
+    expect(() => validateCommand('my-server', 'node', false)).toThrow('my-server');
+    expect(() => validateCommand('my-server', 'node', false)).toThrow('"node"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connect() — command validation integration
+// ---------------------------------------------------------------------------
+
+describe('StdioUpstream.connect() command validation', () => {
+  it('throws when command is a bare name and allowBareCommand is not set', async () => {
+    const upstream = new StdioUpstream({
+      name: 'test',
+      command: 'node',
+      transportType: 'stdio',
+    });
+    await expect(upstream.connect()).rejects.toThrow('must be an absolute path');
+  });
+
+  it('throws when command is a relative path', async () => {
+    const upstream = new StdioUpstream({
+      name: 'test',
+      command: './scripts/server.js',
+      transportType: 'stdio',
+    });
+    await expect(upstream.connect()).rejects.toThrow('must be an absolute path');
   });
 });

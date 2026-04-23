@@ -10,7 +10,7 @@
  */
 
 import 'dotenv/config';
-import { init } from 'nr-ai-agent';
+import { init, NrAiAgent } from 'nr-ai-agent';
 
 const separator = '─'.repeat(60);
 
@@ -18,7 +18,7 @@ function log(section: string, ...args: unknown[]): void {
   console.log(`[${section}]`, ...args);
 }
 
-async function testAnthropic(agent: ReturnType<typeof init>): Promise<void> {
+async function testAnthropic(agent: NrAiAgent): Promise<void> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     log('anthropic', 'Skipped — ANTHROPIC_API_KEY not set');
@@ -80,7 +80,7 @@ async function testAnthropic(agent: ReturnType<typeof init>): Promise<void> {
   });
 }
 
-async function testGemini(agent: ReturnType<typeof init>): Promise<void> {
+async function testGemini(agent: NrAiAgent): Promise<void> {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     log('gemini', 'Skipped — GOOGLE_API_KEY not set');
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
 
   // --- Initialize ---
   log('init', 'Initializing agent...');
-  const agent = init({
+  const agent = await init({
     licenseKey: process.env.NEW_RELIC_LICENSE_KEY ?? 'placeholder-license-key',
     appName: process.env.NEW_RELIC_APP_NAME ?? 'ai-observatory-test',
     accountId: process.env.NEW_RELIC_ACCOUNT_ID ?? '0',

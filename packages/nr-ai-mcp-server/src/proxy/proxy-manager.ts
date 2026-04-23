@@ -28,7 +28,14 @@ export interface ProxyManagerOptions {
   readonly port: number;
   readonly onToolCall?: (record: ProxyToolCallRecord) => void;
   readonly onRequest?: (record: ProxyRequestRecord) => void;
+  /** Timeout for reading the full request body (ms). Default: 30000. */
+  readonly bodyTimeoutMs?: number;
+  /** Maximum allowed request body size in bytes. Default: 10 MB. */
+  readonly maxBodyBytes?: number;
 }
+
+const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
 // ---------------------------------------------------------------------------
 // JSON-RPC body parsing (just enough to identify the method)
@@ -68,11 +75,15 @@ export class ProxyManager {
   private readonly port: number;
   private readonly onToolCall: ((record: ProxyToolCallRecord) => void) | undefined;
   private readonly onRequest: ((record: ProxyRequestRecord) => void) | undefined;
+  private readonly bodyTimeoutMs: number;
+  private readonly maxBodyBytes: number;
 
   constructor(options: ProxyManagerOptions) {
     this.port = options.port;
     this.onToolCall = options.onToolCall;
     this.onRequest = options.onRequest;
+    this.bodyTimeoutMs = options.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
+    this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   }
 
   /** Register an upstream MCP server for proxying. */
@@ -129,8 +140,10 @@ export class ProxyManager {
           res.end(JSON.stringify({ error: 'internal_error' }));
         } else if (!res.writableEnded) {
           // Headers already sent (e.g. mid-SSE stream) — writing JSON would corrupt
-          // the stream; destroy the socket to signal an abnormal close instead.
-          res.socket?.destroy();
+          // the stream. N-09: destroy the response (not just the socket) so the
+          // writable stream and its pipe chain are fully cleaned up.
+          res.on('error', () => { /* suppress post-destroy write errors */ });
+          res.destroy();
         }
       });
     });
@@ -183,8 +196,9 @@ export class ProxyManager {
     // Parse /proxy/{server-name} route
     const match = url.match(/^\/proxy\/([^/]+)/);
     if (!match) {
+      logger.warn('Proxy route not found', { url });
       res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'not_found', message: `No route for ${url}` }));
+      res.end(JSON.stringify({ error: 'not_found' }));
       return;
     }
 
@@ -198,13 +212,28 @@ export class ProxyManager {
     }
     const upstream = this.upstreams.get(serverName);
     if (!upstream) {
+      logger.warn('Unknown upstream requested', { serverName });
       res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'upstream_not_found', message: `Unknown upstream: ${serverName}` }));
+      res.end(JSON.stringify({ error: 'upstream_not_found' }));
       return;
     }
 
     // Read request body (for POST/DELETE; empty for GET)
-    const body = await readBody(req);
+    let body: Buffer;
+    try {
+      body = await readBody(req, this.bodyTimeoutMs, this.maxBodyBytes);
+    } catch (err) {
+      if (res.headersSent) return;
+      const message = err instanceof Error ? err.message : String(err);
+      if ((err as NodeJS.ErrnoException).code === 'BODY_TOO_LARGE') {
+        res.writeHead(413, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload_too_large', message }));
+      } else {
+        res.writeHead(408, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'request_timeout', message }));
+      }
+      return;
+    }
 
     // Forward with interception
     await this.forwardWithInterception(upstream, req, res, body);
@@ -308,20 +337,38 @@ export class ProxyManager {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
+function readBody(req: IncomingMessage, timeoutMs: number, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     if (req.method === 'GET') {
       resolve(Buffer.alloc(0));
       return;
     }
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
     let settled = false;
+
+    const timeoutHandle = setTimeout(() => {
+      settle(() => reject(new Error(`Request body read timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    timeoutHandle.unref();
+
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeoutHandle);
       fn();
     };
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+
+    req.on('data', (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        const err = new Error(`Request body exceeds limit of ${maxBytes} bytes`) as NodeJS.ErrnoException;
+        err.code = 'BODY_TOO_LARGE';
+        settle(() => reject(err));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => settle(() => resolve(Buffer.concat(chunks))));
     req.on('error', (err) => settle(() => reject(err)));
     req.on('close', () => settle(() => reject(new Error('Request closed before body was fully read'))));

@@ -51,6 +51,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 0,
@@ -60,6 +61,29 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     ...overrides,
   };
 }
+
+// N-06: null-proto accumulator tests
+describe('aggregateSessions prototype-pollution resistance (N-06)', () => {
+  it('handles __proto__ and constructor keys in toolBreakdown without pollution', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(makeSummary({
+      sessionId: 'proto-sess',
+      startTime: start.getTime() + 1000,
+      // keys that would shadow Object.prototype on a regular {} accumulator
+      toolBreakdown: { '__proto__': 1, constructor: 2, Read: 5 } as unknown as Record<string, number>,
+    }));
+
+    const summary = generator.generate('2026-W16');
+
+    // Regular tool key survives in the aggregated output
+    expect(summary.toolBreakdown['Read']).toBe(5);
+    // Object.prototype must be unmodified — no pollution of enumerable properties
+    expect(Object.keys(Object.prototype)).toEqual([]);
+  });
+});
 
 describe('WeeklySummaryGenerator', () => {
   it('generate() aggregates 5 sessions into correct weekly totals', () => {
@@ -151,6 +175,27 @@ describe('WeeklySummaryGenerator', () => {
     expect(bob.totalCostUsd).toBe(0.15);
     expect(bob.totalToolCalls).toBe(6);
     expect(bob.totalTasksCompleted).toBe(1);
+  });
+
+  // N-03: defense-in-depth validation in generate()
+  it('generate() throws for path-traversal weekId (N-03)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    expect(() => generator.generate('../../../etc/passwd')).toThrow(/Invalid weekId format/);
+  });
+
+  it('generate() throws for arbitrary string weekId (N-03)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    expect(() => generator.generate('not-a-week')).toThrow(/Invalid weekId format/);
+  });
+
+  it('generate() accepts valid YYYY-Wnn weekId (N-03)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(makeSummary({ sessionId: 'n03-sess', startTime: start.getTime() + 1000 }));
+    expect(() => generator.generate('2026-W16')).not.toThrow();
   });
 
   it('auto-generation: generates last week summary if missing', () => {

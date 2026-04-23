@@ -18,6 +18,16 @@ export interface UpstreamConfig {
   readonly transportType: 'http' | 'stdio';
   /** Timeout in ms for upstream HTTP requests (default: 30000) */
   readonly timeoutMs?: number;
+  /**
+   * Allow private/loopback addresses (127.x.x.x, 10.x.x.x, etc.).
+   * For local development and testing only — never set in production deployments.
+   */
+  readonly allowPrivateHosts?: boolean;
+  /**
+   * Allow bare command names (e.g., "node" instead of "/usr/bin/node").
+   * For local development and testing only — never set in production deployments.
+   */
+  readonly allowBareCommand?: boolean;
 }
 
 // ---------------------------------------------------------------------------

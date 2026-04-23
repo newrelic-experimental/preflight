@@ -72,6 +72,7 @@ export interface WrapperConfig {
   recordContent: boolean;
   highSecurity: boolean;
   contentMaxLength: number;
+  redactionPatterns: readonly RegExp[];
 }
 
 export type RecordHandler = (record: AiRequestRecord) => void;

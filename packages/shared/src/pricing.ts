@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { resolve, extname } from 'node:path';
 import type { TokenUsage } from './tokens.js';
 import { DEFAULT_PRICING_TABLE } from './pricing-data.js';
 import { createLogger } from './logger.js';
@@ -53,20 +54,76 @@ let mergedTable: Record<string, ModelPricing> = { ...DEFAULT_PRICING_TABLE };
 // Custom pricing file
 // ---------------------------------------------------------------------------
 
+function isFiniteNonNegative(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+function validatePricingEntry(model: string, entry: unknown): ModelPricing | null {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    logger.warn('Custom pricing entry is not an object — skipped', { model });
+    return null;
+  }
+  const e = entry as Record<string, unknown>;
+
+  if (!isFiniteNonNegative(e.inputPerMTok)) {
+    logger.warn('Custom pricing entry has invalid inputPerMTok — skipped', { model, value: e.inputPerMTok });
+    return null;
+  }
+  if (!isFiniteNonNegative(e.outputPerMTok)) {
+    logger.warn('Custom pricing entry has invalid outputPerMTok — skipped', { model, value: e.outputPerMTok });
+    return null;
+  }
+  if (typeof e.contextWindow !== 'number' || !Number.isFinite(e.contextWindow) || e.contextWindow <= 0) {
+    logger.warn('Custom pricing entry has invalid contextWindow — skipped', { model, value: e.contextWindow });
+    return null;
+  }
+
+  const optionalRateFields = [
+    'thinkingPerMTok', 'cacheReadPerMTok', 'cacheCreationPerMTok',
+    'tierInputPerMTok', 'tierOutputPerMTok', 'tierThinkingPerMTok',
+  ] as const;
+  for (const field of optionalRateFields) {
+    if (e[field] !== undefined && !isFiniteNonNegative(e[field])) {
+      logger.warn(`Custom pricing entry has invalid ${field} — skipped`, { model, value: e[field] });
+      return null;
+    }
+  }
+  if (e.tierThreshold !== undefined && (typeof e.tierThreshold !== 'number' || !Number.isFinite(e.tierThreshold) || e.tierThreshold <= 0)) {
+    logger.warn('Custom pricing entry has invalid tierThreshold — skipped', { model, value: e.tierThreshold });
+    return null;
+  }
+
+  return e as unknown as ModelPricing;
+}
+
 export function loadCustomPricing(filePath: string): Record<string, ModelPricing> | null {
+  const resolvedPath = resolve(filePath);
+
+  if (extname(resolvedPath).toLowerCase() !== '.json') {
+    logger.warn('Custom pricing file must have a .json extension', { filePath: resolvedPath });
+    return null;
+  }
+
   try {
-    const raw = readFileSync(filePath, 'utf-8');
-    const parsed = JSON.parse(raw) as Record<string, ModelPricing>;
+    const raw = readFileSync(resolvedPath, 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
 
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      logger.warn('Custom pricing file is not a JSON object', { filePath });
+      logger.warn('Custom pricing file is not a JSON object', { filePath: resolvedPath });
       return null;
     }
 
-    return parsed;
+    const result: Record<string, ModelPricing> = {};
+    for (const [model, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const validated = validatePricingEntry(model, entry);
+      if (validated !== null) {
+        result[model] = validated;
+      }
+    }
+    return result;
   } catch (err) {
     logger.warn('Failed to load custom pricing file', {
-      filePath,
+      filePath: resolvedPath,
       error: err instanceof Error ? err.message : String(err),
     });
     return null;

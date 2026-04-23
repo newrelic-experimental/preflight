@@ -174,7 +174,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiAntiPattern FACET anti_pattern_type, platform SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiAntiPattern FACET type, platform SINCE 7 days ago"
               }
             ]
           }

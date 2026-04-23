@@ -178,4 +178,14 @@ describe('truncateErrorMessage', () => {
     expect(truncated).toHaveLength(50);
     expect(truncated.endsWith('...')).toBe(true);
   });
+
+  it('clamps maxLength to 4 when caller passes a value below 4', () => {
+    const result = truncateErrorMessage('hello', 2);
+    expect(result.length).toBeLessThanOrEqual(4);
+    expect(result.endsWith('...')).toBe(true);
+  });
+
+  it('truncates to exactly 4 chars when maxLength=4', () => {
+    expect(truncateErrorMessage('hello', 4)).toBe('h...');
+  });
 });

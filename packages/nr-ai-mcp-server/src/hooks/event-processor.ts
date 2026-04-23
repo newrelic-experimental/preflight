@@ -22,11 +22,14 @@ export interface HookEventProcessorOptions {
   store: LocalStore;
   pollIntervalMs?: number;
   orphanTimeoutMs?: number;
+  /** Maximum pre-events held in memory awaiting a post. Defaults to 2000. */
+  maxPendingEvents?: number;
   onRecord: (record: ToolCallRecord) => void;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_PENDING = 2_000;
 
 export class HookEventProcessor {
   private readonly store: LocalStore;
@@ -35,6 +38,7 @@ export class HookEventProcessor {
   private readonly onRecord: (record: ToolCallRecord) => void;
 
   private readonly pending: Map<string, HookEvent> = new Map();
+  private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private fallbackCounter = 0;
@@ -46,6 +50,7 @@ export class HookEventProcessor {
     this.store = options.store;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.orphanTimeoutMs = options.orphanTimeoutMs ?? DEFAULT_ORPHAN_TIMEOUT_MS;
+    this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
     this.onRecord = options.onRecord;
 
     this.boundBeforeExit = () => {
@@ -152,8 +157,14 @@ export class HookEventProcessor {
   }
 
   private handlePreEvent(event: HookEvent): void {
-    const key = this.pairingKey(event);
-    this.pending.set(key, event);
+    if (this.pending.size >= this.maxPendingEvents) {
+      const oldestKey = this.pending.keys().next().value as string;
+      this.pending.delete(oldestKey);
+      logger.warn('Pending map overflow — oldest pre-event dropped', {
+        maxPendingEvents: this.maxPendingEvents,
+      });
+    }
+    this.pending.set(this.pairingKey(event), event);
   }
 
   private handlePostEvent(event: HookEvent): void {

@@ -58,7 +58,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT average(estimatedCostUsd) AS 'USD / Task' FROM AiCodingTask SINCE 7 days ago"
+                "query": "SELECT average(estimated_cost_usd) AS 'USD / Task' FROM AiCodingTask SINCE 7 days ago"
               }
             ]
           }
@@ -71,7 +71,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT percentage(count(*), WHERE testsPassed > 0) AS 'Success %' FROM AiCodingTask SINCE 7 days ago"
+                "query": "SELECT percentage(count(*), WHERE tests_passed > 0) AS 'Success %' FROM AiCodingTask SINCE 7 days ago"
               }
             ],
             "thresholds": [
@@ -169,7 +169,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT max(estimatedCostUsd) FROM AiCodingTask FACET taskId SINCE 7 days ago LIMIT 10"
+                "query": "SELECT max(estimated_cost_usd) FROM AiCodingTask FACET task_id SINCE 7 days ago LIMIT 10"
               }
             ]
           }

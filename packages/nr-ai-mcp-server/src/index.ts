@@ -189,6 +189,8 @@ async function main(): Promise<void> {
       localStore,
       eventHarvestIntervalMs: config.harvestIntervalMs.events,
       metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
+      costTracker,
+      efficiencyScorer,
     });
 
     const capturedNrIngest = nrIngest;
@@ -198,6 +200,23 @@ async function main(): Promise<void> {
         sessionTracker.recordToolCall(record);
         taskDetector.recordToolCall(record);
         capturedNrIngest.ingestToolCall(record);
+
+        // Emit any tasks that completed as a result of this record,
+        // and detect anti-patterns across each completed task's tool calls
+        for (const task of taskDetector.drainNewlyCompletedTasks()) {
+          capturedNrIngest.ingestCodingTask(task);
+          const firstRecord = task.toolCalls[0];
+          const context = {
+            sessionId: firstRecord?.sessionId ?? undefined,
+            platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
+            taskId: task.taskId,
+          };
+          const { patterns } = antiPatternDetector.analyze(task.toolCalls);
+          efficiencyScorer.computeScore(task, patterns);
+          for (const pattern of patterns) {
+            capturedNrIngest.ingestAntiPattern(pattern, context);
+          }
+        }
       },
     });
 

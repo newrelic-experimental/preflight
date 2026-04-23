@@ -26,6 +26,10 @@ function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? text.slice(0, maxLength) : text;
 }
 
+function redact(text: string, patterns: readonly RegExp[]): string {
+  return patterns.reduce((s, pattern) => s.replace(pattern, '[REDACTED]'), text);
+}
+
 function extractLastUserMessage(contents: GenerateContentParameters['contents']): string | null {
   if (typeof contents === 'string') return contents;
   if (!Array.isArray(contents)) {
@@ -78,6 +82,10 @@ function extractSystemInstructionLength(config: GenerateContentConfig | undefine
   return text !== null ? text.length : null;
 }
 
+function sanitizeToolName(name: unknown): string {
+  return String(name ?? '').slice(0, 256).replace(/[\x00-\x1f]/g, '');
+}
+
 function extractToolNames(tools: GenerateContentConfig['tools'] | undefined): string[] {
   if (!tools || !Array.isArray(tools)) return [];
   const names: string[] = [];
@@ -85,7 +93,7 @@ function extractToolNames(tools: GenerateContentConfig['tools'] | undefined): st
     const t = tool as Tool;
     if (t.functionDeclarations) {
       for (const fd of t.functionDeclarations) {
-        if (fd.name) names.push(fd.name);
+        if (fd.name) names.push(sanitizeToolName(fd.name));
       }
     }
     if (t.googleSearch) names.push('googleSearch');
@@ -262,10 +270,12 @@ function buildErrorRecord(
   base: ReturnType<typeof buildBaseRecord>,
   err: unknown,
   timer: RequestTimer,
+  config: WrapperConfig,
 ): AiRequestRecord {
   timer.stop();
   const metrics = timer.getMetrics();
   const error = err as { status?: number; error?: { type?: string }; message?: string };
+  const rawMessage = error.message ?? (err instanceof Error ? err.message : String(err));
   return {
     ...base,
     model: base.requestModel,
@@ -282,7 +292,7 @@ function buildErrorRecord(
     responseText: null,
     error: {
       type: error.error?.type ?? (err instanceof Error ? err.constructor.name : 'Unknown'),
-      message: truncate(error.message ?? (err instanceof Error ? err.message : String(err)), 1024),
+      message: truncate(redact(rawMessage, config.redactionPatterns), 1024),
       statusCode: error.status ?? null,
     },
   };
@@ -311,7 +321,7 @@ function wrapGenerateContent(
       onRecord(record);
       return response;
     } catch (err) {
-      const record = buildErrorRecord(base, err, timer);
+      const record = buildErrorRecord(base, err, timer, config);
       onRecord(record);
       throw err;
     }
@@ -336,7 +346,7 @@ function wrapGenerateContentStream(
       const stream = await original(params);
       return wrapAsyncGenerator(stream, base, timer, config, onRecord);
     } catch (err) {
-      const record = buildErrorRecord(base, err, timer);
+      const record = buildErrorRecord(base, err, timer, config);
       onRecord(record);
       throw err;
     }
@@ -390,7 +400,7 @@ async function* wrapAsyncGenerator(
       onRecord(record);
     }
   } catch (err) {
-    const record = buildErrorRecord(base, err, timer);
+    const record = buildErrorRecord(base, err, timer, config);
     onRecord(record);
     throw err;
   }
@@ -427,6 +437,7 @@ function wrapEmbedContent(
       return response;
     } catch (err) {
       const error = err as { status?: number; error?: { type?: string }; message?: string };
+      const rawMessage = error.message ?? (err instanceof Error ? err.message : String(err));
       const record: AiEmbeddingRecord = {
         id: randomUUID(),
         timestamp: Date.now(),
@@ -439,10 +450,7 @@ function wrapEmbedContent(
         embeddingCount: 0,
         error: {
           type: error.error?.type ?? (err instanceof Error ? err.constructor.name : 'Unknown'),
-          message: truncate(
-            error.message ?? (err instanceof Error ? err.message : String(err)),
-            1024,
-          ),
+          message: truncate(redact(rawMessage, config.redactionPatterns), 1024),
           statusCode: error.status ?? null,
         },
       };

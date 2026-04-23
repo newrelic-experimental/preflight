@@ -479,6 +479,23 @@ describe('updateScore()', () => {
     expect(avg).not.toBeNull();
     expect(avg!.components.speed).toBeCloseTo(0.5, 2);
   });
+
+  it('getSessionAverage timestamp reflects computation time, not the last task end time', () => {
+    const scorer = new EfficiencyScorer();
+
+    const taskEndTime = Date.now() - 60_000; // task ended 60 seconds ago
+    scorer.computeScore(makeTask({ taskId: 'old-task', endTime: taskEndTime }));
+
+    const before = Date.now();
+    const avg = scorer.getSessionAverage();
+    const after = Date.now();
+
+    expect(avg).not.toBeNull();
+    // Timestamp must be at or after the task end time and within the current call window
+    expect(avg!.timestamp).toBeGreaterThanOrEqual(taskEndTime);
+    expect(avg!.timestamp).toBeGreaterThanOrEqual(before);
+    expect(avg!.timestamp).toBeLessThanOrEqual(after);
+  });
 });
 
 // ---------------------------------------------------------------------------

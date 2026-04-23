@@ -205,9 +205,10 @@ export function handleGetSessionHistory(
       isError: true,
     };
   }
+  const developer = typeof args.developer === 'string' ? args.developer.slice(0, 256) : undefined;
   const sessions = sessionStore.loadAllSessions({
     since,
-    developer: args.developer,
+    developer,
   });
 
   const limit = args.limit ?? 20;
@@ -259,6 +260,14 @@ export function handleGetWeeklySummary(
     };
   }
 
+  // N-03: validate week format before it reaches file-path construction
+  if (!/^\d{4}-W\d{2}$/.test(args.week)) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Invalid week format. Use YYYY-Wnn (e.g. "2026-W16") or "latest".' }) }],
+      isError: true,
+    };
+  }
+
   const summary = weeklySummaryGenerator.generate(args.week);
   return {
     content: [{
@@ -275,9 +284,10 @@ export function handleGetTrends(
   const weeks = args.weeks ?? 8;
   const since = new Date(Date.now() - weeks * 7 * 86_400_000);
 
+  const developer = typeof args.developer === 'string' ? args.developer.slice(0, 256) : undefined;
   const trends = trendAnalyzer.computeTrends({
     since,
-    developer: args.developer,
+    developer,
   });
 
   const metric = args.metric ?? 'efficiency';
@@ -310,7 +320,7 @@ export function handleGetCollaborationProfile(
   collaborationProfiler: CollaborationProfiler,
   args: { developer?: string },
 ) {
-  const developer = args.developer ?? 'unknown';
+  const developer = typeof args.developer === 'string' ? args.developer.slice(0, 256) : 'unknown';
   const profile = collaborationProfiler.computeProfile(developer);
   const comparison = collaborationProfiler.compareToTeam(developer);
 
@@ -402,7 +412,7 @@ export function handleGetRecommendations(
   recommendationEngine: RecommendationEngine,
   args: { developer?: string; topN?: number },
 ) {
-  const developer = args.developer ?? 'unknown';
+  const developer = typeof args.developer === 'string' ? args.developer.slice(0, 256) : 'unknown';
   const recs = recommendationEngine.generateAllRecommendations(developer, {
     topN: args.topN,
   });
@@ -459,12 +469,15 @@ export function handleGetPlatformComparison(
         break;
       }
       case 'error_rate': {
-        const total = platformSessions.reduce((sum, s) => {
+        let weightedErrors = 0;
+        let totalTc = 0;
+        for (const s of platformSessions) {
           const tc = s.toolCallCount ?? 0;
-          const successRate = s.taskSuccessRate ?? 1;
-          return sum + (tc > 0 ? (1 - successRate) : 0);
-        }, 0);
-        value = Math.round((total / count) * 100) / 100;
+          const errorRate = 1 - (s.toolSuccessRate ?? 1);
+          weightedErrors += tc * errorRate;
+          totalTc += tc;
+        }
+        value = totalTc > 0 ? Math.round((weightedErrors / totalTc) * 100) / 100 : 0;
         break;
       }
       case 'efficiency':

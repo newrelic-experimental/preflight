@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -338,6 +338,44 @@ describe('collector-script', () => {
     it('truncate() truncates and adds marker', () => {
       const result = truncate('hello world', 5);
       expect(result).toBe('hello...[truncated]');
+    });
+
+    // N-02: ReDoS protection
+    it('redact() truncates input over 1 MB before applying patterns (N-02)', () => {
+      const overLimit = 'A'.repeat(1_048_577);
+      const result = redact(overLimit);
+      expect(result.length).toBeLessThanOrEqual(1_048_576);
+    });
+
+    it('redact() does not match an unterminated PEM block — bounded pattern prevents ReDoS (N-02)', () => {
+      const input = '-----BEGIN RSA PRIVATE KEY-----' + 'B'.repeat(200);
+      expect(redact(input)).toBe(input);
+    });
+  });
+
+  describe('file permissions (M-03)', () => {
+    it('creates the buffer directory with mode 0o700', () => {
+      // Point to a subdirectory that does not yet exist so mkdirSync is triggered
+      const subDir = resolve(tmpDir, 'new-subdir');
+      const subBufPath = resolve(subDir, 'buffer.jsonl');
+      process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = subBufPath;
+
+      processHook(makePreToolUse());
+
+      expect(existsSync(subDir)).toBe(true);
+      const dirStat = statSync(subDir);
+      expect(dirStat.mode & 0o777).toBe(0o700);
+
+      // Restore the original buffer path for subsequent tests
+      process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
+    });
+
+    it('creates the buffer file with mode 0o600', () => {
+      processHook(makePreToolUse());
+
+      expect(existsSync(bufferPath)).toBe(true);
+      const fileStat = statSync(bufferPath);
+      expect(fileStat.mode & 0o777).toBe(0o600);
     });
   });
 

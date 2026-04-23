@@ -51,22 +51,31 @@ export const REPORT_TOKENS_TOOL = {
 // Handlers
 // ---------------------------------------------------------------------------
 
+const MAX_TOKENS = 10_000_000;
+const clampToken = (v: number): number => {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
+};
+
 export function handleReportTokens(costTracker: CostTracker, args: TokenReport) {
+  const inputTokens       = clampToken(args.input_tokens);
+  const outputTokens      = clampToken(args.output_tokens);
+  const thinkingTokens    = clampToken(args.thinking_tokens ?? 0);
+  const cacheReadTokens   = clampToken(args.cache_read_tokens ?? 0);
+  const cacheCreationTokens = clampToken(args.cache_creation_tokens ?? 0);
+  const safeModel = typeof args.model === 'string' ? args.model.slice(0, 256) : 'unknown';
+
   const usage: TokenUsage = {
-    inputTokens: args.input_tokens,
-    outputTokens: args.output_tokens,
-    thinkingTokens: args.thinking_tokens ?? 0,
-    cacheReadTokens: args.cache_read_tokens ?? 0,
-    cacheCreationTokens: args.cache_creation_tokens ?? 0,
-    totalTokens:
-      args.input_tokens +
-      args.output_tokens +
-      (args.thinking_tokens ?? 0) +
-      (args.cache_read_tokens ?? 0) +
-      (args.cache_creation_tokens ?? 0),
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    // Cache tokens are billed separately and excluded from totalTokens to match Anthropic dashboard conventions
+    totalTokens: inputTokens + outputTokens + thinkingTokens,
   };
 
-  const breakdown = costTracker.recordTokenUsage(usage, args.model);
+  const breakdown = costTracker.recordTokenUsage(usage, safeModel);
   const metrics = costTracker.getMetrics();
 
   return {
@@ -78,7 +87,7 @@ export function handleReportTokens(costTracker: CostTracker, args: TokenReport) 
             recorded: true,
             cost_this_report_usd: breakdown.totalUsd,
             session_total_cost_usd: metrics.sessionTotalCostUsd,
-            model: args.model,
+            model: safeModel,
           },
           null,
           2,
@@ -127,6 +136,8 @@ export function handleGetCostBreakdown(
       input: metrics.totalInputTokens,
       output: metrics.totalOutputTokens,
       thinking: metrics.totalThinkingTokens,
+      cache_read: metrics.totalCacheReadTokens,
+      cache_creation: metrics.totalCacheCreationTokens,
     },
   };
 

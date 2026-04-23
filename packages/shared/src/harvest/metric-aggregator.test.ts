@@ -1,4 +1,13 @@
+import { jest, beforeEach, afterEach } from '@jest/globals';
 import { MetricAggregator } from './metric-aggregator.js';
+
+let stderrSpy: ReturnType<typeof jest.spyOn>;
+beforeEach(() => {
+  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+});
+afterEach(() => {
+  stderrSpy.mockRestore();
+});
 
 // ---------------------------------------------------------------------------
 // 1. record() computes correct count, sum, min, max
@@ -78,6 +87,33 @@ describe('MetricAggregator', () => {
   // ---------------------------------------------------------------------------
   it('harvest on empty aggregator returns empty array', () => {
     const agg = new MetricAggregator();
+    expect(agg.harvest()).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // S-04: non-finite values are rejected
+  // ---------------------------------------------------------------------------
+  it.each([NaN, Infinity, -Infinity])(
+    'ignores non-finite value %p and leaves bucket clean',
+    (badValue) => {
+      const agg = new MetricAggregator();
+      agg.record('ai.duration', 10);
+      agg.record('ai.duration', badValue);
+      agg.record('ai.duration', 20);
+
+      const metrics = agg.harvest();
+      const sum = metrics.find((m) => m.name === 'ai.duration.sum');
+      const count = metrics.find((m) => m.name === 'ai.duration.count');
+      expect(sum!.value).toBe(30);
+      expect(count!.value).toBe(2);
+    },
+  );
+
+  it('does not create a bucket for a non-finite-only metric', () => {
+    const agg = new MetricAggregator();
+    agg.record('ai.cost', NaN);
+    agg.record('ai.cost', Infinity);
+    expect(agg.bucketCount).toBe(0);
     expect(agg.harvest()).toEqual([]);
   });
 

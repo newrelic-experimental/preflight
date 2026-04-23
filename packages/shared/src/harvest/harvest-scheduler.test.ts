@@ -297,7 +297,46 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 8. Concurrent stop() calls await the same flush (no short-circuit)
+  // 8. Re-queued metrics are capped to prevent unbounded growth (B-01)
+  // ---------------------------------------------------------------------------
+  it('caps re-queued metrics to maxRetryMetrics (500), keeping newest', async () => {
+    const sendMetricsFn = jest
+      .fn<Promise<TransportResult>, any>()
+      .mockResolvedValue(failureResult);
+
+    const { scheduler } = makeScheduler({ sendMetricsFn });
+    scheduler.start();
+
+    // Record 130 unique metric names → 130 × 4 = 520 NrMetric entries (exceeds cap of 500)
+    for (let i = 0; i < 130; i++) {
+      scheduler.recordMetric(`metric.b01.${i}`, i);
+    }
+
+    // First harvest at 60s — batch of 520, fails, capped to 500
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(sendMetricsFn).toHaveBeenCalledTimes(1);
+    const logOutput = stderrSpy.mock.calls.map((c: unknown[]) => c[0] as string).join('');
+    expect(logOutput).toContain('overflow');
+
+    // Second harvest — retry batch (500 entries) is sent; verify size is capped
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(sendMetricsFn).toHaveBeenCalledTimes(2);
+    const retryBatch = sendMetricsFn.mock.calls[1][0] as Array<{ name: string }>;
+    expect(retryBatch).toHaveLength(500);
+
+    // Oldest 5 metric names (metric.b01.0 – metric.b01.4, = first 20 NrMetric entries)
+    // should have been dropped; the newest (metric.b01.125 – metric.b01.129) should survive
+    const retryNames = new Set(retryBatch.map((m) => m.name));
+    expect(retryNames.has('metric.b01.0.count')).toBe(false);
+    expect(retryNames.has('metric.b01.4.count')).toBe(false);
+    expect(retryNames.has('metric.b01.125.count')).toBe(true);
+    expect(retryNames.has('metric.b01.129.count')).toBe(true);
+
+    await scheduler.stop();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 9. Concurrent stop() calls await the same flush (no short-circuit)
   // ---------------------------------------------------------------------------
   it('concurrent stop() calls share the same flush promise', async () => {
     const sendEventsFn = jest.fn<Promise<TransportResult>, any>().mockImplementation(

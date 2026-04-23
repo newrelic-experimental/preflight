@@ -70,6 +70,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 10,
@@ -147,6 +148,34 @@ describe('Cross-session tool handlers', () => {
     expect(parsed).toHaveProperty('sessionCount');
     expect(parsed).toHaveProperty('totalCostUsd');
     expect(parsed).toHaveProperty('perDeveloper');
+  });
+
+  // -------------------------------------------------------------------------
+  // N-03: handleGetWeeklySummary — weekId validation
+  // -------------------------------------------------------------------------
+
+  it('handleGetWeeklySummary returns error for path-traversal weekId (N-03)', () => {
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const result = handleGetWeeklySummary(generator, { week: '../../../etc/passwd' });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.error).toMatch(/Invalid week format/);
+  });
+
+  it('handleGetWeeklySummary returns error for arbitrary string weekId (N-03)', () => {
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const result = handleGetWeeklySummary(generator, { week: 'not-a-week' });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.error).toMatch(/Invalid week format/);
+  });
+
+  it('handleGetWeeklySummary accepts valid YYYY-Wnn weekId (N-03)', () => {
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const result = handleGetWeeklySummary(generator, { week: '2026-W16' });
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.week).toBe('2026-W16');
   });
 
   // -------------------------------------------------------------------------
@@ -460,5 +489,120 @@ describe('Cross-session tool handlers', () => {
 
     expect(parsed.metric).toBe('efficiency');
     expect(parsed.platforms).toHaveProperty('claude-code');
+  });
+
+  // -------------------------------------------------------------------------
+  // 11. get_platform_comparison — error_rate weighted formula (B-02)
+  // -------------------------------------------------------------------------
+
+  it('handleGetPlatformComparison error_rate uses weighted formula across sessions', () => {
+    // Session A: 1 call, 100% tool failure rate → contributes 1 failed call
+    store.saveSession(makeSummary({
+      sessionId: 'er-a',
+      toolCallCount: 1,
+      toolSuccessRate: 0,
+      platform: 'claude-code',
+    } as Partial<FullSessionSummary>));
+    // Session B: 100 calls, 10% tool failure rate → contributes 10 failed calls
+    store.saveSession(makeSummary({
+      sessionId: 'er-b',
+      toolCallCount: 100,
+      toolSuccessRate: 0.9,
+      platform: 'claude-code',
+    } as Partial<FullSessionSummary>));
+
+    const result = handleGetPlatformComparison(store, { metric: 'error_rate' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    // Weighted: (1 + 10) / (1 + 100) = 11/101 ≈ 0.11
+    // Unweighted arithmetic mean would be: (1.0 + 0.1) / 2 = 0.55 — very different
+    const average = parsed.platforms['claude-code'].average as number;
+    expect(average).toBeCloseTo(11 / 101, 2);
+    expect(average).not.toBeCloseTo(0.55, 1);
+  });
+
+  it('handleGetPlatformComparison error_rate returns 0 when platform has no tool calls', () => {
+    store.saveSession(makeSummary({
+      sessionId: 'er-zero',
+      toolCallCount: 0,
+      toolSuccessRate: 0,
+      platform: 'cursor',
+    } as Partial<FullSessionSummary>));
+
+    const result = handleGetPlatformComparison(store, { metric: 'error_rate' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.platforms['cursor'].average).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. get_platform_comparison — error_rate uses tool success, not task success (#101)
+  // -------------------------------------------------------------------------
+
+  it('handleGetPlatformComparison error_rate reflects tool failures, not test pass rate', () => {
+    // Platform with 0 test runs but 50% tool failure — old code showed 0% error rate
+    store.saveSession(makeSummary({
+      sessionId: 'no-tests',
+      toolCallCount: 10,
+      toolSuccessRate: 0.5,   // 50% tool success → 50% error rate
+      taskSuccessRate: null,  // no test runs
+      platform: 'windsurf',
+    } as Partial<FullSessionSummary>));
+
+    const result = handleGetPlatformComparison(store, { metric: 'error_rate' });
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    // Should report 0.5 (50% tool error rate), not 0 (from null taskSuccessRate ?? 1 → 0%)
+    expect(parsed.platforms['windsurf'].average).toBeCloseTo(0.5, 2);
+  });
+
+  // N-08: unbounded developer / notes inputs
+  it('handleGetSessionHistory truncates developer over 256 chars (N-08)', () => {
+    const longDev = 'a'.repeat(300);
+    store.saveSession(makeSummary({ sessionId: 'dev-long', developer: 'a'.repeat(256) }));
+    // Should not throw; developer filter is truncated, returning 0 or 1 sessions
+    const result = handleGetSessionHistory(store, { developer: longDev });
+    expect(result.content[0]).toBeDefined();
+  });
+
+  it('handleGetTrends truncates developer over 256 chars (N-08)', () => {
+    const analyzer = new TrendAnalyzer({ sessionStore: store });
+    const longDev = 'b'.repeat(300);
+    // Should not throw and returns a result object
+    const result = handleGetTrends(analyzer, { developer: longDev, weeks: 4 });
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed).toHaveProperty('data_points');
+  });
+
+  it('handleGetCollaborationProfile truncates developer over 256 chars (N-08)', () => {
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+    const longDev = 'c'.repeat(300);
+    const result = handleGetCollaborationProfile(profiler, { developer: longDev });
+    const parsed = JSON.parse(result.content[0]!.text);
+    // developer in response is the value stored by the profiler (truncated input)
+    expect(parsed.developer.length).toBeLessThanOrEqual(256);
+  });
+
+  it('handleGetRecommendations truncates developer over 256 chars (N-08)', () => {
+    const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
+    const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
+    const claudeMdTracker = new ClaudeMdTracker({ sessionStore: store });
+    const promptFeedbackEngine = new PromptFeedbackEngine({
+      sessionStore: store,
+      collaborationProfiler,
+      claudeMdTracker,
+    });
+    const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
+    const engine = new RecommendationEngine({
+      sessionStore: store,
+      trendAnalyzer,
+      collaborationProfiler,
+      claudeMdTracker,
+      promptFeedbackEngine,
+      costPerOutcomeAnalyzer,
+    });
+    const longDev = 'd'.repeat(300);
+    const result = handleGetRecommendations(engine, { developer: longDev });
+    expect(result.content[0]).toBeDefined();
   });
 });

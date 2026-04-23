@@ -46,6 +46,31 @@ export class ByteCountTransform extends Transform {
 }
 
 // ---------------------------------------------------------------------------
+// SSRF protection
+// ---------------------------------------------------------------------------
+
+const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
+
+// Matches loopback, RFC-1918 private ranges, and link-local (169.254/16).
+// Covers both bare IPv6 (::1) and bracket-wrapped ([::1]) forms since
+// Node.js URL.hostname returns the bracketed form for IPv6 addresses.
+const BLOCKED_HOST_RE =
+  /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|\[?::1\]?$|0\.0\.0\.0$|localhost$)/i;
+
+function validateUpstreamUrl(name: string, url: URL): void {
+  if (!ALLOWED_SCHEMES.has(url.protocol)) {
+    throw new Error(
+      `HttpUpstream "${name}": scheme "${url.protocol}" is not allowed; use http: or https:`,
+    );
+  }
+  if (BLOCKED_HOST_RE.test(url.hostname)) {
+    throw new Error(
+      `HttpUpstream "${name}": host "${url.hostname}" resolves to a private or loopback address`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HttpUpstream
 // ---------------------------------------------------------------------------
 
@@ -61,6 +86,9 @@ export class HttpUpstream implements ProxyUpstream {
     }
     this.name = config.name;
     this.url = new URL(config.url);
+    if (!config.allowPrivateHosts) {
+      validateUpstreamUrl(this.name, this.url);
+    }
     this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
@@ -106,8 +134,8 @@ export class HttpUpstream implements ProxyUpstream {
           const upstreamLatencyMs = performance.now() - start;
           const statusCode = upstreamRes.statusCode ?? 502;
 
-          const contentType = upstreamRes.headers['content-type'] ?? '';
-          const isStreaming = contentType.includes('text/event-stream');
+          const mediaType = (upstreamRes.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+          const isStreaming = mediaType === 'text/event-stream';
 
           // Copy response headers, skipping hop-by-hop headers
           for (const [key, value] of Object.entries(upstreamRes.headers)) {
@@ -182,7 +210,8 @@ export class HttpUpstream implements ProxyUpstream {
               if (bytesAlreadySent > 0 && !res.writableEnded) {
                 res.socket?.destroy();
               } else if (!res.writableEnded) {
-                res.end();
+                res.writeHead(statusCode, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: 'upstream_error', message: String(err) }));
               }
               resolve({
                 statusCode,

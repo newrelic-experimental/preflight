@@ -115,6 +115,10 @@ export class WeeklySummaryGenerator {
   }
 
   generate(weekId: string): WeeklySummary {
+    // N-03: defense-in-depth — reject non-conforming weekIds before filepath construction
+    if (!/^\d{4}-W\d{2}$/.test(weekId)) {
+      throw new Error(`Invalid weekId format: "${weekId}". Expected YYYY-Wnn.`);
+    }
     const { start, end } = getWeekDateRange(weekId);
 
     const allSessions = this.sessionStore.loadAllSessions({ since: start });
@@ -189,8 +193,9 @@ function aggregateSessions(weekId: string, sessions: FullSessionSummary[]): Week
   let totalTestsPassed = 0;
   let efficiencySum = 0;
   let efficiencyCount = 0;
-  const toolBreakdown: Record<string, number> = {};
-  const antiPatternCounts: Record<string, number> = {};
+  // N-06: null-proto accumulators — prevent prototype pollution from disk-sourced keys
+  const toolBreakdown = Object.create(null) as Record<string, number>;
+  const antiPatternCounts = Object.create(null) as Record<string, number>;
 
   for (const session of sessions) {
     totalCostUsd += session.estimatedCostUsd ?? 0;
@@ -244,8 +249,9 @@ function aggregateDeveloperSessions(sessions: FullSessionSummary[]): DeveloperWe
   let totalTestsPassed = 0;
   let efficiencySum = 0;
   let efficiencyCount = 0;
-  const toolBreakdown: Record<string, number> = {};
-  const antiPatternCounts: Record<string, number> = {};
+  // N-06: null-proto accumulators — prevent prototype pollution from disk-sourced keys
+  const toolBreakdown = Object.create(null) as Record<string, number>;
+  const antiPatternCounts = Object.create(null) as Record<string, number>;
 
   for (const session of sessions) {
     totalCostUsd += session.estimatedCostUsd ?? 0;

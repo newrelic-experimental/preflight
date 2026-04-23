@@ -4,10 +4,14 @@
  */
 
 import type { NrEventData, NrMetric, NrLogEntry, TransportOptions, TransportResult } from '@nr-ai-observatory/shared';
-import { HarvestScheduler, sendEvents, sendMetrics } from '@nr-ai-observatory/shared';
+import { HarvestScheduler, MetricAggregator, sendEvents, sendMetrics } from '@nr-ai-observatory/shared';
 import type { ToolCallRecord, AuditEntry } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
+import type { AiCodingTask } from '../metrics/task-detector.js';
+import type { AntiPattern } from '../metrics/anti-patterns.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
+import type { CostTracker } from '../metrics/cost-tracker.js';
+import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import { ProxyMetricsTracker } from '../metrics/proxy-metrics.js';
 import {
   AuditTrailManager,
@@ -59,6 +63,10 @@ export interface NrIngestOptions {
   logHarvestIntervalMs?: number;
   /** Override for testing; defaults to the shared sendLogs transport. */
   sendLogsFn?: SendLogsFn;
+  /** Cost tracker for emitting ai.cost.* metrics. */
+  costTracker?: CostTracker;
+  /** Efficiency scorer for emitting ai.efficiency.* metrics. */
+  efficiencyScorer?: EfficiencyScorer;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +189,84 @@ export function proxyRequestToNrEvent(
   return event;
 }
 
+/**
+ * Convert an AiCodingTask into a flat NR event object.
+ *
+ * All fields use snake_case to match the convention of AiToolCall/AiAuditEvent.
+ * File path arrays are emitted as counts to keep event size small.
+ */
+export function codingTaskToNrEvent(
+  task: AiCodingTask,
+  attrs: { developer: string; appName: string },
+): NrEventData {
+  const firstRecord = task.toolCalls[0];
+  const sessionId = firstRecord?.sessionId ?? null;
+  const platform =
+    typeof firstRecord?.platform === 'string' ? firstRecord.platform : 'claude-code';
+
+  const event: NrEventData = {
+    eventType: 'AiCodingTask',
+    timestamp: Math.floor(task.endTime / 1000),
+    task_id: task.taskId,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform,
+    start_time: Math.floor(task.startTime / 1000),
+    end_time: Math.floor(task.endTime / 1000),
+    duration_ms: task.durationMs,
+    tool_call_count: task.toolCallCount,
+    files_read: task.filesRead.length,
+    files_modified: task.filesModified.length,
+    lines_added: task.linesAdded,
+    lines_removed: task.linesRemoved,
+    bash_commands_run: task.bashCommandsRun,
+    tests_run: task.testsRun,
+    tests_passed: task.testsPassed,
+    build_run: task.buildRun,
+    build_passed: task.buildPassed,
+    estimated_cost_usd: task.estimatedCostUsd ?? 0,
+    tokens_used: task.tokensUsed,
+    asked_user_questions: task.askedUserQuestions,
+    sub_agents_spawned: task.subAgentsSpawned,
+  };
+
+  if (sessionId != null) event.session_id = sessionId;
+
+  return event;
+}
+
+/**
+ * Convert an AntiPattern into a flat NR event object.
+ *
+ * Optional fields are only included when defined on the source pattern.
+ */
+export function antiPatternToNrEvent(
+  pattern: AntiPattern,
+  attrs: { developer: string; appName: string; sessionId?: string; platform?: string; taskId: string },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiAntiPattern',
+    timestamp: Math.floor(Date.now() / 1000),
+    type: pattern.type,
+    task_id: attrs.taskId,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform: attrs.platform ?? 'claude-code',
+    suggestion: pattern.suggestion,
+  };
+
+  if (attrs.sessionId != null) event.session_id = attrs.sessionId;
+  if (pattern.file != null) event.file = pattern.file;
+  if (pattern.command != null) event.command = pattern.command;
+  if (pattern.iterations != null) event.iterations = pattern.iterations;
+  if (pattern.readCount != null) event.read_count = pattern.readCount;
+  if (pattern.repeatCount != null) event.repeat_count = pattern.repeatCount;
+  if (pattern.editCount != null) event.edit_count = pattern.editCount;
+  if (pattern.agentCount != null) event.agent_count = pattern.agentCount;
+
+  return event;
+}
+
 // ---------------------------------------------------------------------------
 // NrIngestManager
 // ---------------------------------------------------------------------------
@@ -190,8 +276,9 @@ export class NrIngestManager {
   private readonly logIngest: LogIngestManager;
   private readonly sessionTracker: SessionTracker;
   private readonly proxyMetrics: ProxyMetricsTracker;
+  private readonly costTracker?: CostTracker;
+  private readonly efficiencyScorer?: EfficiencyScorer;
   readonly auditTrail: AuditTrailManager;
-  private readonly localStore: LocalStore | null;
   private readonly developer: string;
   private readonly appName: string;
   private readonly metricHarvestIntervalMs: number;
@@ -203,11 +290,13 @@ export class NrIngestManager {
     this.appName = options.appName;
     this.sessionTracker = options.sessionTracker;
     this.proxyMetrics = new ProxyMetricsTracker();
+    this.costTracker = options.costTracker;
+    this.efficiencyScorer = options.efficiencyScorer;
     this.auditTrail = new AuditTrailManager({
       developer: options.developer,
       sessionId: options.sessionId ?? null,
+      localStore: options.localStore,
     });
-    this.localStore = options.localStore ?? null;
     this.metricHarvestIntervalMs = options.metricHarvestIntervalMs ?? 60_000;
 
     this.scheduler = new HarvestScheduler({
@@ -282,22 +371,28 @@ export class NrIngestManager {
     }
     // Queue audit log entry for NR Logs API
     this.logIngest.addAuditRecord(auditRecord);
+  }
 
-    if (this.localStore) {
-      this.localStore.appendAuditLog({
-        timestamp: auditRecord.timestamp,
-        action: auditRecord.action,
-        tool: auditRecord.tool,
-        detail: auditRecord.detail,
-        developer: auditRecord.developer,
-        filePath: auditRecord.filePath,
-        command: auditRecord.command,
-        securityAlert: auditRecord.securityAlert ? {
-          severity: auditRecord.securityAlert.severity,
-          alertType: auditRecord.securityAlert.alertType,
-        } : undefined,
-      });
-    }
+  ingestCodingTask(task: AiCodingTask): void {
+    const event = codingTaskToNrEvent(task, {
+      developer: this.developer,
+      appName: this.appName,
+    });
+    this.scheduler.addEvent(event);
+  }
+
+  ingestAntiPattern(
+    pattern: AntiPattern,
+    context: { sessionId?: string; platform?: string; taskId: string },
+  ): void {
+    const event = antiPatternToNrEvent(pattern, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionId: context.sessionId,
+      platform: context.platform,
+      taskId: context.taskId,
+    });
+    this.scheduler.addEvent(event);
   }
 
   start(): void {
@@ -333,6 +428,20 @@ export class NrIngestManager {
     this.scheduler.recordMetric('ai.session.duration_ms', metrics.sessionDurationMs);
     this.scheduler.recordMetric('ai.session.unique_files_read', metrics.uniqueFilesRead);
     this.scheduler.recordMetric('ai.session.unique_files_written', metrics.uniqueFilesWritten);
+
+    // Emit cost and efficiency metrics with developer dimension so Team View
+    // FACET developer queries return per-developer breakdowns.
+    if (this.costTracker || this.efficiencyScorer) {
+      const developer = this.developer;
+      const scheduler = this.scheduler;
+      const devAggregator = {
+        record(name: string, value: number, attrs: Record<string, string | number> = {}) {
+          scheduler.recordMetric(name, value, { developer, ...attrs });
+        },
+      } as unknown as MetricAggregator;
+      this.costTracker?.emitMetrics(devAggregator);
+      this.efficiencyScorer?.emitMetrics(devAggregator);
+    }
 
     // Emit aggregated proxy metrics
     const proxyMetrics = this.proxyMetrics.getMetrics();

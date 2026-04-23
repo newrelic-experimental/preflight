@@ -134,6 +134,67 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
   });
 
+  // S-03: accountId format validation
+  it('throws when accountId contains path-traversal characters', () => {
+    expect(() =>
+      loadConfig({ licenseKey: 'key', appName: 'app', accountId: '123/../other' }),
+    ).toThrow('NEW_RELIC_ACCOUNT_ID must be 1–12 decimal digits');
+  });
+
+  it('throws when accountId is non-numeric', () => {
+    expect(() =>
+      loadConfig({ licenseKey: 'key', appName: 'app', accountId: 'abc' }),
+    ).toThrow('NEW_RELIC_ACCOUNT_ID must be 1–12 decimal digits');
+  });
+
+  it('throws when accountId exceeds 12 digits', () => {
+    expect(() =>
+      loadConfig({ licenseKey: 'key', appName: 'app', accountId: '1234567890123' }),
+    ).toThrow('NEW_RELIC_ACCOUNT_ID must be 1–12 decimal digits');
+  });
+
+  it('throws when accountId from env var is invalid', () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '123/evil';
+    expect(() => loadConfig({ licenseKey: 'key', appName: 'app' })).toThrow(
+      'NEW_RELIC_ACCOUNT_ID must be 1–12 decimal digits',
+    );
+  });
+
+  it('accepts a valid numeric accountId', () => {
+    const config = loadConfig({ licenseKey: 'key', appName: 'app', accountId: '12345' });
+    expect(config.accountId).toBe('12345');
+  });
+
+  it('accepts null accountId without validation', () => {
+    const config = loadConfig({ licenseKey: 'key', appName: 'app', accountId: null });
+    expect(config.accountId).toBeNull();
+  });
+
+  // S-06: envInt bounds clamping
+  it('clamps contentMaxLength to minimum 1 when env var is 0 or negative', () => {
+    process.env.NEW_RELIC_AI_CONTENT_MAX_LENGTH = '0';
+    const config = loadConfig({ licenseKey: 'key', appName: 'app' });
+    expect(config.contentMaxLength).toBe(1);
+  });
+
+  it('clamps contentMaxLength to minimum 1 when env var is negative', () => {
+    process.env.NEW_RELIC_AI_CONTENT_MAX_LENGTH = '-500';
+    const config = loadConfig({ licenseKey: 'key', appName: 'app' });
+    expect(config.contentMaxLength).toBe(1);
+  });
+
+  it('clamps contentMaxLength to maximum 1_048_576 when env var exceeds it', () => {
+    process.env.NEW_RELIC_AI_CONTENT_MAX_LENGTH = '9999999';
+    const config = loadConfig({ licenseKey: 'key', appName: 'app' });
+    expect(config.contentMaxLength).toBe(1_048_576);
+  });
+
+  it('accepts valid contentMaxLength within bounds', () => {
+    process.env.NEW_RELIC_AI_CONTENT_MAX_LENGTH = '8192';
+    const config = loadConfig({ licenseKey: 'key', appName: 'app' });
+    expect(config.contentMaxLength).toBe(8192);
+  });
+
   it('accepts 1/0 as boolean env var values', () => {
     process.env.NEW_RELIC_AI_ENABLED = '0';
     process.env.NEW_RELIC_AI_HIGH_SECURITY = '1';

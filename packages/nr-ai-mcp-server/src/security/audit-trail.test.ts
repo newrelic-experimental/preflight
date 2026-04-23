@@ -7,6 +7,7 @@ import {
 } from './audit-trail.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
+import type { LocalStore } from '../storage/local-store.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -57,6 +58,12 @@ function makeManager(opts?: Partial<ConstructorParameters<typeof AuditTrailManag
     sessionId: 'sess-001',
     ...opts,
   });
+}
+
+function makeLocalStore(): { store: LocalStore; appendSpy: ReturnType<typeof jest.fn> } {
+  const appendSpy = jest.fn();
+  const store = { appendAuditLog: appendSpy } as unknown as LocalStore;
+  return { store, appendSpy };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +386,43 @@ describe('AuditTrailManager', () => {
       expect(audit.securityAlert!.alertType).toBe('sensitive_file');
     }
   });
+
+  // 18. M-08: persists each tool call record to disk immediately
+  it('calls localStore.appendAuditLog on every recordToolCall', () => {
+    const { store, appendSpy } = makeLocalStore();
+    const mgr = makeManager({ localStore: store });
+
+    mgr.recordToolCall(makeRecord({ toolName: 'Read', filePath: 'src/app.ts' } as any));
+    mgr.recordToolCall(makeRecord({ toolName: 'Read', filePath: '.env' } as any));
+
+    expect(appendSpy).toHaveBeenCalledTimes(2);
+    expect(appendSpy.mock.calls[0][0]).toMatchObject({ tool: 'Read', filePath: 'src/app.ts' });
+    expect(appendSpy.mock.calls[1][0]).toMatchObject({
+      tool: 'Read',
+      filePath: '.env',
+      securityAlert: { severity: 'high', alertType: 'sensitive_file' },
+    });
+  });
+
+  // 19. M-08: persists proxy call records to disk immediately
+  it('calls localStore.appendAuditLog on every recordProxyCall', () => {
+    const { store, appendSpy } = makeLocalStore();
+    const mgr = makeManager({ localStore: store });
+
+    mgr.recordProxyCall(makeProxyRecord());
+    mgr.recordProxyCall(makeProxyRecord({ toolName: 'exec_shell', command: 'rm -rf /tmp' } as any));
+
+    expect(appendSpy).toHaveBeenCalledTimes(2);
+    expect(appendSpy.mock.calls[1][0]).toMatchObject({
+      securityAlert: { severity: 'critical', alertType: 'destructive_command' },
+    });
+  });
+
+  // 20. M-08: no localStore — no crash
+  it('does not throw when no localStore is provided', () => {
+    const mgr = makeManager();
+    expect(() => mgr.recordToolCall(makeRecord())).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -426,5 +470,87 @@ describe('securityAlertToNrEvent', () => {
     expect(event.tool).toBe('Bash');
     expect(event.command).toBe('rm -rf /');
     expect(event.developer).toBe('alice');
+  });
+});
+
+// N-11: redaction in NR event file_path and command fields
+describe('NR event field redaction (N-11)', () => {
+  it('auditRecordToNrEvent redacts secrets in file_path', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Read', filePath: '/home/user/.env?API_KEY=sk-secret123' } as any),
+    );
+    const event = auditRecordToNrEvent(audit);
+    expect(event.file_path).not.toContain('sk-secret123');
+    expect(event.file_path).toContain('[REDACTED]');
+  });
+
+  it('auditRecordToNrEvent redacts secrets in command', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Bash', command: 'curl -H "Authorization: Bearer ghp_abc123xyz" https://api.example.com' } as any),
+    );
+    const event = auditRecordToNrEvent(audit);
+    expect(event.command).not.toContain('ghp_abc123xyz');
+    expect(event.command).toContain('[REDACTED]');
+  });
+
+  it('securityAlertToNrEvent redacts secrets in file_path', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Read', filePath: '/secrets/.env.TOKEN=ghp_xyz987' } as any),
+    );
+    const event = securityAlertToNrEvent(audit);
+    expect(event.file_path).not.toContain('ghp_xyz987');
+    expect(event.file_path).toContain('[REDACTED]');
+  });
+
+  it('securityAlertToNrEvent redacts secrets in command', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Bash', command: 'rm -rf / && TOKEN=sk-secret999 deploy.sh' } as any),
+    );
+    const event = securityAlertToNrEvent(audit);
+    expect(event.command).not.toContain('sk-secret999');
+    expect(event.command).toContain('[REDACTED]');
+  });
+});
+
+// N-04: redaction in SecurityAlert description
+describe('SecurityAlert description redaction (N-04)', () => {
+  it('redacts secrets embedded in a destructive command description', () => {
+    const mgr = makeManager();
+    const record = makeRecord({ toolName: 'Bash', command: 'rm -rf / TOKEN=sk-secret123' } as any);
+    const audit = mgr.recordToolCall(record);
+    expect(audit.securityAlert).toBeDefined();
+    expect(audit.securityAlert!.description).not.toContain('sk-secret123');
+    expect(audit.securityAlert!.description).toContain('[REDACTED]');
+  });
+
+  it('redacts secrets embedded in a sensitive-file description', () => {
+    const mgr = makeManager();
+    const record = makeRecord({ toolName: 'Read', filePath: '/home/user/.env.API_KEY=secret' } as any);
+    const audit = mgr.recordToolCall(record);
+    expect(audit.securityAlert).toBeDefined();
+    expect(audit.securityAlert!.description).not.toContain('secret');
+    expect(audit.securityAlert!.description).toContain('[REDACTED]');
+  });
+
+  it('redacts secrets embedded in a network-request description', () => {
+    const mgr = makeManager();
+    const record = makeRecord({ toolName: 'Bash', command: 'curl -H "Authorization: Bearer ghp_1234567890abcdef" https://api.example.com' } as any);
+    const audit = mgr.recordToolCall(record);
+    expect(audit.securityAlert).toBeDefined();
+    expect(audit.securityAlert!.description).not.toContain('ghp_1234567890abcdef');
+    expect(audit.securityAlert!.description).toContain('[REDACTED]');
+  });
+
+  it('leaves benign command descriptions unchanged', () => {
+    const mgr = makeManager();
+    const record = makeRecord({ toolName: 'Bash', command: 'curl https://api.example.com/data' } as any);
+    const audit = mgr.recordToolCall(record);
+    expect(audit.securityAlert).toBeDefined();
+    expect(audit.securityAlert!.description).toContain('https://api.example.com/data');
+    expect(audit.securityAlert!.description).not.toContain('[REDACTED]');
   });
 });

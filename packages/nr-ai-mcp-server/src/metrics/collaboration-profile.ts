@@ -271,7 +271,7 @@ function classify(dimensions: ProfileDimensions): string {
 
   if (specificity >= 0.6 && autonomy >= 0.6) return 'Power User';
   if (specificity < 0.6 && autonomy >= 0.6) return 'Delegator';
-  if (specificity < 0.6 && correctionRate < 0.6) return 'Learning';
+  if (specificity < 0.6 && autonomy < 0.6 && correctionRate < 0.6) return 'Learning';
   return 'Collaborative';
 }
 

@@ -9,7 +9,7 @@ import {
   readdirSync,
   statSync,
 } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, sep } from 'node:path';
 import { createLogger } from '@nr-ai-observatory/shared';
 import type { HookEvent, SessionSummary, AuditEntry } from './types.js';
 
@@ -34,7 +34,7 @@ export class LocalStore {
 
     for (const dir of dirs) {
       if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
     }
 
@@ -114,8 +114,15 @@ export class LocalStore {
   }
 
   saveSession(session: SessionSummary): void {
-    const filename = `${session.sessionId}.json`;
-    const filepath = resolve(this.storagePath, 'sessions', filename);
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session.sessionId)) {
+      logger.warn('Rejecting invalid sessionId for file path', { sessionId: session.sessionId });
+      return;
+    }
+    const sessionsDir = resolve(this.storagePath, 'sessions');
+    const filepath = resolve(sessionsDir, `${session.sessionId}.json`);
+    if (!filepath.startsWith(sessionsDir + sep)) {
+      throw new Error(`Session path escaped storage directory: ${filepath}`);
+    }
     writeFileSync(filepath, JSON.stringify(session, null, 2) + '\n');
     logger.debug('Session saved', { sessionId: session.sessionId });
   }

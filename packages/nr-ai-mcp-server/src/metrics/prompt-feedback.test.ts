@@ -56,6 +56,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 10,
@@ -234,7 +235,24 @@ describe('PromptFeedbackEngine', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 5. Recommendation: high correction rate
+  // 5. Empty effectSizes — no sessions before or after change
+  // -------------------------------------------------------------------------
+
+  it('compareClaudeMdVersions returns overallLabel "noise" when no sessions exist around the change', () => {
+    const { engine } = createEngine();
+
+    // Place the change in the distant past so no stored sessions fall in the window
+    const changeTimestamp = Date.now() - 365 * 86_400_000;
+
+    const comparison = engine.compareClaudeMdVersions(changeTimestamp, 1);
+
+    // All metrics lack data — each gets pushed as 'noise' — majority vote must not
+    // fire the 0>=0 branch and incorrectly return 'significant'
+    expect(comparison.overallLabel).toBe('noise');
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Recommendation: high correction rate
   // -------------------------------------------------------------------------
 
   it('recommends more context for developer with high correction rate', () => {

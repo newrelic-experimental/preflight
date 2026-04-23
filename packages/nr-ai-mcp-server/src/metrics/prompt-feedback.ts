@@ -30,7 +30,7 @@ export interface PromptCorrelation {
   readonly withBehaviorAvg: number;
   readonly withoutBehaviorAvg: number;
   readonly delta: number;
-  readonly percentChange: number;
+  readonly percentChange: number | null;
   readonly sessionsWith: number;
   readonly sessionsWithout: number;
 }
@@ -196,10 +196,12 @@ export class PromptFeedbackEngine {
     for (const es of effectSizes) labelCounts[es.label]++;
 
     let overallLabel: EffectSize['label'] = 'noise';
-    if (labelCounts.significant >= labelCounts.moderate && labelCounts.significant >= labelCounts.noise) {
-      overallLabel = 'significant';
-    } else if (labelCounts.moderate >= labelCounts.noise) {
-      overallLabel = 'moderate';
+    if (effectSizes.length > 0) {
+      if (labelCounts.significant >= labelCounts.moderate && labelCounts.significant >= labelCounts.noise) {
+        overallLabel = 'significant';
+      } else if (labelCounts.moderate >= labelCounts.noise) {
+        overallLabel = 'moderate';
+      }
     }
 
     return { changeTimestamp, effectSizes, overallLabel };
@@ -272,11 +274,11 @@ export class PromptFeedbackEngine {
       const impact = this.claudeMdTracker.computeImpact(latestChange.timestamp);
 
       if (impact.verdict.startsWith('Negative')) {
-        const costPct = Math.abs(impact.deltas.cost.percentChange);
+        const costPct = Math.abs(impact.deltas.cost.percentChange ?? 0);
         recommendations.push({
           category: 'claudemd_impact',
           message: 'Recent CLAUDE.md update had a negative impact on metrics. Consider reverting or refining the changes',
-          evidence: `${impact.verdict}. Cost changed by ${impact.deltas.cost.percentChange}%, efficiency by ${impact.deltas.efficiencyScore.percentChange}%`,
+          evidence: `${impact.verdict}. Cost changed by ${impact.deltas.cost.percentChange ?? 'N/A'}%, efficiency by ${impact.deltas.efficiencyScore.percentChange ?? 'N/A'}%`,
           estimatedImpact: `Reverting could save ~${costPct}% on costs`,
           priority: 'high',
         });

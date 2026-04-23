@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync, utimesSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from './local-store.js';
@@ -258,6 +258,33 @@ describe('LocalStore', () => {
       expect(store.loadRecentSessions(7)).toEqual([]);
     });
 
+    it('rejects sessionId containing path traversal and writes no file (N-01)', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+
+      store.saveSession(makeSession({ sessionId: '../../etc/passwd' }));
+
+      expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
+    });
+
+    it('rejects sessionId containing a forward slash (N-01)', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+
+      store.saveSession(makeSession({ sessionId: 'a/b' }));
+
+      expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
+    });
+
+    it('accepts a valid UUID-style sessionId (N-01)', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+
+      store.saveSession(makeSession({ sessionId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }));
+
+      expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(1);
+    });
+
     it('sorts sessions by startTime', () => {
       const store = new LocalStore(tmpDir);
       store.initialize();
@@ -324,6 +351,32 @@ describe('LocalStore', () => {
 
       expect(existsSync(resolve(tmpDir, 'audit', '2025-06-15.jsonl'))).toBe(true);
       expect(existsSync(resolve(tmpDir, 'audit', '2025-06-16.jsonl'))).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Directory permissions (M-03)
+  // ---------------------------------------------------------------------------
+
+  describe('initialize() directory permissions (M-03)', () => {
+    it('creates all storage directories with mode 0o700', () => {
+      // Use a fresh path that does not exist so initialize() creates everything
+      const freshDir = resolve(tmpDir, 'fresh-store');
+      const store = new LocalStore(freshDir);
+      store.initialize();
+
+      const dirsToCheck = [
+        freshDir,
+        resolve(freshDir, 'sessions'),
+        resolve(freshDir, 'weekly_summaries'),
+        resolve(freshDir, 'audit'),
+      ];
+
+      for (const dir of dirsToCheck) {
+        expect(existsSync(dir)).toBe(true);
+        const mode = statSync(dir).mode & 0o777;
+        expect(mode).toBe(0o700);
+      }
     });
   });
 });

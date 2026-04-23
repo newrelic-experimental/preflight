@@ -48,11 +48,18 @@ function getMaxContentLength(): number {
 const REDACTION_PATTERNS: RegExp[] = [
   /\b(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)\b[\s]*[=:]\s*\S+/gi,
   /(?:sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-|Bearer\s+)\S+/g,
-  /-----BEGIN[\s\S]*?-----END[^\n]*-----/g,
+  /-----BEGIN[\s\S]{0,65536}?-----END[^\n]{0,256}-----/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
+  /\bxox[a-z]-[0-9A-Za-z-]+/g,
 ];
 
+const MAX_REDACT_LEN = 1_048_576; // 1 MB
+
 function redact(value: string): string {
-  let result = value;
+  let result = value.length > MAX_REDACT_LEN ? value.slice(0, MAX_REDACT_LEN) : value;
   for (const pattern of REDACTION_PATTERNS) {
     const re = new RegExp(pattern.source, pattern.flags);
     result = result.replace(re, '[REDACTED]');
@@ -267,7 +274,7 @@ function processHook(raw: string): void {
     const bufferPath = getBufferPath();
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true });
+      mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
     }
 
     let line = JSON.stringify(event) + '\n';
@@ -284,7 +291,7 @@ function processHook(raw: string): void {
       line = JSON.stringify(event) + '\n';
     }
 
-    const fd = openSync(bufferPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND);
+    const fd = openSync(bufferPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND, 0o600);
     try {
       writeFileSync(fd, line);
     } finally {

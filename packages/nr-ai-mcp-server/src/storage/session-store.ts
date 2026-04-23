@@ -19,7 +19,7 @@ import {
   readdirSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { createLogger } from '@nr-ai-observatory/shared';
 import type { SessionSummary } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
@@ -54,12 +54,14 @@ export interface FullSessionSummary extends SessionSummary {
   readonly antiPatterns: Array<{ type: string; count: number }>;
   readonly taskCount: number;
   readonly taskSuccessRate: number | null;
+  readonly toolSuccessRate: number | null;
   readonly contextCompressions: number;
   readonly agentSpawns: number;
   readonly userMessages: number;
   readonly assistantMessages: number;
   readonly userCorrections: number;
   readonly outcome: string;
+  readonly platform?: string;
 }
 
 export interface SessionFileInfo {
@@ -89,13 +91,21 @@ export class SessionStore {
   }
 
   saveSession(summary: FullSessionSummary): void {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId)) {
+      logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
+      return;
+    }
+
     if (!existsSync(this.sessionsDir)) {
       mkdirSync(this.sessionsDir, { recursive: true });
     }
 
     const date = new Date(summary.startTime).toISOString().slice(0, 10);
     const filename = `${date}_${summary.sessionId}.json`;
-    const filepath = join(this.sessionsDir, filename);
+    const filepath = resolve(this.sessionsDir, filename);
+    if (!filepath.startsWith(this.sessionsDir + sep)) {
+      throw new Error(`Session path escaped storage directory: ${filepath}`);
+    }
 
     writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n');
     logger.debug('Session saved', { sessionId: summary.sessionId, filename });
@@ -110,7 +120,7 @@ export class SessionStore {
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        return JSON.parse(raw) as FullSessionSummary;
+        return deserializeSession(raw);
       } catch {
         logger.warn('Failed to read session file', { file });
       }
@@ -136,8 +146,8 @@ export class SessionStore {
       if (options?.developer) {
         try {
           const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-          const session = JSON.parse(raw) as FullSessionSummary;
-          if (session.developer !== options.developer) continue;
+          const session = deserializeSession(raw);
+          if (session?.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -146,7 +156,7 @@ export class SessionStore {
       results.push(parsed);
     }
 
-    return results.sort((a, b) => a.date.localeCompare(b.date));
+    return results.sort((a, b) => a.date.localeCompare(b.date) || a.sessionId.localeCompare(b.sessionId));
   }
 
   loadAllSessions(options?: ListSessionsOptions): FullSessionSummary[] {
@@ -165,7 +175,8 @@ export class SessionStore {
 
       try {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
-        const session = JSON.parse(raw) as FullSessionSummary;
+        const session = deserializeSession(raw);
+        if (!session) continue;
 
         if (options?.developer && session.developer !== options.developer) continue;
 
@@ -289,6 +300,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     antiPatterns,
     taskCount: (taskMetrics?.totalTasksCompleted ?? 0) + (taskMetrics?.currentTaskActive ? 1 : 0),
     taskSuccessRate,
+    toolSuccessRate: sessionMetrics.toolSuccessRate,
     contextCompressions: 0,
     agentSpawns: totalAgentSpawns,
     userMessages: 0,
@@ -304,6 +316,77 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
 
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+/**
+ * N-06: Explicitly extract known fields from a raw session JSON string rather
+ * than blindly casting JSON.parse output. Prevents untrusted keys from disk
+ * being misinterpreted as typed properties.
+ */
+function deserializeSession(raw: string): FullSessionSummary | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+
+  const toolBreakdown = Object.create(null) as Record<string, number>;
+  if (typeof obj.toolBreakdown === 'object' && obj.toolBreakdown !== null) {
+    for (const [k, v] of Object.entries(obj.toolBreakdown as Record<string, unknown>)) {
+      if (typeof v === 'number') toolBreakdown[k] = v;
+    }
+  }
+
+  const antiPatterns: Array<{ type: string; count: number }> = [];
+  if (Array.isArray(obj.antiPatterns)) {
+    for (const ap of obj.antiPatterns as unknown[]) {
+      if (typeof ap === 'object' && ap !== null) {
+        const a = ap as Record<string, unknown>;
+        if (typeof a.type === 'string' && typeof a.count === 'number') {
+          antiPatterns.push({ type: a.type, count: a.count });
+        }
+      }
+    }
+  }
+
+  return {
+    sessionId:            typeof obj.sessionId === 'string'  ? obj.sessionId  : '',
+    startTime:            typeof obj.startTime === 'number'  ? obj.startTime  : 0,
+    endTime:              typeof obj.endTime === 'number'    ? obj.endTime    : 0,
+    durationMs:           typeof obj.durationMs === 'number' ? obj.durationMs : 0,
+    toolCallCount:        typeof obj.toolCallCount === 'number' ? obj.toolCallCount : 0,
+    developer:            typeof obj.developer === 'string'  ? obj.developer  : 'unknown',
+    model:                typeof obj.model === 'string'      ? obj.model      : null,
+    toolBreakdown,
+    filesRead:     Array.isArray(obj.filesRead)     ? (obj.filesRead as unknown[]).filter((f): f is string => typeof f === 'string')     : [],
+    filesModified: Array.isArray(obj.filesModified) ? (obj.filesModified as unknown[]).filter((f): f is string => typeof f === 'string') : [],
+    linesAdded:           typeof obj.linesAdded === 'number'           ? obj.linesAdded           : 0,
+    linesRemoved:         typeof obj.linesRemoved === 'number'         ? obj.linesRemoved         : 0,
+    bashCommandCount:     typeof obj.bashCommandCount === 'number'     ? obj.bashCommandCount     : 0,
+    testRunCount:         typeof obj.testRunCount === 'number'         ? obj.testRunCount         : 0,
+    testPassCount:        typeof obj.testPassCount === 'number'        ? obj.testPassCount        : 0,
+    buildRunCount:        typeof obj.buildRunCount === 'number'        ? obj.buildRunCount        : 0,
+    buildPassCount:       typeof obj.buildPassCount === 'number'       ? obj.buildPassCount       : 0,
+    estimatedCostUsd:     typeof obj.estimatedCostUsd === 'number'     ? obj.estimatedCostUsd     : null,
+    tokensInput:          typeof obj.tokensInput === 'number'          ? obj.tokensInput          : 0,
+    tokensOutput:         typeof obj.tokensOutput === 'number'         ? obj.tokensOutput         : 0,
+    tokensThinking:       typeof obj.tokensThinking === 'number'       ? obj.tokensThinking       : 0,
+    efficiencyScore:      typeof obj.efficiencyScore === 'number'      ? obj.efficiencyScore      : null,
+    antiPatterns,
+    taskCount:            typeof obj.taskCount === 'number'            ? obj.taskCount            : 0,
+    taskSuccessRate:      typeof obj.taskSuccessRate === 'number'      ? obj.taskSuccessRate      : null,
+    toolSuccessRate:      typeof obj.toolSuccessRate === 'number'      ? obj.toolSuccessRate      : null,
+    contextCompressions:  typeof obj.contextCompressions === 'number'  ? obj.contextCompressions  : 0,
+    agentSpawns:          typeof obj.agentSpawns === 'number'          ? obj.agentSpawns          : 0,
+    userMessages:         typeof obj.userMessages === 'number'         ? obj.userMessages         : 0,
+    assistantMessages:    typeof obj.assistantMessages === 'number'    ? obj.assistantMessages    : 0,
+    userCorrections:      typeof obj.userCorrections === 'number'      ? obj.userCorrections      : 0,
+    outcome:              typeof obj.outcome === 'string'              ? obj.outcome              : 'unknown',
+    platform:             typeof obj.platform === 'string'             ? obj.platform             : undefined,
+  };
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {

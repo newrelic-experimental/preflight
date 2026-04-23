@@ -37,7 +37,21 @@ export function createLogger(component: string, levelOverride?: LogLevel): Logge
       ...data,
     };
 
-    process.stderr.write(JSON.stringify(entry) + '\n');
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(entry);
+    } catch {
+      // Fallback uses only known-safe scalar fields — avoids re-spreading
+      // circular data that caused the original stringify to throw.
+      serialized = JSON.stringify({
+        timestamp: entry.timestamp,
+        level: entry.level,
+        component: entry.component,
+        message: entry.message,
+        data: '[unserializable]',
+      });
+    }
+    process.stderr.write(serialized + '\n');
   }
 
   return {

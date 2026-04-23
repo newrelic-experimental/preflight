@@ -119,6 +119,13 @@ describe('SessionTracker', () => {
       expect(metrics.toolSuccessRateByTool['Bash']).toBe(1.0);
     });
 
+    it('returns null toolSuccessRate when no tool calls recorded', () => {
+      const tracker = new SessionTracker('empty-session');
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(0);
+      expect(metrics.toolSuccessRate).toBeNull();
+    });
+
     it('tracks errors by type', () => {
       const tracker = new SessionTracker('test-session');
 
@@ -297,7 +304,7 @@ describe('SessionTracker', () => {
       expect(metrics.toolCallCount).toBe(0);
       expect(metrics.toolCallCountByTool).toEqual({});
       expect(metrics.toolDurationMsByTool).toEqual({});
-      expect(metrics.toolSuccessRate).toBe(1);
+      expect(metrics.toolSuccessRate).toBeNull();
       expect(metrics.toolSuccessRateByTool).toEqual({});
       expect(metrics.toolErrorCount).toBe(0);
       expect(metrics.toolErrorsByType).toEqual({});

@@ -59,6 +59,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
+    toolSuccessRate: 1,
     contextCompressions: 0,
     agentSpawns: 0,
     userMessages: 0,
@@ -347,12 +348,18 @@ describe('TrendAnalyzer', () => {
 
 describe('percentChange', () => {
   it('correctly computes positive and negative changes', () => {
-    // 50 → 75 = +50%
     expect(percentChange(50, 75)).toBe(50);
-    // 100 → 80 = -20%
     expect(percentChange(100, 80)).toBe(-20);
-    // 0 → anything = 0 (avoid division by zero)
-    expect(percentChange(0, 42)).toBe(0);
+    expect(percentChange(10, 20)).toBe(100);
+  });
+
+  it('returns null when oldValue is 0 and newValue is non-zero', () => {
+    expect(percentChange(0, 50)).toBeNull();
+    expect(percentChange(0, -1)).toBeNull();
+  });
+
+  it('returns 0 when both values are 0', () => {
+    expect(percentChange(0, 0)).toBe(0);
   });
 });
 

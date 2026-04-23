@@ -194,7 +194,7 @@ export class HarvestScheduler {
   }
 
   private requeueEvents(batch: NrEventData[]): void {
-    this.retryEventBatch = [...batch, ...this.retryEventBatch];
+    this.retryEventBatch = [...this.retryEventBatch, ...batch];
     if (this.retryEventBatch.length > this.maxRetryEvents) {
       const dropped = this.retryEventBatch.length - this.maxRetryEvents;
       this.retryEventBatch = this.retryEventBatch.slice(-this.maxRetryEvents);
@@ -203,7 +203,7 @@ export class HarvestScheduler {
   }
 
   private requeueMetrics(batch: NrMetric[]): void {
-    this.retryMetricBatch = [...batch, ...this.retryMetricBatch];
+    this.retryMetricBatch = [...this.retryMetricBatch, ...batch];
     if (this.retryMetricBatch.length > this.maxRetryMetrics) {
       const dropped = this.retryMetricBatch.length - this.maxRetryMetrics;
       this.retryMetricBatch = this.retryMetricBatch.slice(-this.maxRetryMetrics);

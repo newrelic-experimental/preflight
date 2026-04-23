@@ -271,7 +271,9 @@ export function handleGetEfficiencyScore(
 
   const avg = efficiencyScorer.getSessionAverage();
   const scores = efficiencyScorer.getScores();
-  const latest = scores[scores.length - 1] ?? null;
+  const latest = scores.length > 0
+    ? scores.reduce((best, s) => s.timestamp >= best.timestamp ? s : best)
+    : null;
 
   const result = {
     latest: latest
@@ -314,9 +316,10 @@ export function handleReportFeedback(
     };
   }
 
+  const notes = typeof args.notes === 'string' ? args.notes.slice(0, 1024) : undefined;
   const record = feedbackCollector.record({
     quality: args.quality,
-    notes: args.notes,
+    notes,
     taskId: args.task_id,
   });
 

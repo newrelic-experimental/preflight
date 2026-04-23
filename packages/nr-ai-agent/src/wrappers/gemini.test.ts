@@ -17,6 +17,7 @@ function makeConfig(overrides: Partial<WrapperConfig> = {}): WrapperConfig {
     recordContent: true,
     highSecurity: false,
     contentMaxLength: 4096,
+    redactionPatterns: [],
     ...overrides,
   };
 }
@@ -326,6 +327,21 @@ describe('wrapGeminiClient', () => {
       expect(record.error!.statusCode).toBe(429);
       expect(record.inputTokens).toBe(0);
       expect(record.outputTokens).toBe(0);
+    });
+
+    it('redacts secret patterns from error messages before storing', async () => {
+      const apiError = new Error('auth failed: Bearer sk-secret12345 was rejected');
+      const client = makeMockClient();
+      client.models.generateContent.mockRejectedValue(apiError);
+
+      const config = makeConfig({ redactionPatterns: [/Bearer\s+\S+/g] });
+      const { records, handler } = makeRecorder();
+      const { handler: embHandler } = makeEmbeddingRecorder();
+      wrapGeminiClient(client, config, handler, embHandler);
+
+      await expect(client.models.generateContent(makeGenerateParams())).rejects.toThrow();
+
+      expect(records[0].error!.message).toBe('auth failed: [REDACTED] was rejected');
     });
   });
 
@@ -815,6 +831,49 @@ describe('wrapGeminiClient', () => {
         expect.arrayContaining(['googleSearch', 'codeExecution', 'myFunc']),
       );
       expect(records[0].toolCount).toBe(3);
+    });
+
+    // A-03: tool name sanitization
+    it('truncates function declaration names longer than 256 characters', async () => {
+      const longName = 'b'.repeat(300);
+      const response = makeGenerateContentResponse();
+      const client = makeMockClient();
+      client.models.generateContent.mockResolvedValue(response);
+
+      const { records, handler } = makeRecorder();
+      const { handler: embHandler } = makeEmbeddingRecorder();
+      wrapGeminiClient(client, makeConfig(), handler, embHandler);
+
+      await client.models.generateContent(
+        makeGenerateParams({
+          config: {
+            tools: [{ functionDeclarations: [{ name: longName }] }],
+          },
+        }),
+      );
+
+      expect(records[0].toolNames[0]).toHaveLength(256);
+      expect(records[0].toolNames[0]).toBe('b'.repeat(256));
+    });
+
+    it('strips control characters from function declaration names', async () => {
+      const response = makeGenerateContentResponse();
+      const client = makeMockClient();
+      client.models.generateContent.mockResolvedValue(response);
+
+      const { records, handler } = makeRecorder();
+      const { handler: embHandler } = makeEmbeddingRecorder();
+      wrapGeminiClient(client, makeConfig(), handler, embHandler);
+
+      await client.models.generateContent(
+        makeGenerateParams({
+          config: {
+            tools: [{ functionDeclarations: [{ name: 'my\x00func\nname' }] }],
+          },
+        }),
+      );
+
+      expect(records[0].toolNames[0]).toBe('myfuncname');
     });
   });
 });

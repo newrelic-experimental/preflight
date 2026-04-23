@@ -183,6 +183,7 @@ export function extractRateLimitHeaders(error: unknown): RateLimitInfo {
 }
 
 export function truncateErrorMessage(message: string, maxLength = 1024): string {
-  if (message.length <= maxLength) return message;
-  return message.slice(0, maxLength - 3) + '...';
+  const safeMax = Math.max(4, maxLength);
+  if (message.length <= safeMax) return message;
+  return message.slice(0, safeMax - 3) + '...';
 }

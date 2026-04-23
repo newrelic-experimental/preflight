@@ -39,7 +39,7 @@ describe('init()', () => {
   // 1. Returns NrAiAgent with all expected methods
   // ---------------------------------------------------------------------------
   it('returns NrAiAgent with all expected methods', async () => {
-    const agent = init(validConfig);
+    const agent = await init(validConfig);
 
     expect(agent).toBeInstanceOf(NrAiAgent);
     expect(typeof agent.wrapAnthropicClient).toBe('function');
@@ -51,17 +51,16 @@ describe('init()', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 2. Missing license key throws clear error
+  // 2. Missing license key rejects with clear error
   // ---------------------------------------------------------------------------
-  it('throws when license key is missing', () => {
-    // Clear env vars to ensure nothing leaks in
+  it('rejects when license key is missing', async () => {
     const savedKey = process.env.NEW_RELIC_LICENSE_KEY;
     const savedApp = process.env.NEW_RELIC_APP_NAME;
     delete process.env.NEW_RELIC_LICENSE_KEY;
     delete process.env.NEW_RELIC_APP_NAME;
 
     try {
-      expect(() => init({ appName: 'test' } as any)).toThrow('NEW_RELIC_LICENSE_KEY');
+      await expect(init({ appName: 'test' } as any)).rejects.toThrow('NEW_RELIC_LICENSE_KEY');
     } finally {
       if (savedKey) process.env.NEW_RELIC_LICENSE_KEY = savedKey;
       if (savedApp) process.env.NEW_RELIC_APP_NAME = savedApp;
@@ -72,7 +71,7 @@ describe('init()', () => {
   // 3. enabled=false returns no-op agent
   // ---------------------------------------------------------------------------
   it('returns no-op agent when enabled=false', async () => {
-    const agent = init({ ...validConfig, enabled: false });
+    const agent = await init({ ...validConfig, enabled: false });
 
     expect(agent.getStats().enabled).toBe(false);
 
@@ -80,29 +79,24 @@ describe('init()', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 4. Calling init() twice returns same instance with warning
+  // 4. Concurrent init() calls return the same agent instance
   // ---------------------------------------------------------------------------
-  it('returns same instance on second call and logs warning', async () => {
-    const first = init(validConfig);
-    const second = init(validConfig);
+  it('concurrent calls return the same agent instance', async () => {
+    const [first, second] = await Promise.all([init(validConfig), init(validConfig)]);
 
     expect(second).toBe(first);
-
-    // Verify warning was logged
-    const logOutput = stderrSpy.mock.calls.map((c: unknown[]) => c[0] as string).join('');
-    expect(logOutput).toContain('init() called multiple times');
 
     await first.shutdown();
   });
 
   // ---------------------------------------------------------------------------
-  // 5. shutdown() clears singleton so re-init works
+  // 5. shutdown() clears initPromise so re-init creates a new agent
   // ---------------------------------------------------------------------------
-  it('shutdown clears singleton allowing re-initialization', async () => {
-    const first = init(validConfig);
+  it('shutdown clears initPromise allowing re-initialization', async () => {
+    const first = await init(validConfig);
     await first.shutdown();
 
-    const second = init(validConfig);
+    const second = await init(validConfig);
     expect(second).not.toBe(first);
 
     await second.shutdown();
@@ -112,7 +106,7 @@ describe('init()', () => {
   // 6. getStats() reflects agent state
   // ---------------------------------------------------------------------------
   it('getStats reflects enabled state and uptime', async () => {
-    const agent = init(validConfig);
+    const agent = await init(validConfig);
     const stats = agent.getStats();
 
     expect(stats.enabled).toBe(true);
@@ -122,5 +116,23 @@ describe('init()', () => {
     expect(stats.eventsDropped).toBe(0);
 
     await agent.shutdown();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 7. Failed init() resets initPromise so the next call can retry
+  // ---------------------------------------------------------------------------
+  it('resets initPromise after rejection so callers can retry', async () => {
+    const savedKey = process.env.NEW_RELIC_LICENSE_KEY;
+    delete process.env.NEW_RELIC_LICENSE_KEY;
+
+    try {
+      await expect(init({ appName: 'test' } as any)).rejects.toThrow();
+      // After rejection, a valid init() should succeed
+      const agent = await init(validConfig);
+      expect(agent).toBeInstanceOf(NrAiAgent);
+      await agent.shutdown();
+    } finally {
+      if (savedKey) process.env.NEW_RELIC_LICENSE_KEY = savedKey;
+    }
   });
 });

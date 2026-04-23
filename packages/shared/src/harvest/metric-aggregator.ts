@@ -1,4 +1,7 @@
 import type { NrMetric } from '../transport/types.js';
+import { createLogger } from '../logger.js';
+
+const logger = createLogger('metric-aggregator');
 
 export interface MetricAccumulator {
   count: number;
@@ -25,6 +28,11 @@ export class MetricAggregator {
   }
 
   record(name: string, value: number, attributes: Record<string, string | number> = {}): void {
+    if (!Number.isFinite(value)) {
+      logger.warn('MetricAggregator.record: non-finite value ignored', { name, value });
+      return;
+    }
+
     const key = makeKey(name, attributes);
     let bucket = this.buckets.get(key);
 

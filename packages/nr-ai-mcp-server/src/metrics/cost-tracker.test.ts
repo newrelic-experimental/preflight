@@ -194,6 +194,22 @@ describe('CostTracker', () => {
       expect(metrics.totalInputTokens).toBe(500);
       expect(metrics.totalOutputTokens).toBe(200);
     });
+
+    it('accumulated input+output tokens equal their sum (no double-rounding drift)', () => {
+      const tracker = new CostTracker();
+
+      // inputChars=1, outputChars=1: each rounds to 0 independently (0+0=0).
+      // A naive re-round of the combined chars would give Math.round(2/4)=1,
+      // producing a totalTokens that exceeds the sum of its components.
+      // The fix pre-rounds into named variables so totalTokens = inputTokens + outputTokens.
+      tracker.recordEstimatedTokens(1, 1, 'claude-sonnet-4');
+
+      const metrics = tracker.getMetrics();
+      // Both components round to 0; total must also be 0, not 1
+      expect(metrics.totalInputTokens).toBe(0);
+      expect(metrics.totalOutputTokens).toBe(0);
+      expect(metrics.totalInputTokens + metrics.totalOutputTokens).toBe(0);
+    });
   });
 
   describe('costPerLineOfCode', () => {

@@ -11,12 +11,17 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import type { Stream } from '@anthropic-ai/sdk/streaming';
 import { randomUUID } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
 import { RequestTimer } from '@nr-ai-observatory/shared';
 import type { RequestTimerMetrics } from '@nr-ai-observatory/shared';
 import type { AiRequestRecord, WrapperConfig, RecordHandler } from '../types.js';
 
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+function redact(text: string, patterns: readonly RegExp[]): string {
+  return patterns.reduce((s, pattern) => s.replace(pattern, '[REDACTED]'), text);
 }
 
 function extractSystemPromptLength(
@@ -62,12 +67,16 @@ function extractContentBlockTypes(content: ContentBlock[]): string[] {
   return [...new Set(content.map((b) => b.type))];
 }
 
+function sanitizeToolName(name: unknown): string {
+  return String(name ?? '').slice(0, 256).replace(/[\x00-\x1f]/g, '');
+}
+
 function extractToolInfo(tools: MessageCreateParamsBase['tools'] | undefined): {
   count: number;
   names: string[];
 } {
   if (!tools || tools.length === 0) return { count: 0, names: [] };
-  const names = tools.map((t) => t.name);
+  const names = tools.map((t) => sanitizeToolName(t.name));
   return { count: tools.length, names };
 }
 
@@ -180,10 +189,12 @@ function buildErrorRecord(
   base: ReturnType<typeof buildBaseRecord>,
   err: unknown,
   timer: RequestTimer,
+  config: WrapperConfig,
 ): AiRequestRecord {
   timer.stop();
   const metrics = timer.getMetrics();
   const error = err as { status?: number; error?: { type?: string }; message?: string };
+  const rawMessage = error.message ?? (err instanceof Error ? err.message : String(err));
   return {
     ...base,
     model: base.requestModel,
@@ -200,7 +211,7 @@ function buildErrorRecord(
     responseText: null,
     error: {
       type: error.error?.type ?? (err instanceof Error ? err.constructor.name : 'Unknown'),
-      message: truncate(error.message ?? (err instanceof Error ? err.message : String(err)), 1024),
+      message: truncate(redact(rawMessage, config.redactionPatterns), 1024),
       statusCode: error.status ?? null,
     },
   };
@@ -254,7 +265,7 @@ function wrapCreate(
         return response;
       },
       (err) => {
-        const record = buildErrorRecord(base, err, timer);
+        const record = buildErrorRecord(base, err, timer, config);
         onRecord(record);
         throw err;
       },
@@ -323,7 +334,7 @@ function wrapRawStream(
         onRecord(record);
       }
     } catch (err) {
-      const record = buildErrorRecord(base, err, timer);
+      const record = buildErrorRecord(base, err, timer, config);
       onRecord(record);
       throw err;
     }
@@ -364,15 +375,17 @@ function wrapStream(
       timer.markFirstToken();
     });
 
-    messageStream.on('finalMessage', (message: Message) => {
+    messageStream.once('finalMessage', (message: Message) => {
       timer.stop();
       const record = finalizeRecord(base, message, timer.getMetrics(), config);
       onRecord(record);
+      (messageStream as unknown as EventEmitter).removeAllListeners();
     });
 
-    messageStream.on('error', (err: Error) => {
-      const record = buildErrorRecord(base, err, timer);
+    messageStream.once('error', (err: Error) => {
+      const record = buildErrorRecord(base, err, timer, config);
       onRecord(record);
+      (messageStream as unknown as EventEmitter).removeAllListeners();
     });
 
     return messageStream;

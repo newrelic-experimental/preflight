@@ -15,6 +15,7 @@ export interface McpServerConfig {
   readonly appName: string;
   readonly developer: string;
   readonly enabled: boolean;
+  readonly highSecurity: boolean;
   readonly recordContent: boolean;
   readonly redactionPatterns: readonly RegExp[];
   readonly hookBufferPath: string;
@@ -31,14 +32,24 @@ const DEFAULT_STORAGE_PATH = resolve(homedir(), '.nr-ai-observe');
 const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /\b(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)\b[\s]*[=:]\s*\S+/gi,
   /(?:sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-|Bearer\s+)\S+/g,
-  /-----BEGIN[\s\S]*?-----END[^\n]*-----/g,
+  /-----BEGIN[\s\S]{0,65536}?-----END[^\n]{0,256}-----/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
+  /\bxox[a-z]-[0-9A-Za-z-]+/g,
 ];
 
+// N-07: strip control chars and truncate before the value reaches any NR event field or log
+export function sanitizeDeveloper(raw: string): string {
+  return raw.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 128) || 'unknown';
+}
+
 function inferDeveloper(): string {
-  if (process.env.USER) return process.env.USER;
-  if (process.env.USERNAME) return process.env.USERNAME;
+  if (process.env.USER) return sanitizeDeveloper(process.env.USER);
+  if (process.env.USERNAME) return sanitizeDeveloper(process.env.USERNAME);
   try {
-    return execSync('git config user.name', { encoding: 'utf-8', timeout: 2000 }).trim();
+    return sanitizeDeveloper(execSync('git config user.name', { encoding: 'utf-8', timeout: 2000 }).trim());
   } catch {
     return 'unknown';
   }
@@ -51,11 +62,14 @@ function envBool(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
-function envInt(key: string, defaultValue: number): number {
+function envInt(key: string, defaultValue: number, bounds?: { min?: number; max?: number }): number {
   const val = process.env[key];
   if (val === undefined) return defaultValue;
   const parsed = parseInt(val, 10);
-  return Number.isNaN(parsed) ? defaultValue : parsed;
+  if (Number.isNaN(parsed)) return defaultValue;
+  if (bounds?.min !== undefined && parsed < bounds.min) return bounds.min;
+  if (bounds?.max !== undefined && parsed > bounds.max) return bounds.max;
+  return parsed;
 }
 
 function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
@@ -168,11 +182,23 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         '.',
     );
   }
+  if (!/^\d{1,12}$/.test(accountId)) {
+    throw new Error(
+      'Invalid configuration: accountId must be 1–12 decimal digits. ' +
+        `Received: "${accountId}"`,
+    );
+  }
 
   // --- Build config with priority: CLI > env > file > defaults ---
   const storagePath =
     process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ??
     (typeof file.storagePath === 'string' ? file.storagePath : DEFAULT_STORAGE_PATH);
+
+  // N-10: highSecurity must be resolved before recordContent so it can override it
+  const highSecurity = envBool(
+    'NEW_RELIC_AI_HIGH_SECURITY',
+    typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
+  );
 
   const config: McpServerConfig = {
     licenseKey,
@@ -182,14 +208,18 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       process.env.NEW_RELIC_AI_MCP_APP_NAME ??
       (typeof file.appName === 'string' ? file.appName : 'nr-ai-mcp-server'),
 
-    developer:
+    developer: sanitizeDeveloper(
       process.env.NEW_RELIC_AI_MCP_DEVELOPER ??
       (typeof file.developer === 'string' ? file.developer : inferDeveloper()),
+    ),
 
     enabled:
       envBool('NEW_RELIC_AI_MCP_ENABLED', typeof file.enabled === 'boolean' ? file.enabled : true),
 
-    recordContent: envBool(
+    highSecurity,
+
+    // N-10: highSecurity forces recordContent off regardless of other settings
+    recordContent: highSecurity ? false : envBool(
       'NEW_RELIC_AI_MCP_RECORD_CONTENT',
       typeof file.recordContent === 'boolean' ? file.recordContent : false,
     ),
@@ -208,16 +238,19 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       events: envInt(
         'NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS',
         typeof file.harvestEventsMs === 'number' ? file.harvestEventsMs : 5000,
+        { min: 100, max: 3_600_000 },
       ),
       metrics: envInt(
         'NEW_RELIC_AI_MCP_HARVEST_METRICS_MS',
         typeof file.harvestMetricsMs === 'number' ? file.harvestMetricsMs : 60000,
+        { min: 100, max: 3_600_000 },
       ),
     },
 
     port: cliOptions?.port ?? envInt(
       'NEW_RELIC_AI_MCP_PORT',
       typeof file.port === 'number' ? file.port : 9847,
+      { min: 1, max: 65535 },
     ),
 
     logLevel: cliOptions?.logLevel ?? envLogLevel(
@@ -244,6 +277,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     appName: config.appName,
     developer: config.developer,
     enabled: config.enabled,
+    highSecurity: config.highSecurity,
     recordContent: config.recordContent,
     storagePath: config.storagePath,
     port: config.port,
@@ -253,9 +287,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   return Object.freeze(config);
 }
 
+const MAX_REDACT_LEN = 1_048_576; // 1 MB
+
 export function redactSensitive(value: string, patterns?: readonly RegExp[]): string {
   const pats = patterns ?? DEFAULT_REDACTION_PATTERNS;
-  let result = value;
+  let result = value.length > MAX_REDACT_LEN ? value.slice(0, MAX_REDACT_LEN) : value;
   for (const pattern of pats) {
     // Clone the regex to reset lastIndex for global patterns
     const re = new RegExp(pattern.source, pattern.flags);

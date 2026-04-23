@@ -1,7 +1,9 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { toolCallToNrEvent, NrIngestManager } from './nr-ingest.js';
+import { toolCallToNrEvent, codingTaskToNrEvent, antiPatternToNrEvent, NrIngestManager } from './nr-ingest.js';
 import type { NrIngestOptions } from './nr-ingest.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { AiCodingTask } from '../metrics/task-detector.js';
+import type { AntiPattern } from '../metrics/anti-patterns.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,41 @@ function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
     timestamp: 1_700_000_000_000, // ms
     durationMs: 50,
     success: true,
+    ...overrides,
+  };
+}
+
+function makePattern(overrides?: Partial<AntiPattern>): AntiPattern {
+  return {
+    type: 'thrashing',
+    suggestion: 'Consider reviewing your approach before retrying',
+    ...overrides,
+  };
+}
+
+function makeTask(overrides?: Partial<AiCodingTask>): AiCodingTask {
+  return {
+    taskId: 'task-001',
+    startTime: 1_700_000_000_000,
+    endTime: 1_700_000_060_000,
+    durationMs: 60_000,
+    toolCallCount: 3,
+    toolCallsByType: { Read: 2, Edit: 1 },
+    filesRead: ['/a.ts', '/b.ts'],
+    filesModified: ['/b.ts'],
+    linesChanged: 10,
+    linesAdded: 15,
+    linesRemoved: 5,
+    bashCommandsRun: 1,
+    testsRun: 2,
+    testsPassed: 2,
+    buildRun: 1,
+    buildPassed: 1,
+    estimatedCostUsd: 0.004,
+    tokensUsed: 1200,
+    askedUserQuestions: 0,
+    subAgentsSpawned: 0,
+    toolCalls: [makeRecord({ sessionId: 'sess-001', platform: 'claude-code' })],
     ...overrides,
   };
 }
@@ -328,5 +365,289 @@ describe('NrIngestManager', () => {
       manager.start();
       await manager.stop();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// codingTaskToNrEvent()
+// ---------------------------------------------------------------------------
+
+describe('codingTaskToNrEvent()', () => {
+  it('serializes all standard fields with snake_case naming', () => {
+    const task = makeTask();
+    const event = codingTaskToNrEvent(task, { developer: 'dev1', appName: 'my-app' });
+
+    expect(event.eventType).toBe('AiCodingTask');
+    expect(event.task_id).toBe('task-001');
+    expect(event.developer).toBe('dev1');
+    expect(event.app_name).toBe('my-app');
+    expect(event.duration_ms).toBe(60_000);
+    expect(event.tool_call_count).toBe(3);
+    expect(event.lines_added).toBe(15);
+    expect(event.lines_removed).toBe(5);
+    expect(event.bash_commands_run).toBe(1);
+    expect(event.tests_run).toBe(2);
+    expect(event.tests_passed).toBe(2);
+    expect(event.build_run).toBe(1);
+    expect(event.build_passed).toBe(1);
+    expect(event.estimated_cost_usd).toBe(0.004);
+    expect(event.tokens_used).toBe(1200);
+    expect(event.asked_user_questions).toBe(0);
+    expect(event.sub_agents_spawned).toBe(0);
+  });
+
+  it('emits files_read and files_modified as counts, not arrays', () => {
+    const task = makeTask({ filesRead: ['/a.ts', '/b.ts', '/c.ts'], filesModified: ['/b.ts'] });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event.files_read).toBe(3);
+    expect(event.files_modified).toBe(1);
+  });
+
+  it('converts timestamp from ms to seconds', () => {
+    const task = makeTask({ endTime: 1_700_000_060_000 });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event.timestamp).toBe(1_700_000_060);
+    expect(event.start_time).toBe(1_700_000_000);
+    expect(event.end_time).toBe(1_700_000_060);
+  });
+
+  it('sets session_id from the first tool call record', () => {
+    const task = makeTask({
+      toolCalls: [makeRecord({ sessionId: 'sess-from-record' })],
+    });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event.session_id).toBe('sess-from-record');
+  });
+
+  it('omits session_id when tool calls array is empty', () => {
+    const task = makeTask({ toolCalls: [] });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event).not.toHaveProperty('session_id');
+  });
+
+  it('sets estimated_cost_usd to 0 when estimatedCostUsd is null', () => {
+    const task = makeTask({ estimatedCostUsd: null });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event.estimated_cost_usd).toBe(0);
+  });
+
+  it('reads platform from the first tool call record', () => {
+    const task = makeTask({
+      toolCalls: [makeRecord({ platform: 'cursor' } as Partial<ToolCallRecord>)],
+    });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event.platform).toBe('cursor');
+  });
+
+  it('defaults platform to claude-code when tool calls are empty', () => {
+    const task = makeTask({ toolCalls: [] });
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
+
+    expect(event.platform).toBe('claude-code');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NrIngestManager.ingestCodingTask()
+// ---------------------------------------------------------------------------
+
+describe('NrIngestManager.ingestCodingTask()', () => {
+  it('queues an AiCodingTask event that is flushed on stop()', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestCodingTask(makeTask());
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendEvents).toHaveBeenCalled();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const taskEvent = sentEvents.find(e => e.eventType === 'AiCodingTask');
+    expect(taskEvent).toBeDefined();
+    expect(taskEvent!.task_id).toBe('task-001');
+    expect(taskEvent!.estimated_cost_usd).toBe(0.004);
+  });
+
+  it('task event is queued alongside AiToolCall events in the same batch', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestToolCall(makeRecord({ toolName: 'Read' }));
+    manager.ingestCodingTask(makeTask());
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const eventTypes = sentEvents.map(e => e.eventType);
+    expect(eventTypes).toContain('AiToolCall');
+    expect(eventTypes).toContain('AiCodingTask');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// antiPatternToNrEvent()
+// ---------------------------------------------------------------------------
+
+describe('antiPatternToNrEvent()', () => {
+  it('serializes required fields', () => {
+    const pattern = makePattern();
+    const event = antiPatternToNrEvent(pattern, {
+      developer: 'dev1',
+      appName: 'my-app',
+      sessionId: 'sess-001',
+      platform: 'claude-code',
+      taskId: 'task-001',
+    });
+
+    expect(event.eventType).toBe('AiAntiPattern');
+    expect(event.type).toBe('thrashing');
+    expect(event.task_id).toBe('task-001');
+    expect(event.developer).toBe('dev1');
+    expect(event.app_name).toBe('my-app');
+    expect(event.platform).toBe('claude-code');
+    expect(event.session_id).toBe('sess-001');
+    expect(event.suggestion).toBe('Consider reviewing your approach before retrying');
+  });
+
+  it('omits optional fields when undefined', () => {
+    const pattern = makePattern({ type: 're_reading' });
+    const event = antiPatternToNrEvent(pattern, {
+      developer: 'd',
+      appName: 'a',
+      taskId: 'task-002',
+    });
+
+    expect(event).not.toHaveProperty('session_id');
+    expect(event).not.toHaveProperty('file');
+    expect(event).not.toHaveProperty('command');
+    expect(event).not.toHaveProperty('iterations');
+    expect(event).not.toHaveProperty('read_count');
+    expect(event).not.toHaveProperty('repeat_count');
+    expect(event).not.toHaveProperty('edit_count');
+    expect(event).not.toHaveProperty('agent_count');
+  });
+
+  it('includes optional fields when defined', () => {
+    const pattern = makePattern({
+      type: 'thrashing',
+      file: '/src/foo.ts',
+      iterations: 4,
+    });
+    const event = antiPatternToNrEvent(pattern, {
+      developer: 'd',
+      appName: 'a',
+      taskId: 'task-003',
+    });
+
+    expect(event.file).toBe('/src/foo.ts');
+    expect(event.iterations).toBe(4);
+  });
+
+  it('maps readCount to read_count and repeatCount to repeat_count', () => {
+    const pattern = makePattern({ type: 're_reading', readCount: 5, repeatCount: 3 });
+    const event = antiPatternToNrEvent(pattern, {
+      developer: 'd',
+      appName: 'a',
+      taskId: 'task-004',
+    });
+
+    expect(event.read_count).toBe(5);
+    expect(event.repeat_count).toBe(3);
+    expect(event).not.toHaveProperty('readCount');
+    expect(event).not.toHaveProperty('repeatCount');
+  });
+
+  it('maps editCount to edit_count and agentCount to agent_count', () => {
+    const pattern = makePattern({ type: 'blind_editing', editCount: 6, agentCount: 2 });
+    const event = antiPatternToNrEvent(pattern, {
+      developer: 'd',
+      appName: 'a',
+      taskId: 'task-005',
+    });
+
+    expect(event.edit_count).toBe(6);
+    expect(event.agent_count).toBe(2);
+  });
+
+  it('defaults platform to claude-code when not provided', () => {
+    const event = antiPatternToNrEvent(makePattern(), {
+      developer: 'd',
+      appName: 'a',
+      taskId: 'task-006',
+    });
+
+    expect(event.platform).toBe('claude-code');
+  });
+
+  it('timestamp is in seconds', () => {
+    const before = Math.floor(Date.now() / 1000);
+    const event = antiPatternToNrEvent(makePattern(), {
+      developer: 'd',
+      appName: 'a',
+      taskId: 'task-007',
+    });
+    const after = Math.floor(Date.now() / 1000);
+
+    expect(event.timestamp as number).toBeGreaterThanOrEqual(before);
+    expect(event.timestamp as number).toBeLessThanOrEqual(after);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NrIngestManager.ingestAntiPattern()
+// ---------------------------------------------------------------------------
+
+describe('NrIngestManager.ingestAntiPattern()', () => {
+  it('queues an AiAntiPattern event that is flushed on stop()', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestAntiPattern(makePattern({ type: 'stuck_loop' }), {
+      sessionId: 'sess-001',
+      platform: 'claude-code',
+      taskId: 'task-001',
+    });
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendEvents).toHaveBeenCalled();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const patternEvent = sentEvents.find(e => e.eventType === 'AiAntiPattern');
+    expect(patternEvent).toBeDefined();
+    expect(patternEvent!.type).toBe('stuck_loop');
+    expect(patternEvent!.task_id).toBe('task-001');
+  });
+
+  it('a task with no detected patterns emits zero AiAntiPattern events', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    // Ingest a coding task but no anti-patterns
+    manager.ingestCodingTask(makeTask());
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const patternEvents = sentEvents.filter(e => e.eventType === 'AiAntiPattern');
+    expect(patternEvents).toHaveLength(0);
+  });
+
+  it('multiple patterns for the same task are all queued', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    const context = { sessionId: 'sess-001', platform: 'claude-code', taskId: 'task-001' };
+
+    manager.ingestAntiPattern(makePattern({ type: 'thrashing' }), context);
+    manager.ingestAntiPattern(makePattern({ type: 're_reading' }), context);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const patternEvents = sentEvents.filter(e => e.eventType === 'AiAntiPattern');
+    expect(patternEvents).toHaveLength(2);
+    const types = patternEvents.map(e => e.type);
+    expect(types).toContain('thrashing');
+    expect(types).toContain('re_reading');
   });
 });

@@ -7,6 +7,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { isAbsolute } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -15,6 +16,57 @@ import { createLogger } from '@nr-ai-observatory/shared';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 
 const logger = createLogger('proxy-stdio');
+
+// ---------------------------------------------------------------------------
+// Env sanitization — strips keys that enable dynamic-linker or Node injection
+// ---------------------------------------------------------------------------
+
+export const DANGEROUS_ENV_KEYS = new Set([
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'PATH',
+  'NODE_OPTIONS',
+]);
+
+export function sanitizeEnv(
+  env: Record<string, string> | undefined,
+  upstreamName: string,
+): Record<string, string> | undefined {
+  if (!env) return undefined;
+
+  const sanitized: Record<string, string> = {};
+  const stripped: string[] = [];
+
+  for (const [key, value] of Object.entries(env)) {
+    if (DANGEROUS_ENV_KEYS.has(key)) {
+      stripped.push(key);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+
+  if (stripped.length > 0) {
+    logger.warn(`StdioUpstream "${upstreamName}": stripped dangerous env keys`, { keys: stripped });
+  }
+
+  return sanitized;
+}
+
+// ---------------------------------------------------------------------------
+// Command validation — requires absolute paths to prevent PATH hijacking
+// ---------------------------------------------------------------------------
+
+export function validateCommand(upstreamName: string, command: string, allowBareCommand: boolean): void {
+  if (!allowBareCommand && !isAbsolute(command)) {
+    throw new Error(
+      `StdioUpstream "${upstreamName}": command "${command}" must be an absolute path ` +
+      `(bare names can be hijacked via PATH manipulation). ` +
+      `Use the full path (e.g. /usr/bin/node) or set allowBareCommand for development.`,
+    );
+  }
+}
 
 const DISCONNECT_TIMEOUT_MS = 5_000;
 
@@ -100,10 +152,15 @@ export class StdioUpstream implements ProxyUpstream {
   }
 
   async connect(): Promise<void> {
+    const command = this.config.command!;
+    validateCommand(this.name, command, this.config.allowBareCommand ?? false);
+
+    logger.info(`Stdio upstream "${this.name}" starting`, { command, args: this.config.args });
+
     this.transport = new StdioClientTransport({
-      command: this.config.command!,
+      command,
       args: this.config.args,
-      env: this.config.env,
+      env: sanitizeEnv(this.config.env, this.name),
       stderr: 'pipe',
     });
 
@@ -112,10 +169,7 @@ export class StdioUpstream implements ProxyUpstream {
     );
 
     await this.client.connect(this.transport);
-    logger.info(`Stdio upstream "${this.name}" connected`, {
-      command: this.config.command,
-      args: this.config.args,
-    });
+    logger.info(`Stdio upstream "${this.name}" connected`, { command, args: this.config.args });
   }
 
   async disconnect(): Promise<void> {

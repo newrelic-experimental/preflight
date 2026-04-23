@@ -8,7 +8,9 @@ export interface TokenUsage {
 }
 
 function safeInt(value: unknown): number {
-  if (typeof value === 'number' && !Number.isNaN(value)) return value;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
   return 0;
 }
 

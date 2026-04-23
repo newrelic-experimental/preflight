@@ -229,9 +229,24 @@ Use descriptive branch names: `yourname/short-description` or `fix/issue-descrip
 
 ---
 
+## Security
+
+This codebase sends telemetry to New Relic and can spawn child processes and proxy network requests. A few things to be aware of before your first contribution:
+
+- **Redact before you log or send.** Any string that might contain secrets — error messages from upstream APIs, tool output, file content — must pass through `redact()` (agent) or `redactSensitive()` (MCP server) before it reaches a logger or NR event. The patterns cover API keys, tokens, PEM blocks, JWTs, and more.
+- **Validate external strings at the boundary.** `accountId` is validated as 1–12 decimal digits at config load. Tool names are truncated and stripped of control characters. Any new field that goes into a URL path or NR event should get the same treatment.
+- **Subprocess commands need absolute paths.** `StdioUpstream` rejects relative command names and strips dangerous dynamic-linker env vars (`LD_PRELOAD`, etc.) before spawning a child process.
+- **HTTP upstream URLs are SSRF-checked.** `HttpUpstream` rejects non-`http:`/`https:` schemes and RFC-1918/loopback hosts. Don't bypass this for convenience.
+- **High security mode is absolute.** When `highSecurity=true`, `recordContent` is always `false`. This invariant must never be bypassed.
+
+See [SECURITY.md](./SECURITY.md) for the full guidelines, code examples, and a code review checklist.
+
+---
+
 ## Where to Go for Help
 
 - **[CLAUDE.md](./CLAUDE.md)** — The full technical reference for this repo. Architecture, conventions, every pattern in detail. This is your cheat sheet once you're up to speed.
+- **[SECURITY.md](./SECURITY.md)** — Security practices, invariants, and a code review checklist. Read this before your first PR that touches config loading, network requests, subprocess execution, or telemetry fields.
 - **[TEST_PATTERNS.md](./TEST_PATTERNS.md)** — Testing conventions, factory patterns, mock strategies. Read this before writing your first test.
 - **The code itself** — The best examples of our patterns are in `packages/nr-ai-mcp-server/src/metrics/` (tracker pattern), `packages/shared/src/harvest/` (scheduler/buffer pattern), and the test files alongside them.
 

@@ -70,13 +70,15 @@ export class CostTracker {
    * Uses the heuristic: tokens ≈ characters / 4.
    */
   recordEstimatedTokens(inputChars: number, outputChars: number, model: string): CostBreakdown {
+    const inputTokens = Math.round(inputChars / 4);
+    const outputTokens = Math.round(outputChars / 4);
     const usage: TokenUsage = {
-      inputTokens: Math.round(inputChars / 4),
-      outputTokens: Math.round(outputChars / 4),
+      inputTokens,
+      outputTokens,
       thinkingTokens: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
-      totalTokens: Math.round(inputChars / 4) + Math.round(outputChars / 4),
+      totalTokens: inputTokens + outputTokens,
     };
 
     this.estimationCount++;
