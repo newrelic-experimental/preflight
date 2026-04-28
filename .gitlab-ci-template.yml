@@ -1,0 +1,44 @@
+# Include this template in your .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'your-org/nr-ai-observatory'
+#       file: '.gitlab-ci-template.yml'
+#
+# Required CI/CD variables:
+#   NEW_RELIC_API_KEY    — New Relic User API key
+#   NEW_RELIC_ACCOUNT_ID — New Relic account ID
+
+.nr_ai_report:
+  image: node:20-alpine
+  stage: test
+  variables:
+    NR_AI_SINCE_HOURS: "24"
+    NR_AI_FAIL_BELOW: "0"
+    NR_AI_DEVELOPER: ""
+  script:
+    - npm install -g nr-ai-cicd
+    - |
+      DEVELOPER_FLAG=""
+      if [ -n "$NR_AI_DEVELOPER" ]; then
+        DEVELOPER_FLAG="--developer $NR_AI_DEVELOPER"
+      fi
+      FAIL_FLAG=""
+      if [ "$NR_AI_FAIL_BELOW" != "0" ]; then
+        FAIL_FLAG="--fail-below $NR_AI_FAIL_BELOW"
+      fi
+      nr-ai-report \
+        --since-hours "$NR_AI_SINCE_HOURS" \
+        --output ai-report.md \
+        $DEVELOPER_FLAG \
+        $FAIL_FLAG
+    - |
+      if [ -n "$CI_MERGE_REQUEST_IID" ]; then
+        curl --request POST \
+          --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+          --form "body=@ai-report.md" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes"
+      fi
+  artifacts:
+    paths:
+      - ai-report.md
+    expire_in: 1 week

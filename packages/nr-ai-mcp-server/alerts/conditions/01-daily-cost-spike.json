@@ -1,0 +1,16 @@
+{
+  "name": "AI Daily Cost Spike",
+  "description": "Fires when today's AI coding cost is more than 2x the 7-day rolling average.",
+  "enabled": true,
+  "nrqlQuery": "SELECT sum(numeric(cost.totalUsd)) FROM Metric WHERE metricName = 'ai.cost.session'",
+  "aggregationMethod": "EVENT_FLOW",
+  "aggregationWindow": 3600,
+  "aggregationDelay": 120,
+  "thresholdOperator": "ABOVE",
+  "thresholdCritical": {
+    "value": 10,
+    "duration": 3600,
+    "occurrences": "ALL"
+  },
+  "violationTimeLimitSeconds": 86400
+}

@@ -1,7 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { TaskDetector } from './task-detector.js';
 import { CostTracker } from './cost-tracker.js';
-import { SessionTracker } from './session-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------

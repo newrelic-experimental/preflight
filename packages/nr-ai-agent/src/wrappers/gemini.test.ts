@@ -6,6 +6,15 @@ import type {
   RecordHandler,
   EmbeddingRecordHandler,
 } from '../types.js';
+import type { GenerateContentResponse, GenerateContentParameters, GoogleGenAI } from '@google/genai';
+
+interface MockGoogleGenAIClient {
+  models: {
+    generateContent: jest.Mock;
+    generateContentStream: jest.Mock;
+    embedContent: jest.Mock;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -37,7 +46,7 @@ function makeEmbeddingRecorder(): {
 
 function makeGenerateContentResponse(
   overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+): GenerateContentResponse {
   return {
     candidates: [
       {
@@ -74,19 +83,18 @@ function makeGenerateContentResponse(
       return parts?.[0]?.text as string;
     },
     ...overrides,
-  };
+  } as unknown as GenerateContentResponse;
 }
 
-function makeGenerateParams(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeGenerateParams(overrides: Record<string, unknown> = {}): GenerateContentParameters {
   return {
     model: 'gemini-2.0-flash',
     contents: 'Hello',
     ...overrides,
-  };
+  } as unknown as GenerateContentParameters;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeMockClient(overrides: Record<string, unknown> = {}): any {
+function makeMockClient(overrides: Partial<MockGoogleGenAIClient['models']> = {}): MockGoogleGenAIClient {
   return {
     models: {
       generateContent: jest.fn(),
@@ -109,7 +117,7 @@ describe('wrapGeminiClient', () => {
       const { handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
 
-      const result = wrapGeminiClient(client, config, handler, embHandler);
+      const result = wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       expect(result).toBe(client);
     });
@@ -124,7 +132,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       const params = makeGenerateParams({
         config: {
@@ -196,7 +204,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -227,7 +235,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -249,7 +257,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       // No config at all
       await client.models.generateContent({ model: 'gemini-2.0-flash', contents: 'Hi' });
@@ -286,7 +294,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ recordContent: true, contentMaxLength: 50 });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -313,7 +321,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await expect(client.models.generateContent(makeGenerateParams())).rejects.toThrow(
         'quota exceeded',
@@ -337,7 +345,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ redactionPatterns: [/Bearer\s+\S+/g] });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await expect(client.models.generateContent(makeGenerateParams())).rejects.toThrow();
 
@@ -389,7 +397,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       const stream = await client.models.generateContentStream(makeGenerateParams());
 
@@ -469,7 +477,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       const stream = await client.models.generateContentStream(makeGenerateParams());
       const collected: unknown[] = [];
@@ -507,7 +515,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       const stream = await client.models.generateContentStream(makeGenerateParams());
 
@@ -531,7 +539,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await expect(client.models.generateContentStream(makeGenerateParams())).rejects.toThrow(
         'connection refused',
@@ -559,7 +567,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { handler } = makeRecorder();
       const { records: embRecords, handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       const result = await client.models.embedContent({
         model: 'text-embedding-004',
@@ -594,7 +602,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { handler } = makeRecorder();
       const { records: embRecords, handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.embedContent({
         model: 'text-embedding-004',
@@ -615,7 +623,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { handler } = makeRecorder();
       const { records: embRecords, handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await expect(
         client.models.embedContent({ model: 'text-embedding-004', contents: 'test' }),
@@ -638,13 +646,12 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(makeGenerateParams());
 
       // Test the extraction helper directly
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ratings = extractSafetyRatings(response as any);
+      const ratings = extractSafetyRatings(response);
       expect(ratings).not.toBeNull();
       expect(ratings).toHaveLength(4);
       expect(ratings![0]).toEqual({
@@ -668,8 +675,7 @@ describe('wrapGeminiClient', () => {
           },
         ],
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ratings = extractSafetyRatings(response as any);
+      const ratings = extractSafetyRatings(response);
       expect(ratings).toBeNull();
     });
   });
@@ -692,8 +698,7 @@ describe('wrapGeminiClient', () => {
           },
         ],
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const info = extractGroundingInfo(response as any);
+      const info = extractGroundingInfo(response);
       expect(info).not.toBeNull();
       expect(info!.hasGrounding).toBe(true);
       expect(info!.chunksCount).toBe(2);
@@ -702,8 +707,7 @@ describe('wrapGeminiClient', () => {
 
     it('returns null when grounding is not used', () => {
       const response = makeGenerateContentResponse();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const info = extractGroundingInfo(response as any);
+      const info = extractGroundingInfo(response);
       expect(info).toBeNull();
     });
   });
@@ -717,7 +721,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ recordContent: false });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -747,7 +751,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig({ recordContent: true, highSecurity: true });
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -793,7 +797,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(makeGenerateParams());
 
@@ -813,7 +817,7 @@ describe('wrapGeminiClient', () => {
       const config = makeConfig();
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, config, handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, config, handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -842,7 +846,7 @@ describe('wrapGeminiClient', () => {
 
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, makeConfig(), handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, makeConfig(), handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({
@@ -863,7 +867,7 @@ describe('wrapGeminiClient', () => {
 
       const { records, handler } = makeRecorder();
       const { handler: embHandler } = makeEmbeddingRecorder();
-      wrapGeminiClient(client, makeConfig(), handler, embHandler);
+      wrapGeminiClient(client as unknown as GoogleGenAI, makeConfig(), handler, embHandler);
 
       await client.models.generateContent(
         makeGenerateParams({

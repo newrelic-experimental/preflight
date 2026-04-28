@@ -1,7 +1,7 @@
 export interface AiRequestRecord {
   id: string;
   timestamp: number;
-  provider: 'anthropic' | 'google';
+  provider: 'anthropic' | 'google' | 'openai';
   model: string;
   requestModel: string;
   requestMethod: string;
@@ -47,7 +47,7 @@ export interface AiRequestRecord {
 export interface AiEmbeddingRecord {
   id: string;
   timestamp: number;
-  provider: 'anthropic' | 'google';
+  provider: 'anthropic' | 'google' | 'openai';
   model: string;
   requestModel: string;
 

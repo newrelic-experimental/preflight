@@ -651,3 +651,90 @@ describe('NrIngestManager.ingestAntiPattern()', () => {
     expect(types).toContain('re_reading');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Session trace ID propagation
+// ---------------------------------------------------------------------------
+
+describe('session trace ID propagation', () => {
+  const TRACE_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+  it('toolCallToNrEvent: uses sessionTraceId when provided, ignoring record.sessionId', () => {
+    const record = makeRecord({ sessionId: 'old-session-id' });
+    const event = toolCallToNrEvent(record, {
+      developer: 'dev',
+      appName: 'app',
+      sessionTraceId: TRACE_ID,
+    });
+    expect(event.session_id).toBe(TRACE_ID);
+  });
+
+  it('toolCallToNrEvent: falls back to record.sessionId when sessionTraceId is absent', () => {
+    const record = makeRecord({ sessionId: 'fallback-id' });
+    const event = toolCallToNrEvent(record, { developer: 'dev', appName: 'app' });
+    expect(event.session_id).toBe('fallback-id');
+  });
+
+  it('toolCallToNrEvent: omits session_id when neither sessionTraceId nor record.sessionId is set', () => {
+    const record = makeRecord({ sessionId: undefined });
+    const event = toolCallToNrEvent(record, { developer: 'dev', appName: 'app' });
+    expect(event.session_id).toBeUndefined();
+  });
+
+  it('codingTaskToNrEvent: uses sessionTraceId when provided', () => {
+    const task = makeTask();
+    const event = codingTaskToNrEvent(task, {
+      developer: 'dev',
+      appName: 'app',
+      sessionTraceId: TRACE_ID,
+    });
+    expect(event.session_id).toBe(TRACE_ID);
+  });
+
+  it('codingTaskToNrEvent: falls back to first toolCall.sessionId when sessionTraceId is absent', () => {
+    const task = makeTask({
+      toolCalls: [makeRecord({ sessionId: 'record-session-id' })],
+    });
+    const event = codingTaskToNrEvent(task, { developer: 'dev', appName: 'app' });
+    expect(event.session_id).toBe('record-session-id');
+  });
+
+  it('antiPatternToNrEvent: emits session_id from attrs.sessionId', () => {
+    const pattern = makePattern();
+    const event = antiPatternToNrEvent(pattern, {
+      developer: 'dev',
+      appName: 'app',
+      sessionId: TRACE_ID,
+      taskId: 'task-1',
+    });
+    expect(event.session_id).toBe(TRACE_ID);
+  });
+
+  it('NrIngestManager.ingestToolCall: emits sessionTraceId as session_id on AiToolCall event', async () => {
+    const manager = new NrIngestManager({
+      ...makeIngestOptions(),
+      sessionTraceId: TRACE_ID,
+    });
+    manager.ingestToolCall(makeRecord({ sessionId: 'old-id' }));
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const toolCallEvent = sentEvents.find(e => e.eventType === 'AiToolCall');
+    expect(toolCallEvent?.session_id).toBe(TRACE_ID);
+  });
+
+  it('NrIngestManager.ingestAntiPattern: sessionTraceId takes precedence over context.sessionId', async () => {
+    const manager = new NrIngestManager({
+      ...makeIngestOptions(),
+      sessionTraceId: TRACE_ID,
+    });
+    manager.ingestAntiPattern(makePattern(), { sessionId: 'context-id', taskId: 'task-1' });
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
+    const patternEvent = sentEvents.find(e => e.eventType === 'AiAntiPattern');
+    expect(patternEvent?.session_id).toBe(TRACE_ID);
+  });
+});

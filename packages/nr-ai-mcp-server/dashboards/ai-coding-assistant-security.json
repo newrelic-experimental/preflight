@@ -2,6 +2,19 @@
   "name": "AI Coding Assistant — Security Audit",
   "description": "Security audit trail dashboard for AI coding assistant sessions. Tracks security alerts, sensitive file access, destructive commands, external network requests, and MCP server access patterns. Requires AiAuditEvent, AiToolCall, and AiMcpToolCall custom events sent by the MCP server.",
   "permissions": "PUBLIC_READ_WRITE",
+  "variables": [
+    {
+      "name": "session_id",
+      "title": "Session ID",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "query": "SELECT uniques(session_id) FROM AiToolCall SINCE 7 days ago LIMIT 100"
+      },
+      "isMultiSelection": false,
+      "defaultValues": [],
+      "replacementStrategy": "STRING"
+    }
+  ],
   "pages": [
     {
       "name": "AI Coding Assistant — Security Audit",
@@ -147,7 +160,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall WHERE success = false FACET tool, error_type SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiToolCall WHERE success = false {{#session_id}} AND session_id = '{{session_id}}' {{/session_id}} FACET tool, error_type SINCE 7 days ago"
               }
             ]
           }

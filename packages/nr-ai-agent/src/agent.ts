@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { GoogleGenAI } from '@google/genai';
+import type OpenAI from 'openai';
 import {
   loadConfig,
   createLogger,
@@ -15,6 +16,7 @@ import {
 import type { AgentConfig } from '@nr-ai-observatory/shared';
 import { wrapAnthropicClient as wrapAnthropic } from './wrappers/anthropic.js';
 import { wrapGeminiClient as wrapGemini } from './wrappers/gemini.js';
+import { wrapOpenAiClient as wrapOpenAI } from './wrappers/openai.js';
 import type {
   WrapperConfig,
   RecordHandler,
@@ -116,6 +118,16 @@ export class NrAiAgent {
     };
 
     return wrapAnthropic(client, this.wrapperConfig, onRecord);
+  }
+
+  wrapOpenAiClient(client: OpenAI): OpenAI {
+    if (!this.config.enabled) return client;
+
+    const onRecord: RecordHandler = (record) => {
+      this.ingestRequestRecord(record);
+    };
+
+    return wrapOpenAI(client, this.wrapperConfig, onRecord);
   }
 
   wrapGeminiClient(client: GoogleGenAI): GoogleGenAI {
@@ -256,9 +268,12 @@ export class NrAiAgent {
 
 function resolveRequestMethod(
   record: AiRequestRecord,
-): 'messages.create' | 'messages.stream' | 'models.generateContent' | 'models.generateContentStream' {
+): 'messages.create' | 'messages.stream' | 'models.generateContent' | 'models.generateContentStream' | 'chat.completions.create' {
   if (record.provider === 'anthropic') {
     return record.streaming ? 'messages.stream' : 'messages.create';
+  }
+  if (record.provider === 'openai') {
+    return 'chat.completions.create';
   }
   return record.streaming ? 'models.generateContentStream' : 'models.generateContent';
 }

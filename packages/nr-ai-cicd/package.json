@@ -1,0 +1,26 @@
+{
+  "name": "nr-ai-cicd",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CI/CD integration for NR AI Observatory — posts AI coding cost reports to PRs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "nr-ai-report": "dist/report-cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@nr-ai-observatory/shared": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import { VERSION, createLogger } from '@nr-ai-observatory/shared';
 import { createServer } from './server.js';
@@ -135,6 +136,8 @@ async function main(): Promise<void> {
     await mcpServer.connectStdio();
 
     const config = loadMcpConfig(options);
+    const sessionTraceId = randomUUID();
+    logger.info('Session trace ID generated', { sessionTraceId });
 
     if (!config.enabled) {
       logger.info('Server disabled via config — exiting');
@@ -191,6 +194,7 @@ async function main(): Promise<void> {
       metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
       costTracker,
       efficiencyScorer,
+      sessionTraceId,
     });
 
     const capturedNrIngest = nrIngest;
@@ -250,6 +254,7 @@ async function main(): Promise<void> {
       claudeMdTracker,
       costPerOutcomeAnalyzer,
       recommendationEngine,
+      sessionTraceId,
     });
 
     eventProcessor.start();

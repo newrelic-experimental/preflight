@@ -73,4 +73,73 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     tierInputPerMTok: 0.15,
     tierOutputPerMTok: 0.6,
   },
+
+  // ---- OpenAI ----
+  'gpt-4o': {
+    inputPerMTok: 2.5,
+    outputPerMTok: 10,
+    contextWindow: 128_000,
+  },
+  'gpt-4o-mini': {
+    inputPerMTok: 0.15,
+    outputPerMTok: 0.6,
+    contextWindow: 128_000,
+  },
+  'gpt-4o-2024-11-20': {
+    inputPerMTok: 2.5,
+    outputPerMTok: 10,
+    contextWindow: 128_000,
+  },
+  'gpt-4o-2024-08-06': {
+    inputPerMTok: 2.5,
+    outputPerMTok: 10,
+    contextWindow: 128_000,
+  },
+  'gpt-4o-mini-2024-07-18': {
+    inputPerMTok: 0.15,
+    outputPerMTok: 0.6,
+    contextWindow: 128_000,
+  },
+  'o1': {
+    inputPerMTok: 15,
+    outputPerMTok: 60,
+    thinkingPerMTok: 60,
+    contextWindow: 200_000,
+  },
+  'o1-mini': {
+    inputPerMTok: 1.1,
+    outputPerMTok: 4.4,
+    contextWindow: 128_000,
+  },
+  'o1-preview': {
+    inputPerMTok: 15,
+    outputPerMTok: 60,
+    contextWindow: 128_000,
+  },
+  'o3': {
+    inputPerMTok: 10,
+    outputPerMTok: 40,
+    thinkingPerMTok: 40,
+    contextWindow: 200_000,
+  },
+  'o3-mini': {
+    inputPerMTok: 1.1,
+    outputPerMTok: 4.4,
+    contextWindow: 200_000,
+  },
+  'o4-mini': {
+    inputPerMTok: 1.1,
+    outputPerMTok: 4.4,
+    contextWindow: 200_000,
+  },
+  'gpt-4-turbo': {
+    inputPerMTok: 10,
+    outputPerMTok: 30,
+    contextWindow: 128_000,
+  },
+  'gpt-3.5-turbo': {
+    inputPerMTok: 0.5,
+    outputPerMTok: 1.5,
+    contextWindow: 16_385,
+  },
 };

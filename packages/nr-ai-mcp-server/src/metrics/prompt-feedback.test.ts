@@ -398,8 +398,7 @@ describe('PromptFeedbackEngine', () => {
   // -------------------------------------------------------------------------
 
   it('recommendations are sorted by priority: high before medium before low', () => {
-    const { tracker, engine } = createEngine();
-    const changeTimestamp = Date.now();
+    const { engine } = createEngine();
 
     // Trigger both high-priority (correction rate) and medium-priority (re-reading) rules
     for (let i = 0; i < 4; i++) {

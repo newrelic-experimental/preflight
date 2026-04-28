@@ -2,6 +2,19 @@
   "name": "AI Coding Assistant — Team View",
   "description": "Team-level dashboard for AI coding assistant observability. Shows cost rollups, efficiency scores by developer, trend lines, and optimization insights across sessions. Requires AiToolCall, AiCodingTask, AiAntiPattern custom events and ai.* metrics.",
   "permissions": "PUBLIC_READ_WRITE",
+  "variables": [
+    {
+      "name": "session_id",
+      "title": "Session ID",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "query": "SELECT uniques(session_id) FROM AiToolCall SINCE 7 days ago LIMIT 100"
+      },
+      "isMultiSelection": false,
+      "defaultValues": [],
+      "replacementStrategy": "STRING"
+    }
+  ],
   "pages": [
     {
       "name": "AI Coding Assistant — Team View",
@@ -45,7 +58,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) AS 'Tasks' FROM AiCodingTask SINCE 7 days ago"
+                "query": "SELECT count(*) AS 'Tasks' FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} SINCE 7 days ago"
               }
             ]
           }
@@ -58,7 +71,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT average(estimated_cost_usd) AS 'USD / Task' FROM AiCodingTask SINCE 7 days ago"
+                "query": "SELECT average(estimated_cost_usd) AS 'USD / Task' FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} SINCE 7 days ago"
               }
             ]
           }
@@ -71,7 +84,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT percentage(count(*), WHERE tests_passed > 0) AS 'Success %' FROM AiCodingTask SINCE 7 days ago"
+                "query": "SELECT percentage(count(*), WHERE tests_passed > 0) AS 'Success %' FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} SINCE 7 days ago"
               }
             ],
             "thresholds": [
@@ -115,7 +128,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiCodingTask FACET developer SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET developer SINCE 7 days ago"
               }
             ]
           }
@@ -155,7 +168,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiAntiPattern FACET type TIMESERIES 1 day SINCE 30 days ago"
+                "query": "SELECT count(*) FROM AiAntiPattern {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET type TIMESERIES 1 day SINCE 30 days ago"
               }
             ]
           }
@@ -169,7 +182,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT max(estimated_cost_usd) FROM AiCodingTask FACET task_id SINCE 7 days ago LIMIT 10"
+                "query": "SELECT max(estimated_cost_usd) FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET task_id SINCE 7 days ago LIMIT 10"
               }
             ]
           }
@@ -182,7 +195,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiAntiPattern FACET type SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiAntiPattern {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET type SINCE 7 days ago"
               }
             ]
           }
@@ -195,7 +208,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET tool, developer SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET tool, developer SINCE 7 days ago"
               }
             ]
           }

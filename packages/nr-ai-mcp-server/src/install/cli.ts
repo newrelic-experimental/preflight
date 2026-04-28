@@ -22,6 +22,10 @@ import {
 const NR_CONFIG_DIR = resolve(homedir(), '.nr-ai-observe');
 const NR_CONFIG_PATH = resolve(NR_CONFIG_DIR, 'config.json');
 
+function print(msg = ''): void {
+  process.stdout.write(msg + '\n');
+}
+
 // ---------------------------------------------------------------------------
 // File I/O helpers
 // ---------------------------------------------------------------------------
@@ -61,23 +65,23 @@ function handleInstall(options: { licenseKey?: string; accountId?: string; proje
   const mergedMcp = mergeMcpConfig(existingMcp);
   writeJsonFile(mcpPath, mergedMcp);
 
-  console.log(`\n✓ Claude Code hooks updated: ${settingsPath}`);
-  console.log('  - Added PreToolUse and PostToolUse hooks');
-  console.log(`✓ MCP server registered: ${mcpPath}`);
-  console.log('  - Added nr-ai-observability MCP server');
+  print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
+  print('  - Added PreToolUse and PostToolUse hooks');
+  print(`✓ MCP server registered: ${mcpPath}`);
+  print('  - Added nr-ai-observability MCP server');
 
   if (options.licenseKey && options.accountId) {
     const config = generateNrConfig(options.licenseKey, options.accountId);
     writeJsonFile(NR_CONFIG_PATH, config as unknown as Record<string, unknown>);
-    console.log(`\n✓ New Relic config written: ${NR_CONFIG_PATH}`);
+    print(`\n✓ New Relic config written: ${NR_CONFIG_PATH}`);
   } else if (options.licenseKey || options.accountId) {
-    console.log('\n⚠ Both --license-key and --account-id are required to save NR config. Skipped.');
+    print('\n⚠ Both --license-key and --account-id are required to save NR config. Skipped.');
   }
 
-  console.log('\nNext steps:');
-  console.log('  1. Restart Claude Code');
-  console.log('  2. Verify: ask Claude Code to call nr_observe_get_session_stats');
-  console.log('');
+  print('\nNext steps:');
+  print('  1. Restart Claude Code');
+  print('  2. Verify: ask Claude Code to call nr_observe_get_session_stats');
+  print('');
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +97,9 @@ function handleUninstall(options: { project?: boolean }): void {
     const existingSettings = readJsonFile(settingsPath);
     const cleanedSettings = removeSettings(existingSettings);
     writeJsonFile(settingsPath, cleanedSettings);
-    console.log(`\n✓ Hooks removed: ${settingsPath}`);
+    print(`\n✓ Hooks removed: ${settingsPath}`);
   } else {
-    console.log(`\nNo settings file found at ${settingsPath}. Skipping hooks.`);
+    print(`\nNo settings file found at ${settingsPath}. Skipping hooks.`);
   }
 
   // Remove MCP server from .mcp.json
@@ -106,12 +110,12 @@ function handleUninstall(options: { project?: boolean }): void {
 
     // If .mcp.json is now empty (no mcpServers key or empty object), leave it minimal
     writeJsonFile(mcpPath, cleanedMcp);
-    console.log(`✓ MCP server removed: ${mcpPath}`);
+    print(`✓ MCP server removed: ${mcpPath}`);
   } else {
-    console.log(`No MCP config found at ${mcpPath}. Skipping MCP server.`);
+    print(`No MCP config found at ${mcpPath}. Skipping MCP server.`);
   }
 
-  console.log('\nRestart Claude Code for changes to take effect.\n');
+  print('\nRestart Claude Code for changes to take effect.\n');
 }
 
 // ---------------------------------------------------------------------------

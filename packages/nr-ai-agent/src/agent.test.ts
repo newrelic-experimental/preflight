@@ -25,12 +25,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // Always try to clean up the singleton
-  try {
-    const agent = (init as any).__lastInstance;
-  } catch {
-    // ignore
-  }
   stderrSpy.mockRestore();
 });
 
@@ -60,7 +54,7 @@ describe('init()', () => {
     delete process.env.NEW_RELIC_APP_NAME;
 
     try {
-      await expect(init({ appName: 'test' } as any)).rejects.toThrow('NEW_RELIC_LICENSE_KEY');
+      await expect(init({ appName: 'test' })).rejects.toThrow('NEW_RELIC_LICENSE_KEY');
     } finally {
       if (savedKey) process.env.NEW_RELIC_LICENSE_KEY = savedKey;
       if (savedApp) process.env.NEW_RELIC_APP_NAME = savedApp;
@@ -126,7 +120,7 @@ describe('init()', () => {
     delete process.env.NEW_RELIC_LICENSE_KEY;
 
     try {
-      await expect(init({ appName: 'test' } as any)).rejects.toThrow();
+      await expect(init({ appName: 'test' })).rejects.toThrow();
       // After rejection, a valid init() should succeed
       const agent = await init(validConfig);
       expect(agent).toBeInstanceOf(NrAiAgent);

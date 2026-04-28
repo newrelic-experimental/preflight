@@ -1,11 +1,12 @@
-export type AiProvider = 'anthropic' | 'google';
+export type AiProvider = 'anthropic' | 'google' | 'openai';
 
 export type AiRequestMethod =
   | 'messages.create'
   | 'messages.stream'
   | 'models.generateContent'
   | 'models.generateContentStream'
-  | 'models.embedContent';
+  | 'models.embedContent'
+  | 'chat.completions.create';
 
 export interface AiRequest {
   id: string;

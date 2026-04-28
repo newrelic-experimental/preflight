@@ -15,7 +15,8 @@ import { init, NrAiAgent } from 'nr-ai-agent';
 const separator = '─'.repeat(60);
 
 function log(section: string, ...args: unknown[]): void {
-  console.log(`[${section}]`, ...args);
+  const parts = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a)));
+  process.stdout.write(`[${section}] ${parts.join(' ')}\n`);
 }
 
 async function testAnthropic(agent: NrAiAgent): Promise<void> {
@@ -107,10 +108,14 @@ async function testGemini(agent: NrAiAgent): Promise<void> {
   });
 }
 
+function stdout(msg: string): void {
+  process.stdout.write(msg + '\n');
+}
+
 async function main(): Promise<void> {
-  console.log(separator);
-  console.log('nr-ai-agent — Phase 1 Integration Test');
-  console.log(separator);
+  stdout(separator);
+  stdout('nr-ai-agent — Phase 1 Integration Test');
+  stdout(separator);
 
   // --- Initialize ---
   log('init', 'Initializing agent...');
@@ -122,7 +127,7 @@ async function main(): Promise<void> {
   });
 
   log('init', 'Agent stats after init:', agent.getStats());
-  console.log(separator);
+  stdout(separator);
 
   // --- Test Anthropic ---
   try {
@@ -131,7 +136,7 @@ async function main(): Promise<void> {
     log('anthropic', 'ERROR:', err instanceof Error ? err.message : err);
   }
   log('stats', 'After Anthropic:', agent.getStats());
-  console.log(separator);
+  stdout(separator);
 
   // --- Test Gemini ---
   try {
@@ -140,13 +145,13 @@ async function main(): Promise<void> {
     log('gemini', 'ERROR:', err instanceof Error ? err.message : err);
   }
   log('stats', 'After Gemini:', agent.getStats());
-  console.log(separator);
+  stdout(separator);
 
   // --- Shutdown ---
   log('shutdown', 'Shutting down agent (final flush)...');
   await agent.shutdown();
   log('shutdown', 'Done.');
-  console.log(separator);
+  stdout(separator);
 }
 
 main().catch((err) => {

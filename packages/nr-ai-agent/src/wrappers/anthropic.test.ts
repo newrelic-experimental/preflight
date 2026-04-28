@@ -1,5 +1,13 @@
 import { wrapAnthropicClient } from './anthropic.js';
 import type { AiRequestRecord, WrapperConfig, RecordHandler } from '../types.js';
+import type Anthropic from '@anthropic-ai/sdk';
+
+interface MockAnthropicClient {
+  messages: {
+    create: jest.Mock;
+    stream: jest.Mock;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers to build mock Anthropic SDK objects
@@ -106,8 +114,7 @@ function makeMockRawStream(events: Record<string, unknown>[]) {
   return stream;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeMockClient(overrides: Record<string, unknown> = {}): any {
+function makeMockClient(overrides: Partial<MockAnthropicClient['messages']> = {}): MockAnthropicClient {
   return {
     messages: {
       create: jest.fn(),
@@ -128,7 +135,7 @@ describe('wrapAnthropicClient', () => {
       const config = makeConfig({ enabled: false });
       const { handler } = makeRecorder();
 
-      const result = wrapAnthropicClient(client, config, handler);
+      const result = wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       expect(result).toBe(client);
     });
@@ -143,7 +150,7 @@ describe('wrapAnthropicClient', () => {
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
 
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       const params = makeCreateParams({
         system: 'You are a helpful assistant.',
@@ -210,7 +217,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(
         makeCreateParams({
@@ -232,7 +239,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(
         makeCreateParams({
@@ -258,7 +265,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(
         makeCreateParams({
@@ -280,7 +287,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig({ recordContent: true, contentMaxLength: 50 });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(
         makeCreateParams({
@@ -301,7 +308,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig({ recordContent: true });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       // No system, no tools, no temperature, no thinking
       await client.messages.create({
@@ -333,7 +340,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await expect(client.messages.create(makeCreateParams())).rejects.toThrow(
         'rate limit exceeded',
@@ -357,7 +364,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await expect(client.messages.create(makeCreateParams())).rejects.toThrow('network failure');
 
@@ -372,7 +379,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig({ redactionPatterns: [/Bearer\s+\S+/g] });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await expect(client.messages.create(makeCreateParams())).rejects.toThrow();
 
@@ -389,7 +396,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       const stream = await client.messages.create(makeCreateParams({ stream: true }));
 
@@ -448,7 +455,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       const stream = await client.messages.create(makeCreateParams({ stream: true }));
 
@@ -514,7 +521,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       const stream = await client.messages.create(makeCreateParams({ stream: true }));
       const collected: unknown[] = [];
@@ -539,7 +546,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       const stream = await client.messages.create(makeCreateParams({ stream: true }));
 
@@ -585,7 +592,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       const stream = client.messages.stream(makeCreateParams());
       expect(stream).toBe(mockMessageStream);
@@ -616,7 +623,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       client.messages.stream(makeCreateParams());
 
@@ -638,7 +645,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       client.messages.stream(makeCreateParams());
 
@@ -662,7 +669,7 @@ describe('wrapAnthropicClient', () => {
       const client = makeMockClient();
       client.messages.stream.mockReturnValue(mockMessageStream);
 
-      wrapAnthropicClient(client, makeConfig(), makeRecorder().handler);
+      wrapAnthropicClient(client as unknown as Anthropic, makeConfig(), makeRecorder().handler);
       client.messages.stream(makeCreateParams());
 
       expect(mockMessageStream.removeAllListenersSpy).not.toHaveBeenCalled();
@@ -676,7 +683,7 @@ describe('wrapAnthropicClient', () => {
       const client = makeMockClient();
       client.messages.stream.mockReturnValue(mockMessageStream);
 
-      wrapAnthropicClient(client, makeConfig(), makeRecorder().handler);
+      wrapAnthropicClient(client as unknown as Anthropic, makeConfig(), makeRecorder().handler);
       client.messages.stream(makeCreateParams());
 
       expect(mockMessageStream.removeAllListenersSpy).not.toHaveBeenCalled();
@@ -693,7 +700,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig({ recordContent: false });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(
         makeCreateParams({
@@ -727,7 +734,7 @@ describe('wrapAnthropicClient', () => {
       // Note: recordContent=true but highSecurity=true should override
       const config = makeConfig({ recordContent: true, highSecurity: true });
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(
         makeCreateParams({
@@ -765,7 +772,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(makeCreateParams());
 
@@ -784,7 +791,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create({
         ...makeCreateParams(),
@@ -802,7 +809,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create({
         ...makeCreateParams(),
@@ -825,7 +832,7 @@ describe('wrapAnthropicClient', () => {
 
       const config = makeConfig();
       const { records, handler } = makeRecorder();
-      wrapAnthropicClient(client, config, handler);
+      wrapAnthropicClient(client as unknown as Anthropic, config, handler);
 
       await client.messages.create(makeCreateParams());
 

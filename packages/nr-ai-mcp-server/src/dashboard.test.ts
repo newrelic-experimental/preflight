@@ -51,7 +51,7 @@ function getAllQueries(dashboard: Dashboard): string[] {
 // Structural validation — runs for every dashboard
 // ---------------------------------------------------------------------------
 
-describe.each(dashboards)('Dashboard: $file', ({ file, dashboard }) => {
+describe.each(dashboards)('Dashboard: $file', ({ dashboard }) => {
   it('has valid NR dashboard structure', () => {
     expect(dashboard.name).toBeTruthy();
     expect(Array.isArray(dashboard.pages)).toBe(true);

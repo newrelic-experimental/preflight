@@ -1,0 +1,16 @@
+{
+  "name": "AI Anti-Pattern Rate Elevated",
+  "description": "Fires when total anti-patterns exceed 10 in any 30-minute window.",
+  "enabled": true,
+  "nrqlQuery": "SELECT count(*) FROM AiAntiPattern",
+  "aggregationMethod": "EVENT_FLOW",
+  "aggregationWindow": 600,
+  "aggregationDelay": 120,
+  "thresholdOperator": "ABOVE",
+  "thresholdCritical": {
+    "value": 10,
+    "duration": 600,
+    "occurrences": "AT_LEAST_ONCE"
+  },
+  "violationTimeLimitSeconds": 43200
+}

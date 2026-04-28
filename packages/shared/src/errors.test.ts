@@ -62,8 +62,7 @@ describe('classifyError', () => {
   // 6. Network error ECONNREFUSED → NETWORK_ERROR
   // ---------------------------------------------------------------------------
   it('classifies ECONNREFUSED as NETWORK_ERROR', () => {
-    const err = new Error('connect ECONNREFUSED 127.0.0.1:443');
-    (err as any).code = 'ECONNREFUSED';
+    const err = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' });
     expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.NETWORK_ERROR);
   });
 
@@ -71,15 +70,13 @@ describe('classifyError', () => {
   // 7. Timeout ETIMEDOUT → TIMEOUT
   // ---------------------------------------------------------------------------
   it('classifies ETIMEDOUT as TIMEOUT', () => {
-    const err = new Error('Request timed out');
-    (err as any).code = 'ETIMEDOUT';
+    const err = Object.assign(new Error('Request timed out'), { code: 'ETIMEDOUT' });
     expect(classifyError(err, 'google')).toBe(AiErrorClassification.TIMEOUT);
   });
 
   it('classifies undici timeout codes as TIMEOUT', () => {
     for (const code of ['UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
-      const err = new Error(`undici ${code}`);
-      (err as any).code = code;
+      const err = Object.assign(new Error(`undici ${code}`), { code });
       expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.TIMEOUT);
     }
   });

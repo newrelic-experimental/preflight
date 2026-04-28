@@ -96,7 +96,7 @@ const SESSION_TIMELINE_TOOL = {
 // Handlers
 // ---------------------------------------------------------------------------
 
-export function handleGetSessionStats(sessionTracker: SessionTracker) {
+export function handleGetSessionStats(sessionTracker: SessionTracker, sessionTraceId?: string) {
   const metrics = sessionTracker.getMetrics();
 
   // Compute average tool duration across all tools
@@ -111,6 +111,7 @@ export function handleGetSessionStats(sessionTracker: SessionTracker) {
     : 0;
 
   const stats = {
+    session_trace_id: sessionTraceId ?? null,
     session_id: metrics.sessionId,
     session_duration_ms: metrics.sessionDurationMs,
     tool_calls: metrics.toolCallCount,
@@ -166,6 +167,7 @@ export interface ToolRegistrationOptions {
   claudeMdTracker?: ClaudeMdTracker;
   costPerOutcomeAnalyzer?: CostPerOutcomeAnalyzer;
   recommendationEngine?: RecommendationEngine;
+  sessionTraceId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +202,7 @@ export function registerTools(
     claudeMdTracker,
     costPerOutcomeAnalyzer,
     recommendationEngine,
+    sessionTraceId,
   } = options;
 
   // Build combined tool list
@@ -255,7 +258,7 @@ export function registerTools(
     switch (name) {
       case 'nr_observe_get_session_stats':
         if (!sessionTracker) break;
-        return handleGetSessionStats(sessionTracker);
+        return handleGetSessionStats(sessionTracker, sessionTraceId);
 
       case 'nr_observe_get_session_timeline': {
         if (!sessionTracker) break;

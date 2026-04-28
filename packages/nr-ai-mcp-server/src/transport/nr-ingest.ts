@@ -5,7 +5,7 @@
 
 import type { NrEventData, NrMetric, NrLogEntry, TransportOptions, TransportResult } from '@nr-ai-observatory/shared';
 import { HarvestScheduler, MetricAggregator, sendEvents, sendMetrics } from '@nr-ai-observatory/shared';
-import type { ToolCallRecord, AuditEntry } from '../storage/types.js';
+import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
@@ -53,6 +53,8 @@ export interface NrIngestOptions {
   metricHarvestIntervalMs?: number;
   /** Session ID for audit trail context. */
   sessionId?: string | null;
+  /** Trace ID generated at server startup — threaded through all NR events and metrics. */
+  sessionTraceId?: string;
   /** LocalStore for persisting audit entries to disk. */
   localStore?: LocalStore;
   /** Override for testing; defaults to the shared sendEvents transport. */
@@ -98,7 +100,7 @@ const STANDARD_KEYS = new Set([
  */
 export function toolCallToNrEvent(
   record: ToolCallRecord,
-  attrs: { developer: string; appName: string },
+  attrs: { developer: string; appName: string; sessionTraceId?: string },
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiToolCall',
@@ -110,7 +112,8 @@ export function toolCallToNrEvent(
     app_name: attrs.appName,
   };
 
-  if (record.sessionId != null) event.session_id = record.sessionId;
+  const sessionId = attrs.sessionTraceId ?? record.sessionId;
+  if (sessionId != null) event.session_id = sessionId;
   if (record.durationMs != null) event.duration_ms = record.durationMs;
   if (record.errorType != null) event.error_type = record.errorType;
   if (record.error != null) event.error = record.error;
@@ -197,10 +200,9 @@ export function proxyRequestToNrEvent(
  */
 export function codingTaskToNrEvent(
   task: AiCodingTask,
-  attrs: { developer: string; appName: string },
+  attrs: { developer: string; appName: string; sessionTraceId?: string },
 ): NrEventData {
   const firstRecord = task.toolCalls[0];
-  const sessionId = firstRecord?.sessionId ?? null;
   const platform =
     typeof firstRecord?.platform === 'string' ? firstRecord.platform : 'claude-code';
 
@@ -230,6 +232,7 @@ export function codingTaskToNrEvent(
     sub_agents_spawned: task.subAgentsSpawned,
   };
 
+  const sessionId = attrs.sessionTraceId ?? firstRecord?.sessionId ?? null;
   if (sessionId != null) event.session_id = sessionId;
 
   return event;
@@ -281,6 +284,7 @@ export class NrIngestManager {
   readonly auditTrail: AuditTrailManager;
   private readonly developer: string;
   private readonly appName: string;
+  private readonly sessionTraceId: string | undefined;
   private readonly metricHarvestIntervalMs: number;
   private sessionGaugeIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -288,6 +292,7 @@ export class NrIngestManager {
   constructor(options: NrIngestOptions) {
     this.developer = options.developer;
     this.appName = options.appName;
+    this.sessionTraceId = options.sessionTraceId;
     this.sessionTracker = options.sessionTracker;
     this.proxyMetrics = new ProxyMetricsTracker();
     this.costTracker = options.costTracker;
@@ -340,16 +345,18 @@ export class NrIngestManager {
     const event = toolCallToNrEvent(record, {
       developer: this.developer,
       appName: this.appName,
+      sessionTraceId: this.sessionTraceId,
     });
     this.scheduler.addEvent(event);
 
     // Record per-call metrics for NR Metric API
     const tool = record.toolName;
-    this.scheduler.recordMetric('ai.tool.call_count', 1, { tool });
+    const sessionId = this.sessionTraceId;
+    this.scheduler.recordMetric('ai.tool.call_count', 1, sessionId != null ? { tool, session_id: sessionId } : { tool });
     if (record.durationMs != null) {
-      this.scheduler.recordMetric('ai.tool.duration_ms', record.durationMs, { tool });
+      this.scheduler.recordMetric('ai.tool.duration_ms', record.durationMs, sessionId != null ? { tool, session_id: sessionId } : { tool });
     }
-    this.scheduler.recordMetric('ai.tool.success', record.success ? 1 : 0, { tool });
+    this.scheduler.recordMetric('ai.tool.success', record.success ? 1 : 0, sessionId != null ? { tool, session_id: sessionId } : { tool });
 
     // If this is a proxied tool call, also emit AiMcpToolCall event and aggregate
     if (isProxyToolCall(record)) {
@@ -377,6 +384,7 @@ export class NrIngestManager {
     const event = codingTaskToNrEvent(task, {
       developer: this.developer,
       appName: this.appName,
+      sessionTraceId: this.sessionTraceId,
     });
     this.scheduler.addEvent(event);
   }
@@ -388,7 +396,7 @@ export class NrIngestManager {
     const event = antiPatternToNrEvent(pattern, {
       developer: this.developer,
       appName: this.appName,
-      sessionId: context.sessionId,
+      sessionId: this.sessionTraceId ?? context.sessionId,
       platform: context.platform,
       taskId: context.taskId,
     });
@@ -424,10 +432,20 @@ export class NrIngestManager {
 
   private emitSessionGauges(): void {
     if (!this.running) return;
+    const sessionId = this.sessionTraceId;
+
+    const record = (name: string, value: number, attrs: Record<string, string | number> = {}) => {
+      this.scheduler.recordMetric(
+        name,
+        value,
+        sessionId != null ? { session_id: sessionId, ...attrs } : attrs,
+      );
+    };
+
     const metrics = this.sessionTracker.getMetrics();
-    this.scheduler.recordMetric('ai.session.duration_ms', metrics.sessionDurationMs);
-    this.scheduler.recordMetric('ai.session.unique_files_read', metrics.uniqueFilesRead);
-    this.scheduler.recordMetric('ai.session.unique_files_written', metrics.uniqueFilesWritten);
+    record('ai.session.duration_ms', metrics.sessionDurationMs);
+    record('ai.session.unique_files_read', metrics.uniqueFilesRead);
+    record('ai.session.unique_files_written', metrics.uniqueFilesWritten);
 
     // Emit cost and efficiency metrics with developer dimension so Team View
     // FACET developer queries return per-developer breakdowns.
@@ -436,7 +454,13 @@ export class NrIngestManager {
       const scheduler = this.scheduler;
       const devAggregator = {
         record(name: string, value: number, attrs: Record<string, string | number> = {}) {
-          scheduler.recordMetric(name, value, { developer, ...attrs });
+          scheduler.recordMetric(
+            name,
+            value,
+            sessionId != null
+              ? { developer, session_id: sessionId, ...attrs }
+              : { developer, ...attrs },
+          );
         },
       } as unknown as MetricAggregator;
       this.costTracker?.emitMetrics(devAggregator);

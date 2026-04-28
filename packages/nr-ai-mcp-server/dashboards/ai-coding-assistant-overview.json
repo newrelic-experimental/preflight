@@ -2,6 +2,19 @@
   "name": "AI Coding Assistant — Overview",
   "description": "Pre-built dashboard for nr-ai-mcp-server observability. Requires AiToolCall custom events and ai.* metrics sent by the MCP server hook collector. Widgets will show 'No data' until the server is actively sending telemetry.",
   "permissions": "PUBLIC_READ_WRITE",
+  "variables": [
+    {
+      "name": "session_id",
+      "title": "Session ID",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "query": "SELECT uniques(session_id) FROM AiToolCall SINCE 7 days ago LIMIT 100"
+      },
+      "isMultiSelection": false,
+      "defaultValues": [],
+      "replacementStrategy": "STRING"
+    }
+  ],
   "pages": [
     {
       "name": "AI Coding Assistant — Overview",
@@ -28,7 +41,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) AS 'Tool Calls' FROM AiToolCall SINCE 1 hour ago"
+                "query": "SELECT count(*) AS 'Tool Calls' FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} SINCE 1 hour ago"
               }
             ]
           }
@@ -41,7 +54,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT percentage(count(*), WHERE success = true) AS 'Success %' FROM AiToolCall SINCE 1 hour ago"
+                "query": "SELECT percentage(count(*), WHERE success = true) AS 'Success %' FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} SINCE 1 hour ago"
               }
             ],
             "thresholds": [
@@ -59,7 +72,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET tool SINCE 1 hour ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET tool SINCE 1 hour ago"
               }
             ]
           }
@@ -72,7 +85,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT percentage(count(*), WHERE success = true) FROM AiToolCall FACET tool SINCE 1 hour ago"
+                "query": "SELECT percentage(count(*), WHERE success = true) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET tool SINCE 1 hour ago"
               }
             ]
           }
@@ -85,7 +98,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT average(duration_ms) FROM AiToolCall FACET tool SINCE 1 hour ago"
+                "query": "SELECT average(duration_ms) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET tool SINCE 1 hour ago"
               }
             ]
           }
@@ -99,11 +112,11 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT uniqueCount(filePath) AS 'Files Read' FROM AiToolCall WHERE tool = 'Read' SINCE 1 hour ago"
+                "query": "SELECT uniqueCount(filePath) AS 'Files Read' FROM AiToolCall WHERE tool = 'Read' {{#session_id}} AND session_id = '{{session_id}}' {{/session_id}} SINCE 1 hour ago"
               },
               {
                 "accountIds": [],
-                "query": "SELECT uniqueCount(filePath) AS 'Files Modified' FROM AiToolCall WHERE tool IN ('Write', 'Edit') SINCE 1 hour ago"
+                "query": "SELECT uniqueCount(filePath) AS 'Files Modified' FROM AiToolCall WHERE tool IN ('Write', 'Edit') {{#session_id}} AND session_id = '{{session_id}}' {{/session_id}} SINCE 1 hour ago"
               }
             ]
           }
@@ -116,7 +129,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Bash' AND isTestCommand = true FACET CASES(WHERE success = true AS 'Pass', WHERE success = false AS 'Fail') TIMESERIES SINCE 1 hour ago"
+                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Bash' AND isTestCommand = true {{#session_id}} AND session_id = '{{session_id}}' {{/session_id}} FACET CASES(WHERE success = true AS 'Pass', WHERE success = false AS 'Fail') TIMESERIES SINCE 1 hour ago"
               }
             ]
           }
@@ -130,7 +143,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET tool TIMESERIES 1 minute SINCE 1 hour ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET tool TIMESERIES 1 minute SINCE 1 hour ago"
               }
             ]
           }

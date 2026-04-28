@@ -1,0 +1,16 @@
+name: AI Coding Report
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  ai-report:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/ai-report
+        with:
+          new-relic-api-key: ${{ secrets.NEW_RELIC_API_KEY }}
+          new-relic-account-id: ${{ secrets.NEW_RELIC_ACCOUNT_ID }}

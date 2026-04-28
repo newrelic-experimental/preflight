@@ -16,7 +16,9 @@
     "nr-ai-observe": "dist/hooks/collector-script.js"
   },
   "scripts": {
-    "test": "jest --passWithNoTests"
+    "test": "jest --passWithNoTests",
+    "deploy:alerts": "npx tsx scripts/deploy-alerts.ts",
+    "deploy:alerts:teardown": "npx tsx scripts/deploy-alerts.ts --teardown"
   },
   "dependencies": {
     "@nr-ai-observatory/shared": "*",

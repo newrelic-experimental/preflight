@@ -243,6 +243,32 @@ See [SECURITY.md](./SECURITY.md) for the full guidelines, code examples, and a c
 
 ---
 
+## Deploying to New Relic
+
+### Deploy dashboards
+
+```bash
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 npx tsx packages/nr-ai-mcp-server/scripts/deploy-dashboard.ts --all
+```
+
+Deploys all five pre-built dashboards (overview, security, platform comparison, team view, session detail). Use `--print` to output JSON for manual import via the New Relic UI.
+
+### Deploy alert conditions
+
+```bash
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 npx tsx packages/nr-ai-mcp-server/scripts/deploy-alerts.ts
+```
+
+Deploys the "AI Coding Assistant Alerts" policy with five NRQL conditions. Use `--dry-run` to preview without hitting the API. Conditions 1–4 are enabled by default; condition 05 (session budget) is disabled and requires adjusting the threshold in `packages/nr-ai-mcp-server/src/alerts/conditions/05-session-cost-budget.json`.
+
+To remove all deployed alert conditions:
+
+```bash
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 npx tsx packages/nr-ai-mcp-server/scripts/deploy-alerts.ts --teardown
+```
+
+---
+
 ## Where to Go for Help
 
 - **[CLAUDE.md](./CLAUDE.md)** — The full technical reference for this repo. Architecture, conventions, every pattern in detail. This is your cheat sheet once you're up to speed.

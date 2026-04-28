@@ -120,7 +120,7 @@ export class HttpUpstream implements ProxyUpstream {
       headers['content-length'] = String(body.length);
     }
 
-    return new Promise<ForwardResult>((resolve, reject) => {
+    return new Promise<ForwardResult>((resolve, _reject) => {
       const start = performance.now();
 
       const upstreamReq = requestFn(

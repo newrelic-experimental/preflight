@@ -198,7 +198,7 @@ describe('resolveModelPricing', () => {
   it('returns null for unknown model', () => {
     const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const pricing = resolveModelPricing('gpt-4o');
+    const pricing = resolveModelPricing('completely-unknown-model-2099');
     expect(pricing).toBeNull();
 
     stderrSpy.mockRestore();

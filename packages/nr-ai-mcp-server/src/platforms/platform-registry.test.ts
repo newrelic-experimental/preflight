@@ -5,7 +5,7 @@ import { CursorAdapter } from './cursor-adapter.js';
 import { WindsurfAdapter } from './windsurf-adapter.js';
 import { CopilotAdapter } from './copilot-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
-import type { PlatformAdapter, PlatformConfig, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
+import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
@@ -42,9 +42,9 @@ class FakeAdapter implements PlatformAdapter {
     this.supported = supported;
   }
 
-  async initialize(_config: PlatformConfig): Promise<void> {}
+  async initialize(): Promise<void> {}
 
-  normalizeToolCall(_raw: unknown): NormalizedToolCall {
+  normalizeToolCall(): NormalizedToolCall {
     return {
       toolName: 'Test',
       platformToolName: 'test',

@@ -1,0 +1,200 @@
+{
+  "name": "AI Coding Assistant — Session Detail",
+  "description": "Per-session drill-down dashboard for AI coding assistant observability. Select a session ID to see tool call timeline, cost, task attribution, and file access for that specific session. Requires AiToolCall, AiCodingTask, and AiAntiPattern custom events with session_id attribute.",
+  "permissions": "PUBLIC_READ_WRITE",
+  "variables": [
+    {
+      "name": "session_id",
+      "title": "Session ID",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "query": "SELECT uniques(session_id) FROM AiToolCall SINCE 7 days ago LIMIT 100"
+      },
+      "isMultiSelection": false,
+      "defaultValues": [],
+      "replacementStrategy": "STRING"
+    }
+  ],
+  "pages": [
+    {
+      "name": "Session Overview",
+      "description": "Tool call counts, cost, success rate, and timeline for the selected session",
+      "widgets": [
+        {
+          "title": "Total Tool Calls",
+          "layout": { "column": 1, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) AS 'Tool Calls' FROM AiToolCall WHERE session_id = '{{session_id}}' SINCE 8 hours ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Session Cost",
+          "layout": { "column": 4, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(estimated_cost_usd) AS 'Cost (USD)' FROM AiCodingTask WHERE session_id = '{{session_id}}' SINCE 8 hours ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Success Rate",
+          "layout": { "column": 7, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT percentage(count(*), WHERE success = true) AS 'Success %' FROM AiToolCall WHERE session_id = '{{session_id}}' SINCE 8 hours ago"
+              }
+            ],
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 80 },
+              { "alertSeverity": "CRITICAL", "value": 50 }
+            ]
+          }
+        },
+        {
+          "title": "Anti-Patterns Detected",
+          "layout": { "column": 10, "row": 1, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) AS 'Anti-Patterns' FROM AiAntiPattern WHERE session_id = '{{session_id}}' SINCE 8 hours ago"
+              }
+            ],
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 3 },
+              { "alertSeverity": "CRITICAL", "value": 10 }
+            ]
+          }
+        },
+
+        {
+          "title": "Tool Call Timeline",
+          "layout": { "column": 1, "row": 4, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall WHERE session_id = '{{session_id}}' FACET tool TIMESERIES 1 minute SINCE 8 hours ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Tool Call Breakdown",
+          "layout": { "column": 1, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall WHERE session_id = '{{session_id}}' FACET tool SINCE 8 hours ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Error Breakdown",
+          "layout": { "column": 5, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall WHERE session_id = '{{session_id}}' AND success = false FACET tool SINCE 8 hours ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Average Latency by Tool",
+          "layout": { "column": 9, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT average(duration_ms) AS 'Avg ms' FROM AiToolCall WHERE session_id = '{{session_id}}' FACET tool SINCE 8 hours ago"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tasks & Files",
+      "description": "Task details, file reads, file edits, and anti-pattern breakdown for the selected session",
+      "widgets": [
+        {
+          "title": "Tasks in Session",
+          "layout": { "column": 1, "row": 1, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT task_id, tool_calls, estimated_cost_usd, tests_passed FROM AiCodingTask WHERE session_id = '{{session_id}}' SINCE 8 hours ago"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Files Read",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT uniqueCount(filePath) AS 'Reads', latest(timestamp) AS 'Last Read' FROM AiToolCall WHERE session_id = '{{session_id}}' AND tool = 'Read' FACET filePath SINCE 8 hours ago LIMIT 50"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Files Modified",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) AS 'Edits' FROM AiToolCall WHERE session_id = '{{session_id}}' AND tool IN ('Edit', 'Write') FACET filePath SINCE 8 hours ago LIMIT 50"
+              }
+            ]
+          }
+        },
+
+        {
+          "title": "Anti-Pattern Breakdown",
+          "layout": { "column": 1, "row": 7, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiAntiPattern WHERE session_id = '{{session_id}}' FACET type SINCE 8 hours ago"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

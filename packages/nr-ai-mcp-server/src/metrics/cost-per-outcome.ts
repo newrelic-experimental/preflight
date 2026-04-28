@@ -15,7 +15,6 @@
 import type { MetricAggregator } from '@nr-ai-observatory/shared';
 import { createLogger } from '@nr-ai-observatory/shared';
 import type { AiCodingTask } from './task-detector.js';
-import type { ToolCallRecord } from '../storage/types.js';
 
 const logger = createLogger('cost-per-outcome');
 

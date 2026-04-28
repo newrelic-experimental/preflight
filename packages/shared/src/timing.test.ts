@@ -92,7 +92,6 @@ describe('RequestTimer', () => {
     timer.start();
     busyWait(1);
     timer.markFirstToken();
-    const snapshot = performance.now();
     busyWait(5);
     timer.markFirstToken(); // should be ignored
     timer.stop();

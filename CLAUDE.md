@@ -262,6 +262,18 @@ See [SECURITY.md](./SECURITY.md) for the full guidelines, invariants, and code r
 - **High security mode** — `highSecurity=true` forces `recordContent=false`; this must never be bypassed.
 - **Audit trail** — `AuditTrailManager` classifies every tool call (sensitive file access, destructive commands, external network requests) and persists records to disk in real time.
 
+## Linting
+
+The codebase targets **0 ESLint errors and 0 warnings**. Do not introduce new lint issues when writing or modifying code:
+
+- Never add `eslint-disable` comments to suppress warnings — fix the underlying issue instead
+- Never use `as any` — use `as unknown as T` for forced type coercions, or define a typed mock interface
+- Never use `: any` as a type annotation — use a concrete type, `unknown`, or a generic
+- For jest mock args, use `unknown[]` instead of `any[]` (e.g. `jest.fn<Promise<T>, unknown[]>()`)
+- For unused required parameters, prefix with `_` (e.g. `_config`) — configured in `eslint.config.mjs`
+
+Run `npm run lint` before committing to verify the lint target is still met.
+
 ## Testing Conventions
 
 - Co-located test files: `foo.ts` → `foo.test.ts` (same directory)

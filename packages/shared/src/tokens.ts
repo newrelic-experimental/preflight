@@ -104,7 +104,7 @@ export function extractGeminiTokens(response: GeminiResponse): TokenUsage {
 // Unified stream extraction
 // ---------------------------------------------------------------------------
 
-export type AiProvider = 'anthropic' | 'google';
+export type AiProvider = 'anthropic' | 'google' | 'openai';
 
 export function extractStreamTokens(
   finalChunk: AnthropicResponse | GeminiResponse,

@@ -1,0 +1,16 @@
+{
+  "name": "AI Session Cost Over Budget",
+  "description": "Fires when a single session's cost exceeds $5. Adjust threshold to match your budget.",
+  "enabled": false,
+  "nrqlQuery": "SELECT max(numeric(cost.sessionTotalUsd)) FROM Metric WHERE metricName = 'ai.cost.session' FACET sessionId",
+  "aggregationMethod": "EVENT_FLOW",
+  "aggregationWindow": 300,
+  "aggregationDelay": 120,
+  "thresholdOperator": "ABOVE",
+  "thresholdCritical": {
+    "value": 5,
+    "duration": 300,
+    "occurrences": "AT_LEAST_ONCE"
+  },
+  "violationTimeLimitSeconds": 86400
+}

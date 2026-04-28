@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { createServer, request as nodeRequest, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { HttpUpstream, ByteCountTransform } from './upstream-http.js';
 import type { UpstreamConfig } from './types.js';
@@ -349,8 +349,7 @@ describe('HttpUpstream.forward()', () => {
         const proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
 
         // Make request to the proxy
-        const { request } = require('node:http') as typeof import('node:http');
-        const req = request(
+        const req = nodeRequest(
           { hostname: '127.0.0.1', port: proxyPort, method: 'POST', path: '/' },
           (res) => {
             const chunks: Buffer[] = [];
@@ -412,7 +411,7 @@ describe('HttpUpstream.forward()', () => {
     const fakeReq = makeFakeRequest();
     const fakeRes = makeFakeResponse();
     let socketDestroyed = false;
-    (fakeRes as any).socket = { destroy() { socketDestroyed = true; } };
+    Object.assign(fakeRes, { socket: { destroy() { socketDestroyed = true; } } });
 
     const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
 
@@ -422,14 +421,11 @@ describe('HttpUpstream.forward()', () => {
   });
 
   it('cleans up upstream connection when client disconnects during SSE', async () => {
-    let upstreamResRef: ServerResponse | null = null;
-
     ({ server: mockServer, port } = await createMockServer((_req, res) => {
       _req.on('data', () => {});
       _req.on('end', () => {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
         res.write('data: {"event":"one"}\n\n');
-        upstreamResRef = res;
         // Intentionally never end — simulates a long-lived SSE stream
       });
     }));
@@ -445,8 +441,7 @@ describe('HttpUpstream.forward()', () => {
         const addr = proxyServer.address();
         const proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
 
-        const { request } = require('node:http') as typeof import('node:http');
-        const req = request(
+        const req = nodeRequest(
           { hostname: '127.0.0.1', port: proxyPort, method: 'POST', path: '/' },
           (res) => {
             res.once('data', () => {
@@ -580,7 +575,7 @@ describe('HttpUpstream.forward()', () => {
       transportType: 'http',
     });
     // Access private field via any cast for testing
-    expect((upstream as any).timeoutMs).toBe(30_000);
+    expect((upstream as unknown as { timeoutMs: number }).timeoutMs).toBe(30_000);
   });
 
   // M-10: SSE detection must parse the media type, not just substring-match
@@ -596,7 +591,7 @@ describe('HttpUpstream.forward()', () => {
     const upstream = new HttpUpstream(makeConfig(port));
     const fakeReq = makeFakeRequest();
     const fakeRes = makeFakeResponse();
-    (fakeRes as any).socket = { destroy() {} };
+    Object.assign(fakeRes, { socket: { destroy() {} } });
 
     const result = await upstream.forward(fakeReq, fakeRes as unknown as ServerResponse, Buffer.from('{}'));
     expect(result.isStreaming).toBe(true);

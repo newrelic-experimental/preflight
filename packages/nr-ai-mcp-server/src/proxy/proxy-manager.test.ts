@@ -1,12 +1,12 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   createServer as createHttpServer,
+  request as nodeRequest,
   type ClientRequest,
   type IncomingMessage,
   type ServerResponse,
   type Server,
 } from 'node:http';
-import { performance } from 'node:perf_hooks';
 import { ProxyManager } from './proxy-manager.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './types.js';
 
@@ -77,9 +77,8 @@ function httpRequest(
   } = {},
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   return new Promise((resolve, reject) => {
-    const { request } = require('node:http') as typeof import('node:http');
     const parsed = new URL(url);
-    const req = request(
+    const req = nodeRequest(
       {
         hostname: parsed.hostname,
         port: parsed.port,
@@ -247,8 +246,6 @@ describe('ProxyManager HTTP server', () => {
   });
 
   it('forwards tools/list to upstream and returns response unchanged', async () => {
-    const expectedResponse = { jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'read_file', inputSchema: { type: 'object' } }] } };
-
     ({ server: mockServer, port: proxyPort } = await createMockMcpServer((rpc, _req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'read_file', inputSchema: { type: 'object' } }] } }));
@@ -591,8 +588,7 @@ describe('ProxyManager unhandled request error handler', () => {
     try {
       const result = await new Promise<{ statusCode: number; body: string; connectionReset: boolean }>(
         (resolve) => {
-          const { request } = require('node:http') as typeof import('node:http');
-          const req = request(
+          const req = nodeRequest(
             { hostname: '127.0.0.1', port, method: 'POST', path: '/any' },
             (res) => {
               const chunks: Buffer[] = [];
@@ -762,8 +758,7 @@ describe('ProxyManager body limits (M-05)', () => {
     // Send headers only (chunked encoding) and never complete the body
     const reqHolder: { req: ClientRequest | null } = { req: null };
     const res = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
-      const { request } = require('node:http') as typeof import('node:http');
-      const req = request(
+      const req = nodeRequest(
         {
           hostname: '127.0.0.1',
           port: proxyPort,

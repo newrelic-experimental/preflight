@@ -2,6 +2,19 @@
   "name": "AI Coding Assistant — Platform Comparison",
   "description": "Cross-platform comparison dashboard for AI coding assistants (Claude Code, Cursor, Windsurf, Copilot). All widgets FACET by platform for side-by-side metrics. Requires platform attribute on AiToolCall events.",
   "permissions": "PUBLIC_READ_WRITE",
+  "variables": [
+    {
+      "name": "session_id",
+      "title": "Session ID",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "query": "SELECT uniques(session_id) FROM AiToolCall SINCE 7 days ago LIMIT 100"
+      },
+      "isMultiSelection": false,
+      "defaultValues": [],
+      "replacementStrategy": "STRING"
+    }
+  ],
   "pages": [
     {
       "name": "AI Coding Assistant — Platform Comparison",
@@ -15,7 +28,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT uniqueCount(platform) AS 'Platforms' FROM AiToolCall SINCE 7 days ago"
+                "query": "SELECT uniqueCount(platform) AS 'Platforms' FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} SINCE 7 days ago"
               }
             ]
           }
@@ -28,7 +41,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -41,7 +54,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT uniqueCount(session_id) FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT uniqueCount(session_id) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -54,7 +67,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT percentage(count(*), WHERE success = true) FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT percentage(count(*), WHERE success = true) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -68,7 +81,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT average(duration_ms) FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT average(duration_ms) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -81,7 +94,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT percentage(count(*), WHERE success = false) FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT percentage(count(*), WHERE success = false) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -94,7 +107,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) / uniqueCount(session_id) AS 'Calls/Session' FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT count(*) / uniqueCount(session_id) AS 'Calls/Session' FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -107,7 +120,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET platform TIMESERIES 1 week SINCE 4 weeks ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform TIMESERIES 1 week SINCE 4 weeks ago"
               }
             ]
           }
@@ -121,7 +134,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT sum(estimated_cost_usd) FROM AiCodingTask FACET platform SINCE 7 days ago"
+                "query": "SELECT sum(estimated_cost_usd) FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -134,7 +147,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT average(estimated_cost_usd) FROM AiCodingTask FACET platform SINCE 7 days ago"
+                "query": "SELECT average(estimated_cost_usd) FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ]
           }
@@ -147,7 +160,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT sum(estimated_cost_usd) FROM AiCodingTask FACET platform TIMESERIES 1 week SINCE 4 weeks ago"
+                "query": "SELECT sum(estimated_cost_usd) FROM AiCodingTask {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform TIMESERIES 1 week SINCE 4 weeks ago"
               }
             ]
           }
@@ -161,7 +174,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET tool, platform SINCE 7 days ago LIMIT 20"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET tool, platform SINCE 7 days ago LIMIT 20"
               }
             ]
           }
@@ -174,7 +187,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiAntiPattern FACET type, platform SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiAntiPattern {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET type, platform SINCE 7 days ago"
               }
             ]
           }
@@ -187,7 +200,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET model, platform SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET model, platform SINCE 7 days ago"
               }
             ]
           }
@@ -201,7 +214,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall FACET platform SINCE 7 days ago"
+                "query": "SELECT count(*) FROM AiToolCall {{#session_id}} WHERE session_id = '{{session_id}}' {{/session_id}} FACET platform SINCE 7 days ago"
               }
             ],
             "text": "## Platform Feature Coverage\n\n| Feature | Claude Code | Cursor | Windsurf | Copilot | Generic MCP |\n|---|---|---|---|---|---|\n| Built-in tool calls | ✅ Native hooks | ✅ MCP proxy | ✅ MCP proxy | ✅ VS Code extension | ✅ Manual reporting |\n| MCP proxy data | ✅ | ✅ | ✅ | ✅ | ✅ |\n| Token counts | ✅ Hook events | ⚠️ Limited | ⚠️ Limited | ⚠️ API usage | ❌ Manual only |\n| Timing data | ✅ Pre/post hooks | ✅ Inferred | ✅ Inferred | ✅ Event timestamps | ⚠️ If reported |\n| Session metadata | ✅ Model, version | ✅ Session ID | ✅ Context ID | ✅ Extension data | ⚠️ Manual |"

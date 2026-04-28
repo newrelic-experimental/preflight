@@ -1,0 +1,16 @@
+{
+  "name": "AI Stuck Loop Spike",
+  "description": "Fires when stuck loop anti-patterns exceed 3 occurrences in a 15-minute window.",
+  "enabled": true,
+  "nrqlQuery": "SELECT count(*) FROM AiAntiPattern WHERE patternType = 'stuck_loop'",
+  "aggregationMethod": "EVENT_FLOW",
+  "aggregationWindow": 300,
+  "aggregationDelay": 120,
+  "thresholdOperator": "ABOVE",
+  "thresholdCritical": {
+    "value": 3,
+    "duration": 300,
+    "occurrences": "AT_LEAST_ONCE"
+  },
+  "violationTimeLimitSeconds": 43200
+}

@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
-import { WeeklySummaryGenerator, getIsoWeekId } from '../storage/weekly-summary.js';
+import { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
 import { TrendAnalyzer } from '../metrics/trend-analyzer.js';
 import { CollaborationProfiler } from '../metrics/collaboration-profile.js';
 import { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';

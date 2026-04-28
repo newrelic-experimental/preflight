@@ -1,6 +1,7 @@
 import { HarvestScheduler } from './harvest-scheduler.js';
 import type { HarvestSchedulerOptions } from './harvest-scheduler.js';
-import type { TransportResult } from '../transport/types.js';
+import type { TransportResult, NrMetric } from '../transport/types.js';
+import type { NrEventData } from '../events/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -19,8 +20,8 @@ function makeScheduler(
   sendEventsFn: jest.Mock;
   sendMetricsFn: jest.Mock;
 } {
-  const sendEventsFn = jest.fn<Promise<TransportResult>, any>().mockResolvedValue(successResult);
-  const sendMetricsFn = jest.fn<Promise<TransportResult>, any>().mockResolvedValue(successResult);
+  const sendEventsFn = jest.fn<Promise<TransportResult>, unknown[]>().mockResolvedValue(successResult);
+  const sendMetricsFn = jest.fn<Promise<TransportResult>, unknown[]>().mockResolvedValue(successResult);
 
   const scheduler = new HarvestScheduler({
     licenseKey: 'testkey123',
@@ -93,12 +94,12 @@ describe('HarvestScheduler', () => {
     expect(sendMetricsFn).toHaveBeenCalledTimes(1);
 
     // Verify the events were sent
-    const sentEvents = sendEventsFn.mock.calls[0][0];
+    const sentEvents = sendEventsFn.mock.calls[0][0] as NrEventData[];
     expect(sentEvents).toHaveLength(1);
     expect(sentEvents[0].eventType).toBe('Test');
 
     // Verify metrics were sent (4 gauges: count, sum, min, max)
-    const sentMetrics = sendMetricsFn.mock.calls[0][0];
+    const sentMetrics = sendMetricsFn.mock.calls[0][0] as NrMetric[];
     expect(sentMetrics).toHaveLength(4);
   });
 
@@ -108,7 +109,7 @@ describe('HarvestScheduler', () => {
   it('events added during send are captured in next harvest', async () => {
     let addDuringSend: (() => void) | null = null;
 
-    const sendEventsFn = jest.fn<Promise<TransportResult>, any>().mockImplementation(async () => {
+    const sendEventsFn = jest.fn<Promise<TransportResult>, unknown[]>().mockImplementation(async () => {
       // Simulate adding an event while the send is in-flight
       if (addDuringSend) {
         addDuringSend();
@@ -117,7 +118,7 @@ describe('HarvestScheduler', () => {
       return successResult;
     });
 
-    const { scheduler, sendMetricsFn } = makeScheduler({ sendEventsFn });
+    const { scheduler } = makeScheduler({ sendEventsFn });
 
     scheduler.addEvent({ eventType: 'Original', seq: 1 });
     scheduler.addEvent({ eventType: 'Original', seq: 2 });
@@ -136,14 +137,14 @@ describe('HarvestScheduler', () => {
     expect(sendEventsFn).toHaveBeenCalledTimes(1);
 
     // First harvest should have received the 3 original events
-    const firstBatch = sendEventsFn.mock.calls[0][0];
+    const firstBatch = sendEventsFn.mock.calls[0][0] as NrEventData[];
     expect(firstBatch).toHaveLength(3);
 
     // Second harvest at 10s should pick up the 2 events added during first send
     await jest.advanceTimersByTimeAsync(5_000);
     expect(sendEventsFn).toHaveBeenCalledTimes(2);
 
-    const secondBatch = sendEventsFn.mock.calls[1][0];
+    const secondBatch = sendEventsFn.mock.calls[1][0] as NrEventData[];
     expect(secondBatch).toHaveLength(2);
     expect(secondBatch[0].eventType).toBe('DuringSend');
 
@@ -155,7 +156,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('re-queues events on send failure and retries on next harvest', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, any>()
+      .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValueOnce(failureResult)
       .mockResolvedValue(successResult);
 
@@ -174,7 +175,7 @@ describe('HarvestScheduler', () => {
     // Second harvest — retry succeeds, includes the re-queued event
     await jest.advanceTimersByTimeAsync(5_000);
     expect(sendEventsFn).toHaveBeenCalledTimes(2);
-    const retryBatch = sendEventsFn.mock.calls[1][0];
+    const retryBatch = sendEventsFn.mock.calls[1][0] as NrEventData[];
     expect(retryBatch).toHaveLength(1);
     expect(retryBatch[0].value).toBe(1);
 
@@ -186,7 +187,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('combines re-queued events with new events on next harvest', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, any>()
+      .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValueOnce(failureResult)
       .mockResolvedValue(successResult);
 
@@ -205,7 +206,7 @@ describe('HarvestScheduler', () => {
     // Second harvest — should include both re-queued and new events
     await jest.advanceTimersByTimeAsync(5_000);
     expect(sendEventsFn).toHaveBeenCalledTimes(2);
-    const retryBatch = sendEventsFn.mock.calls[1][0];
+    const retryBatch = sendEventsFn.mock.calls[1][0] as NrEventData[];
     expect(retryBatch).toHaveLength(2);
     expect(retryBatch[0].seq).toBe(1); // re-queued event first
     expect(retryBatch[1].seq).toBe(2); // new event second
@@ -218,7 +219,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('caps re-queued events to maxEventBufferSize, keeping newest', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, any>()
+      .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValue(failureResult);
 
     const { scheduler } = makeScheduler({
@@ -249,14 +250,13 @@ describe('HarvestScheduler', () => {
     // Third harvest — the retry buffer should contain the 5 newest events.
     // Newest are the 3 fresh (seq 10,11,12) plus the last 2 old retries (seq 3,4).
     // The oldest retries (seq 0,1,2) should have been dropped.
-    const thirdSendFn = jest.fn<Promise<TransportResult>, any>().mockResolvedValue(successResult);
     // We can't swap the fn mid-test, but we can check the 3rd call's batch
     await jest.advanceTimersByTimeAsync(5_000);
     expect(sendEventsFn).toHaveBeenCalledTimes(3);
-    const thirdBatch = sendEventsFn.mock.calls[2][0];
+    const thirdBatch = sendEventsFn.mock.calls[2][0] as Array<NrEventData & { seq: number }>;
     expect(thirdBatch).toHaveLength(5);
     // Should contain seq 3,4,10,11,12 (newest 5) — not seq 0,1,2 (oldest 3)
-    const seqs = thirdBatch.map((e: { seq: number }) => e.seq);
+    const seqs = thirdBatch.map((e) => e.seq);
     expect(seqs).not.toContain(0);
     expect(seqs).not.toContain(1);
     expect(seqs).not.toContain(2);
@@ -272,7 +272,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('re-queues metrics on send failure and retries on next harvest', async () => {
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, any>()
+      .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValueOnce(failureResult)
       .mockResolvedValue(successResult);
 
@@ -284,13 +284,13 @@ describe('HarvestScheduler', () => {
     // First metric harvest at 60s — fails
     await jest.advanceTimersByTimeAsync(60_000);
     expect(sendMetricsFn).toHaveBeenCalledTimes(1);
-    const firstBatch = sendMetricsFn.mock.calls[0][0];
+    const firstBatch = sendMetricsFn.mock.calls[0][0] as NrMetric[];
     expect(firstBatch.length).toBeGreaterThan(0);
 
     // Second metric harvest at 120s — retry succeeds with re-queued metrics
     await jest.advanceTimersByTimeAsync(60_000);
     expect(sendMetricsFn).toHaveBeenCalledTimes(2);
-    const retryBatch = sendMetricsFn.mock.calls[1][0];
+    const retryBatch = sendMetricsFn.mock.calls[1][0] as NrMetric[];
     expect(retryBatch.length).toBeGreaterThanOrEqual(firstBatch.length);
 
     await scheduler.stop();
@@ -301,7 +301,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('caps re-queued metrics to maxRetryMetrics (500), keeping newest', async () => {
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, any>()
+      .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValue(failureResult);
 
     const { scheduler } = makeScheduler({ sendMetricsFn });
@@ -339,10 +339,10 @@ describe('HarvestScheduler', () => {
   // 9. Concurrent stop() calls await the same flush (no short-circuit)
   // ---------------------------------------------------------------------------
   it('concurrent stop() calls share the same flush promise', async () => {
-    const sendEventsFn = jest.fn<Promise<TransportResult>, any>().mockImplementation(
+    const sendEventsFn = jest.fn<Promise<TransportResult>, unknown[]>().mockImplementation(
       () => new Promise((resolve) => setTimeout(() => resolve(successResult), 100)),
     );
-    const sendMetricsFn = jest.fn<Promise<TransportResult>, any>().mockImplementation(
+    const sendMetricsFn = jest.fn<Promise<TransportResult>, unknown[]>().mockImplementation(
       () => new Promise((resolve) => setTimeout(() => resolve(successResult), 100)),
     );
 
@@ -378,7 +378,7 @@ describe('HarvestScheduler', () => {
     await scheduler.stop();
 
     expect(sendEventsFn).toHaveBeenCalledTimes(1);
-    expect(sendEventsFn.mock.calls[0][0][0].eventType).toBe('Session1');
+    expect((sendEventsFn.mock.calls[0][0] as NrEventData[])[0].eventType).toBe('Session1');
     expect(sendMetricsFn).toHaveBeenCalledTimes(1);
 
     // Second session — start again, add new data, stop
@@ -389,7 +389,7 @@ describe('HarvestScheduler', () => {
 
     // Second stop must trigger its own final flush
     expect(sendEventsFn).toHaveBeenCalledTimes(2);
-    expect(sendEventsFn.mock.calls[1][0][0].eventType).toBe('Session2');
+    expect((sendEventsFn.mock.calls[1][0] as NrEventData[])[0].eventType).toBe('Session2');
     expect(sendMetricsFn).toHaveBeenCalledTimes(2);
   });
 
@@ -398,7 +398,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('re-queues events when sendEventsFn throws', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, any>()
+      .fn<Promise<TransportResult>, unknown[]>()
       .mockRejectedValueOnce(new Error('network timeout'))
       .mockResolvedValue(successResult);
 
@@ -414,7 +414,7 @@ describe('HarvestScheduler', () => {
     // Second harvest — retry succeeds
     await jest.advanceTimersByTimeAsync(5_000);
     expect(sendEventsFn).toHaveBeenCalledTimes(2);
-    const retryBatch = sendEventsFn.mock.calls[1][0];
+    const retryBatch = sendEventsFn.mock.calls[1][0] as NrEventData[];
     expect(retryBatch).toHaveLength(1);
     expect(retryBatch[0].value).toBe(1);
 

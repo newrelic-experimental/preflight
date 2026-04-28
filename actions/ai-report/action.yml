@@ -1,0 +1,68 @@
+name: 'NR AI Coding Report'
+description: 'Posts an AI coding cost and efficiency report as a PR comment'
+
+inputs:
+  new-relic-api-key:
+    description: 'New Relic User API key (NRAK-...)'
+    required: true
+  new-relic-account-id:
+    description: 'New Relic account ID'
+    required: true
+  developer:
+    description: 'Developer name to filter metrics (defaults to git commit author)'
+    required: false
+    default: ''
+  since-hours:
+    description: 'Look-back window in hours'
+    required: false
+    default: '24'
+  fail-below:
+    description: 'Fail the action if efficiency score is below this value (0 = disabled)'
+    required: false
+    default: '0'
+  github-token:
+    description: 'GitHub token for posting PR comment'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build nr-ai-cicd
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        npm ci
+        npm run build
+
+    - name: Generate report
+      shell: bash
+      env:
+        NEW_RELIC_API_KEY: ${{ inputs.new-relic-api-key }}
+        NEW_RELIC_ACCOUNT_ID: ${{ inputs.new-relic-account-id }}
+      run: |
+        DEVELOPER_FLAG=""
+        if [ -n "${{ inputs.developer }}" ]; then
+          DEVELOPER_FLAG="--developer ${{ inputs.developer }}"
+        fi
+
+        FAIL_FLAG=""
+        if [ "${{ inputs.fail-below }}" != "0" ]; then
+          FAIL_FLAG="--fail-below ${{ inputs.fail-below }}"
+        fi
+
+        node "${{ github.workspace }}/packages/nr-ai-cicd/dist/report-cli.js" \
+          --since-hours "${{ inputs.since-hours }}" \
+          --output /tmp/ai-report.md \
+          $DEVELOPER_FLAG \
+          $FAIL_FLAG
+
+    - name: Post PR comment
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        gh pr comment "${{ github.event.pull_request.number }}" \
+          --body-file /tmp/ai-report.md \
+          --repo "${{ github.repository }}"

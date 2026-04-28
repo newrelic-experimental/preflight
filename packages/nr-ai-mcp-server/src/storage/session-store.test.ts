@@ -1,9 +1,13 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore, buildSessionSummary } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
+import type { SessionTracker } from '../metrics/session-tracker.js';
+import type { CostTracker } from '../metrics/cost-tracker.js';
+import type { TaskDetector } from '../metrics/task-detector.js';
+import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -326,10 +330,10 @@ describe('buildSessionSummary', () => {
     };
 
     const summary = buildSessionSummary({
-      sessionTracker: mockSessionTracker as any,
-      costTracker: mockCostTracker as any,
-      taskDetector: mockTaskDetector as any,
-      efficiencyScorer: mockEfficiencyScorer as any,
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      costTracker: mockCostTracker as unknown as CostTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      efficiencyScorer: mockEfficiencyScorer as unknown as EfficiencyScorer,
       developer: 'alice',
     });
 
@@ -417,8 +421,8 @@ describe('buildSessionSummary', () => {
     };
 
     const summary = buildSessionSummary({
-      sessionTracker: mockSessionTracker as any,
-      taskDetector: mockTaskDetector as any,
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
       developer: 'alice',
     });
 
@@ -457,7 +461,7 @@ describe('buildSessionSummary', () => {
     };
 
     const summary = buildSessionSummary({
-      sessionTracker: mockSessionTracker as any,
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
       developer: 'bob',
     });
 

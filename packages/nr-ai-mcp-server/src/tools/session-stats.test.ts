@@ -6,6 +6,14 @@ import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { handleGetSessionStats, handleGetSessionTimeline } from './session-stats.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { SessionStore } from '../storage/session-store.js';
+import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
+import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
+import type { CollaborationProfiler } from '../metrics/collaboration-profile.js';
+import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
+import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
+import type { TaskDetector } from '../metrics/task-detector.js';
+import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -408,7 +416,7 @@ describe('Cross-session tool registration', () => {
     const server = createServer({
       name: 'cs-test',
       version: '0.0.1',
-      sessionStore: {} as any,
+      sessionStore: {} as unknown as SessionStore,
     });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -434,14 +442,14 @@ describe('Cross-session tool registration', () => {
     const server = createServer({
       name: 'cs-all',
       version: '0.0.1',
-      sessionStore: {} as any,
-      weeklySummaryGenerator: {} as any,
-      trendAnalyzer: {} as any,
-      collaborationProfiler: {} as any,
-      claudeMdTracker: {} as any,
-      costPerOutcomeAnalyzer: {} as any,
-      taskDetector: {} as any,
-      recommendationEngine: {} as any,
+      sessionStore: {} as unknown as SessionStore,
+      weeklySummaryGenerator: {} as unknown as WeeklySummaryGenerator,
+      trendAnalyzer: {} as unknown as TrendAnalyzer,
+      collaborationProfiler: {} as unknown as CollaborationProfiler,
+      claudeMdTracker: {} as unknown as ClaudeMdTracker,
+      costPerOutcomeAnalyzer: {} as unknown as CostPerOutcomeAnalyzer,
+      taskDetector: {} as unknown as TaskDetector,
+      recommendationEngine: {} as unknown as RecommendationEngine,
     });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -500,7 +508,7 @@ describe('Cross-session tool registration', () => {
     const server = createServer({
       name: 'cs-cost-no-task',
       version: '0.0.1',
-      costPerOutcomeAnalyzer: {} as any,
+      costPerOutcomeAnalyzer: {} as unknown as CostPerOutcomeAnalyzer,
       // no taskDetector
     });
     const [ct, st] = InMemoryTransport.createLinkedPair();
