@@ -1,7 +1,8 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { toolCallToNrEvent, codingTaskToNrEvent, antiPatternToNrEvent, NrIngestManager } from './nr-ingest.js';
+import { toolCallToNrEvent, codingTaskToNrEvent, antiPatternToNrEvent, proxyToolCallToNrEvent, NrIngestManager } from './nr-ingest.js';
 import type { NrIngestOptions } from './nr-ingest.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
@@ -19,6 +20,15 @@ function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
     timestamp: 1_700_000_000_000, // ms
     durationMs: 50,
     success: true,
+    ...overrides,
+  };
+}
+
+function makeProxyRecord(overrides?: Partial<ProxyToolCallRecord>): ProxyToolCallRecord {
+  return {
+    ...makeRecord(),
+    serverName: 'test-server',
+    upstreamLatencyMs: 10,
     ...overrides,
   };
 }
@@ -736,5 +746,27 @@ describe('session trace ID propagation', () => {
     const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
     const patternEvent = sentEvents.find(e => e.eventType === 'AiAntiPattern');
     expect(patternEvent?.session_id).toBe(TRACE_ID);
+  });
+
+  it('proxyToolCallToNrEvent: uses sessionTraceId when provided', () => {
+    const record = makeProxyRecord({ sessionId: 'old-session-id' });
+    const event = proxyToolCallToNrEvent(record, {
+      developer: 'dev',
+      appName: 'app',
+      sessionTraceId: TRACE_ID,
+    });
+    expect(event.session_id).toBe(TRACE_ID);
+  });
+
+  it('proxyToolCallToNrEvent: falls back to record.sessionId when sessionTraceId is absent', () => {
+    const record = makeProxyRecord({ sessionId: 'fallback-id' });
+    const event = proxyToolCallToNrEvent(record, { developer: 'dev', appName: 'app' });
+    expect(event.session_id).toBe('fallback-id');
+  });
+
+  it('proxyToolCallToNrEvent: omits session_id when neither sessionTraceId nor record.sessionId is set', () => {
+    const record = makeProxyRecord({ sessionId: undefined });
+    const event = proxyToolCallToNrEvent(record, { developer: 'dev', appName: 'app' });
+    expect(event.session_id).toBeUndefined();
   });
 });

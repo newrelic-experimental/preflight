@@ -59,7 +59,7 @@ npx jest -- src/metrics/cost-tracker.test.ts
 
 ## Project Structure
 
-This is an npm workspaces monorepo with three main packages and an integration test app.
+This is an npm workspaces monorepo with four main packages and an integration test app.
 
 ```
 nr-ai-observatory/
@@ -98,7 +98,7 @@ The largest package. It has several subsystems:
 
 - **Hooks** (`src/hooks/`) — Claude Code invokes a hook script on every tool use. The collector writes events to a local JSONL buffer. The event processor drains the buffer, pairs pre/post events, and emits `ToolCallRecord` objects.
 
-- **Metrics** (`src/metrics/`) — 11 analyzer classes that each receive tool call records and maintain running state. Session tracking, cost tracking, task detection, anti-pattern detection, efficiency scoring, trend analysis, collaboration profiling, and more.
+- **Metrics** (`src/metrics/`) — 12 analyzer classes that each receive tool call records and maintain running state. Session tracking, cost tracking, task detection, anti-pattern detection, efficiency scoring, trend analysis, collaboration profiling, proxy metrics, and more.
 
 - **Tools** (`src/tools/`) — MCP tool handlers that query the metric trackers and return results. These are the tools that Claude Code can call (e.g., `nr_observe_get_session_stats`).
 
@@ -259,7 +259,7 @@ Deploys all five pre-built dashboards (overview, security, platform comparison, 
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 npx tsx packages/nr-ai-mcp-server/scripts/deploy-alerts.ts
 ```
 
-Deploys the "AI Coding Assistant Alerts" policy with five NRQL conditions. Use `--dry-run` to preview without hitting the API. Conditions 1–4 are enabled by default; condition 05 (session budget) is disabled and requires adjusting the threshold in `packages/nr-ai-mcp-server/src/alerts/conditions/05-session-cost-budget.json`.
+Deploys the "AI Coding Assistant Alerts" policy with five NRQL conditions. Use `--dry-run` to preview without hitting the API. Conditions 1–4 are enabled by default; condition 05 (session budget) is disabled and requires adjusting the threshold in `packages/nr-ai-mcp-server/alerts/conditions/05-session-cost-budget.json`.
 
 To remove all deployed alert conditions:
 

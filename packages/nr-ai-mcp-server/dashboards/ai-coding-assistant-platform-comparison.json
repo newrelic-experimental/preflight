@@ -299,12 +299,6 @@
             "id": "viz.markdown"
           },
           "rawConfiguration": {
-            "nrqlQueries": [
-              {
-                "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall WHERE developer = {{developer}} AND session_id = {{session_id}} FACET platform SINCE 7 days ago"
-              }
-            ],
             "text": "## Platform Feature Coverage\n\n| Feature | Claude Code | Cursor | Windsurf | Copilot | Generic MCP |\n|---|---|---|---|---|---|\n| Built-in tool calls | \u2705 Native hooks | \u2705 MCP proxy | \u2705 MCP proxy | \u2705 VS Code extension | \u2705 Manual reporting |\n| MCP proxy data | \u2705 | \u2705 | \u2705 | \u2705 | \u2705 |\n| Token counts | \u2705 Hook events | \u26a0\ufe0f Limited | \u26a0\ufe0f Limited | \u26a0\ufe0f API usage | \u274c Manual only |\n| Timing data | \u2705 Pre/post hooks | \u2705 Inferred | \u2705 Inferred | \u2705 Event timestamps | \u26a0\ufe0f If reported |\n| Session metadata | \u2705 Model, version | \u2705 Session ID | \u2705 Context ID | \u2705 Extension data | \u26a0\ufe0f Manual |"
           }
         }

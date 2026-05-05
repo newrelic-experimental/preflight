@@ -224,7 +224,7 @@ async function main(): Promise<void> {
       },
       terms: [
         {
-          threshold: String(cond.thresholdCritical.value),
+          threshold: cond.thresholdCritical.value,
           thresholdDuration: cond.thresholdCritical.duration,
           thresholdOccurrences: cond.thresholdCritical.occurrences,
           operator: cond.thresholdOperator,
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
         ...(cond.thresholdWarning
           ? [
               {
-                threshold: String(cond.thresholdWarning.value),
+                threshold: cond.thresholdWarning.value,
                 thresholdDuration: cond.thresholdWarning.duration,
                 thresholdOccurrences: cond.thresholdWarning.occurrences,
                 operator: cond.thresholdOperator,

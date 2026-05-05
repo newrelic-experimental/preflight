@@ -87,8 +87,8 @@ A set of compiled regular expressions that cover:
 
 | Pattern | What it catches |
 |---|---|
-| `API_KEY=`, `SECRET=`, `TOKEN=`, … | Key-value secret assignments |
-| `sk-`, `ghp_`, `github_pat_`, `Bearer …` | Common API token prefixes |
+| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, … | Key-value secret assignments |
+| `sk-`, `ghp_`, `gho_`, `github_pat_`, `Bearer …` | Common API token prefixes |
 | `-----BEGIN … -----END-----` | PEM-encoded private keys and certificates |
 | `AKIA[0-9A-Z]{16}` | AWS access key IDs |
 | `AIzaSy…` | Google API keys |
@@ -199,6 +199,7 @@ When spawning an upstream MCP server as a child process, two invariants must hol
    | `LD_LIBRARY_PATH` | Linux: redirect dynamic linker |
    | `DYLD_INSERT_LIBRARIES` | macOS: same as `LD_PRELOAD` |
    | `DYLD_LIBRARY_PATH` | macOS: redirect dynamic linker |
+   | `PATH` | Override command resolution — could redirect `node` or other binaries |
    | `NODE_OPTIONS` | Inject Node.js flags (e.g., `--require`) |
 
 If you add a new subprocess invocation anywhere in the codebase, apply both checks.

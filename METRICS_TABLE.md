@@ -66,6 +66,7 @@ Emitted for proxied tool calls (when the server forwards to upstream MCP servers
 | `success` | boolean | Whether the call succeeded |
 | `developer` | string | Developer identifier |
 | `app_name` | string | Application name |
+| `session_id` | string | Session identifier (if available) |
 | `proxy_overhead_ms` | number | Time spent in proxy layer (if available) |
 | `error_type` | string | Error classification (if failed) |
 | `request_size_bytes` | number | Request payload size (if available) |
@@ -137,6 +138,64 @@ Security alert triggers:
 - **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands
 
 Source: `packages/nr-ai-mcp-server/src/security/audit-trail.ts` — `securityAlertToNrEvent()`
+
+#### `AiCodingTask`
+
+Emitted when a task boundary is detected (a logical unit of work from task start to completion).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventType` | string | Always `"AiCodingTask"` |
+| `timestamp` | number | Unix epoch seconds (task end time) |
+| `task_id` | string | Unique task identifier |
+| `developer` | string | Developer identifier |
+| `app_name` | string | Application name |
+| `platform` | string | Platform attribution (default: `claude-code`) |
+| `session_id` | string | Session identifier (if available) |
+| `start_time` | number | Task start time (Unix epoch seconds) |
+| `end_time` | number | Task end time (Unix epoch seconds) |
+| `duration_ms` | number | Task duration in milliseconds |
+| `tool_call_count` | number | Total tool calls in the task |
+| `files_read` | number | Number of unique files read |
+| `files_modified` | number | Number of unique files modified |
+| `lines_added` | number | Lines added across all edits |
+| `lines_removed` | number | Lines removed across all edits |
+| `bash_commands_run` | number | Number of Bash tool calls |
+| `tests_run` | number | Number of test runs detected |
+| `tests_passed` | boolean | Whether the last test run passed |
+| `build_run` | boolean | Whether a build was run |
+| `build_passed` | boolean | Whether the last build passed |
+| `estimated_cost_usd` | number | Estimated token cost for the task |
+| `tokens_used` | number | Total tokens consumed in the task |
+| `asked_user_questions` | number | Number of questions asked to the user |
+| `sub_agents_spawned` | number | Number of sub-agent spawns |
+
+Source: `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts` — `codingTaskToNrEvent()`
+
+#### `AiAntiPattern`
+
+Emitted for each anti-pattern detected within a completed task.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventType` | string | Always `"AiAntiPattern"` |
+| `timestamp` | number | Unix epoch seconds (detection time) |
+| `type` | string | Pattern type: `thrashing`, `re_reading`, `stuck_loop`, `blind_editing`, or `over_delegation` |
+| `task_id` | string | Task identifier where the pattern was detected |
+| `developer` | string | Developer identifier |
+| `app_name` | string | Application name |
+| `platform` | string | Platform attribution |
+| `session_id` | string | Session identifier (if available) |
+| `suggestion` | string | Human-readable remediation suggestion |
+| `file` | string | File involved (if applicable) |
+| `command` | string | Command involved (if applicable) |
+| `iterations` | number | Number of thrash/repeat iterations (if applicable) |
+| `read_count` | number | Number of redundant reads (re_reading only) |
+| `repeat_count` | number | Number of identical command repeats (stuck_loop only) |
+| `edit_count` | number | Number of unverified edits (blind_editing only) |
+| `agent_count` | number | Number of agent spawns (over_delegation only) |
+
+Source: `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts` — `antiPatternToNrEvent()`
 
 ---
 

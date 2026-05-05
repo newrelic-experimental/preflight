@@ -177,6 +177,16 @@ function makeTask(overrides?: Partial<AiCodingTask>): AiCodingTask {
 }
 ```
 
+### ProxyToolCallRecord factory
+
+NR ingest tests for proxy mode extend `makeRecord` with proxy-specific fields:
+
+```typescript
+function makeProxyRecord(overrides?: Partial<ProxyToolCallRecord>): ProxyToolCallRecord {
+  return { ...makeRecord(), serverName: 'test-server', upstreamLatencyMs: 10, ...overrides };
+}
+```
+
 ### Guidelines for factory functions
 
 - Name them `make*` — `makeRecord`, `makeEvent`, `makeSession`, `makeTask`, etc.
@@ -313,17 +323,17 @@ it('fires events harvest at 5s intervals', async () => {
 
 ### Transport / HTTP tests
 
-Transport tests mock `globalThis.fetch` to simulate HTTP responses:
+Transport tests mock `global.fetch` via a spy to simulate HTTP responses:
 
 ```typescript
-const mockFetch = jest.fn<typeof globalThis.fetch>();
+let fetchSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  globalThis.fetch = mockFetch as unknown as typeof globalThis.fetch;
+  fetchSpy = jest.spyOn(global, 'fetch');
 });
 
 afterEach(() => {
-  jest.restoreAllMocks();
+  fetchSpy.mockRestore();
 });
 ```
 
@@ -447,6 +457,7 @@ These files demonstrate the patterns well and serve as templates for new tests:
 | `packages/nr-ai-mcp-server/src/tools/cross-session-tools.test.ts` | Cross-session tools with SessionStore, temp directory, rich factories |
 | `packages/shared/src/transport/http-client.test.ts` | fetch mocking, gzip verification, region detection, retry behavior |
 | `packages/nr-ai-mcp-server/src/security/audit-trail.test.ts` | Security classification, regex pattern testing, false positive/negative coverage |
+| `packages/nr-ai-mcp-server/src/transport/nr-ingest.test.ts` | Proxy event builders, session trace ID propagation, `makeProxyRecord` factory |
 
 ---
 

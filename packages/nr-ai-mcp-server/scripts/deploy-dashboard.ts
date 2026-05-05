@@ -106,7 +106,7 @@ function injectAccountId(dashboard: DashboardJson, accountId: number): Dashboard
   const copy: DashboardJson = JSON.parse(JSON.stringify(dashboard));
   for (const page of copy.pages) {
     for (const widget of page.widgets) {
-      for (const nrqlQuery of widget.rawConfiguration.nrqlQueries) {
+      for (const nrqlQuery of widget.rawConfiguration.nrqlQueries ?? []) {
         nrqlQuery.accountIds = [accountId];
       }
     }

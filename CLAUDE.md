@@ -1,6 +1,6 @@
 # NR AI Observatory
 
-An npm workspaces monorepo providing observability for AI coding assistants. Three packages: `@nr-ai-observatory/shared` (transport, events, pricing), `nr-ai-agent` (SDK client wrappers for Anthropic/Gemini), and `nr-ai-mcp-server` (MCP server + metrics engine + HTTP proxy). All telemetry flows to New Relic.
+An npm workspaces monorepo providing observability for AI coding assistants. Four packages: `@nr-ai-observatory/shared` (transport, events, pricing), `nr-ai-agent` (SDK client wrappers for Anthropic/Gemini/OpenAI), `nr-ai-mcp-server` (MCP server + metrics engine + HTTP proxy), and `nr-ai-cicd` (CI/CD PR cost reporting). All telemetry flows to New Relic.
 
 ## Development Commands
 
@@ -50,6 +50,7 @@ nr-ai-observatory/
         wrappers/
           anthropic.ts                  # Wraps Anthropic client (messages.create/stream)
           gemini.ts                     # Wraps Google Gemini client (generateContent)
+          openai.ts                     # Wraps OpenAI client (chat.completions.create/stream)
 
     nr-ai-mcp-server/                   # nr-ai-mcp-server
       src/
@@ -60,7 +61,7 @@ nr-ai-observatory/
           collector-script.ts           # nr-ai-observe binary (hook event collector)
           event-processor.ts            # Pairs pre/post hook events into ToolCallRecords
           tool-parsers.ts               # INPUT_PARSERS / OUTPUT_PARSERS for tool fields
-        metrics/                        # 11 analyzer classes
+        metrics/                        # 12 analyzer classes
           session-tracker.ts            # Per-session tool call tracking
           cost-tracker.ts               # Token cost calculation (per-model)
           task-detector.ts              # Task boundary detection
@@ -72,6 +73,7 @@ nr-ai-observatory/
           cost-per-outcome.ts           # Cost breakdown by outcome type
           prompt-feedback.ts            # Feedback collection engine
           recommendation-engine.ts      # Personalized optimization recommendations
+          proxy-metrics.ts              # Proxy mode server latency and tool popularity tracking
         platforms/                      # Platform adapters
           claude-code-adapter.ts        # Claude Code
           cursor-adapter.ts             # Cursor IDE
@@ -98,7 +100,11 @@ nr-ai-observatory/
           nr-ingest.ts                  # NrIngestManager (events + metrics + logs)
           log-ingest.ts                 # Log ingestion with buffering
         install/                        # Claude Code hook installation CLI
+          cli.ts                        # nr-ai-observe install/uninstall commands
         dashboards/                     # Pre-built NR dashboard JSON files
+        alerts/                         # Alert policy and condition definitions
+          policy.json                   # Policy metadata (name, incident preference)
+          conditions/                   # NRQL alert condition JSON files
 
     test-app/                           # E2E integration test for nr-ai-agent
       src/index.ts                      # Exercises full agent pipeline
@@ -133,7 +139,7 @@ Claude Code
                  ├─ nr_observe_get_cost_breakdown
                  ├─ nr_observe_get_anti_patterns
                  ├─ nr_observe_get_recommendations
-                 └─ ... (20+ tools total)
+                 └─ ... (16 tools total)
 ```
 
 ### Data Flow (Agent — SDK Wrapper)
@@ -192,7 +198,7 @@ Logger writes to stderr as JSON. Never write to stdout (reserved for MCP stdio t
 
 ## Metric Tracker Pattern
 
-All 11 metric trackers in `src/metrics/` follow the same shape:
+All 12 metric trackers in `src/metrics/` follow the same shape:
 
 ```typescript
 class XxxTracker {

@@ -15,7 +15,10 @@
       },
       "isMultiSelection": false,
       "defaultValues": [],
-      "replacementStrategy": "STRING"
+      "replacementStrategy": "STRING",
+      "options": {
+        "excluded": true
+      }
     }
   ],
   "pages": [
@@ -138,7 +141,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT count(*) FROM AiToolCall WHERE session_id = {{session_id}} FACET tool TIMESERIES 1 minute SINCE 8 hours ago"
+                "query": "SELECT count(*) FROM AiToolCall WHERE session_id = {{session_id}} FACET tool TIMESERIES AUTO SINCE 8 hours ago"
               }
             ]
           }

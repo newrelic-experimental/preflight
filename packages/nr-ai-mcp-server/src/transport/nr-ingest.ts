@@ -145,7 +145,7 @@ function isProxyToolCall(record: ToolCallRecord): record is ProxyToolCallRecord 
  */
 export function proxyToolCallToNrEvent(
   record: ProxyToolCallRecord,
-  attrs: { developer: string; appName: string },
+  attrs: { developer: string; appName: string; sessionTraceId?: string },
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiMcpToolCall',
@@ -159,6 +159,8 @@ export function proxyToolCallToNrEvent(
     app_name: attrs.appName,
   };
 
+  const sessionId = attrs.sessionTraceId ?? record.sessionId;
+  if (sessionId != null) event.session_id = sessionId;
   if (record.proxyOverheadMs != null) event.proxy_overhead_ms = record.proxyOverheadMs;
   if (record.errorType != null) event.error_type = record.errorType;
   if (record.inputSizeBytes != null) event.request_size_bytes = record.inputSizeBytes;
@@ -363,6 +365,7 @@ export class NrIngestManager {
       const proxyEvent = proxyToolCallToNrEvent(record, {
         developer: this.developer,
         appName: this.appName,
+        sessionTraceId: this.sessionTraceId,
       });
       this.scheduler.addEvent(proxyEvent);
       this.proxyMetrics.recordProxyCall(record);

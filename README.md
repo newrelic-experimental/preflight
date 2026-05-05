@@ -40,7 +40,7 @@ Observability for AI coding assistants. Captures tool calls, token usage, cost, 
 The installer registers two things in your Claude Code configuration:
 
 1. **Hook scripts** — `nr-ai-observe pre-tool` / `nr-ai-observe post-tool` run before and after every tool call, writing events to a local buffer file.
-2. **MCP server** — `nr-ai-mcp-server --stdio` is added as an MCP tool provider, giving Claude Code access to 20+ observability tools like `nr_observe_get_session_stats`.
+2. **MCP server** — `nr-ai-mcp-server --stdio` is added as an MCP tool provider, giving Claude Code access to 16 observability tools like `nr_observe_get_session_stats`.
 
 ### Step 1: Install the package
 
@@ -197,7 +197,7 @@ This removes the hook entries and `nr-ai-observability` MCP server from the rele
 
 ## Installing the dashboards
 
-Four pre-built New Relic dashboards are included in `packages/nr-ai-mcp-server/dashboards/`. Import whichever ones are relevant to your use case.
+Five pre-built New Relic dashboards are included in `packages/nr-ai-mcp-server/dashboards/`. Import whichever ones are relevant to your use case.
 
 ### Available dashboards
 
@@ -207,6 +207,7 @@ Four pre-built New Relic dashboards are included in `packages/nr-ai-mcp-server/d
 | `ai-coding-assistant-team-view.json` | AI Coding Assistant — Team View | Cross-developer cost, efficiency scores, task completion, anti-pattern trends — requires multiple developers reporting to the same NR account |
 | `ai-coding-assistant-security.json` | AI Coding Assistant — Security Audit | Audit trail of sensitive file access, destructive commands, external network requests, and security alerts |
 | `ai-coding-assistant-platform-comparison.json` | AI Coding Assistant — Platform Comparison | Side-by-side comparison of Claude Code, Cursor, Windsurf, Copilot — all widgets faceted by `platform` |
+| `ai-coding-assistant-session-detail.json` | AI Coding Assistant — Session Detail | Per-session drill-down: tool call timeline, cost, task attribution, files read/modified, anti-pattern breakdown |
 
 All dashboards use `accountIds: []` in their NRQL queries, which tells New Relic to use the account ID from the import context. You do not need to edit the JSON files before importing.
 
@@ -480,13 +481,14 @@ Jest runs with `maxWorkers: 1` to avoid deadlocks in stdio integration tests.
 
 ## Packages
 
-This is an npm workspaces monorepo with four packages:
+This is an npm workspaces monorepo with five packages:
 
 | Package | Path | Description |
 |---------|------|-------------|
 | `@nr-ai-observatory/shared` | `packages/shared` | Transport layer, event buffer, pricing table, harvest scheduler, and configuration utilities shared across all packages |
-| `nr-ai-agent` | `packages/nr-ai-agent` | SDK wrapper agent — wraps Anthropic Claude and Google Gemini clients to automatically capture and report AI usage to New Relic |
+| `nr-ai-agent` | `packages/nr-ai-agent` | SDK wrapper agent — wraps Anthropic Claude, Google Gemini, and OpenAI clients to automatically capture and report AI usage to New Relic |
 | `nr-ai-mcp-server` | `packages/nr-ai-mcp-server` | MCP server + observability platform — hooks into Claude Code to capture tool calls, computes efficiency/cost/anti-pattern metrics, and exposes MCP tools for querying session data |
+| `nr-ai-cicd` | `packages/nr-ai-cicd` | CI/CD integration — posts AI coding cost reports to pull requests |
 | `test-app` | `packages/test-app` | End-to-end integration test harness for `nr-ai-agent` |
 
 ### Dependency graph
@@ -497,6 +499,9 @@ test-app
         └─> @nr-ai-observatory/shared
 
 nr-ai-mcp-server
+  └─> @nr-ai-observatory/shared
+
+nr-ai-cicd
   └─> @nr-ai-observatory/shared
 ```
 
