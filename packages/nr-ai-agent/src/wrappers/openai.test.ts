@@ -316,6 +316,29 @@ describe('wrapOpenAiClient', () => {
       expect(records[0].outputTokens).toBe(500);
     });
 
+    it('extracts cached tokens from prompt_tokens_details', async () => {
+      const completion = makeCompletion({
+        usage: {
+          prompt_tokens: 150,
+          completion_tokens: 50,
+          total_tokens: 200,
+          prompt_tokens_details: { cached_tokens: 80 },
+        },
+      });
+      const client = makeMockClient();
+      client.chat.completions.create.mockResolvedValue(completion);
+
+      const { records, handler } = makeRecorder();
+      wrapOpenAiClient(client as unknown as OpenAI, makeConfig(), handler);
+
+      await client.chat.completions.create(makeCreateParams());
+
+      const record = records[0];
+      expect(record.inputTokens).toBe(70);    // 150 - 80
+      expect(record.cacheReadTokens).toBe(80);
+      expect(record.totalTokens).toBe(200);   // from usage.total_tokens
+    });
+
     it('handles missing optional params gracefully', async () => {
       const completion = makeCompletion();
       const client = makeMockClient();
@@ -459,6 +482,53 @@ describe('wrapOpenAiClient', () => {
       expect(record.stopReason).toBe('stop');
       expect(record.contentBlockTypes).toEqual(['text']);
       expect(record.responseText).toBe('Hello from GPT');
+    });
+
+    it('extracts cached tokens from prompt_tokens_details in streaming usage chunk', async () => {
+      const cachedChunks: Record<string, unknown>[] = [
+        {
+          id: 'chatcmpl-cached',
+          object: 'chat.completion.chunk',
+          created: 1700000000,
+          model: 'gpt-5.5',
+          choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: null }],
+        },
+        {
+          id: 'chatcmpl-cached',
+          object: 'chat.completion.chunk',
+          created: 1700000000,
+          model: 'gpt-5.5',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        },
+        {
+          id: 'chatcmpl-cached',
+          object: 'chat.completion.chunk',
+          created: 1700000000,
+          model: 'gpt-5.5',
+          choices: [],
+          usage: {
+            prompt_tokens: 150,
+            completion_tokens: 50,
+            total_tokens: 200,
+            prompt_tokens_details: { cached_tokens: 80 },
+          },
+        },
+      ];
+
+      const mockStream = makeMockStream(cachedChunks);
+      const client = makeMockClient();
+      client.chat.completions.create.mockResolvedValue(mockStream);
+
+      const { records, handler } = makeRecorder();
+      wrapOpenAiClient(client as unknown as OpenAI, makeConfig(), handler);
+
+      const stream = await client.chat.completions.create(makeCreateParams({ stream: true }));
+      for await (const _ of stream) { /* drain */ }
+
+      const record = records[0];
+      expect(record.inputTokens).toBe(70);    // 150 - 80
+      expect(record.cacheReadTokens).toBe(80);
+      expect(record.totalTokens).toBe(200);   // from usage.total_tokens
     });
 
     it('injects stream_options.include_usage into the request', async () => {

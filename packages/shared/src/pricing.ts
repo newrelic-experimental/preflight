@@ -169,10 +169,17 @@ export function resolveModelPricing(modelName: string): ModelPricing | null {
     return mergedTable[modelName];
   }
 
-  // Forward prefix: find table keys that start with the given name
+  // Forward prefix: find table keys that start with the given name followed by a
+  // digit-led suffix (e.g. "-20250514", "-6"). The digit requirement prevents
+  // "gemini-2.5-flash" from accidentally matching "gemini-2.5-flash-lite".
   let bestKey: string | null = null;
   for (const key of Object.keys(mergedTable)) {
-    if (key.startsWith(modelName) && (bestKey === null || key.length > bestKey.length)) {
+    const suffix = key.slice(modelName.length);
+    if (
+      key.startsWith(modelName) &&
+      /^-\d/.test(suffix) &&
+      (bestKey === null || key.length > bestKey.length)
+    ) {
       bestKey = key;
     }
   }

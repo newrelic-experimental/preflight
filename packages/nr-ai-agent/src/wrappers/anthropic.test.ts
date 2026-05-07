@@ -197,7 +197,7 @@ describe('wrapAnthropicClient', () => {
       expect(record.outputTokens).toBe(50);
       expect(record.cacheReadTokens).toBe(10);
       expect(record.cacheCreationTokens).toBe(5);
-      expect(record.totalTokens).toBe(150); // 100 + 50 + 0 thinking
+      expect(record.totalTokens).toBe(165); // 100 + 50 + 0 thinking + 10 cacheRead + 5 cacheCreation
       expect(record.stopReason).toBe('end_turn');
       expect(record.contentBlockTypes).toEqual(['text']);
 

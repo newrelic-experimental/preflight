@@ -1,7 +1,6 @@
 name: AI Coding Report
 on:
-  pull_request:
-    types: [opened, synchronize]
+  workflow_dispatch: # disabled: trigger manually only
 
 jobs:
   ai-report:

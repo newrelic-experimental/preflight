@@ -174,7 +174,7 @@ function finalizeRecord(
     thinkingTokens,
     cacheReadTokens: cacheRead,
     cacheCreationTokens: cacheCreation,
-    totalTokens: inputTokens + outputTokens + thinkingTokens,
+    totalTokens: inputTokens + outputTokens + thinkingTokens + cacheRead + cacheCreation,
     stopReason: response.stop_reason,
     contentBlockTypes: extractContentBlockTypes(response.content),
     responseText:

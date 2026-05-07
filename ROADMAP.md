@@ -17,6 +17,11 @@ This document tracks planned features and improvements. Each section links to a 
 9. [Team and Org Analytics](#9-team-and-org-analytics)
 10. [Developer Experience Improvements](#10-developer-experience-improvements)
 11. [Additional SDK Wrappers](#11-additional-sdk-wrappers)
+12. [Developer Identity as Explicit Config](#12-developer-identity-as-explicit-config)
+13. [Personal Developer Dashboard](#13-personal-developer-dashboard)
+14. [Developer-Scoped Alert Deployments](#14-developer-scoped-alert-deployments)
+15. [Personal Coaching MCP Tool](#15-personal-coaching-mcp-tool)
+16. [GitHub App Integration](#16-github-app-integration)
 
 ---
 
@@ -205,6 +210,95 @@ Extend `nr-ai-agent` with wrappers for AWS Bedrock (native SDK), Mistral, and Co
 - Pricing data for all three providers
 - Tests for each wrapper
 - Peer dependencies added to `nr-ai-agent/package.json`
+
+---
+
+## 12. Developer Identity as Explicit Config
+
+**Status:** Planned
+**Implementation plan:** [docs/roadmap/12-developer-identity.md](docs/roadmap/12-developer-identity.md)
+
+Make `developer` a first-class configured identity rather than a value inferred from `$USER` or git config. The setup wizard confirms or sets it once; every subsequent NR event, metric, and log carries that value reliably. This is the prerequisite for items 13–15 — without an explicit, stable identity, per-developer dashboards and alerts split silently when a user switches machines, renames their OS user, or works in a containerized environment.
+
+**Scope:**
+- Add `developer` as an explicit field in `McpServerConfig` (config file + env var `NEW_RELIC_AI_DEVELOPER`)
+- Fall back to `$USER` / `git config user.name` / `hostname` in that priority order when not set
+- Normalise the value at config load time: lowercase, strip non-alphanumeric except `-` and `_`, max 64 chars
+- Surface the resolved identity in `nr_observe_get_session_stats` so the developer can confirm it at runtime
+- Update setup wizard (`setup-wizard.ts`) to prompt for and persist the developer name
+- Add a `developer` field to the weekly summary JSON so cross-session tools carry the same identity
+- Tests covering env var override, git config fallback, and normalisation edge cases
+
+---
+
+## 13. Personal Developer Dashboard
+
+**Status:** Planned
+**Implementation plan:** [docs/roadmap/13-personal-dashboard.md](docs/roadmap/13-personal-dashboard.md)
+
+A new dashboard JSON file designed for individual self-reflection rather than team oversight. Pre-filtered to the configured developer identity, it surfaces personal efficiency trends, personal anti-pattern history, model cost breakdown over 30 days, and a "best session" highlight. Unlike the existing overview dashboard (which uses `{{developer}}` as an optional filter), this dashboard treats the developer as the fixed subject and optimises every widget for personal insight rather than comparison.
+
+**Scope:**
+- New file `packages/nr-ai-mcp-server/dashboards/ai-coding-assistant-personal.json`
+- Page 1 — **My Trends**: 30-day cost sparkline, efficiency score trend, tool call volume over time, model mix pie
+- Page 2 — **My Patterns**: top anti-patterns (personal frequency vs. personal average), most-read files, re-read rate, task completion rate
+- Page 3 — **My Best Sessions**: top-5 highest-efficiency sessions (linked via `session_id`), average cost per completed task, "personal record" efficiency score callout
+- All queries hard-scoped with a `developer` template variable defaulting to `{{developer_identity}}` (populated from config at deploy time via a new `--developer` flag on `deploy-dashboard`)
+- Update `deploy-dashboard.ts` to accept `--developer <name>` and substitute the default value into the deployed dashboard JSON
+- Verified by deploying against a real account and checking all widgets render without empty-state errors
+
+---
+
+## 14. Developer-Scoped Alert Deployments
+
+**Status:** Planned
+**Implementation plan:** [docs/roadmap/14-developer-alerts.md](docs/roadmap/14-developer-alerts.md)
+
+Extend the alert deploy CLI with a `--developer <name>` mode that deploys a personal alert policy alongside (not instead of) any team-wide policy. Each condition injects `AND developer = '<name>'` into its NRQL and uses individually appropriate thresholds — a personal daily cost spike at $2 is meaningful where a team threshold of $50 would never fire for one person. Personal thresholds are configurable via a `alerts.personal` config section so developers can tune them without touching the shared alert definitions.
+
+**Scope:**
+- New CLI flag: `deploy-alerts --developer <name>` (reads configured developer identity if `<name>` omitted)
+- New conditions JSON directory `src/alerts/conditions-personal/` with five personal variants of the existing conditions, each with tighter default thresholds and a `WHERE developer = '{{developer}}'` clause
+- `deploy-alerts.ts` substitutes the developer name into condition NRQL and policy name (`AI Coding — Personal — <name>`) at deploy time
+- New config section `alerts.personal`: `dailyCostUsd` (default `2`), `sessionCostUsd` (default `0.50`), `efficiencyScoreMin` (default `40`), `antiPatternRateMax` (default `0.15`)
+- Idempotent upsert and teardown parity with existing deploy logic
+- `--developer` flag is additive — running without it deploys team policy; running with it deploys the personal policy; running both is valid
+- Tests for NRQL substitution and threshold override logic
+
+---
+
+## 15. Personal Coaching MCP Tool
+
+**Status:** Planned
+**Implementation plan:** [docs/roadmap/15-personal-coaching.md](docs/roadmap/15-personal-coaching.md)
+
+A new MCP tool `nr_observe_get_personal_insights` that produces a narrative coaching report comparing the developer's current week against their own historical baseline. Rather than raw metrics, it surfaces actionable observations: "you re-read files 40% more than your average this week," "your highest-efficiency sessions all start with a Read tool call before any Edit," "Tuesday afternoons are consistently your lowest-efficiency period." The tool extends the existing `RecommendationEngine` and `TrendAnalyzer` but outputs prose coaching text keyed to personal patterns rather than generic best-practice advice. Degrades gracefully when fewer than two weeks of data exist.
+
+**Scope:**
+- New MCP tool `nr_observe_get_personal_insights` registered in `src/tools/cross-session-tools.ts`
+- `PersonalCoach` class in `src/metrics/personal-coach.ts` accepting `SessionStore` + `WeeklySummaryGenerator`
+- Analysis dimensions: re-read rate vs. personal mean, efficiency score trend, anti-pattern frequency vs. personal baseline, cost-per-task trend, time-of-day efficiency pattern (derived from session `startTime`)
+- Output: a `PersonalInsightsReport` interface with `highlights` (string[]), `regressions` (string[]), `streaks` (string[]), and `topRecommendation` (string)
+- Sparse-data guard: returns a `{ status: 'insufficient_data', weeksAvailable: N, weeksRequired: 2 }` shape when history is thin
+- Narrative generation from structured data (template strings over the computed deltas — no LLM call required)
+- Tests with mock session histories covering improvement, regression, and sparse-data cases
+
+---
+
+## 16. GitHub App Integration
+
+**Status:** Planned
+**Implementation plan:** [docs/roadmap/16-github-app.md](docs/roadmap/16-github-app.md)
+
+A GitHub App that posts AI coding cost and efficiency reports directly on pull requests, without requiring GitHub Actions. Useful when Actions are disabled on an Enterprise account. The app runs as a small webhook server (deployable anywhere — Vercel, Railway, any Node host) that listens for `pull_request` events, fetches metrics from New Relic using the existing `nr-ai-cicd` library, and posts the formatted report as a PR comment via the GitHub API.
+
+**Scope:**
+- `packages/nr-ai-github-app/` new package with `nr-ai-github-app` binary
+- Webhook server using `@octokit/app` (handles signature verification and installation auth automatically)
+- Reuses `fetchCurrentMetrics`, `fetchBaselineMetrics`, `formatReport` from `nr-ai-cicd` unchanged
+- Config via env vars: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `NEW_RELIC_API_KEY`, `NEW_RELIC_ACCOUNT_ID`
+- Optional `NR_AI_REPORT_HOURS` (default `24`) and `NR_AI_REPORT_FAIL_BELOW` quality gate (sets commit status)
+- GitHub App manifest and setup instructions in `packages/nr-ai-github-app/README.md`
 
 ---
 

@@ -138,7 +138,8 @@ function finalizeRecord(
 ): AiRequestRecord {
   const shouldCapture = config.recordContent && !config.highSecurity;
   const usage = response.usage;
-  const inputTokens = usage?.prompt_tokens ?? 0;
+  const cachedTokens = (usage as unknown as { prompt_tokens_details?: { cached_tokens?: number } }).prompt_tokens_details?.cached_tokens ?? 0;
+  const inputTokens = (usage?.prompt_tokens ?? 0) - cachedTokens;
   const outputTokens = usage?.completion_tokens ?? 0;
   const thinkingTokens = extractReasoningTokens(
     usage as unknown as { completion_tokens_details?: { reasoning_tokens?: number } },
@@ -153,9 +154,9 @@ function finalizeRecord(
     inputTokens,
     outputTokens,
     thinkingTokens,
-    cacheReadTokens: 0,
+    cacheReadTokens: cachedTokens,
     cacheCreationTokens: 0,
-    totalTokens: usage?.total_tokens ?? inputTokens + outputTokens + thinkingTokens,
+    totalTokens: usage?.total_tokens ?? inputTokens + outputTokens + thinkingTokens + cachedTokens,
     stopReason: response.choices[0]?.finish_reason ?? null,
     contentBlockTypes: extractContentBlockTypes(response),
     responseText:
@@ -210,6 +211,7 @@ function wrapChunkStream(
   let inputTokens = 0;
   let outputTokens = 0;
   let thinkingTokens = 0;
+  let cacheReadTokens = 0;
   let totalTokens: number | null = null;
   let accumulatedText = '';
   let hasToolCalls = false;
@@ -239,9 +241,12 @@ function wrapChunkStream(
             completion_tokens?: number;
             total_tokens?: number;
             completion_tokens_details?: { reasoning_tokens?: number };
+            prompt_tokens_details?: { cached_tokens?: number };
           };
-          inputTokens = u.prompt_tokens ?? 0;
+          const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
+          inputTokens = (u.prompt_tokens ?? 0) - cached;
           outputTokens = u.completion_tokens ?? 0;
+          cacheReadTokens = cached;
           totalTokens = u.total_tokens ?? null;
           thinkingTokens = extractReasoningTokens(u);
         }
@@ -264,9 +269,9 @@ function wrapChunkStream(
         inputTokens,
         outputTokens,
         thinkingTokens,
-        cacheReadTokens: 0,
+        cacheReadTokens,
         cacheCreationTokens: 0,
-        totalTokens: totalTokens ?? inputTokens + outputTokens + thinkingTokens,
+        totalTokens: totalTokens ?? inputTokens + outputTokens + thinkingTokens + cacheReadTokens,
         stopReason,
         contentBlockTypes,
         responseText:

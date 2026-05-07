@@ -2,6 +2,39 @@ import { DEFAULT_PRICING_TABLE } from './pricing-data.js';
 
 describe('DEFAULT_PRICING_TABLE', () => {
   describe('Anthropic models', () => {
+    it('has claude-opus-4-7 (current gen) with correct rates', () => {
+      const p = DEFAULT_PRICING_TABLE['claude-opus-4-7'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(5);
+      expect(p.outputPerMTok).toBe(25);
+      expect(p.thinkingPerMTok).toBe(25);
+      expect(p.cacheReadPerMTok).toBe(0.5);
+      expect(p.cacheCreationPerMTok).toBe(6.25);
+      expect(p.contextWindow).toBe(1_000_000);
+    });
+
+    it('has claude-sonnet-4-6 (current gen) with correct rates', () => {
+      const p = DEFAULT_PRICING_TABLE['claude-sonnet-4-6'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(3);
+      expect(p.outputPerMTok).toBe(15);
+      expect(p.thinkingPerMTok).toBe(15);
+      expect(p.cacheReadPerMTok).toBe(0.3);
+      expect(p.cacheCreationPerMTok).toBe(3.75);
+      expect(p.contextWindow).toBe(1_000_000);
+    });
+
+    it('has claude-haiku-4-5-20251001 with correct rates', () => {
+      const p = DEFAULT_PRICING_TABLE['claude-haiku-4-5-20251001'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(1);
+      expect(p.outputPerMTok).toBe(5);
+      expect(p.thinkingPerMTok).toBe(5);
+      expect(p.cacheReadPerMTok).toBe(0.1);
+      expect(p.cacheCreationPerMTok).toBe(1.25);
+      expect(p.contextWindow).toBe(200_000);
+    });
+
     it('has claude-sonnet-4-20250514 with correct rates', () => {
       const p = DEFAULT_PRICING_TABLE['claude-sonnet-4-20250514'];
       expect(p).toBeDefined();
@@ -34,8 +67,32 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(p.contextWindow).toBe(1_000_000);
     });
 
-    it('has gemini-2.5-flash', () => {
-      expect(DEFAULT_PRICING_TABLE['gemini-2.5-flash']).toBeDefined();
+    it('has gemini-2.5-flash with flat pricing (no tiers) at May 2026 rates', () => {
+      const p = DEFAULT_PRICING_TABLE['gemini-2.5-flash'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(0.3);
+      expect(p.outputPerMTok).toBe(2.5);
+      expect(p.thinkingPerMTok).toBe(2.5);
+      // No tiers — Gemini 2.5 Flash switched to flat pricing in 2026
+      expect(p.tierThreshold).toBeUndefined();
+      expect(p.tierInputPerMTok).toBeUndefined();
+    });
+
+    it('has gemini-2.5-flash-lite', () => {
+      const p = DEFAULT_PRICING_TABLE['gemini-2.5-flash-lite'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(0.1);
+      expect(p.outputPerMTok).toBe(0.4);
+    });
+
+    it('has gemini-3.1-pro-preview with tiered pricing', () => {
+      const p = DEFAULT_PRICING_TABLE['gemini-3.1-pro-preview'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(2);
+      expect(p.outputPerMTok).toBe(12);
+      expect(p.tierThreshold).toBe(200_000);
+      expect(p.tierInputPerMTok).toBe(4);
+      expect(p.contextWindow).toBe(1_000_000);
     });
 
     it('has gemini-2.0-flash', () => {
@@ -44,6 +101,34 @@ describe('DEFAULT_PRICING_TABLE', () => {
   });
 
   describe('OpenAI models', () => {
+    it('has gpt-5.5 with correct rates and long-context tier', () => {
+      const p = DEFAULT_PRICING_TABLE['gpt-5.5'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(5);
+      expect(p.outputPerMTok).toBe(30);
+      expect(p.cacheReadPerMTok).toBe(0.5);
+      expect(p.contextWindow).toBe(1_000_000);
+      expect(p.tierThreshold).toBe(270_000);
+      expect(p.tierInputPerMTok).toBe(10);
+      expect(p.tierOutputPerMTok).toBe(45);
+    });
+
+    it('has gpt-5.4 with correct rates and long-context tier', () => {
+      const p = DEFAULT_PRICING_TABLE['gpt-5.4'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(2.5);
+      expect(p.outputPerMTok).toBe(15);
+      expect(p.cacheReadPerMTok).toBe(0.25);
+      expect(p.tierThreshold).toBe(270_000);
+      expect(p.tierInputPerMTok).toBe(5);
+      expect(p.tierOutputPerMTok).toBe(22.5);
+    });
+
+    it('has gpt-5.4-mini and gpt-5.4-nano', () => {
+      expect(DEFAULT_PRICING_TABLE['gpt-5.4-mini']).toBeDefined();
+      expect(DEFAULT_PRICING_TABLE['gpt-5.4-nano']).toBeDefined();
+    });
+
     it('has gpt-4o with correct rates', () => {
       const p = DEFAULT_PRICING_TABLE['gpt-4o'];
       expect(p).toBeDefined();

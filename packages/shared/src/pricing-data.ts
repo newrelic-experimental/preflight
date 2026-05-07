@@ -2,11 +2,69 @@ import type { ModelPricing } from './pricing.js';
 
 // ---------------------------------------------------------------------------
 // Built-in pricing table — USD per million tokens
-// Sources: Anthropic & Google public pricing pages (May 2025)
+// Sources: Anthropic, Google, OpenAI public pricing pages (May 2026)
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
-  // ---- Anthropic ----
+  // ---- Anthropic (current generation) ----
+  'claude-opus-4-7': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    thinkingPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
+    contextWindow: 1_000_000,
+  },
+  'claude-sonnet-4-6': {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    thinkingPerMTok: 15,
+    cacheReadPerMTok: 0.3,
+    cacheCreationPerMTok: 3.75,
+    contextWindow: 1_000_000,
+  },
+  'claude-haiku-4-5-20251001': {
+    inputPerMTok: 1,
+    outputPerMTok: 5,
+    thinkingPerMTok: 5,
+    cacheReadPerMTok: 0.1,
+    cacheCreationPerMTok: 1.25,
+    contextWindow: 200_000,
+  },
+
+  // ---- Anthropic (legacy Claude 4 generation) ----
+  'claude-opus-4-6': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    thinkingPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
+    contextWindow: 200_000,
+  },
+  'claude-sonnet-4-5': {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    thinkingPerMTok: 15,
+    cacheReadPerMTok: 0.3,
+    cacheCreationPerMTok: 3.75,
+    contextWindow: 200_000,
+  },
+  'claude-opus-4-5': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    thinkingPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
+    contextWindow: 200_000,
+  },
+  'claude-opus-4-1': {
+    inputPerMTok: 15,
+    outputPerMTok: 75,
+    thinkingPerMTok: 75,
+    cacheReadPerMTok: 1.5,
+    cacheCreationPerMTok: 18.75,
+    contextWindow: 200_000,
+  },
   'claude-sonnet-4-20250514': {
     inputPerMTok: 3,
     outputPerMTok: 15,
@@ -31,7 +89,29 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 200_000,
   },
 
-  // ---- Google Gemini ----
+  // ---- Google Gemini (current generation) ----
+  'gemini-3.1-pro-preview': {
+    inputPerMTok: 2,
+    outputPerMTok: 12,
+    thinkingPerMTok: 12,
+    contextWindow: 1_000_000,
+    tierThreshold: 200_000,
+    tierInputPerMTok: 4,
+    tierOutputPerMTok: 18,
+    tierThinkingPerMTok: 18,
+  },
+  'gemini-3.1-flash-lite-preview': {
+    inputPerMTok: 0.25,
+    outputPerMTok: 1.5,
+    contextWindow: 1_000_000,
+  },
+  'gemini-3-flash-preview': {
+    inputPerMTok: 0.5,
+    outputPerMTok: 3,
+    contextWindow: 1_000_000,
+  },
+
+  // ---- Google Gemini 2.5 ----
   'gemini-2.5-pro': {
     inputPerMTok: 1.25,
     outputPerMTok: 10,
@@ -43,20 +123,25 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     tierThinkingPerMTok: 15,
   },
   'gemini-2.5-flash': {
-    inputPerMTok: 0.15,
-    outputPerMTok: 0.6,
-    thinkingPerMTok: 3.5,
+    inputPerMTok: 0.3,
+    outputPerMTok: 2.5,
+    thinkingPerMTok: 2.5,
     contextWindow: 1_000_000,
-    tierThreshold: 200_000,
-    tierInputPerMTok: 0.3,
-    tierOutputPerMTok: 1.2,
-    tierThinkingPerMTok: 7,
   },
+  'gemini-2.5-flash-lite': {
+    inputPerMTok: 0.1,
+    outputPerMTok: 0.4,
+    contextWindow: 1_000_000,
+  },
+
+  // ---- Google Gemini 2.0 (deprecated — shutting down June 1 2026) ----
   'gemini-2.0-flash': {
     inputPerMTok: 0.1,
     outputPerMTok: 0.4,
     contextWindow: 1_000_000,
   },
+
+  // ---- Google Gemini 1.5 (legacy) ----
   'gemini-1.5-pro': {
     inputPerMTok: 1.25,
     outputPerMTok: 5,
@@ -74,7 +159,39 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     tierOutputPerMTok: 0.6,
   },
 
-  // ---- OpenAI ----
+  // ---- OpenAI (current generation) ----
+  'gpt-5.5': {
+    inputPerMTok: 5,
+    outputPerMTok: 30,
+    cacheReadPerMTok: 0.5,
+    contextWindow: 1_000_000,
+    tierThreshold: 270_000,
+    tierInputPerMTok: 10,
+    tierOutputPerMTok: 45,
+  },
+  'gpt-5.4': {
+    inputPerMTok: 2.5,
+    outputPerMTok: 15,
+    cacheReadPerMTok: 0.25,
+    contextWindow: 1_000_000,
+    tierThreshold: 270_000,
+    tierInputPerMTok: 5,
+    tierOutputPerMTok: 22.5,
+  },
+  'gpt-5.4-mini': {
+    inputPerMTok: 0.75,
+    outputPerMTok: 4.5,
+    cacheReadPerMTok: 0.075,
+    contextWindow: 128_000,
+  },
+  'gpt-5.4-nano': {
+    inputPerMTok: 0.2,
+    outputPerMTok: 1.25,
+    cacheReadPerMTok: 0.02,
+    contextWindow: 128_000,
+  },
+
+  // ---- OpenAI (legacy) ----
   'gpt-4o': {
     inputPerMTok: 2.5,
     outputPerMTok: 10,
@@ -144,7 +261,23 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- AWS Bedrock (Converse API pricing for on-demand) ----
-  // Claude models via Bedrock cross-region inference
+  // Current Claude generation via Bedrock
+  'anthropic.claude-opus-4-7': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-sonnet-4-6': {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-haiku-4-5-20251001-v1:0': {
+    inputPerMTok: 1,
+    outputPerMTok: 5,
+    contextWindow: 200_000,
+  },
+  // Legacy Claude models via Bedrock cross-region inference
   'anthropic.claude-3-5-sonnet-20241022-v2:0': {
     inputPerMTok: 3,
     outputPerMTok: 15,
@@ -215,6 +348,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 0.15,
     contextWindow: 131_000,
   },
+  // ---- Mistral (legacy — deprecated March 2025) ----
   'open-mistral-7b': {
     inputPerMTok: 0.25,
     outputPerMTok: 0.25,
@@ -243,8 +377,8 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 128_000,
   },
   'command': {
-    inputPerMTok: 0.5,
-    outputPerMTok: 1.5,
+    inputPerMTok: 1,
+    outputPerMTok: 2,
     contextWindow: 4_000,
   },
   'command-light': {

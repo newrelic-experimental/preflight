@@ -53,13 +53,14 @@ describe('calculateCost', () => {
       usage({ inputTokens: 10_000, outputTokens: 2_000, thinkingTokens: 5_000 }),
     );
 
-    // input: 10000 * 0.15 / 1_000_000 = 0.0015
-    expect(cost.inputUsd).toBeCloseTo(0.0015, 6);
-    // output: 2000 * 0.60 / 1_000_000 = 0.0012
-    expect(cost.outputUsd).toBeCloseTo(0.0012, 6);
-    // thinking: 5000 * 3.50 / 1_000_000 = 0.0175
-    expect(cost.thinkingUsd).toBeCloseTo(0.0175, 6);
-    expect(cost.totalUsd).toBeCloseTo(0.0015 + 0.0012 + 0.0175, 6);
+    // gemini-2.5-flash (May 2026): flat pricing, no tiers
+    // input: 10000 * 0.30 / 1_000_000 = 0.003
+    expect(cost.inputUsd).toBeCloseTo(0.003, 6);
+    // output: 2000 * 2.50 / 1_000_000 = 0.005
+    expect(cost.outputUsd).toBeCloseTo(0.005, 6);
+    // thinking: 5000 * 2.50 / 1_000_000 = 0.0125
+    expect(cost.thinkingUsd).toBeCloseTo(0.0125, 6);
+    expect(cost.totalUsd).toBeCloseTo(0.003 + 0.005 + 0.0125, 6);
   });
 
   // ---------------------------------------------------------------------------
@@ -204,20 +205,21 @@ describe('resolveModelPricing', () => {
     stderrSpy.mockRestore();
   });
 
-  // 12. Reverse prefix match for versioned model names
-  it('resolves versioned model names via reverse prefix match', () => {
-    // claude-opus-4-7 should match claude-opus-4-20250514 (base: claude-opus-4)
+  // 12. Exact match for current-gen dateless IDs; reverse prefix for legacy names
+  it('resolves current-gen dateless model IDs via exact match', () => {
+    // These IDs are now explicit keys in the table — exact match, not prefix match
     const opus = resolveModelPricing('claude-opus-4-7');
     expect(opus).not.toBeNull();
-    expect(opus!.inputPerMTok).toBe(15);
-    expect(opus!.outputPerMTok).toBe(75);
+    expect(opus!.inputPerMTok).toBe(5);
+    expect(opus!.outputPerMTok).toBe(25);
 
-    // claude-sonnet-4-6 should match claude-sonnet-4-20250514 (base: claude-sonnet-4)
     const sonnet = resolveModelPricing('claude-sonnet-4-6');
     expect(sonnet).not.toBeNull();
     expect(sonnet!.inputPerMTok).toBe(3);
     expect(sonnet!.outputPerMTok).toBe(15);
+  });
 
+  it('resolves partial model names via reverse prefix match', () => {
     // claude-haiku-3-5 should match claude-haiku-3-5-20241022 (base: claude-haiku-3-5)
     const haiku = resolveModelPricing('claude-haiku-3-5');
     expect(haiku).not.toBeNull();
@@ -232,6 +234,23 @@ describe('resolveModelPricing', () => {
     expect(pricing).toBeNull();
 
     stderrSpy.mockRestore();
+  });
+
+  // 14. Forward prefix must not match a longer key that diverges at a non-digit suffix
+  it('does not match gemini-2.5-flash-lite for query gemini-2.5-flash', () => {
+    // "gemini-2.5-flash" is an exact key, so this tests exact match — but the
+    // important invariant is that "-lite" suffix does NOT satisfy the /-\d/ guard,
+    // meaning even if the exact key were absent the algorithm would not wrong-match.
+    const flash = resolveModelPricing('gemini-2.5-flash');
+    const flashLite = resolveModelPricing('gemini-2.5-flash-lite');
+
+    expect(flash).not.toBeNull();
+    expect(flashLite).not.toBeNull();
+    // They must resolve to different pricing entries
+    expect(flash!.inputPerMTok).not.toBe(flashLite!.inputPerMTok);
+    // flash = $0.30/MTok input; flash-lite = $0.10/MTok input
+    expect(flash!.inputPerMTok).toBe(0.3);
+    expect(flashLite!.inputPerMTok).toBe(0.1);
   });
 });
 
