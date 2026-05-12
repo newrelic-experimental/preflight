@@ -178,6 +178,8 @@ async function main(): Promise<void> {
     const modelUsageTracker = new ModelUsageTracker();
 
     const sessionStore = new SessionStore({ storagePath: config.storagePath });
+    const currentSessionId = sessionTracker.getMetrics().sessionId;
+    const { priorDailyCostUsd, priorWeeklyCostUsd } = computeHistoricalCosts(sessionStore, currentSessionId);
     const weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,
@@ -266,8 +268,8 @@ async function main(): Promise<void> {
         if (costMetrics.sessionTotalCostUsd !== null) {
           budgetTracker.updateCost(
             costMetrics.sessionTotalCostUsd,
-            costMetrics.sessionTotalCostUsd,
-            costMetrics.sessionTotalCostUsd,
+            priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
+            priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd,
           );
         }
 
@@ -372,6 +374,33 @@ async function main(): Promise<void> {
     await proxyManager.start();
     logger.info('Proxy server running', { port: config.port, upstreams: proxyManager.getUpstreamNames() });
   }
+}
+
+// Compute cost baselines from prior sessions for daily/weekly budget tracking.
+// Called once at session start; the current in-flight session is excluded so costs
+// aren't double-counted with the live sessionTotalCostUsd on each tool call.
+function computeHistoricalCosts(
+  sessionStore: SessionStore,
+  currentSessionId: string,
+): { priorDailyCostUsd: number; priorWeeklyCostUsd: number } {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  let priorDailyCostUsd = 0;
+  let priorWeeklyCostUsd = 0;
+  try {
+    const sessions = sessionStore.loadAllSessions({ since: weekAgo });
+    for (const session of sessions) {
+      if (session.sessionId === currentSessionId) continue;
+      if (session.estimatedCostUsd === null) continue;
+      const sessionDate = new Date(session.startTime).toISOString().slice(0, 10);
+      if (sessionDate === todayStr) priorDailyCostUsd += session.estimatedCostUsd;
+      priorWeeklyCostUsd += session.estimatedCostUsd;
+    }
+  } catch {
+    // Non-fatal: fall back to session-only costs if history is unreadable
+  }
+  return { priorDailyCostUsd, priorWeeklyCostUsd };
 }
 
 // Only run main() when executed directly (not when imported for testing).
