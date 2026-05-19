@@ -17,8 +17,8 @@
  * Only licenseKey and accountId are required. Everything else has a sensible default.
  *
  * {
- *   "licenseKey": "175cae4b...NRAL",
- *   "accountId": "12345"
+ *   "licenseKey": "YOUR_LICENSE_KEY_NRAL",
+ *   "accountId": "YOUR_ACCOUNT_ID"
  * }
  */
 
@@ -33,13 +33,13 @@ export default {
   // Where to find it: NR One → top-right menu → API keys → create a License key.
   // Env: NEW_RELIC_LICENSE_KEY
   // Default: none (required — server will not start without it)
-  licenseKey: '175cae4b092eb97939c793977b4834609441NRAL',
+  licenseKey: 'YOUR_LICENSE_KEY_NRAL',
 
   // Your New Relic account ID — the number visible in the URL when logged in.
   // e.g., https://one.newrelic.com/nr1-core?account=12345
   // Env: NEW_RELIC_ACCOUNT_ID
   // Default: none (required — server will not start without it)
-  accountId: '12345',
+  accountId: 'YOUR_ACCOUNT_ID',
 
   // ---------------------------------------------------------------------------
   // Identity
