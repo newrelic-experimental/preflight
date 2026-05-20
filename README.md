@@ -280,7 +280,6 @@ Or set it in your config file as `digestWebhookUrl`.
 ## Requirements
 
 - **Node.js**: v24 (see `.nvmrc`)
-- **Python**: 3.9+ — only needed for the Python SDK; not required for the MCP server
 - **New Relic account**: free tier works; you need a license key and a user API key
 - **An AI coding tool**: Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, or Amazon Q
 

@@ -343,7 +343,7 @@ Key test patterns:
 ## See Also
 
 - [@nr-ai-observatory/shared](../shared/) — Transport layer, events, pricing
-- [nr-ai-agent](../nr-ai-agent/) — SDK wrappers for AI model clients
+- `nr-ai-typescript-agent` — SDK wrappers for AI model clients *(now in standalone repo)*
 - [CLAUDE.md](../../CLAUDE.md) — Full technical reference
 - [COMMANDS_TABLE.md](../../docs/COMMANDS_TABLE.md) — All 16+ MCP tools
 - [METRICS_TABLE.md](../../docs/METRICS_TABLE.md) — Event and metric schema

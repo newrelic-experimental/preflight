@@ -14,8 +14,8 @@ The monorepo uses a shared base config (`jest.config.base.ts`) with per-package 
 jest.config.ts              # Root: lists projects, maxWorkers: 1, forceExit
 jest.config.base.ts         # Base: ts-jest ESM preset, module mapper, test match
 packages/shared/jest.config.ts
-packages/nr-ai-agent/jest.config.ts
 packages/nr-ai-mcp-server/jest.config.ts
+# packages/nr-ai-agent/jest.config.ts — now in nr-ai-typescript-agent repo (same pattern applies)
 ```
 
 Key settings from the base config:

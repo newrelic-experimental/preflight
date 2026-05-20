@@ -65,7 +65,7 @@ function safeInt(value: unknown): number {
 
 Use `safeInt` anywhere you extract a numeric count from an untrusted API response.
 
-### Tool names — all six wrappers in `packages/nr-ai-agent/src/wrappers/`
+### Tool names — all six wrappers in `packages/nr-ai-agent/src/wrappers/` *(now in `nr-ai-typescript-agent` repo)*
 
 Tool names come from caller-supplied arrays and are stored in NR events. They must be sanitized:
 
@@ -99,7 +99,7 @@ A set of compiled regular expressions that cover:
 **Where applied:**
 - `collector-script.ts` — redacts tool input/output before writing to the hook buffer
 - `nr-ai-mcp-server/src/config.ts` — `redactSensitive()` for config-level redaction
-- `nr-ai-agent` wrapper — error messages from the upstream API are run through `redact()` before being stored in NR events
+- `nr-ai-agent` wrapper *(now in `nr-ai-typescript-agent` repo)* — error messages from the upstream API are run through `redact()` before being stored in NR events
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through these patterns first. Use `redact(text, config.redactionPatterns)` (agent) or `redactSensitive(text)` (MCP server).
 
@@ -251,7 +251,7 @@ Classification patterns are configurable via constructor options. The log is que
 
 The `pending` map (pre-events awaiting their post-event pair) is capped at 2,000 entries. When the cap is reached, the oldest entry is evicted before inserting the new one. This prevents an unbounded heap growth if the buffer file is flooded with unpaired pre-events.
 
-### Stream listener cleanup — `packages/nr-ai-agent/src/wrappers/anthropic.ts`
+### Stream listener cleanup — `packages/nr-ai-agent/src/wrappers/anthropic.ts` *(now in `nr-ai-typescript-agent` repo)*
 
 `wrapStream` uses `once` (not `on`) for the `finalMessage` and `error` events, and calls `removeAllListeners()` after emitting the record. This releases the closure references held by all three event listeners so the stream object can be garbage collected promptly after completion.
 

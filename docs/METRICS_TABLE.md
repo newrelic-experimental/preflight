@@ -260,7 +260,7 @@ Source: `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts`, `packages/nr-ai-
 
 ### SDK Agent Events
 
-These events are emitted by the SDK agent (`nr-ai-agent`) when application code uses wrapped Anthropic or Gemini clients.
+These events are emitted by the SDK agent (`nr-ai-agent`, now in the `nr-ai-typescript-agent` repo) when application code uses wrapped Anthropic or Gemini clients.
 
 #### `AiRequest`
 
@@ -489,7 +489,7 @@ Emitted every 60 seconds alongside session gauges (only when proxy mode is activ
 
 Source: `packages/nr-ai-mcp-server/src/transport/nr-ingest.ts` — `emitSessionGauges()`, `packages/nr-ai-mcp-server/src/metrics/proxy-metrics.ts`
 
-### SDK Agent — Request Metrics
+### SDK Agent — Request Metrics *(nr-ai-agent now in `nr-ai-typescript-agent` repo)*
 
 Recorded by `nr-ai-agent` for each wrapped SDK call.
 

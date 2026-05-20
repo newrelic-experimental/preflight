@@ -1,6 +1,6 @@
 # NR AI Observatory
 
-An npm workspaces monorepo providing observability for AI coding assistants. Five packages: `@nr-ai-observatory/shared` (transport, events, pricing), `nr-ai-agent` (SDK client wrappers for Anthropic/Gemini/OpenAI), `nr-ai-mcp-server` (MCP server + metrics engine + HTTP proxy), `nr-ai-cicd` (CI/CD PR cost reporting), and `nr-ai-github-app` (GitHub App webhook server that posts the same PR cost reports without requiring GitHub Actions). All telemetry flows to New Relic.
+An npm workspaces monorepo providing observability for AI coding assistants. Two active packages: `@nr-ai-observatory/shared` (transport, events, pricing — source committed in `packages/shared/src/`; run `node scripts/sync-shared.js` to pull upstream changes from `nr-ai-typescript-shared`) and `nr-ai-mcp-server` (MCP server + metrics engine + HTTP proxy). All telemetry flows to New Relic. The TypeScript SDK agent lives in the separate `nr-ai-typescript-agent` repo. CI/CD tooling and GitHub App webhook server live in the separate `nr-ai-github-tools` repo.
 
 ## Development Commands
 
@@ -13,12 +13,13 @@ npm run format             # Prettier (write)
 npm run format:check       # Prettier (check only)
 ```
 
-Build a single package (shared must be built first — it's a project reference):
+Build a single package:
 
 ```bash
 npx tsc -b packages/shared && npx tsc -b packages/nr-ai-mcp-server
-npx tsc -b packages/shared && npx tsc -b packages/nr-ai-agent
 ```
+
+To pull in upstream changes from `nr-ai-typescript-shared` first: `node scripts/sync-shared.js` (then commit the result).
 
 Run tests for a single file:
 
@@ -44,28 +45,7 @@ nr-ai-observatory/
         harvest/                        # EventBuffer, MetricAggregator, HarvestScheduler
         transport/                      # HTTP clients for Events, Metric, and Logs APIs; OtlpTransport and OtlpEventBridge for OTLP/HTTP export
 
-    nr-ai-agent/                        # nr-ai-agent
-      src/
-        agent.ts                        # NrAiAgent class + singleton init()
-        tracing.ts                      # initTracer() / getTracer() — OTel tracer singleton for SDK wrappers
-        span-attributes.ts              # buildSpanName(), buildRequestAttributes(), buildResponseAttributes() — GenAI OTel span helpers
-        wrappers/                       # 6 SDK wrappers
-          anthropic.ts                  # Wraps Anthropic client (messages.create/stream)
-          gemini.ts                     # Wraps Google Gemini client (generateContent)
-          openai.ts                     # Wraps OpenAI client (chat.completions.create/stream)
-          bedrock.ts                    # Wraps AWS Bedrock client (InvokeModel/InvokeModelWithResponseStream)
-          mistral.ts                    # Wraps Mistral client (chat.complete/chat.stream)
-          cohere.ts                     # Wraps Cohere client (chat/chatStream)
-        intelligence/                   # Phase 4 intelligence modules
-          semantic-drift.ts             # SemanticDriftDetector — embedding-based drift detection
-          anomaly-detection.ts          # AnomalyDetector — z-score signal monitoring (3 categories)
-          cost-forecasting.ts           # CostForecaster — linear regression cost projection
-          recommendations.ts            # RecommendationEngine — cache/model/context recommendations
-          experiments.ts                # ExperimentTracker — A/B experiment tracking with t-tests
-        export/                         # Phase 4 export modules
-          otel.ts                       # OTelExporter — OpenTelemetry OTLP/HTTP export (opt-in)
-        api/                            # Phase 4 custom instrumentation
-          custom-metrics.ts             # CustomMetricsManager — user-defined metrics/events/spans
+    nr-ai-agent/ and test-app/          # *(now in `nr-ai-typescript-agent` repo)*
 
     nr-ai-mcp-server/                   # nr-ai-mcp-server
       src/
@@ -142,28 +122,6 @@ nr-ai-observatory/
         conditions/                     # NRQL alert condition JSON files
       dashboards/                       # Pre-built NR dashboard JSON files (data, not source)
       scripts/                          # Deploy scripts (deploy-dashboard.ts, deploy-alerts.ts)
-
-    nr-ai-cicd/                         # nr-ai-cicd
-      src/
-        nrql-client.ts                  # runNrql() — NerdGraph NRQL executor
-        metrics-fetcher.ts              # fetchCurrentMetrics(), fetchBaselineMetrics()
-        report-formatter.ts             # formatReport() — markdown/JSON report generator
-        report-cli.ts                   # nr-ai-report CLI entry point
-        index.ts                        # Public API exports
-      actions/
-        ai-report/
-          action.yml                    # GitHub Actions composite action
-      .gitlab-ci-template.yml           # GitLab CI template
-
-    nr-ai-github-app/                   # nr-ai-github-app
-      src/
-        config.ts                       # AppConfig loader (env-only; fail-fast on missing vars)
-        pr-handler.ts                   # handlePullRequest() — fetches metrics + posts PR comment + optional commit status
-        server.ts                       # createWebhookServer() — @octokit/app + node:http
-        index.ts                        # CLI entry point (nr-ai-github-app binary)
-
-    test-app/                           # E2E integration test for nr-ai-agent
-      src/index.ts                      # Exercises full agent pipeline
 ```
 
 ## Architecture
@@ -198,24 +156,10 @@ Claude Code
                  └─ ... (16 tools total)
 ```
 
-### Data Flow (Agent — SDK Wrapper)
-
-```
-Application code
-  └─> agent.wrapAnthropicClient(client) / agent.wrapGeminiClient(client)
-       └─> intercepted SDK calls
-            ├─> token extraction + cost calculation
-            ├─> event creation (AiRequest, AiResponse, AiMessage)
-            └─> HarvestScheduler → NR Events API / Metric API
-```
-
 ### Package Dependencies
 
 - `shared` has zero runtime dependencies (pure TypeScript)
-- `nr-ai-agent` depends on `shared`; peer-depends on `@anthropic-ai/sdk` and `@google/genai`
 - `nr-ai-mcp-server` depends on `shared`, `@modelcontextprotocol/sdk`, `zod`, `commander`
-- `nr-ai-cicd` depends on `shared`; peer-depends on `commander`
-- `nr-ai-github-app` depends on `nr-ai-cicd` and `@octokit/app`; reuses `fetchCurrentMetrics`, `fetchBaselineMetrics`, and `formatReport` from `nr-ai-cicd` unchanged
 
 ## TypeScript Conventions
 
@@ -366,6 +310,8 @@ All MCP server events (`AiToolCall`, `AiCodingTask`, `AiAntiPattern`, `AiMcpTool
 
 ### Phase 4 SDK Agent Events
 
+*(Emitted by `nr-ai-agent`, now in the `nr-ai-typescript-agent` repo.)*
+
 Emitted by `nr-ai-agent` from the intelligence modules (Phases 4.1–4.7):
 
 | Event Type | Emitted By | Cadence | Use Case |
@@ -377,6 +323,8 @@ Emitted by `nr-ai-agent` from the intelligence modules (Phases 4.1–4.7):
 | `AiRecommendation` | `RecommendationEngine` | Every 5 minutes | Automated optimization recommendations (cache, model, context) |
 
 ### Provider Support
+
+*(Now in the `nr-ai-typescript-agent` repo.)*
 
 SDK agent wrappers now support 6 AI providers:
 - `anthropic` — Anthropic Claude models

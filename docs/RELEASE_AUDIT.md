@@ -28,7 +28,7 @@ No `LICENSE` file exists. Without a license, the project is legally closed-sourc
 ### C2. Real Credentials on Disk in test-app/.env
 
 **Severity:** CRITICAL  
-**File:** `packages/test-app/.env`
+**File:** `packages/test-app/.env` *(now in `nr-ai-typescript-agent` repo)*
 
 The file contains credentials that match the format of real New Relic keys:
 
@@ -89,12 +89,14 @@ The internal shared package is scoped as `@nr-ai-observatory/shared`. Publishing
 ### H3. Wildcard Workspace Dependencies Must Change Before npm Publish
 
 **Severity:** HIGH  
-**Files:** `packages/nr-ai-mcp-server/package.json`, `packages/nr-ai-agent/package.json`, `packages/nr-ai-cicd/package.json`, `packages/nr-ai-github-app/package.json`, `packages/test-app/package.json`
+**Files:** `packages/nr-ai-mcp-server/package.json` (and `nr-ai-typescript-agent` packages, `nr-ai-github-tools` packages, and `nr-ai-typescript-shared/package.json` if publishing those separately)
 
 ```json
 "@nr-ai-observatory/shared": "*"
 "nr-ai-agent": "*"
 ```
+
+*(`nr-ai-agent` is now in the `nr-ai-typescript-agent` repo — this pattern applies there too)*
 
 Wildcard `*` resolves to the local workspace package during development, but when published to npm `*` means "any version including future breaking majors." npm workspaces do not preserve the workspace: protocol in the published tarball unless `"publishConfig"` is configured.
 
@@ -127,10 +129,10 @@ Published npm packages should include:
 
 ## MEDIUM — Recommended Before Publishing
 
-### M1. nr-ai-agent: SDK Clients in devDependencies Alongside peerDependencies
+### M1. nr-ai-agent: SDK Clients in devDependencies Alongside peerDependencies *(nr-ai-agent now in `nr-ai-typescript-agent` repo)*
 
 **Severity:** MEDIUM  
-**File:** `packages/nr-ai-agent/package.json`
+**File:** `packages/nr-ai-agent/package.json` *(now in `nr-ai-typescript-agent` repo)*
 
 All six SDK clients (`@anthropic-ai/sdk`, `openai`, `@google/genai`, `@aws-sdk/client-bedrock-runtime`, `@mistralai/mistralai`, `cohere-ai`) are listed in **both** `devDependencies` and `peerDependencies`. This is intentional for local testing but is confusing for contributors — the README doesn't explain why. More importantly, `peerDependenciesMeta.optional: true` is the right mechanism and it is already configured correctly.
 
@@ -141,7 +143,7 @@ All six SDK clients (`@anthropic-ai/sdk`, `openai`, `@google/genai`, `@aws-sdk/c
 ### M2. Unbounded peerDependency Ranges
 
 **Severity:** MEDIUM  
-**File:** `packages/nr-ai-agent/package.json`
+**File:** `packages/nr-ai-agent/package.json` *(now in `nr-ai-typescript-agent` repo)*
 
 All peerDependencies use `>=X.Y.Z` with no upper bound:
 
@@ -217,8 +219,8 @@ test_fail → grep (Bash) → edit (Write) → test_pass  ← classified as fail
 - `packages/nr-ai-mcp-server/src/tools/cross-session-tools.ts:29`
 - `packages/nr-ai-mcp-server/scripts/deploy-alerts.ts:21`
 - `packages/nr-ai-mcp-server/scripts/deploy-dashboard.ts:34`
-- `packages/nr-ai-agent/scripts/deploy-dashboard.ts:17`
-- `packages/nr-ai-cicd/src/nrql-client.ts:1`
+- `packages/nr-ai-agent/scripts/deploy-dashboard.ts:17` *(now in `nr-ai-typescript-agent` repo)*
+- `packages/nr-ai-cicd/src/nrql-client.ts:1` *(now in `nr-ai-github-tools` repo)*
 
 ```typescript
 const NERDGRAPH_URL = 'https://api.newrelic.com/graphql';
@@ -279,7 +281,7 @@ The agent claimed `process.once()` listeners would accumulate on multiple `start
 |------|--------|-------|
 | LICENSE file | ❌ Missing | Must add before publish |
 | No committed secrets | ✅ Clean | .env not in git history |
-| Rotate disk credentials | ⚠️ Needed | test-app/.env has real-looking keys |
+| Rotate disk credentials | ⚠️ Needed | test-app/.env (now in nr-ai-typescript-agent repo) has real-looking keys |
 | Internal URLs removed | ❌ Needed | source.datanerd.us in ONBOARDING.md |
 | CONTRIBUTING.md | ❌ Missing | |
 | CODE_OF_CONDUCT.md | ❌ Missing | |
@@ -300,7 +302,7 @@ The agent claimed `process.once()` listeners would accumulate on multiple `start
 ## Recommended Pre-Release Order
 
 1. Add `LICENSE` (30 min)
-2. Rotate credentials in `packages/test-app/.env`, replace with placeholders (15 min)
+2. Rotate credentials in `packages/test-app/.env` (now in `nr-ai-typescript-agent` repo), replace with placeholders (15 min)
 3. Remove `source.datanerd.us` line from `ONBOARDING.md` (5 min)
 4. Add `license`, `engines`, and `repository` fields to all `package.json` files (20 min)
 5. Fix workspace dependency wildcards (`"*"` → `"workspace:*"`) (10 min)

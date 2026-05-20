@@ -2,10 +2,6 @@
   "files": [],
   "references": [
     { "path": "packages/shared" },
-    { "path": "packages/nr-ai-agent" },
-    { "path": "packages/nr-ai-mcp-server" },
-    { "path": "packages/test-app" },
-    { "path": "packages/nr-ai-cicd" },
-    { "path": "packages/nr-ai-github-app" }
+    { "path": "packages/nr-ai-mcp-server" }
   ]
 }

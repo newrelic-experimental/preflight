@@ -12,7 +12,6 @@ const baseConfig: Config = {
       'ts-jest',
       {
         useESM: true,
-        tsconfig: 'tsconfig.json',
         diagnostics: {
           ignoreCodes: [151002],
         },

@@ -81,7 +81,7 @@ Ship pre-built New Relic alert policies alongside the dashboards. One command de
 
 Add an OpenAI SDK wrapper to `nr-ai-agent` matching the shape of the existing Anthropic and Gemini wrappers. Covers `chat.completions.create` (streaming and non-streaming), pricing tables for GPT-4o / o1 / o3 family, and token extraction from OpenAI response shapes.
 
-**Scope:**
+**Scope:** *(now lives in `nr-ai-typescript-agent` repo)*
 - `packages/nr-ai-agent/src/wrappers/openai.ts`
 - Pricing data for all current OpenAI models
 - Streaming support (SSE delta accumulation)
@@ -96,10 +96,9 @@ Add an OpenAI SDK wrapper to `nr-ai-agent` matching the shape of the existing An
 
 A GitHub Actions composite action (and matching GitLab CI job template) that reads session telemetry from the current branch, computes cost and efficiency deltas, and posts a structured comment on the pull request. Brings AI coding observability into code review.
 
-**Scope:**
-- `packages/nr-ai-cicd/` new package
-- `nr-ai-report` CLI binary (reads NR NRQL, formats markdown)
-- GitHub Actions composite action (`actions/report/action.yml`)
+**Scope:** *(now lives in `nr-ai-github-tools` repo)*
+- `packages/nr-ai-cicd/` package with `nr-ai-report` CLI binary (reads NR NRQL, formats markdown)
+- GitHub Actions composite action (`actions/ai-report/action.yml`)
 - GitLab CI job template (`.gitlab-ci-template.yml`)
 - PR comment format: cost delta, efficiency score, top anti-patterns, model breakdown
 - Threshold-based pass/fail status check (configurable)
@@ -197,7 +196,7 @@ Three distinct DX improvements:
 
 Extend `nr-ai-agent` with wrappers for AWS Bedrock (native SDK), Mistral, and Cohere to cover the remaining major enterprise AI providers.
 
-**Scope:**
+**Scope:** *(now lives in `nr-ai-typescript-agent` repo)*
 - `packages/nr-ai-agent/src/wrappers/bedrock.ts` — `@aws-sdk/client-bedrock-runtime` `InvokeModelCommand` + `InvokeModelWithResponseStreamCommand`
 - `packages/nr-ai-agent/src/wrappers/mistral.ts` — `@mistralai/mistralai` `chat.complete` / `chat.stream`
 - `packages/nr-ai-agent/src/wrappers/cohere.ts` — `cohere-ai` `chat` / `chatStream`
@@ -281,8 +280,8 @@ A new MCP tool `nr_observe_get_personal_insights` that produces a narrative coac
 
 A GitHub App that posts AI coding cost and efficiency reports directly on pull requests, without requiring GitHub Actions. Useful when Actions are disabled on an Enterprise account. The app runs as a small webhook server (deployable anywhere — Vercel, Railway, any Node host) that listens for `pull_request` events, fetches metrics from New Relic using the existing `nr-ai-cicd` library, and posts the formatted report as a PR comment via the GitHub API.
 
-**Scope:**
-- `packages/nr-ai-github-app/` new package with `nr-ai-github-app` binary
+**Scope:** *(now lives in `nr-ai-github-tools` repo)*
+- `packages/nr-ai-github-app/` package with `nr-ai-github-app` binary
 - Webhook server using `@octokit/app` (handles signature verification and installation auth automatically)
 - Reuses `fetchCurrentMetrics`, `fetchBaselineMetrics`, `formatReport` from `nr-ai-cicd` unchanged
 - Config via env vars: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `NEW_RELIC_API_KEY`, `NEW_RELIC_ACCOUNT_ID`
@@ -329,7 +328,7 @@ Add an OTLP/HTTP transport as an optional alternative or complement to the exist
 
 Make `nr-ai-agent` emit proper OpenTelemetry trace spans from all six SDK wrappers (Anthropic, Gemini, OpenAI, Bedrock, Mistral, Cohere), following the GenAI semantic conventions. This fills the gap in the OTel ecosystem — no official auto-instrumentation packages exist for these SDKs. Each LLM call becomes a span named `"{operation} {model}"` with `gen_ai.*` request and response attributes. When OTLP is not configured, the OTel no-op tracer is used so there is zero overhead.
 
-**Scope:**
+**Scope:** *(now lives in `nr-ai-typescript-agent` repo)*
 - New `packages/nr-ai-agent/src/tracing.ts` — `initTracer()` / `getTracer()` module singleton
 - New `packages/nr-ai-agent/src/span-attributes.ts` — `buildSpanName()`, `buildRequestAttributes()`, `buildResponseAttributes()` helpers
 - All six wrappers extended to start a span before the SDK call and end it in success/error callbacks (streaming spans end after the last chunk)

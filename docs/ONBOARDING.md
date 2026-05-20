@@ -12,7 +12,7 @@ There are two main integration points:
 
 1. **MCP Server** (`nr-ai-mcp-server`) — Hooks into Claude Code via the Model Context Protocol. It captures every tool call, computes metrics like efficiency scores and anti-pattern detection, and exposes MCP tools that Claude Code can query directly (e.g., "show me my session stats").
 
-2. **SDK Agent** (`nr-ai-agent`) — Wraps Anthropic, Google Gemini, OpenAI, AWS Bedrock, Mistral, and Cohere SDK clients. Your application code uses the wrapped client exactly like the original, but every API call is automatically instrumented and sent to New Relic.
+2. **SDK Agent** (`nr-ai-agent`) — *(now in the `nr-ai-typescript-agent` repo)* Wraps Anthropic, Google Gemini, OpenAI, AWS Bedrock, Mistral, and Cohere SDK clients. Your application code uses the wrapped client exactly like the original, but every API call is automatically instrumented and sent to New Relic.
 
 Both share a common transport layer (`@nr-ai-observatory/shared`) that handles event buffering, metric aggregation, and HTTP delivery to New Relic's APIs.
 
@@ -31,8 +31,10 @@ Both share a common transport layer (`@nr-ai-observatory/shared`) that handles e
 ```bash
 nvm install        # Install the right Node version
 nvm use            # Activate it
+# Clone the shared package sibling repo (required by the sync script)
+git clone <nr-ai-typescript-shared-url> ../nr-ai-typescript-shared
 npm install        # Install all workspace dependencies
-npm run build      # Build all packages
+npm run build      # Sync shared sources + build all packages
 npm test           # Verify everything works
 ```
 
@@ -49,27 +51,23 @@ npm test           # Verify everything works
 To build or test a single package:
 
 ```bash
-npx tsc -b packages/shared && npx tsc -b packages/nr-ai-mcp-server
+node scripts/sync-shared.js && npx tsc -b packages/shared && npx tsc -b packages/nr-ai-mcp-server
 npx jest -- src/metrics/cost-tracker.test.ts
 ```
 
-**Important:** Always build `packages/shared` before building any other package — it's a TypeScript project reference that the others depend on.
+**Important:** Always run `node scripts/sync-shared.js` before building `packages/shared` — it copies source from `../nr-ai-typescript-shared`. Then build `packages/shared` before any other package. `npm run build` handles both steps automatically.
 
 ---
 
 ## Project Structure
 
-This is an npm workspaces monorepo with five main packages and an integration test app.
+This is an npm workspaces monorepo with two active packages. The TypeScript SDK agent and E2E test app have been extracted to the `nr-ai-typescript-agent` repo.
 
 ```
 nr-ai-observatory/
   packages/
-    shared/              # Transport, events, pricing, harvest scheduler
-    nr-ai-agent/         # SDK wrapper for Anthropic/Gemini clients
+    shared/              # Transport, events, pricing, harvest scheduler (src/ committed; sync from nr-ai-typescript-shared with scripts/sync-shared.js)
     nr-ai-mcp-server/    # MCP server + metrics engine + HTTP proxy
-    nr-ai-cicd/          # CI/CD integration — nr-ai-report CLI for PR cost reporting
-    nr-ai-github-app/    # GitHub App webhook server for PR cost reports (Actions-free)
-    test-app/            # E2E integration test for nr-ai-agent
 ```
 
 ### `@nr-ai-observatory/shared`
@@ -82,9 +80,9 @@ The foundation layer. Provides:
 - **Pricing** — Calculate USD cost from token counts using model-specific pricing tables
 - **Logger** — `createLogger('name')` writes structured JSON to stderr
 
-### `nr-ai-agent`
+### `nr-ai-agent` *(now in `nr-ai-typescript-agent` repo)*
 
-A lightweight agent that wraps SDK clients:
+A lightweight agent that wraps SDK clients (now maintained in the `nr-ai-typescript-agent` repo):
 
 ```typescript
 import { init } from 'nr-ai-agent';
