@@ -52,7 +52,7 @@
 >
 > It requires at least 2 weeks of session history. For new installs it returns `"insufficient_data"` with a message.
 >
-> **All four features are in one PR. Build is green, 1,720+ tests, lint clean.**
+> **All four features are in one PR. Build is green, 2,190+ tests, lint clean.**
 >
 > The personal coaching report is probably the most interesting to demo — if you've been running the observatory for a few weeks, it can actually tell you something you didn't know. Happy to walk anyone through it.
 >
@@ -181,6 +181,14 @@ would cost 25x less with comparable quality for short exploration tasks.
 
 "Two caveats: it requires at least 2 weeks of session history, and the recommendations are based on patterns — they're suggestions, not directives. But after a month of real data, it starts to feel like actual coaching."
 
+"If you have existing NR telemetry but no local session files, there's a backfill script that seeds your local history from NR data so you don't have to wait:"
+
+```bash
+NEW_RELIC_API_KEY=NRAK-xxxx NEW_RELIC_ACCOUNT_ID=1234567 \
+  npx tsx packages/nr-ai-mcp-server/scripts/backfill-sessions.ts \
+  --developer cdehaan [--days 90] [--dry-run] [--staging]
+```
+
 ---
 
 ### Putting It Together (20 seconds)
@@ -220,7 +228,7 @@ would cost 25x less with comparable quality for short exploration tasks.
   - Having one condition in "warning" state during the demo makes the story more concrete
 - **Before recording:**
   - Run `normalizeDeveloperName` with a few inputs in a REPL to show the consistency story (`"John Doe"` → `"john_doe"`)
-  - Ensure at least 2 weeks of real session data in NR so `get_personal_insights` returns a real report, not `"insufficient_data"`
+  - Ensure at least 2 weeks of real session data in NR so `get_personal_insights` returns a real report, not `"insufficient_data"`. If local session files are missing, run the backfill script first: `npx tsx packages/nr-ai-mcp-server/scripts/backfill-sessions.ts --developer cdehaan --staging`
   - Set a `sessionCostUsd` low enough that it's near the threshold during the demo session — makes the personal alert story land
 - **Tips for live walkthroughs:**
   - Lead with `get_personal_insights` if the audience already knows what the observatory does — skip the setup story and go straight to the output

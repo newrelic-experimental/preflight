@@ -1,5 +1,29 @@
 import type { AiRequest, AiResponse, AiMessage, AiAgentTaskSummary, AiAntiPattern, AiAgentMessage, AiContextReset, NrEventData } from './types.js';
 
+const PROVIDER_TO_GENAI_SYSTEM: Record<string, string> = {
+  anthropic: 'anthropic',
+  google: 'google_genai',
+  openai: 'openai',
+  bedrock: 'aws.bedrock',
+  mistral: 'mistral_ai',
+  cohere: 'cohere',
+};
+
+const METHOD_TO_GENAI_OPERATION: Record<string, string> = {
+  'messages.create': 'chat',
+  'messages.stream': 'chat',
+  'models.generateContent': 'generate_content',
+  'models.generateContentStream': 'generate_content',
+  'models.embedContent': 'embeddings',
+  'chat.completions.create': 'chat',
+  'converse': 'chat',
+  'converse-stream': 'chat',
+  'chat.complete': 'chat',
+  'chat.stream': 'chat',
+  'chat': 'chat',
+  'chatStream': 'chat',
+};
+
 export function aiRequestToNrEvent(event: AiRequest): NrEventData {
   const data: NrEventData = {
     eventType: 'AiRequest',
@@ -22,6 +46,19 @@ export function aiRequestToNrEvent(event: AiRequest): NrEventData {
   if (event.toolNames.length > 0) data.toolNames = JSON.stringify(event.toolNames);
   if (event.thinkingBudgetTokens !== null) data.thinkingBudgetTokens = event.thinkingBudgetTokens;
   if (event['nr.entityGuid'] !== null) data['nr.entityGuid'] = event['nr.entityGuid'];
+
+  // GenAI semantic convention attributes (OTel spec, experimental)
+  const genAiSystem = PROVIDER_TO_GENAI_SYSTEM[event.provider] ?? event.provider;
+  data['gen_ai.system'] = genAiSystem;
+  data['gen_ai.request.model'] = event.model;
+
+  const genAiOperation = METHOD_TO_GENAI_OPERATION[event.requestMethod];
+  if (genAiOperation) data['gen_ai.operation.name'] = genAiOperation;
+
+  if (event.maxTokens !== null) data['gen_ai.request.max_tokens'] = event.maxTokens;
+  if (event.temperature !== null) data['gen_ai.request.temperature'] = event.temperature;
+  if (event.topP !== null) data['gen_ai.request.top_p'] = event.topP;
+  data['gen_ai.request.stream'] = event.streamingEnabled;
 
   for (const [key, value] of Object.entries(event.customAttributes)) {
     data[`custom.${key}`] = value;
@@ -68,6 +105,20 @@ export function aiResponseToNrEvent(event: AiResponse): NrEventData {
     data['error.message'] = event.error.message;
     if (event.error.statusCode !== null) data['error.statusCode'] = event.error.statusCode;
   }
+
+  // GenAI semantic convention attributes (OTel spec, experimental)
+  const genAiSystem = PROVIDER_TO_GENAI_SYSTEM[event.provider] ?? event.provider;
+  data['gen_ai.system'] = genAiSystem;
+  data['gen_ai.response.model'] = event.model;
+
+  data['gen_ai.usage.input_tokens'] = event.inputTokens;
+  data['gen_ai.usage.output_tokens'] = event.outputTokens;
+
+  if (event.thinkingTokens > 0) data['gen_ai.usage.reasoning.output_tokens'] = event.thinkingTokens;
+  if (event.cacheReadTokens > 0) data['gen_ai.usage.cache_read.input_tokens'] = event.cacheReadTokens;
+  if (event.cacheCreationTokens > 0) data['gen_ai.usage.cache_creation.input_tokens'] = event.cacheCreationTokens;
+
+  if (event.stopReason !== null) data['gen_ai.response.finish_reason'] = event.stopReason;
 
   for (const [key, value] of Object.entries(event.customAttributes)) {
     data[`custom.${key}`] = value;

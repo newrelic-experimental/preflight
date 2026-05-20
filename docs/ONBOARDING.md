@@ -141,6 +141,8 @@ The server communicates with Claude Code over stdio using JSON-RPC. It registers
 
 ## Configuration Reference
 
+For a complete annotated reference of every config option — including types, defaults, and env variable overrides — see [`packages/nr-ai-mcp-server/example.config.js`](../packages/nr-ai-mcp-server/example.config.js).
+
 ### Budget Thresholds
 
 Control spending with optional session/daily/weekly budget caps:

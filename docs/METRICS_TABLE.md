@@ -275,6 +275,13 @@ Emitted for every AI model request.
 | `thinkingBudgetTokens` | number | Thinking budget (if set) |
 | `nr.entityGuid` | string | Entity GUID (if set) |
 | `custom.*` | varies | Custom attributes prefixed with `custom.` |
+| `gen_ai.system` | string | OTel GenAI system name (e.g., `anthropic`, `google_genai`, `aws.bedrock`) |
+| `gen_ai.request.model` | string | Model identifier (mirrors `model`) |
+| `gen_ai.operation.name` | string | Operation name: `chat`, `generate_content`, or `embeddings` (omitted for unknown methods) |
+| `gen_ai.request.max_tokens` | number | Max tokens parameter (omitted when null) |
+| `gen_ai.request.temperature` | number | Temperature parameter (omitted when null) |
+| `gen_ai.request.top_p` | number | Top-p parameter (omitted when null) |
+| `gen_ai.request.stream` | boolean | Whether streaming is enabled (mirrors `streamingEnabled`) |
 
 Source: `packages/shared/src/events/serialize.ts` — `aiRequestToNrEvent()`
 
@@ -311,6 +318,14 @@ Emitted for every AI model response.
 | `error.message` | string | Error message (if failed) |
 | `error.statusCode` | number | HTTP status code (if failed) |
 | `custom.*` | varies | Custom attributes prefixed with `custom.` |
+| `gen_ai.system` | string | OTel GenAI system name (e.g., `anthropic`, `google_genai`, `aws.bedrock`) |
+| `gen_ai.response.model` | string | Model identifier (mirrors `model`) |
+| `gen_ai.usage.input_tokens` | number | Input token count (mirrors `inputTokens`) |
+| `gen_ai.usage.output_tokens` | number | Output token count (mirrors `outputTokens`) |
+| `gen_ai.usage.reasoning.output_tokens` | number | Extended thinking token count (omitted when 0) |
+| `gen_ai.usage.cache_read.input_tokens` | number | Prompt cache read tokens (omitted when 0) |
+| `gen_ai.usage.cache_creation.input_tokens` | number | Prompt cache creation tokens (omitted when 0) |
+| `gen_ai.response.finish_reason` | string | Stop reason (e.g., `end_turn`, `max_tokens`; omitted when null) |
 
 Source: `packages/shared/src/events/serialize.ts` — `aiResponseToNrEvent()`
 

@@ -22,7 +22,7 @@ This document tracks planned features and improvements. Each section links to a 
 14. [✅ Developer-Scoped Alert Deployments](#14-developer-scoped-alert-deployments)
 15. [✅ Personal Coaching MCP Tool](#15-personal-coaching-mcp-tool)
 16. [✅ GitHub App Integration](#16-github-app-integration)
-17. [GenAI Semantic Convention Mapping](#17-genai-semantic-convention-mapping)
+17. [✅ GenAI Semantic Convention Mapping](#17-genai-semantic-convention-mapping)
 18. [OTLP Transport Option](#18-otlp-transport-option)
 19. [OTel Spans in SDK Wrappers](#19-otel-spans-in-sdk-wrappers)
 20. [MCP Tool Call Tracing](#20-mcp-tool-call-tracing)
@@ -291,9 +291,9 @@ A GitHub App that posts AI coding cost and efficiency reports directly on pull r
 
 ---
 
-## 17. GenAI Semantic Convention Mapping
+## ✅ 17. GenAI Semantic Convention Mapping
 
-**Status:** Planned
+**Status:** Done
 **Implementation plan:** [docs/roadmap/17-genai-semantic-conventions.md](docs/roadmap/17-genai-semantic-conventions.md)
 
 Enrich all `AiRequest` and `AiResponse` NR events with the standardized `gen_ai.*` attributes defined by the OpenTelemetry GenAI semantic conventions. Additive change — existing custom field names are preserved. The new attributes (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, etc.) make NR's out-of-the-box AI monitoring views work automatically and enable cross-platform NRQL queries using standardized names.
