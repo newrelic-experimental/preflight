@@ -6,31 +6,31 @@
 
 [Executive Summary](#executive-summary)
 
-[1 — Target Audience & Market](#1-target-audience-market)
+[1 — Target Audience & Market](#1--target-audience--market)
 
-[2 — Business Impact](#2-business-impact)
+[2 — Business Impact](#2--business-impact)
 
-[3 — Competitive Landscape](#3-competitive-landscape)
+[3 — Competitive Landscape](#3--competitive-landscape)
 
-[4 — Elevator Pitch & TAM](#4-elevator-pitch-tam)
+[4 — Elevator Pitch & TAM](#4--elevator-pitch--tam)
 
-[5 — Monetization & Pricing](#5-monetization-pricing)
+[5 — Monetization & Pricing](#5--monetization--pricing)
 
-[6 — User Must-Haves](#6-user-must-haves)
+[6 — User Must-Haves](#6--user-must-haves)
 
-[7 — Mindset Shift & Risks](#7-mindset-shift-risks)
+[7 — Mindset Shift & Risks](#7--mindset-shift--risks)
 
-[8 — Discovery & Access](#8-discovery-access)
+[8 — Discovery & Access](#8--discovery--access)
 
-[9 — Overlap & Category](#9-overlap-category)
+[9 — Overlap & Category](#9--overlap--category)
 
-[10 — Rollout Plan](#10-rollout-plan)
+[10 — Rollout Plan](#10--rollout-plan)
 
-[11 — Milestones & Dependencies](#11-milestones-dependencies)
+[11 — Milestones & Dependencies](#11--milestones--dependencies)
 
-[12 — Domain & Support](#12-domain-support)
+[12 — Domain & Support](#12--domain--support)
 
-[13 — Additional Flags](#13-additional-flags)
+[13 — Additional Flags](#13--additional-flags)
 
 [Appendix A — Public Facing APIs](#appendix-a--high-level-public-facing-apis)
 
