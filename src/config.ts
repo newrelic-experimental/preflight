@@ -172,9 +172,9 @@ function inferProjectId(): string | null {
 }
 
 function envBool(key: string, defaultValue: boolean): boolean {
-  const val = process.env[key]?.toLowerCase();
-  if (val === 'true' || val === '1') return true;
-  if (val === 'false' || val === '0') return false;
+  const val = process.env[key]?.trim().toLowerCase();
+  if (val === 'true' || val === '1' || val === 'yes' || val === 'y' || val === 'on') return true;
+  if (val === 'false' || val === '0' || val === 'no' || val === 'n' || val === 'off') return false;
   return defaultValue;
 }
 
@@ -507,9 +507,25 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
     otlpForwardEndpoint: (() => {
       const envVal = process.env.NR_AI_OTLP_FORWARD_ENDPOINT;
-      if (envVal !== undefined) return envVal || null;
-      if (typeof file.otlpForwardEndpoint === 'string') return file.otlpForwardEndpoint || null;
-      return licenseKey ? 'https://otlp.nr-data.net' : null;
+      const endpoint = envVal !== undefined ? (envVal || null) : (
+        typeof file.otlpForwardEndpoint === 'string' ? (file.otlpForwardEndpoint || null) : (
+          licenseKey ? 'https://otlp.nr-data.net' : null
+        )
+      );
+      if (endpoint === null) return null;
+      try {
+        const url = new URL(endpoint);
+        if (url.protocol === 'https:') return endpoint;
+        if (url.protocol === 'http:') {
+          logger.warn('OTLP forward endpoint uses http:// instead of https:// — TLS not enabled', { endpoint });
+          return endpoint;
+        }
+        logger.warn('OTLP forward endpoint has unexpected protocol', { endpoint, protocol: url.protocol });
+        return endpoint;
+      } catch (_err) {
+        logger.error('OTLP forward endpoint is not a valid URL', { endpoint });
+        return null;
+      }
     })(),
 
     otlpForwardHeaders: (() => {

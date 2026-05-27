@@ -72,6 +72,21 @@ export function handleReportTokens(
   const cacheCreationTokens = clampToken(args.cache_creation_tokens ?? 0);
   const safeModel = typeof args.model === 'string' ? args.model.slice(0, 256) : 'unknown';
 
+  if (!/^[a-zA-Z0-9._:-]+$/.test(safeModel)) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            error: 'invalid_model_name',
+            message: `Model name contains invalid characters: ${safeModel}. Allowed: alphanumerics, dots, underscores, colons, hyphens.`,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
   const usage: TokenUsage = {
     inputTokens,
     outputTokens,

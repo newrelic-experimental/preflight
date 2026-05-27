@@ -42,6 +42,8 @@ export interface BudgetOptions {
 
 const THRESHOLD_LEVELS: Array<50 | 80 | 100> = [50, 80, 100];
 
+const MAX_ALERTS = 100;
+
 export class BudgetTracker {
   private readonly sessionBudgetUsd: number | null;
   private readonly dailyBudgetUsd: number | null;
@@ -134,6 +136,9 @@ export class BudgetTracker {
           timestamp: Date.now(),
         };
         this.alerts.push(event);
+        if (this.alerts.length > MAX_ALERTS) {
+          this.alerts.shift();
+        }
         this.onThreshold?.(event);
       }
     }

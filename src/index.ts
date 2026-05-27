@@ -90,8 +90,8 @@ export function parseArgs(argv: string[]): CliOptions {
   const opts = program.opts();
 
   const parsed = parseInt(opts.port, 10);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 65535) {
-    throw new Error(`Invalid port "${opts.port as string}": must be an integer between 0 and 65535`);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new Error(`Invalid port "${opts.port as string}": must be an integer between 1 and 65535`);
   }
 
   return {

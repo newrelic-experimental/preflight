@@ -192,12 +192,12 @@ export class StdioUpstream implements ProxyUpstream {
           timeoutId.unref();
         }),
       ]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
     } catch {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       logger.warn(`Stdio upstream "${this.name}" close timed out after ${DISCONNECT_TIMEOUT_MS}ms — force-killing process`);
       const proc = (transport as unknown as { _process?: { kill(signal?: string): void } })._process;
       proc?.kill('SIGKILL');
-    } finally {
-      if (timeoutId !== null) clearTimeout(timeoutId);
     }
 
     logger.info(`Stdio upstream "${this.name}" disconnected`);

@@ -19,7 +19,7 @@ export class OtlpReceiver {
     if (options.forwardEndpoint !== null) {
       validateSsrfUrl('OtlpReceiver forwardEndpoint', new URL(options.forwardEndpoint));
     }
-    this.options = options;
+    this.options = Object.freeze(options);
   }
 
   start(): Promise<void> {
@@ -116,6 +116,10 @@ export class OtlpReceiver {
     path: string,
     contentType: string,
   ): Promise<{ statusCode: number; body: string }> {
+    if (this.options.forwardEndpoint === null) {
+      throw new Error('forward() called with no forwardEndpoint configured');
+    }
+    validateSsrfUrl('OtlpReceiver forward endpoint', new URL(this.options.forwardEndpoint));
     const url = `${this.options.forwardEndpoint}${path}`;
     const response = await globalThis.fetch(url, {
       method: 'POST',

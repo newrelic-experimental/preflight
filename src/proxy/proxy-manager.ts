@@ -253,13 +253,14 @@ export class ProxyManager {
       body = await readBody(req, this.bodyTimeoutMs, this.maxBodyBytes);
     } catch (err) {
       if (res.headersSent) return;
-      const message = err instanceof Error ? err.message : String(err);
+      const detailedMessage = err instanceof Error ? err.message : String(err);
+      logger.error('body read error', { error: detailedMessage });
       if ((err as NodeJS.ErrnoException).code === 'BODY_TOO_LARGE') {
         res.writeHead(413, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'payload_too_large', message }));
+        res.end(JSON.stringify({ error: 'payload_too_large' }));
       } else {
         res.writeHead(408, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'request_timeout', message }));
+        res.end(JSON.stringify({ error: 'request_timeout' }));
       }
       return;
     }
@@ -303,7 +304,7 @@ export class ProxyManager {
   ): void {
     if (!this.onToolCall) return;
 
-    const toolName = typeof rpc.params?.name === 'string' ? rpc.params.name : 'unknown';
+    const toolName = (typeof rpc.params?.name === 'string' ? rpc.params.name : 'unknown').slice(0, 256).replace(/[\x00-\x1f\x7f]/g, '');
 
     const args =
       typeof rpc.params?.arguments === 'object' && rpc.params.arguments !== null
@@ -368,6 +369,8 @@ export class ProxyManager {
 
 function readBody(req: IncomingMessage, timeoutMs: number, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
     if (req.method === 'GET') {
       resolve(Buffer.alloc(0));
       return;
@@ -376,7 +379,7 @@ function readBody(req: IncomingMessage, timeoutMs: number, maxBytes: number): Pr
     let totalBytes = 0;
     let settled = false;
 
-    const timeoutHandle = setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
       settle(() => reject(new Error(`Request body read timed out after ${timeoutMs}ms`)));
     }, timeoutMs);
     timeoutHandle.unref();
@@ -384,7 +387,7 @@ function readBody(req: IncomingMessage, timeoutMs: number, maxBytes: number): Pr
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeoutHandle);
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       fn();
     };
 

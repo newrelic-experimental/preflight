@@ -821,7 +821,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ## Low severity
 
-### [F-041] Process error messages may leak internal paths to MCP clients — Low (SEC) ✅
+### ~~[F-041] Process error messages may leak internal paths to MCP clients — Low (SEC) ✅~~
 **Location:** `src/proxy/proxy-manager.ts:256-262`
 **Issue:** Error messages from failed body reads are serialized into the JSON response without redaction. Internal file paths or stack-trace fragments may end up in client-facing errors.
 **Impact:** Information disclosure of internal system details to clients.
@@ -831,7 +831,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-042] OTLP forward endpoint validated only at construction — Low (SEC) ✅
+### ~~[F-042] OTLP forward endpoint validated only at construction — Low (SEC) ✅~~
 **Location:** `src/proxy/otlp-receiver.ts:19-21`
 **Issue:** `otlpForwardEndpoint` is validated in the constructor and used in `forward()` (line ~119) without re-validation. If the receiver options are mutated post-construction (the type has `readonly`, but TS readonly is compile-time only), SSRF could be re-introduced.
 **Impact:** Defence-in-depth gap.
@@ -841,7 +841,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-043] `LatencyTracker.getMetrics()` re-sorts large arrays per call — Low (PERF) ✅
+### ~~[F-043] `LatencyTracker.getMetrics()` re-sorts large arrays per call — Low (PERF) ✅~~
 **Location:** `src/metrics/latency-tracker.ts:83-98`
 **Issue:** Each call to `getMetrics()` sorts and copies every per-tool sample array. With many tools and many samples, this is O(n log n) per call.
 **Impact:** Memory and CPU spikes when MCP tools query metrics frequently in long sessions.
@@ -863,7 +863,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-045] BudgetTracker `alerts` array grows unbounded — Low (LIFE) ✅
+### ~~[F-045] BudgetTracker `alerts` array grows unbounded — Low (LIFE) ✅~~
 **Location:** `src/metrics/budget-tracker.ts:55-100`
 **Issue:** Each threshold crossing pushes to `this.alerts`. No cap or rotation.
 **Impact:** Memory grows linearly with threshold crossings during long sessions.
@@ -873,7 +873,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-046] StdioUpstream timeout handle not cleared on happy path — Low (LIFE) ✅
+### ~~[F-046] StdioUpstream timeout handle not cleared on happy path — Low (LIFE) ✅~~
 **Location:** `src/proxy/upstream-stdio.ts:183-201`
 **Issue:** A timeout is created and raced against `client.close()`. On the happy path, the timeout callback fires later (and short-circuits via the `finally` block at line 200), but it would be cleaner to `clearTimeout` immediately after the race resolves.
 **Impact:** Minor — every disconnect leaves a benign pending timeout for `disconnectTimeoutMs`.
@@ -883,7 +883,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-047] ProxyManager `readBody()` timeout not explicitly cleared — Low (LIFE) ✅
+### ~~[F-047] ProxyManager `readBody()` timeout not explicitly cleared — Low (LIFE) ✅~~
 **Location:** `src/proxy/proxy-manager.ts:385-398` (helper referenced from line 253)
 **Issue:** If the body completes before the timeout, the timer is left to GC.
 **Impact:** Negligible; small accumulation of pending timeouts under high request load until GC runs.
@@ -906,7 +906,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-049] Event processor fallback counter could collide on key — Low (CORR) ✅
+### ~~[F-049] Event processor fallback counter could collide on key — Low (CORR) ✅~~
 **Location:** `src/hooks/event-processor.ts:44, 175, 283`
 **Issue:** When pre-events have no `toolUseId`, the pairing key is `${tool}:${timestamp}:${counter++}`. The counter is a process-local int — under contrived conditions (counter wrap around, parallel processors) two keys could collide.
 **Impact:** Extremely unlikely in practice; theoretical mismatch of pre/post events.
@@ -916,7 +916,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-050] `SessionSpan.end()` has a theoretical double-end race — Low (LIFE) ✅
+### ~~[F-050] `SessionSpan.end()` has a theoretical double-end race — Low (LIFE) ✅~~
 **Location:** `src/tracing/session-span.ts:29-38`
 **Issue:** Defensive null check at line 30, then `this.span = null` at line 37. Pure JS single-threaded, so no actual race — but the pattern is fragile if any caller awaits between the check and the null assignment.
 **Impact:** None today; future async refactor could break it.
@@ -926,7 +926,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-051] Port `0` is accepted by the parser — Low (CORR) ✅
+### ~~[F-051] Port `0` is accepted by the parser — Low (CORR) ✅~~
 **Location:** `src/index.ts:92-94`
 **Issue:** Validation allows `parsed >= 0`, so port `0` (OS-assigned) passes. Logging then refers to the configured value (`0`), not the actual bound port — confusing for diagnostics.
 **Impact:** Confusing logs / dashboards if anyone configures port 0.
@@ -936,7 +936,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-052] `envBool()` doesn't accept `yes`/`no` or trimmed values — Low (CORR) ✅
+### ~~[F-052] `envBool()` doesn't accept `yes`/`no` or trimmed values — Low (CORR) ✅~~
 **Location:** `src/config.ts:128-133`
 **Issue:** Only `'true'`, `'1'`, `'false'`, `'0'` are recognized (after lowercasing). Common shell values like `yes`/`no` or values with stray whitespace are silently ignored, falling through to defaults.
 **Impact:** Surprises for customers using shell scripts; a misconfigured `NEW_RELIC_AI_MCP_ENABLED='yes'` quietly disables instead of enabling.
@@ -956,7 +956,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-054] OTLP endpoint URL not scheme-validated at config time — Low (SEC) ✅
+### ~~[F-054] OTLP endpoint URL not scheme-validated at config time — Low (SEC) ✅~~
 **Location:** `src/config.ts:447-452`
 **Issue:** Default `otlpForwardEndpoint` is `'https://otlp.nr-data.net'`, but customer overrides aren't checked against scheme/format.
 **Impact:** A misconfigured `http://` endpoint silently bypasses TLS; hard to spot in logs.
@@ -966,7 +966,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-055] Model name not pattern-validated in cost-tools — Low (SEC) ⚠️
+### ~~[F-055] Model name not pattern-validated in cost-tools — Low (SEC) ⚠️~~
 **Location:** `src/tools/cost-tools.ts:73`
 **Issue:** Model name is truncated to 256 chars but not checked against an expected pattern. Special characters could feed log forging or downstream injection.
 **Impact:** Low — primarily log-forging or noisy NR events. Truncation already mitigates the worst.
@@ -1000,7 +1000,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-058] Digest formatter doesn't escape backticks/newlines for Slack — Low (CORR) ✅
+### ~~[F-058] Digest formatter doesn't escape backticks/newlines for Slack — Low (CORR) ✅~~
 **Location:** `src/digest/digest-formatter.ts:22`
 **Issue:** `topAntiPattern` is wrapped in backticks for Slack code formatting. If the value ever contains backticks or newlines, the Block Kit message breaks.
 **Impact:** Malformed Slack message; rare given fixed enum values today.
@@ -1022,7 +1022,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-060] Proxy tool name not truncated/sanitized — Low (SEC) ✅
+### ~~[F-060] Proxy tool name not truncated/sanitized — Low (SEC) ✅~~
 **Location:** `src/proxy/proxy-manager.ts:306`
 **Issue:** Tool name from `rpc.params?.name` is used as-is in metric dimensions and span attributes.
 **Impact:** Oversized or control-character-laden tool names corrupt metrics.
@@ -1032,23 +1032,23 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-061] Empty developer name aggregation key — Low (CORR) ✅
-**Location:** `src/tools/cross-session-tools.ts:680`
-**Issue:** `String(row.developer ?? 'unknown')` substitutes `'unknown'` only for `null`/`undefined`. An empty-string developer becomes the empty-string key, which can collide with other falsy aggregation keys.
-**Impact:** Edge-case mis-aggregation if an event sneaks through with developer === ''.
-**Suggested fix:** `const dev = (row.developer && String(row.developer).trim()) || 'unknown';`
+~~### [F-061] Empty developer name aggregation key — Low (CORR) ✅~~
+~~**Location:** `src/tools/cross-session-tools.ts:680`~~
+~~**Issue:** `String(row.developer ?? 'unknown')` substitutes `'unknown'` only for `null`/`undefined`. An empty-string developer becomes the empty-string key, which can collide with other falsy aggregation keys.~~
+~~**Impact:** Edge-case mis-aggregation if an event sneaks through with developer === ''.~~
+~~**Suggested fix:** `const dev = (row.developer && String(row.developer).trim()) || 'unknown';`~~
 
-**Implementation steps for Haiku:** In `src/tools/cross-session-tools.ts:680`, replace `String(row.developer ?? 'unknown')` with `(row.developer && String(row.developer).trim()) || 'unknown'`. `npm run build && npx jest -- src/tools/cross-session-tools.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/tools/cross-session-tools.ts:680`, replace `String(row.developer ?? 'unknown')` with `(row.developer && String(row.developer).trim()) || 'unknown'`. `npm run build && npx jest -- src/tools/cross-session-tools.test.ts && npm run lint`.~~
 
 ---
 
-### [F-062] Big switch in tool handler relies on `break` + post-switch throw — Low (CORR) ✅
-**Location:** `src/tools/session-stats.ts:342-528`
-**Issue:** The switch has no `default`. Several cases use `if (!tracker) break;`. Forgetting a `break` in a future addition silently falls through to the next case.
-**Impact:** Latent bug landing surface for any future contributor.
-**Suggested fix:** Replace `break` with `return { content: [...], isError: true }` per case, and add `default: throw new McpError(...)` after the switch.
+~~### [F-062] Big switch in tool handler relies on `break` + post-switch throw — Low (CORR) ✅~~
+~~**Location:** `src/tools/session-stats.ts:342-528`~~
+~~**Issue:** The switch has no `default`. Several cases use `if (!tracker) break;`. Forgetting a `break` in a future addition silently falls through to the next case.~~
+~~**Impact:** Latent bug landing surface for any future contributor.~~
+~~**Suggested fix:** Replace `break` with `return { content: [...], isError: true }` per case, and add `default: throw new McpError(...)` after the switch.~~
 
-**Implementation steps for Haiku:** In `src/tools/session-stats.ts:342-528`, in each case where `if (!tracker) break;` exists, replace `break` with an explicit `return { content: [{ type: 'text', text: JSON.stringify({ error: '<tracker> not initialised' }) }], isError: true };`. Add `default: throw new Error(\`Unknown tool: ${name}\`);` after the switch. `npm run build && npx jest -- src/tools && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/tools/session-stats.ts:342-528`, in each case where `if (!tracker) break;` exists, replace `break` with an explicit `return { content: [{ type: 'text', text: JSON.stringify({ error: '<tracker> not initialised' }) }], isError: true };`. Add `default: throw new Error(\`Unknown tool: ${name}\`);` after the switch. `npm run build && npx jest -- src/tools && npm run lint`.~~
 
 ---
 
@@ -1062,13 +1062,13 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-064] `envBool` doesn't trim before comparing — Low (CORR) ✅
-**Location:** `src/config.ts:128-133`
-**Issue:** Same area as F-052 — env values with leading/trailing whitespace silently fall through to defaults.
-**Impact:** Customer-set env vars from shell quirks (e.g. `' true'`) are silently ignored.
-**Suggested fix:** `process.env[key]?.trim().toLowerCase()` before comparing.
+~~### [F-064] `envBool` doesn't trim before comparing — Low (CORR) ✅~~
+~~**Location:** `src/config.ts:128-133`~~
+~~**Issue:** Same area as F-052 — env values with leading/trailing whitespace silently fall through to defaults.~~
+~~**Impact:** Customer-set env vars from shell quirks (e.g. `' true'`) are silently ignored.~~
+~~**Suggested fix:** `process.env[key]?.trim().toLowerCase()` before comparing.~~
 
-**Implementation steps for Haiku:** Already covered by F-052 implementation steps. Add `.trim()` to `envBool()` reading. `npm run build && npx jest -- src/config.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** Already covered by F-052 implementation steps. Add `.trim()` to `envBool()` reading. `npm run build && npx jest -- src/config.test.ts && npm run lint`.~~
 
 ---
 
@@ -1082,13 +1082,13 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-066] Test asserts `expect.any(Number)` on timestamps — Low (TEST) ✅
-**Location:** `src/metrics/session-tracker.test.ts:246`
-**Issue:** Asserts `metrics.sessionStartTime` is *any* number — accepts `0`, `NaN`, `Infinity`.
-**Impact:** A bug setting startTime to `0` or `NaN` would pass.
-**Suggested fix:** Bound the assertion: `expect(value).toBeGreaterThan(0); expect(value).toBeLessThan(Date.now() + 1000);`.
+~~### [F-066] Test asserts `expect.any(Number)` on timestamps — Low (TEST) ✅~~
+~~**Location:** `src/metrics/session-tracker.test.ts:246`~~
+~~**Issue:** Asserts `metrics.sessionStartTime` is *any* number — accepts `0`, `NaN`, `Infinity`.~~
+~~**Impact:** A bug setting startTime to `0` or `NaN` would pass.~~
+~~**Suggested fix:** Bound the assertion: `expect(value).toBeGreaterThan(0); expect(value).toBeLessThan(Date.now() + 1000);`.~~
 
-**Implementation steps for Haiku:** In `src/metrics/session-tracker.test.ts:246`, replace `expect(metrics.sessionStartTime).toEqual(expect.any(Number))` with `expect(metrics.sessionStartTime).toBeGreaterThan(0); expect(metrics.sessionStartTime).toBeLessThan(Date.now() + 1000);`. `npx jest -- src/metrics/session-tracker.test.ts`.
+~~**Implementation steps for Haiku:** In `src/metrics/session-tracker.test.ts:246`, replace `expect(metrics.sessionStartTime).toEqual(expect.any(Number))` with `expect(metrics.sessionStartTime).toBeGreaterThan(0); expect(metrics.sessionStartTime).toBeLessThan(Date.now() + 1000);`. `npx jest -- src/metrics/session-tracker.test.ts`.~~
 
 ---
 
@@ -1102,13 +1102,13 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-068] Test factory `makeRecord` defaults hide tool-name variability — Low (TEST) ✅
-**Location:** `src/metrics/latency-tracker.test.ts:12-20`
-**Issue:** Default `toolName: 'Read'`, `durationMs: 50`, `success: true`. Tests that don't override these only exercise the happy path.
-**Impact:** Bugs that only manifest under varied input may pass.
-**Suggested fix:** Either require explicit values in tests that care, or randomize defaults using a seedable PRNG.
+~~### [F-068] Test factory `makeRecord` defaults hide tool-name variability — Low (TEST) ✅~~
+~~**Location:** `src/metrics/latency-tracker.test.ts:12-20`~~
+~~**Issue:** Default `toolName: 'Read'`, `durationMs: 50`, `success: true`. Tests that don't override these only exercise the happy path.~~
+~~**Impact:** Bugs that only manifest under varied input may pass.~~
+~~**Suggested fix:** Either require explicit values in tests that care, or randomize defaults using a seedable PRNG.~~
 
-**Implementation steps for Haiku:** In `src/metrics/latency-tracker.test.ts:12-20`, in `makeRecord()`, change defaults to required parameters (no default). Update existing call sites to pass explicit values for `toolName`, `durationMs`, `success`. `npx jest -- src/metrics/latency-tracker.test.ts`.
+~~**Implementation steps for Haiku:** In `src/metrics/latency-tracker.test.ts:12-20`, in `makeRecord()`, change defaults to required parameters (no default). Update existing call sites to pass explicit values for `toolName`, `durationMs`, `success`. `npx jest -- src/metrics/latency-tracker.test.ts`.~~
 
 ---
 

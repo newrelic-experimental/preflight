@@ -41,7 +41,6 @@ export class HookEventProcessor {
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
-  private fallbackCounter = 0;
 
   private readonly boundBeforeExit: () => void;
   private readonly boundSigterm: () => void;
@@ -183,7 +182,7 @@ export class HookEventProcessor {
     // When toolUseId is present use it directly; otherwise find the oldest pending
     // pre-event with the same tool name (FIFO) so parallel same-tool calls don't
     // collide — the counter in pairingKey() gives each pre-event a unique key.
-    const key = toolUseId ?? this.findOldestPendingKey(event.tool) ?? `${event.tool}:${event.timestamp}:${this.fallbackCounter++}`;
+    const key = toolUseId ?? this.findOldestPendingKey(event.tool) ?? `${event.tool}:${event.timestamp}:${randomUUID()}`;
     const preEvent = this.pending.get(key);
     this.pending.delete(key);
 
@@ -289,9 +288,9 @@ export class HookEventProcessor {
   private pairingKey(event: HookEvent): string {
     const toolUseId = event.toolUseId as string | undefined;
     if (toolUseId) return toolUseId;
-    // Append counter so parallel pre-events for the same tool at the same timestamp
+    // Append UUID so parallel pre-events for the same tool at the same timestamp
     // each get a unique slot in this.pending instead of overwriting each other.
-    return `${event.tool}:${event.timestamp}:${this.fallbackCounter++}`;
+    return `${event.tool}:${event.timestamp}:${randomUUID()}`;
   }
 
   private findOldestPendingKey(tool: string): string | undefined {

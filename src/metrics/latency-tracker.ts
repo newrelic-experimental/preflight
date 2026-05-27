@@ -38,6 +38,11 @@ export class LatencyTracker {
     filePath?: string;
   }> = [];
 
+  private cachedSortedAll: number[] | null = null;
+  private cachedSortedByTool = new Map<string, number[]>();
+  private lastSortedAllCount = -1;
+  private lastSortedToolCounts = new Map<string, number>();
+
   recordToolCall(record: ToolCallRecord): void {
     if (record.durationMs === null || record.durationMs === undefined) return;
     const d = record.durationMs;
@@ -84,12 +89,22 @@ export class LatencyTracker {
   }
 
   getMetrics(): LatencyMetrics {
-    const sortedAll = [...this.allDurations].sort((a, b) => a - b);
-    const overall = this.computePercentiles(sortedAll);
+    // Re-sort overall only if new samples have been added
+    if (this.allDurations.length !== this.lastSortedAllCount) {
+      this.cachedSortedAll = [...this.allDurations].sort((a, b) => a - b);
+      this.lastSortedAllCount = this.allDurations.length;
+    }
+    const overall = this.computePercentiles(this.cachedSortedAll ?? []);
 
+    // Re-sort per-tool only if new samples have been added to that tool
     const byTool: Record<string, LatencyPercentiles | null> = {};
     for (const [tool, durations] of this.byTool) {
-      const sorted = [...durations].sort((a, b) => a - b);
+      const prevCount = this.lastSortedToolCounts.get(tool) ?? -1;
+      if (durations.length !== prevCount) {
+        this.cachedSortedByTool.set(tool, [...durations].sort((a, b) => a - b));
+        this.lastSortedToolCounts.set(tool, durations.length);
+      }
+      const sorted = this.cachedSortedByTool.get(tool) ?? [];
       byTool[tool] = this.computePercentiles(sorted);
     }
 
@@ -104,5 +119,9 @@ export class LatencyTracker {
     this.allDurations = [];
     this.byTool.clear();
     this.slowestCalls = [];
+    this.cachedSortedAll = null;
+    this.cachedSortedByTool.clear();
+    this.lastSortedAllCount = -1;
+    this.lastSortedToolCounts.clear();
   }
 }

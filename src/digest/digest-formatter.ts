@@ -6,6 +6,7 @@ export function formatSlackDigest(summary: WeeklySummary): Record<string, unknow
   const topAntiPatternEntry = Object.entries(summary.antiPatternCounts ?? {})
     .sort(([, a], [, b]) => b - a)[0];
   const topAntiPattern = topAntiPatternEntry ? topAntiPatternEntry[0] : 'none';
+  const safeTopAntiPattern = topAntiPattern.replace(/[\`\n]/g, '_');
 
   return {
     blocks: [
@@ -19,7 +20,7 @@ export function formatSlackDigest(summary: WeeklySummary): Record<string, unknow
           { type: 'mrkdwn', text: `*Total Cost:*\n$${totalCost}` },
           { type: 'mrkdwn', text: `*Avg Efficiency:*\n${avgEfficiency}/100` },
           { type: 'mrkdwn', text: `*Sessions:*\n${summary.sessionCount}` },
-          { type: 'mrkdwn', text: `*Top Anti-pattern:*\n\`${topAntiPattern}\`` },
+          { type: 'mrkdwn', text: `*Top Anti-pattern:*\n\`${safeTopAntiPattern}\`` },
         ],
       },
       {

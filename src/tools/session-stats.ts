@@ -360,7 +360,12 @@ export function registerTools(
     try {
     switch (name) {
       case 'nr_observe_get_session_stats': {
-        if (!sessionTracker) break;
+        if (!sessionTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'SessionTracker not available' }) }],
+            isError: true,
+          };
+        }
         const result = handleGetSessionStats(sessionTracker, sessionTraceId);
         const stats = JSON.parse(result.content[0].text as string) as Record<string, unknown>;
         return {
@@ -379,7 +384,12 @@ export function registerTools(
       }
 
       case 'nr_observe_get_session_timeline': {
-        if (!sessionTracker) break;
+        if (!sessionTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'SessionTracker not available' }) }],
+            isError: true,
+          };
+        }
         const lastN = (args as Record<string, unknown> | undefined)?.last_n;
         return handleGetSessionTimeline(
           sessionTracker,
@@ -387,8 +397,13 @@ export function registerTools(
         );
       }
 
-      case 'nr_observe_report_tokens':
-        if (!costTracker) break;
+      case 'nr_observe_report_tokens': {
+        if (!costTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CostTracker not available' }) }],
+            isError: true,
+          };
+        }
         try {
           const tokenReport = TokenReportSchema.parse(args);
           return handleReportTokens(costTracker, tokenReport, modelUsageTracker);
@@ -401,35 +416,76 @@ export function registerTools(
             isError: true,
           };
         }
+      }
 
-      case 'nr_observe_get_cost_breakdown':
-        if (!costTracker) break;
+      case 'nr_observe_get_cost_breakdown': {
+        if (!costTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CostTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetCostBreakdown(costTracker, taskDetector);
+      }
 
-      case 'nr_observe_get_budget_status':
-        if (!budgetTracker) break;
+      case 'nr_observe_get_budget_status': {
+        if (!budgetTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'BudgetTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetBudgetStatus(budgetTracker);
+      }
 
-      case 'nr_observe_get_cost_forecast':
-        if (!costTracker || sessionStartMs === undefined) break;
+      case 'nr_observe_get_cost_forecast': {
+        if (!costTracker || sessionStartMs === undefined) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CostTracker or sessionStartMs not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetCostForecast(costTracker, sessionStartMs);
+      }
 
       case 'nr_observe_get_workflow_trace': {
-        if (!taskDetector) break;
+        if (!taskDetector) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'TaskDetector not available' }) }],
+            isError: true,
+          };
+        }
         const taskId = (args as Record<string, unknown> | undefined)?.task_id as string | undefined;
         return handleGetWorkflowTrace(taskDetector, antiPatternDetector, efficiencyScorer, taskId);
       }
 
-      case 'nr_observe_get_anti_patterns':
-        if (!antiPatternDetector || !taskDetector) break;
+      case 'nr_observe_get_anti_patterns': {
+        if (!antiPatternDetector || !taskDetector) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'AntiPatternDetector or TaskDetector not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetAntiPatterns(taskDetector, antiPatternDetector);
+      }
 
-      case 'nr_observe_get_efficiency_score':
-        if (!efficiencyScorer) break;
+      case 'nr_observe_get_efficiency_score': {
+        if (!efficiencyScorer) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'EfficiencyScorer not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetEfficiencyScore(efficiencyScorer, taskDetector, antiPatternDetector);
+      }
 
       case 'nr_observe_report_feedback': {
-        if (!feedbackCollector) break;
+        if (!feedbackCollector) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'FeedbackCollector not available' }) }],
+            isError: true,
+          };
+        }
         try {
           const feedbackArgs = FeedbackSchema.parse(args);
           return handleReportFeedback(feedbackCollector, feedbackArgs);
@@ -444,9 +500,13 @@ export function registerTools(
         }
       }
 
-      // Cross-session tools
       case 'nr_observe_get_session_history': {
-        if (!sessionStore) break;
+        if (!sessionStore) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'SessionStore not available' }) }],
+            isError: true,
+          };
+        }
         const historyArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetSessionHistory(sessionStore, {
           since: historyArgs.since as string | undefined,
@@ -456,7 +516,12 @@ export function registerTools(
       }
 
       case 'nr_observe_get_weekly_summary': {
-        if (!weeklySummaryGenerator) break;
+        if (!weeklySummaryGenerator) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'WeeklySummaryGenerator not available' }) }],
+            isError: true,
+          };
+        }
         const weekArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetWeeklySummary(weeklySummaryGenerator, {
           week: weekArgs.week as string | undefined,
@@ -464,7 +529,12 @@ export function registerTools(
       }
 
       case 'nr_observe_get_trends': {
-        if (!trendAnalyzer) break;
+        if (!trendAnalyzer) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'TrendAnalyzer not available' }) }],
+            isError: true,
+          };
+        }
         const trendArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetTrends(trendAnalyzer, {
           metric: trendArgs.metric as string | undefined,
@@ -474,19 +544,35 @@ export function registerTools(
       }
 
       case 'nr_observe_get_collaboration_profile': {
-        if (!collaborationProfiler) break;
+        if (!collaborationProfiler) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CollaborationProfiler not available' }) }],
+            isError: true,
+          };
+        }
         const profileArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetCollaborationProfile(collaborationProfiler, {
           developer: profileArgs.developer as string | undefined,
         });
       }
 
-      case 'nr_observe_get_claudemd_impact':
-        if (!claudeMdTracker) break;
+      case 'nr_observe_get_claudemd_impact': {
+        if (!claudeMdTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'ClaudeMdTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetClaudeMdImpact(claudeMdTracker);
+      }
 
       case 'nr_observe_get_cost_per_outcome': {
-        if (!costPerOutcomeAnalyzer || !taskDetector) break;
+        if (!costPerOutcomeAnalyzer || !taskDetector) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CostPerOutcomeAnalyzer or TaskDetector not available' }) }],
+            isError: true,
+          };
+        }
         const costArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetCostPerOutcome(costPerOutcomeAnalyzer, taskDetector, {
           since: costArgs.since as string | undefined,
@@ -494,7 +580,12 @@ export function registerTools(
       }
 
       case 'nr_observe_get_recommendations': {
-        if (!recommendationEngine) break;
+        if (!recommendationEngine) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'RecommendationEngine not available' }) }],
+            isError: true,
+          };
+        }
         const recArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetRecommendations(recommendationEngine, {
           developer: recArgs.developer as string | undefined,
@@ -503,7 +594,12 @@ export function registerTools(
       }
 
       case 'nr_observe_get_platform_comparison': {
-        if (!sessionStore) break;
+        if (!sessionStore) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'SessionStore not available' }) }],
+            isError: true,
+          };
+        }
         const pcArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetPlatformComparison(sessionStore, {
           metric: pcArgs.metric as string | undefined,
@@ -512,7 +608,12 @@ export function registerTools(
       }
 
       case 'nr_observe_get_team_summary': {
-        if (!options.teamId || !options.nrApiKey) break;
+        if (!options.teamId || !options.nrApiKey) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'teamId or nrApiKey not configured' }) }],
+            isError: true,
+          };
+        }
         const summaryArgs = (args ?? {}) as Record<string, unknown>;
         return handleGetTeamSummary({
           teamId: options.teamId,
@@ -524,7 +625,12 @@ export function registerTools(
       }
 
       case 'nr_observe_subscribe_digest': {
-        if (!options.configFilePath) break;
+        if (!options.configFilePath) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'configFilePath not available' }) }],
+            isError: true,
+          };
+        }
         const digestArgs = (args ?? {}) as Record<string, unknown>;
         return handleSubscribeDigest(
           typeof digestArgs.webhookUrl === 'string' ? digestArgs.webhookUrl : '',
@@ -533,38 +639,79 @@ export function registerTools(
       }
 
       case 'nr_observe_unsubscribe_digest': {
-        if (!options.configFilePath) break;
+        if (!options.configFilePath) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'configFilePath not available' }) }],
+            isError: true,
+          };
+        }
         return handleUnsubscribeDigest(options.configFilePath);
       }
 
       case 'nr_observe_send_digest': {
-        if (!options.configFilePath || !weeklySummaryGenerator) break;
+        if (!options.configFilePath || !weeklySummaryGenerator) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'configFilePath or WeeklySummaryGenerator not available' }) }],
+            isError: true,
+          };
+        }
         return handleSendDigest(weeklySummaryGenerator, options.configFilePath);
       }
 
-      case 'nr_observe_get_personal_insights':
-        if (!weeklySummaryGenerator || !options.developer) break;
+      case 'nr_observe_get_personal_insights': {
+        if (!weeklySummaryGenerator || !options.developer) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'WeeklySummaryGenerator or developer not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetPersonalInsights(weeklySummaryGenerator, options.developer);
+      }
 
-      case 'nr_observe_get_context_efficiency':
-        if (!contextWindowTracker) break;
+      case 'nr_observe_get_context_efficiency': {
+        if (!contextWindowTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'ContextWindowTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetContextEfficiency(contextWindowTracker);
+      }
 
-      case 'nr_observe_get_latency_percentiles':
-        if (!latencyTracker) break;
+      case 'nr_observe_get_latency_percentiles': {
+        if (!latencyTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'LatencyTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetLatencyPercentiles(latencyTracker);
+      }
 
-      case 'nr_observe_get_task_completion_rate':
-        if (!taskCompletionTracker) break;
+      case 'nr_observe_get_task_completion_rate': {
+        if (!taskCompletionTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'TaskCompletionTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetTaskCompletionRate(taskCompletionTracker, taskDetector);
+      }
 
-      case 'nr_observe_get_model_usage':
-        if (!modelUsageTracker) break;
+      case 'nr_observe_get_model_usage': {
+        if (!modelUsageTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'ModelUsageTracker not available' }) }],
+            isError: true,
+          };
+        }
         return handleGetModelUsage(modelUsageTracker);
-    }
+      }
 
-    throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-    } catch (err) {
+      default:
+        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+    }
+  } catch (err) {
       if (err instanceof McpError) throw err;
       logger.error('Tool handler threw unexpectedly', {
         tool: name,

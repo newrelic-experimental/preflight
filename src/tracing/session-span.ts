@@ -8,6 +8,7 @@ export class SessionSpan {
   private span: Span | null = null;
   private readonly sessionId: string;
   private readonly developer: string;
+  private ended = false;
 
   constructor(sessionId: string, developer: string) {
     this.sessionId = sessionId;
@@ -27,6 +28,8 @@ export class SessionSpan {
   }
 
   end(toolCallCount: number, taskCount: number): void {
+    if (this.ended) return;
+    this.ended = true;
     if (!this.span) return;
     this.span.setAttributes({
       'ai.session.tool_call_count': toolCallCount,

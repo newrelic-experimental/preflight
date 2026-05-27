@@ -703,18 +703,18 @@ export async function handleGetTeamSummary(
 
   const byDev: Record<string, { costUsd: number; efficiencyScore: number | null; antiPatterns: number }> = {};
   for (const row of costRows) {
-    const dev = String(row.developer ?? 'unknown');
+    const dev = ((row.developer && String(row.developer).trim()) || 'unknown') as string;
     if (!byDev[dev]) byDev[dev] = { costUsd: 0, efficiencyScore: null, antiPatterns: 0 };
     byDev[dev].costUsd = toFiniteNumber(row.totalCost);
   }
   for (const row of effRows) {
-    const dev = String(row.developer ?? 'unknown');
+    const dev = ((row.developer && String(row.developer).trim()) || 'unknown') as string;
     if (!byDev[dev]) byDev[dev] = { costUsd: 0, efficiencyScore: null, antiPatterns: 0 };
     const score = toFiniteNumber(row.avgScore, Number.NaN);
     byDev[dev].efficiencyScore = Number.isFinite(score) ? score : null;
   }
   for (const row of antiPatternRows) {
-    const dev = String(row.developer ?? 'unknown');
+    const dev = ((row.developer && String(row.developer).trim()) || 'unknown') as string;
     if (!byDev[dev]) byDev[dev] = { costUsd: 0, efficiencyScore: null, antiPatterns: 0 };
     byDev[dev].antiPatterns = toFiniteNumber(row.antiPatterns);
   }

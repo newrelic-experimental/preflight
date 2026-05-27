@@ -243,7 +243,8 @@ describe('SessionTracker', () => {
       const metrics = tracker.getMetrics();
 
       expect(metrics.sessionId).toBe('snapshot-session');
-      expect(metrics.sessionStartTime).toEqual(expect.any(Number));
+      expect(metrics.sessionStartTime).toBeGreaterThan(0);
+      expect(metrics.sessionStartTime).toBeLessThan(Date.now() + 1000);
       expect(metrics.sessionDurationMs).toBeGreaterThanOrEqual(0);
       expect(metrics.toolCallCount).toBe(2);
       expect(metrics.toolCallCountByTool).toEqual({ Read: 1, Bash: 1 });

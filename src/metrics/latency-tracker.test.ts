@@ -13,15 +13,16 @@ afterEach(() => {
 });
 
 describe('LatencyTracker', () => {
-  function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
+  function makeRecord(overrides: {
+    toolName: string;
+    durationMs: number;
+    success: boolean;
+  } & Partial<ToolCallRecord>): ToolCallRecord {
     return {
       id: 'r1',
       sessionId: 's1',
       toolUseId: 'u1',
-      toolName: 'Read',
       timestamp: 1000,
-      durationMs: 100,
-      success: true,
       ...overrides,
     } as ToolCallRecord;
   }
@@ -33,7 +34,7 @@ describe('LatencyTracker', () => {
 
   it('single call sets p50/p95/p99 to that duration', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ durationMs: 200 }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 200, success: true }));
     const m = t.getMetrics();
     expect(m.overall?.p50).toBe(200);
     expect(m.overall?.p95).toBe(200);
@@ -45,13 +46,13 @@ describe('LatencyTracker', () => {
 
   it('ignores calls with null durationMs', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ durationMs: null as unknown as number }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number, success: true }));
     expect(t.getMetrics().overall).toBeNull();
   });
 
   it('ignores calls with undefined durationMs', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ durationMs: undefined as unknown as number }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: undefined as unknown as number, success: true }));
     expect(t.getMetrics().overall).toBeNull();
   });
 
@@ -59,7 +60,7 @@ describe('LatencyTracker', () => {
     const t = new LatencyTracker();
     // sorted: [100, 200, 300, 400, 500] → p50 = index floor(5 * 0.5) = 2 → 300
     for (const d of [300, 100, 500, 200, 400]) {
-      t.recordToolCall(makeRecord({ durationMs: d }));
+      t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: d, success: true }));
     }
     const m = t.getMetrics();
     expect(m.overall?.p50).toBe(300);
@@ -70,8 +71,8 @@ describe('LatencyTracker', () => {
 
   it('byTool breakdown uses tool-specific samples', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50 }));
-    t.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 500 }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50, success: true }));
+    t.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 500, success: true }));
     const m = t.getMetrics();
     expect(m.byTool['Read']?.p50).toBe(50);
     expect(m.byTool['Bash']?.p50).toBe(500);
@@ -80,9 +81,9 @@ describe('LatencyTracker', () => {
 
   it('slowestCalls is sorted descending by duration', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ durationMs: 100 }));
-    t.recordToolCall(makeRecord({ durationMs: 500 }));
-    t.recordToolCall(makeRecord({ durationMs: 250 }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 100, success: true }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 500, success: true }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 250, success: true }));
     const { slowestCalls } = t.getMetrics();
     expect(slowestCalls[0].durationMs).toBe(500);
     expect(slowestCalls[1].durationMs).toBe(250);
@@ -92,7 +93,7 @@ describe('LatencyTracker', () => {
   it('slowestCalls is capped at 10 entries', () => {
     const t = new LatencyTracker();
     for (let i = 1; i <= 15; i++) {
-      t.recordToolCall(makeRecord({ durationMs: i * 10 }));
+      t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: i * 10, success: true }));
     }
     const { slowestCalls } = t.getMetrics();
     expect(slowestCalls).toHaveLength(10);
@@ -102,13 +103,13 @@ describe('LatencyTracker', () => {
 
   it('slowestCalls includes filePath when present', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ durationMs: 200, filePath: '/src/app.ts' }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 200, success: true, filePath: '/src/app.ts' }));
     expect(t.getMetrics().slowestCalls[0].filePath).toBe('/src/app.ts');
   });
 
   it('reset clears all state', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ durationMs: 100 }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 100, success: true }));
     t.reset('new-session');
     expect(t.getMetrics().overall).toBeNull();
     expect(Object.keys(t.getMetrics().byTool)).toHaveLength(0);
@@ -118,9 +119,9 @@ describe('LatencyTracker', () => {
   it('byTool does not include tools with no valid samples (F-028)', () => {
     const t = new LatencyTracker();
     // Record invalid duration for Read — it returns early and is never added to byTool
-    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number, success: true }));
     // Record valid duration for Bash
-    t.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 100 }));
+    t.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 100, success: true }));
     const m = t.getMetrics();
     // Read was never added to byTool because durationMs was null
     expect(m.byTool['Read']).toBeUndefined();
@@ -131,8 +132,8 @@ describe('LatencyTracker', () => {
 
   it('overall is null when all recorded calls have null/undefined durationMs (F-028)', () => {
     const t = new LatencyTracker();
-    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number }));
-    t.recordToolCall(makeRecord({ toolName: 'Edit', durationMs: undefined as unknown as number }));
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number, success: true }));
+    t.recordToolCall(makeRecord({ toolName: 'Edit', durationMs: undefined as unknown as number, success: true }));
     const m = t.getMetrics();
     expect(m.overall).toBeNull();
   });
