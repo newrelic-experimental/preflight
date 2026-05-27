@@ -4,6 +4,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer, NrMcpServer } from '../server.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { FeedbackCollector } from './workflow-tools.js';
 import { handleGetSessionStats, handleGetSessionTimeline } from './session-stats.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { SessionStore } from '../storage/session-store.js';
@@ -295,14 +296,17 @@ describe('MCP protocol integration — cost tools', () => {
   let server: NrMcpServer;
   let client: Client;
   let costTracker: CostTracker;
+  let feedbackCollector: FeedbackCollector;
 
   beforeEach(async () => {
     costTracker = new CostTracker();
+    feedbackCollector = new FeedbackCollector();
 
     server = createServer({
       name: 'cost-mcp',
       version: '0.0.1',
       costTracker,
+      feedbackCollector,
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -373,6 +377,56 @@ describe('MCP protocol integration — cost tools', () => {
     expect(body.model).toBe('claude-sonnet-4');
     expect(body.cost_this_report_usd).toBeCloseTo(0.06, 6);
     expect(body.session_total_cost_usd).toBeCloseTo(0.06, 6);
+  });
+
+  it('calling nr_observe_report_tokens with negative tokens returns error', async () => {
+    const result = await client.callTool({
+      name: 'nr_observe_report_tokens',
+      arguments: {
+        input_tokens: -100,
+        output_tokens: 2_000,
+        model: 'claude-sonnet-4',
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+
+    expect(body.error).toContain('Invalid token report');
+  });
+
+  it('calling nr_observe_report_tokens with missing model returns error', async () => {
+    const result = await client.callTool({
+      name: 'nr_observe_report_tokens',
+      arguments: {
+        input_tokens: 10_000,
+        output_tokens: 2_000,
+        // missing model
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+
+    expect(body.error).toContain('Invalid token report');
+  });
+
+  it('calling nr_observe_report_tokens with invalid quality enum returns error', async () => {
+    const result = await client.callTool({
+      name: 'nr_observe_report_feedback',
+      arguments: {
+        quality: 'great',
+        task_id: 'task-123',
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+
+    expect(body.error).toContain('Invalid feedback');
   });
 });
 

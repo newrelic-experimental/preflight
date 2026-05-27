@@ -129,11 +129,11 @@ export class WeeklySummaryGenerator {
     const summary = aggregateSessions(weekId, weekSessions);
 
     if (!existsSync(this.summariesDir)) {
-      mkdirSync(this.summariesDir, { recursive: true });
+      mkdirSync(this.summariesDir, { recursive: true, mode: 0o700 });
     }
 
     const filepath = join(this.summariesDir, `${weekId}.json`);
-    writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n');
+    writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
 
     logger.debug('Weekly summary generated', { weekId, sessions: weekSessions.length });
 

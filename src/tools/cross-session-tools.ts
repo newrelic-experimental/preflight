@@ -259,6 +259,15 @@ export const CROSS_SESSION_TOOLS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+export function toFiniteNumber(x: unknown, fallback = 0): number {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -578,7 +587,7 @@ export async function handleGetTeamSummary(
     collectorHost?: string | null;
     since?: string;
   },
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   if (!options.teamId) {
     return {
       content: [{
@@ -587,6 +596,7 @@ export async function handleGetTeamSummary(
           error: 'teamId is not configured. Set NEW_RELIC_AI_TEAM_ID or teamId in config.',
         }),
       }],
+      isError: true,
     };
   }
 
@@ -598,6 +608,7 @@ export async function handleGetTeamSummary(
           error: 'NEW_RELIC_API_KEY (User key) is required for team summary queries.',
         }),
       }],
+      isError: true,
     };
   }
 
@@ -611,12 +622,18 @@ export async function handleGetTeamSummary(
           error: 'Invalid since value. Use a relative time like "7 days ago", "24 hours ago", or "1 week ago".',
         }),
       }],
+      isError: true,
     };
   }
   const since = rawSince;
 
-  // Escape single quotes in teamId before embedding in NRQL string literals
-  const safeTeamId = options.teamId.replace(/'/g, "\\'");
+  if (!/^[a-zA-Z0-9_-]+$/.test(options.teamId)) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid teamId format. Allowed characters: a-z, A-Z, 0-9, underscore, hyphen.' }) }],
+      isError: true,
+    };
+  }
+  const safeTeamId = options.teamId;
 
   const accountId = parseInt(options.accountId, 10);
 
@@ -679,17 +696,18 @@ export async function handleGetTeamSummary(
   for (const row of costRows) {
     const dev = String(row.developer ?? 'unknown');
     if (!byDev[dev]) byDev[dev] = { costUsd: 0, efficiencyScore: null, antiPatterns: 0 };
-    byDev[dev].costUsd = Number(row.totalCost ?? 0);
+    byDev[dev].costUsd = toFiniteNumber(row.totalCost);
   }
   for (const row of effRows) {
     const dev = String(row.developer ?? 'unknown');
     if (!byDev[dev]) byDev[dev] = { costUsd: 0, efficiencyScore: null, antiPatterns: 0 };
-    byDev[dev].efficiencyScore = row.avgScore != null ? Number(row.avgScore) : null;
+    const score = toFiniteNumber(row.avgScore, Number.NaN);
+    byDev[dev].efficiencyScore = Number.isFinite(score) ? score : null;
   }
   for (const row of antiPatternRows) {
     const dev = String(row.developer ?? 'unknown');
     if (!byDev[dev]) byDev[dev] = { costUsd: 0, efficiencyScore: null, antiPatterns: 0 };
-    byDev[dev].antiPatterns = Number(row.antiPatterns ?? 0);
+    byDev[dev].antiPatterns = toFiniteNumber(row.antiPatterns);
   }
 
   const result = {

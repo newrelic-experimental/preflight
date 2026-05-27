@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import { computePercentile } from './percentile.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,8 +58,7 @@ const MAX_TIMELINE_ENTRIES = 10_000;
 export function computeP95(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.floor((sorted.length - 1) * 0.95);
-  return sorted[index]!;
+  return computePercentile(sorted, 0.95) ?? 0;
 }
 
 export function computeDurationStats(durations: number[]): DurationStats {

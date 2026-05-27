@@ -22,6 +22,8 @@ import {
   handleGetCostPerOutcome,
   handleGetRecommendations,
   handleGetPlatformComparison,
+  handleGetTeamSummary,
+  toFiniteNumber,
 } from './cross-session-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -604,5 +606,80 @@ describe('Cross-session tool handlers', () => {
     const longDev = 'd'.repeat(300);
     const result = handleGetRecommendations(engine, { developer: longDev });
     expect(result.content[0]).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // handleGetTeamSummary — teamId validation
+  // -------------------------------------------------------------------------
+
+  it('rejects teamId with special characters', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: "team' OR '1'='1",
+      accountId: '12345',
+      nrApiKey: 'test-key',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toBeDefined();
+    const text = result.content[0].text;
+    const parsed = JSON.parse(text);
+    expect(parsed.error).toBeDefined();
+    expect(parsed.error).toContain('Invalid teamId format');
+  });
+
+  it('rejects teamId with spaces', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: 'team with spaces',
+      accountId: '12345',
+      nrApiKey: 'test-key',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toBeDefined();
+    const text = result.content[0].text;
+    const parsed = JSON.parse(text);
+    expect(parsed.error).toBeDefined();
+  });
+
+  it('accepts teamId with valid characters (does not reject on format)', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: 'platform-team_123',
+      accountId: '12345',
+      nrApiKey: 'test-key',
+    });
+    expect(result.content[0]).toBeDefined();
+    const text = result.content[0].text;
+    // Valid teamId should not trigger format validation error.
+    // May still error from NerdGraph request, but that's OK — we're testing format validation.
+    const parsed = JSON.parse(text);
+    if (parsed.error) {
+      expect(parsed.error).not.toContain('Invalid teamId format');
+    }
+  });
+
+  describe('toFiniteNumber (F-012)', () => {
+    it('converts valid numbers', () => {
+      expect(toFiniteNumber(123)).toBe(123);
+      expect(toFiniteNumber('456')).toBe(456);
+      expect(toFiniteNumber(0)).toBe(0);
+    });
+
+    it('returns fallback (0) for non-numeric strings', () => {
+      expect(toFiniteNumber('abc')).toBe(0);
+      expect(toFiniteNumber('')).toBe(0);
+    });
+
+    it('returns fallback (0) for undefined and null', () => {
+      expect(toFiniteNumber(undefined)).toBe(0);
+      expect(toFiniteNumber(null)).toBe(0);
+    });
+
+    it('returns fallback (0) for Infinity and NaN', () => {
+      expect(toFiniteNumber(Infinity)).toBe(0);
+      expect(toFiniteNumber(-Infinity)).toBe(0);
+      expect(toFiniteNumber(NaN)).toBe(0);
+    });
+
+    it('uses a custom fallback when provided', () => {
+      expect(toFiniteNumber('abc', -1)).toBe(-1);
+    });
   });
 });

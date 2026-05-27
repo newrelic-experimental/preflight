@@ -452,16 +452,17 @@ describe('HookEventProcessor', () => {
       expect(records.every((r) => r.durationMs !== null)).toBe(true);
     });
 
-    it('logs a warning when the cap is exceeded', () => {
-      const processor = new HookEventProcessor({ store, onRecord, maxPendingEvents: 2 });
+    it('logs a warning when non-orphan eviction occurs', () => {
+      const processor = new HookEventProcessor({ store, onRecord, maxPendingEvents: 2, orphanTimeoutMs: 1000 });
 
-      processor.processEvents([makePreEvent({ toolUseId: 'a', timestamp: 1000 })]);
-      processor.processEvents([makePreEvent({ toolUseId: 'b', timestamp: 1001 })]);
-      // Third event triggers eviction
-      processor.processEvents([makePreEvent({ toolUseId: 'c', timestamp: 1002 })]);
+      const now = Date.now();
+      processor.processEvents([makePreEvent({ toolUseId: 'a', timestamp: now })]);
+      processor.processEvents([makePreEvent({ toolUseId: 'b', timestamp: now })]);
+      // Third event triggers eviction of non-orphan (since both a and b are fresh, not past 1000ms)
+      processor.processEvents([makePreEvent({ toolUseId: 'c', timestamp: now })]);
 
       const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-      expect(output).toContain('Pending map overflow');
+      expect(output).toContain('Evicting non-orphan pre-event due to capacity overflow');
     });
 
     it('uses DEFAULT_MAX_PENDING (2000) when maxPendingEvents is not specified', () => {
@@ -482,5 +483,65 @@ describe('HookEventProcessor', () => {
       ]);
       expect(processor.pendingCount).toBe(2000);
     }, 10_000);
+  });
+
+  describe('Signal handler lifecycle', () => {
+    it('does not accumulate SIGTERM handlers across start/stop cycles', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+      });
+
+      const initialListenerCount = process.listenerCount('SIGTERM');
+
+      // First start/stop cycle
+      processor.start();
+      expect(process.listenerCount('SIGTERM')).toBe(initialListenerCount + 1);
+      processor.stop();
+      expect(process.listenerCount('SIGTERM')).toBe(initialListenerCount);
+
+      // Second start/stop cycle — should not accumulate
+      processor.start();
+      expect(process.listenerCount('SIGTERM')).toBe(initialListenerCount + 1);
+      processor.stop();
+      expect(process.listenerCount('SIGTERM')).toBe(initialListenerCount);
+    });
+  });
+
+  describe('Eviction logic — orphans vs non-orphans', () => {
+    it('evicts orphans before non-orphans when at capacity', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        maxPendingEvents: 3,
+        orphanTimeoutMs: 100,
+      });
+
+      const now = Date.now();
+
+      // Add entry 1: fresh (will not be orphaned)
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_fresh', timestamp: now })]);
+
+      // Add entry 2: old (already orphaned by 100ms)
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_old', timestamp: now - 150 })]);
+
+      // Add entry 3: mid-age (just under orphan threshold)
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_mid', timestamp: now - 50 })]);
+
+      expect(processor.pendingCount).toBe(3);
+
+      // Add entry 4: this should trigger eviction of the oldest (toolu_old)
+      processor.processEvents([makePreEvent({ toolUseId: 'toolu_newest', timestamp: now })]);
+
+      expect(processor.pendingCount).toBe(3);
+
+      // The old entry should be gone, and the fresh ones should remain
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_fresh' })]);
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_mid' })]);
+      processor.processEvents([makePostEvent({ toolUseId: 'toolu_newest' })]);
+
+      // Should have 3 completed records (the old one was orphaned and dropped)
+      expect(records).toHaveLength(3);
+    });
   });
 });

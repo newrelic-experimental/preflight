@@ -14,6 +14,7 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { createLogger } from '../shared/index.js';
 
 const logger = createLogger('session-stats');
@@ -40,7 +41,6 @@ import {
   handleGetBudgetStatus,
   handleGetCostForecast,
 } from './cost-tools.js';
-import type { TokenReport } from './cost-tools.js';
 import {
   WORKFLOW_TRACE_TOOL,
   ANTI_PATTERNS_TOOL,
@@ -218,6 +218,25 @@ export interface ToolRegistrationOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Input validation schemas
+// ---------------------------------------------------------------------------
+
+const TokenReportSchema = z.object({
+  model: z.string().min(1),
+  input_tokens: z.number().nonnegative(),
+  output_tokens: z.number().nonnegative(),
+  cache_creation_tokens: z.number().nonnegative().optional(),
+  cache_read_tokens: z.number().nonnegative().optional(),
+  thinking_tokens: z.number().nonnegative().optional(),
+});
+
+const FeedbackSchema = z.object({
+  quality: z.enum(['good', 'bad', 'neutral']),
+  task_id: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -370,7 +389,18 @@ export function registerTools(
 
       case 'nr_observe_report_tokens':
         if (!costTracker) break;
-        return handleReportTokens(costTracker, args as unknown as TokenReport, modelUsageTracker);
+        try {
+          const tokenReport = TokenReportSchema.parse(args);
+          return handleReportTokens(costTracker, tokenReport, modelUsageTracker);
+        } catch (err) {
+          const message = err instanceof z.ZodError
+            ? err.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+            : String(err);
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: `Invalid token report: ${message}` }) }],
+            isError: true,
+          };
+        }
 
       case 'nr_observe_get_cost_breakdown':
         if (!costTracker) break;
@@ -400,12 +430,18 @@ export function registerTools(
 
       case 'nr_observe_report_feedback': {
         if (!feedbackCollector) break;
-        const feedbackArgs = args as unknown as {
-          quality: 'good' | 'bad' | 'neutral';
-          notes?: string;
-          task_id?: string;
-        };
-        return handleReportFeedback(feedbackCollector, feedbackArgs);
+        try {
+          const feedbackArgs = FeedbackSchema.parse(args);
+          return handleReportFeedback(feedbackCollector, feedbackArgs);
+        } catch (err) {
+          const message = err instanceof z.ZodError
+            ? err.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+            : String(err);
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: `Invalid feedback: ${message}` }) }],
+            isError: true,
+          };
+        }
       }
 
       // Cross-session tools

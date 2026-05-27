@@ -41,9 +41,9 @@ function readJsonFile(path: string): Record<string, unknown> {
 function writeJsonFile(path: string, data: Record<string, unknown>): void {
   const dir = dirname(path);
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------

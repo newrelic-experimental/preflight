@@ -97,7 +97,7 @@ export class SessionStore {
     }
 
     if (!existsSync(this.sessionsDir)) {
-      mkdirSync(this.sessionsDir, { recursive: true });
+      mkdirSync(this.sessionsDir, { recursive: true, mode: 0o700 });
     }
 
     const date = new Date(summary.startTime).toISOString().slice(0, 10);
@@ -107,7 +107,7 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
-    writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n');
+    writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
     logger.debug('Session saved', { sessionId: summary.sessionId, filename });
   }
 

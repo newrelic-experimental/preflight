@@ -75,7 +75,7 @@ export class HookEventProcessor {
     this.intervalId.unref();
 
     process.once('beforeExit', this.boundBeforeExit);
-    process.on('SIGTERM', this.boundSigterm);
+    process.once('SIGTERM', this.boundSigterm);
 
     logger.info('Event processor started', {
       pollIntervalMs: this.pollIntervalMs,
@@ -158,11 +158,22 @@ export class HookEventProcessor {
 
   private handlePreEvent(event: HookEvent): void {
     if (this.pending.size >= this.maxPendingEvents) {
-      const oldestKey = this.pending.keys().next().value as string;
-      this.pending.delete(oldestKey);
-      logger.warn('Pending map overflow — oldest pre-event dropped', {
-        maxPendingEvents: this.maxPendingEvents,
-      });
+      // Prefer evicting events that are already past the orphan timeout
+      const now = Date.now();
+      let evictedKey: string | undefined;
+      for (const [key, pendingEvent] of this.pending) {
+        if (now - pendingEvent.timestamp >= this.orphanTimeoutMs) {
+          evictedKey = key;
+          break;
+        }
+      }
+      if (evictedKey === undefined) {
+        evictedKey = this.pending.keys().next().value as string;
+        logger.warn('Evicting non-orphan pre-event due to capacity overflow', { evictedKey });
+      }
+      if (evictedKey) {
+        this.pending.delete(evictedKey);
+      }
     }
     this.pending.set(this.pairingKey(event), event);
   }

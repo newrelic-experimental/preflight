@@ -1,4 +1,5 @@
 import type { ToolCallRecord } from '../storage/types.js';
+import { computePercentile } from './percentile.js';
 
 export interface LatencyPercentiles {
   readonly p50: number;
@@ -71,9 +72,9 @@ export class LatencyTracker {
   private computePercentiles(sorted: number[]): LatencyPercentiles {
     const count = sorted.length;
     return {
-      p50: sorted[Math.floor(count * 0.5)] ?? 0,
-      p95: sorted[Math.floor(count * 0.95)] ?? 0,
-      p99: sorted[Math.floor(count * 0.99)] ?? 0,
+      p50: computePercentile(sorted, 0.5) ?? 0,
+      p95: computePercentile(sorted, 0.95) ?? 0,
+      p99: computePercentile(sorted, 0.99) ?? 0,
       min: sorted[0] ?? 0,
       max: sorted[count - 1] ?? 0,
       count,

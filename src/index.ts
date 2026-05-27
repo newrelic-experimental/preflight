@@ -404,7 +404,7 @@ async function main(): Promise<void> {
     nrIngest.start();
     logger.info('Server running on stdio transport');
 
-    process.stdin.on('end', () => {
+    process.stdin.once('end', () => {
       logger.info('stdin closed, shutting down');
       void shutdown();
     });
