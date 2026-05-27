@@ -216,8 +216,8 @@ describe('Task data accumulation', () => {
     expect(task.filesRead).toEqual(['/a.ts', '/b.ts']); // sorted, unique
     expect(task.filesModified).toEqual(['/a.ts', '/c.ts']); // sorted, unique
     expect(task.linesChanged).toBe(55); // 50 (Write) + |15-10| (Edit)
-    expect(task.linesAdded).toBe(55); // 50 (Write) + max(0, 15-10) (Edit)
-    expect(task.linesRemoved).toBe(0); // no lines removed
+    expect(task.linesAdded).toBe(65); // 50 (Write) + 15 (Edit new lines)
+    expect(task.linesRemoved).toBe(10); // 10 (Edit old lines removed)
 
     detector.dispose();
   });
@@ -316,6 +316,26 @@ describe('Task data accumulation', () => {
     expect(task.linesChanged).toBe(5); // |0 - 5|
     expect(task.linesAdded).toBe(0);
     expect(task.linesRemoved).toBe(5);
+
+    detector.dispose();
+  });
+
+  it('Edit that both adds and removes lines reports both separately', () => {
+    const detector = new TaskDetector();
+
+    detector.recordToolCall(makeRecord({
+      toolName: 'Edit',
+      filePath: '/a.ts',
+      oldLineCount: 10, // 10 lines removed
+      newLineCount: 12, // 12 lines added
+    }));
+
+    jest.advanceTimersByTime(30_000);
+
+    const task = detector.getCompletedTasks()[0];
+    expect(task.linesChanged).toBe(2); // |12 - 10|
+    expect(task.linesAdded).toBe(12); // gross additions, not net
+    expect(task.linesRemoved).toBe(10); // gross removals, not net
 
     detector.dispose();
   });

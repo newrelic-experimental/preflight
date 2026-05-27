@@ -233,6 +233,62 @@ describe('validateReportToolCallInput', () => {
   it('rejects missing success', () => {
     expect(() => validateReportToolCallInput({ tool: 'Read' })).toThrow('Missing required field: success');
   });
+
+  it('rejects non-numeric duration_ms (F-035)', () => {
+    expect(() =>
+      validateReportToolCallInput({ tool: 'Read', success: true, duration_ms: 'not-a-number' })
+    ).toThrow('Field duration_ms must be a number when present');
+  });
+
+  it('rejects non-numeric input_size_bytes (F-035)', () => {
+    expect(() =>
+      validateReportToolCallInput({ tool: 'Read', success: true, input_size_bytes: 'large' })
+    ).toThrow('Field input_size_bytes must be a number when present');
+  });
+
+  it('rejects non-numeric output_size_bytes (F-035)', () => {
+    expect(() =>
+      validateReportToolCallInput({ tool: 'Read', success: true, output_size_bytes: '1024' })
+    ).toThrow('Field output_size_bytes must be a number when present');
+  });
+
+  it('rejects non-numeric timestamp (F-035)', () => {
+    expect(() =>
+      validateReportToolCallInput({ tool: 'Read', success: true, timestamp: '2000' })
+    ).toThrow('Field timestamp must be a number when present');
+  });
+
+  it('rejects non-string error (F-035)', () => {
+    expect(() =>
+      validateReportToolCallInput({ tool: 'Read', success: false, error: 42 })
+    ).toThrow('Field error must be a string when present');
+  });
+
+  it('rejects non-object input field (F-035)', () => {
+    expect(() =>
+      validateReportToolCallInput({ tool: 'Read', success: true, input: 'string' })
+    ).toThrow('Field input must be an object when present');
+  });
+
+  it('accepts valid optional numeric and string fields (F-035)', () => {
+    const input = {
+      tool: 'Read',
+      success: true,
+      duration_ms: 100,
+      input_size_bytes: 512,
+      output_size_bytes: 1024,
+      timestamp: 1000,
+      error: 'timeout',
+      input: { file_path: '/test' },
+    };
+    const result = validateReportToolCallInput(input);
+    expect(result.duration_ms).toBe(100);
+    expect(result.input_size_bytes).toBe(512);
+    expect(result.output_size_bytes).toBe(1024);
+    expect(result.timestamp).toBe(1000);
+    expect(result.error).toBe('timeout');
+    expect(result.input).toEqual({ file_path: '/test' });
+  });
 });
 
 describe('tool definitions', () => {

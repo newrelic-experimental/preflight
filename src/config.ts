@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { z } from 'zod';
 import { createLogger } from './shared/index.js';
 import type { LogLevel } from './shared/index.js';
 import type { CliOptions } from './types.js';
@@ -72,6 +73,51 @@ const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /\bnpm_[A-Za-z0-9]{36}\b/g,
   /\bxox[a-z]-[0-9A-Za-z-]+/g,
 ];
+
+const ConfigFileSchema = z.object({
+  licenseKey: z.string().optional(),
+  accountId: z.string().optional(),
+  appName: z.string().optional(),
+  developer: z.string().optional(),
+  teamId: z.string().nullable().optional(),
+  projectId: z.string().nullable().optional(),
+  orgId: z.string().nullable().optional(),
+  model: z.string().optional(),
+  enabled: z.boolean().optional(),
+  highSecurity: z.boolean().optional(),
+  recordContent: z.boolean().optional(),
+  storagePath: z.string().optional(),
+  hookBufferPath: z.string().optional(),
+  harvestEventsMs: z.number().optional(),
+  harvestMetricsMs: z.number().optional(),
+  sessionBudgetUsd: z.number().nullable().optional(),
+  dailyBudgetUsd: z.number().nullable().optional(),
+  weeklyBudgetUsd: z.number().nullable().optional(),
+  port: z.number().optional(),
+  logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
+  collectorHost: z.string().nullable().optional(),
+  proxyUpstreams: z.array(z.unknown()).optional(),
+  nrApiKey: z.string().nullable().optional(),
+  digestWebhookUrl: z.string().nullable().optional(),
+  digestSchedule: z.string().optional(),
+  retainSessionsDays: z.number().nullable().optional(),
+  otlpEndpoint: z.string().nullable().optional(),
+  otlpHeaders: z.record(z.string()).optional(),
+  transport: z.enum(['nr-events-api', 'otlp', 'both']).optional(),
+  otlpReceiverEnabled: z.boolean().optional(),
+  otlpReceiverPort: z.number().optional(),
+  otlpForwardEndpoint: z.string().nullable().optional(),
+  otlpForwardHeaders: z.record(z.string()).optional(),
+  alerts: z.object({
+    personal: z.object({
+      dailyCostUsd: z.number().optional(),
+      sessionCostUsd: z.number().optional(),
+      efficiencyScoreMin: z.number().optional(),
+      stuckLoopCountMax: z.number().optional(),
+      antiPatternCountMax: z.number().optional(),
+    }).optional(),
+  }).optional(),
+}).strict();
 
 // N-07: strip control chars and truncate before the value reaches any NR event field or log
 export function sanitizeDeveloper(raw: string): string {
@@ -155,15 +201,30 @@ function loadConfigFile(filePath: string): Record<string, unknown> {
   } catch {
     return {};
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as Record<string, unknown>;
+    parsed = JSON.parse(raw);
   } catch (err) {
-    logger.warn('Failed to parse config file — ignoring', {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logger.error('Invalid JSON in config file', {
       filePath,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMsg,
     });
-    return {};
+    throw new Error(`Config file parsing failed at ${filePath}: ${errorMsg}`);
   }
+  const validation = ConfigFileSchema.safeParse(parsed);
+  if (!validation.success) {
+    const issues = validation.error.issues.map((issue) => {
+      const path = issue.path.join('.');
+      return `${path || 'root'}: ${issue.message}`;
+    }).join('; ');
+    logger.error('Config file validation failed', {
+      filePath,
+      issues,
+    });
+    throw new Error(`Config file validation failed at ${filePath}: ${issues}`);
+  }
+  return validation.data;
 }
 
 function resolveCollectorHost(

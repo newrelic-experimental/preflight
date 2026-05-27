@@ -90,6 +90,27 @@ describe('Thrashing detection', () => {
     const thrashing = result.patterns.filter(p => p.type === 'thrashing');
     expect(thrashing).toHaveLength(0);
   });
+
+  it('detects thrashing on flaky tests after pass without intermediate edits (F-026)', () => {
+    // Sequence: edit /a, test fail, test pass, test fail, test fail
+    // With threshold=2, should detect after 2 consecutive fails (even after a pass)
+    const detector = new AntiPatternDetector({ thrashThreshold: 2 });
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: true }), // Resets count
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }), // Restarts count (no Edit in between)
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }), // Count reaches 2, threshold met
+    ];
+
+    const result = detector.analyze(calls);
+    const thrashing = result.patterns.filter(p => p.type === 'thrashing');
+
+    expect(thrashing).toHaveLength(1);
+    expect(thrashing[0].file).toBe('/a.ts');
+    expect(thrashing[0].iterations).toBeGreaterThanOrEqual(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -435,6 +456,36 @@ describe('Efficiency metrics', () => {
 
     const result = detector.analyze(calls);
     expect(result.readEfficiency).toBeNull();
+  });
+
+  it('readEfficiency: 5 unique reads of 5 different files -> 1.0 (perfect)', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/b.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/c.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/d.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/e.ts' }),
+    ];
+
+    const result = detector.analyze(calls);
+    expect(result.readEfficiency).toBe(1.0);
+  });
+
+  it('readEfficiency: 5 reads of same file -> 0.2 (inefficient)', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+    ];
+
+    const result = detector.analyze(calls);
+    expect(result.readEfficiency).toBe(0.2);
   });
 
   it('verifyRate: 8 edits, 3 followed by test -> 0.375', () => {

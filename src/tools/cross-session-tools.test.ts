@@ -655,6 +655,67 @@ describe('Cross-session tool handlers', () => {
     }
   });
 
+  it('rejects non-numeric accountId (F-040)', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: 'my-team',
+      accountId: 'not-a-number',
+      nrApiKey: 'test-key',
+    });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toMatch(/Invalid accountId/);
+  });
+
+  it('rejects NaN accountId (F-040)', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: 'my-team',
+      accountId: 'NaN',
+      nrApiKey: 'test-key',
+    });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toMatch(/Invalid accountId/);
+  });
+
+  it('surfaces NerdGraph errors instead of returning empty results (F-037)', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ errors: [{ message: 'Access denied' }] }),
+    } as Response);
+
+    try {
+      const result = await handleGetTeamSummary({
+        teamId: 'my-team',
+        accountId: '12345',
+        nrApiKey: 'test-key',
+      });
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.error).toBeDefined();
+      expect(parsed.error).toContain('NerdGraph');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('surfaces missing data structure instead of returning empty results (F-037)', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { actor: { account: { nrql: null } } } }),
+    } as Response);
+
+    try {
+      const result = await handleGetTeamSummary({
+        teamId: 'my-team',
+        accountId: '12345',
+        nrApiKey: 'test-key',
+      });
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.error).toBeDefined();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   describe('toFiniteNumber (F-012)', () => {
     it('converts valid numbers', () => {
       expect(toFiniteNumber(123)).toBe(123);

@@ -88,6 +88,27 @@ export function validateReportToolCallInput(raw: unknown): ReportToolCallInput {
   if (typeof obj.success !== 'boolean') {
     throw new Error('Missing required field: success');
   }
+  // Validate optional numeric fields
+  if (obj.input_size_bytes !== undefined && typeof obj.input_size_bytes !== 'number') {
+    throw new Error('Field input_size_bytes must be a number when present');
+  }
+  if (obj.output_size_bytes !== undefined && typeof obj.output_size_bytes !== 'number') {
+    throw new Error('Field output_size_bytes must be a number when present');
+  }
+  if (obj.duration_ms !== undefined && typeof obj.duration_ms !== 'number') {
+    throw new Error('Field duration_ms must be a number when present');
+  }
+  if (obj.timestamp !== undefined && typeof obj.timestamp !== 'number') {
+    throw new Error('Field timestamp must be a number when present');
+  }
+  // Validate optional string fields
+  if (obj.error !== undefined && typeof obj.error !== 'string') {
+    throw new Error('Field error must be a string when present');
+  }
+  // Validate optional input object
+  if (obj.input !== undefined && (typeof obj.input !== 'object' || obj.input === null)) {
+    throw new Error('Field input must be an object when present');
+  }
   return obj as unknown as ReportToolCallInput;
 }
 

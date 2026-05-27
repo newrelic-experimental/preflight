@@ -114,7 +114,7 @@ export function toolCallToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiToolCall',
-    timestamp: Math.floor(record.timestamp / 1000),
+    timestamp: record.timestamp,
     tool: record.toolName,
     tool_use_id: record.toolUseId,
     success: record.success,
@@ -149,9 +149,14 @@ export function toolCallToNrEvent(
   return event;
 }
 
-/** Type guard for ProxyToolCallRecord (has serverName and upstreamLatencyMs). */
-function isProxyToolCall(record: ToolCallRecord): record is ProxyToolCallRecord {
-  return 'serverName' in record && 'upstreamLatencyMs' in record;
+/** Type guard for ProxyToolCallRecord (has serverName and upstreamLatencyMs with correct types). */
+export function isProxyToolCall(record: ToolCallRecord): record is ProxyToolCallRecord {
+  return (
+    'serverName' in record &&
+    typeof (record as Record<string, unknown>).serverName === 'string' &&
+    'upstreamLatencyMs' in record &&
+    typeof (record as Record<string, unknown>).upstreamLatencyMs === 'number'
+  );
 }
 
 /**
@@ -163,7 +168,7 @@ export function proxyToolCallToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiMcpToolCall',
-    timestamp: Math.floor(record.timestamp / 1000),
+    timestamp: record.timestamp,
     server: record.serverName,
     tool: record.toolName,
     duration_ms: record.durationMs ?? 0,
@@ -196,7 +201,7 @@ export function proxyRequestToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiProxyRequest',
-    timestamp: Math.floor(record.timestamp / 1000),
+    timestamp: record.timestamp,
     server: record.serverName,
     method: record.method,
     duration_ms: record.durationMs,
@@ -232,13 +237,13 @@ export function codingTaskToNrEvent(
 
   const event: NrEventData = {
     eventType: 'AiCodingTask',
-    timestamp: Math.floor(task.endTime / 1000),
+    timestamp: task.endTime,
     task_id: task.taskId,
     developer: attrs.developer,
     app_name: attrs.appName,
     platform,
-    start_time: Math.floor(task.startTime / 1000),
-    end_time: Math.floor(task.endTime / 1000),
+    start_time: task.startTime,
+    end_time: task.endTime,
     duration_ms: task.durationMs,
     tool_call_count: task.toolCallCount,
     files_read: task.filesRead.length,
@@ -277,7 +282,8 @@ export function antiPatternToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiAntiPattern',
-    timestamp: Math.floor(Date.now() / 1000),
+    timestamp: Date.now(),
+    // Field name is intentionally 'type' (not 'patternType') — used by all NRQL queries and dashboards. Do not rename.
     type: pattern.type,
     task_id: attrs.taskId,
     developer: attrs.developer,
@@ -495,7 +501,7 @@ export class NrIngestManager {
   ingestBudgetWarning(event: BudgetThresholdEvent): void {
     const nrEvent: NrEventData = {
       eventType: 'AiBudgetWarning',
-      timestamp: Math.floor(event.timestamp / 1000),
+      timestamp: event.timestamp,
       developer: this.developer,
       appName: this.appName,
       budget_period: event.period,
@@ -525,14 +531,15 @@ export class NrIngestManager {
   }
 
   async stop(): Promise<void> {
+    // Emit final session gauges before clearing interval and stopping scheduler
+    this.emitSessionGauges();
+
     // Clear session gauge interval
     if (this.sessionGaugeIntervalId !== null) {
       clearInterval(this.sessionGaugeIntervalId);
       this.sessionGaugeIntervalId = null;
     }
 
-    // Emit final session gauges before marking as stopped
-    this.emitSessionGauges();
     this.running = false;
 
     const cleanupPromises = [this.scheduler.stop(), this.logIngest.stop()];

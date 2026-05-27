@@ -12,7 +12,7 @@ export interface LatencyPercentiles {
 
 export interface LatencyMetrics {
   readonly overall: LatencyPercentiles | null;
-  readonly byTool: Readonly<Record<string, LatencyPercentiles>>;
+  readonly byTool: Readonly<Record<string, LatencyPercentiles | null>>;
   readonly slowestCalls: ReadonlyArray<{
     toolName: string;
     durationMs: number;
@@ -69,23 +69,25 @@ export class LatencyTracker {
     }
   }
 
-  private computePercentiles(sorted: number[]): LatencyPercentiles {
+  private computePercentiles(sorted: number[]): LatencyPercentiles | null {
+    if (sorted.length === 0) return null;
+
     const count = sorted.length;
     return {
       p50: computePercentile(sorted, 0.5) ?? 0,
       p95: computePercentile(sorted, 0.95) ?? 0,
       p99: computePercentile(sorted, 0.99) ?? 0,
-      min: sorted[0] ?? 0,
-      max: sorted[count - 1] ?? 0,
+      min: sorted[0]!,
+      max: sorted[count - 1]!,
       count,
     };
   }
 
   getMetrics(): LatencyMetrics {
     const sortedAll = [...this.allDurations].sort((a, b) => a - b);
-    const overall = sortedAll.length > 0 ? this.computePercentiles(sortedAll) : null;
+    const overall = this.computePercentiles(sortedAll);
 
-    const byTool: Record<string, LatencyPercentiles> = {};
+    const byTool: Record<string, LatencyPercentiles | null> = {};
     for (const [tool, durations] of this.byTool) {
       const sorted = [...durations].sort((a, b) => a - b);
       byTool[tool] = this.computePercentiles(sorted);

@@ -114,4 +114,26 @@ describe('LatencyTracker', () => {
     expect(Object.keys(t.getMetrics().byTool)).toHaveLength(0);
     expect(t.getMetrics().slowestCalls).toHaveLength(0);
   });
+
+  it('byTool does not include tools with no valid samples (F-028)', () => {
+    const t = new LatencyTracker();
+    // Record invalid duration for Read — it returns early and is never added to byTool
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number }));
+    // Record valid duration for Bash
+    t.recordToolCall(makeRecord({ toolName: 'Bash', durationMs: 100 }));
+    const m = t.getMetrics();
+    // Read was never added to byTool because durationMs was null
+    expect(m.byTool['Read']).toBeUndefined();
+    // Bash recorded with valid sample — should have data, not null
+    expect(m.byTool['Bash']).not.toBeNull();
+    expect(m.byTool['Bash']?.p50).toBe(100);
+  });
+
+  it('overall is null when all recorded calls have null/undefined durationMs (F-028)', () => {
+    const t = new LatencyTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Read', durationMs: null as unknown as number }));
+    t.recordToolCall(makeRecord({ toolName: 'Edit', durationMs: undefined as unknown as number }));
+    const m = t.getMetrics();
+    expect(m.overall).toBeNull();
+  });
 });

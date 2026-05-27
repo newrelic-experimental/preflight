@@ -182,4 +182,26 @@ describe('PersonalCoach', () => {
       expect(result.weeksAnalyzed).toBe(2);
     }
   });
+
+  it('baseline metrics do not contain NaN', () => {
+    const summaries = [
+      makeWeeklySummary('2026-W02', developer),
+      makeWeeklySummary('2026-W01', developer),
+    ];
+    const gen = makeSummaryGenerator(summaries);
+    const coach = new PersonalCoach(gen, developer);
+    const result = coach.generate();
+    if (result.status === 'ok') {
+      // Verify all numeric baseline metrics are finite numbers (not NaN or Infinity)
+      expect(Number.isFinite(result.baseline.totalCostUsd)).toBe(true);
+      expect(Number.isFinite(result.baseline.avgCostPerSession)).toBe(true);
+      expect(Number.isFinite(result.baseline.antiPatternCount)).toBe(true);
+      expect(Number.isFinite(result.baseline.antiPatternRate)).toBe(true);
+      expect(Number.isFinite(result.baseline.sessionsCount)).toBe(true);
+      expect(Number.isFinite(result.baseline.avgToolCallsPerSession)).toBe(true);
+      if (result.baseline.avgEfficiencyScore !== null) {
+        expect(Number.isFinite(result.baseline.avgEfficiencyScore)).toBe(true);
+      }
+    }
+  });
 });

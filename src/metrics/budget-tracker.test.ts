@@ -119,4 +119,70 @@ describe('BudgetTracker', () => {
     expect(status.remainingUsd).toBeCloseTo(13);
     expect(status.pctUsed).toBeCloseTo(35);
   });
+
+  it('re-arms daily thresholds after midnight (F-020)', () => {
+    jest.useFakeTimers();
+    const events: unknown[] = [];
+    const t = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: 10,
+      weeklyBudgetUsd: null,
+      onThreshold: (e) => events.push(e),
+    });
+
+    const initialDate = new Date('2026-05-27T10:00:00Z');
+    jest.setSystemTime(initialDate);
+
+    // Fire 50% threshold on day 1
+    t.updateCost(0, 5, 0);
+    expect(events).toHaveLength(1);
+    expect((events[0] as { period: string; thresholdPct: number }).period).toBe('daily');
+    expect((events[0] as { period: string; thresholdPct: number }).thresholdPct).toBe(50);
+
+    // Advance to next day without firing again
+    jest.setSystemTime(new Date('2026-05-27T20:00:00Z'));
+    t.updateCost(0, 6, 0);
+    expect(events).toHaveLength(1);
+
+    // Advance past midnight to next day
+    jest.setSystemTime(new Date('2026-05-28T10:00:00Z'));
+    // Reset daily spent to simulate new day, keep session spending
+    t.updateCost(0, 5, 0);
+    expect(events).toHaveLength(2);
+    expect((events[1] as { period: string }).period).toBe('daily');
+
+    jest.useRealTimers();
+  });
+
+  it('re-arms weekly thresholds after week rollover (F-020)', () => {
+    jest.useFakeTimers();
+    const events: unknown[] = [];
+    const t = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: 50,
+      onThreshold: (e) => events.push(e),
+    });
+
+    const initialDate = new Date('2026-05-27T10:00:00Z');
+    jest.setSystemTime(initialDate);
+
+    // Fire 50% threshold on week 1
+    t.updateCost(0, 0, 25);
+    expect(events).toHaveLength(1);
+    expect((events[0] as { period: string }).period).toBe('weekly');
+
+    // Advance within same week
+    jest.setSystemTime(new Date('2026-05-29T10:00:00Z'));
+    t.updateCost(0, 0, 30);
+    expect(events).toHaveLength(1);
+
+    // Advance to next week (Mon = week start)
+    jest.setSystemTime(new Date('2026-06-02T10:00:00Z'));
+    t.updateCost(0, 0, 25);
+    expect(events).toHaveLength(2);
+    expect((events[1] as { period: string }).period).toBe('weekly');
+
+    jest.useRealTimers();
+  });
 });

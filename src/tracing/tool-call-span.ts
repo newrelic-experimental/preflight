@@ -30,7 +30,9 @@ export function emitToolCallSpan(
     parentContext,
   );
 
-  if (record.durationMs !== null) {
+  let ended = false;
+
+  if (record.durationMs != null && Number.isFinite(record.durationMs)) {
     const endTime = record.timestamp + record.durationMs;
     if (!record.success) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: record.error ?? record.errorType ?? 'tool call failed' });
@@ -38,11 +40,15 @@ export function emitToolCallSpan(
     } else {
       span.setStatus({ code: SpanStatusCode.OK });
     }
-    span.end(endTime);
-  } else {
+    if (!ended) {
+      span.end(endTime);
+      ended = true;
+    }
+  } else if (!ended) {
     // Orphaned/timeout record — end immediately
     span.setStatus({ code: SpanStatusCode.ERROR, message: 'orphaned tool call (no post event)' });
     span.end();
+    ended = true;
   }
 
   logger.debug('Tool call span emitted', { tool: record.toolName, success: record.success });

@@ -635,7 +635,13 @@ export async function handleGetTeamSummary(
   }
   const safeTeamId = options.teamId;
 
-  const accountId = parseInt(options.accountId, 10);
+  const accountId = Number(options.accountId);
+  if (!Number.isFinite(accountId)) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: `Invalid accountId: "${options.accountId}" is not a valid number` }) }],
+      isError: true,
+    };
+  }
 
   const nerdgraphQuery = `query($accountId: Int!, $nrql: Nrql!) {
     actor { account(id: $accountId) { nrql(query: $nrql) { results } } }
@@ -657,7 +663,10 @@ export async function handleGetTeamSummary(
       const msg = (json.errors as Array<{ message?: unknown }>).map(e => String(e.message ?? e)).join('; ');
       throw new Error(`NerdGraph errors: ${msg}`);
     }
-    return (json.data?.actor.account.nrql.results ?? []) as Array<Record<string, unknown>>;
+    if (!json.data?.actor?.account?.nrql?.results) {
+      throw new Error('NerdGraph query returned no data (unexpected response structure)');
+    }
+    return json.data.actor.account.nrql.results as Array<Record<string, unknown>>;
   }
 
   let costRows: Array<Record<string, unknown>>;

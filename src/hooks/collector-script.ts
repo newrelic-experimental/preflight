@@ -30,7 +30,26 @@ function getBufferPath(): string {
   return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH ?? DEFAULT_BUFFER_PATH;
 }
 
+function getHighSecurity(): boolean {
+  const highSecurityEnv = process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY === 'true';
+  if (highSecurityEnv) return true;
+
+  try {
+    const configPath = resolve(homedir(), '.nr-ai-observe', 'config.json');
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+      return config.highSecurity === true;
+    }
+  } catch {
+    // Silently ignore config read errors
+  }
+
+  return false;
+}
+
 function getRecordContent(): boolean {
+  const highSecurity = getHighSecurity();
+  if (highSecurity) return false;
   return process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT === 'true';
 }
 
@@ -260,7 +279,7 @@ function processHook(raw: string): void {
       tool: toolName,
       timestamp,
       success: false,
-      error: data.error ?? 'unknown error',
+      error: redact(data.error ?? 'unknown error'),
       isInterrupt: data.is_interrupt ?? false,
     };
   } else {
@@ -307,7 +326,7 @@ function processHook(raw: string): void {
 }
 
 // Exported for testing
-export { processHook, redact, hashInput, sizeOf, truncate };
+export { processHook, redact, hashInput, sizeOf, truncate, getRecordContent };
 
 // ---------------------------------------------------------------------------
 // Entry point — only when run directly (not when imported by the MCP server)

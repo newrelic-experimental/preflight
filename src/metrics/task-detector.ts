@@ -115,8 +115,10 @@ class ActiveTask {
     } else if (tool === 'Edit') {
       const newLines = (record.newLineCount as number | undefined) ?? 0;
       const oldLines = (record.oldLineCount as number | undefined) ?? 0;
-      this.linesAdded += Math.max(0, newLines - oldLines);
-      this.linesRemoved += Math.max(0, oldLines - newLines);
+      // Track actual additions and removals, not just net diff.
+      // An edit that replaces 10 lines with 15 lines: removed=10, added=15 (not added=5).
+      this.linesAdded += newLines;
+      this.linesRemoved += oldLines;
       this.linesChanged += Math.abs(newLines - oldLines);
     }
 

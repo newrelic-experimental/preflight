@@ -161,8 +161,10 @@ export class PersonalCoach {
   ): PersonalWeekMetrics {
     const metrics = weeks.map(w => this.toPersonalWeekMetrics(w));
 
-    const mean = (values: number[]): number =>
-      values.reduce((a, b) => a + b, 0) / values.length;
+    const mean = (values: number[]): number => {
+      if (values.length === 0) return 0;
+      return values.reduce((a, b) => a + b, 0) / values.length;
+    };
 
     const efficiencyScores = metrics
       .map(m => m.avgEfficiencyScore)

@@ -132,10 +132,12 @@ export class AntiPatternDetector {
             flagged.set(lastEditFile, count);
           }
         } else {
-          // Test passed — reset cycle count for this file
+          // Test passed — reset cycle count for this file, but keep tracking the file
+          // for subsequent test attempts (flaky tests may fail again)
           fileCycles.set(lastEditFile, 0);
         }
-        lastEditFile = null;
+        // Note: Don't clear lastEditFile here. It persists until a new Edit to a different file.
+        // This allows proper tracking of cycles when tests fail again after passing.
       }
     }
 

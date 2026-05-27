@@ -52,7 +52,8 @@ export class BudgetTracker {
   private dailySpentUsd = 0;
   private weeklySpentUsd = 0;
 
-  private firedThresholds = new Set<string>();
+  // Map from threshold key (e.g., "daily_50") to period ID (e.g., "day:2026-05-27")
+  private firedThresholds = new Map<string, string>();
   private alerts: BudgetThresholdEvent[] = [];
 
   constructor(options: BudgetOptions) {
@@ -73,7 +74,41 @@ export class BudgetTracker {
     this.checkThresholds();
   }
 
+  private currentPeriodId(period: BudgetPeriod): string {
+    const now = new Date();
+    if (period === 'session') {
+      return 'session:infinite';
+    }
+    if (period === 'daily') {
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `day:${year}-${month}-${day}`;
+    }
+    if (period === 'weekly') {
+      const year = now.getFullYear();
+      const jan4 = new Date(year, 0, 4);
+      const weekStart = new Date(jan4);
+      weekStart.setDate(jan4.getDate() - jan4.getDay());
+      const week = Math.ceil((now.getTime() - weekStart.getTime()) / (7 * 24 * 60 * 60 * 1000));
+      const weekNum = String(Math.max(1, week)).padStart(2, '0');
+      return `week:${year}-W${weekNum}`;
+    }
+    return '';
+  }
+
+  private pruneStaleThresholds(): void {
+    for (const [key, periodId] of this.firedThresholds.entries()) {
+      const period = key.split('_')[0] as BudgetPeriod;
+      const currentPeriod = this.currentPeriodId(period);
+      if (periodId !== currentPeriod) {
+        this.firedThresholds.delete(key);
+      }
+    }
+  }
+
   private checkThresholds(): void {
+    this.pruneStaleThresholds();
     this.checkPeriod('session', this.sessionSpentUsd, this.sessionBudgetUsd);
     this.checkPeriod('daily', this.dailySpentUsd, this.dailyBudgetUsd);
     this.checkPeriod('weekly', this.weeklySpentUsd, this.weeklyBudgetUsd);
@@ -86,10 +121,11 @@ export class BudgetTracker {
   ): void {
     if (budget === null || budget <= 0) return;
     const pctUsed = (spent / budget) * 100;
+    const currentPeriod = this.currentPeriodId(period);
     for (const level of THRESHOLD_LEVELS) {
       const key = `${period}_${level}`;
       if (pctUsed >= level && !this.firedThresholds.has(key)) {
-        this.firedThresholds.add(key);
+        this.firedThresholds.set(key, currentPeriod);
         const event: BudgetThresholdEvent = {
           period,
           thresholdPct: level,
@@ -135,7 +171,7 @@ export class BudgetTracker {
 
   resetSession(): void {
     this.sessionSpentUsd = 0;
-    for (const key of this.firedThresholds) {
+    for (const key of this.firedThresholds.keys()) {
       if (key.startsWith('session_')) this.firedThresholds.delete(key);
     }
     this.alerts = this.alerts.filter(a => a.period !== 'session');

@@ -276,25 +276,30 @@ async function main(): Promise<void> {
     eventProcessor = new HookEventProcessor({
       store: localStore,
       onRecord: (record) => {
+        if (!config || !sessionTracker || !taskDetector) {
+          logger.warn('onRecord called before full initialization; skipping');
+          return;
+        }
+
         // Capture active task ID before recordToolCall may close the current task
-        const taskIdBeforeRecord = config!.transport !== 'nr-events-api'
-          ? taskDetector!.getActiveTaskId()
+        const taskIdBeforeRecord = config.transport !== 'nr-events-api'
+          ? taskDetector.getActiveTaskId()
           : null;
 
-        sessionTracker!.recordToolCall(record);
-        taskDetector!.recordToolCall(record);
+        sessionTracker.recordToolCall(record);
+        taskDetector.recordToolCall(record);
 
-        if (config!.transport !== 'nr-events-api') {
+        if (config.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
-          const activeTaskId = taskDetector!.getActiveTaskId();
+          const activeTaskId = taskDetector.getActiveTaskId();
           const parentCtx = taskIdBeforeRecord
-            ? taskSpanTracker!.getContext(taskIdBeforeRecord, sessionSpan!.getContext())
-            : sessionSpan!.getContext();
+            ? taskSpanTracker.getContext(taskIdBeforeRecord, sessionSpan.getContext())
+            : sessionSpan.getContext();
           emitToolCallSpan(record, parentCtx, activeTaskId ?? undefined);
 
           // Open a task span if a new task was started by this record
           if (activeTaskId !== null && activeTaskId !== taskIdBeforeRecord) {
-            taskSpanTracker!.openTask(activeTaskId, record.toolName, sessionSpan!.getContext());
+            taskSpanTracker.openTask(activeTaskId, record.toolName, sessionSpan.getContext());
           }
         }
 
@@ -310,7 +315,7 @@ async function main(): Promise<void> {
           costTracker.recordEstimatedTokens(
             record.inputSizeBytes ?? 0,
             record.outputSizeBytes ?? 0,
-            config!.model,
+            config.model,
           );
         }
 
@@ -325,12 +330,12 @@ async function main(): Promise<void> {
 
         // Emit any tasks that completed as a result of this record,
         // and detect anti-patterns across each completed task's tool calls
-        for (const task of taskDetector!.drainNewlyCompletedTasks()) {
+        for (const task of taskDetector.drainNewlyCompletedTasks()) {
           capturedNrIngest.ingestCodingTask(task);
           taskCompletionTracker.recordTask(task);
           // Close the task span — this handles both signal-driven and idle-timer-driven closures
-          if (config!.transport !== 'nr-events-api') {
-            taskSpanTracker!.closeTask(task.taskId, task.toolCallCount);
+          if (config.transport !== 'nr-events-api' && taskSpanTracker) {
+            taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
           }
           const firstRecord = task.toolCalls[0];
           const context = {
@@ -382,15 +387,15 @@ async function main(): Promise<void> {
     });
 
     persistSession = () => {
-      if (!sessionStore) return;
+      if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
         const summary = buildSessionSummary({
-          sessionTracker: sessionTracker!,
+          sessionTracker,
           costTracker,
-          taskDetector: taskDetector!,
+          taskDetector,
           antiPatternDetector,
           efficiencyScorer,
-          developer: config!.developer ?? 'unknown',
+          developer: config.developer ?? 'unknown',
         });
         sessionStore.saveSession(summary);
         weeklySummaryGenerator?.checkAndGenerateLastWeek();

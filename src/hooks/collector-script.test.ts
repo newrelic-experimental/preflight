@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { processHook, redact, hashInput, sizeOf, truncate } from './collector-script.js';
+import { processHook, redact, hashInput, sizeOf, truncate, getRecordContent } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -197,6 +197,25 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.isInterrupt).toBe(true);
     });
+
+    it('redacts sensitive information in error messages (F-017)', () => {
+      const errorWithToken = 'Authorization failed: Bearer eyJhbGciOiJIUzI1NiJ9.token.signature';
+      processHook(makePostToolUseFailure({ error: errorWithToken }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.error).not.toContain('Bearer');
+      expect(event.error).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+      expect(event.error).toContain('[REDACTED]');
+    });
+
+    it('redacts API keys in error messages (F-017)', () => {
+      const errorWithApiKey = 'Failed: API_KEY = sk-1234567890abcdef';
+      processHook(makePostToolUseFailure({ error: errorWithApiKey }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.error).not.toContain('sk-1234567890abcdef');
+      expect(event.error).toContain('[REDACTED]');
+    });
   });
 
   describe('recordContent', () => {
@@ -350,6 +369,30 @@ describe('collector-script', () => {
     it('redact() does not match an unterminated PEM block — bounded pattern prevents ReDoS (N-02)', () => {
       const input = '-----BEGIN RSA PRIVATE KEY-----' + 'B'.repeat(200);
       expect(redact(input)).toBe(input);
+    });
+
+    describe('getRecordContent() — enforcing highSecurity (F-015)', () => {
+      beforeEach(() => {
+        delete process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY;
+        delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
+      });
+
+      it('returns false when NEW_RELIC_AI_MCP_HIGH_SECURITY env var is set', () => {
+        process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY = 'true';
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        expect(getRecordContent()).toBe(false);
+      });
+
+      it('returns true when recordContent env var is true and highSecurity is not set', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        expect(getRecordContent()).toBe(true);
+      });
+
+      it('returns false by default when neither env nor config is set', () => {
+        expect(getRecordContent()).toBe(false);
+      });
     });
   });
 

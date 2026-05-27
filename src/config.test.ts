@@ -302,16 +302,60 @@ describe('loadMcpConfig()', () => {
     expect(config.licenseKey).toBe('test-key');
   });
 
-  it('gracefully handles invalid JSON in config file and logs a warning', () => {
+  it('throws on invalid JSON in config file (F-033)', () => {
     const path = resolve(tmpDir, 'bad.json');
     writeFileSync(path, 'not json{{{');
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
-    const config = loadMcpConfig({ config: path });
-    expect(config.licenseKey).toBe('test-key');
+    expect(() => loadMcpConfig({ config: path })).toThrow(/Config file parsing failed/);
     const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(stderrOutput).toMatch(/warn/);
-    expect(stderrOutput).toMatch(/Failed to parse config file/);
+    expect(stderrOutput).toMatch(/error/);
+    expect(stderrOutput).toMatch(/Invalid JSON in config file/);
+  });
+
+  it('throws on invalid config file schema (F-036)', () => {
+    const path = resolve(tmpDir, 'bad-schema.json');
+    writeFileSync(path, JSON.stringify({
+      sessionBudgetUsd: 'not-a-number', // should be number
+      licenseKey: 'test-key',
+      accountId: '12345',
+    }));
+    process.env.NEW_RELIC_LICENSE_KEY = 'ignored';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    expect(() => loadMcpConfig({ config: path })).toThrow(/Config file validation failed/);
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/error/);
+    expect(stderrOutput).toMatch(/validation failed/);
+  });
+
+  it('rejects unknown fields in config file (F-036)', () => {
+    const path = resolve(tmpDir, 'unknown-fields.json');
+    writeFileSync(path, JSON.stringify({
+      licenseKey: 'test-key',
+      accountId: '12345',
+      unknownField: 'should-fail',
+    }));
+    process.env.NEW_RELIC_LICENSE_KEY = 'ignored';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    expect(() => loadMcpConfig({ config: path })).toThrow(/Config file validation failed/);
+  });
+
+  it('accepts valid config file with all optional numeric fields (F-036)', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'valid-numeric.json');
+    writeFileSync(path, JSON.stringify({
+      sessionBudgetUsd: 10.5,
+      dailyBudgetUsd: 50,
+      weeklyBudgetUsd: 300,
+      port: 9847,
+      harvestEventsMs: 5000,
+      harvestMetricsMs: 60000,
+    }));
+    const config = loadMcpConfig({ config: path });
+    expect(config.sessionBudgetUsd).toBe(10.5);
+    expect(config.dailyBudgetUsd).toBe(50);
+    expect(config.weeklyBudgetUsd).toBe(300);
   });
 
   it('silently ignores missing config file without a warning', () => {

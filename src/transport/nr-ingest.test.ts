@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { toolCallToNrEvent, codingTaskToNrEvent, antiPatternToNrEvent, proxyToolCallToNrEvent, NrIngestManager } from './nr-ingest.js';
+import { toolCallToNrEvent, codingTaskToNrEvent, antiPatternToNrEvent, proxyToolCallToNrEvent, NrIngestManager, isProxyToolCall } from './nr-ingest.js';
 import type { NrIngestOptions } from './nr-ingest.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
@@ -123,11 +123,11 @@ describe('toolCallToNrEvent()', () => {
     expect(event.app_name).toBe('my-app');
   });
 
-  it('converts timestamp from ms to seconds', () => {
+  it('preserves timestamp in milliseconds', () => {
     const record = makeRecord({ timestamp: 1_700_000_000_000 });
     const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
 
-    expect(event.timestamp).toBe(1_700_000_000);
+    expect(event.timestamp).toBe(1_700_000_000_000);
   });
 
   it('includes tool-specific fields from parsers', () => {
@@ -414,13 +414,13 @@ describe('codingTaskToNrEvent()', () => {
     expect(event.files_modified).toBe(1);
   });
 
-  it('converts timestamp from ms to seconds', () => {
-    const task = makeTask({ endTime: 1_700_000_060_000 });
+  it('preserves timestamps in milliseconds', () => {
+    const task = makeTask({ endTime: 1_700_000_060_000, startTime: 1_700_000_000_000 });
     const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
 
-    expect(event.timestamp).toBe(1_700_000_060);
-    expect(event.start_time).toBe(1_700_000_000);
-    expect(event.end_time).toBe(1_700_000_060);
+    expect(event.timestamp).toBe(1_700_000_060_000);
+    expect(event.start_time).toBe(1_700_000_000_000);
+    expect(event.end_time).toBe(1_700_000_060_000);
   });
 
   it('sets session_id from the first tool call record', () => {
@@ -593,14 +593,14 @@ describe('antiPatternToNrEvent()', () => {
     expect(event.platform).toBe('claude-code');
   });
 
-  it('timestamp is in seconds', () => {
-    const before = Math.floor(Date.now() / 1000);
+  it('timestamp is in milliseconds (F-021)', () => {
+    const before = Date.now();
     const event = antiPatternToNrEvent(makePattern(), {
       developer: 'd',
       appName: 'a',
       taskId: 'task-007',
     });
-    const after = Math.floor(Date.now() / 1000);
+    const after = Date.now();
 
     expect(event.timestamp as number).toBeGreaterThanOrEqual(before);
     expect(event.timestamp as number).toBeLessThanOrEqual(after);
@@ -746,6 +746,41 @@ describe('session trace ID propagation', () => {
     const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<Record<string, unknown>>;
     const patternEvent = sentEvents.find(e => e.eventType === 'AiAntiPattern');
     expect(patternEvent?.session_id).toBe(TRACE_ID);
+  });
+
+  it('isProxyToolCall: returns true for valid proxy record', () => {
+    const record = makeProxyRecord();
+    expect(isProxyToolCall(record)).toBe(true);
+  });
+
+  it('isProxyToolCall: returns false when serverName is null', () => {
+    const record = makeProxyRecord({ serverName: null as unknown as string });
+    expect(isProxyToolCall(record)).toBe(false);
+  });
+
+  it('isProxyToolCall: returns false when serverName is not a string', () => {
+    const record = makeProxyRecord({ serverName: 123 as unknown as string });
+    expect(isProxyToolCall(record)).toBe(false);
+  });
+
+  it('isProxyToolCall: returns false when upstreamLatencyMs is null', () => {
+    const record = makeProxyRecord({ upstreamLatencyMs: null as unknown as number });
+    expect(isProxyToolCall(record)).toBe(false);
+  });
+
+  it('isProxyToolCall: returns false when upstreamLatencyMs is not a number', () => {
+    const record = makeProxyRecord({ upstreamLatencyMs: 'broken' as unknown as number });
+    expect(isProxyToolCall(record)).toBe(false);
+  });
+
+  it('isProxyToolCall: returns false when serverName is missing', () => {
+    const record = makeRecord({ upstreamLatencyMs: 10 } as Partial<ToolCallRecord>);
+    expect(isProxyToolCall(record)).toBe(false);
+  });
+
+  it('isProxyToolCall: returns false when upstreamLatencyMs is missing', () => {
+    const record = makeRecord({ serverName: 'test-server' } as Partial<ToolCallRecord>);
+    expect(isProxyToolCall(record)).toBe(false);
   });
 
   it('proxyToolCallToNrEvent: uses sessionTraceId when provided', () => {

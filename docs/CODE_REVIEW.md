@@ -400,7 +400,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ## Medium severity
 
-### [F-015] `highSecurity=true` is enforceable in main config but bypassable via env in collector — Medium (SEC) ✅
+### ~~[F-015] `highSecurity=true` is enforceable in main config but bypassable via env in collector — Medium (SEC)~~ ✅
 **Location:** `src/config.ts:323-327`, `src/hooks/collector-script.ts:228, 251`
 **Issue:** The main config loader forces `recordContent: false` when `highSecurity` is true. The collector script reads `recordContent` from `NEW_RELIC_AI_MCP_RECORD_CONTENT` independently and has no awareness of the `highSecurity` flag. If the env var is set inconsistently, content can still be captured by the hook collector even when the server config says high-security mode is on.
 **Impact:** A misconfigured high-security deployment silently captures content the customer believed was off-limits — a serious trust violation given the brief's compliance positioning.
@@ -408,18 +408,20 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 **Implementation steps for Haiku:**
 
-1. Open `src/config.ts`. After `recordContent` is resolved (around line 324), expose the `highSecurity` flag through the existing collector-env mechanism.
-2. In the install/setup wizard (`src/install/setup-wizard.ts`), when generating the hook command line, pass `NEW_RELIC_AI_MCP_HIGH_SECURITY=true` if `highSecurity` is set.
-3. Open `src/hooks/collector-script.ts`. Near line 34 where `getRecordContent()` reads `NEW_RELIC_AI_MCP_RECORD_CONTENT`, add a parallel check: `const highSecurity = process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY === 'true';`
-4. In `getRecordContent()`, if `highSecurity` is true, return `false` regardless of the other env var: `if (highSecurity) return false;`
-5. Build: `npm run build`.
-6. Add a test in `src/hooks/collector-script.test.ts`: set `NEW_RELIC_AI_MCP_HIGH_SECURITY=true` and `NEW_RELIC_AI_MCP_RECORD_CONTENT=true`, call `getRecordContent()`, assert `false`.
-7. Run tests: `npx jest -- src/hooks/collector-script.test.ts`.
-8. Run: `npm run lint`.
+~~1. Open `src/config.ts`. After `recordContent` is resolved (around line 324), expose the `highSecurity` flag through the existing collector-env mechanism.~~
+~~2. In the install/setup wizard (`src/install/setup-wizard.ts`), when generating the hook command line, pass `NEW_RELIC_AI_MCP_HIGH_SECURITY=true` if `highSecurity` is set.~~
+~~3. Open `src/hooks/collector-script.ts`. Near line 34 where `getRecordContent()` reads `NEW_RELIC_AI_MCP_RECORD_CONTENT`, add a parallel check: `const highSecurity = process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY === 'true';`~~
+~~4. In `getRecordContent()`, if `highSecurity` is true, return `false` regardless of the other env var: `if (highSecurity) return false;`~~
+~~5. Build: `npm run build`.~~
+~~6. Add a test in `src/hooks/collector-script.test.ts`: set `NEW_RELIC_AI_MCP_HIGH_SECURITY=true` and `NEW_RELIC_AI_MCP_RECORD_CONTENT=true`, call `getRecordContent()`, assert `false`.~~
+~~7. Run tests: `npx jest -- src/hooks/collector-script.test.ts`.~~
+~~8. Run: `npm run lint`.~~
+
+**COMPLETED:** Added `getHighSecurity()` function that checks both `NEW_RELIC_AI_MCP_HIGH_SECURITY` env var and config file's `highSecurity` flag. Modified `getRecordContent()` to enforce `highSecurity` setting — when high-security is enabled, content recording is always forced to false regardless of other settings. Exported `getRecordContent()` for testing and added tests verifying env var enforcement.
 
 ---
 
-### [F-016] Slack webhook URL has no SSRF validation in `digest-sender.ts` — Medium (SEC) ✅
+### ~~[F-016] Slack webhook URL has no SSRF validation in `digest-sender.ts` — Medium (SEC)~~ ✅
 **Location:** `src/digest/digest-sender.ts:1-10`
 **Issue:** `sendSlackDigest()` accepts any string `webhookUrl` and passes it directly to `fetch()`. SSRF protection currently exists only at the caller site (`cross-session-tools.ts:712` checks the `https://hooks.slack.com/` prefix). Other call paths or future surfaces that pass a different URL bypass that check entirely.
 **Impact:** If an attacker writes the config file or sets the env var, the digest can be redirected to an arbitrary URL — leaking the digest contents (developer names, costs, anti-patterns) and turning the process into an SSRF vector.
@@ -427,21 +429,23 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 **Implementation steps for Haiku:**
 
-1. Open `src/digest/digest-sender.ts`.
-2. At the top of `sendSlackDigest()` (just after the function signature), add validation:
+~~1. Open `src/digest/digest-sender.ts`.~~
+~~2. At the top of `sendSlackDigest()` (just after the function signature), add validation:~~
    ```typescript
    if (!webhookUrl.startsWith('https://hooks.slack.com/')) {
      throw new Error('Invalid webhook URL: must start with https://hooks.slack.com/');
    }
    ```
-3. Build: `npm run build`.
-4. Add a test in `src/digest/digest-sender.test.ts` (create if missing): assert that `sendSlackDigest('http://evil.com/x', payload)` throws.
-5. Run tests: `npx jest -- src/digest`.
-6. Run: `npm run lint`.
+~~3. Build: `npm run build`.~~
+~~4. Add a test in `src/digest/digest-sender.test.ts` (create if missing): assert that `sendSlackDigest('http://evil.com/x', payload)` throws.~~
+~~5. Run tests: `npx jest -- src/digest`.~~
+~~6. Run: `npm run lint`.~~
+
+**COMPLETED:** Added SSRF validation at the top of `sendSlackDigest()` to enforce `https://hooks.slack.com/` prefix on all webhook URLs. Created comprehensive test suite with 7 test cases covering valid Slack URLs, invalid domains, HTTP URLs, localhost, and internal IP addresses. All tests passing, no lint errors.
 
 ---
 
-### [F-017] Error messages from `collector-script.ts` not redacted before persisting — Medium (SEC) ✅
+### ~~[F-017] Error messages from `collector-script.ts` not redacted before persisting — Medium (SEC)~~ ✅
 **Location:** `src/hooks/collector-script.ts:263`
 **Issue:** `error: data.error ?? 'unknown error'` is written into the buffer without `redact()`. The error string can carry stack traces, file paths, or — worst case — secret values that surfaced in an exception message.
 **Impact:** Buffer file (then NR events) contains unredacted error contents.
@@ -449,13 +453,15 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 **Implementation steps for Haiku:**
 
-1. Open `src/hooks/collector-script.ts`. Verify `redact` is imported at the top (it should already be — search for `redact`).
-2. Locate line 263, currently `error: data.error ?? 'unknown error'`.
-3. Replace with: `error: redact(data.error ?? 'unknown error')`.
-4. Build: `npm run build`.
-5. Add a test in `src/hooks/collector-script.test.ts` that constructs a `PostToolUseFailure` event with an error string containing `Bearer abc123` and asserts the persisted event's `error` field is redacted.
-6. Run: `npx jest -- src/hooks/collector-script.test.ts`.
-7. Run: `npm run lint`.
+~~1. Open `src/hooks/collector-script.ts`. Verify `redact` is imported at the top (it should already be — search for `redact`).~~
+~~2. Locate line 263, currently `error: data.error ?? 'unknown error'`.~~
+~~3. Replace with: `error: redact(data.error ?? 'unknown error')`.~~
+~~4. Build: `npm run build`.~~
+~~5. Add a test in `src/hooks/collector-script.test.ts` that constructs a `PostToolUseFailure` event with an error string containing `Bearer abc123` and asserts the persisted event's `error` field is redacted.~~
+~~6. Run: `npx jest -- src/hooks/collector-script.test.ts`.~~
+~~7. Run: `npm run lint`.~~
+
+**COMPLETED:** Wrapped error messages with `redact()` to sanitize sensitive information before persisting to buffer. Added two test cases verifying that Bearer tokens and API keys are properly redacted in error messages. All tests passing, no lint errors.
 
 ---
 
@@ -485,7 +491,7 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-019] `taskDetector!.getMetrics()` non-null assertion in shutdown can crash — Medium (CORR) ✅
+### ~~[F-019] `taskDetector!.getMetrics()` non-null assertion in shutdown can crash — Medium (CORR)~~ ✅
 **Location:** `src/index.ts:141-146`
 **Issue:** Shutdown handler calls `taskDetector!.getMetrics()` with a non-null assertion. `taskDetector` is only initialised on the stdio code path (around line 200). If startup fails before that initialisation (e.g. config-load throw), shutdown crashes with "Cannot read properties of undefined."
 **Impact:** Clean shutdown is broken on early-failure paths; exit code may be wrong; subsequent cleanup steps don't run.
@@ -493,9 +499,9 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 **Implementation steps for Haiku:**
 
-1. Open `src/index.ts`. Locate the shutdown handler at lines 141-146.
-2. Find the line `const taskMetrics = taskDetector!.getMetrics();` (or similar non-null assertion).
-3. Replace with a guard:
+~~1. Open `src/index.ts`. Locate the shutdown handler at lines 141-146.~~
+~~2. Find the line `const taskMetrics = taskDetector!.getMetrics();` (or similar non-null assertion).~~
+~~3. Replace with a guard:~~
    ```typescript
    if (!taskDetector) {
      logger.info('Shutdown before taskDetector init; skipping task metrics');
@@ -503,14 +509,16 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
    }
    const taskMetrics = taskDetector.getMetrics();
    ```
-4. Search the file for any other `taskDetector!` non-null assertions and apply the same guard pattern.
-5. Build: `npm run build`.
-6. Run: `npx jest`.
-7. Run: `npm run lint`.
+~~4. Search the file for any other `taskDetector!` non-null assertions and apply the same guard pattern.~~
+~~5. Build: `npm run build`.~~
+~~6. Run: `npx jest`.~~
+~~7. Run: `npm run lint`.~~
+
+**COMPLETED:** Removed all non-null assertions on taskDetector throughout src/index.ts. Added defensive guard at top of onRecord callback to ensure config, sessionTracker, and taskDetector are defined before use. Updated persistSession to guard against undefined values for config, sessionTracker, taskDetector before accessing them. All tests passing (1714 tests), no lint errors. Graceful shutdown now safe even on early-failure paths.
 
 ---
 
-### [F-020] `BudgetTracker` `firedThresholds` Set is never cleared at period rollover — Medium (CORR) ✅
+### ~~[F-020] `BudgetTracker` `firedThresholds` Set is never cleared at period rollover — Medium (CORR)~~ ✅
 **Location:** `src/metrics/budget-tracker.ts:81-104`
 **Issue:** `firedThresholds` records keys like `${period}:${pct}` to deduplicate alerts within a period. Once 50% fires for "today", the entry stays forever. When the calendar rolls over to the next day, the daily budget resets but the de-dup set still says "we already fired the 50% alert."
 **Impact:** Daily / weekly budget alerts go silent after the first period in which they fire. Users miss subsequent period overages.
@@ -518,19 +526,21 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 **Implementation steps for Haiku:**
 
-1. Open `src/metrics/budget-tracker.ts`. Locate `firedThresholds` (around lines 81-104) and the `updateCost` method.
-2. Replace `firedThresholds: Set<string>` with `firedThresholds: Map<string, string>` where the value stores a period stamp like `'day:2026-05-21'` or `'week:2026-W21'`.
-3. Add a private helper `private currentPeriodId(period: 'day' | 'week' | 'month'): string` that returns `'day:YYYY-MM-DD'`, `'week:YYYY-Www'`, etc. based on the current date.
-4. In `updateCost`, before checking thresholds, prune entries from `firedThresholds` whose period stamp doesn't match the current period.
-5. When firing a threshold, store the current period id as the value.
-6. Build: `npm run build`.
-7. Add a test that fakes `Date.now()` (use `jest.useFakeTimers()`) to advance past midnight and asserts the daily threshold fires again.
-8. Run: `npx jest -- src/metrics/budget-tracker.test.ts`.
-9. Run: `npm run lint`.
+~~1. Open `src/metrics/budget-tracker.ts`. Locate `firedThresholds` (around lines 81-104) and the `updateCost` method.~~
+~~2. Replace `firedThresholds: Set<string>` with `firedThresholds: Map<string, string>` where the value stores a period stamp like `'day:2026-05-21'` or `'week:2026-W21'`.~~
+~~3. Add a private helper `private currentPeriodId(period: 'day' | 'week' | 'month'): string` that returns `'day:YYYY-MM-DD'`, `'week:YYYY-Www'`, etc. based on the current date.~~
+~~4. In `updateCost`, before checking thresholds, prune entries from `firedThresholds` whose period stamp doesn't match the current period.~~
+~~5. When firing a threshold, store the current period id as the value.~~
+~~6. Build: `npm run build`.~~
+~~7. Add a test that fakes `Date.now()` (use `jest.useFakeTimers()`) to advance past midnight and asserts the daily threshold fires again.~~
+~~8. Run: `npx jest -- src/metrics/budget-tracker.test.ts`.~~
+~~9. Run: `npm run lint`.~~
+
+**COMPLETED:** Replaced `firedThresholds` Set with Map storing period IDs (day:YYYY-MM-DD, week:YYYY-Www). Added `currentPeriodId()` helper to compute calendar-based period identifiers. Added `pruneStaleThresholds()` called at start of `checkThresholds()` to clear de-dup entries for expired periods. Created two comprehensive tests using fake timers to verify daily and weekly thresholds re-fire after period rollover. All 1718 tests passing, no lint errors.
 
 ---
 
-### [F-021] NR event timestamps lose millisecond precision — Medium (CORR) ✅
+### ~~[F-021] NR event timestamps lose millisecond precision — Medium (CORR)~~ ✅
 **Location:** `src/transport/nr-ingest.ts:117, 166, 199, 235, 240, 241, 280, 498`
 **Issue:** Every `timestamp` field is built as `Math.floor(record.timestamp / 1000)`, converting epoch-ms to epoch-seconds. NR's Events API accepts millisecond timestamps natively.
 **Impact:** Two events emitted within the same wall-clock second collide on timestamp; ordering ambiguity in dashboards; sub-second TIMESERIES bucketing impossible.
@@ -538,24 +548,26 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 **Implementation steps for Haiku:**
 
-1. Verify in New Relic Events API documentation that the `timestamp` field accepts milliseconds. (Spoiler: yes — the API accepts both seconds and milliseconds since epoch.)
-2. Open `src/transport/nr-ingest.ts`.
-3. At each of these lines: 117, 166, 199, 235, 240, 241, 280, 498 — find the pattern `Math.floor(record.timestamp / 1000)` (or similar `/1000` conversions on a timestamp).
-4. Replace each with the bare `record.timestamp` (or whatever the source variable is).
-5. Build: `npm run build`.
-6. Add a test: emit an event, drain via the test ingest mock, assert `event.timestamp` matches the original ms-precision value.
-7. Run: `npx jest -- src/transport/nr-ingest.test.ts`.
-8. Run: `npm run lint`.
+~~1. Verify in New Relic Events API documentation that the `timestamp` field accepts milliseconds. (Spoiler: yes — the API accepts both seconds and milliseconds since epoch.)~~
+~~2. Open `src/transport/nr-ingest.ts`.~~
+~~3. At each of these lines: 117, 166, 199, 235, 240, 241, 280, 498 — find the pattern `Math.floor(record.timestamp / 1000)` (or similar `/1000` conversions on a timestamp).~~
+~~4. Replace each with the bare `record.timestamp` (or whatever the source variable is).~~
+~~5. Build: `npm run build`.~~
+~~6. Add a test: emit an event, drain via the test ingest mock, assert `event.timestamp` matches the original ms-precision value.~~
+~~7. Run: `npx jest -- src/transport/nr-ingest.test.ts`.~~
+~~8. Run: `npm run lint`.~~
+
+**COMPLETED:** Removed all 8 instances of `Math.floor(... / 1000)` conversions from nr-ingest.ts, now passing millisecond-precision timestamps directly to NR Events API. Updated three test cases to verify millisecond-precision timestamps preserved. Events now maintain full sub-second ordering and enable TIMESERIES bucketing at millisecond granularity. All 1718 tests passing, no lint errors.
 
 ---
 
-### [F-022] `isProxyToolCall` type guard checks key presence but not types — Medium (TYPE) ✅
-**Location:** `src/transport/nr-ingest.ts:152-155`
-**Issue:** Type guard returns `'serverName' in record && 'upstreamLatencyMs' in record`. Doesn't verify the values are the right types. A record with `serverName: null, upstreamLatencyMs: 'broken'` passes the guard, then `proxyToolCallToNrEvent()` later crashes or emits wrong types.
-**Impact:** Runtime errors or malformed NR events under unexpected upstream-record shapes.
-**Suggested fix:** `return typeof record.serverName === 'string' && typeof record.upstreamLatencyMs === 'number'`.
+### ~~[F-022] `isProxyToolCall` type guard checks key presence but not types — Medium (TYPE)~~ ✅
+~~**Location:** `src/transport/nr-ingest.ts:152-155`~~
+~~**Issue:** Type guard returns `'serverName' in record && 'upstreamLatencyMs' in record`. Doesn't verify the values are the right types. A record with `serverName: null, upstreamLatencyMs: 'broken'` passes the guard, then `proxyToolCallToNrEvent()` later crashes or emits wrong types.~~
+~~**Impact:** Runtime errors or malformed NR events under unexpected upstream-record shapes.~~
+~~**Suggested fix:** `return typeof record.serverName === 'string' && typeof record.upstreamLatencyMs === 'number'`.~~
 
-**Implementation steps for Haiku:**
+~~**Implementation steps for Haiku:**
 
 1. Open `src/transport/nr-ingest.ts`. Locate `isProxyToolCall` at lines 152-155.
 2. Replace the function body with:
@@ -570,7 +582,9 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 3. Build: `npm run build`.
 4. Add a test that passes a record with `serverName: null` and asserts `isProxyToolCall` returns `false`.
 5. Run: `npx jest -- src/transport/nr-ingest.test.ts`.
-6. Run: `npm run lint`.
+6. Run: `npm run lint`.~~
+
+**COMPLETED:** Updated `isProxyToolCall` type guard to validate both key presence AND types. Now checks `typeof record.serverName === 'string'` and `typeof record.upstreamLatencyMs === 'number'`. Exported function for testing. Added 7 comprehensive test cases covering invalid types (null, number, string), missing keys, and valid records. All 1723 tests passing, no lint errors.
 
 ---
 
@@ -591,30 +605,32 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-024] TaskDetector `linesAdded`/`linesRemoved` are mutually exclusive — Medium (CORR) ✅
-**Location:** `src/metrics/task-detector.ts:115-120`
-**Issue:** The diff math is `linesAdded += max(0, newLines - oldLines)` and `linesRemoved += max(0, oldLines - newLines)`. This treats an Edit as net additions OR net removals — but a real Edit can both add and remove lines.
-**Impact:** Code-churn metrics are wrong: a refactor that drops 10 lines and adds 12 reports `linesAdded=2, linesRemoved=0` instead of `linesAdded=12, linesRemoved=10`.
-**Suggested fix:** Parse the actual edit (Edit/Write tool input has both before and after counts) and record additions/removals from the diff, not from net line count.
+### ~~[F-024] TaskDetector `linesAdded`/`linesRemoved` are mutually exclusive — Medium (CORR)~~ ✅
+~~**Location:** `src/metrics/task-detector.ts:115-120`~~
+~~**Issue:** The diff math is `linesAdded += max(0, newLines - oldLines)` and `linesRemoved += max(0, oldLines - newLines)`. This treats an Edit as net additions OR net removals — but a real Edit can both add and remove lines.~~
+~~**Impact:** Code-churn metrics are wrong: a refactor that drops 10 lines and adds 12 reports `linesAdded=2, linesRemoved=0` instead of `linesAdded=12, linesRemoved=10`.~~
+~~**Suggested fix:** Parse the actual edit (Edit/Write tool input has both before and after counts) and record additions/removals from the diff, not from net line count.~~
 
-**Implementation steps for Haiku:**
+~~**Implementation steps for Haiku:**
 
 1. Open `src/metrics/task-detector.ts`. Locate the lines-counting logic at 115-120.
 2. Investigate the source of `oldLines` and `newLines`. If they come from `record.oldLineCount` / `record.newLineCount`, the current math reports net diff, not gross.
 3. Switch to using the actual diff content if available (the Edit tool input's `old_string` / `new_string` line counts). For each edit, count newlines in each: `addedLines = (newString.match(/\n/g) ?? []).length`, `removedLines = (oldString.match(/\n/g) ?? []).length`. Add both unconditionally.
 4. If diff content isn't available at this layer, fall back to net diff but mark the metric as approximate.
 5. Build: `npm run build`. Run: `npx jest -- src/metrics/task-detector.test.ts`.
-6. Add a test where `oldString` has 5 newlines and `newString` has 7 — assert `linesAdded += 7, linesRemoved += 5`.
+6. Add a test where `oldString` has 5 newlines and `newString` has 7 — assert `linesAdded += 7, linesRemoved += 5`.~~
+
+**COMPLETED:** Changed Edit line counting to track gross additions and removals instead of net diff. Now `linesAdded += newLines` and `linesRemoved += oldLines` unconditionally, correctly reporting refactors that both add and remove lines. Updated existing test expectations: edit from 10→15 lines now reports linesAdded=65 (50+15), linesRemoved=10 instead of linesAdded=55, linesRemoved=0. Added comprehensive test case demonstrating the fix. All 1724 tests passing, no lint errors.
 
 ---
 
-### [F-025] PersonalCoach `mean([])` divides by zero → `NaN` — Medium (CORR) ✅
-**Location:** `src/metrics/personal-coach.ts:165`
-**Issue:** Helper `mean(values)` returns `values.reduce((a,b) => a+b, 0) / values.length`. When `values.length === 0`, returns `NaN`.
-**Impact:** Personal-coaching report can return `NaN` baselines, breaking downstream comparisons and rendering UI.
-**Suggested fix:** Return `0` (or `null`) when `values.length === 0`. Choose `null` if downstream consumers can handle it, otherwise fall through to `0`.
+### ~~[F-025] PersonalCoach `mean([])` divides by zero → `NaN` — Medium (CORR)~~ ✅
+~~**Location:** `src/metrics/personal-coach.ts:165`~~
+~~**Issue:** Helper `mean(values)` returns `values.reduce((a,b) => a+b, 0) / values.length`. When `values.length === 0`, returns `NaN`.~~
+~~**Impact:** Personal-coaching report can return `NaN` baselines, breaking downstream comparisons and rendering UI.~~
+~~**Suggested fix:** Return `0` (or `null`) when `values.length === 0`. Choose `null` if downstream consumers can handle it, otherwise fall through to `0`.~~
 
-**Implementation steps for Haiku:**
+~~**Implementation steps for Haiku:**
 
 1. Open `src/metrics/personal-coach.ts`. Locate the `mean()` helper at line 165.
 2. Add an empty-array guard:
@@ -625,47 +641,53 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
    }
    ```
 3. Build: `npm run build`. Run: `npx jest -- src/metrics/personal-coach.test.ts`.
-4. Add a test: `mean([])` returns 0, not NaN.
+4. Add a test: `mean([])` returns 0, not NaN.~~
+
+**COMPLETED:** Added empty-array guard to `mean()` helper in PersonalCoach.computeBaseline(). Now returns 0 when passed an empty array instead of NaN. Added comprehensive test that verifies all baseline metrics are finite numbers (not NaN or Infinity). All 1725 tests passing, no lint errors.
 
 ---
 
-### [F-026] AntiPattern thrashing detector resets `lastEditFile` after a passing test — Medium (CORR) ✅
-**Location:** `src/metrics/anti-patterns.ts:136-138`
-**Issue:** When a test passes the thrashing cycle counter resets to 0, *and* `lastEditFile = null`. The next failing test on the same file starts the counter from scratch — the `[fail, pass, fail, fail]` pattern gets reported as 1 thrash instead of 2.
-**Impact:** Real thrashing on flaky tests under-reports.
-**Suggested fix:** Only clear `lastEditFile` when switching to a different file, not on every passing test.
+### ~~[F-026] AntiPattern thrashing detector resets `lastEditFile` after a passing test — Medium (CORR)~~ ✅
+~~**Location:** `src/metrics/anti-patterns.ts:136-138`~~
+~~**Issue:** When a test passes the thrashing cycle counter resets to 0, *and* `lastEditFile = null`. The next failing test on the same file starts the counter from scratch — the `[fail, pass, fail, fail]` pattern gets reported as 1 thrash instead of 2.~~
+~~**Impact:** Real thrashing on flaky tests under-reports.~~
+~~**Suggested fix:** Only clear `lastEditFile` when switching to a different file, not on every passing test.~~
 
-**Implementation steps for Haiku:**
+~~**Implementation steps for Haiku:**
 
 1. Open `src/metrics/anti-patterns.ts:136-138`. Find the lines that set the cycle counter to 0 and `lastEditFile = null` on a passing test.
 2. Remove the `lastEditFile = null` line. Keep the counter reset.
 3. Add a test for `[edit /a, fail, pass, fail, fail]` and verify thrashing fires (cycles ≥ 2).
-4. Build + test: `npm run build && npx jest -- src/metrics/anti-patterns.test.ts && npm run lint`.
+4. Build + test: `npm run build && npx jest -- src/metrics/anti-patterns.test.ts && npm run lint`.~~
+
+**COMPLETED:** Removed unconditional `lastEditFile = null` after test commands. Now `lastEditFile` persists across consecutive tests and only gets cleared when switching to a different file via Edit/Write. This allows proper tracking of thrashing cycles on flaky tests that fail again after passing. Added test for `[edit /a, fail, pass, fail, fail]` sequence with custom threshold to verify the pattern is correctly detected. All 1726 tests passing, no lint errors.
 
 ---
 
-### [F-027] `computeReadEfficiency()` may not be implemented — Medium (CORR) ✅
-**Location:** `src/metrics/anti-patterns.ts` (`computeReadEfficiency` referenced around line 95)
-**Issue:** Agent flagged that the helper is referenced but its body wasn't found in the inspected snippet. If unimplemented or returning undefined, `AntiPatternMetrics.readEfficiency` is always null.
-**Impact:** A documented metric is silently absent from outputs.
-**Suggested fix:** Verify the implementation exists, returns a number, and is unit-tested. If genuinely missing, implement it (or remove the referenced field).
+### ~~[F-027] `computeReadEfficiency()` may not be implemented — Medium (CORR)~~ ✅
+~~**Location:** `src/metrics/anti-patterns.ts` (`computeReadEfficiency` referenced around line 95)~~
+~~**Issue:** Agent flagged that the helper is referenced but its body wasn't found in the inspected snippet. If unimplemented or returning undefined, `AntiPatternMetrics.readEfficiency` is always null.~~
+~~**Impact:** A documented metric is silently absent from outputs.~~
+~~**Suggested fix:** Verify the implementation exists, returns a number, and is unit-tested. If genuinely missing, implement it (or remove the referenced field).~~
 
-**Implementation steps for Haiku:**
+~~**Implementation steps for Haiku:**
 
 1. Open `src/metrics/anti-patterns.ts`. Search for `computeReadEfficiency`. Per verification it exists at lines 305-319.
 2. Audit its body: confirm it computes a meaningful ratio (e.g. unique-files-read / total-reads) and returns a finite number or `null`.
 3. Add a unit test exercising it with: 0 reads (expect null), 5 unique reads of 5 files (expect 1.0), 5 reads of 1 file (expect 0.2).
-4. Build + test: `npm run build && npx jest -- src/metrics/anti-patterns.test.ts`.
+4. Build + test: `npm run build && npx jest -- src/metrics/anti-patterns.test.ts`.~~
+
+**COMPLETED:** Verified `computeReadEfficiency()` implementation at lines 307-321 computes unique-files-read / total-reads ratio, returns finite number or null (on 0 reads). Existing tests already covered 0 reads (null). Added two comprehensive test cases: 5 unique reads of 5 different files (expect 1.0 perfect efficiency), and 5 reads of same file (expect 0.2 inefficient). All 1728 tests passing, no lint errors.
 
 ---
 
-### [F-028] LatencyTracker reports p95/p99 as `0` for empty samples — Medium (CORR) ✅
-**Location:** `src/metrics/latency-tracker.ts:74`
-**Issue:** When `sorted.length === 0`, `Math.floor(0 * 0.95) === 0`, `sorted[0]` is `undefined`, then `?? 0` makes the percentile `0`. The return type allows `null`, so `null` would be the truthful value.
-**Impact:** Dashboards display a misleading `0ms p95` for sessions with no samples — looks like "extremely fast" instead of "no data".
-**Suggested fix:** Return `null` (or omit the entry) when `sorted.length === 0`.
+### ~~[F-028] LatencyTracker reports p95/p99 as `0` for empty samples — Medium (CORR) ✅~~
+~~**Location:** `src/metrics/latency-tracker.ts:74`~~
+~~**Issue:** When `sorted.length === 0`, `Math.floor(0 * 0.95) === 0`, `sorted[0]` is `undefined`, then `?? 0` makes the percentile `0`. The return type allows `null`, so `null` would be the truthful value.~~
+~~**Impact:** Dashboards display a misleading `0ms p95` for sessions with no samples — looks like "extremely fast" instead of "no data".~~
+~~**Suggested fix:** Return `null` (or omit the entry) when `sorted.length === 0`.~~
 
-**Implementation steps for Haiku:** In `src/metrics/latency-tracker.ts:74`, change `?? 0` to `?? null` for each percentile line, and update the return type to `LatencyPercentiles | null`. Update consumers to handle `null` (display "—" rather than `0ms`). `npm run build && npx jest -- src/metrics/latency-tracker.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/metrics/latency-tracker.ts:74`, change `?? 0` to `?? null` for each percentile line, and update the return type to `LatencyPercentiles | null`. Update consumers to handle `null` (display "—" rather than `0ms`). `npm run build && npx jest -- src/metrics/latency-tracker.test.ts && npm run lint`.~~
 
 ---
 
@@ -681,43 +703,43 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-030] NrIngestManager session-gauge interval can race against shutdown — Medium (LIFE) ✅
-**Location:** `src/transport/nr-ingest.ts:527-543`
-**Issue:** `stop()` clears `sessionGaugeIntervalId` (line 529-531) and *then* calls `emitSessionGauges()` (line 535). If the interval was firing concurrently with `stop()`, the in-flight `emitSessionGauges()` may complete after the harvest scheduler has been stopped, dropping the final gauges.
-**Impact:** Final session gauges occasionally lost on shutdown.
-**Suggested fix:** Reorder: call `emitSessionGauges()` *first* (with its existing `running` guard), then clear the interval. Add an `await` if the gauge emit is async.
+### ~~[F-030] NrIngestManager session-gauge interval can race against shutdown — Medium (LIFE) ✅~~
+~~**Location:** `src/transport/nr-ingest.ts:527-543`~~
+~~**Issue:** `stop()` clears `sessionGaugeIntervalId` (line 529-531) and *then* calls `emitSessionGauges()` (line 535). If the interval was firing concurrently with `stop()`, the in-flight `emitSessionGauges()` may complete after the harvest scheduler has been stopped, dropping the final gauges.~~
+~~**Impact:** Final session gauges occasionally lost on shutdown.~~
+~~**Suggested fix:** Reorder: call `emitSessionGauges()` *first* (with its existing `running` guard), then clear the interval. Add an `await` if the gauge emit is async.~~
 
-**Implementation steps for Haiku:** In `src/transport/nr-ingest.ts:527-543`, swap the order: `await this.emitSessionGauges();` first, then `clearInterval(this.sessionGaugeIntervalId)`. `npm run build && npx jest -- src/transport/nr-ingest.test.ts && npm run lint`.
-
----
-
-### [F-031] Tool call span double-end risk on `durationMs === 0` — Medium (CORR) ✅
-**Location:** `src/tracing/tool-call-span.ts:33-46`
-**Issue:** Logic uses `if (record.durationMs !== null)` to gate `end()`. `0` is a valid duration but flow-control around it is fragile; future refactors may double-end.
-**Impact:** OTel SDK warnings or undefined behaviour for zero-duration tool calls.
-**Suggested fix:** Use `if (record.durationMs != null && Number.isFinite(record.durationMs))` to be explicit. Track an `ended` flag to defend against double-end at any time.
-
-**Implementation steps for Haiku:** In `src/tracing/tool-call-span.ts:33`, change `if (record.durationMs !== null)` to `if (record.durationMs != null && Number.isFinite(record.durationMs))`. Add a private `ended: boolean = false` flag and check it before calling `span.end(...)`. `npm run build && npx jest -- src/tracing && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/transport/nr-ingest.ts:527-543`, swap the order: `await this.emitSessionGauges();` first, then `clearInterval(this.sessionGaugeIntervalId)`. `npm run build && npx jest -- src/transport/nr-ingest.test.ts && npm run lint`.~~
 
 ---
 
-### [F-032] `AiAntiPattern` event field is `type` — match memory's "field naming" convention or document — Medium (DOC) ✅
-**Location:** `src/transport/nr-ingest.ts:281` (sets the `type` field)
-**Issue:** The saved memory `reference_nr_event_schema` notes that AiAntiPattern uses `type` (not `patternType`). The agent flagged `type` as a possible deviation from convention. After cross-referencing the memory, `type` is the *current correct* field name. **This is a reminder finding, not a defect** — but Agent D specifically flagged it as a problem, so document the convention here so the question doesn't recur.
-**Impact:** None if `type` is intentional; renaming would break dashboards.
-**Suggested fix:** Add a comment in `nr-ingest.ts:281` referencing `reference_nr_event_schema` so future readers don't mistake this for a bug.
+### ~~[F-031] Tool call span double-end risk on `durationMs === 0` — Medium (CORR) ✅~~
+~~**Location:** `src/tracing/tool-call-span.ts:33-46`~~
+~~**Issue:** Logic uses `if (record.durationMs !== null)` to gate `end()`. `0` is a valid duration but flow-control around it is fragile; future refactors may double-end.~~
+~~**Impact:** OTel SDK warnings or undefined behaviour for zero-duration tool calls.~~
+~~**Suggested fix:** Use `if (record.durationMs != null && Number.isFinite(record.durationMs))` to be explicit. Track an `ended` flag to defend against double-end at any time.~~
 
-**Implementation steps for Haiku:** In `src/transport/nr-ingest.ts:281`, above the line setting `type: pattern.type`, add the comment: `// Field name is intentionally 'type' (not 'patternType') — used by all NRQL queries and dashboards. Do not rename.` No code change. `npm run build && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/tracing/tool-call-span.ts:33`, change `if (record.durationMs !== null)` to `if (record.durationMs != null && Number.isFinite(record.durationMs))`. Add a private `ended: boolean = false` flag and check it before calling `span.end(...)`. `npm run build && npx jest -- src/tracing && npm run lint`.~~
 
 ---
 
-### [F-033] Config file parse failure silently falls back to defaults — Medium (CORR) ✅
-**Location:** `src/config.ts:150-167` (`loadConfigFile`)
-**Issue:** On `JSON.parse` error, the function logs and returns `{}`. Defaults then take over. Customers writing invalid JSON have no clear signal.
-**Impact:** Misconfigurations look like "the product ignored my settings" instead of "your config is broken." Hard to diagnose for support.
-**Suggested fix:** Throw on parse error (or exit with non-zero code) — fail loudly. Log the JSON parse error message verbatim so the customer can fix it.
+### ~~[F-032] `AiAntiPattern` event field is `type` — match memory's "field naming" convention or document — Medium (DOC) ✅~~
+~~**Location:** `src/transport/nr-ingest.ts:281` (sets the `type` field)~~
+~~**Issue:** The saved memory `reference_nr_event_schema` notes that AiAntiPattern uses `type` (not `patternType`). The agent flagged `type` as a possible deviation from convention. After cross-referencing the memory, `type` is the *current correct* field name. **This is a reminder finding, not a defect** — but Agent D specifically flagged it as a problem, so document the convention here so the question doesn't recur.~~
+~~**Impact:** None if `type` is intentional; renaming would break dashboards.~~
+~~**Suggested fix:** Add a comment in `nr-ingest.ts:281` referencing `reference_nr_event_schema` so future readers don't mistake this for a bug.~~
 
-**Implementation steps for Haiku:** In `src/config.ts:150-167` `loadConfigFile()`, replace `return {}` on parse error with `throw new Error(\`Invalid JSON in config file ${path}: ${err.message}\`);`. Add a test that passes malformed JSON and asserts the throw with a clear message. `npm run build && npx jest -- src/config.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/transport/nr-ingest.ts:281`, above the line setting `type: pattern.type`, add the comment: `// Field name is intentionally 'type' (not 'patternType') — used by all NRQL queries and dashboards. Do not rename.` No code change. `npm run build && npm run lint`.~~
+
+---
+
+### ~~[F-033] Config file parse failure silently falls back to defaults — Medium (CORR) ✅~~
+~~**Location:** `src/config.ts:150-167` (`loadConfigFile`)~~
+~~**Issue:** On `JSON.parse` error, the function logs and returns `{}`. Defaults then take over. Customers writing invalid JSON have no clear signal.~~
+~~**Impact:** Misconfigurations look like "the product ignored my settings" instead of "your config is broken." Hard to diagnose for support.~~
+~~**Suggested fix:** Throw on parse error (or exit with non-zero code) — fail loudly. Log the JSON parse error message verbatim so the customer can fix it.~~
+
+~~**Implementation steps for Haiku:** In `src/config.ts:150-167` `loadConfigFile()`, replace `return {}` on parse error with `throw new Error(\`Invalid JSON in config file ${path}: ${err.message}\`);`. Add a test that passes malformed JSON and asserts the throw with a clear message. `npm run build && npx jest -- src/config.test.ts && npm run lint`.~~
 
 ---
 
@@ -733,33 +755,33 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-035] Generic MCP adapter validation only checks two fields — Medium (TYPE) ✅
-**Location:** `src/platforms/generic-mcp-adapter.ts:91`
-**Issue:** `validateReportToolCallInput` checks `tool` and `success`, then casts to `ReportToolCallInput`. Optional fields (`duration_ms`, `error`, `timestamp`) are not type-checked. A caller passing `duration_ms: "not a number"` produces silent NaN downstream.
-**Impact:** Latency tracking sees NaN; downstream aggregations produce NaN totals.
-**Suggested fix:** Validate every numeric/string optional field's type when present (`typeof input.duration_ms === 'number'` etc.).
+### ~~[F-035] Generic MCP adapter validation only checks two fields — Medium (TYPE) ✅~~
+~~**Location:** `src/platforms/generic-mcp-adapter.ts:91`~~
+~~**Issue:** `validateReportToolCallInput` checks `tool` and `success`, then casts to `ReportToolCallInput`. Optional fields (`duration_ms`, `error`, `timestamp`) are not type-checked. A caller passing `duration_ms: "not a number"` produces silent NaN downstream.~~
+~~**Impact:** Latency tracking sees NaN; downstream aggregations produce NaN totals.~~
+~~**Suggested fix:** Validate every numeric/string optional field's type when present (`typeof input.duration_ms === 'number'` etc.).~~
 
-**Implementation steps for Haiku:** In `src/platforms/generic-mcp-adapter.ts:91`, expand `validateReportToolCallInput()` to check every optional field's type when present. For each of `duration_ms`, `error`, `timestamp`, etc.: `if (obj.X !== undefined && typeof obj.X !== 'expected') throw new Error(...)`. `npm run build && npx jest -- src/platforms && npm run lint`.
-
----
-
-### [F-036] Config file JSON not schema-validated — Medium (TYPE) ✅
-**Location:** `src/config.ts:151-167` and downstream field accesses
-**Issue:** `JSON.parse(raw) as Record<string, unknown>` then field-by-field reads with type coercion. No central schema validation. A field with the wrong type (e.g. `sessionBudgetUsd: "$2"`) silently coerces to `NaN` or falls back to default.
-**Impact:** Silent misconfiguration; bugs are hard to attribute to config typos.
-**Suggested fix:** Define a zod schema for the config file shape, run `safeParse` on the parsed JSON, and surface validation errors with line/field info.
-
-**Implementation steps for Haiku:** In `src/config.ts`, define `ConfigFileSchema` matching the `McpServerConfig` shape (use `z.object` with `.partial()` since most fields are optional). After `JSON.parse(raw)`, run `ConfigFileSchema.safeParse(parsed)`; on failure, throw with the formatted issues. Add tests for valid + malformed shapes. `npm run build && npx jest -- src/config.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/platforms/generic-mcp-adapter.ts:91`, expand `validateReportToolCallInput()` to check every optional field's type when present. For each of `duration_ms`, `error`, `timestamp`, etc.: `if (obj.X !== undefined && typeof obj.X !== 'expected') throw new Error(...)`. `npm run build && npx jest -- src/platforms && npm run lint`.~~
 
 ---
 
-### [F-037] NerdGraph response error path swallows query failures — Medium (TYPE) ✅
-**Location:** `src/tools/cross-session-tools.ts:706`
-**Issue:** `(json.data?.actor.account.nrql.results ?? []) as Array<...>`. When NR returns an `errors` payload instead of `data`, the `??` falls through to `[]` and the caller treats it as "zero results" instead of "query failed".
-**Impact:** Users see empty dashboards instead of an error message; debugging is harder.
-**Suggested fix:** Check `if (!json.data || json.errors?.length)` first and throw with the NR error message attached.
+### ~~[F-036] Config file JSON not schema-validated — Medium (TYPE) ✅~~
+~~**Location:** `src/config.ts:151-167` and downstream field accesses~~
+~~**Issue:** `JSON.parse(raw) as Record<string, unknown>` then field-by-field reads with type coercion. No central schema validation. A field with the wrong type (e.g. `sessionBudgetUsd: "$2"`) silently coerces to `NaN` or falls back to default.~~
+~~**Impact:** Silent misconfiguration; bugs are hard to attribute to config typos.~~
+~~**Suggested fix:** Define a zod schema for the config file shape, run `safeParse` on the parsed JSON, and surface validation errors with line/field info.~~
 
-**Implementation steps for Haiku:** In `src/tools/cross-session-tools.ts:706`, before the `?? []` fallback, add: `if (!json.data || json.errors?.length) { throw new Error(\`NerdGraph error: ${JSON.stringify(json.errors)}\`); }`. `npm run build && npx jest -- src/tools/cross-session-tools.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/config.ts`, define `ConfigFileSchema` matching the `McpServerConfig` shape (use `z.object` with `.partial()` since most fields are optional). After `JSON.parse(raw)`, run `ConfigFileSchema.safeParse(parsed)`; on failure, throw with the formatted issues. Add tests for valid + malformed shapes. `npm run build && npx jest -- src/config.test.ts && npm run lint`.~~
+
+---
+
+### ~~[F-037] NerdGraph response error path swallows query failures — Medium (TYPE) ✅~~
+~~**Location:** `src/tools/cross-session-tools.ts:706`~~
+~~**Issue:** `(json.data?.actor.account.nrql.results ?? []) as Array<...>`. When NR returns an `errors` payload instead of `data`, the `??` falls through to `[]` and the caller treats it as "zero results" instead of "query failed".~~
+~~**Impact:** Users see empty dashboards instead of an error message; debugging is harder.~~
+~~**Suggested fix:** Check `if (!json.data || json.errors?.length)` first and throw with the NR error message attached.~~
+
+~~**Implementation steps for Haiku:** In `src/tools/cross-session-tools.ts:706`, before the `?? []` fallback, add: `if (!json.data || json.errors?.length) { throw new Error(\`NerdGraph error: ${JSON.stringify(json.errors)}\`); }`. `npm run build && npx jest -- src/tools/cross-session-tools.test.ts && npm run lint`.~~
 
 ---
 
@@ -787,13 +809,13 @@ With 100 samples, the first picks index 95, the second picks index 94. The two t
 
 ---
 
-### [F-040] `parseInt(options.accountId)` no validation in team summary — Medium (TYPE) ✅
-**Location:** `src/tools/cross-session-tools.ts:677`
-**Issue:** `parseInt(options.accountId, 10)` returns `NaN` on undefined/non-numeric input. NaN is then passed to NerdGraph as the account ID.
-**Impact:** Cryptic NerdGraph error instead of a clear "invalid accountId" message; harder to diagnose for users.
-**Suggested fix:** `const accountId = Number(options.accountId); if (!Number.isFinite(accountId)) throw new Error('Invalid accountId: ' + options.accountId);`
+### ~~[F-040] `parseInt(options.accountId)` no validation in team summary — Medium (TYPE) ✅~~
+~~**Location:** `src/tools/cross-session-tools.ts:677`~~
+~~**Issue:** `parseInt(options.accountId, 10)` returns `NaN` on undefined/non-numeric input. NaN is then passed to NerdGraph as the account ID.~~
+~~**Impact:** Cryptic NerdGraph error instead of a clear "invalid accountId" message; harder to diagnose for users.~~
+~~**Suggested fix:** `const accountId = Number(options.accountId); if (!Number.isFinite(accountId)) throw new Error('Invalid accountId: ' + options.accountId);`~~
 
-**Implementation steps for Haiku:** In `src/tools/cross-session-tools.ts:677`, replace `parseInt(options.accountId, 10)` with `Number(options.accountId)` followed by an `Number.isFinite()` guard that throws on failure. `npm run build && npx jest -- src/tools/cross-session-tools.test.ts && npm run lint`.
+~~**Implementation steps for Haiku:** In `src/tools/cross-session-tools.ts:677`, replace `parseInt(options.accountId, 10)` with `Number(options.accountId)` followed by an `Number.isFinite()` guard that throws on failure. `npm run build && npx jest -- src/tools/cross-session-tools.test.ts && npm run lint`.~~
 
 ---
 
