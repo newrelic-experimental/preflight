@@ -6,5 +6,6 @@ export type {
   CostUpdateEvent,
   AntiPatternEvent,
   HeartbeatEvent,
+  AlertEvent,
   ReplayEntry,
 } from './live-event-bus.js';

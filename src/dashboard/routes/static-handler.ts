@@ -60,6 +60,14 @@ export function createStaticHandler(rootDir: string): (req: IncomingMessage, res
       });
       res.end(data);
     } catch {
+      // Asset requests (paths with a file extension) should 404, not fall back —
+      // otherwise a request for /missing.js gets the SPA HTML and the browser tries
+      // to execute it as JavaScript. Only extensionless paths are SPA routes.
+      if (extname(target)) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       return await serveIndexFallback(root, res);
     }
   };

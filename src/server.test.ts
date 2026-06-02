@@ -57,9 +57,10 @@ describe('MCP protocol via InMemoryTransport', () => {
     await server.close();
   });
 
-  it('responds to tools/list with an empty tool list', async () => {
+  it('responds to tools/list with only the health tool when no trackers configured', async () => {
     const result = await client.listTools();
-    expect(result.tools).toEqual([]);
+    expect(result.tools).toHaveLength(1);
+    expect(result.tools[0]!.name).toBe('nr_observe_health');
   });
 
   it('responds to resources/list with an empty resource list', async () => {

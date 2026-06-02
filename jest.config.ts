@@ -8,7 +8,7 @@ const config: Config = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
-    '^.+\\.ts$': [
+    '^.+\\.[tj]s$': [
       'ts-jest',
       {
         useESM: true,
@@ -20,6 +20,11 @@ const config: Config = {
     ],
   },
   extensionsToTreatAsEsm: ['.ts'],
+  // commander v15 is pure ESM (no CJS entry); jest's default transformIgnorePatterns
+  // skips node_modules, which leaves its `import` statements as syntax errors when
+  // CJS test bundles try to require it. Allow commander through the transformer
+  // (the transform regex above also matches .js so ts-jest will rewrite it).
+  transformIgnorePatterns: ['/node_modules/(?!commander/)'],
   testTimeout: 15_000,
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts', '!src/**/index.ts'],
   coverageReporters: ['text', 'lcov'],

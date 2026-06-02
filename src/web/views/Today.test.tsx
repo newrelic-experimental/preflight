@@ -1,29 +1,51 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Today } from './Today';
 import { useLiveStore } from '../store/liveStore';
 
-function renderToday() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+function renderToday(qc?: QueryClient) {
+  const client =
+    qc ??
+    new QueryClient({
+      defaultOptions: { queries: { retry: 0 } },
+    });
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={client}>
       <Today />
     </QueryClientProvider>,
   );
 }
 
+function resetStore(): void {
+  useLiveStore.setState({
+    connected: true,
+    recentToolCalls: [
+      { id: 'a', tool: 'Read', durationMs: 120, costUsd: 0.001, ts: 1 },
+      { id: 'b', tool: 'Edit', durationMs: 85, costUsd: 0.002, ts: 2 },
+    ],
+    cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 18.4 },
+    antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }],
+    firingAlerts: new Map(),
+    dismissedAlerts: new Set(),
+  });
+}
+
 describe('Today view', () => {
   beforeEach(() => {
-    useLiveStore.setState({
-      connected: true,
-      recentToolCalls: [
-        { id: 'a', tool: 'Read', durationMs: 120, costUsd: 0.001, ts: 1 },
-        { id: 'b', tool: 'Edit', durationMs: 85, costUsd: 0.002, ts: 2 },
-      ],
-      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 18.4 },
-      antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }],
-    });
+    resetStore();
+    // Default: stub fetch with an empty alerts array so the panel doesn't
+    // throw a network error during the basic-render assertions below.
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('renders the four KPI labels', () => {
@@ -93,7 +115,16 @@ describe('Today header timestamp', () => {
       recentToolCalls: [],
       cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
       antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
     });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
     vi.useFakeTimers();
     // 2026-05-29 14:00 local-ish — exact zone doesn't matter; the
     // assertion below only checks the value is stable across
@@ -103,6 +134,7 @@ describe('Today header timestamp', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('memoizes the header timestamp across re-renders', () => {
@@ -132,5 +164,92 @@ describe('Today header timestamp', () => {
 
     const after = container.querySelector('header span')!.textContent;
     expect(after).toBe(before);
+  });
+});
+
+describe('Today view — Recent alerts panel', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('calls /api/alerts/recent and renders an empty state when the log is empty', async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/api/alerts/recent'))).toBe(true);
+
+    expect(await screen.findByText(/No alerts in recent history/i)).toBeInTheDocument();
+  });
+
+  it('renders rows from a non-empty response', async () => {
+    const now = Date.now();
+    const fakeAlerts = [
+      {
+        id: 'rule-cost',
+        state: 'firing',
+        severity: 'warning',
+        title: 'Cost spike',
+        description: 'desc',
+        value: 12.5,
+        threshold: 10,
+        firedAt: now - 5 * 60_000,
+      },
+      {
+        id: 'rule-stuck',
+        state: 'cleared',
+        severity: 'critical',
+        title: 'Stuck loop',
+        description: 'desc',
+        value: 2,
+        threshold: 3,
+        firedAt: now - 60 * 60_000,
+      },
+    ];
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(fakeAlerts), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText('Cost spike')).toBeInTheDocument();
+    expect(screen.getByText('Stuck loop')).toBeInTheDocument();
+    // value/threshold formatted column.
+    expect(screen.getByText(/12\.50 \/ 10/)).toBeInTheDocument();
+    // state column shows firing vs cleared.
+    expect(screen.getByText('firing')).toBeInTheDocument();
+    expect(screen.getByText('cleared')).toBeInTheDocument();
+  });
+
+  it('shows an error message when the request fails', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response('boom', {
+          status: 500,
+          statusText: 'Internal',
+        }),
+    ) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText(/Error loading recent alerts/i)).toBeInTheDocument();
   });
 });

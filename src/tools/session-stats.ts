@@ -15,7 +15,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { createLogger } from '../shared/index.js';
+import { createLogger, VERSION } from '../shared/index.js';
 
 const logger = createLogger('session-stats');
 import type { SessionTracker } from '../metrics/session-tracker.js';
@@ -110,6 +110,17 @@ const SESSION_STATS_TOOL = {
   annotations: { readOnlyHint: true },
 };
 
+const HEALTH_TOOL = {
+  name: 'nr_observe_health',
+  description:
+    'Check server health: version, uptime, session ID, and connection timestamp. Use when the MCP connection feels stale or tools are behaving unexpectedly.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+  annotations: { readOnlyHint: true },
+};
+
 const SESSION_TIMELINE_TOOL = {
   name: 'nr_observe_get_session_timeline',
   description:
@@ -180,6 +191,28 @@ export function handleGetSessionTimeline(
 
   return {
     content: [{ type: 'text' as const, text: JSON.stringify({ timeline }, null, 2) }],
+  };
+}
+
+export function handleHealth(options: {
+  sessionStartMs?: number;
+  developer?: string;
+  sessionId?: string;
+}): { content: [{ type: 'text'; text: string }] } {
+  const nowMs = Date.now();
+  const startMs = options.sessionStartMs ?? nowMs;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        status: 'ok',
+        version: VERSION,
+        developer: options.developer ?? 'unknown',
+        session_id: options.sessionId ?? null,
+        connected_at: new Date(startMs).toISOString(),
+        uptime_seconds: Math.round((nowMs - startMs) / 1000),
+      }, null, 2),
+    }],
   };
 }
 
@@ -278,7 +311,7 @@ export function registerTools(
   } = options;
 
   // Build combined tool list
-  const tools: typeof SESSION_STATS_TOOL[] = [];
+  const tools: typeof SESSION_STATS_TOOL[] = [HEALTH_TOOL];
   if (sessionTracker) {
     tools.push(SESSION_STATS_TOOL, SESSION_TIMELINE_TOOL);
   }
@@ -359,6 +392,14 @@ export function registerTools(
 
     try {
     switch (name) {
+      case 'nr_observe_health': {
+        return handleHealth({
+          sessionStartMs,
+          developer: options.developer,
+          sessionId: sessionTracker?.getMetrics().sessionId,
+        });
+      }
+
       case 'nr_observe_get_session_stats': {
         if (!sessionTracker) {
           return {
@@ -409,7 +450,7 @@ export function registerTools(
           return handleReportTokens(costTracker, tokenReport, modelUsageTracker);
         } catch (err) {
           const message = err instanceof z.ZodError
-            ? err.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+            ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
             : String(err);
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: `Invalid token report: ${message}` }) }],
@@ -491,7 +532,7 @@ export function registerTools(
           return handleReportFeedback(feedbackCollector, feedbackArgs);
         } catch (err) {
           const message = err instanceof z.ZodError
-            ? err.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+            ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
             : String(err);
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: `Invalid feedback: ${message}` }) }],

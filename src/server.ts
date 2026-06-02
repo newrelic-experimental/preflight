@@ -1,8 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
   ErrorCode,
@@ -19,6 +17,7 @@ export class NrMcpServer {
   auditTrailManager: import('./security/audit-trail.js').AuditTrailManager | undefined;
 
   constructor(options: ServerOptions) {
+    const serverStartMs = Date.now();
     this.server = new Server(
       { name: options.name, version: options.version },
       {
@@ -30,58 +29,30 @@ export class NrMcpServer {
     );
 
     this.auditTrailManager = options.auditTrailManager;
-    this.registerHandlers(options);
+    this.registerHandlers(options, serverStartMs);
     logger.info('MCP server created', { name: options.name, version: options.version });
   }
 
-  private registerHandlers(options: ServerOptions): void {
-    // Register tools when any tracker is provided
-    const hasTrackers =
-      options.sessionTracker ||
-      options.costTracker ||
-      options.taskDetector ||
-      options.antiPatternDetector ||
-      options.efficiencyScorer ||
-      options.feedbackCollector ||
-      options.sessionStore ||
-      options.weeklySummaryGenerator ||
-      options.trendAnalyzer ||
-      options.collaborationProfiler ||
-      options.claudeMdTracker ||
-      options.costPerOutcomeAnalyzer ||
-      options.recommendationEngine;
-
-    if (hasTrackers) {
-      registerTools(this.server, {
-        sessionTracker: options.sessionTracker,
-        costTracker: options.costTracker,
-        taskDetector: options.taskDetector,
-        antiPatternDetector: options.antiPatternDetector,
-        efficiencyScorer: options.efficiencyScorer,
-        feedbackCollector: options.feedbackCollector,
-        sessionStore: options.sessionStore,
-        weeklySummaryGenerator: options.weeklySummaryGenerator,
-        trendAnalyzer: options.trendAnalyzer,
-        collaborationProfiler: options.collaborationProfiler,
-        claudeMdTracker: options.claudeMdTracker,
-        costPerOutcomeAnalyzer: options.costPerOutcomeAnalyzer,
-        recommendationEngine: options.recommendationEngine,
-        developer: options.developer,
-        teamId: options.teamId,
-        projectId: options.projectId,
-      });
-    } else {
-      this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: [],
-      }));
-
-      this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-        throw new McpError(
-          ErrorCode.MethodNotFound,
-          `Unknown tool: ${request.params.name}`,
-        );
-      });
-    }
+  private registerHandlers(options: ServerOptions, serverStartMs: number): void {
+    registerTools(this.server, {
+      sessionTracker: options.sessionTracker,
+      costTracker: options.costTracker,
+      taskDetector: options.taskDetector,
+      antiPatternDetector: options.antiPatternDetector,
+      efficiencyScorer: options.efficiencyScorer,
+      feedbackCollector: options.feedbackCollector,
+      sessionStore: options.sessionStore,
+      weeklySummaryGenerator: options.weeklySummaryGenerator,
+      trendAnalyzer: options.trendAnalyzer,
+      collaborationProfiler: options.collaborationProfiler,
+      claudeMdTracker: options.claudeMdTracker,
+      costPerOutcomeAnalyzer: options.costPerOutcomeAnalyzer,
+      recommendationEngine: options.recommendationEngine,
+      developer: options.developer,
+      teamId: options.teamId,
+      projectId: options.projectId,
+      sessionStartMs: serverStartMs,
+    });
 
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const resources: Array<{ uri: string; name: string; description: string; mimeType: string }> = [];

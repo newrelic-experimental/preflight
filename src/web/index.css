@@ -1,6 +1,20 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@theme {
+  --color-bg-base: #0b1120;
+  --color-bg-panel: #0f172a;
+  --color-bg-line: #1e293b;
+  --color-ink-base: #e2e8f0;
+  --color-ink-subtle: #94a3b8;
+  --color-ink-muted: #64748b;
+  --color-accent-cyan: #22d3ee;
+  --color-accent-green: #22c55e;
+  --color-accent-amber: #f59e0b;
+  --color-accent-red: #f87171;
+
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+}
 
 html, body, #root {
   height: 100%;

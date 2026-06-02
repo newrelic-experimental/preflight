@@ -67,6 +67,18 @@ export interface McpServerConfig {
     readonly host: string;
     readonly openOnStart: boolean;
   };
+  /**
+   * Local-alerts engine config block. Defaults: enabled=true when mode is
+   * not 'cloud', interval=30s, OS notifications off, log retention 10 MB,
+   * rules file at ~/.nr-ai-observe/alerts/rules.json.
+   */
+  readonly alerts: {
+    readonly enabled: boolean;
+    readonly evaluationIntervalSeconds: number;
+    readonly osNotifications: boolean;
+    readonly logRetentionMb: number;
+    readonly rulesPath: string | null;
+  };
 }
 
 const DEFAULT_STORAGE_PATH = resolve(homedir(), '.nr-ai-observe');
@@ -118,14 +130,14 @@ const ConfigFileSchema = z.object({
   digestSchedule: z.string().optional(),
   retainSessionsDays: z.number().nullable().optional(),
   otlpEndpoint: z.string().nullable().optional(),
-  otlpHeaders: z.record(z.string()).optional(),
+  otlpHeaders: z.record(z.string(), z.string()).optional(),
   transport: z.enum(['nr-events-api', 'otlp', 'both']).optional(),
   mode: z.enum(['cloud', 'local', 'both']).optional(),
   otlpReceiverEnabled: z.boolean().optional(),
   otlpReceiverPort: z.number().optional(),
   otlpReceiverBindAddress: z.string().optional(),
   otlpForwardEndpoint: z.string().nullable().optional(),
-  otlpForwardHeaders: z.record(z.string()).optional(),
+  otlpForwardHeaders: z.record(z.string(), z.string()).optional(),
   alerts: z.object({
     personal: z.object({
       dailyCostUsd: z.number().optional(),
@@ -134,6 +146,11 @@ const ConfigFileSchema = z.object({
       stuckLoopCountMax: z.number().optional(),
       antiPatternCountMax: z.number().optional(),
     }).optional(),
+    enabled: z.boolean().optional(),
+    evaluationIntervalSeconds: z.number().int().min(5).max(300).optional(),
+    osNotifications: z.boolean().optional(),
+    logRetentionMb: z.number().min(1).max(1024).optional(),
+    rulesPath: z.string().nullable().optional(),
   }).optional(),
   dashboard: z.object({
     port: z.number().int().min(1).max(65535).optional(),
@@ -282,6 +299,44 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
     }
   }
   return result;
+}
+
+/**
+ * Validate the alerts.rulesPath value. The path is read from the user's
+ * config file or NR_AI_ALERTS_RULES_PATH env var; both are user-controlled
+ * but worth a defensive guard to keep an accidental misconfiguration from
+ * pointing fs.watch at /etc/hosts or similar. Rules:
+ *
+ *   1. Must end in `.json` (case-insensitive).
+ *   2. Must resolve under `storagePath` (the configured storage root).
+ *
+ * The default rules path is `${storagePath}/alerts/rules.json`, which
+ * always passes both checks. A bad path falls back to the default with a
+ * logged warning rather than throwing — one bad config field shouldn't
+ * brick the whole server.
+ */
+function validateRulesPath(rawPath: string, storagePath: string): string {
+  const fallback = resolve(storagePath, 'alerts', 'rules.json');
+  if (!rawPath.toLowerCase().endsWith('.json')) {
+    logger.warn(
+      'alerts.rulesPath does not end in .json — falling back to default',
+      { rawPath, fallback },
+    );
+    return fallback;
+  }
+  const resolved = resolve(rawPath);
+  const storageResolved = resolve(storagePath);
+  // Match prefix only on full path segments to avoid `/foo/bar` matching
+  // `/foo/barbaz`.
+  const prefix = storageResolved.endsWith('/') ? storageResolved : storageResolved + '/';
+  if (resolved !== storageResolved && !resolved.startsWith(prefix)) {
+    logger.warn(
+      'alerts.rulesPath resolves outside storagePath — falling back to default',
+      { rawPath, resolved, storagePath: storageResolved, fallback },
+    );
+    return fallback;
+  }
+  return resolved;
 }
 
 function parseProxyUpstreams(
@@ -638,6 +693,68 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         port: dashboardPort,
         host: dashboardHost,
         openOnStart: dashboardOpenOnStart,
+      };
+    })(),
+
+    alerts: (() => {
+      // The alerts config is a separate top-level block from
+      // `personalAlertThresholds` (above) — they share the `alerts` key in
+      // the file schema for backwards compatibility, but expose different
+      // fields. `enabled` defaults to true outside of cloud-only mode.
+      const alertsFile = (typeof file.alerts === 'object' && file.alerts !== null
+        ? file.alerts as Record<string, unknown>
+        : {});
+      const fileEnabled = typeof alertsFile.enabled === 'boolean' ? alertsFile.enabled : undefined;
+      const fileInterval = typeof alertsFile.evaluationIntervalSeconds === 'number'
+        ? alertsFile.evaluationIntervalSeconds
+        : undefined;
+      const fileOsNotifications = typeof alertsFile.osNotifications === 'boolean'
+        ? alertsFile.osNotifications
+        : undefined;
+      const fileLogRetention = typeof alertsFile.logRetentionMb === 'number'
+        ? alertsFile.logRetentionMb
+        : undefined;
+      const fileRulesPath = typeof alertsFile.rulesPath === 'string'
+        ? alertsFile.rulesPath
+        : undefined;
+
+      const enabledDefault = mode !== 'cloud';
+      const enabled = envBool('NR_AI_ALERTS_ENABLED', fileEnabled ?? enabledDefault);
+
+      const intervalSeconds = envInt(
+        'NR_AI_ALERTS_INTERVAL_SECONDS',
+        fileInterval ?? 30,
+        { min: 5, max: 300 },
+      );
+
+      const osNotifications = envBool(
+        'NR_AI_ALERTS_OS_NOTIFICATIONS',
+        fileOsNotifications ?? false,
+      );
+
+      const logRetentionMb = envInt(
+        'NR_AI_ALERTS_LOG_RETENTION_MB',
+        fileLogRetention ?? 10,
+        { min: 1, max: 1024 },
+      );
+
+      const envRulesPath = process.env.NR_AI_ALERTS_RULES_PATH;
+      const rawRulesPath = envRulesPath !== undefined && envRulesPath !== ''
+        ? envRulesPath
+        : (fileRulesPath ?? resolve(storagePath, 'alerts', 'rules.json'));
+      // Defensive validation: rulesPath is read from user config, so reject
+      // values that don't end in .json or that resolve outside storagePath.
+      // Prevents accidental fs.watch handles on system files like /etc/hosts
+      // or path-traversal probes via env-var injection. The default path is
+      // always permitted.
+      const rulesPath = validateRulesPath(rawRulesPath, storagePath);
+
+      return {
+        enabled,
+        evaluationIntervalSeconds: intervalSeconds,
+        osNotifications,
+        logRetentionMb,
+        rulesPath,
       };
     })(),
   };

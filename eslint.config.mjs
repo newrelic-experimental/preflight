@@ -41,7 +41,7 @@ export default [
     settings: {
       // Pin instead of 'detect' — eslint-plugin-react@7.37 calls a removed
       // ESLint 10 context API during version detection.
-      react: { version: '18.3' },
+      react: { version: '19.0' },
     },
     rules: {
       ...reactPlugin.configs.recommended.rules,

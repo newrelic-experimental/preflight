@@ -294,6 +294,43 @@ Run `nr-ai-observe setup` to choose a mode interactively.
 
 ---
 
+## Local Alerts
+
+Local-mode users get the same threshold alerting as cloud users — evaluated in-process, no New Relic dependency. The engine reads rules from `~/.nr-ai-observe/alerts/rules.json`, evaluates them on a fixed cadence (default 30 s), and surfaces firing/clearing events through the embedded dashboard.
+
+**Setting up rules.** The `nr-ai-observe setup` wizard offers to copy a starter rule set from `examples/local-alert-rules.json` into place when you choose local or both mode. Re-running setup never overwrites a user-edited rules file.
+
+**Eight rule types are supported:**
+
+| Type | What it checks |
+|------|----------------|
+| `cost.window` | Cumulative spend in the named period (`session` / `today` / `week`) crosses a USD threshold. |
+| `efficiency.below` | Efficiency score has stayed under N for `windowSeconds` continuously. |
+| `antipattern.count` | More than N anti-patterns of a chosen type (or any type) in `windowSeconds`. |
+| `latency.percentile` | p50/p95/p99 latency for a tool exceeds N ms. |
+| `budget.session` / `budget.daily` / `budget.weekly` | Budget threshold reached for the named period (uses configured budget caps). |
+| `tool.failure` | Failure rate for a tool exceeds N% in `windowSeconds`. |
+
+**Channels.** Each rule has a `channels` array — `["banner"]` (default) shows a dismissible banner in the dashboard; `["banner", "os"]` also fires a native OS notification (macOS/Linux/Windows) when `alerts.osNotifications` is enabled in config. `[]` is silent (logged only).
+
+**Alert log.** Every fire/clear is appended to `~/.nr-ai-observe/alerts/log.jsonl` (rotated at the configured retention size). The dashboard's "Recent alerts" panel reads this file.
+
+**Live reload.** Editing `rules.json` reloads the rule set within ~200 ms — no server restart needed. One malformed rule is logged and skipped; the rest of the rule set keeps evaluating.
+
+**Configuration knobs** (under `alerts` in the config file or via env vars):
+
+| Field | Env var | Default |
+|-------|---------|---------|
+| `alerts.enabled` | `NR_AI_ALERTS_ENABLED` | `true` outside cloud-only mode |
+| `alerts.evaluationIntervalSeconds` | `NR_AI_ALERTS_INTERVAL_SECONDS` | `30` (5–300) |
+| `alerts.osNotifications` | `NR_AI_ALERTS_OS_NOTIFICATIONS` | `false` |
+| `alerts.logRetentionMb` | `NR_AI_ALERTS_LOG_RETENTION_MB` | `10` (1–1024) |
+| `alerts.rulesPath` | `NR_AI_ALERTS_RULES_PATH` | `~/.nr-ai-observe/alerts/rules.json` |
+
+For the full design, see [docs/superpowers/plans/2026-05-29-local-alerts.md](docs/superpowers/plans/2026-05-29-local-alerts.md).
+
+---
+
 ## Weekly Digest
 
 Register a Slack webhook to receive a weekly summary every Monday morning:

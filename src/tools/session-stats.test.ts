@@ -5,7 +5,7 @@ import { createServer, NrMcpServer } from '../server.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { FeedbackCollector } from './workflow-tools.js';
-import { handleGetSessionStats, handleGetSessionTimeline } from './session-stats.js';
+import { handleGetSessionStats, handleGetSessionTimeline, handleHealth } from './session-stats.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
@@ -171,6 +171,44 @@ describe('handleGetSessionTimeline()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// handleHealth — unit tests
+// ---------------------------------------------------------------------------
+
+describe('handleHealth()', () => {
+  it('returns ok status with version when called with no options', () => {
+    const result = handleHealth({});
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.status).toBe('ok');
+    expect(typeof data.version).toBe('string');
+    expect(data.version.length).toBeGreaterThan(0);
+    expect(data.developer).toBe('unknown');
+    expect(data.session_id).toBeNull();
+    expect(data.uptime_seconds).toBe(0);
+    expect(typeof data.connected_at).toBe('string');
+    expect(new Date(data.connected_at).toISOString()).toBe(data.connected_at);
+  });
+
+  it('computes uptime_seconds from sessionStartMs', () => {
+    const startMs = Date.now() - 90_000;
+    const result = handleHealth({ sessionStartMs: startMs });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.uptime_seconds).toBeGreaterThanOrEqual(89);
+    expect(data.uptime_seconds).toBeLessThanOrEqual(91);
+  });
+
+  it('reflects developer and session_id when provided', () => {
+    const tracker = new SessionTracker('health-session-id');
+    const result = handleHealth({ developer: 'alice', sessionId: tracker.getMetrics().sessionId });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.developer).toBe('alice');
+    expect(data.session_id).toBe('health-session-id');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MCP protocol integration (via InMemoryTransport)
 // ---------------------------------------------------------------------------
 
@@ -207,12 +245,13 @@ describe('MCP protocol integration', () => {
     await server.close();
   });
 
-  it('tools/list includes both session tools', async () => {
+  it('tools/list includes health and session tools', async () => {
     const result = await client.listTools();
 
-    expect(result.tools).toHaveLength(2);
+    expect(result.tools).toHaveLength(3);
 
     const names = result.tools.map(t => t.name);
+    expect(names).toContain('nr_observe_health');
     expect(names).toContain('nr_observe_get_session_stats');
     expect(names).toContain('nr_observe_get_session_timeline');
 
@@ -350,11 +389,13 @@ describe('MCP protocol integration — cost tools', () => {
     const result = await bothClient.listTools();
     const names = result.tools.map(t => t.name);
 
+    expect(names).toContain('nr_observe_health');
     expect(names).toContain('nr_observe_get_session_stats');
     expect(names).toContain('nr_observe_get_session_timeline');
     expect(names).toContain('nr_observe_report_tokens');
     expect(names).toContain('nr_observe_get_cost_breakdown');
-    expect(result.tools).toHaveLength(4);
+    expect(names).toContain('nr_observe_get_cost_forecast');
+    expect(result.tools).toHaveLength(6);
 
     await bothClient.close();
     await bothServer.close();
@@ -455,9 +496,10 @@ describe('Server without any trackers', () => {
     await server.close();
   });
 
-  it('returns empty tools list when no trackers provided', async () => {
+  it('returns only health tool when no trackers provided', async () => {
     const result = await client.listTools();
-    expect(result.tools).toEqual([]);
+    expect(result.tools).toHaveLength(1);
+    expect(result.tools[0]!.name).toBe('nr_observe_health');
   });
 });
 

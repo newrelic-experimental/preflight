@@ -47,9 +47,10 @@ export interface ApiHandlerDeps {
   readonly budgetTracker?: { getStatus: () => unknown };
   readonly latencyTracker?: { getMetrics: () => unknown };
   readonly personalCoach?: { generate: () => unknown };
+  readonly alertLog?: { readRecent: (limit: number) => Promise<readonly unknown[]> };
 }
 
-type RouteFn = (req: IncomingMessage, res: ServerResponse) => void;
+type RouteFn = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
 function jsonOk(res: ServerResponse, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -65,7 +66,7 @@ function unavailable(res: ServerResponse, what: string): void {
   res.end(JSON.stringify({ error: 'unavailable', what }));
 }
 
-export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, res: ServerResponse) => void {
+export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const routes = new Map<string, RouteFn>();
 
   routes.set('GET /api/session/current', (_req, res) => {
@@ -151,12 +152,31 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
     jsonOk(res, deps.personalCoach.generate());
   });
 
-  return (req, res) => {
+  routes.set('GET /api/alerts/recent', async (_req, res) => {
+    // 404 (not 503) when alerts are not configured — the route does not
+    // exist as a logical resource in cloud-only mode or when alerts are
+    // disabled. Plan §8 acceptance criterion calls for 404.
+    if (!deps.alertLog) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+      return;
+    }
+    // Fixed limit (50) for v1.1 — matches the dashboard panel cap.
+    try {
+      const entries = await deps.alertLog.readRecent(50);
+      jsonOk(res, entries);
+    } catch (err) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'internal', detail: String(err) }));
+    }
+  });
+
+  return async (req, res) => {
     const path = (req.url ?? '/').split('?')[0] ?? '/';
     const key = `${req.method ?? 'GET'} ${path}`;
     const fn = routes.get(key);
     if (fn) {
-      fn(req, res);
+      await fn(req, res);
       return;
     }
 

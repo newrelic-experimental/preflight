@@ -1,6 +1,11 @@
 import http from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DashboardServer } from './dashboard-server.js';
 import { LiveEventBus } from './live-event-bus.js';
+import { LocalAlertEngine } from '../alerts/local-alert-engine.js';
+import { AlertLog } from '../alerts/alert-log.js';
 
 describe('DashboardServer', () => {
   let server: DashboardServer;
@@ -191,6 +196,42 @@ describe('DashboardServer SSE shutdown', () => {
     await server.stop();
     const elapsed = Date.now() - start;
     expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+describe('DashboardServer alert wiring', () => {
+  let server: DashboardServer;
+  let dir: string;
+  afterEach(async () => {
+    await server?.stop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('exposes the alert engine and log when provided', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'dashboard-alert-'));
+    const engine = new LocalAlertEngine();
+    const log = new AlertLog({ path: join(dir, 'log.jsonl') });
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      alertEngine: engine,
+      alertLog: log,
+    });
+    await server.start();
+    expect(server.getAlertEngine()).toBe(engine);
+    expect(server.getAlertLog()).toBe(log);
+  });
+
+  it('returns undefined when alert engine/log are not provided', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+    });
+    await server.start();
+    expect(server.getAlertEngine()).toBeUndefined();
+    expect(server.getAlertLog()).toBeUndefined();
   });
 });
 

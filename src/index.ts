@@ -2,6 +2,7 @@
 import 'dotenv/config';
 
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { VERSION, createLogger } from './shared/index.js';
@@ -34,6 +35,11 @@ import { NrIngestManager } from './transport/nr-ingest.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { LiveEventBus } from './dashboard/index.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
+import { LocalAlertEngine } from './alerts/local-alert-engine.js';
+import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
+import { AlertLog } from './alerts/alert-log.js';
+import { OsNotifier } from './alerts/os-notifier.js';
+import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { registerTools } from './tools/session-stats.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
@@ -136,6 +142,9 @@ async function main(): Promise<void> {
   let sessionSpan: SessionSpan | undefined;
   let taskSpanTracker: TaskSpanTracker | undefined;
   let dashboardServer: DashboardServer | undefined;
+  let alertEvaluationInterval: NodeJS.Timeout | undefined;
+  let alertRulesWatcher: import('node:fs').FSWatcher | undefined;
+  let alertRulesWatchTimer: NodeJS.Timeout | undefined;
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -149,6 +158,15 @@ async function main(): Promise<void> {
         const stats = sessionTracker.getMetrics();
         const taskMetrics = taskDetector.getMetrics();
         sessionSpan.end(stats.toolCallCount, taskMetrics.totalTasksCompleted);
+      }
+      if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
+      if (alertRulesWatchTimer) clearTimeout(alertRulesWatchTimer);
+      if (alertRulesWatcher) {
+        try {
+          alertRulesWatcher.close();
+        } catch {
+          // ignore close errors during shutdown
+        }
       }
       eventProcessor?.stop();
       if (dashboardServer) await dashboardServer.stop();
@@ -262,12 +280,99 @@ async function main(): Promise<void> {
     });
 
     const dashboardEnabled = config.mode === 'local' || config.mode === 'both';
+    let alertEngine: LocalAlertEngine | undefined;
+    let alertSnapshotCollector: AlertSnapshotCollector | undefined;
+    let alertLog: AlertLog | undefined;
     if (dashboardEnabled) {
-      const { dirname, resolve: resolvePath } = await import('node:path');
+      const { dirname, resolve: resolvePath, join: joinPath } = await import('node:path');
       // Resolve relative to the running entry script so this works whether the
       // server is launched from source via tsx or from the compiled dist/ bin.
       const here = dirname(process.argv[1] ?? process.cwd());
       const staticDir = resolvePath(here, 'web');
+
+      // Local alerts: construct engine + log + snapshot collector only when
+      // alerts are enabled (default true outside cloud-only mode). Rules are
+      // loaded from disk (config.alerts.rulesPath); fs.watch reloads them
+      // when the file changes.
+      if (config.alerts.enabled) {
+        const osNotifier = new OsNotifier();
+        alertEngine = new LocalAlertEngine({
+          osNotifier,
+          osNotificationsEnabled: config.alerts.osNotifications,
+        });
+        alertLog = new AlertLog({
+          path: joinPath(config.storagePath, 'alerts', 'log.jsonl'),
+        });
+        // Adapter for EfficiencyScorer: collector wants a numeric score or
+        // null. Internally use getSessionAverage() rather than adding a new
+        // public method on the scorer.
+        const efficiencyAdapter = {
+          getCurrentScore: (): number | null =>
+            efficiencyScorer.getSessionAverage()?.score ?? null,
+        };
+        alertSnapshotCollector = new AlertSnapshotCollector({
+          costTracker,
+          efficiencyScorer: efficiencyAdapter,
+          antiPatternDetector,
+          latencyTracker,
+        });
+        const capturedAlertLog = alertLog;
+        alertEngine.setOnAlert((event) => {
+          liveBus.emit('alert', event);
+          void capturedAlertLog.append(event);
+        });
+
+        // Initial rule load and fs.watch wiring.
+        const rulesPath = config.alerts.rulesPath;
+        if (rulesPath) {
+          loadAlertRulesFromDisk(alertEngine, rulesPath);
+          try {
+            const fs = await import('node:fs');
+            // fs.watch on macOS fires twice (write + rename) for many editors;
+            // debounce via a 200 ms timer. The watch handle is closed during
+            // shutdown.
+            alertRulesWatcher = fs.watch(rulesPath, { persistent: false }, () => {
+              try {
+                if (alertRulesWatchTimer) clearTimeout(alertRulesWatchTimer);
+                alertRulesWatchTimer = setTimeout(() => {
+                  if (alertEngine) {
+                    loadAlertRulesFromDisk(alertEngine, rulesPath);
+                  }
+                }, 200);
+                alertRulesWatchTimer.unref?.();
+              } catch (err) {
+                logger.warn('Alert rules watch handler errored', { error: String(err) });
+              }
+            });
+            alertRulesWatcher.on('error', (err) => {
+              logger.warn('Alert rules watcher errored', { error: String(err) });
+            });
+          } catch (err) {
+            logger.warn('Could not start fs.watch on alert rules file', {
+              rulesPath,
+              error: String(err),
+            });
+          }
+        }
+
+        // Periodic evaluation. The interval is unref'd so the Node event
+        // loop can exit cleanly during shutdown / when stdin closes.
+        const evaluationIntervalMs = config.alerts.evaluationIntervalSeconds * 1000;
+        const capturedEngine = alertEngine;
+        const capturedCollector = alertSnapshotCollector;
+        alertEvaluationInterval = setInterval(() => {
+          try {
+            const nowTs = Date.now();
+            const windows = capturedEngine.getRequiredWindows();
+            const snapshot = capturedCollector.snapshot(nowTs, windows);
+            capturedEngine.evaluate(snapshot, nowTs);
+          } catch (err) {
+            logger.warn('Alert evaluation tick failed', { error: String(err) });
+          }
+        }, evaluationIntervalMs);
+        // Don't keep the process alive solely on this interval.
+        alertEvaluationInterval.unref?.();
+      }
 
       dashboardServer = new DashboardServer({
         port: config.dashboard.port,
@@ -289,7 +394,10 @@ async function main(): Promise<void> {
           budgetTracker,
           latencyTracker,
           personalCoach,
+          alertLog,
         },
+        alertEngine,
+        alertLog,
       });
       const addr = await dashboardServer.start();
       logger.info(`Dashboard ready at http://${addr.address}:${addr.port}`);
@@ -327,6 +435,8 @@ async function main(): Promise<void> {
       capturedNrIngest = nrIngest;
     }
 
+    const capturedAlertEngine = alertEngine;
+    const capturedAlertSnapshotCollector = alertSnapshotCollector;
     budgetTracker.setOnThreshold((event) => {
       capturedNrIngest?.ingestBudgetWarning(event);
       logger.warn('Budget threshold reached', {
@@ -335,6 +445,28 @@ async function main(): Promise<void> {
         spentUsd: event.spentUsd.toFixed(4),
         budgetUsd: event.budgetUsd.toFixed(2),
       });
+      // Route into the local alert engine so configured rules can fire.
+      if (capturedAlertEngine) {
+        capturedAlertEngine.evaluate(
+          {
+            timestamp: event.timestamp,
+            cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 0 },
+            efficiency: { score: null },
+            antiPatterns: [],
+            latency: [],
+            toolFailures: [],
+            budgetThresholds: [
+              {
+                period: event.period,
+                thresholdPct: event.thresholdPct,
+                spentUsd: event.spentUsd,
+                budgetUsd: event.budgetUsd,
+              },
+            ],
+          },
+          Date.now(),
+        );
+      }
     });
     eventProcessor = new HookEventProcessor({
       store: localStore,
@@ -380,6 +512,13 @@ async function main(): Promise<void> {
           tool: record.toolName,
           durationMs: record.durationMs ?? 0,
           costUsd: 0,
+          ts: record.timestamp,
+        });
+        // Push into the alert collector's rolling tool-call buffer so
+        // tool.failure rules have data to evaluate against.
+        capturedAlertSnapshotCollector?.recordToolCall({
+          toolName: record.toolName,
+          success: record.success,
           ts: record.timestamp,
         });
 
@@ -438,6 +577,12 @@ async function main(): Promise<void> {
                 ?? pattern.editCount
                 ?? pattern.agentCount
                 ?? 1,
+            });
+            // Mirror each detected pattern into the alert collector's
+            // rolling buffer so antipattern.count rules have data.
+            capturedAlertSnapshotCollector?.recordAntiPattern({
+              type: pattern.type,
+              ts: Date.now(),
             });
           }
         }
@@ -564,6 +709,54 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * Read the rules file from disk, validate it via `parseLocalAlertRules`,
+ * and call `engine.loadRules()` with the valid subset. Invalid entries are
+ * logged and skipped — one bad rule does not disable the engine. Failures
+ * to read or parse the file (e.g. it doesn't exist on first boot, or is
+ * mid-write during a watch reload) are non-fatal: the engine simply keeps
+ * its previous rule set in that case.
+ */
+function loadAlertRulesFromDisk(
+  engine: LocalAlertEngine,
+  rulesPath: string,
+): void {
+  try {
+    if (!existsSync(rulesPath)) {
+      logger.info('Alert rules file not found; engine running with no rules', {
+        rulesPath,
+      });
+      engine.loadRules([]);
+      return;
+    }
+    const raw = readFileSync(rulesPath, 'utf-8');
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      logger.warn('Alert rules file has invalid JSON; keeping previous rules', {
+        rulesPath,
+        error: String(err),
+      });
+      return;
+    }
+    const { valid, invalid } = parseLocalAlertRules(json);
+    if (invalid.length > 0) {
+      logger.warn('Some alert rules failed validation', {
+        invalidCount: invalid.length,
+        validCount: valid.length,
+      });
+    }
+    engine.loadRules(valid);
+    logger.info('Alert rules loaded', { rulesPath, count: valid.length });
+  } catch (err) {
+    logger.warn('Failed to load alert rules from disk', {
+      rulesPath,
+      error: String(err),
+    });
+  }
+}
+
 // Compute cost baselines from prior sessions for daily/weekly budget tracking.
 // Called once at session start; the current in-flight session is excluded so costs
 // aren't double-counted with the live sessionTotalCostUsd on each tool call.
@@ -593,7 +786,6 @@ function computeHistoricalCosts(
 
 // Only run main() when executed directly (not when imported for testing).
 // Resolve symlinks so this also matches when invoked via the `nr-ai-mcp-server` bin link.
-import { realpathSync } from 'node:fs';
 const resolvedArgv1 = (() => {
   try { return realpathSync(process.argv[1]); } catch { return process.argv[1]; }
 })();

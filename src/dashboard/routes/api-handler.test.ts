@@ -586,6 +586,86 @@ describe('api-handler GET /api/cost-per-outcome', () => {
   });
 });
 
+describe('api-handler GET /api/alerts/recent', () => {
+  it('returns alertLog.readRecent(50) entries as JSON', async () => {
+    const fakeEntries = [
+      {
+        id: 'rule-a',
+        state: 'firing',
+        severity: 'warning',
+        title: 'A',
+        description: 'd',
+        value: 1,
+        threshold: 0,
+        firedAt: 1000,
+      },
+      {
+        id: 'rule-b',
+        state: 'cleared',
+        severity: 'critical',
+        title: 'B',
+        description: 'd',
+        value: 0,
+        threshold: 5,
+        firedAt: 500,
+      },
+    ];
+    let receivedLimit = 0;
+    const handler = createApiHandler({
+      alertLog: {
+        readRecent: async (limit: number) => {
+          receivedLimit = limit;
+          return fakeEntries;
+        },
+      },
+    });
+    const req = { method: 'GET', url: '/api/alerts/recent' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeEntries);
+    expect(receivedLimit).toBe(50);
+  });
+
+  it('returns 404 when alertLog is missing (cloud mode or alerts disabled)', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/alerts/recent' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(404);
+    expect(JSON.parse(body())).toEqual({ error: 'not_found' });
+  });
+
+  it('returns 500 when alertLog.readRecent rejects', async () => {
+    const handler = createApiHandler({
+      alertLog: {
+        readRecent: async () => {
+          throw new Error('disk gone');
+        },
+      },
+    });
+    const req = { method: 'GET', url: '/api/alerts/recent' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(500);
+    const parsed = JSON.parse(body());
+    expect(parsed.error).toBe('internal');
+    expect(parsed.detail).toContain('disk gone');
+  });
+
+  it('returns an empty array when the log is empty', async () => {
+    const handler = createApiHandler({
+      alertLog: { readRecent: async () => [] },
+    });
+    const req = { method: 'GET', url: '/api/alerts/recent' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual([]);
+  });
+});
+
 describe('api-handler GET /api/personal-coach', () => {
   it('returns the PersonalCoach.generate() result', async () => {
     const fake = {

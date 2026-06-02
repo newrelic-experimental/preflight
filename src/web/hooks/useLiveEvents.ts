@@ -30,15 +30,24 @@ export function useLiveEvents(url: string = '/sse'): void {
         /* ignore malformed */
       }
     };
+    const onAlert = (e: MessageEvent): void => {
+      try {
+        store.addOrUpdateAlert(JSON.parse(e.data));
+      } catch {
+        /* ignore malformed */
+      }
+    };
 
     es.addEventListener('tool-call', onToolCall as EventListener);
     es.addEventListener('cost-update', onCost as EventListener);
     es.addEventListener('anti-pattern', onAnti as EventListener);
+    es.addEventListener('alert', onAlert as EventListener);
 
     return (): void => {
       es.removeEventListener('tool-call', onToolCall as EventListener);
       es.removeEventListener('cost-update', onCost as EventListener);
       es.removeEventListener('anti-pattern', onAnti as EventListener);
+      es.removeEventListener('alert', onAlert as EventListener);
       es.close();
     };
   }, [url]);

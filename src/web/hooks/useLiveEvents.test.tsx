@@ -45,6 +45,8 @@ describe('useLiveEvents', () => {
       recentToolCalls: [],
       cost: null,
       antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
     });
   });
   afterEach(() => {

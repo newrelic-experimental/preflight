@@ -1111,7 +1111,7 @@ describe('licenseKey gating', () => {
   it('throws when config file mode is invalid (caught by zod)', () => {
     const configPath = writeConfigFile({ mode: 'offline' as 'cloud' });
     expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Config file validation failed.*mode.*Expected.*'cloud'.*'local'.*'both'.*received 'offline'/,
+      /Config file validation failed.*mode.*Invalid option: expected one of "cloud"\|"local"\|"both"/,
     );
   });
 });
@@ -1318,6 +1318,176 @@ describe('dashboard config', () => {
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
     expect(config.dashboard.openOnStart).toBe(true);
+  });
+});
+
+describe('alerts config (Phase 4 task 25)', () => {
+  beforeEach(() => {
+    delete process.env.NR_AI_ALERTS_ENABLED;
+    delete process.env.NR_AI_ALERTS_INTERVAL_SECONDS;
+    delete process.env.NR_AI_ALERTS_OS_NOTIFICATIONS;
+    delete process.env.NR_AI_ALERTS_LOG_RETENTION_MB;
+    delete process.env.NR_AI_ALERTS_RULES_PATH;
+  });
+
+  it('applies sensible defaults when alerts block is missing', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    // Cloud mode default → enabled=false (alerts only apply locally).
+    expect(config.alerts.enabled).toBe(false);
+    expect(config.alerts.evaluationIntervalSeconds).toBe(30);
+    expect(config.alerts.osNotifications).toBe(false);
+    expect(config.alerts.logRetentionMb).toBe(10);
+    expect(config.alerts.rulesPath).toMatch(/alerts[\/\\]rules\.json$/);
+  });
+
+  it("defaults enabled=true when mode='local'", () => {
+    process.env.NR_AI_MODE = 'local';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.enabled).toBe(true);
+  });
+
+  it("defaults enabled=true when mode='both'", () => {
+    process.env.NR_AI_MODE = 'both';
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.enabled).toBe(true);
+  });
+
+  it('reads enabled from config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ alerts: { enabled: true } });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.enabled).toBe(true);
+  });
+
+  it('NR_AI_ALERTS_ENABLED env var overrides file', () => {
+    process.env.NR_AI_MODE = 'local';
+    process.env.NR_AI_ALERTS_ENABLED = 'false';
+    const configPath = writeConfigFile({ alerts: { enabled: true } });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.enabled).toBe(false);
+  });
+
+  it('reads evaluationIntervalSeconds from env var', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_INTERVAL_SECONDS = '60';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.evaluationIntervalSeconds).toBe(60);
+  });
+
+  it('clamps evaluationIntervalSeconds to min 5', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_INTERVAL_SECONDS = '1';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.evaluationIntervalSeconds).toBe(5);
+  });
+
+  it('clamps evaluationIntervalSeconds to max 300', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_INTERVAL_SECONDS = '99999';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.evaluationIntervalSeconds).toBe(300);
+  });
+
+  it('reads evaluationIntervalSeconds from config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ alerts: { evaluationIntervalSeconds: 90 } });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.evaluationIntervalSeconds).toBe(90);
+  });
+
+  it('rejects file evaluationIntervalSeconds outside the bounds at validation time', () => {
+    const configPath = writeConfigFile({ alerts: { evaluationIntervalSeconds: 9000 } });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /Config file validation failed/,
+    );
+  });
+
+  it('reads osNotifications from env var', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_OS_NOTIFICATIONS = 'true';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.osNotifications).toBe(true);
+  });
+
+  it('reads logRetentionMb from env var with bounds', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_LOG_RETENTION_MB = '50';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.logRetentionMb).toBe(50);
+  });
+
+  it('reads rulesPath from env var when it lives under storagePath', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const c1 = loadMcpConfig({ config: configPath });
+    const customRules = resolve(c1.storagePath, 'alerts', 'custom.json');
+    process.env.NR_AI_ALERTS_RULES_PATH = customRules;
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.rulesPath).toBe(customRules);
+  });
+
+  it('rejects rulesPath that does not end in .json — falls back to default', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_RULES_PATH = '/etc/hosts';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.rulesPath).toMatch(/alerts[\/\\]rules\.json$/);
+    expect(config.alerts.rulesPath).not.toBe('/etc/hosts');
+  });
+
+  it('rejects rulesPath that resolves outside storagePath — falls back to default', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NR_AI_ALERTS_RULES_PATH = '/tmp/elsewhere.json';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.rulesPath).toMatch(/alerts[\/\\]rules\.json$/);
+    expect(config.alerts.rulesPath).not.toBe('/tmp/elsewhere.json');
+  });
+
+  it('rejects rulesPath with a path-traversal segment', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const c1 = loadMcpConfig({ config: configPath });
+    process.env.NR_AI_ALERTS_RULES_PATH = resolve(c1.storagePath, '..', 'evil.json');
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.rulesPath).toMatch(/alerts[\/\\]rules\.json$/);
+  });
+
+  it('does NOT clobber the personalAlertThresholds branch when alerts.* is set', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({
+      alerts: {
+        enabled: true,
+        personal: { dailyCostUsd: 99 },
+      },
+    });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.alerts.enabled).toBe(true);
+    expect(config.personalAlertThresholds.dailyCostUsd).toBe(99);
   });
 });
 

@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { buildConfig, runSetupWizard } from './setup-wizard.js';
+import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
 import * as rlMod from 'node:readline/promises';
 import * as fsMod from 'node:fs';
 
@@ -12,6 +12,9 @@ jest.mock('node:fs', () => ({
   readFileSync: jest.fn(),
   writeFileSync: jest.fn(),
   mkdirSync: jest.fn(),
+  existsSync: jest.fn(),
+  copyFileSync: jest.fn(),
+  chmodSync: jest.fn(),
 }));
 jest.mock('./cli.js', () => ({ runInstallCli: jest.fn() }));
 
@@ -20,8 +23,131 @@ const mockedFs = fsMod as unknown as {
   readFileSync: jest.Mock;
   writeFileSync: jest.Mock;
   mkdirSync: jest.Mock;
+  existsSync: jest.Mock;
+  copyFileSync: jest.Mock;
+  chmodSync: jest.Mock;
 };
 const mockedRl = rlMod as unknown as { createInterface: jest.Mock };
+
+// ---------------------------------------------------------------------------
+// copyStarterAlertRules — Phase 4 task 24
+// ---------------------------------------------------------------------------
+
+describe('copyStarterAlertRules', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('copies the source file when destination does not exist', () => {
+    mockedFs.existsSync.mockImplementation((p: unknown) => p === '/src/rules.json');
+    mockedFs.copyFileSync.mockReturnValue(undefined);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.chmodSync.mockReturnValue(undefined);
+
+    const result = copyStarterAlertRules({
+      sourcePath: '/src/rules.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(result.copied).toBe(true);
+    expect(mockedFs.copyFileSync).toHaveBeenCalledWith(
+      '/src/rules.json',
+      '/dest/alerts/rules.json',
+    );
+  });
+
+  it('skips when destination already exists', () => {
+    mockedFs.existsSync.mockReturnValue(true);
+
+    const result = copyStarterAlertRules({
+      sourcePath: '/src/rules.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(result.copied).toBe(false);
+    expect(result.reason).toBe('exists');
+    expect(mockedFs.copyFileSync).not.toHaveBeenCalled();
+  });
+
+  it('creates the destination directory with 0o700 permissions', () => {
+    mockedFs.existsSync.mockImplementation((p: unknown) => p === '/src/rules.json');
+    mockedFs.copyFileSync.mockReturnValue(undefined);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.chmodSync.mockReturnValue(undefined);
+
+    copyStarterAlertRules({
+      sourcePath: '/src/rules.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(mockedFs.mkdirSync).toHaveBeenCalledWith(
+      '/dest/alerts',
+      { recursive: true, mode: 0o700 },
+    );
+  });
+
+  it('chmods the copied file to 0o600', () => {
+    mockedFs.existsSync.mockImplementation((p: unknown) => p === '/src/rules.json');
+    mockedFs.copyFileSync.mockReturnValue(undefined);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.chmodSync.mockReturnValue(undefined);
+
+    copyStarterAlertRules({
+      sourcePath: '/src/rules.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(mockedFs.chmodSync).toHaveBeenCalledWith(
+      '/dest/alerts/rules.json',
+      0o600,
+    );
+  });
+
+  it('returns a friendly reason when the source is missing', () => {
+    mockedFs.existsSync.mockReturnValue(false);
+
+    const result = copyStarterAlertRules({
+      sourcePath: '/nope/does-not-exist.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(result.copied).toBe(false);
+    expect(result.reason).toBe('source-missing');
+    expect(mockedFs.copyFileSync).not.toHaveBeenCalled();
+  });
+
+  it('returns the error message when copyFileSync throws', () => {
+    mockedFs.existsSync.mockImplementation((p: unknown) => p === '/src/rules.json');
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.copyFileSync.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    const result = copyStarterAlertRules({
+      sourcePath: '/src/rules.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(result.copied).toBe(false);
+    expect(result.reason).toContain('disk full');
+  });
+
+  it('still reports success if chmod fails (Windows path)', () => {
+    mockedFs.existsSync.mockImplementation((p: unknown) => p === '/src/rules.json');
+    mockedFs.copyFileSync.mockReturnValue(undefined);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.chmodSync.mockImplementation(() => {
+      throw new Error('chmod ENOSYS');
+    });
+
+    const result = copyStarterAlertRules({
+      sourcePath: '/src/rules.json',
+      destPath: '/dest/alerts/rules.json',
+    });
+
+    expect(result.copied).toBe(true);
+  });
+});
 
 describe('buildConfig', () => {
   it('merges new fields with existing config', () => {
@@ -218,8 +344,8 @@ describe('setupWizard mode branch', () => {
 
   it("when mode='local' is chosen, does NOT prompt for licenseKey or accountId", async () => {
     // Order: mode, [skipped: accountId, licenseKey], developer, teamId, projectId,
-    // sessionBudget, dashboardPort, installHooks
-    answers('local', 'tester', '', '', '', '', 'n');
+    // sessionBudget, dashboardPort, copyStarterRules, installHooks
+    answers('local', 'tester', '', '', '', '', 'n', 'n');
 
     await runSetupWizard();
 
@@ -235,7 +361,7 @@ describe('setupWizard mode branch', () => {
   });
 
   it("when mode='local', persists dashboard config with chosen port", async () => {
-    answers('local', 'tester', '', '', '', '8080', 'n');
+    answers('local', 'tester', '', '', '', '8080', 'n', 'n');
 
     await runSetupWizard();
 
@@ -246,7 +372,7 @@ describe('setupWizard mode branch', () => {
   });
 
   it("when mode='both', prompts for credentials AND port", async () => {
-    answers('both', '12345', 'NRLIC-test', 'tester', '', '', '', '7777', 'n');
+    answers('both', '12345', 'NRLIC-test', 'tester', '', '', '', '7777', 'n', 'n');
 
     await runSetupWizard();
 

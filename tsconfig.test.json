@@ -5,6 +5,7 @@
     "incremental": false,
     "declaration": false,
     "declarationMap": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "types": ["jest", "node"]
   }
 }

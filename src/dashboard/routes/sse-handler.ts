@@ -42,10 +42,12 @@ export function createSseHandler(
       'tool-call': onAny('tool-call'),
       'cost-update': onAny('cost-update'),
       'anti-pattern': onAny('anti-pattern'),
+      'alert': onAny('alert'),
     } as const;
     bus.on('tool-call', handlers['tool-call']);
     bus.on('cost-update', handlers['cost-update']);
     bus.on('anti-pattern', handlers['anti-pattern']);
+    bus.on('alert', handlers['alert']);
 
     const heartbeat = setInterval(() => {
       const seq = nextLocalSeq++;
@@ -58,6 +60,7 @@ export function createSseHandler(
       bus.off('tool-call', handlers['tool-call']);
       bus.off('cost-update', handlers['cost-update']);
       bus.off('anti-pattern', handlers['anti-pattern']);
+      bus.off('alert', handlers['alert']);
     };
     req.on('close', cleanup);
     res.on('close', cleanup);

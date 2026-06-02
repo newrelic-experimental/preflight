@@ -24,11 +24,23 @@ export interface HeartbeatEvent {
   readonly ts: number;
 }
 
+export interface AlertEvent {
+  readonly id: string;
+  readonly state: 'firing' | 'cleared';
+  readonly severity: 'info' | 'warning' | 'critical';
+  readonly title: string;
+  readonly description: string;
+  readonly value: number;
+  readonly threshold: number;
+  readonly firedAt: number;
+}
+
 export type LiveEventMap = {
   'tool-call': ToolCallEvent;
   'cost-update': CostUpdateEvent;
   'anti-pattern': AntiPatternEvent;
   'heartbeat': HeartbeatEvent;
+  'alert': AlertEvent;
 };
 
 export type LiveEventName = keyof LiveEventMap;

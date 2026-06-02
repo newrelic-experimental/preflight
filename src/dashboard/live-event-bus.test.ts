@@ -61,4 +61,27 @@ describe('LiveEventBus', () => {
     expect(replay[0]!.seq).toBe(1);
     expect((replay[0]!.payload as { id: string }).id).toBe('first');
   });
+
+  it('delivers and replays alert events', () => {
+    const bus = new LiveEventBus();
+    const received: unknown[] = [];
+    bus.on('alert', (e) => received.push(e));
+    const payload = {
+      id: 'session-cost-spike',
+      state: 'firing' as const,
+      severity: 'warning' as const,
+      title: 'Session cost above $5',
+      description: 'Session spend crossed the $5 threshold',
+      value: 5.42,
+      threshold: 5,
+      firedAt: 1700000000000,
+    };
+    bus.emit('alert', payload);
+    expect(received).toEqual([payload]);
+
+    const replay = bus.replayFrom(0);
+    expect(replay).toHaveLength(1);
+    expect(replay[0]!.event).toBe('alert');
+    expect(replay[0]!.payload).toEqual(payload);
+  });
 });

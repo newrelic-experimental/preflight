@@ -5,6 +5,8 @@ import { LiveEventBus } from './live-event-bus.js';
 import { createStaticHandler } from './routes/static-handler.js';
 import { createApiHandler, ApiHandlerDeps } from './routes/api-handler.js';
 import { createSseHandler } from './routes/sse-handler.js';
+import type { LocalAlertEngine } from '../alerts/local-alert-engine.js';
+import type { AlertLog } from '../alerts/alert-log.js';
 
 const logger = createLogger('dashboard-server');
 
@@ -14,6 +16,12 @@ export interface DashboardServerOptions {
   readonly bus: LiveEventBus;
   readonly staticDir?: string;
   readonly api?: ApiHandlerDeps;
+  // Phase 1 wiring: passed in when the server is constructed in local/both
+  // mode. Phase 3 will surface them via the API + SPA. They live on the
+  // server for now so other modules (e.g. budget threshold callback in
+  // index.ts) can route events through the engine.
+  readonly alertEngine?: LocalAlertEngine;
+  readonly alertLog?: AlertLog;
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -24,7 +32,7 @@ export class DashboardServer {
   private readonly startedAt = Date.now();
   private readonly routes = new Map<string, RouteHandler>();
   private readonly staticHandler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined;
-  private readonly apiHandler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
+  private readonly apiHandler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined;
   // SSE responses are long-lived and would block server.close() forever.
   // Track them so stop() can force-end each one before awaiting close.
   private readonly activeSseResponses = new Set<ServerResponse>();
@@ -32,7 +40,16 @@ export class DashboardServer {
   constructor(opts: DashboardServerOptions) {
     this.opts = opts;
     this.staticHandler = opts.staticDir ? createStaticHandler(opts.staticDir) : undefined;
-    this.apiHandler = opts.api ? createApiHandler(opts.api) : undefined;
+    // Merge alertLog from the top-level options into the api deps so the
+    // /api/alerts/recent route can read from it. Top-level opts.alertLog
+    // wins over any value already on opts.api.alertLog (it's the
+    // canonical source — the api block predates the alertLog wiring).
+    const apiDeps: ApiHandlerDeps | undefined = opts.api
+      ? { ...opts.api, alertLog: opts.alertLog ?? opts.api.alertLog }
+      : opts.alertLog
+        ? { alertLog: opts.alertLog }
+        : undefined;
+    this.apiHandler = apiDeps ? createApiHandler(apiDeps) : undefined;
     this.routes.set('GET /api/health', (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -53,6 +70,16 @@ export class DashboardServer {
 
   registerRoute(method: 'GET' | 'POST', path: string, handler: RouteHandler): void {
     this.routes.set(`${method} ${path}`, handler);
+  }
+
+  /** Phase 1 hook for tests + Phase 3 API route wiring. */
+  getAlertEngine(): LocalAlertEngine | undefined {
+    return this.opts.alertEngine;
+  }
+
+  /** Phase 1 hook for tests + Phase 3 API route wiring. */
+  getAlertLog(): AlertLog | undefined {
+    return this.opts.alertLog;
   }
 
   async start(): Promise<AddressInfo> {

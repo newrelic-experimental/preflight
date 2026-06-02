@@ -136,7 +136,7 @@ describe('F-137: CLI argument edge cases', () => {
 
   it('--help causes process.exit(0)', () => {
     const exitSpy = jest.spyOn(process, 'exit').mockImplementation(
-      (_code?: number): never => { throw new Error(`exit:${_code}`); },
+      (_code?: string | number | null): never => { throw new Error(`exit:${_code}`); },
     );
     const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
@@ -149,7 +149,7 @@ describe('F-137: CLI argument edge cases', () => {
 
   it('unknown flag causes Commander to exit with code 1', () => {
     const exitSpy = jest.spyOn(process, 'exit').mockImplementation(
-      (_code?: number): never => { throw new Error(`exit:${_code}`); },
+      (_code?: string | number | null): never => { throw new Error(`exit:${_code}`); },
     );
     try {
       expect(() => parseArgs([...base, '--totally-unknown-flag'])).toThrow('exit:1');

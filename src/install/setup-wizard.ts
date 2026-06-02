@@ -1,12 +1,94 @@
 import { createInterface } from 'node:readline/promises';
-import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import {
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+  existsSync,
+  copyFileSync,
+  chmodSync,
+} from 'node:fs';
+import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { normalizeDeveloperName } from '../config.js';
 import { runInstallCli, verifyBinaryOnPath } from './cli.js';
 
 const DEFAULT_STORAGE_PATH = resolve(homedir(), '.nr-ai-observe');
 const CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
+const ALERT_RULES_DEST = resolve(DEFAULT_STORAGE_PATH, 'alerts', 'rules.json');
+
+interface WizardLogger {
+  warn(msg: string, meta?: object): void;
+  info(msg: string, meta?: object): void;
+}
+
+/**
+ * Resolve the path to the bundled `examples/local-alert-rules.json`. The
+ * wizard ships from either `dist/install/` (when installed via npm) or
+ * `src/install/` (when executed via `npx tsx`); both resolve to the repo
+ * root by walking up two directories from the running script.
+ *
+ * Uses `process.argv[1]` rather than `__dirname` (which doesn't exist in
+ * ESM) or `import.meta.url` (which trips Jest's TS module check). Same
+ * pattern as `src/index.ts` for resolving the static dashboard dir.
+ */
+function defaultStarterRulesSource(): string {
+  const scriptPath = process.argv[1] ?? process.cwd();
+  return resolve(dirname(scriptPath), '..', '..', 'examples', 'local-alert-rules.json');
+}
+
+export interface CopyStarterAlertRulesOptions {
+  /** Path to the source examples/local-alert-rules.json. */
+  readonly sourcePath: string;
+  /** Destination path (default: ~/.nr-ai-observe/alerts/rules.json). */
+  readonly destPath: string;
+  /** Optional logger; otherwise no-op. */
+  readonly logger?: WizardLogger;
+}
+
+export interface CopyStarterAlertRulesResult {
+  readonly copied: boolean;
+  readonly reason?: string;
+}
+
+/**
+ * Copy the bundled starter alert rules into the destination path. Idempotent:
+ * if the destination already exists, the function leaves it alone (so a
+ * user-edited rules file is never clobbered by a re-run of `setup`). The
+ * destination directory is created with `0o700` if missing; the file is
+ * written with `0o600`.
+ */
+export function copyStarterAlertRules(
+  opts: CopyStarterAlertRulesOptions,
+): CopyStarterAlertRulesResult {
+  const { sourcePath, destPath, logger } = opts;
+  if (existsSync(destPath)) {
+    logger?.info('alerts: rules file already exists; skipping copy', {
+      destPath,
+    });
+    return { copied: false, reason: 'exists' };
+  }
+  if (!existsSync(sourcePath)) {
+    logger?.warn('alerts: starter rules source not found', { sourcePath });
+    return { copied: false, reason: 'source-missing' };
+  }
+  try {
+    mkdirSync(dirname(destPath), { recursive: true, mode: 0o700 });
+    copyFileSync(sourcePath, destPath);
+    // copyFileSync preserves permissions from source; force 0o600 so the
+    // destination is locked-down regardless of what the source file had.
+    try {
+      chmodSync(destPath, 0o600);
+    } catch {
+      // Non-fatal — Windows may not honour chmod, etc.
+    }
+    logger?.info('alerts: copied starter rules', { sourcePath, destPath });
+    return { copied: true };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger?.warn('alerts: copy failed', { sourcePath, destPath, error });
+    return { copied: false, reason: error };
+  }
+}
 
 function print(msg = ''): void {
   process.stdout.write(msg + '\n');
@@ -187,6 +269,34 @@ export async function runSetupWizard(): Promise<void> {
   mkdirSync(DEFAULT_STORAGE_PATH, { recursive: true, mode: 0o700 });
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
   print(`\nConfig written to ${CONFIG_PATH}`);
+
+  // Step 5c: Starter alert rules (local + both modes only).
+  // Default-yes prompt; copy is idempotent — re-running the wizard never
+  // overwrites a user-edited rules file.
+  if (mode === 'local' || mode === 'both') {
+    const copyAnswer = (
+      await rl.question(
+        'Copy starter alert rules to ~/.nr-ai-observe/alerts/rules.json? [Y/n]: ',
+      )
+    ).trim().toLowerCase();
+    if (copyAnswer !== 'n' && copyAnswer !== 'no') {
+      const result = copyStarterAlertRules({
+        sourcePath: defaultStarterRulesSource(),
+        destPath: ALERT_RULES_DEST,
+        logger: {
+          warn: (msg) => print(`  ! ${msg}`),
+          info: (msg) => print(`  → ${msg}`),
+        },
+      });
+      if (result.copied) {
+        print(`Starter alert rules copied to ${ALERT_RULES_DEST}`);
+      } else if (result.reason === 'exists') {
+        print(`Existing rules.json left in place (skipped — file exists).`);
+      } else {
+        print(`Could not copy starter rules: ${result.reason ?? 'unknown error'}`);
+      }
+    }
+  }
 
   // Step 6: Hook install
   // Config is already written above; pass no credentials to install so it only

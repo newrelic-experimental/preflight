@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
-import { useLiveStore } from '../store/liveStore';
+import { useQuery } from '@tanstack/react-query';
+import { useLiveStore, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
 import { Sparkline } from '../components/Sparkline';
+import { fetchRecentAlerts, qk } from '../api/client';
 
 const HEADER_TIMESTAMP_FORMAT = {
   weekday: 'short',
@@ -10,6 +12,14 @@ const HEADER_TIMESTAMP_FORMAT = {
   hour: 'numeric',
   minute: '2-digit',
 } as const;
+
+const RECENT_ALERTS_REFETCH_MS = 30_000;
+
+const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
+  info: 'text-ink-muted',
+  warning: 'text-accent-amber',
+  critical: 'text-accent-red',
+};
 
 export function Today(): JSX.Element {
   const recent = useLiveStore((s) => s.recentToolCalls);
@@ -67,7 +77,7 @@ export function Today(): JSX.Element {
         )}
       </div>
 
-      <div className="bg-bg-panel border border-bg-line rounded p-3">
+      <div className="bg-bg-panel border border-bg-line rounded p-3 mb-3">
         <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">recent</div>
         {recent.length === 0 ? (
           <div className="text-ink-muted text-xs">No calls yet — start a Claude prompt.</div>
@@ -90,8 +100,94 @@ export function Today(): JSX.Element {
           </table>
         )}
       </div>
+
+      <RecentAlertsPanel />
     </section>
   );
+}
+
+function RecentAlertsPanel(): JSX.Element {
+  const { data, isLoading, error } = useQuery<readonly AlertEvent[]>({
+    queryKey: qk.alertsRecent,
+    queryFn: () => fetchRecentAlerts() as Promise<readonly AlertEvent[]>,
+    refetchInterval: RECENT_ALERTS_REFETCH_MS,
+  });
+
+  const entries = data ?? [];
+
+  return (
+    <div className="bg-bg-panel border border-bg-line rounded p-3">
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+        recent alerts
+      </div>
+      {isLoading && <div className="text-ink-muted text-xs">Loading…</div>}
+      {error && <div className="text-accent-red text-xs">Error loading recent alerts.</div>}
+      {!isLoading && !error && entries.length === 0 && (
+        <div className="text-ink-muted text-xs">No alerts in recent history.</div>
+      )}
+      {!isLoading && !error && entries.length > 0 && (
+        <table className="w-full text-xs">
+          <thead className="text-ink-muted">
+            <tr>
+              <th className="text-left pb-1">when</th>
+              <th className="text-left pb-1">sev</th>
+              <th className="text-left pb-1">rule</th>
+              <th className="text-right pb-1">value / threshold</th>
+              <th className="text-left pb-1 pl-2">state</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.slice(0, 50).map((a) => (
+              <tr key={`${a.id}-${a.firedAt}-${a.state}`} className="border-t border-bg-line">
+                <td className="py-1 text-ink-subtle tabular-nums whitespace-nowrap">
+                  {formatRelativeTime(a.firedAt)}
+                </td>
+                <td className="py-1">
+                  <span aria-hidden="true" className={SEVERITY_DOT[a.severity]}>
+                    ●
+                  </span>{' '}
+                  <span className="text-ink-subtle uppercase tracking-wider text-[10px]">
+                    {a.severity}
+                  </span>
+                </td>
+                <td className="py-1">{a.title}</td>
+                <td className="py-1 text-right tabular-nums">
+                  {formatNumber(a.value)} / {formatNumber(a.threshold)}
+                </td>
+                <td
+                  className={
+                    'py-1 pl-2 ' +
+                    (a.state === 'firing' ? 'text-accent-amber' : 'text-ink-muted')
+                  }
+                >
+                  {a.state}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function formatRelativeTime(ts: number): string {
+  const now = Date.now();
+  const diff = Math.max(0, now - ts);
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatNumber(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) >= 100) return n.toFixed(0);
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(2);
 }
 
 function ForecastEodCard({

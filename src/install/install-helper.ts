@@ -141,7 +141,7 @@ const SettingsSchema = z.object({ hooks: HooksFieldSchema.optional() }).passthro
 
 const McpServerEntrySchema = z.object({ command: z.string(), args: z.array(z.string()) }).passthrough();
 const McpConfigSchema = z.object({
-  mcpServers: z.record(McpServerEntrySchema).optional(),
+  mcpServers: z.record(z.string(), McpServerEntrySchema).optional(),
 }).passthrough();
 
 // ---------------------------------------------------------------------------

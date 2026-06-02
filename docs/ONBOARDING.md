@@ -207,6 +207,10 @@ Dashboard ready at http://127.0.0.1:7777
 
 If the URL is unreachable, check whether port 7777 is in use (`lsof -i:7777`) and override with `NR_AI_DASHBOARD_PORT`.
 
+#### Local alerts
+
+In local and both modes, the server evaluates threshold rules in-process and surfaces firing alerts in the dashboard banner stack. Rules live at `~/.nr-ai-observe/alerts/rules.json`; a starter set is copied into place by the setup wizard. To customise: edit the file in your editor — the engine watches the file and reloads on save (within ~200 ms, no restart needed). To disable a rule, set its `"enabled": false` field; to disable the engine entirely, set `alerts.enabled: false` in your config (or `NR_AI_ALERTS_ENABLED=false`). To opt into native OS notifications for critical alerts, set `alerts.osNotifications: true` in your config and add `"os"` to the relevant rule's `channels` array. See the [Local Alerts](../README.md#local-alerts) section of the README for the full list of rule types and config knobs.
+
 ### Budget Thresholds
 
 Control spending with optional session/daily/weekly budget caps:
