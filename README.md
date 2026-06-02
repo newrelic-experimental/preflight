@@ -283,6 +283,8 @@ In local mode:
 - All telemetry stays in `~/.nr-ai-observe/` on your machine.
 - `licenseKey` and `accountId` are not required.
 
+The server still runs via Claude Code's MCP connection (`--stdio`). You don't launch it manually — Claude Code starts it automatically when you open a session, because `nr-ai-observe install` registered it as an MCP server. The dashboard stays alive as long as your Claude Code session is open.
+
 The dashboard has four views:
 
 - **Today** — live KPIs, sparkline of tool latencies, recent calls, anti-pattern alerts.
@@ -405,7 +407,9 @@ npm test
 
 | Command | Purpose |
 |---------|---------|
-| `npm run build` | Build all packages |
+| `npm run build` | Build TypeScript server + Vite web dashboard |
+| `npm run build:server` | Build only the TypeScript server (`tsc --build`) |
+| `npm run build:web` | Build only the Vite web dashboard (output: `dist/web/`) |
 | `npm test` | Run all tests |
 | `npm run lint` | Check code style |
 | `npm run format` | Auto-format code |

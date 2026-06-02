@@ -48,8 +48,23 @@ function toAuditEntry(entry: unknown): AuditEntryDto {
   };
 }
 
+interface LiveSessionMetrics {
+  readonly sessionId: string;
+  readonly sessionStartTime: number;
+  readonly sessionDurationMs: number;
+  readonly toolCallCount: number;
+  readonly toolCallCountByTool: Record<string, number>;
+  readonly uniqueFilesRead: number;
+  readonly uniqueFilesWritten: number;
+  readonly toolCallTimeline: ReadonlyArray<{
+    readonly timestamp: number;
+    readonly toolName: string;
+    readonly durationMs: number | null;
+  }>;
+}
+
 export interface ApiHandlerDeps {
-  readonly sessionTracker?: { getMetrics: () => unknown };
+  readonly sessionTracker?: { getMetrics: () => LiveSessionMetrics };
   readonly sessionStore?: {
     loadTodaySessions: () => unknown[];
     listSessions: (opts?: { since?: Date; developer?: string }) => unknown[];
@@ -106,7 +121,25 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
       limit = Math.min(Math.max(parsed, 1), 500);
     }
     const allSessions = deps.sessionStore.loadAllSessions?.() ?? deps.sessionStore.listSessions();
-    const sliced = allSessions.slice(-limit);
+    const sliced = allSessions.slice(-limit) as unknown[];
+
+    // Append the current live session so it appears in the list before shutdown
+    if (deps.sessionTracker) {
+      const live = deps.sessionTracker.getMetrics();
+      const alreadyPersisted = sliced.some(
+        (s) => (s as { sessionId?: string }).sessionId === live.sessionId,
+      );
+      if (!alreadyPersisted && live.toolCallCount > 0) {
+        sliced.push({
+          sessionId: live.sessionId,
+          startTime: live.sessionStartTime,
+          durationMs: live.sessionDurationMs,
+          toolCallCount: live.toolCallCount,
+          estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
+        });
+      }
+    }
+
     jsonOk(res, sliced);
   });
 
@@ -203,12 +236,38 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
       const sessionId = sessionIdMatch[1]!;
       if (!deps.sessionStore) return unavailable(res, 'sessionStore');
       const session = deps.sessionStore.loadSession(sessionId);
-      if (session === null) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'not_found' }));
+      if (session !== null) {
+        jsonOk(res, session);
         return;
       }
-      jsonOk(res, session);
+      // Not persisted — check if it's the current live session
+      if (deps.sessionTracker) {
+        const live = deps.sessionTracker.getMetrics();
+        if (live.sessionId === sessionId) {
+          const costUsd = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
+          const antiPatterns = deps.antiPatternDetector
+            ? (deps.antiPatternDetector.getCurrentPatterns() as Array<{ type: string; count: number }>)
+            : [];
+          jsonOk(res, {
+            sessionId: live.sessionId,
+            startTime: live.sessionStartTime,
+            durationMs: live.sessionDurationMs,
+            toolCallCount: live.toolCallCount,
+            estimatedCostUsd: costUsd,
+            toolBreakdown: live.toolCallCountByTool,
+            antiPatterns,
+            toolCalls: live.toolCallTimeline.map((t) => ({
+              toolName: t.toolName,
+              durationMs: t.durationMs ?? 0,
+              startTime: t.timestamp,
+              endTime: t.timestamp + (t.durationMs ?? 0),
+            })),
+          });
+          return;
+        }
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
       return;
     }
 

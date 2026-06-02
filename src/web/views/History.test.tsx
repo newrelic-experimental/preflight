@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
@@ -349,6 +350,142 @@ describe('History data helpers', () => {
 
     it('returns an empty array when given no weeks', () => {
       expect(buildAntiPatternSeries([])).toEqual([]);
+    });
+  });
+});
+
+/**
+ * Tests that verify helper functions work with REAL API response shapes.
+ * The real API uses different field names and types than the frontend
+ * originally assumed (e.g., epoch ms numbers instead of ISO strings,
+ * "week" instead of "weekStart", "avgEfficiencyScore" instead of "efficiencyScore").
+ */
+describe('History helpers with real API data shapes', () => {
+  describe('aggregateDailyCost with real /api/sessions shape', () => {
+    it('handles sessions with numeric startTime (epoch ms)', () => {
+      // Real API returns startTime as epoch ms number, not ISO string
+      const out = aggregateDailyCost(
+        [
+          { sessionId: 'abc-123', startTime: 1780361259600, estimatedCostUsd: 0.42 },
+          { sessionId: 'def-456', startTime: 1780361259600 + 3600000, estimatedCostUsd: 0.58 },
+        ],
+        30,
+      );
+      expect(out.length).toBeGreaterThan(0);
+      // Both sessions are on the same day, so costs should be summed
+      expect(out[0].cost).toBe(1.0);
+      // The day string should be a valid MM-DD format
+      expect(out[0].day).toMatch(/^\d{2}-\d{2}$/);
+    });
+
+    it('handles sessions with undefined estimatedCostUsd (skips them)', () => {
+      const out = aggregateDailyCost(
+        [
+          { sessionId: 'abc-123', startTime: 1780361259600, estimatedCostUsd: undefined },
+          { sessionId: 'def-456', startTime: 1780361259600, estimatedCostUsd: 0.5 },
+        ],
+        30,
+      );
+      // Only the session with a defined cost should be included
+      expect(out).toHaveLength(1);
+      expect(out[0].cost).toBe(0.5);
+    });
+
+    it('handles sessions with null estimatedCostUsd (skips them)', () => {
+      const out = aggregateDailyCost(
+        [
+          { sessionId: 'abc-123', startTime: 1780361259600, estimatedCostUsd: null },
+          { sessionId: 'def-456', startTime: 1780361259600, estimatedCostUsd: 1.2 },
+        ],
+        30,
+      );
+      expect(out).toHaveLength(1);
+      expect(out[0].cost).toBe(1.2);
+    });
+
+    it('handles sessions with undefined startTime (skips them)', () => {
+      const out = aggregateDailyCost(
+        [
+          { sessionId: 'abc-123', startTime: undefined, estimatedCostUsd: 0.42 },
+          { sessionId: 'def-456', startTime: 1780361259600, estimatedCostUsd: 0.5 },
+        ],
+        30,
+      );
+      // The session without startTime should be skipped
+      expect(out).toHaveLength(1);
+      expect(out[0].cost).toBe(0.5);
+    });
+
+    it('returns empty array for empty input', () => {
+      expect(aggregateDailyCost([], 30)).toEqual([]);
+    });
+  });
+
+  describe('buildAntiPatternSeries with real /api/weekly shape', () => {
+    it('handles weeks with "week" field (not "weekStart")', () => {
+      // Real API returns "week": "2026-W22" instead of "weekStart": "2026-05-25"
+      const out = buildAntiPatternSeries([
+        {
+          week: '2026-W22',
+          totalCostUsd: 0,
+          antiPatternCounts: { thrashing: 2, blind_edit: 1 },
+        },
+        {
+          week: '2026-W23',
+          totalCostUsd: 5.0,
+          antiPatternCounts: { stuck_loop: 3 },
+        },
+      ]);
+      expect(out).toEqual([
+        { week: 'W22', count: 3 },
+        { week: 'W23', count: 3 },
+      ]);
+    });
+
+    it('handles weeks where weekStart is undefined (falls back to week field)', () => {
+      // weekStart is undefined, but week is present -- should use week
+      const out = buildAntiPatternSeries([
+        {
+          weekStart: undefined,
+          week: '2026-W22',
+          totalCostUsd: 0,
+          antiPatternCounts: { thrashing: 5 },
+        },
+      ]);
+      expect(out).toHaveLength(1);
+      expect(out[0].count).toBe(5);
+      // Should slice from index 5 of "2026-W22" -> "W22"... actually let's check
+      // (w.weekStart ?? w.week ?? '').slice(5) -- weekStart is undefined so ?? picks week
+      // "2026-W22".slice(5) -> "W22"
+      expect(out[0].week).toBe('W22');
+    });
+
+    it('handles empty antiPatternCounts (skips the week)', () => {
+      const out = buildAntiPatternSeries([
+        {
+          week: '2026-W22',
+          totalCostUsd: 0,
+          avgEfficiencyScore: null,
+          antiPatternCounts: {},
+        },
+      ]);
+      expect(out).toEqual([]);
+    });
+  });
+
+  describe('buildOutcomeData with real API edge cases', () => {
+    it('handles undefined input', () => {
+      expect(buildOutcomeData(undefined)).toEqual([]);
+    });
+
+    it('handles empty outcomeDistribution', () => {
+      const out = buildOutcomeData({
+        outcomeDistribution: {},
+        wasteRatio: 0,
+        totalCost: 0,
+        totalTasks: 0,
+      });
+      expect(out).toEqual([]);
     });
   });
 });

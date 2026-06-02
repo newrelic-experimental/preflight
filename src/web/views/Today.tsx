@@ -3,7 +3,14 @@ import { useQuery } from '@tanstack/react-query';
 import { useLiveStore, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
 import { Sparkline } from '../components/Sparkline';
-import { fetchRecentAlerts, NotFoundError, qk } from '../api/client';
+import {
+  fetchRecentAlerts,
+  fetchCost,
+  fetchSessionsList,
+  fetchAntiPatterns,
+  NotFoundError,
+  qk,
+} from '../api/client';
 
 const HEADER_TIMESTAMP_FORMAT = {
   weekday: 'short',
@@ -21,13 +28,64 @@ const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
   critical: 'text-accent-red',
 };
 
+interface CostApiResponse {
+  readonly cost: { readonly sessionTotalCostUsd?: number | null };
+  readonly forecast: { readonly forecastEndOfDayUsd?: number | null } | null;
+}
+
+interface SessionAntiPattern {
+  readonly type: string;
+  readonly count?: number;
+  readonly file?: string;
+  readonly command?: string;
+  readonly iterations?: number;
+  readonly readCount?: number;
+  readonly repeatCount?: number;
+  readonly editCount?: number;
+}
+
+interface SessionSummary {
+  readonly sessionId: string;
+  readonly startTime?: number;
+  readonly toolCallCount?: number;
+  readonly estimatedCostUsd?: number | null;
+  readonly antiPatterns?: SessionAntiPattern[];
+}
+
 export function Today(): JSX.Element {
   const recent = useLiveStore((s) => s.recentToolCalls);
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
 
-  const calls = recent.length;
-  const todayTotal = cost?.todayTotalUsd ?? 0;
+  const { data: costApi } = useQuery<CostApiResponse>({
+    queryKey: qk.cost,
+    queryFn: () => fetchCost() as Promise<CostApiResponse>,
+  });
+  const { data: todaySessions } = useQuery<SessionSummary[]>({
+    queryKey: qk.sessionsList(200),
+    queryFn: () => fetchSessionsList(200) as Promise<SessionSummary[]>,
+  });
+  const { data: apiAntiPatterns } = useQuery<SessionAntiPattern[]>({
+    queryKey: qk.antiPatterns,
+    queryFn: () => fetchAntiPatterns() as Promise<SessionAntiPattern[]>,
+  });
+
+  const persistedTodaySpend = useMemo(() => computeTodaySpend(todaySessions ?? []), [todaySessions]);
+  const persistedTodayCalls = useMemo(() => computeTodayToolCalls(todaySessions ?? []), [todaySessions]);
+  const persistedTodayFlags = useMemo(() => computeTodayFlags(todaySessions ?? []), [todaySessions]);
+
+  const calls = persistedTodayCalls + recent.length;
+  // SSE cost-update includes persisted + live; use it when available.
+  // Fallback: persisted sessions + current session cost from the REST API
+  // (the current session isn't in the sessions list until shutdown).
+  const todayTotal = cost?.todayTotalUsd
+    ?? (persistedTodaySpend + (costApi?.cost?.sessionTotalCostUsd ?? 0));
+
+  // Flags = past sessions today (from session list) + current session (from
+  // anti-patterns API, which is authoritative and survives refresh). SSE
+  // pushes update live but reset on reload, so use API as floor.
+  const currentSessionFlags = Math.max(apiAntiPatterns?.length ?? 0, antiPatterns.length);
+  const flagsCount = persistedTodayFlags + currentSessionFlags;
   const sparklineValues = useMemo(() => recent.map((c) => c.durationMs), [recent]);
   const headerTimestamp = useMemo(
     () => new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
@@ -48,19 +106,30 @@ export function Today(): JSX.Element {
         <Kpi label="eff." tone="good" value="—" sub="needs more data" />
         <Kpi
           label="flags"
-          tone={antiPatterns.length > 0 ? 'warn' : 'neutral'}
-          value={String(antiPatterns.length)}
+          tone={flagsCount > 0 ? 'warn' : 'neutral'}
+          value={String(flagsCount)}
         />
       </div>
 
-      <ForecastEodCard todayTotal={todayTotal} forecastEod={cost?.forecastEodUsd ?? null} />
+      <ForecastEodCard todayTotal={todayTotal} forecastEod={cost?.forecastEodUsd ?? costApi?.forecast?.forecastEndOfDayUsd ?? null} />
 
-      {antiPatterns.length > 0 && (
+      {flagsCount > 0 && (
         <div className="mb-3 bg-bg-panel border border-accent-amber/40 rounded p-2.5 text-xs">
-          <span className="text-accent-amber font-semibold">⚠ {antiPatterns[0].type}</span>
-          <span className="text-ink-muted"> — </span>
-          <span>{antiPatterns[0].count}× re-edits to </span>
-          <code className="bg-bg-line px-1 rounded">{antiPatterns[0].target}</code>
+          {antiPatterns.length > 0 ? (
+            <>
+              <span className="text-accent-amber font-semibold">⚠ {antiPatterns[0].type}</span>
+              <span className="text-ink-muted"> — </span>
+              <span>{antiPatterns[0].count}× on </span>
+              <code className="bg-bg-line px-1 rounded">{antiPatterns[0].target}</code>
+            </>
+          ) : apiAntiPatterns && apiAntiPatterns.length > 0 ? (
+            <>
+              <span className="text-accent-amber font-semibold">⚠ {apiAntiPatterns[0].type}</span>
+              <span className="text-ink-muted"> — </span>
+              <span>{apiAntiPatterns[0].count ?? apiAntiPatterns[0].iterations ?? apiAntiPatterns[0].readCount ?? '?'}× on </span>
+              <code className="bg-bg-line px-1 rounded">{apiAntiPatterns[0].file ?? apiAntiPatterns[0].command ?? 'unknown'}</code>
+            </>
+          ) : null}
         </div>
       )}
 
@@ -79,8 +148,12 @@ export function Today(): JSX.Element {
 
       <div className="bg-bg-panel border border-bg-line rounded p-3 mb-3">
         <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">recent</div>
-        {recent.length === 0 ? (
+        {recent.length === 0 && calls === 0 ? (
           <div className="text-ink-muted text-xs">No calls yet — start a Claude prompt.</div>
+        ) : recent.length === 0 ? (
+          <div className="text-ink-muted text-xs">
+            {calls} tool calls recorded today · waiting for live events…
+          </div>
         ) : (
           <table className="w-full text-xs">
             <thead className="text-ink-muted">
@@ -210,6 +283,44 @@ function formatNumber(n: number): string {
   if (Math.abs(n) >= 100) return n.toFixed(0);
   if (Number.isInteger(n)) return String(n);
   return n.toFixed(2);
+}
+
+function isToday(ts: number): boolean {
+  const d = new Date(ts);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+}
+
+function computeTodaySpend(sessions: SessionSummary[]): number {
+  let total = 0;
+  for (const s of sessions) {
+    if (s.startTime && isToday(s.startTime) && s.estimatedCostUsd != null) {
+      total += s.estimatedCostUsd;
+    }
+  }
+  return total;
+}
+
+function computeTodayToolCalls(sessions: SessionSummary[]): number {
+  let total = 0;
+  for (const s of sessions) {
+    if (s.startTime && isToday(s.startTime)) {
+      total += s.toolCallCount ?? 0;
+    }
+  }
+  return total;
+}
+
+function computeTodayFlags(sessions: SessionSummary[]): number {
+  let total = 0;
+  for (const s of sessions) {
+    if (s.startTime && isToday(s.startTime)) {
+      total += s.antiPatterns?.length ?? 0;
+    }
+  }
+  return total;
 }
 
 function ForecastEodCard({

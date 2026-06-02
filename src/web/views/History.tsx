@@ -19,16 +19,18 @@ import {
 } from '../api/client';
 
 interface WeeklyRow {
-  readonly weekStart: string;
-  readonly efficiencyScore: number;
+  readonly weekStart?: string;
+  readonly week?: string;
+  readonly efficiencyScore?: number;
+  readonly avgEfficiencyScore?: number | null;
   readonly totalCostUsd: number;
   readonly antiPatternCounts?: Record<string, number>;
 }
 
 interface SessionRow {
   readonly sessionId: string;
-  readonly startTime: string;
-  readonly estimatedCostUsd: number | null;
+  readonly startTime?: string | number;
+  readonly estimatedCostUsd?: number | null;
 }
 
 interface OutcomeBucket {
@@ -85,10 +87,11 @@ export function History(): JSX.Element {
     queryFn: () => fetchPersonalCoach() as Promise<PersonalCoachResult>,
   });
 
-  const weeklyData = (weekly.data ?? []).map((w) => ({
-    week: w.weekStart.slice(5),
-    efficiency: Math.round(w.efficiencyScore * 100),
-  }));
+  const weeklyData = (weekly.data ?? []).map((w) => {
+    const label = (w.weekStart ?? w.week ?? '').slice(5) || '?';
+    const score = w.efficiencyScore ?? w.avgEfficiencyScore ?? 0;
+    return { week: label, efficiency: Math.round((score ?? 0) * 100) };
+  });
 
   const dailyData = aggregateDailyCost(sessions.data ?? [], 30);
   const outcomeData = buildOutcomeData(costPerOutcome.data);
@@ -280,7 +283,7 @@ export function aggregateDailyCost(
 ): Array<{ day: string; cost: number }> {
   const byDay = new Map<string, number>();
   for (const r of rows) {
-    if (r.estimatedCostUsd === null) continue;
+    if (r.estimatedCostUsd == null || r.startTime == null) continue;
     const day = new Date(r.startTime).toISOString().slice(5, 10);
     byDay.set(day, (byDay.get(day) ?? 0) + r.estimatedCostUsd);
   }
@@ -309,7 +312,7 @@ export function buildAntiPatternSeries(
     const counts = w.antiPatternCounts ?? {};
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     if (total > 0) {
-      out.push({ week: w.weekStart.slice(5), count: total });
+      out.push({ week: (w.weekStart ?? w.week ?? '').slice(5) || '?', count: total });
     }
   }
   return out;

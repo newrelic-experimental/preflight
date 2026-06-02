@@ -76,7 +76,7 @@ describe('Sessions view', () => {
   });
 
   it('shows the empty-timeline message when the selected session has no tool calls', async () => {
-    renderSessions(SAMPLE_LIST, { s1: { sessionId: 's1', toolCalls: [] } });
+    renderSessions(SAMPLE_LIST, { s1: { sessionId: 's1', toolCallCount: 0, toolCalls: [] } });
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/s1/)[0]);
     await waitFor(() =>
@@ -104,19 +104,124 @@ describe('Sessions view', () => {
     expect(screen.getByText('80ms')).toBeInTheDocument();
   });
 
-  it('shows the timeline header with session ID, call count, and span', async () => {
+  it('shows the timeline header with session ID and call count', async () => {
     const detail = {
-      sessionId: 's1',
-      toolCalls: [
-        { toolName: 'Read', durationMs: 100, startTime: 0, endTime: 100 },
-        { toolName: 'Edit', durationMs: 200, startTime: 1_000, endTime: 5_000 },
-      ],
+      sessionId: 's1-abcdef',
+      toolCallCount: 5,
+      durationMs: 5000,
+      toolBreakdown: { Read: 3, Edit: 2 },
     };
     renderSessions(SAMPLE_LIST, { s1: detail });
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/s1/)[0]);
     await waitFor(() =>
-      expect(screen.getByText(/s1 · 2 calls · 5s/)).toBeInTheDocument(),
+      expect(screen.getByText(/s1-abcde · 5 calls · 5s/)).toBeInTheDocument(),
+    );
+  });
+});
+
+describe('Sessions view — real API shapes', () => {
+  const REAL_API_LIST = [
+    {
+      sessionId: 'abc-123',
+      startTime: 1780361259600,
+      endTime: 1780361457932,
+      durationMs: 198332,
+      toolCallCount: 28,
+      developer: 'adamjohnson',
+      model: 'claude-sonnet-4-6',
+      toolBreakdown: { Bash: 12, Read: 13, Edit: 2, Write: 1 },
+      filesRead: ['src/foo.ts'],
+      filesModified: ['src/bar.ts'],
+      estimatedCostUsd: 0.42,
+      outcome: 'feature',
+    },
+    {
+      sessionId: 'def-456',
+      startTime: 1780275000000,
+      endTime: 1780275200000,
+      durationMs: 200000,
+      toolCallCount: 5,
+      developer: 'adamjohnson',
+      model: 'claude-sonnet-4-6',
+      toolBreakdown: { Read: 5 },
+      filesRead: ['src/index.ts'],
+      filesModified: [],
+      estimatedCostUsd: 0.08,
+      outcome: 'exploration',
+    },
+  ];
+
+  it('renders without crashing when sessions have epoch-ms startTime (number)', async () => {
+    renderSessions(REAL_API_LIST);
+    await waitFor(() => expect(screen.getByText(/abc-123/)).toBeInTheDocument());
+    expect(screen.getByText(/def-456/)).toBeInTheDocument();
+    expect(screen.getByText('28 calls')).toBeInTheDocument();
+    expect(screen.getByText('$0.42')).toBeInTheDocument();
+  });
+
+  it('renders without crashing when estimatedCostUsd is undefined', async () => {
+    const listWithNoCost = [
+      {
+        sessionId: 'nocost01',
+        startTime: 1780361259600,
+        toolCallCount: 10,
+        outcome: 'feature',
+      },
+    ];
+    renderSessions(listWithNoCost);
+    await waitFor(() => expect(screen.getByText(/nocost01/)).toBeInTheDocument());
+    expect(screen.getByText('10 calls')).toBeInTheDocument();
+  });
+
+  it('renders without crashing when estimatedCostUsd is null', async () => {
+    const listWithNullCost = [
+      {
+        sessionId: 'nullcst1',
+        startTime: 1780361259600,
+        toolCallCount: 7,
+        estimatedCostUsd: null,
+        outcome: 'bug_fix',
+      },
+    ];
+    renderSessions(listWithNullCost);
+    await waitFor(() => expect(screen.getByText(/nullcst1/)).toBeInTheDocument());
+    expect(screen.getByText('7 calls')).toBeInTheDocument();
+  });
+
+  it('shows tool breakdown when session detail has no toolCalls array', async () => {
+    const detailWithBreakdownOnly = {
+      sessionId: 'abc-123',
+      durationMs: 198332,
+      toolCallCount: 28,
+      model: 'claude-sonnet-4-6',
+      toolBreakdown: { Bash: 12, Read: 13, Edit: 2, Write: 1 },
+      filesRead: ['src/foo.ts'],
+      filesModified: ['src/bar.ts'],
+      estimatedCostUsd: 0.42,
+      outcome: 'feature',
+    };
+    renderSessions(REAL_API_LIST, { 'abc-123': detailWithBreakdownOnly });
+    await waitFor(() => expect(screen.getByText(/abc-123/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText(/abc-123/)[0]);
+    await waitFor(() => expect(screen.getByText(/tool breakdown/i)).toBeInTheDocument());
+    expect(screen.getByText('Bash')).toBeInTheDocument();
+    expect(screen.getByText('Read')).toBeInTheDocument();
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(screen.getByText('Write')).toBeInTheDocument();
+  });
+
+  it('renders without crashing when session detail has no toolCalls and no toolBreakdown', async () => {
+    const emptyDetail = {
+      sessionId: 'abc-123',
+      durationMs: 198332,
+      toolCallCount: 0,
+    };
+    renderSessions(REAL_API_LIST, { 'abc-123': emptyDetail });
+    await waitFor(() => expect(screen.getByText(/abc-123/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText(/abc-123/)[0]);
+    await waitFor(() =>
+      expect(screen.getByText(/no tool calls in this session/i)).toBeInTheDocument(),
     );
   });
 });

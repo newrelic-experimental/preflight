@@ -12,7 +12,16 @@ interface SessionRow {
 
 interface SessionDetail {
   readonly sessionId: string;
-  readonly toolCalls: ReadonlyArray<{
+  readonly toolCallCount?: number;
+  readonly durationMs?: number;
+  readonly estimatedCostUsd?: number | null;
+  readonly model?: string | null;
+  readonly outcome?: string;
+  readonly toolBreakdown?: Record<string, number>;
+  readonly filesRead?: string[];
+  readonly filesModified?: string[];
+  readonly antiPatterns?: Array<{ type: string; count: number }>;
+  readonly toolCalls?: ReadonlyArray<{
     readonly toolName: string;
     readonly durationMs: number;
     readonly startTime: number;
@@ -95,41 +104,111 @@ export function Sessions(): JSX.Element {
 }
 
 function SessionTimeline({ data }: { data: SessionDetail }): JSX.Element {
-  const calls = data.toolCalls;
-  if (calls.length === 0) {
+  const calls = data.toolCalls ?? [];
+  const breakdown = data.toolBreakdown ?? {};
+  const breakdownEntries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+  const totalCalls = data.toolCallCount ?? calls.length ?? 0;
+  const durationSec = data.durationMs ? Math.round(data.durationMs / 1000) : null;
+
+  if (calls.length === 0 && breakdownEntries.length === 0) {
     return <div className="text-ink-muted text-xs">No tool calls in this session.</div>;
   }
-  const first = calls[0]?.startTime ?? 0;
-  const last = calls[calls.length - 1]?.endTime ?? first + 1;
-  const span = Math.max(1, last - first);
 
   return (
     <div>
-      <h2 className="text-xs uppercase tracking-wider text-ink-muted mb-2">
-        {data.sessionId} · {calls.length} calls · {Math.round(span / 1000)}s
+      <h2 className="text-xs uppercase tracking-wider text-ink-muted mb-3">
+        {data.sessionId.slice(0, 8)} · {totalCalls} calls
+        {durationSec !== null && ` · ${durationSec}s`}
       </h2>
-      <div className="flex flex-col gap-0.5">
-        {calls.map((c) => {
-          const left = ((c.startTime - first) / span) * 100;
-          const width = Math.max(0.5, ((c.endTime - c.startTime) / span) * 100);
-          return (
-            <div
-              key={`${c.startTime}-${c.toolName}`}
-              className="flex items-center gap-2 text-[11px]"
-            >
-              <span className="w-20 text-ink-subtle truncate">{c.toolName}</span>
-              <div className="flex-1 h-3 bg-bg-base relative rounded">
-                <div
-                  className="absolute top-0 h-3 bg-accent-cyan/70 rounded"
-                  style={{ left: `${left}%`, width: `${width}%` }}
-                  title={`${c.durationMs}ms`}
-                />
-              </div>
-              <span className="w-14 text-right text-ink-muted tabular-nums">{c.durationMs}ms</span>
-            </div>
-          );
-        })}
+
+      <div className="grid grid-cols-3 gap-2 mb-4 text-xs">
+        {data.model && (
+          <div className="bg-bg-base rounded p-2">
+            <div className="text-ink-muted text-[10px] uppercase">Model</div>
+            <div className="font-mono">{data.model}</div>
+          </div>
+        )}
+        {data.estimatedCostUsd != null && (
+          <div className="bg-bg-base rounded p-2">
+            <div className="text-ink-muted text-[10px] uppercase">Cost</div>
+            <div className="tabular-nums">${data.estimatedCostUsd.toFixed(3)}</div>
+          </div>
+        )}
+        {data.outcome && (
+          <div className="bg-bg-base rounded p-2">
+            <div className="text-ink-muted text-[10px] uppercase">Outcome</div>
+            <div>{data.outcome}</div>
+          </div>
+        )}
       </div>
+
+      {breakdownEntries.length > 0 && (
+        <div className="mb-4">
+          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+            Tool breakdown
+          </div>
+          <div className="flex flex-col gap-1">
+            {breakdownEntries.map(([tool, count]) => {
+              const pct = totalCalls > 0 ? (count / totalCalls) * 100 : 0;
+              return (
+                <div key={tool} className="flex items-center gap-2 text-[11px]">
+                  <span className="w-20 text-ink-subtle truncate">{tool}</span>
+                  <div className="flex-1 h-3 bg-bg-base relative rounded">
+                    <div
+                      className="h-3 bg-accent-cyan/70 rounded"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className="w-10 text-right text-ink-muted tabular-nums">{count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {(data.filesModified?.length ?? 0) > 0 && (
+        <div className="mb-4">
+          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">
+            Files modified
+          </div>
+          <ul className="text-[11px] text-ink-subtle space-y-0.5">
+            {data.filesModified!.map((f) => (
+              <li key={f} className="font-mono truncate">{f.split('/').slice(-2).join('/')}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(data.antiPatterns?.length ?? 0) > 0 && (
+        <div>
+          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">
+            Anti-patterns
+          </div>
+          <ul className="text-[11px] text-amber-400 space-y-0.5">
+            {data.antiPatterns!.map((ap) => (
+              <li key={ap.type}>⚠ {ap.type} ({ap.count}×)</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {calls.length > 0 && (
+        <div>
+          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Timeline</div>
+          <div className="flex flex-col gap-0.5">
+            {calls.map((c) => (
+              <div
+                key={`${c.startTime}-${c.toolName}`}
+                className="flex items-center gap-2 text-[11px]"
+              >
+                <span className="w-20 text-ink-subtle truncate">{c.toolName}</span>
+                <span className="w-14 text-right text-ink-muted tabular-nums">{c.durationMs}ms</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
