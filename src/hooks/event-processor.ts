@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
 import type { LocalStore } from '../storage/local-store.js';
-import type { HookEvent, ToolCallRecord } from '../storage/types.js';
+import type { HookEvent, ToolCallRecord, TokenEvent } from '../storage/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -25,6 +25,7 @@ export interface HookEventProcessorOptions {
   /** Maximum pre-events held in memory awaiting a post. Defaults to 2000. */
   maxPendingEvents?: number;
   onRecord: (record: ToolCallRecord) => void;
+  onTokenEvent?: (event: TokenEvent) => void;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -36,6 +37,7 @@ export class HookEventProcessor {
   private readonly pollIntervalMs: number;
   private readonly orphanTimeoutMs: number;
   private readonly onRecord: (record: ToolCallRecord) => void;
+  private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
 
   private readonly pending: Map<string, HookEvent> = new Map();
   private readonly maxPendingEvents: number;
@@ -51,6 +53,7 @@ export class HookEventProcessor {
     this.orphanTimeoutMs = options.orphanTimeoutMs ?? DEFAULT_ORPHAN_TIMEOUT_MS;
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
     this.onRecord = options.onRecord;
+    this.onTokenEvent = options.onTokenEvent ?? null;
 
     this.boundBeforeExit = () => {
       this.stop();
@@ -118,7 +121,9 @@ export class HookEventProcessor {
   processEvents(events: HookEvent[]): void {
     for (const event of events) {
       try {
-        if (event.mode === 'pre') {
+        if (event.mode === 'token') {
+          this.handleTokenEvent(event);
+        } else if (event.mode === 'pre') {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
           this.handlePostEvent(event);
@@ -229,6 +234,27 @@ export class HookEventProcessor {
         ...toolFields,
       };
       this.emitRecord(record);
+    }
+  }
+
+  private handleTokenEvent(event: HookEvent): void {
+    if (!this.onTokenEvent) return;
+    const tokenEvent: TokenEvent = {
+      mode: 'token',
+      timestamp: event.timestamp,
+      inputTokens: (event.inputTokens as number) ?? 0,
+      outputTokens: (event.outputTokens as number) ?? 0,
+      cacheReadTokens: (event.cacheReadTokens as number) ?? 0,
+      cacheCreationTokens: (event.cacheCreationTokens as number) ?? 0,
+      model: (event.model as string) ?? 'unknown',
+      sessionId: event.sessionId as string | undefined,
+    };
+    try {
+      this.onTokenEvent(tokenEvent);
+    } catch (err) {
+      logger.warn('onTokenEvent callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

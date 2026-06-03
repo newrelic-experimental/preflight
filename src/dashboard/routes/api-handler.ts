@@ -4,6 +4,7 @@ import {
   attributeSessionCosts,
   type SessionLikeForCostOutcome,
 } from '../../metrics/cost-per-outcome.js';
+import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
 
@@ -77,7 +78,10 @@ export interface ApiHandlerDeps {
   readonly costForecast?: () => unknown;
   readonly antiPatternDetector?: { getCurrentPatterns: () => unknown };
   readonly auditTrailManager?: { getAuditLog: () => readonly unknown[] };
-  readonly weeklySummaryGenerator?: { loadRecentWeeks: (count: number) => unknown[] };
+  readonly weeklySummaryGenerator?: {
+    loadRecentWeeks: (count: number) => unknown[];
+    generate: (weekId: string) => unknown;
+  };
   readonly budgetTracker?: { getStatus: () => unknown };
   readonly latencyTracker?: { getMetrics: () => unknown };
   readonly personalCoach?: { generate: () => unknown };
@@ -89,6 +93,9 @@ export interface ApiHandlerDeps {
   // Minimal interface — we only need the rolling session-average score for the
   // Today KPI; richer per-task breakdowns ship via the existing MCP tool path.
   readonly efficiencyScorer?: { getSessionAverage: () => { score: number } | null };
+  readonly qualityProxyTracker?: { getMetrics: () => unknown };
+  readonly toolSelectionScorer?: { scoreSession: (calls: readonly ToolCallRecord[]) => unknown };
+  readonly toolCallBuffer?: { getRecords: () => readonly ToolCallRecord[] };
 }
 
 type RouteFn = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -185,12 +192,13 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
     if (!Number.isNaN(parsed)) {
       limit = Math.min(Math.max(parsed, 1), 500);
     }
-    // F-035: Always use listSessions() — loadAllSessions returns the
-    // narrower SessionLikeForCostOutcome shape that drops fields the
-    // Sessions view needs (model, developer, full toolBreakdown, etc.).
-    // loadAllSessions is reserved for the cost-per-outcome endpoints.
-    const allSessions = deps.sessionStore.listSessions();
-    const sliced = allSessions.slice(-limit) as unknown[];
+    const allSessions = deps.sessionStore.loadAllSessions
+      ? deps.sessionStore.loadAllSessions()
+      : deps.sessionStore.listSessions();
+    const withActivity = (allSessions as unknown[]).filter(
+      (s) => ((s as { toolCallCount?: number }).toolCallCount ?? 0) > 0,
+    );
+    const sliced = withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before shutdown
     if (deps.sessionTracker) {
@@ -239,6 +247,7 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
     if (!Number.isNaN(parsed)) {
       count = Math.min(Math.max(parsed, 1), 52);
     }
+    try { deps.weeklySummaryGenerator.generate(getIsoWeekId(new Date())); } catch { /* best-effort */ }
     jsonOk(res, deps.weeklySummaryGenerator.loadRecentWeeks(count));
   });
 
@@ -288,6 +297,17 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'internal', detail: String(err) }));
     }
+  });
+
+  routes.set('GET /api/quality-proxy', (_req, res) => {
+    if (!deps.qualityProxyTracker) return unavailable(res, 'qualityProxyTracker');
+    jsonOk(res, deps.qualityProxyTracker.getMetrics());
+  });
+
+  routes.set('GET /api/tool-selection-score', (_req, res) => {
+    if (!deps.toolSelectionScorer) return unavailable(res, 'toolSelectionScorer');
+    const calls = deps.toolCallBuffer?.getRecords() ?? [];
+    jsonOk(res, deps.toolSelectionScorer.scoreSession(calls));
   });
 
   return async (req, res) => {

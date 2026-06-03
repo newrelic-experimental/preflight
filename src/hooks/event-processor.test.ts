@@ -606,4 +606,60 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(3);
     });
   });
+
+  describe('token events', () => {
+    it('dispatches token events to onTokenEvent callback', () => {
+      const tokenEvents: unknown[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onTokenEvent: (event) => { tokenEvents.push(event); },
+      });
+
+      const tokenEvent: HookEvent = {
+        mode: 'token',
+        tool: '',
+        timestamp: 5000,
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 50000,
+        cacheCreationTokens: 3000,
+        model: 'claude-opus-4-6',
+        sessionId: 'sess-001',
+      };
+
+      processor.processEvents([tokenEvent]);
+
+      expect(tokenEvents).toHaveLength(1);
+      expect(tokenEvents[0]).toMatchObject({
+        mode: 'token',
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 50000,
+        cacheCreationTokens: 3000,
+        model: 'claude-opus-4-6',
+        sessionId: 'sess-001',
+      });
+      expect(records).toHaveLength(0);
+    });
+
+    it('does not error when onTokenEvent is not provided', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+      });
+
+      const tokenEvent: HookEvent = {
+        mode: 'token',
+        tool: '',
+        timestamp: 5000,
+        inputTokens: 500,
+        outputTokens: 100,
+        model: 'claude-opus-4-6',
+      };
+
+      expect(() => processor.processEvents([tokenEvent])).not.toThrow();
+      expect(records).toHaveLength(0);
+    });
+  });
 });

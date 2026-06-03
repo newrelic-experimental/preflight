@@ -1,7 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useLocation } from 'wouter';
-import { fetchSessionsList, fetchSessionCurrent, fetchSessionDetail, qk } from '../api/client';
+import { fetchSessionsList, fetchSessionCurrent, fetchSessionDetail, fetchSessionReplay, qk } from '../api/client';
 
 // F-051: keep the query limit and the "showing N most recent" notice in
 // lock-step. If you bump this, also update the api-handler clamp upper
@@ -43,7 +42,55 @@ interface SessionDetail {
   readonly filesModified?: string[];
   readonly antiPatterns?: Array<{ type: string; count: number }>;
   readonly timeline?: ReadonlyArray<TimelineEntry>;
+  readonly qualityProxy?: {
+    readonly diffApplyRate: number | null;
+    readonly testPassRate: number | null;
+    readonly backtrackCount: number;
+    readonly selfCorrectionCount: number;
+  };
+  readonly toolSelectionScore?: {
+    readonly score: number;
+    readonly redundantReadCount: number;
+    readonly repeatedFailureCount: number;
+    readonly unusedOutputCount: number;
+  };
 }
+
+interface Segment {
+  readonly type: string;
+  readonly startIndex: number;
+  readonly endIndex: number;
+  readonly iterations: number;
+  readonly target: string;
+  readonly severity: 'warning' | 'critical';
+}
+
+interface ReplayData {
+  readonly sessionId: string;
+  readonly timeline: TimelineEntry[];
+  readonly segments: Segment[];
+  readonly worstSegment: Segment | null;
+}
+
+const SEGMENT_LABELS: Record<string, string> = {
+  thrashing: 'Edit/Test Thrashing',
+  stuck_loop: 'Stuck Loop',
+  blind_editing: 'Blind Editing',
+  re_reading: 'Repeated Reads',
+};
+
+const TOOL_ICONS: Record<string, string> = {
+  Read: '\u{1F4C4}',
+  Edit: '✏️',
+  Write: '\u{1F4DD}',
+  Bash: '⚡',
+  Agent: '\u{1F916}',
+  AskUserQuestion: '\u{1F4AC}',
+  TaskCreate: '\u{1F4CB}',
+  TaskUpdate: '✅',
+};
+
+const LIVE_REFETCH_MS = 3_000;
 
 type SortKey = 'date' | 'cost' | 'calls';
 
@@ -80,7 +127,6 @@ function sortSessions(rows: SessionRow[], key: SortKey): SessionRow[] {
 export function Sessions(): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('date');
-  const [, navigate] = useLocation();
 
   const list = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
@@ -106,11 +152,7 @@ export function Sessions(): JSX.Element {
   }, [list.data, sortKey]);
 
   const handleSessionClick = (sessionId: string): void => {
-    if (sessionId === liveSessionId) {
-      navigate(`/replay/${sessionId}`);
-    } else {
-      setSelectedId(sessionId);
-    }
+    setSelectedId(sessionId);
   };
 
   return (
@@ -156,7 +198,6 @@ export function Sessions(): JSX.Element {
               </div>
               <div className="flex justify-between mt-1 text-ink-subtle text-[11px]">
                 <span>{current.data?.toolCallCount ?? 0} calls</span>
-                <span className="text-accent-cyan">replay →</span>
               </div>
             </button>
           )}
@@ -212,25 +253,34 @@ export function Sessions(): JSX.Element {
         {selectedId && detail.isLoading && (
           <div className="text-ink-muted text-xs">Loading detail…</div>
         )}
-        {selectedId && detail.data && <SessionTimeline data={detail.data} />}
+        {selectedId && detail.data && (
+          <SessionTimeline data={detail.data} isLive={selectedId === liveSessionId} />
+        )}
       </div>
     </section>
   );
 }
 
-function SessionTimeline({ data }: { data: SessionDetail }): JSX.Element {
-  const [, navigate] = useLocation();
-  const entries = data.timeline ?? [];
+function qualityRateColor(rate: number | null, goodThreshold = 0.8, warnThreshold = 0.5): string {
+  if (rate === null) return 'text-ink-muted';
+  if (rate >= goodThreshold) return 'text-green-400';
+  if (rate >= warnThreshold) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function toolScoreColor(score: number): string {
+  if (score >= 0.8) return 'text-accent-cyan';
+  if (score >= 0.5) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolean }): JSX.Element {
   const breakdown = data.toolBreakdown ?? {};
   const breakdownEntries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
-  const totalCalls = data.toolCallCount ?? entries.length;
+  const totalCalls = data.toolCallCount ?? 0;
   const durationSec = data.durationMs ? Math.round(data.durationMs / 1000) : null;
+  const entries = data.timeline ?? [];
   const first = entries.length > 0 ? entries[0]!.timestamp : 0;
-  const last =
-    entries.length > 0
-      ? entries[entries.length - 1]!.timestamp + (entries[entries.length - 1]!.durationMs ?? 0)
-      : 0;
-  const span = Math.max(1, last - first);
 
   if (entries.length === 0 && breakdownEntries.length === 0) {
     return <div className="text-ink-muted text-xs">No tool calls in this session.</div>;
@@ -240,11 +290,17 @@ function SessionTimeline({ data }: { data: SessionDetail }): JSX.Element {
     <div>
       <div className="flex items-baseline justify-between mb-3">
         <div>
-          <h2 className="text-xs uppercase tracking-wider text-ink-muted">
+          <h2 className="text-xs uppercase tracking-wider text-ink-muted flex items-center gap-2">
             {data.sessionId.slice(0, 8)} · {totalCalls} calls
             {durationSec !== null && ` · ${durationSec}s`}
+            {isLive && (
+              <span className="inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
+                live
+              </span>
+            )}
           </h2>
-          {entries.length > 0 && (
+          {first > 0 && (
             <div className="text-[11px] text-ink-subtle mt-0.5">
               {new Date(first).toLocaleString(undefined, {
                 weekday: 'short',
@@ -256,13 +312,6 @@ function SessionTimeline({ data }: { data: SessionDetail }): JSX.Element {
             </div>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => navigate(`/replay/${data.sessionId}`)}
-          className="text-[11px] text-accent-cyan hover:underline"
-        >
-          Replay →
-        </button>
       </div>
 
       <div className="grid grid-cols-3 gap-2 mb-4 text-xs">
@@ -285,6 +334,59 @@ function SessionTimeline({ data }: { data: SessionDetail }): JSX.Element {
           </div>
         )}
       </div>
+
+      {(data.qualityProxy || data.toolSelectionScore) && (
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          {data.qualityProxy && (
+            <div className="bg-bg-base border border-bg-line rounded p-3">
+              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+                Session Quality
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="text-ink-muted">Diff Apply </span>
+                  <span className={qualityRateColor(data.qualityProxy.diffApplyRate)}>
+                    {data.qualityProxy.diffApplyRate !== null
+                      ? `${(data.qualityProxy.diffApplyRate * 100).toFixed(0)}%`
+                      : '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-ink-muted">Test Pass </span>
+                  <span className={qualityRateColor(data.qualityProxy.testPassRate)}>
+                    {data.qualityProxy.testPassRate !== null
+                      ? `${(data.qualityProxy.testPassRate * 100).toFixed(0)}%`
+                      : '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-ink-muted">Backtracks </span>
+                  <span className={data.qualityProxy.backtrackCount > 0 ? 'text-amber-400' : ''}>
+                    {data.qualityProxy.backtrackCount}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-ink-muted">Self-corrections </span>
+                  <span className="text-ink-subtle">{data.qualityProxy.selfCorrectionCount}</span>
+                </div>
+              </div>
+            </div>
+          )}
+          {data.toolSelectionScore && (
+            <div className="bg-bg-base border border-bg-line rounded p-3">
+              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+                Tool Selection
+              </div>
+              <div className={`text-2xl font-semibold tabular-nums ${toolScoreColor(data.toolSelectionScore.score)}`}>
+                {data.toolSelectionScore.score.toFixed(2)}
+              </div>
+              <div className="text-[10px] text-ink-muted mt-1">
+                re-reads: {data.toolSelectionScore.redundantReadCount} · repeat fails: {data.toolSelectionScore.repeatedFailureCount} · unused: {data.toolSelectionScore.unusedOutputCount}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {breakdownEntries.length > 0 && (
         <div className="mb-4">
@@ -324,47 +426,135 @@ function SessionTimeline({ data }: { data: SessionDetail }): JSX.Element {
         </div>
       )}
 
-      {(data.antiPatterns?.length ?? 0) > 0 && (
-        <div>
-          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">
-            Anti-patterns
+      <InlineReplay sessionId={data.sessionId} isLive={isLive} />
+    </div>
+  );
+}
+
+function fmtElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `+${min}:${String(sec).padStart(2, '0')}`;
+}
+
+function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolean }): JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const { data, isLoading } = useQuery<ReplayData>({
+    queryKey: qk.sessionReplay(sessionId),
+    queryFn: () => fetchSessionReplay(sessionId) as Promise<ReplayData>,
+    retry: false,
+    refetchInterval: isLive ? LIVE_REFETCH_MS : false,
+  });
+
+  useEffect(() => {
+    if (isLive && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [data?.timeline.length, isLive]);
+
+  if (isLoading) {
+    return <div className="text-ink-muted text-xs mt-3">Loading replay…</div>;
+  }
+
+  if (!data || data.timeline.length === 0) {
+    return <></>;
+  }
+
+  const segments = data.segments;
+  const firstTs = data.timeline[0]!.timestamp;
+  const segmentAt = buildSegmentLookup(data.timeline.length, segments);
+
+  return (
+    <div className="mt-4">
+      {segments.length > 0 && (
+        <div className="bg-bg-base border border-accent-amber/40 rounded p-2.5 mb-3">
+          <div className="text-[11px] font-semibold text-accent-amber mb-1.5">
+            {segments.length} anti-pattern{segments.length > 1 ? 's' : ''}
           </div>
-          <ul className="text-[11px] text-amber-400 space-y-0.5">
-            {data.antiPatterns!.map((ap) => (
-              <li key={ap.type}>⚠ {ap.type} ({ap.count}×)</li>
+          <div className="flex flex-wrap gap-1.5">
+            {segments.map((seg, i) => (
+              <span
+                key={`${seg.type}-${seg.startIndex}-${i}`}
+                className={
+                  'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ' +
+                  (seg.severity === 'critical'
+                    ? 'bg-accent-red/10 text-accent-red border border-accent-red/30'
+                    : 'bg-accent-amber/10 text-accent-amber border border-accent-amber/30')
+                }
+              >
+                {SEGMENT_LABELS[seg.type] ?? seg.type}
+                <span className="opacity-70">({seg.iterations}×)</span>
+              </span>
             ))}
-          </ul>
+          </div>
         </div>
       )}
 
-      {entries.length > 0 && (
-        <div>
-          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Timeline</div>
-          <div className="flex flex-col gap-0.5">
-            {entries.map((c, i) => {
-              const dur = c.durationMs ?? 0;
-              const left = ((c.timestamp - first) / span) * 100;
-              const width = Math.max(0.5, (dur / span) * 100);
-              return (
-                <div
-                  key={`${c.timestamp}-${c.toolName}-${i}`}
-                  className="flex items-center gap-2 text-[11px]"
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+        replay · {data.timeline.length} calls
+        {isLive && <span className="text-accent-cyan ml-1">· auto-updating</span>}
+      </div>
+
+      <div ref={scrollRef} className="max-h-[400px] overflow-auto flex flex-col">
+        {data.timeline.map((entry, idx) => {
+          const seg = segmentAt[idx];
+          const borderColor = seg
+            ? seg.severity === 'critical' ? 'border-l-accent-red' : 'border-l-accent-amber'
+            : 'border-l-transparent';
+          const bgColor = seg
+            ? seg.severity === 'critical' ? 'bg-accent-red/5' : 'bg-accent-amber/5'
+            : '';
+          const elapsed = entry.timestamp - firstTs;
+
+          return (
+            <div
+              key={`${idx}-${entry.timestamp}`}
+              className={`flex items-center gap-1.5 px-2 py-0.5 border-l-2 ${borderColor} ${bgColor} text-[11px]`}
+            >
+              <span className="w-10 text-ink-muted tabular-nums shrink-0">
+                {fmtElapsed(elapsed)}
+              </span>
+              <span className="w-4 text-center shrink-0" aria-hidden="true">
+                {TOOL_ICONS[entry.toolName] ?? '·'}
+              </span>
+              <span className="w-16 truncate font-medium text-ink-base shrink-0">{entry.toolName}</span>
+              <span className="flex-1 truncate text-ink-subtle min-w-0">
+                {entry.filePath ?? entry.command ?? ''}
+              </span>
+              <span className="w-14 text-right tabular-nums text-ink-muted shrink-0">
+                {entry.durationMs != null ? `${entry.durationMs}ms` : '—'}
+              </span>
+              <span className={`w-3 text-center shrink-0 ${entry.success ? 'text-accent-green' : 'text-accent-red'}`}>
+                {entry.success ? '✓' : '✗'}
+              </span>
+              {seg && idx === seg.startIndex && (
+                <span
+                  className={
+                    'ml-0.5 px-1 py-0.5 rounded text-[9px] font-medium shrink-0 ' +
+                    (seg.severity === 'critical' ? 'bg-accent-red/20 text-accent-red' : 'bg-accent-amber/20 text-accent-amber')
+                  }
                 >
-                  <span className="w-20 text-ink-subtle truncate">{c.toolName}</span>
-                  <div className="flex-1 h-3 bg-bg-base relative rounded">
-                    <div
-                      className={`absolute top-0 h-3 rounded ${c.success ? 'bg-accent-cyan/70' : 'bg-accent-red/70'}`}
-                      style={{ left: `${left}%`, width: `${width}%` }}
-                      title={`${dur}ms`}
-                    />
-                  </div>
-                  <span className="w-14 text-right text-ink-muted tabular-nums">{dur}ms</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                  {SEGMENT_LABELS[seg.type] ?? seg.type}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
+}
+
+function buildSegmentLookup(length: number, segments: Segment[]): (Segment | null)[] {
+  const lookup: (Segment | null)[] = new Array(length).fill(null);
+  for (const seg of segments) {
+    for (let i = seg.startIndex; i <= Math.min(seg.endIndex, length - 1); i++) {
+      if (lookup[i] === null || seg.severity === 'critical') {
+        lookup[i] = seg;
+      }
+    }
+  }
+  return lookup;
 }

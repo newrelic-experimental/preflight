@@ -12,7 +12,7 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import { readFileSync, writeFileSync, openSync, closeSync, mkdirSync, existsSync, constants as fsConstants } from 'node:fs';
+import { readFileSync, readSync, writeFileSync, openSync, closeSync, mkdirSync, existsSync, constants as fsConstants, statSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -108,6 +108,148 @@ function truncate(value: string, maxLen: number): string {
 
 function countLines(text: string): number {
   return (text.match(/\n/g) || []).length + 1;
+}
+
+// ---------------------------------------------------------------------------
+// Transcript token collection
+// ---------------------------------------------------------------------------
+
+const TRANSCRIPT_TAIL_BYTES = 16_384;
+const DEFAULT_MODEL = 'claude-opus-4-6';
+
+interface TranscriptUsage {
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  output_tokens?: number;
+}
+
+function getClaudeHome(): string {
+  return process.env.NR_AI_OBSERVE_CLAUDE_HOME ?? resolve(homedir(), '.claude');
+}
+
+function getTranscriptPath(cwd: string | undefined, sessionId: string | undefined): string | null {
+  if (!sessionId) return null;
+  const projectDir = cwd
+    ? cwd.replace(/\//g, '-')
+    : process.env.PWD?.replace(/\//g, '-');
+  if (!projectDir) return null;
+  return resolve(getClaudeHome(), 'projects', projectDir, `${sessionId}.jsonl`);
+}
+
+function readLastAssistantUsage(transcriptPath: string): TranscriptUsage | null {
+  try {
+    const stat = statSync(transcriptPath);
+    if (stat.size === 0) return null;
+
+    const fd = openSync(transcriptPath, fsConstants.O_RDONLY);
+    try {
+      const readSize = Math.min(stat.size, TRANSCRIPT_TAIL_BYTES);
+      const buffer = Buffer.alloc(readSize);
+      const bytesRead = readSync(fd, buffer, 0, readSize, stat.size - readSize);
+      const tail = buffer.toString('utf-8', 0, bytesRead);
+
+      const lines = tail.split('\n').filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const entry = JSON.parse(lines[i]) as Record<string, unknown>;
+          if (entry.type === 'assistant' && entry.message && typeof entry.message === 'object') {
+            const msg = entry.message as Record<string, unknown>;
+            if (msg.usage && typeof msg.usage === 'object') {
+              return msg.usage as TranscriptUsage;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Silently ignore — transcript may not exist yet
+  }
+  return null;
+}
+
+function getLastTranscriptSize(sessionId: string): number {
+  try {
+    const bufferDir = dirname(getBufferPath());
+    const statePath = resolve(bufferDir, `.transcript-pos-${sessionId}`);
+    if (existsSync(statePath)) {
+      return parseInt(readFileSync(statePath, 'utf-8').trim(), 10) || 0;
+    }
+  } catch {
+    // Ignore
+  }
+  return 0;
+}
+
+function setLastTranscriptSize(sessionId: string, size: number): void {
+  try {
+    const bufferDir = dirname(getBufferPath());
+    if (!existsSync(bufferDir)) {
+      mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
+    }
+    const statePath = resolve(bufferDir, `.transcript-pos-${sessionId}`);
+    writeFileSync(statePath, String(size), { mode: 0o600 });
+  } catch {
+    // Ignore
+  }
+}
+
+function collectTranscriptTokens(data: { cwd?: string; session_id?: string }): void {
+  const sessionId = data.session_id;
+  const transcriptPath = getTranscriptPath(data.cwd as string | undefined, sessionId);
+  if (!transcriptPath || !sessionId) return;
+
+  let currentSize: number;
+  try {
+    currentSize = statSync(transcriptPath).size;
+  } catch {
+    return;
+  }
+
+  const lastSize = getLastTranscriptSize(sessionId);
+  if (currentSize <= lastSize) return;
+
+  const usage = readLastAssistantUsage(transcriptPath);
+  if (!usage) return;
+
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return;
+
+  setLastTranscriptSize(sessionId, currentSize);
+
+  const tokenEvent: Record<string, unknown> = {
+    mode: 'token',
+    timestamp: Date.now(),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+    model: DEFAULT_MODEL,
+  };
+  tokenEvent.sessionId = sessionId;
+
+  try {
+    const bufferPath = getBufferPath();
+    const bufferDir = dirname(bufferPath);
+    if (!existsSync(bufferDir)) {
+      mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
+    }
+
+    const line = JSON.stringify(tokenEvent) + '\n';
+    const fd = openSync(bufferPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND, 0o600);
+    try {
+      writeFileSync(fd, line);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Silent failure — never block Claude Code
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,10 +465,20 @@ function processHook(raw: string): void {
   } catch {
     // Silent failure — never block Claude Code
   }
+
+  // After writing the tool event, collect token usage from the transcript.
+  // Only on PostToolUse — each assistant turn produces exactly one usage object.
+  if (eventName === 'PostToolUse') {
+    try {
+      collectTranscriptTokens(data);
+    } catch {
+      // Silent failure — transcript reading is best-effort
+    }
+  }
 }
 
 // Exported for testing
-export { processHook, redact, hashInput, sizeOf, truncate, getRecordContent };
+export { processHook, redact, hashInput, sizeOf, truncate, getRecordContent, collectTranscriptTokens, readLastAssistantUsage, getTranscriptPath };
 
 // ---------------------------------------------------------------------------
 // Entry point — only when run directly (not when imported by the MCP server)

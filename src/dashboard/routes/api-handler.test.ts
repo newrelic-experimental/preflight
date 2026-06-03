@@ -109,6 +109,7 @@ describe('api-handler GET /api/sessions', () => {
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
       sessionId: `sess-${i}`,
       date: `2026-05-${String(i + 1).padStart(2, '0')}`,
+      toolCallCount: i + 1,
     }));
     const handler = createApiHandler({
       sessionStore: {
@@ -132,6 +133,7 @@ describe('api-handler GET /api/sessions', () => {
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
       sessionId: `sess-${i}`,
       date: `2026-05-${String(i + 1).padStart(2, '0')}`,
+      toolCallCount: i + 1,
     }));
     const handler = createApiHandler({
       sessionStore: {
@@ -153,6 +155,7 @@ describe('api-handler GET /api/sessions', () => {
       filename: `2026-05-${String((i % 30) + 1).padStart(2, '0')}_sess-${i}.json`,
       sessionId: `sess-${i}`,
       date: `2026-05-${String((i % 30) + 1).padStart(2, '0')}`,
+      toolCallCount: i + 1,
     }));
     const handler = createApiHandler({
       sessionStore: {
@@ -174,6 +177,7 @@ describe('api-handler GET /api/sessions', () => {
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
       sessionId: `sess-${i}`,
       date: `2026-05-${String(i + 1).padStart(2, '0')}`,
+      toolCallCount: i + 1,
     }));
     const handler = createApiHandler({
       sessionStore: {
@@ -198,13 +202,13 @@ describe('api-handler GET /api/sessions', () => {
     expect(status()).toBe(503);
   });
 
-  it('does not call loadAllSessions for /api/sessions list (F-035)', async () => {
+  it('uses loadAllSessions for /api/sessions list when available', async () => {
     const fakeSessions = Array.from({ length: 5 }, (_v, i) => ({
-      filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
       sessionId: `sess-${i}`,
-      date: `2026-05-${String(i + 1).padStart(2, '0')}`,
+      startTime: Date.now(),
+      toolCallCount: i + 1,
     }));
-    const listSessionsSpy = jest.fn(() => fakeSessions);
+    const listSessionsSpy = jest.fn(() => []);
     const loadAllSessionsSpy = jest.fn(() => fakeSessions);
     const handler = createApiHandler({
       sessionStore: {
@@ -218,8 +222,8 @@ describe('api-handler GET /api/sessions', () => {
     const { res, status } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(listSessionsSpy).toHaveBeenCalled();
-    expect(loadAllSessionsSpy).not.toHaveBeenCalled();
+    expect(loadAllSessionsSpy).toHaveBeenCalled();
+    expect(listSessionsSpy).not.toHaveBeenCalled();
   });
 });
 

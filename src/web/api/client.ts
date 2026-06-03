@@ -35,6 +35,10 @@ export const fetchPersonalCoach = (): Promise<unknown> => getJson<unknown>('/api
 export const fetchRecentAlerts = (): Promise<unknown> => getJson<unknown>('/api/alerts/recent');
 export const fetchSessionReplay = (id: string): Promise<unknown> =>
   getJson<unknown>(`/api/sessions/${encodeURIComponent(id)}/replay`);
+export const fetchQualityProxy = (): Promise<unknown> =>
+  getJson<unknown>('/api/quality-proxy');
+export const fetchToolSelectionScore = (): Promise<unknown> =>
+  getJson<unknown>('/api/tool-selection-score');
 
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
@@ -51,4 +55,6 @@ export const qk = {
   personalCoach: ['personal-coach'] as const,
   alertsRecent: ['alerts', 'recent'] as const,
   sessionReplay: (id: string) => ['session', id, 'replay'] as const,
+  qualityProxy: ['quality-proxy'] as const,
+  toolSelectionScore: ['tool-selection-score'] as const,
 };

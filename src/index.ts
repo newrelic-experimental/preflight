@@ -31,6 +31,14 @@ import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { LatencyTracker } from './metrics/latency-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
+import { RetryDetector } from './metrics/retry-detector.js';
+import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
+import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
+import { DecisionTracker } from './metrics/decision-tracker.js';
+import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
+import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
+import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
+import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { LiveEventBus } from './dashboard/index.js';
@@ -232,6 +240,19 @@ async function main(): Promise<void> {
     const latencyTracker = new LatencyTracker();
     const taskCompletionTracker = new TaskCompletionTracker();
     const modelUsageTracker = new ModelUsageTracker();
+    const retryDetector = new RetryDetector();
+    const contextCompositionTracker = new ContextCompositionTracker();
+    const latencyDecompositionTracker = new LatencyDecompositionTracker();
+    const decisionTracker = new DecisionTracker();
+    const instructionDriftTracker = new InstructionDriftTracker();
+    const toolSelectionScorer = new ToolSelectionScorer();
+    const qualityProxyTracker = new QualityProxyTracker();
+    const apiFailureTracker = new ApiFailureTracker();
+
+    const toolCallBuffer: import('./storage/types.js').ToolCallRecord[] = [];
+    const toolCallBufferAccessor = {
+      getRecords: () => toolCallBuffer as readonly import('./storage/types.js').ToolCallRecord[],
+    };
 
     sessionStore = new SessionStore({ storagePath: config.storagePath });
     const currentSessionId = sessionTracker.getMetrics().sessionId;
@@ -286,9 +307,10 @@ async function main(): Promise<void> {
     let alertLog: AlertLog | undefined;
     if (dashboardEnabled) {
       const { dirname, resolve: resolvePath, join: joinPath } = await import('node:path');
-      // Resolve relative to the running entry script so this works whether the
-      // server is launched from source via tsx or from the compiled dist/ bin.
-      const here = dirname(process.argv[1] ?? process.cwd());
+      // Resolve symlinks (e.g. npm link) before dirname so staticDir points
+      // to the actual dist/ directory, not the symlink's parent.
+      const entryScript = realpathSync(process.argv[1] ?? process.cwd());
+      const here = dirname(entryScript);
       const staticDir = resolvePath(here, 'web');
 
       // Local alerts: construct engine + log + snapshot collector only when
@@ -399,6 +421,9 @@ async function main(): Promise<void> {
           alertLog,
           taskDetector,
           efficiencyScorer,
+          qualityProxyTracker,
+          toolSelectionScorer,
+          toolCallBuffer: toolCallBufferAccessor,
         },
         alertEngine,
         alertLog,
@@ -539,6 +564,9 @@ async function main(): Promise<void> {
 
         contextWindowTracker.recordToolCall(record);
         latencyTracker.recordToolCall(record);
+        retryDetector.recordToolCall(record);
+        qualityProxyTracker.recordToolCall(record);
+        toolCallBuffer.push(record);
 
         // Record audit trail unconditionally so the local dashboard's Audit view
         // populates regardless of mode. NrIngestManager (when present) reuses the
@@ -626,6 +654,38 @@ async function main(): Promise<void> {
           }
         }
       },
+      onTokenEvent: (tokenEvent) => {
+        if (!costTracker || !config) return;
+        const usage = {
+          inputTokens: tokenEvent.inputTokens,
+          outputTokens: tokenEvent.outputTokens,
+          thinkingTokens: 0,
+          cacheReadTokens: tokenEvent.cacheReadTokens,
+          cacheCreationTokens: tokenEvent.cacheCreationTokens,
+          totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
+        };
+        const breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model);
+        modelUsageTracker.recordUsage(
+          tokenEvent.model,
+          tokenEvent.inputTokens,
+          tokenEvent.outputTokens,
+          breakdown.totalUsd,
+        );
+
+        const costMetrics = costTracker.getMetrics();
+        if (costMetrics.sessionTotalCostUsd !== null) {
+          budgetTracker.updateCost(
+            costMetrics.sessionTotalCostUsd,
+            priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
+            priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd,
+          );
+          liveBus.emit('cost-update', {
+            sessionTotalUsd: costMetrics.sessionTotalCostUsd,
+            todayTotalUsd: priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
+            forecastEodUsd: null,
+          });
+        }
+      },
     });
 
     // Wire audit trail into resource handlers (was undefined at createServer() time).
@@ -653,6 +713,15 @@ async function main(): Promise<void> {
       latencyTracker,
       taskCompletionTracker,
       modelUsageTracker,
+      retryDetector,
+      contextCompositionTracker,
+      latencyDecompositionTracker,
+      decisionTracker,
+      instructionDriftTracker,
+      toolSelectionScorer,
+      toolCallBuffer: toolCallBufferAccessor,
+      qualityProxyTracker,
+      apiFailureTracker,
       sessionTraceId,
       sessionStartMs,
       accountId: config.accountId,

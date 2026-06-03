@@ -1,9 +1,9 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { processHook, redact, hashInput, sizeOf, truncate, getRecordContent } from './collector-script.js';
+import { processHook, redact, hashInput, sizeOf, truncate, getRecordContent, collectTranscriptTokens, readLastAssistantUsage, getTranscriptPath } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -445,6 +445,139 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.mode).toBe('pre');
       expect(events[0]!.tool).toBe('Read');
+    });
+  });
+
+  describe('transcript token collection', () => {
+    it('getTranscriptPath builds correct path from cwd and sessionId', () => {
+      const path = getTranscriptPath('/Users/test/myproject', 'abc-123');
+      expect(path).toContain('.claude/projects/-Users-test-myproject/abc-123.jsonl');
+    });
+
+    it('getTranscriptPath returns null when sessionId is missing', () => {
+      expect(getTranscriptPath('/some/path', undefined)).toBeNull();
+    });
+
+    it('readLastAssistantUsage extracts usage from transcript', () => {
+      const transcriptPath = resolve(tmpDir, 'test-transcript.jsonl');
+      const lines = [
+        JSON.stringify({ type: 'human', message: { content: 'hello' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'hi' }],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_creation_input_tokens: 200,
+              cache_read_input_tokens: 5000,
+            },
+          },
+        }),
+      ];
+      writeFileSync(transcriptPath, lines.join('\n') + '\n');
+
+      const usage = readLastAssistantUsage(transcriptPath);
+      expect(usage).toEqual({
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 200,
+        cache_read_input_tokens: 5000,
+      });
+    });
+
+    it('readLastAssistantUsage returns null for non-existent file', () => {
+      expect(readLastAssistantUsage('/does/not/exist.jsonl')).toBeNull();
+    });
+
+    it('readLastAssistantUsage returns null for empty file', () => {
+      const transcriptPath = resolve(tmpDir, 'empty-transcript.jsonl');
+      writeFileSync(transcriptPath, '');
+      expect(readLastAssistantUsage(transcriptPath)).toBeNull();
+    });
+
+    it('readLastAssistantUsage picks the last assistant entry', () => {
+      const transcriptPath = resolve(tmpDir, 'multi-assistant.jsonl');
+      const lines = [
+        JSON.stringify({
+          type: 'assistant',
+          message: { usage: { input_tokens: 10, output_tokens: 5 } },
+        }),
+        JSON.stringify({ type: 'human', message: { content: 'more' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: { usage: { input_tokens: 200, output_tokens: 80, cache_read_input_tokens: 9000 } },
+        }),
+      ];
+      writeFileSync(transcriptPath, lines.join('\n') + '\n');
+
+      const usage = readLastAssistantUsage(transcriptPath);
+      expect(usage!.input_tokens).toBe(200);
+      expect(usage!.output_tokens).toBe(80);
+      expect(usage!.cache_read_input_tokens).toBe(9000);
+    });
+
+    it('collectTranscriptTokens writes a token event to buffer', () => {
+      const sessionId = 'test-session-abc';
+      const projectDir = tmpDir.replace(/\//g, '-');
+      const claudeHome = resolve(tmpDir, 'claude-home');
+      const claudeDir = resolve(claudeHome, 'projects', projectDir);
+      mkdirSync(claudeDir, { recursive: true });
+
+      const transcriptPath = resolve(claudeDir, `${sessionId}.jsonl`);
+      const transcriptLine = JSON.stringify({
+        type: 'assistant',
+        message: { usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 10000 } },
+      });
+      writeFileSync(transcriptPath, transcriptLine + '\n');
+
+      process.env.NR_AI_OBSERVE_CLAUDE_HOME = claudeHome;
+
+      try {
+        collectTranscriptTokens({ cwd: tmpDir, session_id: sessionId });
+
+        const events = readBufferEvents();
+        const tokenEvents = events.filter(e => e.mode === 'token');
+        expect(tokenEvents).toHaveLength(1);
+        expect(tokenEvents[0]).toMatchObject({
+          mode: 'token',
+          inputTokens: 500,
+          outputTokens: 100,
+          cacheReadTokens: 10000,
+          cacheCreationTokens: 0,
+          sessionId: sessionId,
+        });
+      } finally {
+        delete process.env.NR_AI_OBSERVE_CLAUDE_HOME;
+      }
+    });
+
+    it('collectTranscriptTokens deduplicates when transcript size has not changed', () => {
+      const sessionId = 'test-session-dedup';
+      const projectDir = tmpDir.replace(/\//g, '-');
+      const claudeHome = resolve(tmpDir, 'claude-home2');
+      const claudeDir = resolve(claudeHome, 'projects', projectDir);
+      mkdirSync(claudeDir, { recursive: true });
+
+      const transcriptPath = resolve(claudeDir, `${sessionId}.jsonl`);
+      const transcriptLine = JSON.stringify({
+        type: 'assistant',
+        message: { usage: { input_tokens: 300, output_tokens: 60 } },
+      });
+      writeFileSync(transcriptPath, transcriptLine + '\n');
+
+      process.env.NR_AI_OBSERVE_CLAUDE_HOME = claudeHome;
+
+      try {
+        collectTranscriptTokens({ cwd: tmpDir, session_id: sessionId });
+        collectTranscriptTokens({ cwd: tmpDir, session_id: sessionId });
+
+        const events = readBufferEvents();
+        const tokenEvents = events.filter(e => e.mode === 'token');
+        expect(tokenEvents).toHaveLength(1);
+      } finally {
+        delete process.env.NR_AI_OBSERVE_CLAUDE_HOME;
+      }
     });
   });
 });

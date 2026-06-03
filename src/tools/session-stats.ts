@@ -84,6 +84,14 @@ import type { ContextWindowTracker } from '../metrics/context-window-tracker.js'
 import type { LatencyTracker } from '../metrics/latency-tracker.js';
 import type { TaskCompletionTracker } from '../metrics/task-completion-tracker.js';
 import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
+import type { RetryDetector } from '../metrics/retry-detector.js';
+import type { ContextCompositionTracker } from '../metrics/context-composition-tracker.js';
+import type { LatencyDecompositionTracker } from '../metrics/latency-decomposition.js';
+import type { DecisionTracker } from '../metrics/decision-tracker.js';
+import type { InstructionDriftTracker } from '../metrics/instruction-drift-tracker.js';
+import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
+import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
+import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import {
   CONTEXT_EFFICIENCY_TOOL,
   LATENCY_PERCENTILES_TOOL,
@@ -94,6 +102,24 @@ import {
   handleGetTaskCompletionRate,
   handleGetModelUsage,
 } from './analytics-tools.js';
+import {
+  RETRY_ALERTS_TOOL,
+  CONTEXT_COMPOSITION_TOOL,
+  LATENCY_DECOMPOSITION_TOOL,
+  DECISION_TREE_TOOL,
+  INSTRUCTION_DRIFT_TOOL,
+  TOOL_SELECTION_SCORE_TOOL,
+  QUALITY_PROXY_TOOL,
+  API_FAILURES_TOOL,
+  handleGetRetryAlerts,
+  handleGetContextComposition,
+  handleGetLatencyDecomposition,
+  handleGetDecisionTree,
+  handleGetInstructionDrift,
+  handleGetToolSelectionScore,
+  handleGetQualityProxy,
+  handleGetApiFailures,
+} from './extended-analytics-tools.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
@@ -239,6 +265,15 @@ export interface ToolRegistrationOptions {
   latencyTracker?: LatencyTracker;
   taskCompletionTracker?: TaskCompletionTracker;
   modelUsageTracker?: ModelUsageTracker;
+  retryDetector?: RetryDetector;
+  contextCompositionTracker?: ContextCompositionTracker;
+  latencyDecompositionTracker?: LatencyDecompositionTracker;
+  decisionTracker?: DecisionTracker;
+  instructionDriftTracker?: InstructionDriftTracker;
+  toolSelectionScorer?: ToolSelectionScorer;
+  toolCallBuffer?: { getRecords(): readonly import('../storage/types.js').ToolCallRecord[] };
+  qualityProxyTracker?: QualityProxyTracker;
+  apiFailureTracker?: ApiFailureTracker;
   sessionTraceId?: string;
   sessionStartMs?: number;
   accountId?: string;
@@ -306,6 +341,14 @@ export function registerTools(
     latencyTracker,
     taskCompletionTracker,
     modelUsageTracker,
+    retryDetector,
+    contextCompositionTracker,
+    latencyDecompositionTracker,
+    decisionTracker,
+    instructionDriftTracker,
+    toolSelectionScorer,
+    qualityProxyTracker,
+    apiFailureTracker,
     sessionTraceId,
     sessionStartMs,
   } = options;
@@ -383,6 +426,30 @@ export function registerTools(
   }
   if (modelUsageTracker) {
     tools.push(MODEL_USAGE_TOOL);
+  }
+  if (retryDetector) {
+    tools.push(RETRY_ALERTS_TOOL);
+  }
+  if (contextCompositionTracker) {
+    tools.push(CONTEXT_COMPOSITION_TOOL);
+  }
+  if (latencyDecompositionTracker) {
+    tools.push(LATENCY_DECOMPOSITION_TOOL);
+  }
+  if (decisionTracker) {
+    tools.push(DECISION_TREE_TOOL);
+  }
+  if (instructionDriftTracker) {
+    tools.push(INSTRUCTION_DRIFT_TOOL);
+  }
+  if (toolSelectionScorer && options.toolCallBuffer) {
+    tools.push(TOOL_SELECTION_SCORE_TOOL);
+  }
+  if (qualityProxyTracker) {
+    tools.push(QUALITY_PROXY_TOOL);
+  }
+  if (apiFailureTracker) {
+    tools.push(API_FAILURES_TOOL);
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -747,6 +814,87 @@ export function registerTools(
           };
         }
         return handleGetModelUsage(modelUsageTracker);
+      }
+
+      case 'nr_observe_get_retry_alerts': {
+        if (!retryDetector) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'RetryDetector not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetRetryAlerts(retryDetector);
+      }
+
+      case 'nr_observe_get_context_composition': {
+        if (!contextCompositionTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'ContextCompositionTracker not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetContextComposition(contextCompositionTracker);
+      }
+
+      case 'nr_observe_get_latency_decomposition': {
+        if (!latencyDecompositionTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'LatencyDecompositionTracker not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetLatencyDecomposition(latencyDecompositionTracker);
+      }
+
+      case 'nr_observe_get_decision_tree': {
+        if (!decisionTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'DecisionTracker not available' }) }],
+            isError: true,
+          };
+        }
+        const dtArgs = (args ?? {}) as Record<string, unknown>;
+        return handleGetDecisionTree(decisionTracker, dtArgs.post_mortem === true);
+      }
+
+      case 'nr_observe_get_instruction_drift': {
+        if (!instructionDriftTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'InstructionDriftTracker not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetInstructionDrift(instructionDriftTracker);
+      }
+
+      case 'nr_observe_get_tool_selection_score': {
+        if (!toolSelectionScorer || !options.toolCallBuffer) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'ToolSelectionScorer or toolCallBuffer not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetToolSelectionScore(toolSelectionScorer, options.toolCallBuffer.getRecords());
+      }
+
+      case 'nr_observe_get_quality_proxy': {
+        if (!qualityProxyTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'QualityProxyTracker not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetQualityProxy(qualityProxyTracker);
+      }
+
+      case 'nr_observe_get_api_failures': {
+        if (!apiFailureTracker) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'ApiFailureTracker not available' }) }],
+            isError: true,
+          };
+        }
+        return handleGetApiFailures(apiFailureTracker);
       }
 
       default:

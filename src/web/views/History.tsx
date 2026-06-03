@@ -94,7 +94,9 @@ export function History(): JSX.Element {
     queryFn: () => fetchPersonalCoach() as Promise<PersonalCoachResult>,
   });
 
-  const weeklyData = (weekly.data ?? []).map((w) => {
+  // API returns newest-first; reverse for chronological left-to-right chart rendering
+  const weeklyChronological = [...(weekly.data ?? [])].reverse();
+  const weeklyData = weeklyChronological.map((w) => {
     const fullDate = w.weekStart ?? w.week ?? '';
     const score = w.efficiencyScore ?? w.avgEfficiencyScore ?? 0;
     return { week: fullDate || '?', efficiency: Math.round((score ?? 0) * 100) };
@@ -102,7 +104,7 @@ export function History(): JSX.Element {
 
   const dailyData = aggregateDailyCost(sessions.data ?? [], 30);
   const outcomeData = buildOutcomeData(costPerOutcome.data);
-  const antiPatternSeries = buildAntiPatternSeries(weekly.data ?? []);
+  const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
 
   return (
     <section>

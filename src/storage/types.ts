@@ -1,5 +1,5 @@
 export interface HookEvent {
-  readonly mode: 'pre' | 'post';
+  readonly mode: 'pre' | 'post' | 'token';
   readonly tool: string;
   readonly timestamp: number;
   readonly inputHash?: string;
@@ -7,6 +7,17 @@ export interface HookEvent {
   readonly outputSize?: number;
   readonly success?: boolean;
   readonly [key: string]: unknown;
+}
+
+export interface TokenEvent {
+  readonly mode: 'token';
+  readonly timestamp: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly model: string;
+  readonly sessionId?: string;
 }
 
 export interface SessionSummary {

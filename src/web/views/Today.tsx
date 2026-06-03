@@ -1,14 +1,17 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useLocation } from 'wouter';
 import { useLiveStore, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
-import { Sparkline } from '../components/Sparkline';
 import {
   fetchRecentAlerts,
   fetchCost,
   fetchSessionCurrent,
   fetchSessionsList,
+  fetchSessionReplay,
   fetchAntiPatterns,
+  fetchQualityProxy,
+  fetchToolSelectionScore,
   NotFoundError,
   qk,
 } from '../api/client';
@@ -60,12 +63,39 @@ interface SessionSummary {
   readonly antiPatterns?: SessionAntiPattern[];
 }
 
+interface QualityProxyMetrics {
+  readonly totalSignals: number;
+  readonly diffApplyRate: number | null;
+  readonly testPassRate: number | null;
+  readonly backtrackCount: number;
+  readonly selfCorrectionCount: number;
+  readonly degradationDetected: boolean;
+}
+
+interface ToolSelectionOffender {
+  readonly toolName: string;
+  readonly reason: 'redundant_read' | 'repeated_failure' | 'unused_output';
+  readonly penaltyScore: number;
+  readonly detail: string;
+}
+
+interface ToolSelectionMetrics {
+  readonly score: number;
+  readonly totalCalls: number;
+  readonly penalizedCalls: number;
+  readonly redundantReadCount: number;
+  readonly repeatedFailureCount: number;
+  readonly unusedOutputCount: number;
+  readonly worstOffenders: readonly ToolSelectionOffender[];
+}
+
+const QUALITY_REFETCH_MS = 10_000;
+
 export function Today(): JSX.Element {
-  const recent = useLiveStore((s) => s.recentToolCalls);
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
 
-  const { data: costApi } = useQuery<CostApiResponse>({
+  const { data: costApi, isPending: costPending } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
     queryFn: () => fetchCost() as Promise<CostApiResponse>,
   });
@@ -73,7 +103,7 @@ export function Today(): JSX.Element {
     queryKey: qk.sessionCurrent,
     queryFn: () => fetchSessionCurrent() as Promise<SessionCurrentApiResponse>,
   });
-  const { data: todaySessions } = useQuery<SessionSummary[]>({
+  const { data: todaySessions, isPending: sessionsPending } = useQuery<SessionSummary[]>({
     queryKey: qk.sessionsList(200),
     queryFn: () => fetchSessionsList(200) as Promise<SessionSummary[]>,
   });
@@ -86,24 +116,17 @@ export function Today(): JSX.Element {
   const persistedTodayCalls = useMemo(() => computeTodayToolCalls(todaySessions ?? []), [todaySessions]);
   const persistedTodayFlags = useMemo(() => computeTodayFlags(todaySessions ?? []), [todaySessions]);
 
-  const calls = persistedTodayCalls + recent.length;
-  // SSE cost-update includes persisted + live; use it when available.
-  // Fallback: persisted sessions + current session cost from the REST API
-  // (the current session isn't in the sessions list until shutdown).
+  const calls = persistedTodayCalls;
+  const spendLoading = !cost && costPending && sessionsPending;
   const todayTotal = cost?.todayTotalUsd
     ?? (persistedTodaySpend + (costApi?.cost?.sessionTotalCostUsd ?? 0));
 
-  // Flags = past sessions today (from session list) + current session (from
-  // anti-patterns API, which is authoritative and survives refresh). SSE
-  // pushes update live but reset on reload, so use API as floor.
   const currentSessionFlags = Math.max(apiAntiPatterns?.length ?? 0, antiPatterns.length);
   const flagsCount = persistedTodayFlags + currentSessionFlags;
-  const sparklineValues = useMemo(() => recent.map((c) => c.durationMs), [recent]);
   const headerTimestamp = useMemo(
     () => new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
     [],
   );
-  const recentReversed = useMemo(() => recent.slice().reverse(), [recent]);
 
   return (
     <section>
@@ -113,7 +136,7 @@ export function Today(): JSX.Element {
       </header>
 
       <div className="grid grid-cols-4 gap-2 mb-3">
-        <Kpi label="spend" tone="accent" value={`$${todayTotal.toFixed(2)}`} />
+        <Kpi label="spend" tone="accent" value={spendLoading ? '…' : `$${todayTotal.toFixed(2)}`} />
         <Kpi label="calls" value={String(calls)} />
         <EfficiencyKpi score={sessionCurrent?.efficiencyScore ?? null} />
         <Kpi
@@ -123,7 +146,7 @@ export function Today(): JSX.Element {
         />
       </div>
 
-      <ForecastEodCard todayTotal={todayTotal} forecastEod={cost?.forecastEodUsd ?? costApi?.forecast?.forecastEndOfDayUsd ?? null} />
+      <ForecastEodCard todayTotal={todayTotal} forecastEod={spendLoading ? null : (cost?.forecastEodUsd ?? costApi?.forecast?.forecastEndOfDayUsd ?? null)} />
 
       {flagsCount > 0 && (
         <div className="mb-3 bg-bg-panel border border-accent-amber/40 rounded p-2.5 text-xs">
@@ -145,49 +168,312 @@ export function Today(): JSX.Element {
         </div>
       )}
 
-      <div className="bg-bg-panel border border-bg-line rounded p-3 mb-3">
-        <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1.5">
-          tool latency · live
-        </div>
-        {sparklineValues.length >= 2 ? (
-          <Sparkline values={sparklineValues} ariaLabel="Tool call latency, milliseconds" />
-        ) : (
-          <div className="text-ink-muted text-xs h-[50px] flex items-center">
-            Waiting for tool calls…
-          </div>
-        )}
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <QualityProxyPanel />
+        <ToolSelectionPanel />
       </div>
 
-      <div className="bg-bg-panel border border-bg-line rounded p-3 mb-3">
-        <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">recent</div>
-        {recent.length === 0 && calls === 0 ? (
-          <div className="text-ink-muted text-xs">No calls yet — start a Claude prompt.</div>
-        ) : recent.length === 0 ? (
-          <div className="text-ink-muted text-xs">
-            {calls} tool calls recorded today · waiting for live events…
-          </div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead className="text-ink-muted">
-              <tr>
-                <th className="text-left pb-1">tool</th>
-                <th className="text-right pb-1">latency</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentReversed.map((c) => (
-                <tr key={c.id} className="border-t border-bg-line">
-                  <td className="py-1">{c.tool}</td>
-                  <td className="py-1 text-right tabular-nums">{c.durationMs} ms</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <LiveSessionPane sessions={todaySessions ?? []} />
 
       <RecentAlertsPanel />
     </section>
+  );
+}
+
+function rateColor(rate: number | null, goodThreshold = 0.8, warnThreshold = 0.5): string {
+  if (rate === null) return 'text-ink-muted';
+  if (rate >= goodThreshold) return 'text-green-400';
+  if (rate >= warnThreshold) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function QualityProxyPanel(): JSX.Element {
+  const { data } = useQuery<QualityProxyMetrics>({
+    queryKey: qk.qualityProxy,
+    queryFn: () => fetchQualityProxy() as Promise<QualityProxyMetrics>,
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
+
+  return (
+    <div className="bg-bg-panel border border-bg-line rounded p-3">
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+        Today · Session Quality
+      </div>
+      {!data || data.totalSignals === 0 ? (
+        <div className="text-ink-muted text-xs">Waiting for edits and test runs…</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-ink-muted">Diff Apply </span>
+              <span className={rateColor(data.diffApplyRate)}>
+                {data.diffApplyRate !== null ? `${(data.diffApplyRate * 100).toFixed(0)}%` : '—'}
+              </span>
+            </div>
+            <div>
+              <span className="text-ink-muted">Test Pass </span>
+              <span className={rateColor(data.testPassRate)}>
+                {data.testPassRate !== null ? `${(data.testPassRate * 100).toFixed(0)}%` : '—'}
+              </span>
+            </div>
+            <div>
+              <span className="text-ink-muted">Backtracks </span>
+              <span className={data.backtrackCount > 0 ? 'text-amber-400' : ''}>
+                {data.backtrackCount}
+              </span>
+            </div>
+            <div>
+              <span className="text-ink-muted">Self-corrections </span>
+              <span className="text-ink-subtle">{data.selfCorrectionCount}</span>
+            </div>
+          </div>
+          {data.degradationDetected && (
+            <div className="text-amber-400 text-xs mt-2">
+              &#9888; Quality degrading
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function scoreColor(score: number): string {
+  if (score >= 0.8) return 'text-accent-cyan';
+  if (score >= 0.5) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function ToolSelectionPanel(): JSX.Element {
+  const { data } = useQuery<ToolSelectionMetrics>({
+    queryKey: qk.toolSelectionScore,
+    queryFn: () => fetchToolSelectionScore() as Promise<ToolSelectionMetrics>,
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
+
+  return (
+    <div className="bg-bg-panel border border-bg-line rounded p-3">
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+        Today · Tool Selection
+      </div>
+      {!data || data.totalCalls === 0 ? (
+        <div className="text-ink-muted text-xs">Waiting for tool calls…</div>
+      ) : (
+        <>
+          <div className="flex items-baseline gap-2">
+            <span className={`text-2xl font-semibold tabular-nums ${scoreColor(data.score)}`}>
+              {data.score.toFixed(2)}
+            </span>
+            <span className="text-[10px] text-ink-muted">/ 1.0</span>
+          </div>
+          <div className="text-[10px] text-ink-muted mt-1">
+            {data.penalizedCalls} of {data.totalCalls} calls penalized
+          </div>
+          {(data.redundantReadCount > 0 || data.repeatedFailureCount > 0 || data.unusedOutputCount > 0) && (
+            <div className="text-[10px] text-ink-subtle mt-1 space-x-2">
+              {data.redundantReadCount > 0 && <span>re-reads: {data.redundantReadCount}</span>}
+              {data.repeatedFailureCount > 0 && <span>repeat fails: {data.repeatedFailureCount}</span>}
+              {data.unusedOutputCount > 0 && <span>unused output: {data.unusedOutputCount}</span>}
+            </div>
+          )}
+          <div className="text-[9px] text-ink-subtle/60 mt-2">
+            Penalizes: reading the same file 3+ times without editing, repeated tool failures, fetching large outputs never referenced.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- Live Session Pane ---
+
+interface ReplayTimelineEntry {
+  readonly timestamp: number;
+  readonly toolName: string;
+  readonly durationMs: number | null;
+  readonly success: boolean;
+  readonly filePath?: string;
+  readonly command?: string;
+}
+
+interface ReplayData {
+  readonly sessionId: string;
+  readonly timeline: ReplayTimelineEntry[];
+}
+
+const TOOL_ICONS: Record<string, string> = {
+  Read: '\u{1F4C4}',
+  Edit: '\u{270F}\u{FE0F}',
+  Write: '\u{1F4DD}',
+  Bash: '\u{26A1}',
+  Agent: '\u{1F916}',
+  AskUserQuestion: '\u{1F4AC}',
+  TaskCreate: '\u{1F4CB}',
+  TaskUpdate: '\u{2705}',
+};
+
+const LIVE_TAIL_REFETCH_MS = 3_000;
+
+function fmtElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${String(sec).padStart(2, '0')}`;
+}
+
+function LiveSessionPane({ sessions }: { sessions: SessionSummary[] }): JSX.Element {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [, navigate] = useLocation();
+
+  const { data: current } = useQuery<{ sessionId: string }>({
+    queryKey: qk.sessionCurrent,
+    queryFn: () => fetchSessionCurrent() as Promise<{ sessionId: string }>,
+  });
+
+  const liveSessionId = current?.sessionId ?? null;
+  const activeId = selectedId ?? liveSessionId;
+  const isLive = activeId !== null && activeId === liveSessionId;
+
+  const { data: replay } = useQuery<ReplayData>({
+    queryKey: activeId ? qk.sessionReplay(activeId) : ['replay', 'none'],
+    queryFn: () => fetchSessionReplay(activeId!) as Promise<ReplayData>,
+    enabled: activeId !== null,
+    retry: false,
+    refetchInterval: isLive ? LIVE_TAIL_REFETCH_MS : false,
+  });
+
+  const tailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isLive && tailRef.current) {
+      tailRef.current.scrollTop = tailRef.current.scrollHeight;
+    }
+  }, [replay?.timeline.length, isLive]);
+
+  // Sort today's sessions by startTime descending (newest first), limit to 10
+  const todaySessions = useMemo(() => {
+    return sessions
+      .filter((s) => s.startTime && isToday(s.startTime))
+      .sort((a, b) => (b.startTime ?? 0) - (a.startTime ?? 0))
+      .slice(0, 10);
+  }, [sessions]);
+
+  const timeline = replay?.timeline ?? [];
+  const firstTs = timeline.length > 0 ? timeline[0]!.timestamp : 0;
+
+  return (
+    <div className="bg-bg-panel border border-bg-line rounded mb-3 grid grid-cols-[220px_1fr] overflow-hidden" style={{ height: '320px' }}>
+      {/* Session list */}
+      <div className="border-r border-bg-line overflow-auto">
+        <div className="text-[10px] text-ink-muted uppercase tracking-wider p-2 border-b border-bg-line">
+          session live tail
+        </div>
+        {liveSessionId && (
+          <button
+            type="button"
+            onClick={() => setSelectedId(liveSessionId)}
+            className={
+              'block w-full text-left p-2 border-b border-bg-line text-xs hover:bg-bg-line ' +
+              (activeId === liveSessionId ? 'bg-bg-line' : '')
+            }
+          >
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-ink-base">{liveSessionId.slice(0, 8)}</span>
+              <span className="inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
+                live
+              </span>
+            </div>
+            <div className="flex gap-2 mt-0.5 text-[10px] text-ink-subtle">
+              <span>${(sessions.find((s) => s.sessionId === liveSessionId)?.estimatedCostUsd ?? 0).toFixed(2)}</span>
+              <span>{sessions.find((s) => s.sessionId === liveSessionId)?.toolCallCount ?? 0} calls</span>
+            </div>
+          </button>
+        )}
+        {todaySessions.map((s) => {
+          if (s.sessionId === liveSessionId) return null;
+          return (
+            <button
+              key={s.sessionId}
+              type="button"
+              onClick={() => setSelectedId(s.sessionId)}
+              className={
+                'block w-full text-left p-2 border-b border-bg-line text-xs hover:bg-bg-line ' +
+                (activeId === s.sessionId ? 'bg-bg-line' : '')
+              }
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-ink-base">{s.sessionId.slice(0, 8)}</span>
+                <span className="text-[10px] text-ink-muted">{s.startTime ? fmtTime(s.startTime) : ''}</span>
+              </div>
+              <div className="flex gap-2 mt-0.5 text-[10px] text-ink-subtle">
+                <span>${(s.estimatedCostUsd ?? 0).toFixed(2)}</span>
+                <span>{s.toolCallCount ?? 0} calls</span>
+              </div>
+            </button>
+          );
+        })}
+        {!liveSessionId && todaySessions.length === 0 && (
+          <div className="p-2 text-ink-muted text-xs">No sessions today.</div>
+        )}
+      </div>
+
+      {/* Live tail */}
+      <div className="flex flex-col overflow-hidden">
+        {activeId && (
+          <div className="flex justify-end px-2 py-1 border-b border-bg-line shrink-0">
+            <button
+              type="button"
+              onClick={() => navigate(`/replay/${activeId}`)}
+              className="text-[10px] text-accent-cyan hover:underline"
+            >
+              full replay &rarr;
+            </button>
+          </div>
+        )}
+        <div ref={tailRef} className="overflow-auto flex-1 p-2">
+          {!activeId && (
+            <div className="text-ink-muted text-xs p-2">Select a session to view its timeline.</div>
+          )}
+          {activeId && timeline.length === 0 && (
+            <div className="text-ink-muted text-xs p-2">
+              {isLive ? 'Waiting for tool calls…' : 'No tool calls in this session.'}
+            </div>
+          )}
+          {timeline.length > 0 && (
+            <div className="flex flex-col">
+              {timeline.map((entry, idx) => {
+                const elapsed = entry.timestamp - firstTs;
+                return (
+                  <div
+                    key={`${idx}-${entry.timestamp}`}
+                    className="flex items-center gap-1.5 px-1 py-0.5 text-xs border-b border-bg-line/50 last:border-b-0"
+                  >
+                    <span className="w-10 text-ink-muted tabular-nums text-[11px] shrink-0">
+                      +{fmtElapsed(elapsed)}
+                    </span>
+                    <span className="w-4 text-center text-[11px]" aria-hidden="true">
+                      {TOOL_ICONS[entry.toolName] ?? '\u{00B7}'}
+                    </span>
+                    <span className="w-24 truncate font-medium text-ink-base text-[11px]">
+                      {entry.toolName}
+                    </span>
+                    <span className="flex-1 truncate text-ink-subtle text-[10px]">
+                      {entry.filePath ?? entry.command ?? ''}
+                    </span>
+                    <span className="w-12 text-right tabular-nums text-ink-muted text-[10px]">
+                      {entry.durationMs != null ? `${entry.durationMs}ms` : ''}
+                    </span>
+                    <span className={`w-3 text-center text-[10px] ${entry.success ? 'text-accent-green' : 'text-accent-red'}`}>
+                      {entry.success ? '\u{2713}' : '\u{2717}'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -290,6 +576,21 @@ function formatRelativeTime(ts: number): string {
   return `${days}d ago`;
 }
 
+function formatNumber(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) >= 100) return n.toFixed(0);
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(2);
+}
+
+function fmtTime(value: number): string {
+  return new Date(value).toLocaleString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+
 function isToday(ts: number): boolean {
   const d = new Date(ts);
   const now = new Date();
@@ -349,7 +650,12 @@ function ForecastEodCard({
   forecastEod: number | null;
 }): JSX.Element {
   const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
-  const delta = hasForecast ? forecastEod - todayTotal : 0;
+  // The forecast is based on the live session's burn rate. If the MCP server
+  // restarted mid-day the forecast only reflects the current session and can be
+  // lower than the already-observed spend. Use todayTotal as the floor so the
+  // card never shows a nonsensical "negative remaining" projection.
+  const effectiveForecast = hasForecast ? Math.max(forecastEod, todayTotal) : 0;
+  const delta = hasForecast ? effectiveForecast - todayTotal : 0;
   const pct = hasForecast && todayTotal > 0 ? (delta / todayTotal) * 100 : 0;
 
   return (
@@ -360,13 +666,17 @@ function ForecastEodCard({
       {hasForecast ? (
         <div className="flex items-baseline gap-3">
           <span className="text-lg font-semibold text-accent-cyan tabular-nums">
-            ${forecastEod.toFixed(2)}
+            ${effectiveForecast.toFixed(2)}
           </span>
           <span className="text-xs text-ink-muted tabular-nums">
-            {/* F-017: render the sign explicitly and use the absolute value
-                so a negative delta renders as `-$1.23`, never `+$-1.23`. */}
-            {delta >= 0 ? '+' : '−'}${Math.abs(delta).toFixed(2)}
-            {todayTotal > 0 && ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)`} from now
+            {delta > 0 ? (
+              <>
+                +${delta.toFixed(2)}
+                {todayTotal > 0 && ` (+${pct.toFixed(0)}%)`} from now
+              </>
+            ) : (
+              <>on pace</>
+            )}
           </span>
         </div>
       ) : (
