@@ -58,6 +58,25 @@ Commands:
 
 If you see `command not found`, the `npm link` step didn't work — retry it, or confirm `node_modules/.bin` is on your PATH.
 
+If you see `EACCES: permission denied` pointing at `/usr/local/lib/node_modules`, your system Node.js is installed in a root-owned directory. Pick one fix:
+
+**Option A — set a user-writable npm prefix** (quick, keeps your existing Node.js):
+```bash
+npm config set prefix ~/.npm-global
+export PATH="$HOME/.npm-global/bin:$PATH"   # add this line to ~/.zshrc or ~/.bash_profile too
+npm link
+```
+
+**Option B — use nvm** (recommended if you switch Node versions regularly):
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+# restart your shell, then:
+nvm install 24 && nvm use 24
+npm install && npm run build && npm link
+```
+
+Do **not** use `sudo npm link` — it creates root-owned files that break future `npm install` runs.
+
 ---
 
 ## Path A — Cloud (New Relic Staging)

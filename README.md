@@ -105,6 +105,23 @@ npm run build    # Compile TypeScript
 npm link         # Register nr-ai-observe binary on PATH (required for hooks)
 ```
 
+> **`npm link` permission error?** If you see `EACCES: permission denied` pointing at `/usr/local/lib/node_modules`, your system Node.js is installed in a root-owned directory. Pick one fix:
+>
+> *Quick fix — set a user-writable npm prefix (keeps your existing Node.js):*
+> ```bash
+> npm config set prefix ~/.npm-global
+> export PATH="$HOME/.npm-global/bin:$PATH"   # also add to ~/.zshrc or ~/.bash_profile
+> npm link
+> ```
+> *Recommended — use nvm (better if you switch Node versions):*
+> ```bash
+> curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+> # restart your shell, then:
+> nvm install 24 && nvm use 24
+> npm install && npm run build && npm link
+> ```
+> Do not use `sudo npm link` — it creates root-owned files that break future `npm install` runs.
+
 ---
 
 ## Talking to the Observatory
