@@ -1,4 +1,4 @@
-# NR AI Observatory — MCP Commands Reference
+# NR AI Coding Observability — MCP Commands Reference
 
 Every MCP tool exposed by the `nr-ai-mcp-server`, what it returns, how it computes each finding, and which trackers it queries.
 
@@ -7,6 +7,34 @@ Tools are conditionally registered — each tool only appears when its required 
 ---
 
 ## Session Tools
+
+### `nr_observe_health`
+
+Check server health and connection status.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "status": "ok",
+  "version": "1.0.0",
+  "developer": "alice",
+  "session_id": "uuid-string",
+  "connected_at": "2026-06-03T10:00:00.000Z",
+  "uptime_seconds": 3600
+}
+```
+
+**Data source:** Server startup metadata
+
+**How it works:** Returns the current server version, the resolved developer name, how long the server has been running (`uptime_seconds`), the current session ID, and the ISO timestamp of when the MCP connection was established. Use this to confirm the MCP server is responsive and to verify the expected developer identity is being used.
+
+**Requires:** Always available
+
+Source: `src/tools/session-stats.ts`
+
+---
 
 ### `nr_observe_get_session_stats`
 
@@ -956,6 +984,271 @@ Which AI model was used per request and cost-efficiency per model.
 **Requires:** `ModelUsageTracker`
 
 Source: `src/tools/analytics-tools.ts`, `src/metrics/model-usage-tracker.ts`
+
+---
+
+## Extended Analytics Tools
+
+These tools expose deeper session-level analysis from the Phase 2 extended metric trackers. They are always registered when the trackers are available (no cross-session store dependency).
+
+### `nr_observe_get_retry_alerts`
+
+Thrashing and retry detection alerts within a sliding window.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "alerts": [
+    { "type": "repeated_failure", "input": "npm test", "occurrences": 4, "windowSize": 5 }
+  ],
+  "totalTokensWasted": 2400,
+  "totalAlertsEmitted": 1
+}
+```
+
+**Data source:** `RetryDetector`
+
+**How it works:** Tracks repeated tool calls with identical or highly similar inputs (Levenshtein similarity ≥ 0.8) within a rolling window (default: 5 calls). Fires an alert when the same input appears 3+ times consecutively. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
+
+**Requires:** `RetryDetector`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/retry-detector.ts`
+
+---
+
+### `nr_observe_get_context_composition`
+
+Per-turn token breakdown by category with context fill percentage and dominance alerts.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "currentFillPercent": 62.5,
+  "currentBreakdown": {
+    "systemPrompt": 8000,
+    "conversationHistory": 45000,
+    "toolResults": 12000,
+    "injectedFiles": 10000
+  },
+  "turnCount": 12,
+  "thresholdAlerts": [
+    { "fillPercent": 62.5, "threshold": 50, "turnIndex": 11 }
+  ],
+  "dominanceAlerts": [],
+  "history": []
+}
+```
+
+**Data source:** `ContextCompositionTracker`
+
+**How it works:** Receives per-turn token reports categorized as `systemPrompt`, `conversationHistory`, `toolResults`, or `injectedFiles`. Tracks fill percentage against the model's context window size. Fires threshold alerts when fill crosses 50%/75%/90% (configurable). Fires dominance alerts when a single category exceeds a configured fraction of total tokens.
+
+**Requires:** `ContextCompositionTracker`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/context-composition-tracker.ts`
+
+---
+
+### `nr_observe_get_latency_decomposition`
+
+Time split between LLM API calls, tool execution, and overhead — with p50/p95 percentiles for each component.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "turnCount": 8,
+  "llmApi": { "p50": 1200, "p95": 3500 },
+  "toolExecution": { "p50": 45, "p95": 280 },
+  "overhead": { "p50": 12, "p95": 60 },
+  "avgComposition": { "llmApi": 0.70, "toolExecution": 0.25, "overhead": 0.05 },
+  "recentTurns": []
+}
+```
+
+**Data source:** `LatencyDecompositionTracker`
+
+**How it works:** Receives per-turn timing reports with `llmApiMs`, `toolExecutionMs`, and computes overhead as the remainder. Aggregates into p50/p95 percentiles per component and a fractional composition showing how each component contributes to overall turn latency.
+
+**Requires:** `LatencyDecompositionTracker`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/latency-decomposition.ts`
+
+---
+
+### `nr_observe_get_decision_tree`
+
+Decision branch analysis with reasoning extraction and failure chain post-mortem.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `post_mortem` | boolean | `false` | If true, return only failure-zone branches |
+
+**Returns (full):**
+```json
+{
+  "totalBranches": 24,
+  "successRate": 0.79,
+  "failurePoints": [
+    { "index": 3, "reasoning": "Expected test to pass...", "action": "Bash", "outcome": "failure" }
+  ],
+  "longestFailureStreak": 3,
+  "firstFailureIndex": 3
+}
+```
+
+**Returns (post_mortem: true):**
+```json
+{
+  "postMortem": [
+    { "index": 3, "reasoning": "...", "action": "Bash", "outcome": "failure" }
+  ]
+}
+```
+
+**Data source:** `DecisionTracker`
+
+**How it works:** Records a branch for each tool call with extracted reasoning (from assistant message preceding the call, up to 500 chars), the action taken, and the outcome (success/failure). Computes `successRate`, identifies the longest consecutive failure streak, and can filter to only failure branches for post-mortem debugging.
+
+**Requires:** `DecisionTracker`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/decision-tracker.ts`
+
+---
+
+### `nr_observe_get_instruction_drift`
+
+CLAUDE.md and system prompt change correlations with session outcomes.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "currentPromptHash": "a1b2c3d4",
+  "uniquePromptVariants": 3,
+  "variantStats": [
+    { "hash": "a1b2c3d4", "sessionCount": 5, "avgSuccessRate": 0.82, "avgTokensPerSession": 45000 }
+  ],
+  "recentCorrelations": [
+    { "fromHash": "old123", "toHash": "a1b2c3d4", "deltaSuccessRate": 0.08, "deltaTokens": -3000 }
+  ],
+  "currentVariantSessionCount": 5
+}
+```
+
+**Data source:** `InstructionDriftTracker`
+
+**How it works:** Hashes the system prompt / CLAUDE.md content at each session start. Groups sessions by prompt hash and computes per-variant averages (success rate, token usage, thrashing). When the prompt changes, emits a correlation record showing how outcomes shifted. Requires ≥3 sessions per variant before comparisons are surfaced.
+
+**Requires:** `InstructionDriftTracker`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/instruction-drift-tracker.ts`
+
+---
+
+### `nr_observe_get_tool_selection_score`
+
+Tool selection quality score with penalty breakdown for redundant reads, repeated failures, and unused large outputs.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "score": 0.87,
+  "totalCalls": 42,
+  "penalizedCalls": 5,
+  "penalties": [
+    { "tool": "Read", "file": "src/app.ts", "reason": "redundant_read", "penaltyWeight": 0.1 }
+  ],
+  "worstOffenders": [],
+  "redundantReadCount": 3,
+  "repeatedFailureCount": 2,
+  "unusedOutputCount": 0
+}
+```
+
+**Data source:** `ToolSelectionScorer`
+
+**How it works:** Scores the full session tool call sequence. Penalizes: redundant reads (same file read again without intervening modification), repeated failures (same Bash command failed twice), and unused large outputs (tool returned a large response that was never referenced). Score 0–1 where 1 is perfect selection. `worstOffenders` lists the highest-penalty calls.
+
+**Requires:** `ToolSelectionScorer`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/tool-selection-scorer.ts`
+
+---
+
+### `nr_observe_get_quality_proxy`
+
+Quality signal tracking: diff apply rate, test pass rate, self-correction count, and degradation detection.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "totalSignals": 18,
+  "diffApplyRate": 0.92,
+  "testPassRate": 0.75,
+  "backtrackCount": 2,
+  "selfCorrectionCount": 3,
+  "qualityByTurnBucket": [],
+  "degradationDetected": false,
+  "events": []
+}
+```
+
+**Data source:** `QualityProxyTracker`
+
+**How it works:** Aggregates quality signals from tool call outcomes: Edit/Write success rate (diff apply), test pass/fail outcomes from Bash calls, backtrack detection (reverting to a previous file state), and self-corrections (re-editing a file shortly after a prior edit). Detects degradation when the trailing-window quality drops below a configured threshold.
+
+**Requires:** `QualityProxyTracker`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/quality-proxy-tracker.ts`
+
+---
+
+### `nr_observe_get_api_failures`
+
+API failure tracking: per-model reliability scorecards, tokens lost, throttle alerts, and mean time to recovery.
+
+**Parameters:** None
+
+**Returns:**
+```json
+{
+  "totalFailures": 3,
+  "byErrorType": { "rate_limit": 2, "server_error": 1 },
+  "byModel": {
+    "claude-sonnet-4-6": {
+      "totalRequests": 40, "failureCount": 2, "reliabilityScore": 0.95,
+      "tokensLost": 8000, "estimatedCostLostUsd": 0.024, "meanTimeToRecoveryMs": 4200
+    }
+  },
+  "bySessionPhase": { "early": 1, "mid": 2, "late": 0 },
+  "totalTokensLost": 8000,
+  "totalEstimatedCostLostUsd": 0.024,
+  "meanTimeToRecoveryMs": 4200,
+  "throttleAlerts": [],
+  "recentFailures": []
+}
+```
+
+**Data source:** `ApiFailureTracker`
+
+**How it works:** Records every failed AI API call with its error type, model, token count, and timestamp. Computes per-model reliability scorecards (`failureCount / totalRequests`). Fires throttle alerts when rate-limit errors exceed a threshold (default: 3 within 10 minutes). Estimates tokens and cost lost on failed requests. MTTR is the average time from failure to next success per model.
+
+**Requires:** `ApiFailureTracker`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/api-failure-tracker.ts`
 
 ---
 

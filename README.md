@@ -1,4 +1,4 @@
-# NR AI Observatory
+# New Relic AI Coding Observability
 
 **Observability for AI coding assistants.** Captures every action your AI coding tool takes — file reads, edits, commands, searches — and sends the data to New Relic so you can see exactly what's happening, how much it costs, and where it's wasting time.
 

@@ -1,4 +1,4 @@
-# NR AI Observatory — Test Patterns
+# NR AI Coding Observability — Test Patterns
 
 This document covers the testing conventions, infrastructure, and patterns used in this repo. Read this before writing your first test.
 

@@ -1,4 +1,4 @@
-# NR AI Observatory
+# NR AI Coding Observability
 
 Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Shared transport/events/pricing code lives in `src/shared/` (synced from `nr-ai-typescript-shared` via `npm run sync:shared`). All telemetry flows to New Relic. The TypeScript SDK agent lives in the separate `nr-ai-typescript-agent` repo. CI/CD tooling and GitHub App webhook server live in the separate `nr-ai-github-tools` repo.
 
@@ -161,7 +161,7 @@ Claude Code
                  ├─ nr_observe_get_cost_breakdown
                  ├─ nr_observe_get_anti_patterns
                  ├─ nr_observe_get_recommendations
-                 └─ ... (27 tools total)
+                 └─ ... (36 tools total)
 ```
 
 ### Package Dependencies
@@ -234,12 +234,13 @@ Tools are registered in `src/tools/session-stats.ts` via `registerTools()`, whic
 
 Tools are conditionally registered based on available dependencies (e.g., cross-session tools only register when `SessionStore` + `WeeklySummaryGenerator` are available).
 
-### MCP Tools (27 total)
+### MCP Tools (36 total)
 
 **Session Tools:**
 - `nr_observe_get_session_stats` — current session metrics
 - `nr_observe_get_session_timeline` — recent tool calls with timestamps
 - `nr_observe_get_efficiency_score` — composite efficiency scoring
+- `nr_observe_health` — server health check: version, uptime, session ID
 
 **Cost and Budget Tools:**
 - `nr_observe_report_tokens` — self-reported token usage with per-model cost calculation
@@ -257,6 +258,16 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 - `nr_observe_get_latency_percentiles` — p50/p95/p99 per tool type
 - `nr_observe_get_task_completion_rate` — task lifecycle (completed vs. abandoned)
 - `nr_observe_get_model_usage` — cost-efficiency per AI model
+
+**Extended Analytics Tools:**
+- `nr_observe_get_retry_alerts` — thrashing/retry detection alerts in a sliding window
+- `nr_observe_get_context_composition` — per-turn token breakdown by category with fill % and dominance alerts
+- `nr_observe_get_latency_decomposition` — LLM API vs tool execution vs overhead time split with p50/p95
+- `nr_observe_get_decision_tree` — decision branch analysis with failure chain post-mortem
+- `nr_observe_get_instruction_drift` — CLAUDE.md/system prompt change correlations with session outcomes
+- `nr_observe_get_tool_selection_score` — tool selection quality score (0–1) with penalty breakdown
+- `nr_observe_get_quality_proxy` — diff apply rate, test pass rate, backtrack count, degradation detection
+- `nr_observe_get_api_failures` — per-model reliability scorecards, tokens lost, throttle alerts, MTTR
 
 **Cross-Session Tools (require SessionStore + WeeklySummaryGenerator):**
 - `nr_observe_get_session_history` — paginated past-session list with summary metrics

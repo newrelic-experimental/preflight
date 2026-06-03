@@ -1,4 +1,4 @@
-# NR AI Observatory — New Developer Onboarding
+# NR AI Coding Observability — New Developer Onboarding
 
 Welcome! This guide walks you through everything you need to get productive in this repo. It covers what the project does, how to set up your environment, how the code is organized, and the conventions we follow.
 
@@ -6,7 +6,7 @@ Welcome! This guide walks you through everything you need to get productive in t
 
 ## What Is This Project?
 
-NR AI Observatory provides **observability for AI coding assistants**. When developers use tools like Claude Code, Cursor, Windsurf, or Copilot, this project captures what's happening — tool calls, token usage, costs, efficiency patterns — and sends it all to New Relic.
+NR AI Coding Observability provides **observability for AI coding assistants**. When developers use tools like Claude Code, Cursor, Windsurf, or Copilot, this project captures what's happening — tool calls, token usage, costs, efficiency patterns — and sends it all to New Relic.
 
 There are two main integration points:
 
@@ -181,7 +181,7 @@ For a complete annotated reference of every config option — including types, d
 
 ### Choosing a mode
 
-NR AI Observatory supports three modes via the `mode` config field:
+NR AI Coding Observability supports three modes via the `mode` config field:
 
 1. **`cloud`** (default) — telemetry ships to New Relic. Required for cross-team dashboards.
 2. **`local`** — telemetry stays on your machine; dashboard runs at `http://127.0.0.1:7777`.

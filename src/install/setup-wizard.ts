@@ -147,7 +147,7 @@ function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
 export async function runSetupWizard(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-  print('\n=== NR AI Observatory Setup ===\n');
+  print('\n=== NR AI Coding Observability Setup ===\n');
   print('This wizard will configure observability for your AI coding assistant.');
   print('Press Ctrl+C at any time to cancel.\n');
 
@@ -158,10 +158,10 @@ export async function runSetupWizard(): Promise<void> {
     typeof existing.mode === 'string' &&
     (existing.mode === 'cloud' || existing.mode === 'local' || existing.mode === 'both')
       ? (existing.mode as WizardMode)
-      : 'cloud';
+      : 'local';
   print('Modes:');
-  print('  1) cloud — ship telemetry to New Relic (default)');
-  print('  2) local — keep all data on this machine, run a local dashboard');
+  print('  1) cloud — ship telemetry to New Relic');
+  print('  2) local — keep all data on this machine, run a local dashboard (default)');
   print('  3) both  — ship to NR AND run the local dashboard');
   const modeRaw = await rl.question(`Which mode? [${existingMode}]: `);
   const mode = parseModeAnswer(modeRaw, existingMode);

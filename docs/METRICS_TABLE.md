@@ -1,4 +1,4 @@
-# NR AI Observatory — Metrics Reference
+# NR AI Coding Observability — Metrics Reference
 
 Every metric and event that this project sends to New Relic, organized by delivery API and source package.
 

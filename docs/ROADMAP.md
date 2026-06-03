@@ -1,4 +1,4 @@
-# NR AI Observatory — Roadmap
+# NR AI Coding Observability — Roadmap
 
 This document captures the planned post-launch roadmap items referenced throughout [PRODUCT_BRIEF.md](./PRODUCT_BRIEF.md). It is intended to evolve — items may be reprioritised, scoped, or delivered in different waves than initially proposed.
 

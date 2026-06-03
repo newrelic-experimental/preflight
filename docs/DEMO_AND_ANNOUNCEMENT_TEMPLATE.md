@@ -16,7 +16,7 @@ Conventions observed across waves 1–4:
   ~3-4min (Wave 2, 5 features), ~4-5min (Waves 3-4, 4-6 features).
 -->
 
-# NR AI Observatory — Wave {{WAVE_NUMBER}} Slack Message & Demo Script
+# NR AI Coding Observability — Wave {{WAVE_NUMBER}} Slack Message & Demo Script
 
 ---
 
@@ -24,7 +24,7 @@ Conventions observed across waves 1–4:
 
 > Hey team :wave:
 >
-> Wave {{WAVE_NUMBER}} of the NR AI Observatory just landed. {{ONE_LINE_THEME — e.g. "Four new features this time, all centered on a single theme: making the observatory personal." or "Six new roadmap items shipped this week, plus a round of pricing engine fixes."}}
+> Wave {{WAVE_NUMBER}} of the NR AI Coding Observability just landed. {{ONE_LINE_THEME — e.g. "Four new features this time, all centered on a single theme: making the observatory personal." or "Six new roadmap items shipped this week, plus a round of pricing engine fixes."}}
 >
 > **What shipped:**
 >
@@ -58,7 +58,7 @@ Conventions observed across waves 1–4:
 
 **[Screen: Terminal with Claude Code open]**
 
-"{{NAME}} here. Wave {{WAVE_NUMBER}} of the NR AI Observatory — {{ONE_LINE_THEME_RESTATED}}. {{OPTIONAL: 'Quick disclaimer:' or 'If you haven't seen the earlier demos, short version: it's an MCP server that ships AI coding assistant telemetry to New Relic.'}}"
+"{{NAME}} here. Wave {{WAVE_NUMBER}} of the NR AI Coding Observability — {{ONE_LINE_THEME_RESTATED}}. {{OPTIONAL: 'Quick disclaimer:' or 'If you haven't seen the earlier demos, short version: it's an MCP server that ships AI coding assistant telemetry to New Relic.'}}"
 
 ---
 
