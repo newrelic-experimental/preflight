@@ -3,6 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
 import { fetchSessionsList, fetchSessionCurrent, fetchSessionDetail, qk } from '../api/client';
 
+// F-051: keep the query limit and the "showing N most recent" notice in
+// lock-step. If you bump this, also update the api-handler clamp upper
+// bound if you intend to allow more than the current 500 ceiling.
+const SESSIONS_PAGE_SIZE = 50;
+
 interface SessionRow {
   readonly sessionId: string;
   readonly startTime?: string | number;
@@ -78,8 +83,8 @@ export function Sessions(): JSX.Element {
   const [, navigate] = useLocation();
 
   const list = useQuery<SessionRow[]>({
-    queryKey: qk.sessionsList(50),
-    queryFn: () => fetchSessionsList(50) as Promise<SessionRow[]>,
+    queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
+    queryFn: () => fetchSessionsList(SESSIONS_PAGE_SIZE) as Promise<SessionRow[]>,
   });
 
   const current = useQuery<CurrentSession>({
@@ -187,6 +192,16 @@ export function Sessions(): JSX.Element {
               </button>
             );
           })}
+          {/* F-051: when the API returns the full page, surface that older
+              sessions exist beyond what's rendered. The cap is enforced
+              server-side (api-handler `limit` clamp) and matches the
+              `qk.sessionsList(50)` query above; bump both together if the
+              cap ever changes. */}
+          {rows.length >= SESSIONS_PAGE_SIZE && (
+            <div className="p-2 text-[10px] text-ink-muted text-center border-t border-bg-line">
+              Showing {SESSIONS_PAGE_SIZE} most recent sessions.
+            </div>
+          )}
         </div>
       </aside>
 

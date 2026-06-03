@@ -398,6 +398,7 @@ async function main(): Promise<void> {
           personalCoach,
           alertLog,
           taskDetector,
+          efficiencyScorer,
         },
         alertEngine,
         alertLog,

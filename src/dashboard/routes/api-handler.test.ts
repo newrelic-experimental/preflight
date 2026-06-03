@@ -16,7 +16,7 @@ function fakeRes(): { res: ServerResponse; status: () => number; body: () => str
 }
 
 describe('api-handler GET /api/session/current', () => {
-  it('returns sessionTracker.getMetrics() as JSON', async () => {
+  it('returns sessionTracker.getMetrics() with efficiencyScore: null when scorer is absent', async () => {
     const fake = { id: 'sess-1', toolCallCount: 5 };
     const handler = createApiHandler({
       sessionTracker: { getMetrics: () => fake } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
@@ -26,7 +26,33 @@ describe('api-handler GET /api/session/current', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(headers()['content-type']).toMatch(/application\/json/);
-    expect(JSON.parse(body())).toEqual(fake);
+    expect(JSON.parse(body())).toEqual({ ...fake, efficiencyScore: null });
+  });
+
+  it('includes efficiencyScore from getSessionAverage() when scorer is wired in', async () => {
+    const fake = { id: 'sess-2', toolCallCount: 7 };
+    const handler = createApiHandler({
+      sessionTracker: { getMetrics: () => fake } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      efficiencyScorer: { getSessionAverage: () => ({ score: 0.78 }) },
+    });
+    const req = { method: 'GET', url: '/api/session/current' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ...fake, efficiencyScore: 0.78 });
+  });
+
+  it('keeps efficiencyScore null when scorer returns null (no tasks scored yet)', async () => {
+    const fake = { id: 'sess-3', toolCallCount: 0 };
+    const handler = createApiHandler({
+      sessionTracker: { getMetrics: () => fake } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      efficiencyScorer: { getSessionAverage: () => null },
+    });
+    const req = { method: 'GET', url: '/api/session/current' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ...fake, efficiencyScore: null });
   });
 
   it('returns 503 with { error, what } body when sessionTracker is missing', async () => {

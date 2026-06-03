@@ -1,6 +1,7 @@
 import type { KeyboardEvent } from 'react';
 import { X } from 'lucide-react';
 import type { AlertEvent } from '../store/liveStore';
+import { formatNumber } from '../lib/format';
 
 type Severity = AlertEvent['severity'];
 
@@ -53,7 +54,6 @@ export function AlertBanner({ alert, onDismiss }: AlertBannerProps): JSX.Element
   return (
     <div
       role={ariaRole(alert.severity)}
-      aria-live={alert.severity === 'critical' ? 'assertive' : 'polite'}
       aria-labelledby={titleId}
       tabIndex={0}
       data-alert-id={alert.id}
@@ -70,7 +70,7 @@ export function AlertBanner({ alert, onDismiss }: AlertBannerProps): JSX.Element
       <span id={titleId} className="font-medium text-ink-base shrink-0">{alert.title}</span>
       <span className="text-ink-muted truncate">{alert.description}</span>
       <span className="ml-auto shrink-0 text-ink-subtle tabular-nums whitespace-nowrap">
-        {formatValue(alert.value)} / {formatValue(alert.threshold)}
+        {formatNumber(alert.value)} / {formatNumber(alert.threshold)}
       </span>
       <button
         type="button"
@@ -84,9 +84,3 @@ export function AlertBanner({ alert, onDismiss }: AlertBannerProps): JSX.Element
   );
 }
 
-function formatValue(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  if (Math.abs(n) >= 100) return n.toFixed(0);
-  if (Number.isInteger(n)) return String(n);
-  return n.toFixed(2);
-}

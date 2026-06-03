@@ -6,11 +6,13 @@ import { Sparkline } from '../components/Sparkline';
 import {
   fetchRecentAlerts,
   fetchCost,
+  fetchSessionCurrent,
   fetchSessionsList,
   fetchAntiPatterns,
   NotFoundError,
   qk,
 } from '../api/client';
+import { formatNumber } from '../lib/format';
 
 const HEADER_TIMESTAMP_FORMAT = {
   weekday: 'short',
@@ -31,6 +33,12 @@ const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
 interface CostApiResponse {
   readonly cost: { readonly sessionTotalCostUsd?: number | null };
   readonly forecast: { readonly forecastEndOfDayUsd?: number | null } | null;
+}
+
+// F-050: minimal shape — only the field this view consumes. The endpoint
+// also returns the live SessionMetrics; we don't depend on those here.
+interface SessionCurrentApiResponse {
+  readonly efficiencyScore?: number | null;
 }
 
 interface SessionAntiPattern {
@@ -60,6 +68,10 @@ export function Today(): JSX.Element {
   const { data: costApi } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
     queryFn: () => fetchCost() as Promise<CostApiResponse>,
+  });
+  const { data: sessionCurrent } = useQuery<SessionCurrentApiResponse>({
+    queryKey: qk.sessionCurrent,
+    queryFn: () => fetchSessionCurrent() as Promise<SessionCurrentApiResponse>,
   });
   const { data: todaySessions } = useQuery<SessionSummary[]>({
     queryKey: qk.sessionsList(200),
@@ -103,7 +115,7 @@ export function Today(): JSX.Element {
       <div className="grid grid-cols-4 gap-2 mb-3">
         <Kpi label="spend" tone="accent" value={`$${todayTotal.toFixed(2)}`} />
         <Kpi label="calls" value={String(calls)} />
-        <Kpi label="eff." tone="good" value="—" sub="needs more data" />
+        <EfficiencyKpi score={sessionCurrent?.efficiencyScore ?? null} />
         <Kpi
           label="flags"
           tone={flagsCount > 0 ? 'warn' : 'neutral'}
@@ -278,13 +290,6 @@ function formatRelativeTime(ts: number): string {
   return `${days}d ago`;
 }
 
-function formatNumber(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  if (Math.abs(n) >= 100) return n.toFixed(0);
-  if (Number.isInteger(n)) return String(n);
-  return n.toFixed(2);
-}
-
 function isToday(ts: number): boolean {
   const d = new Date(ts);
   const now = new Date();
@@ -321,6 +326,19 @@ function computeTodayFlags(sessions: SessionSummary[]): number {
     }
   }
   return total;
+}
+
+// F-050: small wrapper that picks tone from the score. The score itself is
+// a unitless [0, 1] composite computed by EfficiencyScorer on the server;
+// we render it as a percentage so the KPI is legible at a glance.
+function EfficiencyKpi({ score }: { score: number | null }): JSX.Element {
+  if (score === null || !Number.isFinite(score)) {
+    return <Kpi label="eff." tone="good" value="—" sub="needs more data" />;
+  }
+  const pct = Math.round(score * 100);
+  // Bands match the EfficiencyScorer narrative: ≥80% strong, ≥50% mixed, <50% poor.
+  const tone: 'good' | 'warn' | 'accent' = pct >= 80 ? 'good' : pct >= 50 ? 'accent' : 'warn';
+  return <Kpi label="eff." tone={tone} value={`${pct}%`} />;
 }
 
 function ForecastEodCard({

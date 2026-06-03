@@ -329,8 +329,6 @@ Local-mode users get the same threshold alerting as cloud users — evaluated in
 | `alerts.logRetentionMb` | `NR_AI_ALERTS_LOG_RETENTION_MB` | `10` (1–1024) |
 | `alerts.rulesPath` | `NR_AI_ALERTS_RULES_PATH` | `~/.nr-ai-observe/alerts/rules.json` |
 
-For the full design, see [docs/superpowers/plans/2026-05-29-local-alerts.md](docs/superpowers/plans/2026-05-29-local-alerts.md).
-
 ---
 
 ## Weekly Digest

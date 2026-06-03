@@ -69,6 +69,28 @@ describe('Sessions view', () => {
     await waitFor(() => expect(screen.getByText(/no sessions yet/i)).toBeInTheDocument());
   });
 
+  it('shows a cap notice when the list returns the full page', async () => {
+    // F-051: 50 rows is the page-size sentinel — the API caps at this and
+    // the SPA uses the same constant. Asserting the notice appears at the
+    // boundary protects the contract without having to inspect the literal.
+    const fullPage = Array.from({ length: 50 }, (_, i) => ({
+      sessionId: `cap-${i}`,
+      startTime: '2026-05-28T09:00:00Z',
+      toolCallCount: 1,
+      estimatedCostUsd: 0,
+    }));
+    renderSessions(fullPage);
+    await waitFor(() =>
+      expect(screen.getByText(/showing 50 most recent sessions/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('hides the cap notice when fewer than the page size are returned', async () => {
+    renderSessions(SAMPLE_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.queryByText(/showing 50 most recent sessions/i)).not.toBeInTheDocument();
+  });
+
   it('shows a placeholder until a session is selected', async () => {
     renderSessions(SAMPLE_LIST);
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());

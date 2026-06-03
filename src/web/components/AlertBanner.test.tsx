@@ -30,13 +30,15 @@ describe('AlertBanner', () => {
     expect(screen.getByText(/CRIT/)).toBeInTheDocument();
   });
 
+  // role="alert" implies aria-live="assertive"; role="status" implies "polite".
+  // The explicit aria-live attribute was removed in F-048 because both roles
+  // carry the live-region semantic by default per the ARIA spec.
   it('uses role="alert" for critical severity (assertive)', () => {
     const { container } = render(
       <AlertBanner alert={makeAlert({ severity: 'critical' })} onDismiss={() => {}} />,
     );
     const root = container.firstElementChild!;
     expect(root.getAttribute('role')).toBe('alert');
-    expect(root.getAttribute('aria-live')).toBe('assertive');
   });
 
   it('uses role="status" for warning severity (polite)', () => {
@@ -45,7 +47,6 @@ describe('AlertBanner', () => {
     );
     const root = container.firstElementChild!;
     expect(root.getAttribute('role')).toBe('status');
-    expect(root.getAttribute('aria-live')).toBe('polite');
   });
 
   it('uses role="status" for info severity', () => {

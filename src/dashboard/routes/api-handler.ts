@@ -86,6 +86,9 @@ export interface ApiHandlerDeps {
     getCompletedTasks: () => readonly { toolCalls: readonly ToolCallRecord[] }[];
     getCurrentTask: () => { toolCalls: readonly ToolCallRecord[] } | null;
   };
+  // Minimal interface — we only need the rolling session-average score for the
+  // Today KPI; richer per-task breakdowns ship via the existing MCP tool path.
+  readonly efficiencyScorer?: { getSessionAverage: () => { score: number } | null };
 }
 
 type RouteFn = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -100,8 +103,12 @@ function jsonOk(res: ServerResponse, body: unknown): void {
 }
 
 function unavailable(res: ServerResponse, what: string): void {
-  res.writeHead(503, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ error: 'unavailable', what }));
+  const payload = JSON.stringify({ error: 'unavailable', what });
+  res.writeHead(503, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(payload)),
+  });
+  res.end(payload);
 }
 
 function toolCallToTimelineEntry(tc: ToolCallRecord): ReplayTimelineEntry {
@@ -157,7 +164,11 @@ export function createApiHandler(deps: ApiHandlerDeps): (req: IncomingMessage, r
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
-    jsonOk(res, deps.sessionTracker.getMetrics());
+    // F-050: surface the rolling efficiency score as a sibling field so the
+    // SPA Today KPI can render it without a second round-trip. `null` when
+    // no tasks have been scored yet (or when the scorer wasn't wired in).
+    const efficiencyScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;
+    jsonOk(res, { ...deps.sessionTracker.getMetrics(), efficiencyScore });
   });
 
   routes.set('GET /api/session/today', (_req, res) => {
