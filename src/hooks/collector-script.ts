@@ -493,7 +493,7 @@ const _isDirectExecution = _resolvedScript != null && /collector-script\.[jt]s$/
 
 if (_isDirectExecution) {
   const _subcommand = process.argv[2];
-  if (_subcommand === 'install' || _subcommand === 'uninstall' || _subcommand === 'setup') {
+  if (_subcommand === 'install' || _subcommand === 'uninstall' || _subcommand === 'setup' || _subcommand === 'update' || (_subcommand !== undefined && _subcommand.startsWith('-'))) {
     // Dynamic import keeps the hook path lightweight — commander and friends
     // are only loaded when the user explicitly runs install/uninstall/setup.
     import('../install/cli.js')
