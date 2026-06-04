@@ -25,7 +25,7 @@ describe('REPORT_TOKENS_TOOL', () => {
       'output_tokens',
       'model',
     ]);
-    expect(REPORT_TOKENS_TOOL.annotations.readOnlyHint).toBe(true);
+    expect(REPORT_TOKENS_TOOL.annotations.readOnlyHint).toBe(false);
   });
 });
 

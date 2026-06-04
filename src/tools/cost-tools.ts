@@ -53,7 +53,7 @@ export const REPORT_TOKENS_TOOL = {
     },
     required: ['input_tokens', 'output_tokens', 'model'],
   },
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: false },
 };
 
 // ---------------------------------------------------------------------------

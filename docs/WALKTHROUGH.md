@@ -97,7 +97,7 @@ Answer the prompts:
 
 | Prompt                                  | What to enter                                    |
 | --------------------------------------- | ------------------------------------------------ |
-| `Which mode? [cloud]:`                  | Press **Enter** (accept default `cloud`)         |
+| `Which mode? [local]:`                  | Type `cloud` and press **Enter**                 |
 | `New Relic Account ID:`                 | Your account ID (digits only, e.g. `12345`)      |
 | `New Relic License Key:`                | Your license key                                 |
 | `Developer name [your-username]:`       | Your name or alias — it appears on all NR events |
@@ -130,7 +130,7 @@ The wizard also prints the dashboard and alerts deploy commands. Copy them — y
 cat ~/.nr-ai-observe/config.json
 ```
 
-Should show `licenseKey`, `accountId`, `developer`, and `mode` (or no mode field, which defaults to cloud).
+Should show `licenseKey`, `accountId`, `developer`, and `mode: "cloud"`.
 
 ---
 
@@ -169,6 +169,13 @@ Use your **staging** User API key and add `--staging` (required — production k
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   npx tsx scripts/deploy-dashboard.ts --all --staging
 ```
+
+> **Re-deploying?** Running the command above a second time creates duplicate dashboards. Use `--update` instead to update the existing ones in-place:
+>
+> ```bash
+> NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
+>   npx tsx scripts/deploy-dashboard.ts --all --update --staging
+> ```
 
 **Expected output:**
 
@@ -407,8 +414,8 @@ nr-ai-observe uninstall
 # Clear local data (sessions, config, buffer)
 rm -rf ~/.nr-ai-observe
 
-# Cloud (staging): dashboards and alerts stay in NR until deleted
-# To remove them:
+# Cloud (staging): dashboards and alerts stay in NR until deleted.
+# Replace NRAK-... with your staging User API key and 12345 with your account ID:
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   npx tsx scripts/deploy-dashboard.ts --all --teardown --staging
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
