@@ -8,7 +8,7 @@ import type { ToolCallRecord } from '../storage/types.js';
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -98,8 +98,8 @@ describe('CostTracker', () => {
         'claude-sonnet-4',
       );
 
-      // Opus: 10k input ($0.15) + 2k output ($0.15) = $0.30
-      // claude-opus-4: input=$15/MTok, output=$75/MTok
+      // Opus: 10k input ($0.05) + 2k output ($0.05) = $0.10
+      // claude-opus-4 → claude-opus-4-7: input=$5/MTok, output=$25/MTok
       tracker.recordTokenUsage(
         makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
         'claude-opus-4',
@@ -115,9 +115,9 @@ describe('CostTracker', () => {
 
       expect(Object.keys(metrics.costByModel)).toHaveLength(2);
       expect(metrics.costByModel['claude-sonnet-4']).toBeCloseTo(0.12, 4);
-      expect(metrics.costByModel['claude-opus-4']).toBeCloseTo(0.3, 4);
+      expect(metrics.costByModel['claude-opus-4']).toBeCloseTo(0.1, 4);
       // Total should equal sum of models
-      expect(metrics.sessionTotalCostUsd).toBeCloseTo(0.42, 4);
+      expect(metrics.sessionTotalCostUsd).toBeCloseTo(0.22, 4);
     });
 
     it('tracks thinking and cache tokens', () => {
@@ -399,7 +399,7 @@ describe('CostTracker', () => {
         makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
         'claude-sonnet-4',
       );
-      // claude-opus-4: 10k input ($0.15) + 2k output ($0.15) = $0.30
+      // claude-opus-4 → claude-opus-4-7: 10k input ($0.05) + 2k output ($0.05) = $0.10
       tracker.recordTokenUsage(
         makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
         'claude-opus-4',
@@ -413,7 +413,7 @@ describe('CostTracker', () => {
       const metrics = tracker.getMetrics();
       expect(Object.keys(metrics.costByModel)).toHaveLength(3);
       expect(metrics.costByModel['claude-sonnet-4']).toBeCloseTo(0.06, 4);
-      expect(metrics.costByModel['claude-opus-4']).toBeCloseTo(0.3, 4);
+      expect(metrics.costByModel['claude-opus-4']).toBeCloseTo(0.1, 4);
       expect(metrics.costByModel['claude-haiku-4-5']).toBeCloseTo(0.02, 4);
       // Session total equals the sum of per-model costs
       const modelSum = Object.values(metrics.costByModel).reduce((a, b) => a + b, 0);
@@ -447,17 +447,17 @@ describe('CostTracker', () => {
       const aggregator = new MetricAggregator();
       tracker.emitMetrics(aggregator);
 
-      const metrics = aggregator.harvest();
+      const metrics = aggregator.harvest(60_000);
       const names = metrics.map((m) => m.name);
 
-      expect(names).toContain('ai.cost.session_total_usd.count');
-      expect(names).toContain('ai.cost.tokens_input.count');
-      expect(names).toContain('ai.cost.tokens_output.count');
-      expect(names).toContain('ai.cost.tokens_thinking.count');
-      expect(names).toContain('ai.cost.tokens_cache_read.count');
-      expect(names).toContain('ai.cost.cost_per_line_of_code.count');
-      expect(names).toContain('ai.cost.report_count.count');
-      expect(names).toContain('ai.cost.estimation_count.count');
+      expect(names).toContain('ai.cost.session_total_usd');
+      expect(names).toContain('ai.cost.tokens_input');
+      expect(names).toContain('ai.cost.tokens_output');
+      expect(names).toContain('ai.cost.tokens_thinking');
+      expect(names).toContain('ai.cost.tokens_cache_read');
+      expect(names).toContain('ai.cost.cost_per_line_of_code');
+      expect(names).toContain('ai.cost.report_count');
+      expect(names).toContain('ai.cost.estimation_count');
     });
 
     it('emits cost_per_file_modified when session tracker has file data', () => {
@@ -473,8 +473,8 @@ describe('CostTracker', () => {
       const aggregator = new MetricAggregator();
       tracker.emitMetrics(aggregator);
 
-      const names = aggregator.harvest().map((m) => m.name);
-      expect(names).toContain('ai.cost.cost_per_file_modified.count');
+      const names = aggregator.harvest(60_000).map((m) => m.name);
+      expect(names).toContain('ai.cost.cost_per_file_modified');
     });
 
     it('includes model attribute on metrics', () => {
@@ -488,9 +488,9 @@ describe('CostTracker', () => {
       const aggregator = new MetricAggregator();
       tracker.emitMetrics(aggregator);
 
-      const metrics = aggregator.harvest();
+      const metrics = aggregator.harvest(60_000);
       // All metrics should have the model attribute
-      const costMetric = metrics.find((m) => m.name === 'ai.cost.session_total_usd.count');
+      const costMetric = metrics.find((m) => m.name === 'ai.cost.session_total_usd');
       expect(costMetric?.attributes).toEqual(expect.objectContaining({ model: 'claude-sonnet-4' }));
     });
   });

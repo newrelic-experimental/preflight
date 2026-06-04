@@ -4,7 +4,7 @@ import { localAlertRuleSchema, parseLocalAlertRules } from './local-alert-rule.j
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -275,7 +275,7 @@ describe('parseLocalAlertRules — bulk parsing', () => {
   });
 
   it('logs a warning when a duplicate rule id is dropped (F-022)', () => {
-    const warnSpy = jest.spyOn(process.stderr, 'write');
+    const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     parseLocalAlertRules([
       {
         id: 'dup',
@@ -293,6 +293,7 @@ describe('parseLocalAlertRules — bulk parsing', () => {
       },
     ]);
     const captured = warnSpy.mock.calls.map((args) => String(args[0])).join('');
+    warnSpy.mockRestore();
     expect(captured).toContain('duplicate alert rule id');
     expect(captured).toContain('"id":"dup"');
   });

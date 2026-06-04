@@ -7,92 +7,106 @@ export type AiRequestMethod =
   | 'models.generateContentStream'
   | 'models.embedContent'
   | 'chat.completions.create'
+  // CODE_REVIEW §6.17 — OpenAI's embeddings endpoint. Added so consumers
+  // calling `client.embeddings.create({...})` (the OpenAI Node SDK shape)
+  // can pass the verbatim method name and have it map to
+  // `gen_ai.operation.name = 'embeddings'` in serialize.ts.
+  | 'embeddings.create'
   | 'converse'
   | 'converse-stream'
   | 'chat.complete'
   | 'chat.stream'
   | 'chat'
-  | 'chatStream';
+  | 'chatStream'
+  // CODE_REVIEW §6.17 — Cohere's embeddings endpoint (`client.embed(...)`).
+  | 'embed';
 
 export interface AiRequest {
-  id: string;
-  timestamp: number;
-  provider: AiProvider;
-  model: string;
-  requestMethod: AiRequestMethod;
+  readonly id: string;
+  readonly timestamp: number;
+  readonly provider: AiProvider;
+  readonly model: string;
+  readonly requestMethod: AiRequestMethod;
 
-  maxTokens: number | null;
-  temperature: number | null;
-  topP: number | null;
-  systemPromptLength: number | null;
-  messageCount: number;
-  toolCount: number;
-  toolNames: string[];
-  thinkingEnabled: boolean;
-  thinkingBudgetTokens: number | null;
-  streamingEnabled: boolean;
+  readonly maxTokens: number | null;
+  readonly temperature: number | null;
+  readonly topP: number | null;
+  readonly systemPromptLength: number | null;
+  readonly messageCount: number;
+  readonly toolCount: number;
+  readonly toolNames: string[];
+  readonly thinkingEnabled: boolean;
+  readonly thinkingBudgetTokens: number | null;
+  readonly streamingEnabled: boolean;
 
-  'nr.appName': string;
-  'nr.entityGuid': string | null;
-  customAttributes: Record<string, string | number>;
+  readonly 'nr.appName': string;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export interface AiResponse {
-  id: string;
-  timestamp: number;
-  provider: AiProvider;
-  model: string;
+  readonly id: string;
+  readonly timestamp: number;
+  readonly provider: AiProvider;
+  readonly model: string;
 
-  durationMs: number;
-  timeToFirstTokenMs: number | null;
-  tokensPerSecond: number | null;
+  readonly durationMs: number;
+  readonly timeToFirstTokenMs: number | null;
+  readonly tokensPerSecond: number | null;
 
-  inputTokens: number;
-  outputTokens: number;
-  thinkingTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  totalTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly thinkingTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly totalTokens: number;
 
-  costInputUsd: number | null;
-  costOutputUsd: number | null;
-  costThinkingUsd: number | null;
-  costCacheReadUsd: number | null;
-  costCacheCreationUsd: number | null;
-  costTotalUsd: number | null;
+  readonly costInputUsd: number | null;
+  readonly costOutputUsd: number | null;
+  readonly costThinkingUsd: number | null;
+  readonly costCacheReadUsd: number | null;
+  readonly costCacheCreationUsd: number | null;
+  readonly costTotalUsd: number | null;
 
-  stopReason: string | null;
-  contentBlockTypes: string[];
+  readonly stopReason: string | null;
+  readonly contentBlockTypes: string[];
 
-  error: { type: string; message: string; statusCode: number | null } | null;
+  readonly error: { type: string; message: string; statusCode: number | null } | null;
 
-  'nr.appName': string;
-  customAttributes: Record<string, string | number>;
+  readonly 'nr.appName': string;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export type AiMessageRole = 'system' | 'user' | 'assistant';
 
 export interface AiMessage {
-  id: string;
-  timestamp: number;
-  role: AiMessageRole;
-  content: string;
-  contentLength: number;
-  sequence: number;
+  readonly id: string;
+  readonly timestamp: number;
+  readonly role: AiMessageRole;
+  readonly content: string;
+  readonly contentLength: number;
+  readonly sequence: number;
 
-  'nr.appName': string;
-  customAttributes: Record<string, string | number>;
+  readonly 'nr.appName': string;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export type NrEventData = Record<string, string | number | boolean>;
 
-export type SpanType = 'agent_task' | 'llm_call' | 'tool_call' | 'sub_agent' | 'planning';
+// WIP (§EVT1): SpanType and SpanAttributes are reserved for a future distributed
+// tracing feature. No factory or serializer exists yet — intentionally NOT exported
+// from index.ts. Implement createSpanAttributes() + spanAttributesToNrEvent() before
+// re-exporting. Do not use from consumer code until backed by implementations.
+// The underscore prefix suppresses @typescript-eslint/no-unused-vars.
+type _SpanType = 'agent_task' | 'llm_call' | 'tool_call' | 'sub_agent' | 'planning';
 
-export interface SpanAttributes {
+interface _SpanAttributes {
   readonly traceId: string;
   readonly spanId: string;
   readonly parentSpanId: string | null;
-  readonly spanType: SpanType;
+  readonly spanType: _SpanType;
   readonly name: string;
   readonly startTime: number;
   readonly endTime: number | null;
@@ -102,7 +116,7 @@ export interface SpanAttributes {
   readonly model?: string;
   readonly toolName?: string;
   readonly input?: string;
-  readonly customAttributes: Record<string, string | number>;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export interface AiAgentTaskSummary {
@@ -118,13 +132,15 @@ export interface AiAgentTaskSummary {
   readonly totalCostUsd: number | null;
   readonly stepCount: number;
   readonly success: boolean;
+  readonly provider?: AiProvider;
   readonly delegationCount?: number;
   readonly spawnCount?: number;
   readonly delegationDepth?: number;
   readonly interAgentMessages?: number;
   readonly delegationOverheadMs?: number;
   readonly 'nr.appName': string;
-  readonly customAttributes: Record<string, string | number>;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export type AntiPatternType =
@@ -142,15 +158,17 @@ export interface AiAntiPattern {
   readonly patternType: AntiPatternType;
   readonly severity: 'low' | 'medium' | 'high';
   readonly description: string;
+  readonly provider?: AiProvider;
   readonly toolName?: string;
   readonly repeatCount?: number;
   readonly depthIndex?: number;
   readonly taskComplexity?: 'simple' | 'moderate' | 'complex';
-  readonly contextPressure?: number;
-  readonly tokenShare?: number;
+  readonly contextPressure?: number | null;
+  readonly tokenShare?: number | null;
   readonly attemptCount?: number;
   readonly 'nr.appName': string;
-  readonly customAttributes: Record<string, string | number>;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export interface AiAgentMessage {
@@ -160,9 +178,11 @@ export interface AiAgentMessage {
   readonly fromAgent: string;
   readonly toAgent: string;
   readonly messageType: string;
+  readonly provider?: AiProvider;
   readonly tokenCount?: number;
   readonly 'nr.appName': string;
-  readonly customAttributes: Record<string, string | number>;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }
 
 export interface AiContextReset {
@@ -175,7 +195,9 @@ export interface AiContextReset {
   readonly tokensRemoved: number;
   readonly compressionRatio: number;
   readonly reason: 'summarization' | 'truncation' | 'sliding_window' | 'manual';
+  readonly provider?: AiProvider;
   readonly turnsRemoved?: number;
   readonly 'nr.appName': string;
-  readonly customAttributes: Record<string, string | number>;
+  readonly 'nr.entityGuid': string | null;
+  readonly customAttributes: Record<string, string | number | boolean>;
 }

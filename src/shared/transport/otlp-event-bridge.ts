@@ -2,6 +2,10 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
 import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import type { NrEventData } from '../events/types.js';
+import { createLogger } from '../logger.js';
+import { validateOtlpEndpoint, hasOtlpAuthHeader } from './otlp-shared.js';
+
+const logger = createLogger('otlp-event-bridge');
 
 export interface OtlpEventBridgeOptions {
   endpoint: string;
@@ -14,6 +18,16 @@ export class OtlpEventBridge {
   private readonly otelLogger: ReturnType<LoggerProvider['getLogger']>;
 
   constructor(options: OtlpEventBridgeOptions) {
+    validateOtlpEndpoint(options.endpoint, 'OtlpEventBridge');
+
+    // Warn once at construction time when no auth header is present (§TR4),
+    // matching the behaviour of OtlpTransport.exportMetrics().
+    if (!hasOtlpAuthHeader(options.headers ?? {})) {
+      logger.warn('OtlpEventBridge constructed with no auth header — collector may reject events', {
+        endpoint: options.endpoint,
+      });
+    }
+
     const exporter = new OTLPLogExporter({
       url: `${options.endpoint}/v1/logs`,
       headers: options.headers ?? {},
@@ -31,8 +45,16 @@ export class OtlpEventBridge {
     for (const event of events) {
       this.otelLogger.emit({
         severityText: 'INFO',
-        body: (event['eventType'] as string) ?? 'AiEvent',
-        attributes: event as Record<string, string | number | boolean>,
+        body: String(event['eventType'] ?? 'AiEvent'),
+        // Filter to scalar values only — the OTel SDK's AnyValue type also
+        // accepts arrays/objects/null, and a non-scalar value would produce a
+        // malformed log record. NrEventData is typed as all-scalar but callers
+        // may pass unexpected shapes (§TR2).
+        attributes: Object.fromEntries(
+          Object.entries(event).filter(
+            ([, v]) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+          ),
+        ),
         timestamp: typeof event.timestamp === 'number' ? event.timestamp : Date.now(),
       });
     }

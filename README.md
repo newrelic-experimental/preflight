@@ -40,10 +40,10 @@ nvm install 24 && nvm use 24
 
 You use two different NR keys at different points:
 
-| Key              | What it does                            | Where to find it                                                                 |
-| ---------------- | --------------------------------------- | -------------------------------------------------------------------------------- |
-| **License key**  | Sends telemetry data _into_ NR          | NR One → top-right menu → API keys → create a **License** key                    |
-| **User API key** | Deploys dashboards and alerts _into_ NR | NR One → top-right menu → API keys → create a **User** key (starts with `NRAK-`) |
+| Key              | What it does                            | Where to find it                                                                                                         |
+| ---------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **License key**  | Sends telemetry data _into_ NR (ingest) | NR One → top-right menu → API keys → create a key of type **License**. Long hex string ending in `NRAL`. Not `NRAK-`.    |
+| **User API key** | Deploys dashboards and alerts _into_ NR | NR One → top-right menu → API keys → create a key of type **User**. Starts with `NRAK-`. Only needed for deploy scripts. |
 
 You'll also need your **Account ID** — a number visible in the URL when you're logged into NR One: `https://one.newrelic.com/nr1-core?account=`**`12345`**.
 
@@ -82,7 +82,9 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   npx tsx scripts/deploy-dashboard.ts --all
 ```
 
-This creates 7 dashboards in your NR account. Find them under **Dashboards** → search "AI Coding". Add `--staging` if your account is on the New Relic staging environment, or `--eu` for accounts on the EU region.
+This creates 7 dashboards in your NR account. Find them under **Dashboards** → search "AI Coding".
+
+> **Staging vs production:** Use your account's license key and account ID from whichever environment you're targeting — both work. Add `--staging` if your account is on `staging-one.newrelic.com`, `--eu` for EU region accounts, or omit both flags for standard production (`one.newrelic.com`). Don't mix keys across environments (a production license key won't ingest to staging and vice versa).
 
 **Step 3 — Restart Claude Code and verify**
 

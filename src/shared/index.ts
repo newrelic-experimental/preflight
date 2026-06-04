@@ -1,12 +1,17 @@
-export const VERSION = '0.1.0';
+export { VERSION } from './version.js';
 export { createLogger } from './logger.js';
 export type { Logger, LogLevel } from './logger.js';
+export { redact, safeForLog } from './redact.js';
 export { loadConfig } from './config.js';
-export type { AgentConfig } from './config.js';
+export type { AgentConfig, AgentConfigInput } from './config.js';
 export {
   createAiRequest,
   createAiResponse,
   createAiMessage,
+  createAiAgentTaskSummary,
+  createAiAntiPattern,
+  createAiAgentMessage,
+  createAiContextReset,
   aiRequestToNrEvent,
   aiResponseToNrEvent,
   aiMessageToNrEvent,
@@ -14,6 +19,7 @@ export {
   aiAntiPatternToNrEvent,
   aiAgentMessageToNrEvent,
   aiContextResetToNrEvent,
+  EVENT_SCHEMA_VERSION,
 } from './events/index.js';
 export type {
   AiProvider,
@@ -23,8 +29,6 @@ export type {
   AiMessageRole,
   AiMessage,
   NrEventData,
-  SpanType,
-  SpanAttributes,
   AiAgentTaskSummary,
   AntiPatternType,
   AiAntiPattern,
@@ -33,19 +37,43 @@ export type {
   CreateAiRequestParams,
   CreateAiResponseParams,
   CreateAiMessageParams,
+  CreateAiAgentTaskSummaryParams,
+  CreateAiAntiPatternParams,
+  CreateAiAgentMessageParams,
+  CreateAiContextResetParams,
+  SerializeOptions,
 } from './events/index.js';
 export {
   extractAnthropicTokens,
   extractGeminiTokens,
+  extractOpenAITokens,
+  extractBedrockTokens,
+  extractMistralTokens,
+  extractCohereTokens,
   extractStreamTokens,
+  safeInt,
   TokenAccumulator,
 } from './tokens.js';
-export type { TokenUsage } from './tokens.js';
-export { calculateCost, resolveModelPricing, initPricing } from './pricing.js';
+export type {
+  TokenUsage,
+  AnthropicResponse,
+  GeminiResponse,
+  OpenAIResponse,
+  BedrockResponse,
+  MistralResponse,
+  CohereResponse,
+} from './tokens.js';
+export {
+  calculateCost,
+  resolveModelPricing,
+  initPricing,
+  loadCustomPricing,
+  PricingTable,
+} from './pricing.js';
 export { DEFAULT_PRICING_TABLE } from './pricing-data.js';
 export type { ModelPricing, CostBreakdown } from './pricing.js';
 export { RequestTimer } from './timing.js';
-export type { RequestTimerMetrics } from './timing.js';
+export type { RequestTimerMetrics, ThinkingPhase } from './timing.js';
 export {
   sendEvents,
   sendMetrics,
@@ -56,22 +84,32 @@ export {
 export type {
   NrMetric,
   NrLogEntry,
+  TransportMode,
   TransportOptions,
   TransportResult,
   OtlpTransportOptions,
   OtlpEventBridgeOptions,
 } from './transport/index.js';
-export { EventBuffer, MetricAggregator, HarvestScheduler } from './harvest/index.js';
+export {
+  EventBuffer,
+  MetricAggregator,
+  HarvestScheduler,
+  snapshotsToNrMetrics,
+} from './harvest/index.js';
 export type {
   EventBufferOptions,
   MetricAccumulator,
+  MetricAttributeValue,
+  MetricSnapshot,
   HarvestSchedulerOptions,
 } from './harvest/index.js';
 export {
   AiErrorClassification,
   classifyError,
+  classifyErrorDetailed,
   isRetryable,
+  RETRYABLE,
   extractRateLimitHeaders,
   truncateErrorMessage,
 } from './errors.js';
-export type { RateLimitInfo } from './errors.js';
+export type { RateLimitInfo, ClassifiedError } from './errors.js';

@@ -428,6 +428,7 @@ export class NrIngestManager {
   private readonly orgId: string | null | undefined;
   private readonly metricHarvestIntervalMs: number;
   private readonly otlpTransport: OtlpTransport | null;
+  private readonly otlpEventBridge: OtlpEventBridge | null;
   private sessionGaugeIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -465,9 +466,10 @@ export class NrIngestManager {
         headers: options.otlpHeaders,
         appName: options.appName,
       });
-      otlpTransport.start();
+      // OtlpTransport no longer has an explicit start() — providers initialise in the constructor.
     }
     this.otlpTransport = otlpTransport;
+    this.otlpEventBridge = otlpEventBridge;
 
     // Wrap send functions so non-retryable 4xx failures (400, 403, etc.) are not
     // re-queued by HarvestScheduler. Returning success=true suppresses the requeue
@@ -508,6 +510,7 @@ export class NrIngestManager {
       otlpEventBridge: otlpEventBridge ?? undefined,
       otlpTransport: otlpTransport ?? undefined,
       transport: options.transport,
+      allowProcessExit: true,
     });
 
     this.logIngest = new LogIngestManager({
@@ -698,6 +701,9 @@ export class NrIngestManager {
     const cleanupPromises = [this.scheduler.stop(), this.logIngest.stop()];
     if (this.otlpTransport) {
       cleanupPromises.push(this.otlpTransport.shutdown());
+    }
+    if (this.otlpEventBridge) {
+      cleanupPromises.push(this.otlpEventBridge.shutdown());
     }
     await Promise.all(cleanupPromises);
   }

@@ -104,7 +104,7 @@ function makeIngestOptions(overrides?: Partial<NrIngestOptions>): NrIngestOption
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   mockSendEvents.mockClear();
   mockSendMetrics.mockClear();
   mockSendLogs.mockClear();
@@ -330,9 +330,9 @@ describe('NrIngestManager', () => {
         Record<string, unknown>
       >;
       const metricNames = sentMetrics.map((m) => m.name);
-      expect(metricNames).toContain('ai.tool.call_count.count');
-      expect(metricNames).toContain('ai.tool.duration_ms.count');
-      expect(metricNames).toContain('ai.tool.success.count');
+      expect(metricNames).toContain('ai.tool.call_count');
+      expect(metricNames).toContain('ai.tool.duration_ms');
+      expect(metricNames).toContain('ai.tool.success');
     });
   });
 
@@ -399,9 +399,9 @@ describe('NrIngestManager', () => {
       >;
       const metricNames = sentMetrics.map((m) => m.name);
 
-      expect(metricNames).toContain('ai.session.duration_ms.count');
-      expect(metricNames).toContain('ai.session.unique_files_read.count');
-      expect(metricNames).toContain('ai.session.unique_files_written.count');
+      expect(metricNames).toContain('ai.session.duration_ms');
+      expect(metricNames).toContain('ai.session.unique_files_read');
+      expect(metricNames).toContain('ai.session.unique_files_written');
     });
 
     it('emitSessionGauges is a no-op after stop()', async () => {
@@ -440,8 +440,8 @@ describe('NrIngestManager', () => {
         Record<string, unknown>
       >;
       const metricNames = sentMetrics.map((m) => m.name);
-      expect(metricNames).toContain('ai.session.duration_ms.count');
-      expect(metricNames).toContain('ai.session.unique_files_read.count');
+      expect(metricNames).toContain('ai.session.duration_ms');
+      expect(metricNames).toContain('ai.session.unique_files_read');
     });
   });
 

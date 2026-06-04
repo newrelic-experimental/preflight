@@ -11,7 +11,7 @@ let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
   fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -89,17 +89,29 @@ describe('sendEvents', () => {
     expect(url).toBe('https://insights-collector.eu01.nr-data.net/v1/accounts/12345/events');
   });
 
-  it('routes to EU endpoint when collectorHost contains eu', async () => {
+  // §5.9: collectorHost containing a dot is treated as a literal host override.
+  it('uses literal collectorHost as URL host when it contains a dot', async () => {
     await sendEvents(testEvents, 'us01xxUSKEY', {
       ...baseOptions,
       collectorHost: 'collector.eu01.nr-data.net',
     });
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://insights-collector.eu01.nr-data.net/v1/accounts/12345/events');
+    expect(url).toBe('https://collector.eu01.nr-data.net/v1/accounts/12345/events');
   });
 
-  it('routes to staging endpoint when collectorHost contains staging', async () => {
+  it('uses literal collectorHost as URL host when it contains a port', async () => {
+    await sendEvents(testEvents, 'us01xxUSKEY', {
+      ...baseOptions,
+      collectorHost: 'my-proxy.example.com:8443',
+    });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe('https://my-proxy.example.com:8443/v1/accounts/12345/events');
+  });
+
+  // §5.9: bare 'staging' keyword (no dot) is still routed via region detection.
+  it('routes bare staging keyword to NR staging events endpoint', async () => {
     await sendEvents(testEvents, 'us01xxUSKEY', {
       ...baseOptions,
       collectorHost: 'staging',

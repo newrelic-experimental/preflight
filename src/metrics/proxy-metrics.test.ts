@@ -11,7 +11,7 @@ import type { ProxyRequestRecord } from '../proxy/types.js';
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -313,28 +313,28 @@ describe('ProxyMetricsTracker', () => {
 
     const aggregator = new MetricAggregator();
     tracker.emitMetrics(aggregator);
-    const metrics = aggregator.harvest();
+    const metrics = aggregator.harvest(60_000);
     const names = metrics.map((m) => m.name);
 
     // Per-server metrics
-    expect(names).toContain('ai.mcp.server_call_count.count');
-    expect(names).toContain('ai.mcp.server_latency_ms.count');
-    expect(names).toContain('ai.mcp.server_error_rate.count');
+    expect(names).toContain('ai.mcp.server_call_count');
+    expect(names).toContain('ai.mcp.server_latency_ms');
+    expect(names).toContain('ai.mcp.server_error_rate');
 
     // Global proxy overhead
-    expect(names).toContain('ai.mcp.proxy_overhead_ms.count');
+    expect(names).toContain('ai.mcp.proxy_overhead_ms');
 
     // Tool popularity
-    expect(names).toContain('ai.mcp.tool_popularity.count');
+    expect(names).toContain('ai.mcp.tool_popularity');
 
     // Check server dimensions
-    const serverCallMetrics = metrics.filter((m) => m.name === 'ai.mcp.server_call_count.count');
+    const serverCallMetrics = metrics.filter((m) => m.name === 'ai.mcp.server_call_count');
     const servers = serverCallMetrics.map((m) => m.attributes?.server);
     expect(servers).toContain('server-a');
     expect(servers).toContain('server-b');
 
     // Check tool+server dimensions on popularity
-    const popularityMetrics = metrics.filter((m) => m.name === 'ai.mcp.tool_popularity.count');
+    const popularityMetrics = metrics.filter((m) => m.name === 'ai.mcp.tool_popularity');
     const toolServers = popularityMetrics.map((m) => ({
       tool: m.attributes?.tool,
       server: m.attributes?.server,
@@ -346,7 +346,7 @@ describe('ProxyMetricsTracker', () => {
   it('emitMetrics skips latency and error rate when no data', () => {
     const aggregator = new MetricAggregator();
     tracker.emitMetrics(aggregator);
-    const metrics = aggregator.harvest();
+    const metrics = aggregator.harvest(60_000);
 
     expect(metrics).toHaveLength(0);
   });

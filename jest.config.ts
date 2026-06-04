@@ -32,6 +32,11 @@ const config: Config = {
   displayName: 'nr-ai-mcp-server',
   maxWorkers: 1,
   forceExit: true,
+  // src/shared/index.test.ts verifies that VERSION matches the upstream package.json.
+  // That invariant is not meaningful here — shared is inlined source, not a versioned
+  // package — and the path resolution (join(__dirname, '..', 'package.json')) resolves
+  // correctly in the upstream repo but to src/package.json (non-existent) in this layout.
+  testPathIgnorePatterns: ['/node_modules/', 'src/shared/index\\.test\\.ts'],
 };
 
 export default config;

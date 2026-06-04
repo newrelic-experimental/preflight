@@ -1,9 +1,10 @@
 import { jest, beforeEach, afterEach } from '@jest/globals';
-import { MetricAggregator } from './metric-aggregator.js';
+import { MetricAggregator, snapshotsToNrMetrics } from './metric-aggregator.js';
+import type { MetricSnapshot } from './metric-aggregator.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => {
   stderrSpy.mockRestore();
@@ -11,7 +12,11 @@ afterEach(() => {
 
 // ---------------------------------------------------------------------------
 // 1. record() computes correct count, sum, min, max
+// CODE_REVIEW §4.9 — wire format is now ONE summary metric per bucket
+// (with `value: { count, sum, min, max }`) instead of four separate metrics.
 // ---------------------------------------------------------------------------
+const TEST_INTERVAL_MS = 60_000;
+
 describe('MetricAggregator', () => {
   it('correctly computes count, sum, min, max for same metric', () => {
     const agg = new MetricAggregator();
@@ -20,14 +25,16 @@ describe('MetricAggregator', () => {
     agg.record('ai.duration', 20, { model: 'claude' });
     agg.record('ai.duration', 5, { model: 'claude' });
 
-    const metrics = agg.harvest();
+    const metrics = agg.harvest(TEST_INTERVAL_MS);
 
-    const findMetric = (suffix: string) => metrics.find((m) => m.name === `ai.duration.${suffix}`);
-
-    expect(findMetric('count')!.value).toBe(3);
-    expect(findMetric('sum')!.value).toBe(35);
-    expect(findMetric('min')!.value).toBe(5);
-    expect(findMetric('max')!.value).toBe(20);
+    expect(metrics).toHaveLength(1);
+    expect(metrics[0].name).toBe('ai.duration');
+    expect(metrics[0].type).toBe('summary');
+    if (metrics[0].type !== 'summary') throw new Error('type guard');
+    expect(metrics[0].value.count).toBe(3);
+    expect(metrics[0].value.sum).toBe(35);
+    expect(metrics[0].value.min).toBe(5);
+    expect(metrics[0].value.max).toBe(20);
   });
 
   // ---------------------------------------------------------------------------
@@ -39,20 +46,19 @@ describe('MetricAggregator', () => {
     agg.record('ai.tokens', 100);
     agg.record('ai.tokens', 200);
 
-    const first = agg.harvest();
-    expect(first.length).toBe(4); // count, sum, min, max
+    const first = agg.harvest(TEST_INTERVAL_MS);
+    expect(first.length).toBe(1); // ONE summary per bucket
 
-    const second = agg.harvest();
+    const second = agg.harvest(TEST_INTERVAL_MS);
     expect(second).toEqual([]);
     expect(agg.bucketCount).toBe(0);
 
     // New recordings after reset appear only in next harvest
     agg.record('ai.tokens', 50);
-    const third = agg.harvest();
-    expect(third.length).toBe(4);
-
-    const count = third.find((m) => m.name === 'ai.tokens.count');
-    expect(count!.value).toBe(1);
+    const third = agg.harvest(TEST_INTERVAL_MS);
+    expect(third.length).toBe(1);
+    if (third[0].type !== 'summary') throw new Error('type guard');
+    expect(third[0].value.count).toBe(1);
   });
 
   // ---------------------------------------------------------------------------
@@ -66,19 +72,17 @@ describe('MetricAggregator', () => {
 
     expect(agg.bucketCount).toBe(2);
 
-    const metrics = agg.harvest();
-    // 4 metrics per bucket × 2 buckets = 8
-    expect(metrics).toHaveLength(8);
+    const metrics = agg.harvest(TEST_INTERVAL_MS);
+    // ONE summary per bucket × 2 buckets = 2 wire metrics
+    expect(metrics).toHaveLength(2);
 
-    const claudeCount = metrics.find(
-      (m) => m.name === 'ai.duration.count' && m.attributes?.model === 'claude',
-    );
-    const geminiCount = metrics.find(
-      (m) => m.name === 'ai.duration.count' && m.attributes?.model === 'gemini',
-    );
+    const claude = metrics.find((m) => m.attributes?.model === 'claude');
+    const gemini = metrics.find((m) => m.attributes?.model === 'gemini');
+    if (!claude || claude.type !== 'summary') throw new Error('claude bucket missing');
+    if (!gemini || gemini.type !== 'summary') throw new Error('gemini bucket missing');
 
-    expect(claudeCount!.value).toBe(1);
-    expect(geminiCount!.value).toBe(1);
+    expect(claude.value.count).toBe(1);
+    expect(gemini.value.count).toBe(1);
   });
 
   // ---------------------------------------------------------------------------
@@ -86,7 +90,7 @@ describe('MetricAggregator', () => {
   // ---------------------------------------------------------------------------
   it('harvest on empty aggregator returns empty array', () => {
     const agg = new MetricAggregator();
-    expect(agg.harvest()).toEqual([]);
+    expect(agg.harvest(TEST_INTERVAL_MS)).toEqual([]);
   });
 
   // ---------------------------------------------------------------------------
@@ -100,11 +104,11 @@ describe('MetricAggregator', () => {
       agg.record('ai.duration', badValue);
       agg.record('ai.duration', 20);
 
-      const metrics = agg.harvest();
-      const sum = metrics.find((m) => m.name === 'ai.duration.sum');
-      const count = metrics.find((m) => m.name === 'ai.duration.count');
-      expect(sum!.value).toBe(30);
-      expect(count!.value).toBe(2);
+      const metrics = agg.harvest(TEST_INTERVAL_MS);
+      expect(metrics).toHaveLength(1);
+      if (metrics[0].type !== 'summary') throw new Error('type guard');
+      expect(metrics[0].value.sum).toBe(30);
+      expect(metrics[0].value.count).toBe(2);
     },
   );
 
@@ -113,32 +117,363 @@ describe('MetricAggregator', () => {
     agg.record('ai.cost', NaN);
     agg.record('ai.cost', Infinity);
     expect(agg.bucketCount).toBe(0);
-    expect(agg.harvest()).toEqual([]);
+    expect(agg.harvest(TEST_INTERVAL_MS)).toEqual([]);
   });
 
   // ---------------------------------------------------------------------------
-  // 5. Output metrics have correct type, timestamp, and attributes
+  // 5. Output metrics carry the harvest interval, valid timestamp, original attrs
   // ---------------------------------------------------------------------------
-  it('output metrics have correct types, valid timestamp, and original attributes', () => {
+  it('output summary carries intervalMs, valid timestamp, and original attributes', () => {
     const agg = new MetricAggregator();
     const before = Date.now();
 
     agg.record('ai.cost', 0.05, { provider: 'anthropic', model: 'sonnet' });
 
-    const metrics = agg.harvest();
+    const metrics = agg.harvest(TEST_INTERVAL_MS);
     const after = Date.now();
 
-    expect(metrics).toHaveLength(4);
-    for (const m of metrics) {
-      expect(m.timestamp).toBeGreaterThanOrEqual(before);
-      expect(m.timestamp).toBeLessThanOrEqual(after);
-      expect(m.attributes).toEqual({ provider: 'anthropic', model: 'sonnet' });
-    }
+    expect(metrics).toHaveLength(1);
+    const m = metrics[0];
+    expect(m.type).toBe('summary');
+    expect(m.name).toBe('ai.cost');
+    expect(m.timestamp).toBeGreaterThanOrEqual(before);
+    expect(m.timestamp).toBeLessThanOrEqual(after);
+    expect(m.attributes).toEqual({ provider: 'anthropic', model: 'sonnet' });
+    if (m.type !== 'summary') throw new Error('type guard');
+    expect(m.intervalMs).toBe(TEST_INTERVAL_MS);
+    expect(m.value).toEqual({ count: 1, sum: 0.05, min: 0.05, max: 0.05 });
+  });
 
-    const byName = Object.fromEntries(metrics.map((m) => [m.name, m.type]));
-    expect(byName['ai.cost.count']).toBe('count');
-    expect(byName['ai.cost.sum']).toBe('gauge');
-    expect(byName['ai.cost.min']).toBe('gauge');
-    expect(byName['ai.cost.max']).toBe('gauge');
+  // ---------------------------------------------------------------------------
+  // §4.6 — harvestSnapshots() returns pre-explosion bucket form and resets
+  // ---------------------------------------------------------------------------
+  it('harvestSnapshots() returns one snapshot per (name, attrs) bucket and drains the aggregator (CODE_REVIEW §4.6)', () => {
+    const agg = new MetricAggregator();
+    agg.record('ai.duration', 10, { model: 'claude' });
+    agg.record('ai.duration', 20, { model: 'claude' });
+    agg.record('ai.duration', 5, { model: 'gemini' });
+
+    const snapshots = agg.harvestSnapshots();
+    expect(snapshots).toHaveLength(2);
+
+    const claude = snapshots.find((s) => s.attributes.model === 'claude')!;
+    expect(claude.name).toBe('ai.duration');
+    expect(claude.count).toBe(2);
+    expect(claude.sum).toBe(30);
+    expect(claude.min).toBe(10);
+    expect(claude.max).toBe(20);
+
+    const gemini = snapshots.find((s) => s.attributes.model === 'gemini')!;
+    expect(gemini.count).toBe(1);
+    expect(gemini.sum).toBe(5);
+
+    // Aggregator is drained
+    expect(agg.bucketCount).toBe(0);
+    expect(agg.harvestSnapshots()).toEqual([]);
+  });
+
+  it('caller mutation of attributes after record() does not affect bucket state (§MA1)', () => {
+    const agg = new MetricAggregator();
+    const tags: Record<string, string> = { region: 'us-east' };
+    agg.record('latency', 100, tags);
+    tags.region = 'changed'; // mutate after record
+
+    const snapshots = agg.harvestSnapshots();
+    expect(snapshots[0].attributes.region).toBe('us-east'); // bucket was cloned
+  });
+
+  it('harvestSnapshots() returns snapshots isolated from bucket state (§MA1)', () => {
+    const agg = new MetricAggregator();
+    agg.record('m', 1, { k: 'v' });
+    const snapshots = agg.harvestSnapshots();
+    // Mutating snapshot attributes should not affect any future record/merge
+    (snapshots[0].attributes as Record<string, string>).k = 'mutated';
+    agg.record('m', 2, { k: 'v' }); // same bucket key
+    const snapshots2 = agg.harvestSnapshots();
+    expect(snapshots2[0].attributes.k).toBe('v');
+  });
+
+  // ---------------------------------------------------------------------------
+  // §4.6 — merge() folds snapshots back, accumulating same-key buckets
+  // ---------------------------------------------------------------------------
+  it('merge() accumulates same-key snapshots into a single rolled-up bucket (CODE_REVIEW §4.6)', () => {
+    // The retry path: a previous harvest's snapshots are merged back into a
+    // fresh aggregator alongside the next interval's data. Same name+attrs
+    // entries must collapse into one bucket with summed count/sum and
+    // min/max combined — not two parallel data points.
+    const agg = new MetricAggregator();
+    agg.record('ai.tokens', 100, { model: 'claude' });
+    agg.record('ai.tokens', 200, { model: 'claude' });
+    const previous = agg.harvestSnapshots();
+
+    // Next interval — record fresh values for the same bucket
+    agg.record('ai.tokens', 50, { model: 'claude' });
+    agg.record('ai.tokens', 300, { model: 'claude' });
+
+    // Fold the previous failed-send snapshots back in
+    agg.merge(previous);
+
+    const rolled = agg.harvestSnapshots();
+    expect(rolled).toHaveLength(1);
+    const bucket = rolled[0];
+    expect(bucket.count).toBe(4);
+    expect(bucket.sum).toBe(650);
+    expect(bucket.min).toBe(50);
+    expect(bucket.max).toBe(300);
+  });
+
+  it('merge() inserts a new bucket when the key is not present (CODE_REVIEW §4.6)', () => {
+    const agg = new MetricAggregator();
+    agg.record('ai.duration', 10, { model: 'claude' });
+    const fresh = agg.harvestSnapshots();
+    expect(fresh).toHaveLength(1);
+
+    // Second aggregator has no buckets — merge should insert
+    const agg2 = new MetricAggregator();
+    agg2.merge(fresh);
+    expect(agg2.bucketCount).toBe(1);
+
+    const out = agg2.harvestSnapshots();
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      name: 'ai.duration',
+      count: 1,
+      sum: 10,
+      min: 10,
+      max: 10,
+    });
+  });
+
+  it('round-trip: harvestSnapshots -> merge into new aggregator -> harvest produces one rolled-up summary (CODE_REVIEW §4.6 + §4.9)', () => {
+    // End-to-end §4.6 contract: a failed-send snapshot list re-merged with
+    // the next harvest's data must produce ONE summary per name+attrs — not
+    // two timestamped pairs and not four separate metrics (post-§4.9).
+    const agg = new MetricAggregator();
+    agg.record('ai.duration', 10, { model: 'claude' });
+    agg.record('ai.duration', 20, { model: 'claude' });
+    const failed = agg.harvestSnapshots();
+
+    // Simulate next harvest
+    agg.record('ai.duration', 5, { model: 'claude' });
+    agg.merge(failed);
+
+    const wire = agg.harvest(TEST_INTERVAL_MS);
+    // Exactly one summary metric — one rolled-up bucket
+    expect(wire).toHaveLength(1);
+    const m = wire[0];
+    expect(m.type).toBe('summary');
+    expect(m.name).toBe('ai.duration');
+    if (m.type !== 'summary') throw new Error('type guard');
+    expect(m.value).toEqual({ count: 3, sum: 35, min: 5, max: 20 });
+  });
+
+  // ---------------------------------------------------------------------------
+  // §4.9 — snapshotsToNrMetrics() emits one summary per snapshot
+  // ---------------------------------------------------------------------------
+  it('snapshotsToNrMetrics() emits one summary per snapshot with shared timestamp + intervalMs (CODE_REVIEW §4.9)', () => {
+    const ts = 1_700_000_000_000;
+    const snapshots: MetricSnapshot[] = [
+      {
+        name: 'ai.duration',
+        attributes: { model: 'claude' },
+        count: 2,
+        sum: 30,
+        min: 10,
+        max: 20,
+      },
+    ];
+
+    const wire = snapshotsToNrMetrics(snapshots, TEST_INTERVAL_MS, ts);
+    expect(wire).toHaveLength(1);
+    const m = wire[0];
+    expect(m.timestamp).toBe(ts);
+    expect(m.attributes).toEqual({ model: 'claude' });
+    expect(m.name).toBe('ai.duration');
+    expect(m.type).toBe('summary');
+    if (m.type !== 'summary') throw new Error('type guard');
+    expect(m.intervalMs).toBe(TEST_INTERVAL_MS);
+    expect(m.value).toEqual({ count: 2, sum: 30, min: 10, max: 20 });
+  });
+
+  // ---------------------------------------------------------------------------
+  // §4.8 — Strict attribute typing: type sigils prevent key collisions, and
+  // invalid runtime values are rejected (sample dropped) rather than coerced.
+  // ---------------------------------------------------------------------------
+  describe('strict attribute validation (CODE_REVIEW §4.8)', () => {
+    it('treats number 5 and string "5" as distinct buckets', () => {
+      const agg = new MetricAggregator();
+      agg.record('ai.duration', 10, { tier: 5 });
+      agg.record('ai.duration', 20, { tier: '5' });
+      expect(agg.bucketCount).toBe(2);
+
+      const snapshots = agg.harvestSnapshots();
+      expect(snapshots).toHaveLength(2);
+      const numericTier = snapshots.find((s) => s.attributes.tier === 5)!;
+      const stringTier = snapshots.find((s) => s.attributes.tier === '5')!;
+      expect(numericTier.sum).toBe(10);
+      expect(stringTier.sum).toBe(20);
+    });
+
+    it('treats boolean true and string "true" as distinct buckets', () => {
+      const agg = new MetricAggregator();
+      agg.record('ai.flag', 1, { ok: true });
+      agg.record('ai.flag', 2, { ok: 'true' });
+      expect(agg.bucketCount).toBe(2);
+
+      const snapshots = agg.harvestSnapshots();
+      const boolBucket = snapshots.find((s) => s.attributes.ok === true)!;
+      const strBucket = snapshots.find((s) => s.attributes.ok === 'true')!;
+      expect(boolBucket.sum).toBe(1);
+      expect(strBucket.sum).toBe(2);
+    });
+
+    it('accepts boolean attribute values', () => {
+      const agg = new MetricAggregator();
+      agg.record('ai.duration', 10, { cached: true });
+      agg.record('ai.duration', 20, { cached: false });
+      expect(agg.bucketCount).toBe(2);
+
+      const snapshots = agg.harvestSnapshots();
+      const cached = snapshots.find((s) => s.attributes.cached === true)!;
+      const uncached = snapshots.find((s) => s.attributes.cached === false)!;
+      expect(cached.sum).toBe(10);
+      expect(uncached.sum).toBe(20);
+    });
+
+    it.each([
+      ['null', null],
+      ['undefined', undefined],
+      ['object', { nested: 'thing' }],
+      ['array', [1, 2, 3]],
+      ['function', () => 1],
+      ['symbol', Symbol('x')],
+      ['NaN', Number.NaN],
+      ['Infinity', Infinity],
+    ])('drops the entire sample when an attribute value is %s', (_label, badValue) => {
+      const agg = new MetricAggregator();
+      // Cast through unknown to bypass the compile-time guard — we're
+      // simulating a JS caller that sidesteps the type signature.
+      agg.record('ai.duration', 100, { weird: badValue as unknown as string });
+      expect(agg.bucketCount).toBe(0);
+      expect(agg.harvest(TEST_INTERVAL_MS)).toEqual([]);
+    });
+
+    it('drops only the offending sample, not subsequent valid ones', () => {
+      const agg = new MetricAggregator();
+      agg.record('ai.duration', 10, { model: 'claude' });
+      agg.record('ai.duration', 999, {
+        model: null as unknown as string,
+      });
+      agg.record('ai.duration', 20, { model: 'claude' });
+
+      const snapshots = agg.harvestSnapshots();
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0].sum).toBe(30);
+      expect(snapshots[0].count).toBe(2);
+    });
+  });
+
+  // CODE_REVIEW §4.22 — record() returns boolean for backpressure / validation
+  describe('record() return value (§4.22)', () => {
+    it('returns true when the sample is accepted', () => {
+      const agg = new MetricAggregator();
+      expect(agg.record('ai.duration', 10)).toBe(true);
+      expect(agg.record('ai.duration', 20, { model: 'claude' })).toBe(true);
+      expect(agg.record('ai.flag', 1, { ok: true })).toBe(true);
+    });
+
+    it('returns false when the value is non-finite', () => {
+      const agg = new MetricAggregator();
+      expect(agg.record('ai.duration', NaN)).toBe(false);
+      expect(agg.record('ai.duration', Infinity)).toBe(false);
+      expect(agg.record('ai.duration', -Infinity)).toBe(false);
+    });
+
+    it('returns false when an attribute value is invalid', () => {
+      const agg = new MetricAggregator();
+      expect(agg.record('ai.duration', 10, { x: null as unknown as string })).toBe(false);
+      expect(agg.record('ai.duration', 10, { x: { nested: 1 } as unknown as string })).toBe(false);
+      expect(agg.record('ai.duration', 10, { x: [] as unknown as string })).toBe(false);
+    });
+  });
+
+  // CODE_REVIEW §4.11 — drop counter mirrors EventBuffer.dropCount
+  describe('dropCount (§4.11)', () => {
+    it('starts at zero and increments on non-finite values', () => {
+      const agg = new MetricAggregator();
+      expect(agg.dropCount).toBe(0);
+
+      agg.record('ai.duration', NaN);
+      agg.record('ai.duration', Infinity);
+      agg.record('ai.duration', -Infinity);
+
+      expect(agg.dropCount).toBe(3);
+    });
+
+    it('increments on invalid attribute types', () => {
+      const agg = new MetricAggregator();
+
+      agg.record('ai.duration', 10, { x: null as unknown as string });
+      agg.record('ai.duration', 10, { x: { nested: 1 } as unknown as string });
+
+      expect(agg.dropCount).toBe(2);
+    });
+
+    it('does not increment on accepted samples', () => {
+      const agg = new MetricAggregator();
+
+      agg.record('ai.duration', 10);
+      agg.record('ai.duration', 20, { model: 'claude' });
+
+      expect(agg.dropCount).toBe(0);
+    });
+
+    it('drainDropCount returns current value and resets to zero', () => {
+      const agg = new MetricAggregator();
+      agg.record('ai.duration', NaN);
+      agg.record('ai.duration', NaN);
+
+      expect(agg.drainDropCount()).toBe(2);
+      expect(agg.dropCount).toBe(0);
+      expect(agg.drainDropCount()).toBe(0);
+    });
+
+    it('does not reset across harvest() calls (decoupled from harvest cycle)', () => {
+      const agg = new MetricAggregator();
+      agg.record('ai.duration', NaN);
+      agg.harvest(TEST_INTERVAL_MS);
+
+      // dropCount survives a harvest — only drainDropCount() clears it.
+      expect(agg.dropCount).toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // merge() validation guard (§MAC1)
+  // ---------------------------------------------------------------------------
+  describe('merge() validation guard (§MAC1)', () => {
+    it('skips snapshot with negative count', () => {
+      const agg = new MetricAggregator();
+      agg.merge([{ name: 'x', attributes: {}, count: -1, sum: 10, min: 1, max: 10 }]);
+      expect(agg.bucketCount).toBe(0);
+    });
+
+    it('skips snapshot with NaN sum', () => {
+      const agg = new MetricAggregator();
+      agg.merge([{ name: 'x', attributes: {}, count: 1, sum: NaN, min: 1, max: 1 }]);
+      expect(agg.bucketCount).toBe(0);
+    });
+
+    it('skips snapshot with Infinity min', () => {
+      const agg = new MetricAggregator();
+      agg.merge([{ name: 'x', attributes: {}, count: 1, sum: 5, min: -Infinity, max: 5 }]);
+      expect(agg.bucketCount).toBe(0);
+    });
+
+    it('accepts valid snapshot with count: 0 and finite values', () => {
+      const agg = new MetricAggregator();
+      agg.merge([{ name: 'x', attributes: {}, count: 0, sum: 0, min: 0, max: 0 }]);
+      expect(agg.bucketCount).toBe(1);
+    });
   });
 });

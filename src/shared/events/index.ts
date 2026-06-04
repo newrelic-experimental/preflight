@@ -6,19 +6,29 @@ export type {
   AiMessageRole,
   AiMessage,
   NrEventData,
-  SpanType,
-  SpanAttributes,
   AiAgentTaskSummary,
   AntiPatternType,
   AiAntiPattern,
   AiAgentMessage,
   AiContextReset,
 } from './types.js';
-export { createAiRequest, createAiResponse, createAiMessage } from './factory.js';
+export {
+  createAiRequest,
+  createAiResponse,
+  createAiMessage,
+  createAiAgentTaskSummary,
+  createAiAntiPattern,
+  createAiAgentMessage,
+  createAiContextReset,
+} from './factory.js';
 export type {
   CreateAiRequestParams,
   CreateAiResponseParams,
   CreateAiMessageParams,
+  CreateAiAgentTaskSummaryParams,
+  CreateAiAntiPatternParams,
+  CreateAiAgentMessageParams,
+  CreateAiContextResetParams,
 } from './factory.js';
 export {
   aiRequestToNrEvent,
@@ -28,4 +38,6 @@ export {
   aiAntiPatternToNrEvent,
   aiAgentMessageToNrEvent,
   aiContextResetToNrEvent,
+  EVENT_SCHEMA_VERSION,
 } from './serialize.js';
+export type { SerializeOptions } from './serialize.js';

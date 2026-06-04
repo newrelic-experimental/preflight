@@ -11,7 +11,7 @@ let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
   fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -90,17 +90,34 @@ describe('sendLogs', () => {
     expect(url).toBe('https://log-api.eu.newrelic.com/log/v1');
   });
 
-  it('routes to EU endpoint when collectorHost contains eu', async () => {
+  // §5.9: collectorHost containing a dot is treated as a literal host override
+  // and used verbatim in the URL — the path is per-API but the host is whatever
+  // the caller provided. This lets users route through proxies or to non-NR
+  // collectors without us second-guessing their hostname.
+  it('uses literal collectorHost as URL host when it contains a dot', async () => {
     await sendLogs(testLogs, 'us01xxUSKEY', {
       ...baseOptions,
       collectorHost: 'collector.eu01.nr-data.net',
     });
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://log-api.eu.newrelic.com/log/v1');
+    expect(url).toBe('https://collector.eu01.nr-data.net/log/v1');
   });
 
-  it('routes to staging endpoint when collectorHost contains staging', async () => {
+  it('uses literal collectorHost as URL host when it contains a port', async () => {
+    await sendLogs(testLogs, 'us01xxUSKEY', {
+      ...baseOptions,
+      collectorHost: 'my-proxy.example.com:8443',
+    });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe('https://my-proxy.example.com:8443/log/v1');
+  });
+
+  // §5.9: bare 'staging' keyword (no dot) is still routed via region detection
+  // to NR's per-service staging hostnames — the literal-hostname override only
+  // kicks in for FQDN-shaped values. This preserves NR-internal staging usage.
+  it('routes bare staging keyword to NR staging log endpoint', async () => {
     await sendLogs(testLogs, 'us01xxUSKEY', {
       ...baseOptions,
       collectorHost: 'staging',

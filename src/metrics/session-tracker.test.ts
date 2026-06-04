@@ -6,7 +6,7 @@ import { MetricAggregator } from '../shared/index.js';
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -345,20 +345,20 @@ describe('SessionTracker', () => {
       const aggregator = new MetricAggregator();
       tracker.emitMetrics(aggregator);
 
-      const metrics = aggregator.harvest();
+      const metrics = aggregator.harvest(60_000);
 
       // Should have per-tool call_count, duration_ms, success_rate + session metrics
       const names = metrics.map((m) => m.name);
 
       // Check that per-tool metrics were emitted
-      expect(names).toContain('ai.tool.call_count.count');
-      expect(names).toContain('ai.tool.duration_ms.count');
-      expect(names).toContain('ai.tool.success_rate.count');
+      expect(names).toContain('ai.tool.call_count');
+      expect(names).toContain('ai.tool.duration_ms');
+      expect(names).toContain('ai.tool.success_rate');
 
       // Check that session metrics were emitted
-      expect(names).toContain('ai.session.duration_ms.count');
-      expect(names).toContain('ai.session.unique_files_read.count');
-      expect(names).toContain('ai.session.unique_files_written.count');
+      expect(names).toContain('ai.session.duration_ms');
+      expect(names).toContain('ai.session.unique_files_read');
+      expect(names).toContain('ai.session.unique_files_written');
     });
 
     it('emits individual durations so aggregator count/sum/min/max reflect the real distribution', () => {
@@ -371,20 +371,20 @@ describe('SessionTracker', () => {
 
       const aggregator = new MetricAggregator();
       tracker.emitMetrics(aggregator);
-      const metrics = aggregator.harvest();
+      const metrics = aggregator.harvest(60_000);
 
-      const durationMetrics = metrics.filter(
-        (m) => m.name.startsWith('ai.tool.duration_ms') && m.attributes?.tool === 'Read',
+      const durationMetric = metrics.find(
+        (m) => m.name === 'ai.tool.duration_ms' && m.attributes?.tool === 'Read',
       );
-      const byName = Object.fromEntries(durationMetrics.map((m) => [m.name, m.value]));
-
+      // harvest() now emits a single summary metric with { count, sum, min, max }
+      const v = durationMetric?.value as { count: number; sum: number; min: number; max: number };
       // count = 3 (one record() call per duration, not one call with the mean)
-      expect(byName['ai.tool.duration_ms.count']).toBe(3);
+      expect(v.count).toBe(3);
       // sum = 300 (actual total, not mean * 1)
-      expect(byName['ai.tool.duration_ms.sum']).toBe(300);
+      expect(v.sum).toBe(300);
       // min and max reflect the actual distribution
-      expect(byName['ai.tool.duration_ms.min']).toBe(10);
-      expect(byName['ai.tool.duration_ms.max']).toBe(200);
+      expect(v.min).toBe(10);
+      expect(v.max).toBe(200);
     });
   });
 });

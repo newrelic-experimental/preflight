@@ -1,8 +1,55 @@
 import type { ModelPricing } from './pricing.js';
 
 // ---------------------------------------------------------------------------
+// Family-name aliases → current-generation key
+//
+// When a caller passes a family name (e.g. "claude-opus-4"), they almost
+// always mean "the current generation of that family". Without an explicit
+// alias, the prefix-match heuristic in resolveModelPricing() prefers longer
+// keys (dated suffixes like "-20250514") and silently returns LEGACY pricing,
+// e.g. claude-opus-4 → claude-opus-4-20250514 ($15/$75) instead of the
+// current claude-opus-4-7 ($5/$25). That's a 3× cost overestimate.
+//
+// Resolution order in resolveModelPricing(): exact → alias → forward-prefix
+// → reverse-prefix → null.
+// ---------------------------------------------------------------------------
+export const MODEL_ALIASES: Record<string, string> = {
+  // Anthropic Claude families
+  'claude-opus-4': 'claude-opus-4-7',
+  'claude-sonnet-4': 'claude-sonnet-4-6',
+  'claude-haiku-4': 'claude-haiku-4-5',
+  'claude-haiku-3-5': 'claude-haiku-3-5-20241022',
+
+  // Google Gemini current-gen shortcuts
+  'gemini-3.1-pro': 'gemini-3.1-pro-preview',
+  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
+  'gemini-3-flash': 'gemini-3-flash-preview',
+  // Gemini family shortcuts (§PD4): without these, bare family queries like
+  // 'gemini-2.5' return null (gpt-style .x suffixes don't match -\d prefix
+  // heuristic) or non-deterministically pick between pro/flash.
+  'gemini-2.5': 'gemini-2.5-pro',
+  'gemini-2.0': 'gemini-2.0-flash',
+
+  // OpenAI family shortcuts (§PD4): 'gpt-5' has no exact key and the .x
+  // suffix prevents the forward-prefix heuristic from matching.
+  'gpt-5': 'gpt-5.5',
+};
+
+// ---------------------------------------------------------------------------
 // Built-in pricing table — USD per million tokens
-// Sources: Anthropic, Google, OpenAI public pricing pages (May 2026)
+//
+// Rates last verified against vendor public pricing pages on 2026-05-20:
+//   - Anthropic   https://www.anthropic.com/pricing
+//   - Google      https://cloud.google.com/vertex-ai/generative-ai/pricing
+//   - OpenAI      https://openai.com/api/pricing/
+//   - Cohere      https://cohere.com/pricing
+//   - Mistral     https://mistral.ai/pricing
+//   - Bedrock     https://aws.amazon.com/bedrock/pricing/
+//
+// When updating rates, bump the date above so consumers can tell at a glance
+// how stale the built-in table is. Pricing changes on these pages are usually
+// announced; the date is the verification timestamp, not a guarantee that
+// the rate hasn't shifted since.
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
@@ -23,6 +70,18 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheCreationPerMTok: 3.75,
     contextWindow: 1_000_000,
   },
+  // Dateless current-gen entry — MODEL_ALIASES['claude-haiku-4'] routes here.
+  // Matches the opus/sonnet convention: alias → dateless key → dated legacy key.
+  // Update this entry when Haiku 4.x rates change; the dated entry below is
+  // retained only for historical-cost backfill (§PD3).
+  'claude-haiku-4-5': {
+    inputPerMTok: 1,
+    outputPerMTok: 5,
+    thinkingPerMTok: 5,
+    cacheReadPerMTok: 0.1,
+    cacheCreationPerMTok: 1.25,
+    contextWindow: 200_000,
+  },
   'claude-haiku-4-5-20251001': {
     inputPerMTok: 1,
     outputPerMTok: 5,
@@ -33,6 +92,13 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Anthropic (legacy Claude 4 generation) ----
+  // CODE_REVIEW §2.12 — these legacy entries share input/output/cache rates
+  // with their current-generation counterparts, but `contextWindow` differs
+  // (200K legacy vs 1M current). They are NOT alias candidates: the cost
+  // calculations downstream don't use contextWindow, but downstream tooling
+  // (e.g. context-fit checks, dashboard filters by window size) does. Keep
+  // the entries explicit. Family-name routing (e.g. `claude-opus-4` →
+  // current generation) is handled by MODEL_ALIASES above.
   'claude-opus-4-6': {
     inputPerMTok: 5,
     outputPerMTok: 25,
@@ -57,6 +123,13 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheCreationPerMTok: 6.25,
     contextWindow: 200_000,
   },
+  // WARNING: this key uses a version-number suffix (-1) not a date suffix.
+  // The reverse-prefix algorithm strips only 8-digit date suffixes, so a
+  // future model named 'claude-opus-4-10' (or 'claude-opus-4-100') would
+  // match this entry via reverse-prefix because
+  // 'claude-opus-4-10'.startsWith('claude-opus-4-1') is true (§PD5).
+  // If Anthropic releases a claude-opus-4-10 model, add an explicit alias
+  // before that model key appears in the table.
   'claude-opus-4-1': {
     inputPerMTok: 15,
     outputPerMTok: 75,
@@ -134,7 +207,15 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 1_000_000,
   },
 
-  // ---- Google Gemini 2.0 (deprecated — shutting down June 1 2026) ----
+  // ---- Google Gemini 2.0 ----
+  // Retained past Google's published 2026-06-01 deprecation date for
+  // historical-cost backfill: events recorded against `gemini-2.0-flash`
+  // before the cutover may still flow through the harvest scheduler from
+  // long-running consumer apps that haven't migrated yet, and we'd rather
+  // they get a correct cost figure than fall through to the unknown-model
+  // zero rate. Rate values are the last published Google pricing as of
+  // that date and will be removed in a future release after the migration
+  // window closes (CODE_REVIEW §2.13).
   'gemini-2.0-flash': {
     inputPerMTok: 0.1,
     outputPerMTok: 0.4,
@@ -165,7 +246,10 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 30,
     cacheReadPerMTok: 0.5,
     contextWindow: 1_000_000,
+    // OpenAI long-context pricing is marginal: only tokens above 270k are
+    // billed at the tier rate — not the entire request (§PD2).
     tierThreshold: 270_000,
+    tierMode: 'marginal',
     tierInputPerMTok: 10,
     tierOutputPerMTok: 45,
   },
@@ -175,6 +259,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.25,
     contextWindow: 1_000_000,
     tierThreshold: 270_000,
+    tierMode: 'marginal',
     tierInputPerMTok: 5,
     tierOutputPerMTok: 22.5,
   },
@@ -220,7 +305,11 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   o1: {
     inputPerMTok: 15,
     outputPerMTok: 60,
-    thinkingPerMTok: 60,
+    // No thinkingPerMTok: OpenAI bills reasoning tokens as part of
+    // completion_tokens at outputPerMTok. The extractor sets thinkingTokens
+    // from completion_tokens_details.reasoning_tokens as an informational
+    // breakdown, but those tokens are already counted in outputTokens, so
+    // a separate thinkingPerMTok rate would double-bill (§PD1).
     contextWindow: 200_000,
   },
   'o1-mini': {
@@ -236,7 +325,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   o3: {
     inputPerMTok: 10,
     outputPerMTok: 40,
-    thinkingPerMTok: 40,
+    // No thinkingPerMTok — see 'o1' comment above (§PD1).
     contextWindow: 200_000,
   },
   'o3-mini': {
@@ -262,6 +351,9 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
 
   // ---- AWS Bedrock (Converse API pricing for on-demand) ----
   // Current Claude generation via Bedrock
+  // NOTE (§PR2): cache pricing for claude-opus-4-7 and claude-sonnet-4-6 on
+  // Bedrock has not been publicly documented as of 2026-06-03. Rates below are
+  // omitted until verified against the AWS Bedrock pricing page.
   'anthropic.claude-opus-4-7': {
     inputPerMTok: 5,
     outputPerMTok: 25,
@@ -278,9 +370,12 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 200_000,
   },
   // Legacy Claude models via Bedrock cross-region inference
+  // Cache rates verified against AWS Bedrock pricing page (2026-06-03) (§PR2).
   'anthropic.claude-3-5-sonnet-20241022-v2:0': {
     inputPerMTok: 3,
     outputPerMTok: 15,
+    cacheReadPerMTok: 0.6,
+    cacheCreationPerMTok: 7.5,
     contextWindow: 200_000,
   },
   'anthropic.claude-3-5-haiku-20241022-v1:0': {
@@ -336,17 +431,17 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   'mistral-large-latest': {
     inputPerMTok: 2,
     outputPerMTok: 6,
-    contextWindow: 131_000,
+    contextWindow: 131_072,
   },
   'mistral-small-latest': {
     inputPerMTok: 0.1,
     outputPerMTok: 0.3,
-    contextWindow: 131_000,
+    contextWindow: 131_072,
   },
   'mistral-nemo': {
     inputPerMTok: 0.15,
     outputPerMTok: 0.15,
-    contextWindow: 131_000,
+    contextWindow: 131_072,
   },
   // ---- Mistral (legacy — deprecated March 2025) ----
   'open-mistral-7b': {
@@ -376,14 +471,18 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 0.6,
     contextWindow: 128_000,
   },
+  // CODE_REVIEW §2.15 — `command` and `command-light` are deprecated (2024)
+  // but retained for historical-cost backfill of consumer apps that haven't
+  // migrated. Context window is 4096 tokens, not 4000 — the round-number
+  // approximation in the original entry was off by 96 tokens.
   command: {
     inputPerMTok: 1,
     outputPerMTok: 2,
-    contextWindow: 4_000,
+    contextWindow: 4_096,
   },
   'command-light': {
     inputPerMTok: 0.3,
     outputPerMTok: 0.6,
-    contextWindow: 4_000,
+    contextWindow: 4_096,
   },
 };

@@ -30,7 +30,7 @@ jest.mock('@opentelemetry/resources', () => ({
 }));
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   jest.clearAllMocks();
 });
 
@@ -203,6 +203,13 @@ describe('OtlpEventBridge', () => {
     >;
     const emitMock = providerInstance._emitMock as jest.Mock;
     expect(emitMock).toHaveBeenCalledTimes(3);
+
+    // Verify LogRecord shape for the first event (§TR9)
+    const firstCall = emitMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(firstCall.severityText).toBe('INFO');
+    expect(firstCall.body).toBe('AiToolCall');
+    expect(firstCall.timestamp).toBe(1000);
+    expect(firstCall.attributes).toMatchObject({ eventType: 'AiToolCall', timestamp: 1000 });
   });
 
   // ---------------------------------------------------------------------------
@@ -217,5 +224,71 @@ describe('OtlpEventBridge', () => {
     const events: NrEventData[] = [{ eventType: 'AiToolCall' }];
 
     expect(() => bridge.sendEvents(events)).not.toThrow();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 12-16. CODE_REVIEW §9.9 / §5.11 — endpoint scheme enforcement
+  // ---------------------------------------------------------------------------
+  describe('endpoint scheme enforcement (CODE_REVIEW §9.9 / §5.11)', () => {
+    it('accepts https:// without warning', () => {
+      expect(
+        () =>
+          new OtlpEventBridge({
+            endpoint: 'https://otlp.nr-data.net',
+            appName: 'test-app',
+          }),
+      ).not.toThrow();
+      const warnedCleartext = stderrSpy.mock.calls.some((call: unknown[]) =>
+        String(call[0] ?? '').includes('plain http://'),
+      );
+      expect(warnedCleartext).toBe(false);
+    });
+
+    it('accepts http://localhost without warning (loopback exception)', () => {
+      expect(
+        () =>
+          new OtlpEventBridge({
+            endpoint: 'http://localhost:4318',
+            appName: 'test-app',
+          }),
+      ).not.toThrow();
+      const warnedCleartext = stderrSpy.mock.calls.some((call: unknown[]) =>
+        String(call[0] ?? '').includes('plain http://'),
+      );
+      expect(warnedCleartext).toBe(false);
+    });
+
+    it('emits a cleartext warning for http:// to a non-loopback host', () => {
+      expect(
+        () =>
+          new OtlpEventBridge({
+            endpoint: 'http://internal-collector.example.com:4318',
+            appName: 'test-app',
+          }),
+      ).not.toThrow();
+      const stderrText = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
+      expect(stderrText).toMatch(/plain http:\/\//);
+      expect(stderrText).toMatch(/internal-collector\.example\.com/);
+    });
+
+    it('throws on a non-http(s) scheme', () => {
+      expect(
+        () =>
+          new OtlpEventBridge({
+            endpoint: 'ftp://collector.example.com',
+            appName: 'test-app',
+          }),
+      ).toThrow(/OTLP endpoint must use http\(s\)/);
+    });
+
+    it('throws on a malformed endpoint URL', () => {
+      expect(
+        () =>
+          new OtlpEventBridge({
+            endpoint: 'not a url',
+            appName: 'test-app',
+          }),
+      ).toThrow(/invalid OTLP endpoint URL/);
+    });
   });
 });

@@ -17,11 +17,17 @@ End-to-end testing guide for both the **New Relic (cloud/staging)** and **local*
 | Claude Code (latest)                                                     | Open it and confirm it launches |
 | **Cloud path only:** New Relic account with a license key + user API key | See below                       |
 
-**New Relic keys (cloud path only — use staging keys):**
+**New Relic keys (cloud path only):**
 
-- **License key** — [staging-one.newrelic.com](https://staging-one.newrelic.com) → top-right menu → **API keys** → create a key of type **License**. Looks like a long hex string ending in `NRAL`.
-- **User API key** — same screen, create a key of type **User**. Starts with `NRAK-`. **Must be a staging key** — production keys return 401 against the staging API.
-- **Account ID** — visible in the staging URL: `https://staging-one.newrelic.com/nr1-core?account=`**`12345`**
+| Key              | Type to create | Looks like                       | Used for                                                      |
+| ---------------- | -------------- | -------------------------------- | ------------------------------------------------------------- |
+| **License key**  | License        | Long hex string ending in `NRAL` | Sending telemetry into NR (ingest). **Not** the User API key. |
+| **User API key** | User           | Starts with `NRAK-`              | Deploying dashboards and alerts via the deploy scripts.       |
+| **Account ID**   | —              | A number, e.g. `12345`           | Visible in the NR URL: `?account=12345`                       |
+
+**This guide uses staging.** Create all three from [staging-one.newrelic.com](https://staging-one.newrelic.com) → top-right menu → **API keys**. Production keys return 401 against the staging API — don't mix them.
+
+**Using a production account instead?** Everything works the same — use your prod license key and prod account ID, and omit `--staging` from every deploy command in this guide. The MCP server itself has no staging/prod mode; it simply sends to whichever environment the license key belongs to.
 
 ---
 

@@ -10,7 +10,7 @@ let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
   fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -25,6 +25,7 @@ const testMetrics: NrMetric[] = [
     type: 'count',
     value: 500,
     timestamp: Date.now(),
+    intervalMs: 60_000,
     attributes: { model: 'claude-sonnet-4', provider: 'anthropic' },
   },
 ];
@@ -47,11 +48,51 @@ describe('sendMetrics', () => {
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe('https://metric-api.newrelic.com/metric/v1');
 
-    // Decompress and verify payload structure
+    // Decompress and verify payload structure. CODE_REVIEW §4.9: the
+    // wire payload renames `intervalMs` to `'interval.ms'` per NR Metric
+    // API contract; verify both shape and that the rename took effect.
     const body = init!.body as Buffer;
     const decompressed = await gunzipAsync(body);
     const payload = JSON.parse(decompressed.toString());
-    expect(payload).toEqual([{ metrics: testMetrics }]);
+    expect(payload).toHaveLength(1);
+    expect(payload[0].metrics).toHaveLength(2);
+    expect(payload[0].metrics[0]).toMatchObject({
+      name: 'ai.request.duration',
+      type: 'gauge',
+      value: 1234,
+    });
+    expect(payload[0].metrics[1]).toMatchObject({
+      name: 'ai.request.tokens',
+      type: 'count',
+      value: 500,
+      'interval.ms': 60_000,
+      attributes: { model: 'claude-sonnet-4', provider: 'anthropic' },
+    });
+    // The camelCase TS field should NOT appear on the wire.
+    expect(payload[0].metrics[1]).not.toHaveProperty('intervalMs');
+  });
+
+  // CODE_REVIEW §4.9 — summary metric round-trips with structured value
+  it('serializes a summary metric with structured value and interval.ms', async () => {
+    const summaryMetric: NrMetric = {
+      name: 'ai.duration',
+      type: 'summary',
+      timestamp: Date.now(),
+      intervalMs: 5_000,
+      value: { count: 3, sum: 35, min: 5, max: 20 },
+      attributes: { model: 'claude' },
+    };
+
+    await sendMetrics([summaryMetric], 'us01xxTESTKEY', baseOptions);
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const decompressed = await gunzipAsync(init!.body as Buffer);
+    const payload = JSON.parse(decompressed.toString());
+    const m = payload[0].metrics[0];
+    expect(m.type).toBe('summary');
+    expect(m.value).toEqual({ count: 3, sum: 35, min: 5, max: 20 });
+    expect(m['interval.ms']).toBe(5_000);
+    expect(m).not.toHaveProperty('intervalMs');
   });
 
   // ---------------------------------------------------------------------------

@@ -159,7 +159,7 @@ export class OtlpReceiver {
         return;
       }
       logger.error('OTLP receiver error', {
-        message: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? err.message : String(err),
       });
       res.writeHead(500);
       res.end();

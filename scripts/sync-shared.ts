@@ -92,7 +92,14 @@ if (existsSync(sharedDst)) {
   rmSync(sharedDst, { recursive: true, force: true });
 }
 
-cpSync(srcDir, sharedDst, { recursive: true });
+// Skip *.property.test.ts files — they require fast-check which is an upstream
+// devDependency not present here. The standard *.test.ts files cover the same
+// behaviour for consuming-repo purposes; property tests are most valuable
+// during active development of the shared module itself.
+cpSync(srcDir, sharedDst, {
+  recursive: true,
+  filter: (src) => !src.endsWith('.property.test.ts'),
+});
 
 const fileCount = walk(sharedDst).length;
 log(`Synced ${fileCount} file${fileCount === 1 ? '' : 's'}: ${srcDir} -> ${sharedDst}`);

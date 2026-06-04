@@ -108,7 +108,7 @@ describe('DashboardServer', () => {
   // and Node didn't re-emit because the once listener consumed the event —
   // production failures were invisible.
   it('logs server errors that fire after start() resolves (F-011 regression)', async () => {
-    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       server = new DashboardServer({
         port: 0,
@@ -131,11 +131,11 @@ describe('DashboardServer', () => {
 });
 
 describe('DashboardServer staticDir bootstrap warning (F-036)', () => {
-  let stderrSpy: jest.SpiedFunction<typeof process.stderr.write>;
+  let stderrSpy: jest.SpiedFunction<typeof console.error>;
   let server: DashboardServer | undefined;
 
   beforeEach(() => {
-    stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {

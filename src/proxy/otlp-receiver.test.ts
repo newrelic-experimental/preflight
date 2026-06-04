@@ -13,7 +13,7 @@ import type { OtlpReceiverOptions } from './otlp-receiver.js';
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -649,9 +649,7 @@ describe('error message sanitization (F-103)', () => {
       );
       expect(statusCode).toBe(500);
 
-      const logged = (stderrSpy.mock.calls as Array<[string | Uint8Array]>)
-        .map(([arg]) => (typeof arg === 'string' ? arg : Buffer.from(arg).toString()))
-        .join('');
+      const logged = (stderrSpy.mock.calls as Array<[string]>).map(([arg]) => String(arg)).join('');
 
       expect(logged).toContain(errorMessage);
       for (const frame of stackFrames) {
