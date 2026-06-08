@@ -3,6 +3,7 @@ import { fetchGitEfficiency, fetchGitEfficiencyRepos, qk } from '../api/client';
 import { Kpi } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { EmptyState } from '../components/EmptyState';
+import { GeoBanner } from '../components/GeoBanner';
 
 interface GitSuggestion {
   readonly severity: 'info' | 'warning' | 'critical';
@@ -268,6 +269,7 @@ export function GitEfficiency(): JSX.Element {
 
   return (
     <section>
+      <GeoBanner theme="git" />
       <header className="flex items-baseline justify-between mb-4">
         <div>
           <h1 className="text-xl font-semibold gradient-text">Git Efficiency</h1>

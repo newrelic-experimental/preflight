@@ -203,6 +203,7 @@ async function main(): Promise<void> {
   let sessionSpan: SessionSpan | undefined;
   let taskSpanTracker: TaskSpanTracker | undefined;
   let dashboardServer: DashboardServer | undefined;
+  let liveSessionRegistry: LiveSessionRegistry | undefined;
   let alertEvaluationInterval: NodeJS.Timeout | undefined;
   let alertRulesWatcher: import('node:fs').FSWatcher | undefined;
   let alertRulesWatchTimer: NodeJS.Timeout | undefined;
@@ -231,6 +232,7 @@ async function main(): Promise<void> {
         alertRulesWatcher = undefined;
       }
       eventProcessor?.stop();
+      liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
         dashboardServer ? dashboardServer.stop() : Promise.resolve(),
@@ -330,7 +332,8 @@ async function main(): Promise<void> {
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
     const apiFailureTracker = new ApiFailureTracker();
-    const liveSessionRegistry = new LiveSessionRegistry();
+    liveSessionRegistry = new LiveSessionRegistry();
+    liveSessionRegistry.startSampling();
     const turnCostAttributor = new TurnCostAttributor();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -586,6 +589,7 @@ async function main(): Promise<void> {
           toolCallBuffer: toolCallBufferAccessor,
           liveSessionRegistry,
           gitEfficiencyTracker,
+          concurrencyTracker: liveSessionRegistry,
         },
         alertEngine,
         alertLog,
@@ -710,7 +714,7 @@ async function main(): Promise<void> {
         sessionTracker.recordToolCall(record);
         taskDetector.recordToolCall(record);
         if (record.sessionId) {
-          liveSessionRegistry.touch(record.sessionId, record.cwd as string | undefined);
+          liveSessionRegistry!.touch(record.sessionId, record.cwd as string | undefined);
         }
 
         if (config.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {

@@ -1,5 +1,4 @@
 import { Home, Clock, TrendingUp, ShieldCheck, GitBranch, Sun, Moon } from 'lucide-react';
-import { StatusIndicator } from './StatusIndicator';
 import { useLiveAlerts } from '../hooks/useLiveAlerts';
 import type { AlertEvent } from '../store/liveStore';
 import type { Theme } from '../hooks/useTheme';
@@ -85,18 +84,46 @@ export function Sidebar({
     <aside className="w-52 bg-bg-deep border-r border-border-subtle p-4 flex flex-col">
       {/* Logo + brand */}
       <div className="flex items-center gap-2 mb-1">
-        <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+          {/* Observatory dome */}
           <path
-            d="M2 10 L6 4 L10 14 L14 6 L18 10"
-            stroke="currentColor"
-            strokeWidth="2"
+            d="M5 18 L5 14 Q5 8 12 6 Q19 8 19 14 L19 18"
             fill="none"
+            stroke="url(#logoGrad)"
+            strokeWidth="1.8"
             strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-accent-green"
           />
+          {/* Base */}
+          <line
+            x1="3"
+            y1="18"
+            x2="21"
+            y2="18"
+            stroke="url(#logoGrad)"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+          {/* Telescope */}
+          <line
+            x1="12"
+            y1="10"
+            x2="17"
+            y2="4"
+            stroke="url(#logoGrad)"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+          {/* Star */}
+          <circle cx="18" cy="3" r="1" fill="#ffd166" />
+          <defs>
+            <linearGradient id="logoGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#9945ff" />
+              <stop offset="50%" stopColor="#e94e8a" />
+              <stop offset="100%" stopColor="#1ce783" />
+            </linearGradient>
+          </defs>
         </svg>
-        <span className="text-ink-base font-semibold text-sm tracking-tight">observatory</span>
+        <span className="font-semibold text-sm tracking-tight gradient-text">observatory</span>
       </div>
       <div className="text-ink-muted text-[10px] tracking-wide mb-6">
         local &middot; single-user
@@ -119,20 +146,25 @@ export function Sidebar({
       </nav>
 
       {/* Footer */}
-      <div className="mt-auto pt-4 border-t border-border-subtle flex items-center justify-between">
-        {connected ? (
-          <StatusIndicator tone="good" label="connected" />
-        ) : (
-          <StatusIndicator tone="warn" label="reconnecting" />
-        )}
-        <button
-          type="button"
-          onClick={onToggleTheme}
-          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          className="p-1.5 rounded-lg text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors"
-        >
-          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-        </button>
+      <div className="mt-auto pt-3 border-t border-border-subtle">
+        <div className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-surface-3">
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`w-2 h-2 rounded-full ${connected ? 'bg-accent-green animate-pulse' : 'bg-accent-amber'}`}
+            />
+            <span className="text-[10px] text-ink-subtle tracking-wide">
+              {connected ? 'live' : 'reconnecting'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="p-1 rounded text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors"
+          >
+            {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
+          </button>
+        </div>
       </div>
     </aside>
   );

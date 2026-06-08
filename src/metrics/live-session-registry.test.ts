@@ -69,4 +69,63 @@ describe('LiveSessionRegistry', () => {
     expect(reg.getLiveSessions()).toEqual([]);
     expect(reg.isLive('sess-a')).toBe(false);
   });
+
+  describe('concurrency tracking', () => {
+    it('tracks peak concurrent sessions via touch()', () => {
+      const reg = new LiveSessionRegistry(5000);
+      reg.touch('a');
+      reg.touch('b');
+      reg.touch('c');
+      expect(reg.getPeakConcurrent()).toBe(3);
+    });
+
+    it('getConcurrentCount() returns current live count', () => {
+      const reg = new LiveSessionRegistry(5000);
+      reg.touch('a');
+      reg.touch('b');
+      expect(reg.getConcurrentCount()).toBe(2);
+      jest.advanceTimersByTime(6000);
+      expect(reg.getConcurrentCount()).toBe(0);
+    });
+
+    it('peak persists even after sessions go stale', () => {
+      const reg = new LiveSessionRegistry(5000);
+      reg.touch('a');
+      reg.touch('b');
+      reg.touch('c');
+      jest.advanceTimersByTime(6000);
+      expect(reg.getConcurrentCount()).toBe(0);
+      expect(reg.getPeakConcurrent()).toBe(3);
+    });
+
+    it('startSampling() records time series entries', () => {
+      const reg = new LiveSessionRegistry(60_000);
+      reg.touch('a');
+      reg.startSampling();
+      jest.advanceTimersByTime(30_000);
+      const ts = reg.getConcurrencyTimeSeries();
+      expect(ts.length).toBe(1);
+      expect(ts[0]!.count).toBe(1);
+      reg.stopSampling();
+    });
+
+    it('stopSampling() halts recording', () => {
+      const reg = new LiveSessionRegistry(60_000);
+      reg.startSampling();
+      jest.advanceTimersByTime(30_000);
+      reg.stopSampling();
+      jest.advanceTimersByTime(60_000);
+      expect(reg.getConcurrencyTimeSeries().length).toBe(1);
+    });
+
+    it('time series caps at max buffer size', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('a');
+      reg.startSampling();
+      jest.advanceTimersByTime(30_000 * 2900);
+      const ts = reg.getConcurrencyTimeSeries();
+      expect(ts.length).toBeLessThanOrEqual(2880);
+      reg.stopSampling();
+    });
+  });
 });

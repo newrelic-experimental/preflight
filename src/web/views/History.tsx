@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { EmptyState } from '../components/EmptyState';
+import { ActivityHeatmap } from '../components/ActivityHeatmap';
+import { GeoBanner } from '../components/GeoBanner';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -17,6 +20,8 @@ import {
   fetchSessionsList,
   fetchCostPerOutcome,
   fetchPersonalCoach,
+  fetchActivityHeatmap,
+  fetchConcurrencyHistory,
   qk,
 } from '../api/client';
 import { shortToolName } from '../lib/format';
@@ -39,6 +44,15 @@ interface SessionRow {
   readonly efficiencyScore?: number | null;
   readonly toolCallCount?: number;
   readonly toolBreakdown?: Record<string, number>;
+}
+
+interface HistoryHeatmapResponse {
+  readonly days: Array<{ date: string; count: number }>;
+  readonly maxCount: number;
+}
+
+interface ConcurrencyHistoryResponse {
+  readonly dailyPeaks: Array<{ date: string; peak: number }>;
 }
 
 interface OutcomeBucket {
@@ -132,6 +146,16 @@ export function History(): JSX.Element {
     queryFn: () => fetchPersonalCoach() as Promise<PersonalCoachResult>,
   });
 
+  const activityGrid = useQuery<HistoryHeatmapResponse>({
+    queryKey: qk.activityHeatmap('history'),
+    queryFn: () => fetchActivityHeatmap('history', 12) as Promise<HistoryHeatmapResponse>,
+  });
+
+  const concurrencyHistory = useQuery<ConcurrencyHistoryResponse>({
+    queryKey: qk.concurrencyHistory(30),
+    queryFn: () => fetchConcurrencyHistory(30) as Promise<ConcurrencyHistoryResponse>,
+  });
+
   // API returns newest-first; reverse for chronological left-to-right chart rendering
   const weeklyChronological = [...(weekly.data ?? [])].reverse();
   const weeklyData = weeklyChronological.map((w) => {
@@ -145,9 +169,12 @@ export function History(): JSX.Element {
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(sessions.data ?? []);
   const topTools = aggregateToolUsage(sessions.data ?? []);
+  const concurrencyData = concurrencyHistory.data?.dailyPeaks ?? [];
+  const hasConcurrencyData = concurrencyData.some((d) => d.peak > 0);
 
   return (
     <section>
+      <GeoBanner theme="history" />
       <h1 className="text-xl font-semibold gradient-text mb-4">History</h1>
 
       <div className="grid grid-cols-2 gap-3">
@@ -368,6 +395,31 @@ export function History(): JSX.Element {
         </Panel>
       </div>
 
+      <div className="grid grid-cols-2 gap-3 mt-3">
+        {activityGrid.data && activityGrid.data.days.length > 0 && (
+          <Panel title="Activity · last 12 weeks">
+            <ActivityHeatmap
+              variant="grid"
+              buckets={[]}
+              maxCount={activityGrid.data.maxCount}
+              days={activityGrid.data.days}
+              ariaLabel="Daily activity heatmap for the last 4 weeks"
+            />
+          </Panel>
+        )}
+
+        {hasConcurrencyData && (
+          <div className="glass-card p-4 flex flex-col">
+            <div className="text-[11px] text-ink-muted uppercase tracking-wider font-medium mb-3">
+              Peak sessions · all-time: {Math.max(...concurrencyData.map((d) => d.peak))}
+            </div>
+            <div className="flex-1 flex items-end justify-center">
+              <ConcurrencyBlockChart data={concurrencyData} />
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="mt-3">
         <CoachCard data={coach.data} />
       </div>
@@ -563,4 +615,86 @@ export function aggregateToolUsage(rows: SessionRow[]): Array<{ tool: string; co
     .map(([tool, count]) => ({ tool, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
+}
+
+const BLOCK_COLOR = 'rgba(0, 212, 170, 0.7)';
+const BLOCK_COLOR_PEAK_CELL = 'rgba(0, 212, 170, 1)';
+
+function ConcurrencyBlockChart({
+  data,
+}: {
+  data: Array<{ date: string; peak: number }>;
+}): JSX.Element {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+  const maxPeak = Math.max(...data.map((d) => d.peak), 1);
+
+  const blockSize = 10;
+  const blockGap = 2;
+  const colGap = 3;
+  const colWidth = blockSize + colGap;
+  const chartHeight = maxPeak * (blockSize + blockGap);
+  const chartWidth = data.length * colWidth;
+
+  return (
+    <div className="relative">
+      <svg
+        width="100%"
+        height={chartHeight}
+        role="img"
+        aria-label={`Peak concurrent sessions over ${data.length} days`}
+        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+        preserveAspectRatio="xMidYMax meet"
+        onMouseLeave={() => setTooltip(null)}
+      >
+        {data.map((day, colIdx) => {
+          const blocks: JSX.Element[] = [];
+          for (let b = 0; b < day.peak; b++) {
+            const isMax = day.peak === maxPeak;
+            blocks.push(
+              <rect
+                key={`${colIdx}-${b}`}
+                x={colIdx * colWidth}
+                y={chartHeight - (b + 1) * (blockSize + blockGap)}
+                width={blockSize}
+                height={blockSize}
+                rx={1}
+                fill={isMax ? BLOCK_COLOR_PEAK_CELL : BLOCK_COLOR}
+                className="heatmap-cell"
+                style={{ animationDelay: `${colIdx * 10 + b * 8}ms` }}
+              />,
+            );
+          }
+          return (
+            <g
+              key={colIdx}
+              onMouseEnter={() => {
+                setTooltip({
+                  x: colIdx * colWidth,
+                  y: chartHeight - day.peak * (blockSize + blockGap) - 14,
+                  text: `${day.date.slice(5)}: ${day.peak}`,
+                });
+              }}
+            >
+              <rect
+                x={colIdx * colWidth}
+                y={0}
+                width={colWidth}
+                height={chartHeight}
+                fill="transparent"
+              />
+              {blocks}
+            </g>
+          );
+        })}
+      </svg>
+      {tooltip && (
+        <div
+          className="absolute px-1.5 py-0.5 bg-bg-elevated text-[10px] text-ink-default rounded shadow-md pointer-events-none whitespace-nowrap"
+          style={{ left: tooltip.x, top: Math.max(0, tooltip.y) }}
+        >
+          {tooltip.text}
+        </div>
+      )}
+    </div>
+  );
 }

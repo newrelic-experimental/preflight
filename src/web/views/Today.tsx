@@ -7,6 +7,9 @@ import { AnimatedCard } from '../components/AnimatedCard';
 import { Sparkline } from '../components/Sparkline';
 import { EmptyState } from '../components/EmptyState';
 import { GanttTimeline } from '../components/GanttTimeline';
+import { ConcurrencyIndicator, type ConcurrencyData } from '../components/ConcurrencyIndicator';
+import { ActivityHeatmap } from '../components/ActivityHeatmap';
+import { GeoBanner } from '../components/GeoBanner';
 import {
   fetchRecentAlerts,
   fetchCost,
@@ -16,6 +19,8 @@ import {
   fetchAntiPatterns,
   fetchQualityProxy,
   fetchToolSelectionScore,
+  fetchConcurrency,
+  fetchActivityHeatmap,
   NotFoundError,
   qk,
 } from '../api/client';
@@ -40,6 +45,13 @@ const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
 interface CostApiResponse {
   readonly cost: { readonly sessionTotalCostUsd?: number | null; readonly model?: string | null };
   readonly forecast: { readonly forecastEndOfDayUsd?: number | null } | null;
+}
+
+interface HeatmapApiResponse {
+  readonly buckets: number[];
+  readonly bucketSizeMs: number;
+  readonly startTimestamp: number;
+  readonly maxCount: number;
 }
 
 // Minimal view of the /api/session/current payload. F-050 added
@@ -123,6 +135,16 @@ export function Today(): JSX.Element {
     queryKey: qk.antiPatterns,
     queryFn: () => fetchAntiPatterns() as Promise<SessionAntiPattern[]>,
   });
+  const { data: concurrency } = useQuery<ConcurrencyData>({
+    queryKey: qk.concurrency,
+    queryFn: () => fetchConcurrency() as Promise<ConcurrencyData>,
+    refetchInterval: 10_000,
+  });
+  const { data: todayHeatmap } = useQuery<HeatmapApiResponse>({
+    queryKey: qk.activityHeatmap('today'),
+    queryFn: () => fetchActivityHeatmap('today') as Promise<HeatmapApiResponse>,
+    refetchInterval: 30_000,
+  });
 
   const modelHealth = useMemo(
     () =>
@@ -188,6 +210,7 @@ export function Today(): JSX.Element {
 
   return (
     <section>
+      <GeoBanner />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
         <span className="text-xs text-ink-muted">{headerTimestamp}</span>
@@ -227,7 +250,7 @@ export function Today(): JSX.Element {
         <ModelHealthCard health={modelHealth} />
       </AnimatedCard>
 
-      <AnimatedCard index={2}>
+      <AnimatedCard index={2} className="grid grid-cols-2 gap-3 mb-3">
         <ForecastEodCard
           todayTotal={todayTotal}
           forecastEod={
@@ -243,6 +266,13 @@ export function Today(): JSX.Element {
             costApi?.cost?.sessionTotalCostUsd ?? 0,
           )}
         />
+        {concurrency && (
+          <ConcurrencyIndicator
+            current={concurrency.current}
+            peak={concurrency.peak}
+            timeSeries={concurrency.timeSeries}
+          />
+        )}
       </AnimatedCard>
 
       {flagsCount > 0 &&
@@ -283,7 +313,23 @@ export function Today(): JSX.Element {
         <LiveSessionPane sessions={todaySessions ?? []} />
       </AnimatedCard>
 
-      <AnimatedCard index={6}>
+      {todayHeatmap && todayHeatmap.buckets.length > 0 && (
+        <AnimatedCard index={6} className="glass-card p-3 mb-3">
+          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+            activity · today
+          </div>
+          <ActivityHeatmap
+            variant="strip"
+            buckets={todayHeatmap.buckets}
+            maxCount={todayHeatmap.maxCount}
+            bucketSizeMs={todayHeatmap.bucketSizeMs}
+            startTimestamp={todayHeatmap.startTimestamp}
+            ariaLabel="Today's activity density in 15-minute blocks"
+          />
+        </AnimatedCard>
+      )}
+
+      <AnimatedCard index={7}>
         <RecentAlertsPanel />
       </AnimatedCard>
     </section>

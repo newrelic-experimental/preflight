@@ -202,6 +202,11 @@ export interface ApiHandlerDeps {
     getLiveSessions: () => string[];
     getSessionName: (sessionId: string) => string | null;
   };
+  readonly concurrencyTracker?: {
+    getConcurrentCount: () => number;
+    getPeakConcurrent: () => number;
+    getConcurrencyTimeSeries: () => readonly { timestamp: number; count: number }[];
+  };
 }
 
 type RouteFn = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -222,6 +227,149 @@ function unavailable(res: ServerResponse, what: string): void {
     'content-length': String(Buffer.byteLength(payload)),
   });
   res.end(payload);
+}
+
+const ACTIVITY_WINDOW_MS = 180_000; // 3 minutes — matches LiveSessionRegistry staleness
+
+function mergeActivityWindows(
+  timeline: readonly { timestamp: number }[],
+): Array<{ start: number; end: number }> {
+  const sorted = [...timeline].sort((a, b) => a.timestamp - b.timestamp);
+  const windows: Array<{ start: number; end: number }> = [];
+  for (const entry of sorted) {
+    const start = entry.timestamp;
+    const end = start + ACTIVITY_WINDOW_MS;
+    if (windows.length > 0 && start <= windows[windows.length - 1]!.end) {
+      windows[windows.length - 1]!.end = Math.max(windows[windows.length - 1]!.end, end);
+    } else {
+      windows.push({ start, end });
+    }
+  }
+  return windows;
+}
+
+function computeTodayPeakConcurrency(sessions: readonly unknown[]): number {
+  const events: Array<{ ts: number; delta: number }> = [];
+  for (const s of sessions) {
+    const session = s as { timeline?: readonly { timestamp: number }[] };
+    if (!session.timeline || session.timeline.length === 0) continue;
+
+    const windows = mergeActivityWindows(session.timeline);
+
+    for (const w of windows) {
+      events.push({ ts: w.start, delta: 1 }, { ts: w.end, delta: -1 });
+    }
+  }
+  if (events.length === 0) return 0;
+  events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+  let current = 0;
+  let peak = 0;
+  for (const e of events) {
+    current += e.delta;
+    if (current > peak) peak = current;
+  }
+  return peak;
+}
+
+function computeDailyPeakConcurrency(
+  sessions: readonly unknown[],
+  days: number,
+): Array<{ date: string; peak: number }> {
+  const now = new Date();
+  const result: Array<{ date: string; peak: number }> = [];
+
+  for (let d = days - 1; d >= 0; d--) {
+    const dayStart = new Date(now);
+    dayStart.setUTCDate(dayStart.getUTCDate() - d);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+
+    const dayStartMs = dayStart.getTime();
+    const dayEndMs = dayEnd.getTime();
+    const dateKey = dayStart.toISOString().slice(0, 10);
+
+    // Find sessions that overlap with this day and have timeline data
+    const events: Array<{ ts: number; delta: number }> = [];
+    for (const s of sessions) {
+      const session = s as { timeline?: readonly { timestamp: number }[] };
+      if (!session.timeline || session.timeline.length === 0) continue;
+
+      // Only include tool calls within this day
+      const dayEntries = session.timeline.filter(
+        (e) => e.timestamp >= dayStartMs && e.timestamp < dayEndMs,
+      );
+      if (dayEntries.length === 0) continue;
+
+      const windows = mergeActivityWindows(dayEntries);
+
+      for (const w of windows) {
+        events.push({ ts: w.start, delta: 1 }, { ts: w.end, delta: -1 });
+      }
+    }
+
+    if (events.length === 0) {
+      result.push({ date: dateKey, peak: 0 });
+      continue;
+    }
+
+    events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+    let concurrent = 0;
+    let peak = 0;
+    for (const e of events) {
+      concurrent += e.delta;
+      if (concurrent > peak) peak = concurrent;
+    }
+    result.push({ date: dateKey, peak });
+  }
+
+  return result;
+}
+
+function computeHourlyConcurrency(
+  sessions: readonly unknown[],
+): Array<{ timestamp: number; count: number }> {
+  const now = Date.now();
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const startMs = startOfDay.getTime();
+
+  // Build activity windows from actual tool call timestamps
+  const events: Array<{ ts: number; delta: number }> = [];
+  for (const s of sessions) {
+    const session = s as { timeline?: readonly { timestamp: number }[] };
+    if (!session.timeline || session.timeline.length === 0) continue;
+
+    const windows = mergeActivityWindows(session.timeline);
+
+    for (const w of windows) {
+      events.push({ ts: w.start, delta: 1 }, { ts: w.end, delta: -1 });
+    }
+  }
+
+  if (events.length === 0) return [];
+  events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+
+  // Compute peak concurrent within each 30-min window
+  const windowMs = 1_800_000; // 30 minutes
+  const currentWindow = Math.floor((now - startMs) / windowMs);
+  const peaks = new Array<number>(currentWindow + 1).fill(0);
+
+  let concurrent = 0;
+  for (const e of events) {
+    concurrent += e.delta;
+    if (e.ts >= startMs) {
+      const windowIdx = Math.min(Math.floor((e.ts - startMs) / windowMs), currentWindow);
+      if (concurrent > peaks[windowIdx]!) {
+        peaks[windowIdx] = concurrent;
+      }
+    }
+  }
+
+  return peaks.map((count, i) => ({
+    timestamp: startMs + i * windowMs,
+    count,
+  }));
 }
 
 function toolCallToTimelineEntry(tc: ToolCallRecord): ReplayTimelineEntry {
@@ -489,6 +637,130 @@ export function createApiHandler(
   routes.set('GET /api/git-efficiency', (_req, res) => {
     if (!deps.gitEfficiencyTracker) return unavailable(res, 'gitEfficiencyTracker');
     jsonOk(res, deps.gitEfficiencyTracker.getMetrics());
+  });
+  routes.set('GET /api/concurrency', (req, res) => {
+    if (!deps.concurrencyTracker) return unavailable(res, 'concurrencyTracker');
+    try {
+      const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
+      const historicalPeak = computeTodayPeakConcurrency(todaySessions);
+      const livePeak = deps.concurrencyTracker.getPeakConcurrent();
+      const hourlySeries = computeHourlyConcurrency(todaySessions);
+
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const view = url.searchParams.get('view');
+      if (view === 'history') {
+        const daysParam = url.searchParams.get('days');
+        const days = daysParam ? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90) : 30;
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+        since.setHours(0, 0, 0, 0);
+        const allSessions = deps.sessionStore?.loadAllSessions?.({ since }) ?? [];
+        const dailyPeaks = computeDailyPeakConcurrency(allSessions, days);
+        jsonOk(res, { dailyPeaks });
+        return;
+      }
+
+      const allSessions = deps.sessionStore?.loadAllSessions?.() ?? [];
+      const allTimePeak = computeTodayPeakConcurrency(allSessions);
+
+      jsonOk(res, {
+        current: deps.concurrencyTracker.getConcurrentCount(),
+        peak: Math.max(livePeak, historicalPeak),
+        allTimePeak: Math.max(livePeak, historicalPeak, allTimePeak),
+        timeSeries: hourlySeries,
+      });
+    } catch {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'internal_error' }));
+    }
+  });
+
+  routes.set('GET /api/activity-heatmap', (req, res) => {
+    try {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const view = url.searchParams.get('view') ?? 'today';
+
+      if (view === 'today') {
+        const now = Date.now();
+        const startOfDay = new Date(now);
+        startOfDay.setHours(0, 0, 0, 0);
+        const startMs = startOfDay.getTime();
+        const bucketSizeMs = 900_000;
+        const bucketCount = Math.ceil((now - startMs) / bucketSizeMs) || 1;
+        const buckets = new Array<number>(bucketCount).fill(0);
+
+        const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
+        for (const r of bufferRecords) {
+          if (r.timestamp >= startMs) {
+            const idx = Math.floor((r.timestamp - startMs) / bucketSizeMs);
+            if (idx >= 0 && idx < bucketCount) {
+              buckets[idx]++;
+            }
+          }
+        }
+
+        const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
+        for (const s of todaySessions) {
+          const session = s as { timeline?: readonly { timestamp: number }[] };
+          if (session.timeline) {
+            for (const entry of session.timeline) {
+              if (entry.timestamp >= startMs) {
+                const idx = Math.floor((entry.timestamp - startMs) / bucketSizeMs);
+                if (idx >= 0 && idx < bucketCount) {
+                  buckets[idx]++;
+                }
+              }
+            }
+          }
+        }
+
+        const maxCount = Math.max(...buckets, 1);
+        jsonOk(res, { buckets, bucketSizeMs, startTimestamp: startMs, maxCount });
+        return;
+      }
+
+      if (view === 'history') {
+        const weeksParam = url.searchParams.get('weeks');
+        const weeks = weeksParam ? Math.min(Math.max(parseInt(weeksParam, 10) || 12, 1), 52) : 12;
+        const now = new Date();
+        const startDate = new Date(now);
+        startDate.setUTCDate(startDate.getUTCDate() - weeks * 7);
+        startDate.setUTCHours(0, 0, 0, 0);
+
+        const sessions = deps.sessionStore?.loadAllSessions?.({ since: startDate }) ?? [];
+
+        const dayMap = new Map<string, number>();
+        const cursor = new Date(startDate);
+        while (cursor <= now) {
+          dayMap.set(cursor.toISOString().slice(0, 10), 0);
+          cursor.setUTCDate(cursor.getUTCDate() + 1);
+        }
+
+        for (const s of sessions) {
+          const session = s as { startTime?: string | number; toolCallCount?: number };
+          if (!session.startTime) continue;
+          const d = new Date(
+            typeof session.startTime === 'number' ? session.startTime : session.startTime,
+          );
+          if (d < startDate) continue;
+          const key = d.toISOString().slice(0, 10);
+          if (dayMap.has(key)) {
+            dayMap.set(key, (dayMap.get(key) ?? 0) + (session.toolCallCount ?? 0));
+          }
+        }
+
+        const days = Array.from(dayMap.entries()).map(([date, count]) => ({ date, count }));
+        const maxCount = Math.max(...days.map((d) => d.count), 1);
+        jsonOk(res, { days, maxCount });
+        return;
+      }
+
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_view', message: 'Use view=today or view=history' }));
+    } catch {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'internal_error' }));
+    }
   });
 
   routes.set('GET /api/git-efficiency/repos', (_req, res) => {

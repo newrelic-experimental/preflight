@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAuditLog, qk } from '../api/client';
+import { GeoBanner } from '../components/GeoBanner';
 
 interface AuditEntry {
   readonly ts: number;
@@ -58,6 +59,7 @@ export function Audit(): JSX.Element {
 
   return (
     <section>
+      <GeoBanner theme="audit" />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Audit</h1>
         <button

@@ -6,11 +6,21 @@
 import { basename } from 'node:path';
 
 const DEFAULT_STALE_THRESHOLD_MS = 180_000; // 3 minutes
+const MAX_CONCURRENCY_SAMPLES = 2880; // 24h at 30s intervals
+const SAMPLE_INTERVAL_MS = 30_000;
+
+export interface ConcurrencySample {
+  readonly timestamp: number;
+  readonly count: number;
+}
 
 export class LiveSessionRegistry {
   private readonly lastActivity = new Map<string, number>();
   private readonly sessionNames = new Map<string, string>();
   private readonly staleThresholdMs: number;
+  private peakConcurrent = 0;
+  private readonly concurrencyTimeSeries: ConcurrencySample[] = [];
+  private samplingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS) {
     this.staleThresholdMs = staleThresholdMs;
@@ -23,6 +33,10 @@ export class LiveSessionRegistry {
       if (name.length > 0 && name !== '.' && name !== '..') {
         this.sessionNames.set(sessionId, name);
       }
+    }
+    const liveCount = this.getLiveSessions().length;
+    if (liveCount > this.peakConcurrent) {
+      this.peakConcurrent = liveCount;
     }
   }
 
@@ -62,5 +76,36 @@ export class LiveSessionRegistry {
       return false;
     }
     return true;
+  }
+
+  startSampling(): void {
+    if (this.samplingInterval) return;
+    this.samplingInterval = setInterval(() => {
+      const count = this.getLiveSessions().length;
+      this.concurrencyTimeSeries.push({ timestamp: Date.now(), count });
+      if (this.concurrencyTimeSeries.length > MAX_CONCURRENCY_SAMPLES) {
+        this.concurrencyTimeSeries.shift();
+      }
+    }, SAMPLE_INTERVAL_MS);
+    this.samplingInterval.unref();
+  }
+
+  stopSampling(): void {
+    if (this.samplingInterval) {
+      clearInterval(this.samplingInterval);
+      this.samplingInterval = null;
+    }
+  }
+
+  getConcurrentCount(): number {
+    return this.getLiveSessions().length;
+  }
+
+  getPeakConcurrent(): number {
+    return this.peakConcurrent;
+  }
+
+  getConcurrencyTimeSeries(): readonly ConcurrencySample[] {
+    return this.concurrencyTimeSeries;
   }
 }

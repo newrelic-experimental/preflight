@@ -10,6 +10,8 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { EmptyState } from '../components/EmptyState';
 import { GanttTimeline } from '../components/GanttTimeline';
+import { ActivityHeatmap } from '../components/ActivityHeatmap';
+import { GeoBanner } from '../components/GeoBanner';
 import {
   fetchSessionsList,
   fetchSessionCurrent,
@@ -18,6 +20,7 @@ import {
   qk,
 } from '../api/client';
 import { shortToolName } from '../lib/format';
+import { bucketTimeline, autoBucketSize } from '../lib/bucket';
 
 // F-051: keep the query limit and the "showing N most recent" notice in
 // lock-step. If you bump this, also update the api-handler clamp upper
@@ -200,94 +203,102 @@ export function Sessions(): JSX.Element {
   };
 
   return (
-    <section className="grid grid-cols-[260px_1fr] gap-3 h-full">
-      <aside className="glass-card overflow-hidden flex flex-col">
-        <header className="p-2 border-b border-border-subtle">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs uppercase tracking-wider text-ink-muted">Sessions</h2>
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="text-[10px] bg-surface-5 border border-border-medium rounded px-1.5 py-0.5 text-ink-subtle"
-            >
-              <option value="date">Newest</option>
-              <option value="cost">Cost</option>
-              <option value="calls">Calls</option>
-            </select>
-          </div>
-        </header>
-        <div className="overflow-auto">
-          {list.isLoading && <div className="p-3 text-ink-muted text-xs">Loading…</div>}
-          {!list.isLoading && rows.length === 0 && liveSessionIds.size === 0 && (
-            <EmptyState
-              icon="code"
-              title="No sessions yet"
-              subtitle="Start coding with Claude to see your sessions here."
-            />
-          )}
-          {rows.map((r) => {
-            const isLive = liveSessionIds.has(r.sessionId);
-            return (
-              <button
-                key={r.sessionId}
-                type="button"
-                onClick={() => handleSessionClick(r.sessionId)}
-                className={
-                  'block w-full text-left p-2 border-b border-border-subtle text-xs hover:bg-bg-line ' +
-                  (selectedId === r.sessionId ? 'bg-bg-line' : '')
-                }
+    <section className="flex flex-col h-full">
+      <div className="h-8 overflow-hidden rounded-lg mb-2 shrink-0">
+        <GeoBanner theme="sessions" />
+      </div>
+      <h1 className="text-lg font-semibold gradient-text mb-2 shrink-0">Sessions</h1>
+      <div className="grid grid-cols-[260px_1fr] gap-3 flex-1 min-h-0">
+        <aside className="glass-card overflow-hidden flex flex-col">
+          <header className="p-2 border-b border-border-subtle">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs uppercase tracking-wider text-ink-muted">List</h2>
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className="text-[10px] bg-surface-5 border border-border-medium rounded px-1.5 py-0.5 text-ink-subtle"
               >
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="font-mono text-ink-base truncate">
-                    {r.sessionName || r.sessionId.slice(0, 8)}
-                  </span>
-                  {isLive && (
-                    <span className="shrink-0 inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
-                      <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
-                      live
+                <option value="date">Newest</option>
+                <option value="cost">Cost</option>
+                <option value="calls">Calls</option>
+              </select>
+            </div>
+          </header>
+          <div className="overflow-auto">
+            {list.isLoading && <div className="p-3 text-ink-muted text-xs">Loading…</div>}
+            {!list.isLoading && rows.length === 0 && liveSessionIds.size === 0 && (
+              <EmptyState
+                icon="code"
+                title="No sessions yet"
+                subtitle="Start coding with Claude to see your sessions here."
+              />
+            )}
+            {rows.map((r) => {
+              const isLive = liveSessionIds.has(r.sessionId);
+              return (
+                <button
+                  key={r.sessionId}
+                  type="button"
+                  onClick={() => handleSessionClick(r.sessionId)}
+                  className={
+                    'block w-full text-left p-2 border-b border-border-subtle text-xs hover:bg-bg-line ' +
+                    (selectedId === r.sessionId ? 'bg-bg-line' : '')
+                  }
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-mono text-ink-base truncate">
+                      {r.sessionName || r.sessionId.slice(0, 8)}
                     </span>
-                  )}
-                </div>
-                <div className="flex justify-between mt-1 text-ink-subtle text-[11px]">
-                  <span>{r.toolCallCount ?? 0} calls</span>
-                  <span className="text-ink-muted">{r.startTime ? fmtTime(r.startTime) : '—'}</span>
-                  <span>
-                    {r.estimatedCostUsd != null ? `$${r.estimatedCostUsd.toFixed(2)}` : '—'}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
-          {/* F-051: when the API returns the full page, surface that older
+                    {isLive && (
+                      <span className="shrink-0 inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
+                        <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
+                        live
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex justify-between mt-1 text-ink-subtle text-[11px]">
+                    <span>{r.toolCallCount ?? 0} calls</span>
+                    <span className="text-ink-muted">
+                      {r.startTime ? fmtTime(r.startTime) : '—'}
+                    </span>
+                    <span>
+                      {r.estimatedCostUsd != null ? `$${r.estimatedCostUsd.toFixed(2)}` : '—'}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+            {/* F-051: when the API returns the full page, surface that older
               sessions exist beyond what's rendered. The cap is enforced
               server-side (api-handler `limit` clamp) and matches the
               `qk.sessionsList(50)` query above; bump both together if the
               cap ever changes. */}
-          {rows.length >= SESSIONS_PAGE_SIZE && (
-            <div className="p-2 text-[10px] text-ink-muted text-center border-t border-border-subtle">
-              Showing {SESSIONS_PAGE_SIZE} most recent sessions.
-            </div>
+            {rows.length >= SESSIONS_PAGE_SIZE && (
+              <div className="p-2 text-[10px] text-ink-muted text-center border-t border-border-subtle">
+                Showing {SESSIONS_PAGE_SIZE} most recent sessions.
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <div className="glass-card glass-card-static p-4 overflow-auto">
+          {!selectedId && (
+            <EmptyState
+              icon="timeline"
+              title="Loading sessions"
+              subtitle="Selecting the most recent session…"
+            />
+          )}
+          {selectedId && detail.isLoading && (
+            <div className="text-ink-muted text-xs">Loading detail…</div>
+          )}
+          {selectedId && detail.data && (
+            <SessionTimeline
+              data={detail.data}
+              isLive={!!selectedId && liveSessionIds.has(selectedId)}
+            />
           )}
         </div>
-      </aside>
-
-      <div className="glass-card glass-card-static p-4 overflow-auto">
-        {!selectedId && (
-          <EmptyState
-            icon="timeline"
-            title="Loading sessions"
-            subtitle="Selecting the most recent session…"
-          />
-        )}
-        {selectedId && detail.isLoading && (
-          <div className="text-ink-muted text-xs">Loading detail…</div>
-        )}
-        {selectedId && detail.data && (
-          <SessionTimeline
-            data={detail.data}
-            isLive={!!selectedId && liveSessionIds.has(selectedId)}
-          />
-        )}
       </div>
     </section>
   );
@@ -486,7 +497,49 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         </div>
       )}
 
+      <SessionActivityStrip timeline={entries} />
+
       <InlineReplay sessionId={data.sessionId} isLive={isLive} />
+    </div>
+  );
+}
+
+function SessionActivityStrip({
+  timeline,
+}: {
+  timeline: ReadonlyArray<{ timestamp: number }>;
+}): JSX.Element | null {
+  const heatmap = useMemo(() => {
+    if (timeline.length < 2) return null;
+    const startMs = timeline[0]!.timestamp;
+    const endMs = timeline[timeline.length - 1]!.timestamp;
+    const durationMs = endMs - startMs;
+    if (durationMs < 1000) return null;
+    const bucketSizeMs = autoBucketSize(durationMs);
+    const buckets = bucketTimeline(timeline, {
+      startMs,
+      endMs: endMs + bucketSizeMs,
+      bucketSizeMs,
+    });
+    const maxCount = Math.max(...buckets, 1);
+    return { buckets, maxCount, bucketSizeMs, startMs };
+  }, [timeline]);
+
+  if (!heatmap) return null;
+
+  return (
+    <div className="mb-4">
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">
+        Activity density
+      </div>
+      <ActivityHeatmap
+        variant="strip"
+        buckets={heatmap.buckets}
+        maxCount={heatmap.maxCount}
+        bucketSizeMs={heatmap.bucketSizeMs}
+        startTimestamp={heatmap.startMs}
+        ariaLabel="Session activity density"
+      />
     </div>
   );
 }

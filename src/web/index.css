@@ -30,6 +30,8 @@
   --color-accent-teal: #00d4aa;
   --color-accent-amber: #ffb224;
   --color-accent-red: #ff4c4c;
+  --color-accent-pink: #e94e8a;
+  --color-accent-coral: #ff6b6b;
 
   /* Legacy alias for existing cyan usages → map to NR green */
   --color-accent-cyan: #1ce783;
@@ -104,16 +106,18 @@ html.light .glass-card:not(.glass-card-static):hover {
     0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-/* Gradient text (NR green → white) */
+/* Gradient text (purple → pink → green) */
 .gradient-text {
-  background: linear-gradient(135deg, #1ce783 0%, #ffffff 80%);
+  width: fit-content;
+  background: linear-gradient(90deg, #9945ff 0%, #e94e8a 50%, #1ce783 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 html.light .gradient-text {
-  background: linear-gradient(135deg, #0fa968 0%, #1a1a2e 80%);
+  width: fit-content;
+  background: linear-gradient(90deg, #7c3aed 0%, #c2185b 50%, #0fa968 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -121,7 +125,9 @@ html.light .gradient-text {
 
 /* Glow effects */
 .glow-green {
-  box-shadow: 0 0 40px rgba(28, 231, 131, 0.15);
+  box-shadow:
+    0 0 40px rgba(153, 69, 255, 0.1),
+    0 0 80px rgba(233, 78, 138, 0.06);
 }
 
 .glow-purple {
@@ -154,7 +160,7 @@ html.light .glow-purple {
   right: -5%;
   width: 600px;
   height: 600px;
-  background: radial-gradient(circle, rgba(28, 231, 131, 0.07) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(233, 78, 138, 0.07) 0%, transparent 70%);
   animation: drift 20s ease-in-out infinite alternate;
 }
 
@@ -163,7 +169,7 @@ html.light .glow-purple {
   left: -5%;
   width: 500px;
   height: 500px;
-  background: radial-gradient(circle, rgba(153, 69, 255, 0.05) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(153, 69, 255, 0.06) 0%, transparent 70%);
   animation: drift 25s ease-in-out infinite alternate-reverse;
 }
 
@@ -262,6 +268,82 @@ html.light .mesh-bg::after {
     animation: none !important;
     opacity: 1;
     transform: none;
+  }
+}
+
+/* Activity heatmap cells */
+@keyframes heatmap-cell-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.heatmap-cell {
+  animation: heatmap-cell-enter 0.2s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heatmap-cell {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* New peak celebration */
+@keyframes particle-burst {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0);
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.5);
+  }
+}
+
+.new-peak-glow {
+  animation: peak-glow 1.5s ease-out;
+}
+
+@keyframes peak-glow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(28, 231, 131, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 20px 4px rgba(28, 231, 131, 0.3);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-peak-glow {
+    animation: none !important;
+  }
+}
+
+/* Geometric banner decoration */
+.geo-banner {
+  height: 48px;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 12px;
+  opacity: 0.85;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .geo-banner {
+    opacity: 0.7;
   }
 }
 

@@ -44,7 +44,7 @@ export function Kpi({
 
   const valueClass = hero
     ? 'text-3xl font-bold mt-1 tabular-nums gradient-text'
-    : `text-2xl font-semibold mt-1 tabular-nums ${TONE[tone]}`;
+    : `text-3xl font-bold mt-1 tabular-nums ${TONE[tone]}`;
 
   return (
     <div className="px-1">

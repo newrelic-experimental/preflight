@@ -41,6 +41,13 @@ export const fetchToolSelectionScore = (): Promise<unknown> =>
 export const fetchGitEfficiency = (): Promise<unknown> => getJson<unknown>('/api/git-efficiency');
 export const fetchGitEfficiencyRepos = (): Promise<unknown> =>
   getJson<unknown>('/api/git-efficiency/repos');
+export const fetchConcurrency = (): Promise<unknown> => getJson<unknown>('/api/concurrency');
+export const fetchConcurrencyHistory = (days = 30): Promise<unknown> =>
+  getJson<unknown>(`/api/concurrency?view=history&days=${days}`);
+export const fetchActivityHeatmap = (view: string, weeks?: number): Promise<unknown> =>
+  getJson<unknown>(
+    `/api/activity-heatmap?view=${encodeURIComponent(view)}${weeks ? `&weeks=${weeks}` : ''}`,
+  );
 
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
@@ -61,4 +68,7 @@ export const qk = {
   toolSelectionScore: ['tool-selection-score'] as const,
   gitEfficiency: ['git-efficiency'] as const,
   gitEfficiencyRepos: ['git-efficiency-repos'] as const,
+  concurrency: ['concurrency'] as const,
+  concurrencyHistory: (days: number) => ['concurrency', 'history', days] as const,
+  activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
 };
