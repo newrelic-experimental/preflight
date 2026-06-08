@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-The codebase is well-structured and security-conscious, with zero committed secrets, comprehensive input validation, and strong documentation. The main blockers before open-sourcing are administrative (missing LICENSE, CONTRIBUTING.md, internal URL in ONBOARDING.md) rather than deep technical problems. Several medium-priority bugs also need attention.
+The codebase is well-structured and security-conscious, with zero committed secrets, comprehensive input validation, and strong documentation. The main blockers before open-sourcing are administrative (missing LICENSE, CODE_OF_CONDUCT.md) rather than deep technical problems. Several medium-priority bugs also need attention.
 
 ---
 
@@ -37,31 +37,24 @@ The file contained credentials matching the format of real New Relic keys. The f
 
 ---
 
-### C3. Internal New Relic URL in ONBOARDING.md
+### ✅ C3. Internal New Relic URL — Resolved
 
-**Severity:** CRITICAL
-**File:** `docs/ONBOARDING.md:27`
+**File:** `docs/ONBOARDING.md` (deleted)
 
-```
-- Access to New Relic's private npm registry ([setup guide](https://source.datanerd.us/commune/npm-setup))
-```
-
-`source.datanerd.us/commune/npm-setup` is an internal New Relic link. External contributors cannot access it and it must not appear in a public repo.
-
-**Action:** Remove this line. All project dependencies are on the public npm registry. If this prerequisite applies only to NR employees, move it to an internal wiki page.
+`source.datanerd.us/commune/npm-setup` was present in ONBOARDING.md. That file has been deleted and replaced by `CONTRIBUTING.md`, which contains no internal links. No action required.
 
 ---
 
 ## HIGH — Should Fix Before Publishing
 
-### H1. Missing CONTRIBUTING.md and CODE_OF_CONDUCT.md
+### H1. Missing CODE_OF_CONDUCT.md
 
 **Severity:** HIGH
-**Files:** neither file exists at repo root
+**File:** not present at repo root
 
-GitHub prominently surfaces both files. Their absence signals an incomplete open-source project. `CODE_OF_CONDUCT.md` is also expected by many automated checks and contributor workflows.
+`CONTRIBUTING.md` has been created. `CODE_OF_CONDUCT.md` is still missing. GitHub prominently surfaces this file and it is expected by many automated contributor workflows.
 
-**Action:** Create both files. For `CONTRIBUTING.md`, cover bug reporting, PR workflow, commit message conventions (already in `CLAUDE.md`), and development setup. For `CODE_OF_CONDUCT.md`, the [Contributor Covenant](https://www.contributor-covenant.org/) is the standard template.
+**Action:** Create `CODE_OF_CONDUCT.md`. The [Contributor Covenant](https://www.contributor-covenant.org/) is the standard template.
 
 ---
 
@@ -195,8 +188,8 @@ Originally flagged as potentially unstable pre-release versions. As of 2026-06-0
 | LICENSE file                          | ❌ Missing   | Must add before publish                                                            |
 | No committed secrets                  | ✅ Clean     | `.env` not in git history                                                          |
 | Rotate disk credentials               | ⚠️ Confirm   | `test-app/.env` (in `nr-ai-typescript-agent` repo) — confirm keys were rotated     |
-| Internal URLs removed                 | ❌ Needed    | `source.datanerd.us` in `docs/ONBOARDING.md:27`                                    |
-| CONTRIBUTING.md                       | ❌ Missing   |                                                                                    |
+| Internal URLs removed                 | ✅ Resolved  | `docs/ONBOARDING.md` deleted; `CONTRIBUTING.md` has no internal links              |
+| CONTRIBUTING.md                       | ✅ Created   |                                                                                    |
 | CODE_OF_CONDUCT.md                    | ❌ Missing   |                                                                                    |
 | npm scope                             | ✅ N/A       | Shared code is synced as source, not a published package; scope claim not required |
 | `license` field in package.json       | ❌ Missing   |                                                                                    |
@@ -217,9 +210,8 @@ Originally flagged as potentially unstable pre-release versions. As of 2026-06-0
 
 1. Add `LICENSE` (30 min)
 2. Confirm credential rotation in `nr-ai-typescript-agent` repo's `test-app/.env` (15 min)
-3. Remove `source.datanerd.us` line from `docs/ONBOARDING.md` (5 min)
-4. Add `license`, `engines`, and `repository` fields to `package.json` (10 min)
-5. Create `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md` (1 hr)
-6. Fix `CostPerOutcome` bug-fix classifier (M2) (1 hr)
-7. Fix pricing negative savings validation (M1) (30 min)
-8. Address remaining medium/low items at discretion
+3. Add `license`, `engines`, and `repository` fields to `package.json` (10 min)
+4. Create `CODE_OF_CONDUCT.md` (30 min)
+5. Fix `CostPerOutcome` bug-fix classifier (M2) (1 hr)
+6. Fix pricing negative savings validation (M1) (30 min)
+7. Address remaining medium/low items at discretion

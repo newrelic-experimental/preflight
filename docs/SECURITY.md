@@ -197,14 +197,15 @@ When spawning an upstream MCP server as a child process, two invariants must hol
 
 2. **Dangerous env keys stripped** — the following keys are removed from the child environment regardless of what the config file supplies:
 
-   | Key                     | Risk                                                                  |
-   | ----------------------- | --------------------------------------------------------------------- |
-   | `LD_PRELOAD`            | Linux: preload attacker shared library                                |
-   | `LD_LIBRARY_PATH`       | Linux: redirect dynamic linker                                        |
-   | `DYLD_INSERT_LIBRARIES` | macOS: same as `LD_PRELOAD`                                           |
-   | `DYLD_LIBRARY_PATH`     | macOS: redirect dynamic linker                                        |
-   | `PATH`                  | Override command resolution — could redirect `node` or other binaries |
-   | `NODE_OPTIONS`          | Inject Node.js flags (e.g., `--require`)                              |
+   | Key                     | Risk                                     |
+   | ----------------------- | ---------------------------------------- |
+   | `LD_PRELOAD`            | Linux: preload attacker shared library   |
+   | `LD_LIBRARY_PATH`       | Linux: redirect dynamic linker           |
+   | `DYLD_INSERT_LIBRARIES` | macOS: same as `LD_PRELOAD`              |
+   | `DYLD_LIBRARY_PATH`     | macOS: redirect dynamic linker           |
+   | `NODE_OPTIONS`          | Inject Node.js flags (e.g., `--require`) |
+
+   Note: `PATH` is intentionally **not** stripped. `StdioClientTransport` (MCP SDK) spreads `getDefaultEnvironment()` before applying the caller-supplied env, so stripping `PATH` from config input has no effect — it would always flow through anyway. PATH-based hijacking is prevented instead by the absolute-path requirement in invariant 1.
 
 If you add a new subprocess invocation anywhere in the codebase, apply both checks.
 

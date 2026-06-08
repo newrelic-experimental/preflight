@@ -249,45 +249,9 @@ The easiest way to configure is through the setup wizard (`nr-ai-observe setup`)
 
 All settings can also be set via environment variables — see [example.config.js](./example.config.js) for the full annotated reference.
 
-### OTLP Transport (Optional)
+### OTLP Transport
 
-By default, the Observatory sends telemetry to New Relic's proprietary Events API and Metrics API. You can optionally export to **any OpenTelemetry-compatible backend** — Datadog, Grafana Cloud, Honeycomb, a self-hosted OpenTelemetry Collector, or New Relic's OTLP endpoint — without losing the NR path.
-
-Add these settings to `~/.nr-ai-observe/config.json`:
-
-```json
-{
-  "otlpEndpoint": "https://otlp.nr-data.net",
-  "otlpHeaders": { "api-key": "YOUR_LICENSE_KEY" },
-  "transport": "both"
-}
-```
-
-| Setting        | What it does                          | Options                                                                                                                                               |
-| -------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `otlpEndpoint` | OTLP/HTTP endpoint URL                | **New Relic**: US: `https://otlp.nr-data.net`, EU: `https://otlp.eu01.nr-data.net`. Or use any backend's OTLP URL (Datadog, Grafana, Honeycomb, etc.) |
-| `otlpHeaders`  | Extra HTTP headers for authentication | **New Relic**: `{ "api-key": "YOUR_LICENSE_KEY" }`. **Datadog**: `{ "dd-api-key": "YOUR_DATADOG_API_KEY" }`. Consult your backend's docs.             |
-| `transport`    | How to send telemetry                 | `"nr-events-api"` (default, NR only), `"otlp"` (OTLP only), `"both"` (simultaneous export to NR and OTLP)                                             |
-
-#### Inbound OTLP Receiver (Proxy Mode)
-
-When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context and forwarded to NR, linking application traces to the AI session that produced them.
-
-```json
-{
-  "otlpReceiverEnabled": true,
-  "otlpReceiverPort": 4318,
-  "otlpForwardEndpoint": "https://otlp.nr-data.net",
-  "otlpForwardHeaders": { "api-key": "YOUR_LICENSE_KEY" }
-}
-```
-
-| Setting               | What it does                                                                     | Default                                               |
-| --------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `otlpReceiverEnabled` | Enable the local OTLP/HTTP receiver                                              | `false`                                               |
-| `otlpReceiverPort`    | Port the receiver listens on                                                     | `4318`                                                |
-| `otlpForwardEndpoint` | Where enriched payloads are forwarded. Set to `null` to receive and enrich only. | `https://otlp.nr-data.net` (when `licenseKey` is set) |
-| `otlpForwardHeaders`  | HTTP headers added to every forwarded request                                    | `{ "api-key": <licenseKey> }`                         |
+To export telemetry to other OpenTelemetry-compatible backends (Datadog, Grafana Cloud, Honeycomb, or New Relic's OTLP endpoint), or to enable an inbound OTLP receiver in proxy mode, see [ADVANCED.md](./docs/ADVANCED.md#otlp-transport).
 
 ---
 
@@ -396,36 +360,9 @@ Run `nr-ai-observe setup` to choose a mode interactively.
 
 ## Local Alerts
 
-Local-mode users get the same threshold alerting as cloud users — evaluated in-process, no New Relic dependency. The engine reads rules from `~/.nr-ai-observe/alerts/rules.json`, evaluates them on a fixed cadence (default 30 s), and surfaces firing/clearing events through the embedded dashboard.
+Local-mode users get threshold alerting evaluated in-process — no New Relic dependency. Rules live at `~/.nr-ai-observe/alerts/rules.json`; a starter set is copied into place by the setup wizard.
 
-**Setting up rules.** The `nr-ai-observe setup` wizard offers to copy a starter rule set from `examples/local-alert-rules.json` into place when you choose local or both mode. Re-running setup never overwrites a user-edited rules file.
-
-**Eight rule types are supported:**
-
-| Type                                                | What it checks                                                                               |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `cost.window`                                       | Cumulative spend in the named period (`session` / `today` / `week`) crosses a USD threshold. |
-| `efficiency.below`                                  | Efficiency score has stayed under N for `windowSeconds` continuously.                        |
-| `antipattern.count`                                 | More than N anti-patterns of a chosen type (or any type) in `windowSeconds`.                 |
-| `latency.percentile`                                | p50/p95/p99 latency for a tool exceeds N ms.                                                 |
-| `budget.session` / `budget.daily` / `budget.weekly` | Budget threshold reached for the named period (uses configured budget caps).                 |
-| `tool.failure`                                      | Failure rate for a tool exceeds N% in `windowSeconds`.                                       |
-
-**Channels.** Each rule has a `channels` array — `["banner"]` (default) shows a dismissible banner in the dashboard; `["banner", "os"]` also fires a native OS notification (macOS/Linux/Windows) when `alerts.osNotifications` is enabled in config. `[]` is silent (logged only).
-
-**Alert log.** Every fire/clear is appended to `~/.nr-ai-observe/alerts/log.jsonl` (rotated at the configured retention size). The dashboard's "Recent alerts" panel reads this file.
-
-**Live reload.** Editing `rules.json` reloads the rule set within ~200 ms — no server restart needed. One malformed rule is logged and skipped; the rest of the rule set keeps evaluating.
-
-**Configuration knobs** (under `alerts` in the config file or via env vars):
-
-| Field                              | Env var                         | Default                              |
-| ---------------------------------- | ------------------------------- | ------------------------------------ |
-| `alerts.enabled`                   | `NR_AI_ALERTS_ENABLED`          | `true` outside cloud-only mode       |
-| `alerts.evaluationIntervalSeconds` | `NR_AI_ALERTS_INTERVAL_SECONDS` | `30` (5–300)                         |
-| `alerts.osNotifications`           | `NR_AI_ALERTS_OS_NOTIFICATIONS` | `false`                              |
-| `alerts.logRetentionMb`            | `NR_AI_ALERTS_LOG_RETENTION_MB` | `10` (1–1024)                        |
-| `alerts.rulesPath`                 | `NR_AI_ALERTS_RULES_PATH`       | `~/.nr-ai-observe/alerts/rules.json` |
+For the full list of rule types, channel options, alert log configuration, and live reload behavior, see [ADVANCED.md](./docs/ADVANCED.md#local-alerts).
 
 ---
 
@@ -481,7 +418,8 @@ Or set it in your config file as `digestWebhookUrl`.
 
 ## Documentation
 
-- **[ONBOARDING.md](./docs/ONBOARDING.md)** — Detailed setup guide and architecture overview
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, architecture, conventions, testing, and end-to-end verification
+- **[ADVANCED.md](./docs/ADVANCED.md)** — OTLP export, local alerts, per-developer alerts, session backfill
 - **[COMMANDS_TABLE.md](./docs/COMMANDS_TABLE.md)** — All MCP tools with parameters and return values
 - **[METRICS_TABLE.md](./docs/METRICS_TABLE.md)** — Every event and metric sent to New Relic
 - **[SECURITY.md](./docs/SECURITY.md)** — Security practices and audit trail
@@ -513,8 +451,8 @@ npm test
 | `npm run dev:all`      | Build then start local dashboard                        |
 | `npm run start:local`  | Alias for `npm run dev`                                 |
 
-See [ONBOARDING.md](./docs/ONBOARDING.md) for the full development guide, conventions, and architecture.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development guide, conventions, and architecture.
 
 ---
 
-**Questions?** Start with [ONBOARDING.md](./docs/ONBOARDING.md) or open an issue.
+**Questions?** Start with [CONTRIBUTING.md](./CONTRIBUTING.md) or open an issue.

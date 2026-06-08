@@ -29,11 +29,36 @@ Key settings:
 ### Running tests
 
 ```bash
-npm test                                         # Entire suite
+npm test                                         # Entire Jest suite
 npx jest -- src/shared/                          # All tests under one directory
 npx jest -- src/metrics/cost-tracker.test.ts     # One file
 npx jest -- --testNamePattern="re-queues"        # Tests matching a name pattern
 ```
+
+---
+
+## Web Tests (Vitest)
+
+The web dashboard in `src/web/` uses a **separate test runner**: [Vitest](https://vitest.dev/), not Jest. These are the only tests that use React components, browser APIs, or `.tsx` files.
+
+```bash
+npm run test:web    # Run the Vitest suite
+```
+
+Vitest is configured via the `root: resolve(__dirname, 'src/web')` setting in `vite.config.ts`, so it discovers tests only within `src/web/`.
+
+### Key differences from Jest tests
+
+| Concern        | Jest (`src/**/*.test.ts`) | Vitest (`src/web/**/*.test.tsx`)  |
+| -------------- | ------------------------- | --------------------------------- |
+| File extension | `.test.ts`                | `.test.tsx`                       |
+| Import globals | `from '@jest/globals'`    | vitest globals (no import needed) |
+| Spy/mock       | `jest.spyOn`, `jest.fn`   | `vi.spyOn`, `vi.fn`               |
+| Run command    | `npm test`                | `npm run test:web`                |
+
+**Important:** Web test files must use `.test.tsx`, not `.test.ts`. Jest picks up `.test.ts` files under `src/web/` and fails on Vitest imports; the `.tsx` extension is what routes them to Vitest instead.
+
+Web tests follow the same factory-function and spy patterns as Jest tests — just with `vi.*` instead of `jest.*`.
 
 ---
 
@@ -189,7 +214,7 @@ function makeProxyRecord(overrides?: Partial<ProxyToolCallRecord>): ProxyToolCal
 
 ### Metric tracker tests
 
-All 19 metric trackers in `src/metrics/` follow the same test structure: create a tracker, feed it records, read out metrics, assert.
+All metric trackers in `src/metrics/` follow the same test structure: create a tracker, feed it records, read out metrics, assert.
 
 ```typescript
 describe('SessionTracker', () => {

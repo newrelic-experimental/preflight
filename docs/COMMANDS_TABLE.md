@@ -37,6 +37,38 @@ Source: `src/tools/session-stats.ts`
 
 ---
 
+### `nr_observe_get_config`
+
+Show the current server configuration with sensitive fields masked.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "mode": "cloud",
+  "developer": "alice",
+  "accountId": "12345",
+  "licenseKeyMasked": "175cae4b...NRAL",
+  "nrApiKeyMasked": "NRAK-****",
+  "region": "US",
+  "storagePath": "/Users/alice/.nr-ai-observe",
+  "dashboardUrl": "https://one.newrelic.com/dashboards/...",
+  "configFilePath": "/Users/alice/.nr-ai-observe/config.json"
+}
+```
+
+**Data source:** Server config at startup
+
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode) without exposing credentials.
+
+**Requires:** Always available
+
+Source: `src/tools/session-stats.ts`
+
+---
+
 ### `nr_observe_get_session_stats`
 
 Current session metrics snapshot.
@@ -54,6 +86,7 @@ Current session metrics snapshot.
   },
   "session_trace_id": "uuid-string-or-null",
   "session_id": "string",
+  "session_name": "nr-ai-observatory",
   "session_duration_ms": 0,
   "tool_calls": 0,
   "tool_calls_by_type": { "Read": 5, "Edit": 3 },
@@ -74,6 +107,7 @@ Current session metrics snapshot.
 - `identity.developer` — resolved developer name from config (normalised by `normalizeDeveloperName()`). Defaults to `"unknown"` when not configured. Use this to confirm at runtime which identity is being attached to NR events.
 - `identity.teamId` / `identity.projectId` — team and project identifiers from config. `null` when not configured. `projectId` is auto-derived from the git remote URL when unset.
 - `session_trace_id` — UUID generated at server startup via `randomUUID()`; threaded through every NR event, metric, and log entry emitted in this session. Use `WHERE session_id = '<value>'` in NRQL to query all telemetry for a single session. `null` if the server was started without trace ID support.
+- `session_name` — display name derived from the working directory path at session start (e.g. the repo folder name). `null` if not available.
 - `tool_calls` — running count incremented on each `recordToolCall()`
 - `tool_calls_by_type` — per-tool-name counter map
 - `success_rate` — `successCount / totalCount`
@@ -1065,6 +1099,145 @@ Which AI model was used per request and cost-efficiency per model.
 **Requires:** `ModelUsageTracker`
 
 Source: `src/tools/analytics-tools.ts`, `src/metrics/model-usage-tracker.ts`
+
+---
+
+### `nr_observe_get_cost_per_tool`
+
+Cost attribution per tool type — approximate, based on turn-level token correlation.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "turns": [
+    {
+      "turnId": "turn-001",
+      "startTime": 1713700000000,
+      "endTime": 1713700005000,
+      "toolCalls": ["Read", "Edit"],
+      "inputTokens": 2000,
+      "outputTokens": 500,
+      "cacheReadTokens": 800,
+      "model": "claude-sonnet-4-6",
+      "estimatedCostUsd": 0.003,
+      "costPerToolCall": 0.0015
+    }
+  ],
+  "costByToolType": {
+    "Read": { "totalCost": 0.012, "callCount": 15, "avgCost": 0.0008 },
+    "Edit": { "totalCost": 0.025, "callCount": 8, "avgCost": 0.003 }
+  },
+  "totalAttributedCost": 0.042,
+  "attributionRate": 0.85
+}
+```
+
+**Data source:** `TurnCostAttributor`
+
+**How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of total session cost that could be attributed (turns with no token report are excluded). Results are approximate — cost is correlated at the turn level, not the individual call level.
+
+**Requires:** `TurnCostAttributor`
+
+Source: `src/tools/session-stats.ts`, `src/metrics/turn-cost-attributor.ts`
+
+---
+
+### `nr_observe_get_turn_analysis`
+
+Conversation turn analysis: groups tool calls by AI response, shows parallelism and turn patterns.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "totalTurns": 12,
+  "avgToolsPerTurn": 2.4,
+  "maxToolsPerTurn": 5,
+  "avgTurnDurationMs": 1850,
+  "avgParallelism": 1.8,
+  "recentTurns": [
+    {
+      "turnId": "turn-012",
+      "turnNumber": 12,
+      "startTime": 1713700060000,
+      "endTime": 1713700061850,
+      "durationMs": 1850,
+      "toolCalls": [
+        {
+          "toolName": "Read",
+          "toolUseId": "toolu_001",
+          "success": true,
+          "durationMs": 30,
+          "timestamp": 1713700060100
+        }
+      ],
+      "toolCount": 3,
+      "parallelism": 2,
+      "uniqueTools": ["Read", "Bash"]
+    }
+  ],
+  "turnsByToolCount": { "1": 4, "2": 3, "3": 3, "5": 2 }
+}
+```
+
+**Data source:** `TurnTracker`
+
+**How it works:** Groups tool calls into conversation turns — a turn is all tool calls issued between two consecutive AI responses. `parallelism` is the maximum number of tool calls running concurrently within the turn (detected from overlapping timestamps). `avgParallelism` > 1 indicates the AI is making parallel tool calls efficiently. `turnsByToolCount` shows the distribution of tools-per-turn across the session.
+
+**Requires:** `TurnTracker`
+
+Source: `src/tools/session-stats.ts`, `src/metrics/turn-tracker.ts`
+
+---
+
+### `nr_observe_get_git_efficiency`
+
+Git workflow efficiency metrics: merge conflicts, aborted operations, force pushes, stale branch detection, and actionable suggestions.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "totalGitCommands": 24,
+  "mergeConflicts": 1,
+  "rebaseConflicts": 0,
+  "abortedOperations": 0,
+  "forcePushes": 0,
+  "resetHards": 1,
+  "discardedChanges": 0,
+  "pullCount": 5,
+  "pushCount": 3,
+  "commitCount": 8,
+  "branchOperations": 4,
+  "conflictResolutionRate": 1.0,
+  "avgConflictResolutionMs": 45000,
+  "staleBranchPulls": 0,
+  "gitCommandTimeline": [],
+  "conflictHistory": [],
+  "suggestions": [
+    {
+      "type": "merge_conflict_rate",
+      "message": "Consider rebasing more frequently to reduce merge conflicts.",
+      "severity": "medium"
+    }
+  ]
+}
+```
+
+**Data source:** `GitEfficiencyTracker`
+
+**How it works:** Classifies Bash tool calls that invoke `git` commands by inspecting the command string and output. Detects merge/rebase conflicts from command output patterns, flags force pushes and hard resets as risky operations, and identifies stale branch pulls (pulls that bring in a large number of incoming commits). `conflictResolutionRate` is the fraction of detected conflicts that were resolved rather than aborted. `suggestions` surfaces actionable recommendations when patterns exceed configured thresholds.
+
+**Requires:** `GitEfficiencyTracker`
+
+Source: `src/tools/session-stats.ts`, `src/metrics/git-efficiency-tracker.ts`
 
 ---
 
