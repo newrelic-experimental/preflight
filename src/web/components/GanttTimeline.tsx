@@ -165,10 +165,17 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
                   onMouseEnter={() => setHoveredIndex(idx)}
                   onMouseLeave={() => setHoveredIndex(null)}
                 />
-                {/* Tooltip — anchor to whichever side of the bar leaves more
-                    room so it never spills past the track edges, and switch to
-                    above-the-bar for the last few rows so it isn't clipped by
-                    the scroll container. */}
+                {/* Tooltip positioning:
+                    - Bars starting past the midpoint (leftPct >= 50) anchor
+                      their tooltip to the right edge of the bar so it grows
+                      leftward and stays within the track. Math.max(0, ...) clamps
+                      the right value when floating-point arithmetic overshoots on
+                      full-width bars. Bars in the first half anchor to the left.
+                    - The above-the-bar flip fires only for the last 3 rows of the
+                      list (idx > sorted.length - 4) AND only when the list has at
+                      least 4 rows (idx >= 3). Lists with 3 or fewer entries never
+                      flip — their last row is at most idx=2, which never satisfies
+                      idx >= 3, so the tooltip always drops below the bar. */}
                 {hoveredIndex === idx && (
                   <div
                     className={`absolute z-50 px-2 py-1.5 rounded-lg bg-bg-elevated border border-bg-line text-[11px] text-ink-base shadow-lg whitespace-nowrap pointer-events-none ${idx >= 3 && idx > sorted.length - 4 ? 'bottom-full mb-1' : 'top-full mt-1'}`}
