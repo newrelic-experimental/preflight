@@ -63,6 +63,7 @@ nr-ai-observe update
 | `npm run backfill:sessions`         | Backfill local session JSON files from NR event history                                           |
 | `npm run dev`                       | Start local dashboard server (`--local`); assumes `dist/` already built                           |
 | `npm run dev:all`                   | Build then start local dashboard (`npm run build && npm run dev`)                                 |
+| `npm run dev:full`                  | Build backend, then start backend + Vite dev server together (open `http://localhost:5173`)       |
 | `npm run start:local`               | Alias for `npm run dev`                                                                           |
 
 To run a single test file:

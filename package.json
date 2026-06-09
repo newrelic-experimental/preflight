@@ -54,6 +54,7 @@
     "check:bundle-size": "npx tsx scripts/check-bundle-size.ts",
     "dev": "node dist/index.js --local",
     "dev:all": "npm run build && npm run dev",
+    "dev:full": "npm run build:server && { npm run dev & BACK=$!; npm run dev:web; kill $BACK 2>/dev/null || true; }",
     "start": "node dist/index.js --stdio",
     "start:local": "node dist/index.js --local",
     "prepare": "husky"

@@ -174,7 +174,7 @@ export class DashboardServer {
         return;
       }
       if (
-        req.method === 'GET' &&
+        (req.method === 'GET' || req.method === 'PATCH' || req.method === 'POST') &&
         pathname.startsWith('/api/') &&
         pathname !== '/api/health' &&
         this.apiHandler

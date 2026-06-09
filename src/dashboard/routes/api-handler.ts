@@ -1,5 +1,9 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
-import { redactSensitive } from '../../config.js';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { redactSensitive, normalizeDeveloperName } from '../../config.js';
+import { handleSendDigest } from '../../tools/cross-session-tools.js';
+import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
+import type { McpServerConfig } from '../../config.js';
 import {
   attributeSessionCosts,
   type SessionLikeForCostOutcome,
@@ -208,6 +212,8 @@ export interface ApiHandlerDeps {
     getConcurrencyTimeSeries: () => readonly { timestamp: number; count: number }[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => unknown };
+  readonly config?: McpServerConfig;
+  readonly configFilePath?: string;
 }
 
 type RouteFn = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -228,6 +234,26 @@ function unavailable(res: ServerResponse, what: string): void {
     'content-length': String(Buffer.byteLength(payload)),
   });
   res.end(payload);
+}
+
+const MAX_BODY_BYTES = 64 * 1024; // 64 KB — generous for any settings payload
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (c: Buffer) => {
+      total += c.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('Request body too large'));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
 }
 
 const ACTIVITY_WINDOW_MS = 180_000; // 3 minutes — matches LiveSessionRegistry staleness
@@ -798,6 +824,262 @@ export function createApiHandler(
       }
     }
     jsonOk(res, { repos: [...repoSet].sort(), currentRepo });
+  });
+
+  // ── Settings endpoints ──────────────────────────────────────────────────
+
+  routes.set('GET /api/settings', (_req, res) => {
+    if (!deps.config) return unavailable(res, 'config');
+    const c = deps.config;
+
+    // Read editable fields from disk so the UI reflects the latest saved
+    // values after a PATCH (deps.config is frozen at startup and never
+    // updated in memory).
+    let disk: Record<string, unknown> = {};
+    if (deps.configFilePath) {
+      try {
+        disk = JSON.parse(readFileSync(deps.configFilePath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        /* config file may not exist yet — fall through to startup defaults */
+      }
+    }
+
+    const diskAlerts = (disk.alerts ?? {}) as Record<string, unknown>;
+    const diskPersonal = (diskAlerts['personal'] ?? {}) as Record<string, unknown>;
+
+    jsonOk(res, {
+      // Editable fields: prefer disk, fall back to startup config
+      developer: typeof disk.developer === 'string' ? disk.developer : c.developer,
+      teamId: 'teamId' in disk ? (disk.teamId as string | null) : c.teamId,
+      sessionBudgetUsd:
+        'sessionBudgetUsd' in disk ? (disk.sessionBudgetUsd as number | null) : c.sessionBudgetUsd,
+      dailyBudgetUsd:
+        'dailyBudgetUsd' in disk ? (disk.dailyBudgetUsd as number | null) : c.dailyBudgetUsd,
+      weeklyBudgetUsd:
+        'weeklyBudgetUsd' in disk ? (disk.weeklyBudgetUsd as number | null) : c.weeklyBudgetUsd,
+      retainSessionsDays:
+        'retainSessionsDays' in disk
+          ? (disk.retainSessionsDays as number | null)
+          : c.retainSessionsDays,
+      digestWebhookUrl:
+        'digestWebhookUrl' in disk ? (disk.digestWebhookUrl as string | null) : c.digestWebhookUrl,
+      digestSchedule:
+        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
+      alerts: {
+        personal: {
+          dailyCostUsd:
+            typeof diskPersonal['dailyCostUsd'] === 'number'
+              ? diskPersonal['dailyCostUsd']
+              : c.personalAlertThresholds.dailyCostUsd,
+          sessionCostUsd:
+            typeof diskPersonal['sessionCostUsd'] === 'number'
+              ? diskPersonal['sessionCostUsd']
+              : c.personalAlertThresholds.sessionCostUsd,
+          efficiencyScoreMin:
+            typeof diskPersonal['efficiencyScoreMin'] === 'number'
+              ? diskPersonal['efficiencyScoreMin']
+              : c.personalAlertThresholds.efficiencyScoreMin,
+          stuckLoopCountMax:
+            typeof diskPersonal['stuckLoopCountMax'] === 'number'
+              ? diskPersonal['stuckLoopCountMax']
+              : c.personalAlertThresholds.stuckLoopCountMax,
+          antiPatternCountMax:
+            typeof diskPersonal['antiPatternCountMax'] === 'number'
+              ? diskPersonal['antiPatternCountMax']
+              : c.personalAlertThresholds.antiPatternCountMax,
+        },
+      },
+      // Read-only fields always from startup config
+      accountId: c.accountId ?? null,
+      appName: c.appName,
+      mode: c.mode,
+      storagePath: c.storagePath,
+      highSecurity: c.highSecurity,
+      licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+    });
+  });
+
+  routes.set('PATCH /api/settings', async (req, res) => {
+    if (!deps.configFilePath) return unavailable(res, 'configFilePath');
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+    } catch {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_json' }));
+      return;
+    }
+
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(readFileSync(deps.configFilePath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      /* no existing config — start fresh */
+    }
+
+    const errors: string[] = [];
+    let digestUrlOnly = true; // tracks whether only digest URL changed
+
+    if ('developer' in body) {
+      if (typeof body.developer !== 'string') {
+        errors.push('developer must be a string');
+      } else {
+        existing.developer = normalizeDeveloperName(body.developer);
+        digestUrlOnly = false;
+      }
+    }
+    if ('teamId' in body) {
+      if (body.teamId !== null && typeof body.teamId !== 'string') {
+        errors.push('teamId must be string or null');
+      } else {
+        existing.teamId = body.teamId;
+        digestUrlOnly = false;
+      }
+    }
+    if ('sessionBudgetUsd' in body) {
+      if (
+        body.sessionBudgetUsd !== null &&
+        (typeof body.sessionBudgetUsd !== 'number' || body.sessionBudgetUsd <= 0)
+      ) {
+        errors.push('sessionBudgetUsd must be a positive number or null');
+      } else {
+        existing.sessionBudgetUsd = body.sessionBudgetUsd;
+        digestUrlOnly = false;
+      }
+    }
+    if ('dailyBudgetUsd' in body) {
+      if (
+        body.dailyBudgetUsd !== null &&
+        (typeof body.dailyBudgetUsd !== 'number' || body.dailyBudgetUsd <= 0)
+      ) {
+        errors.push('dailyBudgetUsd must be a positive number or null');
+      } else {
+        existing.dailyBudgetUsd = body.dailyBudgetUsd;
+        digestUrlOnly = false;
+      }
+    }
+    if ('weeklyBudgetUsd' in body) {
+      if (
+        body.weeklyBudgetUsd !== null &&
+        (typeof body.weeklyBudgetUsd !== 'number' || body.weeklyBudgetUsd <= 0)
+      ) {
+        errors.push('weeklyBudgetUsd must be a positive number or null');
+      } else {
+        existing.weeklyBudgetUsd = body.weeklyBudgetUsd;
+        digestUrlOnly = false;
+      }
+    }
+    if ('retainSessionsDays' in body) {
+      if (
+        body.retainSessionsDays !== null &&
+        (!Number.isInteger(body.retainSessionsDays) ||
+          (body.retainSessionsDays as number) < 1 ||
+          (body.retainSessionsDays as number) > 365)
+      ) {
+        errors.push('retainSessionsDays must be integer 1-365 or null');
+      } else {
+        existing.retainSessionsDays = body.retainSessionsDays;
+        digestUrlOnly = false;
+      }
+    }
+    if ('digestWebhookUrl' in body) {
+      if (
+        body.digestWebhookUrl !== null &&
+        (typeof body.digestWebhookUrl !== 'string' ||
+          !body.digestWebhookUrl.startsWith('https://hooks.slack.com/'))
+      ) {
+        errors.push(
+          'digestWebhookUrl must be a Slack incoming webhook URL (https://hooks.slack.com/...) or null',
+        );
+      } else {
+        existing.digestWebhookUrl = body.digestWebhookUrl ?? undefined;
+        if (existing.digestWebhookUrl === undefined) {
+          delete existing.digestWebhookUrl;
+        }
+      }
+    }
+    if ('digestSchedule' in body) {
+      if (typeof body.digestSchedule !== 'string') {
+        errors.push('digestSchedule must be a string');
+      } else {
+        existing.digestSchedule = body.digestSchedule;
+        digestUrlOnly = false;
+      }
+    }
+    if ('alerts' in body) {
+      const alertsBody = body.alerts as Record<string, unknown> | undefined;
+      const personal = alertsBody?.['personal'] as Record<string, unknown> | undefined;
+      if (personal) {
+        const existingAlerts = (existing.alerts ?? {}) as Record<string, unknown>;
+        const existingPersonal = (existingAlerts['personal'] ?? {}) as Record<string, unknown>;
+        if ('dailyCostUsd' in personal) {
+          if (typeof personal.dailyCostUsd !== 'number' || personal.dailyCostUsd < 0) {
+            errors.push('alerts.personal.dailyCostUsd must be a non-negative number');
+          } else {
+            existingPersonal.dailyCostUsd = personal.dailyCostUsd;
+          }
+        }
+        if ('sessionCostUsd' in personal) {
+          if (typeof personal.sessionCostUsd !== 'number' || personal.sessionCostUsd < 0) {
+            errors.push('alerts.personal.sessionCostUsd must be a non-negative number');
+          } else {
+            existingPersonal.sessionCostUsd = personal.sessionCostUsd;
+          }
+        }
+        if ('efficiencyScoreMin' in personal) {
+          if (
+            typeof personal.efficiencyScoreMin !== 'number' ||
+            personal.efficiencyScoreMin < 0 ||
+            personal.efficiencyScoreMin > 1
+          ) {
+            errors.push('alerts.personal.efficiencyScoreMin must be 0-1');
+          } else {
+            existingPersonal.efficiencyScoreMin = personal.efficiencyScoreMin;
+          }
+        }
+        if ('stuckLoopCountMax' in personal) {
+          if (
+            !Number.isInteger(personal.stuckLoopCountMax) ||
+            (personal.stuckLoopCountMax as number) < 0
+          ) {
+            errors.push('alerts.personal.stuckLoopCountMax must be a non-negative integer');
+          } else {
+            existingPersonal.stuckLoopCountMax = personal.stuckLoopCountMax;
+          }
+        }
+        if ('antiPatternCountMax' in personal) {
+          if (
+            !Number.isInteger(personal.antiPatternCountMax) ||
+            (personal.antiPatternCountMax as number) < 0
+          ) {
+            errors.push('alerts.personal.antiPatternCountMax must be a non-negative integer');
+          } else {
+            existingPersonal.antiPatternCountMax = personal.antiPatternCountMax;
+          }
+        }
+        existingAlerts['personal'] = existingPersonal;
+        existing.alerts = existingAlerts;
+        digestUrlOnly = false;
+      }
+    }
+
+    if (errors.length > 0) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'validation_failed', errors }));
+      return;
+    }
+
+    writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
+    jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('POST /api/digest/send', async (_req, res) => {
+    if (!deps.weeklySummaryGenerator || !deps.configFilePath) return unavailable(res, 'digest');
+    const result = await handleSendDigest(
+      deps.weeklySummaryGenerator as unknown as WeeklySummaryGenerator,
+      deps.configFilePath,
+    );
+    jsonOk(res, result);
   });
 
   return async (req, res) => {

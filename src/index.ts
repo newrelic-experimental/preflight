@@ -610,6 +610,8 @@ async function main(): Promise<void> {
           gitEfficiencyTracker,
           concurrencyTracker: liveSessionRegistry,
           contextTracker,
+          config,
+          configFilePath: options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'),
         },
         alertEngine,
         alertLog,

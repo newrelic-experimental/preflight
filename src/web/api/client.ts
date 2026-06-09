@@ -53,6 +53,46 @@ export const fetchContext = (sessionId?: string): Promise<unknown> =>
     sessionId ? `/api/context?sessionId=${encodeURIComponent(sessionId)}` : '/api/context',
   );
 
+export interface SettingsPatch {
+  developer?: string;
+  teamId?: string | null;
+  sessionBudgetUsd?: number | null;
+  dailyBudgetUsd?: number | null;
+  weeklyBudgetUsd?: number | null;
+  retainSessionsDays?: number | null;
+  digestWebhookUrl?: string | null;
+  digestSchedule?: string;
+  alerts?: {
+    personal?: {
+      dailyCostUsd?: number;
+      sessionCostUsd?: number;
+      efficiencyScoreMin?: number;
+      stuckLoopCountMax?: number;
+      antiPatternCountMax?: number;
+    };
+  };
+}
+
+export const fetchSettings = (): Promise<unknown> => getJson<unknown>('/api/settings');
+
+export const patchSettings = (body: SettingsPatch): Promise<unknown> =>
+  fetch('/api/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    const json = (await r.json()) as unknown;
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return json;
+  });
+
+export const postDigestSend = (): Promise<unknown> =>
+  fetch('/api/digest/send', { method: 'POST' }).then(async (r) => {
+    const json = (await r.json()) as unknown;
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return json;
+  });
+
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionToday: ['session', 'today'] as const,
@@ -76,4 +116,5 @@ export const qk = {
   concurrencyHistory: (days: number) => ['concurrency', 'history', days] as const,
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
   context: ['context'] as const,
+  settings: ['settings'] as const,
 };

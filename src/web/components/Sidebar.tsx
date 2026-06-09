@@ -1,4 +1,14 @@
-import { Home, Clock, TrendingUp, ShieldCheck, GitBranch, Sun, Moon } from 'lucide-react';
+import {
+  Home,
+  Clock,
+  TrendingUp,
+  ShieldCheck,
+  GitBranch,
+  Sun,
+  Moon,
+  Settings2,
+  Bell,
+} from 'lucide-react';
 import { useLiveAlerts } from '../hooks/useLiveAlerts';
 import type { AlertEvent } from '../store/liveStore';
 import type { Theme } from '../hooks/useTheme';
@@ -12,6 +22,11 @@ const NAV_ANALYZE = [
   { path: '/history', label: 'History', Icon: TrendingUp },
   { path: '/git', label: 'Git', Icon: GitBranch },
   { path: '/audit', label: 'Audit', Icon: ShieldCheck },
+] as const;
+
+const NAV_CONFIGURE = [
+  { path: '/settings', label: 'Settings', Icon: Settings2 },
+  { path: '/alerts', label: 'Alerts', Icon: Bell },
 ] as const;
 
 const BADGE_TONE: Record<AlertEvent['severity'], string> = {
@@ -141,8 +156,16 @@ export function Sidebar({
       <div className="text-[10px] font-medium text-ink-muted uppercase tracking-wider mb-2 px-2">
         Analyze
       </div>
-      <nav aria-label="Analyze" className="flex flex-col gap-0.5">
+      <nav aria-label="Analyze" className="flex flex-col gap-0.5 mb-4">
         {NAV_ANALYZE.map((item) => renderNavItem(item))}
+      </nav>
+
+      {/* CONFIGURE section */}
+      <div className="text-[10px] font-medium text-ink-muted uppercase tracking-wider mb-2 px-2">
+        Configure
+      </div>
+      <nav aria-label="Configure" className="flex flex-col gap-0.5">
+        {NAV_CONFIGURE.map((item) => renderNavItem(item))}
       </nav>
 
       {/* Footer */}

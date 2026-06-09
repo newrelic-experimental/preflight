@@ -353,12 +353,14 @@ npm run start:local    # alias for npm run dev
 
 Open `http://127.0.0.1:7777` in your browser. The process stays alive until you press Ctrl+C.
 
-The dashboard has four views:
+The dashboard has six views:
 
 - **Today** — live KPIs, sparkline of tool latencies, recent calls, anti-pattern alerts.
 - **Sessions** — list of past sessions with a per-session timeline of every tool call.
 - **History** — weekly efficiency and daily spend trends.
 - **Audit** — every classified tool call (sensitive file access, destructive commands, external network), with a JSONL export button.
+- **Settings** — edit developer name, team ID, budget caps, and session retention from the browser (no config file editing required).
+- **Alerts** — live budget spend vs. caps, editable personal alert thresholds, and Slack digest configuration.
 
 Run `nr-ai-observe setup` to choose a mode interactively.
 
@@ -378,7 +380,7 @@ Register a Slack webhook to receive a weekly summary every Monday morning:
 
 In Claude Code, ask: _"Call `nr_observe_subscribe_digest` with this webhook URL: `https://hooks.slack.com/services/...`"_
 
-Or set it in your config file as `digestWebhookUrl`.
+Or set it in your config file as `digestWebhookUrl`, or configure it directly from the **Alerts** tab in the local dashboard.
 
 ---
 
@@ -445,17 +447,18 @@ npm test
 
 ### Common tasks
 
-| Command                | Purpose                                                 |
-| ---------------------- | ------------------------------------------------------- |
-| `npm run build`        | Build TypeScript server + Vite web dashboard            |
-| `npm run build:server` | Build only the TypeScript server (`tsc --build`)        |
-| `npm run build:web`    | Build only the Vite web dashboard (output: `dist/web/`) |
-| `npm test`             | Run all tests                                           |
-| `npm run lint`         | Check code style                                        |
-| `npm run format`       | Auto-format code                                        |
-| `npm run dev`          | Start local dashboard (assumes pre-built `dist/`)       |
-| `npm run dev:all`      | Build then start local dashboard                        |
-| `npm run start:local`  | Alias for `npm run dev`                                 |
+| Command                | Purpose                                                    |
+| ---------------------- | ---------------------------------------------------------- |
+| `npm run build`        | Build TypeScript server + Vite web dashboard               |
+| `npm run build:server` | Build only the TypeScript server (`tsc --build`)           |
+| `npm run build:web`    | Build only the Vite web dashboard (output: `dist/web/`)    |
+| `npm test`             | Run all tests                                              |
+| `npm run lint`         | Check code style                                           |
+| `npm run format`       | Auto-format code                                           |
+| `npm run dev`          | Start local dashboard (assumes pre-built `dist/`)          |
+| `npm run dev:all`      | Build then start local dashboard                           |
+| `npm run dev:full`     | Build backend, then run backend + Vite dev server together |
+| `npm run start:local`  | Alias for `npm run dev`                                    |
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development guide, conventions, and architecture.
 
