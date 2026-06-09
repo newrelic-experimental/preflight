@@ -52,12 +52,19 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
   }
 
   // Sort by timestamp so out-of-order entries (clock skew, live injection) don't
-  // produce negative offsets or clip bars behind the label column.
-  const sorted = [...entries].sort((a, b) => a.timestamp - b.timestamp);
-  const firstTs = sorted[0]!.timestamp;
+  // produce negative offsets or clip bars behind the label column. Carry the
+  // original index so segment indices (which refer to the unsorted `entries`)
+  // still map to the right rows after sorting.
+  const sorted = entries
+    .map((entry, originalIdx) => ({ entry, originalIdx }))
+    .sort((a, b) => a.entry.timestamp - b.entry.timestamp);
+  const firstTs = sorted[0]!.entry.timestamp;
   // Use the maximum end time across all entries, not just the last entry in array
   // order — an intermediate entry may have a longer duration and overflow the track.
-  const maxEnd = sorted.reduce((m, e) => Math.max(m, e.timestamp + (e.durationMs ?? 50)), 0);
+  const maxEnd = sorted.reduce(
+    (m, { entry }) => Math.max(m, entry.timestamp + (entry.durationMs ?? 50)),
+    0,
+  );
   const totalDuration = Math.max(maxEnd - firstTs, 1);
 
   // Compute tick interval — target ~8 visible labels max
@@ -74,17 +81,25 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
     ticks.push(t);
   }
 
-  // Build per-row segment lookup for left-border indicators
-  const segmentAt: (GanttSegment | null)[] = new Array(entries.length).fill(null);
+  // Build per-row segment lookup. Segment indices reference the original
+  // `entries` order; map them through the sort so highlights land on the
+  // right row when entries arrive out of timestamp order.
+  const segmentAt: (GanttSegment | null)[] = new Array(sorted.length).fill(null);
+  const originalToSorted = new Map<number, number>();
+  for (let i = 0; i < sorted.length; i++) {
+    originalToSorted.set(sorted[i]!.originalIdx, i);
+  }
   for (const seg of segments) {
     const start = Math.max(0, seg.startIndex);
     const end = Math.min(seg.endIndex, entries.length - 1);
     for (let i = start; i <= end; i++) {
+      const sIdx = originalToSorted.get(i);
+      if (sIdx === undefined) continue;
       if (
-        segmentAt[i] === null ||
-        (seg.severity === 'critical' && segmentAt[i]!.severity !== 'critical')
+        segmentAt[sIdx] === null ||
+        (seg.severity === 'critical' && segmentAt[sIdx]!.severity !== 'critical')
       ) {
-        segmentAt[i] = seg;
+        segmentAt[sIdx] = seg;
       }
     }
   }
@@ -115,7 +130,7 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
 
       {/* Rows */}
       <div className="mt-1">
-        {sorted.map((entry, idx) => {
+        {sorted.map(({ entry, originalIdx }, idx) => {
           const offsetMs = entry.timestamp - firstTs;
           const duration = entry.durationMs ?? 50;
           const leftPct = (offsetMs / totalDuration) * 100;
@@ -129,7 +144,7 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
 
           return (
             <div
-              key={`${idx}-${entry.timestamp}`}
+              key={`${originalIdx}-${entry.timestamp}`}
               className={`flex items-center h-7 ${borderClass}`}
             >
               <div
@@ -150,13 +165,16 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
                   onMouseEnter={() => setHoveredIndex(idx)}
                   onMouseLeave={() => setHoveredIndex(null)}
                 />
-                {/* Tooltip */}
+                {/* Tooltip — anchor to whichever side of the bar leaves more
+                    room so it never spills past the track edges, and switch to
+                    above-the-bar for the last few rows so it isn't clipped by
+                    the scroll container. */}
                 {hoveredIndex === idx && (
                   <div
-                    className={`absolute z-50 px-2 py-1.5 rounded-lg bg-bg-elevated border border-bg-line text-[11px] text-ink-base shadow-lg whitespace-nowrap pointer-events-none ${idx >= 3 && idx > entries.length - 4 ? 'bottom-full mb-1' : 'top-full mt-1'}`}
+                    className={`absolute z-50 px-2 py-1.5 rounded-lg bg-bg-elevated border border-bg-line text-[11px] text-ink-base shadow-lg whitespace-nowrap pointer-events-none ${idx >= 3 && idx > sorted.length - 4 ? 'bottom-full mb-1' : 'top-full mt-1'}`}
                     style={
-                      leftPct > 60
-                        ? { right: `${100 - leftPct - widthPct}%` }
+                      leftPct >= 50
+                        ? { right: `${Math.max(0, 100 - leftPct - widthPct)}%` }
                         : { left: `${leftPct}%` }
                     }
                   >
