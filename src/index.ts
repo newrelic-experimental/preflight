@@ -214,6 +214,23 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info('Shutting down...');
     try {
+      // Remove pidfile and port file early so status checks reflect shutdown promptly.
+      if (options.local) {
+        const { homedir: home } = await import('node:os');
+        const { join: joinPath } = await import('node:path');
+        const { unlinkSync } = await import('node:fs');
+        const stateDir = joinPath(home(), '.nr-ai-observe');
+        try {
+          unlinkSync(joinPath(stateDir, 'daemon.pid'));
+        } catch {
+          /* already gone */
+        }
+        try {
+          unlinkSync(joinPath(stateDir, 'daemon.port'));
+        } catch {
+          /* already gone */
+        }
+      }
       persistSession?.();
       if (config?.transport !== 'nr-events-api' && sessionTracker && taskDetector && sessionSpan) {
         taskSpanTracker?.closeAll();
@@ -622,6 +639,21 @@ async function main(): Promise<void> {
         throw err;
       }
       logger.info(`Dashboard ready at http://${addr.address}:${addr.port}`);
+
+      // Write pidfile and port file so `nr-ai-observe status/stop` can find this process.
+      if (options.local) {
+        try {
+          const { homedir: home } = await import('node:os');
+          const { mkdirSync: mkStateDir, writeFileSync: writeState } = await import('node:fs');
+          const stateDir = joinPath(home(), '.nr-ai-observe');
+          mkStateDir(stateDir, { recursive: true, mode: 0o700 });
+          writeState(joinPath(stateDir, 'daemon.pid'), String(process.pid), { mode: 0o600 });
+          writeState(joinPath(stateDir, 'daemon.port'), String(addr.port), { mode: 0o600 });
+        } catch {
+          // Non-fatal — daemon management will fall back to other detection
+        }
+      }
+
       // F-013: openOnStart is declared in config but auto-open isn't
       // implemented in v1 — log a warning so a user who set it doesn't
       // assume the feature works silently.

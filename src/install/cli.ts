@@ -365,7 +365,124 @@ export function createInstallProgram(): Command {
     .option('--disable', 'Remove the auto-update schedule')
     .action(handleSchedule);
 
+  program
+    .command('start')
+    .description('Start the dashboard daemon (auto-starts on login)')
+    .option('-p, --port <number>', 'Dashboard port', '7777')
+    .action(async (opts: { port: string }) => {
+      try {
+        const { startDaemon, installLaunchAgent, getDaemonStatus, pollHealth } =
+          await import('./daemon.js');
+        const port = parseInt(opts.port, 10);
+        if (!Number.isFinite(port) || port < 1 || port > 65535) {
+          print('Error: port must be a number between 1 and 65535');
+          process.exitCode = 1;
+          return;
+        }
+        print('Starting nr-ai-observe...');
+        // On macOS, let launchd own the process lifecycle (restart-on-crash, login persistence).
+        // installLaunchAgent + launchctl load starts the process — no need for startDaemon.
+        if (process.platform === 'darwin') {
+          installLaunchAgent(port, print);
+          // launchctl load is asynchronous — poll until the health endpoint responds
+          // before checking status, mirroring what startDaemon does on other platforms.
+          await pollHealth(port, 3000);
+        } else {
+          await startDaemon({ port, log: print });
+        }
+        const status = await getDaemonStatus(port);
+        if (status.running) {
+          print(`  PID:        ${status.pid}`);
+          print(`  Port:       ${status.port}`);
+          print(`  Dashboard:  ${status.url}`);
+          if (process.platform === 'darwin') {
+            print(`  Auto-start: enabled (will start on login)`);
+          }
+        } else {
+          print('  Daemon may still be starting — check with: nr-ai-observe status');
+        }
+      } catch (err) {
+        print(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('stop')
+    .description('Stop the dashboard daemon and remove auto-start')
+    .action(async () => {
+      try {
+        const { stopDaemon, removeLaunchAgent } = await import('./daemon.js');
+        print('Stopping nr-ai-observe...');
+        // Remove LaunchAgent FIRST so launchd doesn't respawn after SIGTERM.
+        removeLaunchAgent(print);
+        await stopDaemon(print);
+        print('Stopped.');
+      } catch (err) {
+        print(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('status')
+    .description('Show daemon status')
+    .action(async () => {
+      try {
+        const { getDaemonStatus, isLaunchAgentInstalled } = await import('./daemon.js');
+        const status = await getDaemonStatus();
+        const autoStart = isLaunchAgentInstalled();
+        if (status.running) {
+          print('nr-ai-observe is running');
+          print(`  PID:        ${status.pid}`);
+          print(`  Port:       ${status.port}`);
+          if (status.uptime != null) {
+            print(`  Uptime:     ${formatUptime(status.uptime)}`);
+          }
+          print(`  Dashboard:  ${status.url}`);
+          print(`  Auto-start: ${autoStart ? 'enabled' : 'disabled'}`);
+        } else {
+          print('nr-ai-observe is not running');
+          if (autoStart) {
+            print('  Auto-start is configured but daemon is not running.');
+            print('  Try: nr-ai-observe start');
+          }
+        }
+      } catch (err) {
+        print(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('serve')
+    .description('Run the dashboard in the foreground (for debugging)')
+    .option('-p, --port <number>', 'Dashboard port', '7777')
+    .action(async (opts: { port: string }) => {
+      try {
+        const { startDaemon } = await import('./daemon.js');
+        const port = parseInt(opts.port, 10);
+        if (!Number.isFinite(port) || port < 1 || port > 65535) {
+          print('Error: port must be a number between 1 and 65535');
+          process.exitCode = 1;
+          return;
+        }
+        await startDaemon({ port, foreground: true, log: print });
+      } catch (err) {
+        print(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
   return program;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
 }
 
 export async function runInstallCli(argv: string[]): Promise<void> {

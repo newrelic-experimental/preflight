@@ -631,6 +631,10 @@ if (_isDirectExecution) {
     _subcommand === 'uninstall' ||
     _subcommand === 'setup' ||
     _subcommand === 'update' ||
+    _subcommand === 'start' ||
+    _subcommand === 'stop' ||
+    _subcommand === 'status' ||
+    _subcommand === 'serve' ||
     (_subcommand !== undefined && _subcommand.startsWith('-'))
   ) {
     // Dynamic import keeps the hook path lightweight — commander and friends
