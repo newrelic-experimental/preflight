@@ -706,6 +706,7 @@ if (_isDirectExecution) {
     _subcommand === 'uninstall' ||
     _subcommand === 'setup' ||
     _subcommand === 'update' ||
+    _subcommand === 'validate' ||
     _subcommand === 'start' ||
     _subcommand === 'stop' ||
     _subcommand === 'status' ||

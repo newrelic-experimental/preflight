@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -944,6 +944,162 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   });
 
   return Object.freeze(config);
+}
+
+// ---------------------------------------------------------------------------
+// Config file validation (used by `nr-ai-observe validate` CLI command)
+// ---------------------------------------------------------------------------
+
+export interface ConfigValidationResult {
+  readonly filePath: string;
+  readonly fileExists: boolean;
+  /** Fatal problems that will prevent the MCP server from starting. */
+  readonly errors: readonly string[];
+  /** Non-fatal problems that may cause settings to be silently ignored. */
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Validate a config file and return structured results — no throws, no logging.
+ * The CLI `validate` command uses this to surface issues in human-readable form
+ * before the user attempts to start the MCP server.
+ */
+export function validateConfigFile(filePath: string): ConfigValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!existsSync(filePath)) {
+    return { filePath, fileExists: false, errors, warnings };
+  }
+
+  // Read and parse the file
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    errors.push(`Could not read file: ${err instanceof Error ? err.message : String(err)}`);
+    return { filePath, fileExists: true, errors, warnings };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    errors.push(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    return { filePath, fileExists: true, errors, warnings };
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    errors.push('Config must be a JSON object, not an array or primitive value');
+    return { filePath, fileExists: true, errors, warnings };
+  }
+
+  // Zod type/value errors
+  const validation = ConfigFileSchema.safeParse(parsed);
+  if (!validation.success) {
+    for (const issue of validation.error.issues) {
+      const path = issue.path.length > 0 ? issue.path.join('.') : 'root';
+      errors.push(`${path}: ${issue.message}`);
+    }
+  }
+
+  // Unknown key detection with "did you mean" suggestions
+  const file = parsed as Record<string, unknown>;
+
+  const knownTopKeys = new Set(Object.keys(ConfigFileSchema.shape));
+  for (const key of Object.keys(file)) {
+    if (!knownTopKeys.has(key)) {
+      const suggestion = findSuggestion(key, knownTopKeys);
+      warnings.push(
+        `Unknown key "${key}"${suggestion ? ` — did you mean "${suggestion}"?` : ' — not a recognized config field'}`,
+      );
+    }
+  }
+
+  const knownAlertsKeys = new Set([
+    'personal',
+    'enabled',
+    'evaluationIntervalSeconds',
+    'osNotifications',
+    'logRetentionMb',
+    'rulesPath',
+  ]);
+  const knownAlertsPersonalKeys = new Set([
+    'dailyCostUsd',
+    'sessionCostUsd',
+    'efficiencyScoreMin',
+    'stuckLoopCountMax',
+    'antiPatternCountMax',
+  ]);
+  const knownDashboardKeys = new Set(['port', 'host', 'openOnStart']);
+
+  if (file.alerts && typeof file.alerts === 'object' && !Array.isArray(file.alerts)) {
+    const alerts = file.alerts as Record<string, unknown>;
+    for (const key of Object.keys(alerts)) {
+      if (!knownAlertsKeys.has(key)) {
+        const suggestion = findSuggestion(key, knownAlertsKeys);
+        warnings.push(
+          `Unknown key "alerts.${key}"${suggestion ? ` — did you mean "alerts.${suggestion}"?` : ''}`,
+        );
+      }
+    }
+    if (alerts.personal && typeof alerts.personal === 'object' && !Array.isArray(alerts.personal)) {
+      const personal = alerts.personal as Record<string, unknown>;
+      for (const key of Object.keys(personal)) {
+        if (!knownAlertsPersonalKeys.has(key)) {
+          const suggestion = findSuggestion(key, knownAlertsPersonalKeys);
+          warnings.push(
+            `Unknown key "alerts.personal.${key}"${suggestion ? ` — did you mean "alerts.personal.${suggestion}"?` : ''}`,
+          );
+        }
+      }
+    }
+  }
+
+  if (file.dashboard && typeof file.dashboard === 'object' && !Array.isArray(file.dashboard)) {
+    const dashboard = file.dashboard as Record<string, unknown>;
+    for (const key of Object.keys(dashboard)) {
+      if (!knownDashboardKeys.has(key)) {
+        const suggestion = findSuggestion(key, knownDashboardKeys);
+        warnings.push(
+          `Unknown key "dashboard.${key}"${suggestion ? ` — did you mean "dashboard.${suggestion}"?` : ''}`,
+        );
+      }
+    }
+  }
+
+  return { filePath, fileExists: true, errors, warnings };
+}
+
+/** Return a suggestion from known keys if the unknown key is a case-insensitive
+ *  match or a single-character edit away (insertion, deletion, or substitution). */
+function findSuggestion(unknown: string, knownKeys: Set<string>): string | null {
+  const lower = unknown.toLowerCase();
+  // Exact case-insensitive match — covers the most common typo (e.g. licensekey → licenseKey)
+  for (const k of knownKeys) {
+    if (k.toLowerCase() === lower) return k;
+  }
+  // Single-character difference (insertion, deletion, or substitution)
+  for (const k of knownKeys) {
+    if (editDistance(unknown, k) <= 1) return k;
+  }
+  return null;
+}
+
+function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
 }
 
 const MAX_REDACT_LEN = 1_048_576; // 1 MB

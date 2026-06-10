@@ -7,6 +7,7 @@ import {
   redactSensitive,
   sanitizeDeveloper,
   normalizeDeveloperName,
+  validateConfigFile,
 } from './config.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -1607,5 +1608,91 @@ describe('normalizeDeveloperName', () => {
   it('handles $USER-style values consistently across machines', () => {
     expect(normalizeDeveloperName('cdehaan')).toBe('cdehaan');
     expect(normalizeDeveloperName('CDEHAAN')).toBe('cdehaan');
+  });
+});
+
+describe('validateConfigFile()', () => {
+  it('returns fileExists:false with no errors for a missing file', () => {
+    const result = validateConfigFile(resolve(tmpDir, 'nonexistent.json'));
+    expect(result.fileExists).toBe(false);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('reports a read error separately from a JSON parse error', () => {
+    // Write a directory where a file is expected (unreadable as JSON)
+    mkdirSync(resolve(tmpDir, 'notafile.json'));
+    const result = validateConfigFile(resolve(tmpDir, 'notafile.json'));
+    expect(result.fileExists).toBe(true);
+    expect(result.errors[0]).toMatch(/Could not read file/);
+  });
+
+  it('reports invalid JSON', () => {
+    writeFileSync(resolve(tmpDir, 'bad.json'), 'not json{{{');
+    const result = validateConfigFile(resolve(tmpDir, 'bad.json'));
+    expect(result.errors[0]).toMatch(/Invalid JSON/);
+  });
+
+  it('reports a non-object root value', () => {
+    writeFileSync(resolve(tmpDir, 'arr.json'), '[1, 2, 3]');
+    const result = validateConfigFile(resolve(tmpDir, 'arr.json'));
+    expect(result.errors[0]).toMatch(/JSON object/);
+  });
+
+  it('returns no errors or warnings for a valid config', () => {
+    writeFileSync(
+      resolve(tmpDir, 'valid.json'),
+      JSON.stringify({ licenseKey: 'abc', accountId: '12345', mode: 'cloud' }),
+    );
+    const result = validateConfigFile(resolve(tmpDir, 'valid.json'));
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('reports a Zod type error for a wrong-type field', () => {
+    writeFileSync(resolve(tmpDir, 'badtype.json'), JSON.stringify({ enabled: 'yes' }));
+    const result = validateConfigFile(resolve(tmpDir, 'badtype.json'));
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain('enabled');
+  });
+
+  it('reports a Zod enum error for an invalid mode value', () => {
+    writeFileSync(resolve(tmpDir, 'badmode.json'), JSON.stringify({ mode: 'clod' }));
+    const result = validateConfigFile(resolve(tmpDir, 'badmode.json'));
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain('mode');
+  });
+
+  it('warns about an unknown top-level key with a did-you-mean suggestion', () => {
+    writeFileSync(resolve(tmpDir, 'typo.json'), JSON.stringify({ licensekey: 'abc' }));
+    const result = validateConfigFile(resolve(tmpDir, 'typo.json'));
+    expect(result.warnings[0]).toContain('licensekey');
+    expect(result.warnings[0]).toContain('licenseKey');
+  });
+
+  it('warns about an unknown key with no suggestion when there is no close match', () => {
+    writeFileSync(resolve(tmpDir, 'unknown.json'), JSON.stringify({ completelyWrong: true }));
+    const result = validateConfigFile(resolve(tmpDir, 'unknown.json'));
+    expect(result.warnings[0]).toContain('completelyWrong');
+    expect(result.warnings[0]).not.toContain('did you mean');
+  });
+
+  it('warns about unknown keys in nested alerts and dashboard objects', () => {
+    writeFileSync(
+      resolve(tmpDir, 'nested.json'),
+      JSON.stringify({
+        alerts: { enabledd: true },
+        dashboard: { openOnStarrt: false },
+      }),
+    );
+    const result = validateConfigFile(resolve(tmpDir, 'nested.json'));
+    const allWarnings = result.warnings.join('\n');
+    expect(allWarnings).toContain('alerts.enabledd');
+    expect(allWarnings).toContain('dashboard.openOnStarrt');
+  });
+
+  it('never throws, even on empty file', () => {
+    writeFileSync(resolve(tmpDir, 'empty.json'), '');
+    expect(() => validateConfigFile(resolve(tmpDir, 'empty.json'))).not.toThrow();
   });
 });

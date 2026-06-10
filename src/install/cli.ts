@@ -28,6 +28,7 @@ import {
   detectMcpConfigPath,
   generateNrConfig,
 } from './install-helper.js';
+import { validateConfigFile, DEFAULT_STORAGE_PATH } from '../config.js';
 import {
   installSchedule,
   removeSchedule,
@@ -270,6 +271,9 @@ function handleInstall(options: {
   print('  1. Restart Claude Code');
   print('  2. Verify: ask Claude Code to call nr_observe_get_session_stats');
   print('');
+  print('  Tip: if the MCP server fails to connect, run:');
+  print('    nr-ai-observe validate');
+  print('  to check your config file for typos or unsupported fields.');
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +321,52 @@ function handleUninstall(options: { project?: boolean }): void {
 }
 
 // ---------------------------------------------------------------------------
+// Validate handler
+// ---------------------------------------------------------------------------
+
+function handleValidate(options: { config?: string }): void {
+  const configPath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
+  print(`Validating ${configPath}...`);
+  print('');
+
+  const result = validateConfigFile(configPath);
+
+  if (!result.fileExists) {
+    print('No config file found at this path — defaults will apply.');
+    print("Run 'nr-ai-observe setup' to create one.");
+    return;
+  }
+
+  if (result.errors.length === 0 && result.warnings.length === 0) {
+    print('✓ Config is valid — no issues found.');
+    return;
+  }
+
+  for (const err of result.errors) {
+    print(`✗ Error: ${err}`);
+  }
+  for (const warn of result.warnings) {
+    print(`⚠ Warning: ${warn}`);
+  }
+
+  print('');
+  const parts: string[] = [];
+  if (result.errors.length > 0)
+    parts.push(`${result.errors.length} error${result.errors.length > 1 ? 's' : ''}`);
+  if (result.warnings.length > 0)
+    parts.push(`${result.warnings.length} warning${result.warnings.length > 1 ? 's' : ''}`);
+
+  if (result.errors.length > 0) {
+    print(`${parts.join(', ')}. Config is invalid — the MCP server will not start.`);
+    print('Fix the errors above, then restart Claude Code.');
+    process.exitCode = 1;
+  } else {
+    print(`${parts.join(', ')}. Config will load, but the flagged fields are silently ignored.`);
+    print('Check the warnings above for possible typos.');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLI program
 // ---------------------------------------------------------------------------
 
@@ -352,6 +402,12 @@ export function createInstallProgram(): Command {
         process.exitCode = 1;
       }
     });
+
+  program
+    .command('validate')
+    .description('Check the config file for unknown fields, type errors, and typos')
+    .option('--config <path>', 'Path to config file (default: ~/.nr-ai-observe/config.json)')
+    .action(handleValidate);
 
   program
     .command('update')

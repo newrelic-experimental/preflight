@@ -263,6 +263,23 @@ The easiest way to configure is through the setup wizard (`nr-ai-observe setup`)
 
 All settings can also be set via environment variables — see [example.config.js](./example.config.js) for the full annotated reference.
 
+### Validating your config
+
+If the MCP server fails to connect, run:
+
+```bash
+nr-ai-observe validate
+```
+
+This checks your config file for JSON syntax errors, invalid field types, and misspelled or unknown keys — and suggests corrections:
+
+```
+✗ Error: mode: Invalid enum value. Expected 'cloud' | 'local' | 'both', received 'clod'
+⚠ Warning: Unknown key "licensekey" — did you mean "licenseKey"?
+```
+
+Pass `--config <path>` to check a file at a non-default location.
+
 ### OTLP Transport
 
 To export telemetry to other OpenTelemetry-compatible backends (Datadog, Grafana Cloud, Honeycomb, or New Relic's OTLP endpoint), or to enable an inbound OTLP receiver in proxy mode, see [ADVANCED.md](./docs/ADVANCED.md#otlp-transport).
