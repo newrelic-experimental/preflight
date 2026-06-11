@@ -22,7 +22,7 @@ You need three things before installation.
 
 This works with **Claude Code**, Cursor, Windsurf, GitHub Copilot, Zed, Continue.dev, or Amazon Q Developer. The examples below use Claude Code, which has the deepest integration.
 
-### 2. Node.js v22 or higher
+### 2. Node.js v22 or higher (v24 recommended)
 
 Open a terminal and run:
 
@@ -30,10 +30,10 @@ Open a terminal and run:
 node --version
 ```
 
-If it shows `v22.x.x` or higher, you're set. If not, install it from [nodejs.org](https://nodejs.org) or via nvm:
+If it shows `v22.x.x` or higher, you're set. v24 is recommended (and what the project uses for development). If you need to upgrade, install it from [nodejs.org](https://nodejs.org) or via nvm:
 
 ```bash
-nvm install 22 && nvm use 22
+nvm install 24 && nvm use 24
 ```
 
 ### 3. A New Relic account with two keys
@@ -51,13 +51,20 @@ You'll also need your **Account ID** — a number visible in the URL when you're
 
 ## Quick Start
 
-**Step 1 — Install the package globally**
+> **Pre-release:** The npm package will be available after the public launch. Until then, install from source:
+>
+> ```bash
+> git clone https://source.datanerd.us/cdehaan/nr-ai-coding-observability
+> cd nr-ai-coding-observability
+> nvm use        # Node 22+
+> npm install
+> npm run build
+> npm link       # puts nr-ai-observe on your PATH
+> ```
+>
+> After launch, Step 1 will simplify to `npm install -g nr-ai-mcp-server`.
 
-```bash
-npm install -g nr-ai-mcp-server
-```
-
-This puts `nr-ai-observe` on your PATH.
+**Step 1 — Put `nr-ai-observe` on your PATH** _(see above)_
 
 **Step 2 — Run the interactive setup wizard**
 
@@ -104,12 +111,12 @@ If you get back a response with tool call counts and timing data, it's working.
 
 ## From source / contributing
 
-If you'd rather run from a git clone (to develop the project, deploy dashboards/alerts, or stay on the latest unreleased changes):
+This is also the current install path until the npm package is published. Use it to develop the project, deploy dashboards/alerts, or stay on the latest unreleased changes:
 
 ```bash
-git clone https://github.com/newrelic/nr-ai-observatory
-cd nr-ai-observatory
-nvm use          # Switch to the right Node version
+git clone https://source.datanerd.us/cdehaan/nr-ai-coding-observability
+cd nr-ai-coding-observability
+nvm use          # Switch to the right Node version (24+)
 npm install      # Install all dependencies
 npm run build    # Compile TypeScript
 npm link         # Register nr-ai-observe binary on PATH (required for hooks)
@@ -132,7 +139,7 @@ Then run `nr-ai-observe setup` exactly as in the Quick Start.
 > ```bash
 > curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 > # restart your shell, then:
-> nvm install 22 && nvm use 22
+> nvm install 24 && nvm use 24
 > npm install && npm run build && npm link
 > ```
 >
@@ -248,18 +255,18 @@ The easiest way to configure is through the setup wizard (`nr-ai-observe setup`)
 
 ### Key settings
 
-| Setting              | What it does                                                                                                                                                                 | Default      |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| `developer`          | Your identifier on all NR events. Automatically normalized to lowercase with underscores — e.g., "John Doe" → "john_doe". Falls back to `$USER` or your git name if not set. | Inferred     |
-| `collectorHost`      | Region override: `null` = US (default), `'eu'` = EU, `'gov'` = FedRAMP/GovCloud. The wizard auto-detects from your license key prefix and lets you confirm.                  | `null` (US)  |
-| `nrApiKey`           | User API key (`NRAK-...`) for NerdGraph queries (team summaries, dashboard/alert deploy). The wizard prompts for it and validates it live.                                   | Not set      |
-| `sessionBudgetUsd`   | Emits a warning event at 50%, 80%, 100% of this amount per session                                                                                                           | No limit     |
-| `dailyBudgetUsd`     | Daily spend cap                                                                                                                                                              | No limit     |
-| `weeklyBudgetUsd`    | Weekly spend cap                                                                                                                                                             | No limit     |
-| `retainSessionsDays` | Auto-deletes local session files older than N days                                                                                                                           | Keep forever |
-| `teamId`             | Tags all events with your team name for team dashboards                                                                                                                      | Not set      |
-| `projectId`          | Tags all events with a project name (auto-derived from your git remote URL if not set)                                                                                       | Auto-derived |
-| `digestWebhookUrl`   | Slack webhook URL for weekly cost and efficiency summaries                                                                                                                   | Not set      |
+| Setting              | What it does                                                                                                                                                                                                                                                              | Default      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `developer`          | Your identifier on all NR events. Automatically normalized to lowercase with underscores — e.g., "John Doe" → "john_doe". Falls back to `$USER` or your git name if not set.                                                                                              | Inferred     |
+| `collectorHost`      | Region override: `null` = US (default), `'eu'` = EU, `'gov'` = FedRAMP/GovCloud. The wizard auto-detects from your license key prefix and lets you confirm.                                                                                                               | `null` (US)  |
+| `nrApiKey`           | User API key (`NRAK-...`) for NerdGraph queries (team summaries, dashboard/alert deploy). The wizard prompts for it and validates it live.                                                                                                                                | Not set      |
+| `sessionBudgetUsd`   | Emits a warning event at 50%, 80%, 100% of this amount per session                                                                                                                                                                                                        | No limit     |
+| `dailyBudgetUsd`     | Emits a warning event at 50%, 80%, 100% of this amount per day                                                                                                                                                                                                            | No limit     |
+| `weeklyBudgetUsd`    | Emits a warning event at 50%, 80%, 100% of this amount per week                                                                                                                                                                                                           | No limit     |
+| `retainSessionsDays` | Auto-deletes local session files older than N days                                                                                                                                                                                                                        | Keep forever |
+| `teamId`             | A label **you define** (e.g. `"platform-eng"`, `"nova-team"`) stamped on all NR events as `team_id`, enabling cross-developer queries like `WHERE team_id = 'platform-eng'`. This is **not** your NR account ID — it's a free-form slug you choose to identify your team. | Not set      |
+| `projectId`          | Tags all events with a project name (auto-derived from your git remote URL if not set)                                                                                                                                                                                    | Auto-derived |
+| `digestWebhookUrl`   | Slack webhook URL for weekly cost and efficiency summaries                                                                                                                                                                                                                | Not set      |
 
 All settings can also be set via environment variables — see [example.config.js](./example.config.js) for the full annotated reference.
 

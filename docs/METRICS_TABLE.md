@@ -52,7 +52,7 @@ Emitted for every tool call captured by the hook collector.
 | `developer`         | string  | Developer identifier                                                                                                                                                       |
 | `app_name`          | string  | Application name (default: `nr-ai-mcp-server`)                                                                                                                             |
 | `session_id`        | string  | Session identifier (if available)                                                                                                                                          |
-| `team_id`           | string  | Team identifier (if configured)                                                                                                                                            |
+| `team_id`           | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not configured.                                              |
 | `project_id`        | string  | Project identifier (derived from git remote or configured)                                                                                                                 |
 | `org_id`            | string  | Organization identifier (if configured)                                                                                                                                    |
 | `platform`          | string  | Platform attribution (default: `claude-code`)                                                                                                                              |
@@ -79,25 +79,25 @@ Source: `src/hooks/bash-classifier.ts` — `classifyBash()`
 
 Emitted for proxied tool calls (when the server forwards to upstream MCP servers).
 
-| Field                 | Type    | Description                                                |
-| --------------------- | ------- | ---------------------------------------------------------- |
-| `eventType`           | string  | Always `"AiMcpToolCall"`                                   |
-| `timestamp`           | number  | Unix epoch milliseconds                                    |
-| `server`              | string  | Upstream server name                                       |
-| `tool`                | string  | Tool name                                                  |
-| `duration_ms`         | number  | Total duration including proxy overhead                    |
-| `upstream_latency_ms` | number  | Upstream server response time                              |
-| `success`             | boolean | Whether the call succeeded                                 |
-| `developer`           | string  | Developer identifier                                       |
-| `app_name`            | string  | Application name                                           |
-| `session_id`          | string  | Session identifier (if available)                          |
-| `team_id`             | string  | Team identifier (if configured)                            |
-| `project_id`          | string  | Project identifier (derived from git remote or configured) |
-| `org_id`              | string  | Organization identifier (if configured)                    |
-| `proxy_overhead_ms`   | number  | Time spent in proxy layer (if available)                   |
-| `error_type`          | string  | Error classification (if failed)                           |
-| `request_size_bytes`  | number  | Request payload size (if available)                        |
-| `response_size_bytes` | number  | Response payload size (if available)                       |
+| Field                 | Type    | Description                                                                                                            |
+| --------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`           | string  | Always `"AiMcpToolCall"`                                                                                               |
+| `timestamp`           | number  | Unix epoch milliseconds                                                                                                |
+| `server`              | string  | Upstream server name                                                                                                   |
+| `tool`                | string  | Tool name                                                                                                              |
+| `duration_ms`         | number  | Total duration including proxy overhead                                                                                |
+| `upstream_latency_ms` | number  | Upstream server response time                                                                                          |
+| `success`             | boolean | Whether the call succeeded                                                                                             |
+| `developer`           | string  | Developer identifier                                                                                                   |
+| `app_name`            | string  | Application name                                                                                                       |
+| `session_id`          | string  | Session identifier (if available)                                                                                      |
+| `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`          | string  | Project identifier (derived from git remote or configured)                                                             |
+| `org_id`              | string  | Organization identifier (if configured)                                                                                |
+| `proxy_overhead_ms`   | number  | Time spent in proxy layer (if available)                                                                               |
+| `error_type`          | string  | Error classification (if failed)                                                                                       |
+| `request_size_bytes`  | number  | Request payload size (if available)                                                                                    |
+| `response_size_bytes` | number  | Response payload size (if available)                                                                                   |
 
 Source: `src/transport/nr-ingest.ts` — `proxyToolCallToNrEvent()`
 
@@ -105,22 +105,22 @@ Source: `src/transport/nr-ingest.ts` — `proxyToolCallToNrEvent()`
 
 Emitted for non-tool proxy requests (discovery methods like `tools/list`, `resources/list`).
 
-| Field                 | Type    | Description                                                |
-| --------------------- | ------- | ---------------------------------------------------------- |
-| `eventType`           | string  | Always `"AiProxyRequest"`                                  |
-| `timestamp`           | number  | Unix epoch milliseconds                                    |
-| `server`              | string  | Upstream server name                                       |
-| `method`              | string  | MCP method name (e.g., `tools/list`)                       |
-| `duration_ms`         | number  | Total duration                                             |
-| `upstream_latency_ms` | number  | Upstream response time                                     |
-| `success`             | boolean | Whether the request succeeded                              |
-| `developer`           | string  | Developer identifier                                       |
-| `app_name`            | string  | Application name                                           |
-| `team_id`             | string  | Team identifier (if configured)                            |
-| `project_id`          | string  | Project identifier (derived from git remote or configured) |
-| `org_id`              | string  | Organization identifier (if configured)                    |
-| `proxy_overhead_ms`   | number  | Proxy layer overhead (if available)                        |
-| `response_size_bytes` | number  | Response size (if available)                               |
+| Field                 | Type    | Description                                                                                                            |
+| --------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`           | string  | Always `"AiProxyRequest"`                                                                                              |
+| `timestamp`           | number  | Unix epoch milliseconds                                                                                                |
+| `server`              | string  | Upstream server name                                                                                                   |
+| `method`              | string  | MCP method name (e.g., `tools/list`)                                                                                   |
+| `duration_ms`         | number  | Total duration                                                                                                         |
+| `upstream_latency_ms` | number  | Upstream response time                                                                                                 |
+| `success`             | boolean | Whether the request succeeded                                                                                          |
+| `developer`           | string  | Developer identifier                                                                                                   |
+| `app_name`            | string  | Application name                                                                                                       |
+| `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`          | string  | Project identifier (derived from git remote or configured)                                                             |
+| `org_id`              | string  | Organization identifier (if configured)                                                                                |
+| `proxy_overhead_ms`   | number  | Proxy layer overhead (if available)                                                                                    |
+| `response_size_bytes` | number  | Response size (if available)                                                                                           |
 
 Source: `src/transport/nr-ingest.ts` — `proxyRequestToNrEvent()`
 
@@ -128,23 +128,23 @@ Source: `src/transport/nr-ingest.ts` — `proxyRequestToNrEvent()`
 
 Emitted for every tool call as a security audit record.
 
-| Field                  | Type    | Description                                                                                                         |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
-| `eventType`            | string  | Always `"AiAuditEvent"`                                                                                             |
-| `timestamp`            | number  | Unix epoch seconds                                                                                                  |
-| `action`               | string  | Audit action: `FileRead`, `FileWrite`, `FileEdit`, `BashCommand`, `McpToolCall`, `AgentSpawn`, `Search`, or `Other` |
-| `tool`                 | string  | Tool name                                                                                                           |
-| `detail`               | string  | Human-readable description of the action                                                                            |
-| `developer`            | string  | Developer identifier                                                                                                |
-| `session_id`           | string  | Session identifier (if available)                                                                                   |
-| `team_id`              | string  | Team identifier (if configured)                                                                                     |
-| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                          |
-| `org_id`               | string  | Organization identifier (if configured)                                                                             |
-| `file_path`            | string  | File path involved (if applicable)                                                                                  |
-| `command`              | string  | Command executed (if applicable)                                                                                    |
-| `audit.security_alert` | boolean | Whether a security alert was triggered                                                                              |
-| `audit.severity`       | string  | Alert severity: `critical`, `high`, or `medium` (if alert)                                                          |
-| `audit.alert_type`     | string  | Alert type: `destructive_command`, `sensitive_file`, or `external_network` (if alert)                               |
+| Field                  | Type    | Description                                                                                                            |
+| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`            | string  | Always `"AiAuditEvent"`                                                                                                |
+| `timestamp`            | number  | Unix epoch seconds                                                                                                     |
+| `action`               | string  | Audit action: `FileRead`, `FileWrite`, `FileEdit`, `BashCommand`, `McpToolCall`, `AgentSpawn`, `Search`, or `Other`    |
+| `tool`                 | string  | Tool name                                                                                                              |
+| `detail`               | string  | Human-readable description of the action                                                                               |
+| `developer`            | string  | Developer identifier                                                                                                   |
+| `session_id`           | string  | Session identifier (if available)                                                                                      |
+| `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                             |
+| `org_id`               | string  | Organization identifier (if configured)                                                                                |
+| `file_path`            | string  | File path involved (if applicable)                                                                                     |
+| `command`              | string  | Command executed (if applicable)                                                                                       |
+| `audit.security_alert` | boolean | Whether a security alert was triggered                                                                                 |
+| `audit.severity`       | string  | Alert severity: `critical`, `high`, or `medium` (if alert)                                                             |
+| `audit.alert_type`     | string  | Alert type: `destructive_command`, `sensitive_file`, or `external_network` (if alert)                                  |
 
 Source: `src/security/audit-trail.ts` — `auditRecordToNrEvent()`
 
@@ -152,21 +152,21 @@ Source: `src/security/audit-trail.ts` — `auditRecordToNrEvent()`
 
 Emitted only when a security alert is triggered (subset of audit events).
 
-| Field         | Type   | Description                                                    |
-| ------------- | ------ | -------------------------------------------------------------- |
-| `eventType`   | string | Always `"SecurityAlert"`                                       |
-| `timestamp`   | number | Unix epoch seconds                                             |
-| `severity`    | string | `critical`, `high`, or `medium`                                |
-| `alert_type`  | string | `destructive_command`, `sensitive_file`, or `external_network` |
-| `description` | string | Human-readable alert description                               |
-| `tool`        | string | Tool that triggered the alert                                  |
-| `developer`   | string | Developer identifier                                           |
-| `session_id`  | string | Session identifier (if available)                              |
-| `team_id`     | string | Team identifier (if configured)                                |
-| `project_id`  | string | Project identifier (derived from git remote or configured)     |
-| `org_id`      | string | Organization identifier (if configured)                        |
-| `file_path`   | string | File path (if sensitive file alert)                            |
-| `command`     | string | Command (if destructive command alert)                         |
+| Field         | Type   | Description                                                                                                            |
+| ------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`   | string | Always `"SecurityAlert"`                                                                                               |
+| `timestamp`   | number | Unix epoch seconds                                                                                                     |
+| `severity`    | string | `critical`, `high`, or `medium`                                                                                        |
+| `alert_type`  | string | `destructive_command`, `sensitive_file`, or `external_network`                                                         |
+| `description` | string | Human-readable alert description                                                                                       |
+| `tool`        | string | Tool that triggered the alert                                                                                          |
+| `developer`   | string | Developer identifier                                                                                                   |
+| `session_id`  | string | Session identifier (if available)                                                                                      |
+| `team_id`     | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`  | string | Project identifier (derived from git remote or configured)                                                             |
+| `org_id`      | string | Organization identifier (if configured)                                                                                |
+| `file_path`   | string | File path (if sensitive file alert)                                                                                    |
+| `command`     | string | Command (if destructive command alert)                                                                                 |
 
 Security alert triggers:
 
@@ -180,36 +180,36 @@ Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
 Emitted when a task boundary is detected (a logical unit of work from task start to completion).
 
-| Field                  | Type    | Description                                                                           |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------- |
-| `eventType`            | string  | Always `"AiCodingTask"`                                                               |
-| `timestamp`            | number  | Unix epoch milliseconds (task end time)                                               |
-| `task_id`              | string  | Unique task identifier                                                                |
-| `developer`            | string  | Developer identifier                                                                  |
-| `app_name`             | string  | Application name                                                                      |
-| `platform`             | string  | Platform attribution (default: `claude-code`)                                         |
-| `session_id`           | string  | Session identifier (if available)                                                     |
-| `team_id`              | string  | Team identifier (if configured)                                                       |
-| `project_id`           | string  | Project identifier (derived from git remote or configured)                            |
-| `org_id`               | string  | Organization identifier (if configured)                                               |
-| `start_time`           | number  | Task start time (Unix epoch milliseconds)                                             |
-| `end_time`             | number  | Task end time (Unix epoch milliseconds)                                               |
-| `duration_ms`          | number  | Task duration in milliseconds                                                         |
-| `tool_call_count`      | number  | Total tool calls in the task                                                          |
-| `files_read`           | number  | Number of unique files read                                                           |
-| `files_modified`       | number  | Number of unique files modified                                                       |
-| `lines_added`          | number  | Lines added across all edits                                                          |
-| `lines_removed`        | number  | Lines removed across all edits                                                        |
-| `bash_commands_run`    | number  | Number of Bash tool calls                                                             |
-| `tests_run`            | number  | Number of test runs detected                                                          |
-| `tests_passed`         | boolean | Whether the last test run passed                                                      |
-| `build_run`            | boolean | Whether a build was run                                                               |
-| `build_passed`         | boolean | Whether the last build passed                                                         |
-| `estimated_cost_usd`   | number  | Estimated token cost for the task (`0` when cost was never computed)                  |
-| `cost_estimated`       | boolean | `true` when `estimated_cost_usd` was actually computed; `false` when defaulted to `0` |
-| `tokens_used`          | number  | Total tokens consumed in the task                                                     |
-| `asked_user_questions` | number  | Number of questions asked to the user                                                 |
-| `sub_agents_spawned`   | number  | Number of sub-agent spawns                                                            |
+| Field                  | Type    | Description                                                                                                            |
+| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`            | string  | Always `"AiCodingTask"`                                                                                                |
+| `timestamp`            | number  | Unix epoch milliseconds (task end time)                                                                                |
+| `task_id`              | string  | Unique task identifier                                                                                                 |
+| `developer`            | string  | Developer identifier                                                                                                   |
+| `app_name`             | string  | Application name                                                                                                       |
+| `platform`             | string  | Platform attribution (default: `claude-code`)                                                                          |
+| `session_id`           | string  | Session identifier (if available)                                                                                      |
+| `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                             |
+| `org_id`               | string  | Organization identifier (if configured)                                                                                |
+| `start_time`           | number  | Task start time (Unix epoch milliseconds)                                                                              |
+| `end_time`             | number  | Task end time (Unix epoch milliseconds)                                                                                |
+| `duration_ms`          | number  | Task duration in milliseconds                                                                                          |
+| `tool_call_count`      | number  | Total tool calls in the task                                                                                           |
+| `files_read`           | number  | Number of unique files read                                                                                            |
+| `files_modified`       | number  | Number of unique files modified                                                                                        |
+| `lines_added`          | number  | Lines added across all edits                                                                                           |
+| `lines_removed`        | number  | Lines removed across all edits                                                                                         |
+| `bash_commands_run`    | number  | Number of Bash tool calls                                                                                              |
+| `tests_run`            | number  | Number of test runs detected                                                                                           |
+| `tests_passed`         | boolean | Whether the last test run passed                                                                                       |
+| `build_run`            | boolean | Whether a build was run                                                                                                |
+| `build_passed`         | boolean | Whether the last build passed                                                                                          |
+| `estimated_cost_usd`   | number  | Estimated token cost for the task (`0` when cost was never computed)                                                   |
+| `cost_estimated`       | boolean | `true` when `estimated_cost_usd` was actually computed; `false` when defaulted to `0`                                  |
+| `tokens_used`          | number  | Total tokens consumed in the task                                                                                      |
+| `asked_user_questions` | number  | Number of questions asked to the user                                                                                  |
+| `sub_agents_spawned`   | number  | Number of sub-agent spawns                                                                                             |
 
 Source: `src/transport/nr-ingest.ts` — `codingTaskToNrEvent()`
 
@@ -217,27 +217,27 @@ Source: `src/transport/nr-ingest.ts` — `codingTaskToNrEvent()`
 
 Emitted for each anti-pattern detected within a completed task.
 
-| Field          | Type   | Description                                                                                  |
-| -------------- | ------ | -------------------------------------------------------------------------------------------- |
-| `eventType`    | string | Always `"AiAntiPattern"`                                                                     |
-| `timestamp`    | number | Unix epoch milliseconds (detection time)                                                     |
-| `type`         | string | Pattern type: `thrashing`, `re_reading`, `stuck_loop`, `blind_editing`, or `over_delegation` |
-| `task_id`      | string | Task identifier where the pattern was detected                                               |
-| `developer`    | string | Developer identifier                                                                         |
-| `app_name`     | string | Application name                                                                             |
-| `platform`     | string | Platform attribution                                                                         |
-| `session_id`   | string | Session identifier (if available)                                                            |
-| `team_id`      | string | Team identifier (if configured)                                                              |
-| `project_id`   | string | Project identifier (if configured)                                                           |
-| `org_id`       | string | Organization identifier (if configured)                                                      |
-| `suggestion`   | string | Human-readable remediation suggestion                                                        |
-| `file`         | string | File involved (if applicable)                                                                |
-| `command`      | string | Command involved (if applicable)                                                             |
-| `iterations`   | number | Number of thrash/repeat iterations (if applicable)                                           |
-| `read_count`   | number | Number of redundant reads (re_reading only)                                                  |
-| `repeat_count` | number | Number of identical command repeats (stuck_loop only)                                        |
-| `edit_count`   | number | Number of unverified edits (blind_editing only)                                              |
-| `agent_count`  | number | Number of agent spawns (over_delegation only)                                                |
+| Field          | Type   | Description                                                                                                            |
+| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`    | string | Always `"AiAntiPattern"`                                                                                               |
+| `timestamp`    | number | Unix epoch milliseconds (detection time)                                                                               |
+| `type`         | string | Pattern type: `thrashing`, `re_reading`, `stuck_loop`, `blind_editing`, or `over_delegation`                           |
+| `task_id`      | string | Task identifier where the pattern was detected                                                                         |
+| `developer`    | string | Developer identifier                                                                                                   |
+| `app_name`     | string | Application name                                                                                                       |
+| `platform`     | string | Platform attribution                                                                                                   |
+| `session_id`   | string | Session identifier (if available)                                                                                      |
+| `team_id`      | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`   | string | Project identifier (if configured)                                                                                     |
+| `org_id`       | string | Organization identifier (if configured)                                                                                |
+| `suggestion`   | string | Human-readable remediation suggestion                                                                                  |
+| `file`         | string | File involved (if applicable)                                                                                          |
+| `command`      | string | Command involved (if applicable)                                                                                       |
+| `iterations`   | number | Number of thrash/repeat iterations (if applicable)                                                                     |
+| `read_count`   | number | Number of redundant reads (re_reading only)                                                                            |
+| `repeat_count` | number | Number of identical command repeats (stuck_loop only)                                                                  |
+| `edit_count`   | number | Number of unverified edits (blind_editing only)                                                                        |
+| `agent_count`  | number | Number of agent spawns (over_delegation only)                                                                          |
 
 Source: `src/transport/nr-ingest.ts` — `antiPatternToNrEvent()`
 
@@ -245,21 +245,21 @@ Source: `src/transport/nr-ingest.ts` — `antiPatternToNrEvent()`
 
 Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 
-| Field           | Type   | Description                                                 |
-| --------------- | ------ | ----------------------------------------------------------- |
-| `eventType`     | string | Always `"AiBudgetWarning"`                                  |
-| `timestamp`     | number | Unix epoch milliseconds                                     |
-| `budget_period` | string | Budget period: `session`, `daily`, or `weekly`              |
-| `threshold_pct` | number | Threshold percentage: `50`, `80`, or `100`                  |
-| `spent_usd`     | number | Amount spent in this period (USD)                           |
-| `budget_usd`    | number | Configured budget limit (USD)                               |
-| `remaining_usd` | number | Remaining budget (`max(0, budget_usd - spent_usd)`)         |
-| `developer`     | string | Developer identifier                                        |
-| `appName`       | string | Application name (note: camelCase, unlike other MCP events) |
-| `session_id`    | string | Session identifier (if available)                           |
-| `team_id`       | string | Team identifier (if configured)                             |
-| `project_id`    | string | Project identifier (if configured)                          |
-| `org_id`        | string | Organization identifier (if configured)                     |
+| Field           | Type   | Description                                                                                                            |
+| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`     | string | Always `"AiBudgetWarning"`                                                                                             |
+| `timestamp`     | number | Unix epoch milliseconds                                                                                                |
+| `budget_period` | string | Budget period: `session`, `daily`, or `weekly`                                                                         |
+| `threshold_pct` | number | Threshold percentage: `50`, `80`, or `100`                                                                             |
+| `spent_usd`     | number | Amount spent in this period (USD)                                                                                      |
+| `budget_usd`    | number | Configured budget limit (USD)                                                                                          |
+| `remaining_usd` | number | Remaining budget (`max(0, budget_usd - spent_usd)`)                                                                    |
+| `developer`     | string | Developer identifier                                                                                                   |
+| `appName`       | string | Application name (note: camelCase, unlike other MCP events)                                                            |
+| `session_id`    | string | Session identifier (if available)                                                                                      |
+| `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`    | string | Project identifier (if configured)                                                                                     |
+| `org_id`        | string | Organization identifier (if configured)                                                                                |
 
 **Firing rules:**
 
@@ -275,29 +275,29 @@ Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 
 Emitted for each LLM turn when context-window tracking is enabled, capturing token breakdown by category.
 
-| Field                   | Type   | Description                                               |
-| ----------------------- | ------ | --------------------------------------------------------- |
-| `eventType`             | string | Always `"AiContextSnapshot"`                              |
-| `timestamp`             | number | Unix epoch milliseconds                                   |
-| `developer`             | string | Developer identifier                                      |
-| `appName`               | string | Application name (camelCase, same as `AiBudgetWarning`)   |
-| `session_id`            | string | Session identifier (if available)                         |
-| `team_id`               | string | Team identifier (if configured)                           |
-| `project_id`            | string | Project identifier (if configured)                        |
-| `org_id`                | string | Organization identifier (if configured)                   |
-| `turn_number`           | number | Sequential turn number within the session                 |
-| `total_context_tokens`  | number | Total input tokens for this turn                          |
-| `output_tokens`         | number | Output tokens for this turn                               |
-| `cache_read_tokens`     | number | Prompt cache read tokens                                  |
-| `cache_creation_tokens` | number | Prompt cache creation tokens                              |
-| `fill_percent`          | number | Context window fill percentage (0–100)                    |
-| `system_tokens`         | number | Tokens consumed by system prompt                          |
-| `tool_tokens`           | number | Tokens consumed by tool definitions and results           |
-| `user_tokens`           | number | Tokens consumed by user messages                          |
-| `assistant_tokens`      | number | Tokens consumed by assistant messages                     |
-| `top_tool`              | string | Tool name with largest context contribution (if any)      |
-| `top_tool_bytes`        | number | Byte size of top tool's contribution (if any)             |
-| `top_tool_tokens`       | number | Estimated token count of top tool's contribution (if any) |
+| Field                   | Type   | Description                                                                                                            |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `eventType`             | string | Always `"AiContextSnapshot"`                                                                                           |
+| `timestamp`             | number | Unix epoch milliseconds                                                                                                |
+| `developer`             | string | Developer identifier                                                                                                   |
+| `appName`               | string | Application name (camelCase, same as `AiBudgetWarning`)                                                                |
+| `session_id`            | string | Session identifier (if available)                                                                                      |
+| `team_id`               | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
+| `project_id`            | string | Project identifier (if configured)                                                                                     |
+| `org_id`                | string | Organization identifier (if configured)                                                                                |
+| `turn_number`           | number | Sequential turn number within the session                                                                              |
+| `total_context_tokens`  | number | Total input tokens for this turn                                                                                       |
+| `output_tokens`         | number | Output tokens for this turn                                                                                            |
+| `cache_read_tokens`     | number | Prompt cache read tokens                                                                                               |
+| `cache_creation_tokens` | number | Prompt cache creation tokens                                                                                           |
+| `fill_percent`          | number | Context window fill percentage (0–100)                                                                                 |
+| `system_tokens`         | number | Tokens consumed by system prompt                                                                                       |
+| `tool_tokens`           | number | Tokens consumed by tool definitions and results                                                                        |
+| `user_tokens`           | number | Tokens consumed by user messages                                                                                       |
+| `assistant_tokens`      | number | Tokens consumed by assistant messages                                                                                  |
+| `top_tool`              | string | Tool name with largest context contribution (if any)                                                                   |
+| `top_tool_bytes`        | number | Byte size of top tool's contribution (if any)                                                                          |
+| `top_tool_tokens`       | number | Estimated token count of top tool's contribution (if any)                                                              |
 
 Source: `src/transport/nr-ingest.ts` — `ingestContextSnapshot()`
 

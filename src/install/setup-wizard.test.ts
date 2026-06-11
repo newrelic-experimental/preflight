@@ -496,8 +496,10 @@ describe('setupWizard mode branch', () => {
     await runSetupWizard();
 
     const promptMessages = mockRl.question.mock.calls.map((c) => String(c[0]).toLowerCase());
-    expect(promptMessages.some((m) => m.includes('license'))).toBe(false);
-    expect(promptMessages.some((m) => m.includes('account id'))).toBe(false);
+    expect(promptMessages.some((m) => m.includes('license key —'))).toBe(false);
+    // Check that the Account ID *field prompt* (starts with "account id —") did not appear.
+    // The team label prompt contains "not your nr account id" but does not start with "account id".
+    expect(promptMessages.some((m) => m.startsWith('account id —'))).toBe(false);
 
     const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
     const written = JSON.parse(writtenJson) as Record<string, unknown>;

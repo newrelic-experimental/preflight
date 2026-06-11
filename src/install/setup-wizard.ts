@@ -225,8 +225,8 @@ export async function runSetupWizard(): Promise<void> {
           ? '$NEW_RELIC_ACCOUNT_ID'
           : '';
       const accountIdPrompt = accountIdHint
-        ? `New Relic Account ID [${accountIdHint}]: `
-        : 'New Relic Account ID: ';
+        ? `Account ID — your NR account number, found in the NR One URL [${accountIdHint}]: `
+        : 'Account ID — your NR account number, found in the NR One URL (required): ';
       accountId = (await rl.question(accountIdPrompt)).trim();
       if (!accountId) accountId = defaultAccountId;
       if (!/^\d{1,12}$/.test(accountId)) {
@@ -247,7 +247,7 @@ export async function runSetupWizard(): Promise<void> {
         : envLicenseKey
           ? '$NEW_RELIC_LICENSE_KEY'
           : 'required';
-      const keyPrompt = `New Relic License Key [${keyHint}]: `;
+      const keyPrompt = `License Key — authenticates telemetry ingest to your NR account [${keyHint}]: `;
       licenseKey = (await rl.question(keyPrompt)).trim();
       if (!licenseKey) licenseKey = defaultKey;
       if (!licenseKey) {
@@ -312,7 +312,9 @@ export async function runSetupWizard(): Promise<void> {
           ? '$NEW_RELIC_API_KEY'
           : 'optional';
       const apiKeyRaw = (
-        await rl.question(`New Relic API Key (NRAK-...) [${apiKeyHint}]: `)
+        await rl.question(
+          `API Key (NRAK-...) — for team queries and deploying dashboards/alerts [${apiKeyHint}]: `,
+        )
       ).trim();
       if (apiKeyRaw) {
         nrApiKey = apiKeyRaw;
@@ -364,20 +366,31 @@ export async function runSetupWizard(): Promise<void> {
         ? existing.developer
         : normalizeDeveloperName(emailLocalPart || process.env.USER || process.env.USERNAME || '');
     const rawInput =
-      (await rl.question(`Developer name [${defaultDeveloper}]: `)).trim() || defaultDeveloper;
+      (
+        await rl.question(
+          `Developer name — stamped on every event so you can filter your own data [${defaultDeveloper}]: `,
+        )
+      ).trim() || defaultDeveloper;
     const developer = normalizeDeveloperName(rawInput);
     if (developer !== rawInput) {
       print(`  → Normalized to: ${developer}`);
     }
 
     // Step 4: Optional fields
+    print('\n-- Optional fields (press Enter to skip any) --');
     const existingTeamId = typeof existing.teamId === 'string' ? existing.teamId : null;
-    const teamIdAnswer = (await rl.question(`Team ID [${existingTeamId ?? 'optional'}]: `)).trim();
+    const teamIdAnswer = (
+      await rl.question(
+        `Team label — a slug you define, e.g. "platform-eng" (not your NR account ID) used for recording metrics [${existingTeamId ?? 'optional'}]: `,
+      )
+    ).trim();
     const teamId = teamIdAnswer || existingTeamId;
 
     const existingProjectId = typeof existing.projectId === 'string' ? existing.projectId : null;
     const projectIdAnswer = (
-      await rl.question(`Project ID [${existingProjectId ?? 'auto-detect from git'}]: `)
+      await rl.question(
+        `Project ID — labels all events by project for per-project filtering [${existingProjectId ?? 'optional, auto-detected from git'}]: `,
+      )
     ).trim();
     const projectId = projectIdAnswer || existingProjectId;
 
@@ -385,7 +398,11 @@ export async function runSetupWizard(): Promise<void> {
     const existingBudget =
       typeof existing.sessionBudgetUsd === 'number' ? String(existing.sessionBudgetUsd) : null;
     const sessionBudgetStr =
-      (await rl.question(`Session budget USD [${existingBudget ?? 'no limit'}]: `)).trim() ||
+      (
+        await rl.question(
+          `Session budget USD — triggers a warning event when AI spend exceeds this per session [${existingBudget ?? 'no limit'}]: `,
+        )
+      ).trim() ||
       (existingBudget ?? '');
     let sessionBudgetUsd: number | null = null;
     if (sessionBudgetStr) {
@@ -407,7 +424,9 @@ export async function runSetupWizard(): Promise<void> {
           : null;
       const defaultPort = existingDashboard?.port ?? 7777;
       const portStr = (
-        await rl.question(`Local dashboard port (loopback only) [${defaultPort}]: `)
+        await rl.question(
+          `Dashboard port — open http://127.0.0.1:${defaultPort} in your browser to view metrics [${defaultPort}]: `,
+        )
       ).trim();
       if (portStr) {
         const parsed = parseInt(portStr, 10);

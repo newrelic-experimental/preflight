@@ -27,7 +27,8 @@ export default {
   // Env: NEW_RELIC_AI_MCP_DEVELOPER
   developer: 'jane_doe',
 
-  // Team identifier for aggregated team dashboards.
+  // User-defined team label (e.g. 'platform-eng') stamped on every NR event as team_id
+  // for cross-developer queries. Not your NR account ID — a free-form slug you choose.
   // Env: NEW_RELIC_AI_TEAM_ID
   teamId: 'my-team',
 
@@ -45,11 +46,11 @@ export default {
   // Env: NEW_RELIC_AI_SESSION_BUDGET_USD
   sessionBudgetUsd: 5.0,
 
-  // Maximum spend per calendar day in USD.
+  // Maximum spend per calendar day in USD before a budget warning event is emitted.
   // Env: NEW_RELIC_AI_DAILY_BUDGET_USD
   dailyBudgetUsd: 20.0,
 
-  // Maximum spend per calendar week in USD.
+  // Maximum spend per calendar week in USD before a budget warning event is emitted.
   // Env: NEW_RELIC_AI_WEEKLY_BUDGET_USD
   weeklyBudgetUsd: 100.0,
 
@@ -169,9 +170,9 @@ export default {
   // Env: NR_AI_OTLP_FORWARD_HEADERS (comma-separated key=value pairs)
   otlpForwardHeaders: { 'api-key': 'YOUR_LICENSE_KEY_NRAL' },
 
-  // ── NR User API key (for team summary NerdGraph queries) ──────────────────
+  // ── NR User API key (for team queries and deploying dashboards/alerts) ───────
 
-  // User API key (NRAK-...). Required only for nr_observe_get_team_summary.
+  // User API key (NRAK-...). Used for team summary queries and deploying dashboards/alerts.
   // Env: NEW_RELIC_API_KEY
   nrApiKey: 'NRAK-XXXXXXXXXXXXXXXXXXXXXXXXXX',
 

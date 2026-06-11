@@ -1556,7 +1556,7 @@ Aggregated AI coding cost and efficiency metrics for all developers in the confi
 
 **Config fields:**
 
-- `NEW_RELIC_AI_TEAM_ID` — team identifier for aggregation
+- `NEW_RELIC_AI_TEAM_ID` — a label you choose (e.g. `"platform-eng"`) to group your team's NR events. **Not** your NR account ID — pick any alphanumeric slug that identifies your team.
 - `NEW_RELIC_API_KEY` — User API key (NRAK-...) for NerdGraph queries
 
 Source: `src/tools/cross-session-tools.ts`
