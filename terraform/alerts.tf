@@ -12,7 +12,7 @@ resource "newrelic_nrql_alert_condition" "hourly_cost_spike" {
   description  = "Fires when AI coding cost exceeds $10 in any 1-hour window."
   enabled      = true
 
-  nrql { query = "SELECT sum(ai.cost.session_total_usd) FROM Metric" }
+  nrql { query = "SELECT sum(estimated_cost_usd) FROM AiCodingTask" }
 
   aggregation_method = "event_flow"
   aggregation_delay  = 120
@@ -132,7 +132,7 @@ resource "newrelic_nrql_alert_condition" "personal_daily_cost" {
   description  = "Fires when ${var.developer}'s AI coding cost exceeds the personal threshold in any 1-hour window."
   enabled      = true
 
-  nrql { query = "SELECT sum(ai.cost.session_total_usd) FROM Metric WHERE developer = '${var.developer}'" }
+  nrql { query = "SELECT sum(estimated_cost_usd) FROM AiCodingTask WHERE developer = '${var.developer}'" }
 
   aggregation_method = "event_flow"
   aggregation_delay  = 120
