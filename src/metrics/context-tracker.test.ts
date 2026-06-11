@@ -251,4 +251,60 @@ describe('ContextTracker', () => {
       expect(contributions[1].percentOfToolOutput).toBe(20);
     });
   });
+
+  describe('modelContextWindow resolution', () => {
+    it('grows the cap to 1M on first Opus 4.7 turn (default 200K start)', () => {
+      // Construct with default options (no modelContextWindow override → 200K default)
+      const fresh = new ContextTracker();
+      // Initial cap is 200K
+      expect(fresh.getMetrics().contextWindow).toBe(200_000);
+
+      // First turn lands with claude-opus-4-7 (1M context window)
+      fresh.recordTurn(
+        makeTokenEvent({
+          model: 'claude-opus-4-7',
+          inputTokens: 100_000,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        }),
+      );
+
+      // Cap should grow from 200K → 1M
+      expect(fresh.getMetrics().contextWindow).toBe(1_000_000);
+    });
+
+    it('does NOT shrink the cap when Haiku follows Opus', () => {
+      // Construct with default 200K cap
+      const fresh = new ContextTracker();
+
+      // Turn 1: Opus 4.7 → cap grows to 1M
+      fresh.recordTurn(
+        makeTokenEvent({
+          model: 'claude-opus-4-7',
+          inputTokens: 605_000,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        }),
+      );
+      expect(fresh.getMetrics().contextWindow).toBe(1_000_000);
+      // 605K / 1M = 60.5%
+      expect(fresh.getMetrics().fillPercent).toBe(60.5);
+
+      // Turn 2: Haiku 4.5 (200K window) at the same total context.
+      // Cap must stay at 1M, not shrink to 200K — otherwise a 605K-token
+      // snapshot would read as 302.5% fillPercent.
+      const snapshot = fresh.recordTurn(
+        makeTokenEvent({
+          model: 'claude-haiku-4-5',
+          inputTokens: 605_000,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        }),
+      );
+
+      expect(fresh.getMetrics().contextWindow).toBe(1_000_000);
+      expect(fresh.getMetrics().fillPercent).toBe(60.5);
+      expect(snapshot.fillPercent).toBe(60.5);
+    });
+  });
 });

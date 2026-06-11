@@ -51,6 +51,15 @@ export interface ContextUpdateEvent {
   readonly turnNumber: number;
   readonly totalTokens: number;
   readonly fillPercent: number;
+  /**
+   * Per-model context window cap (tokens). Resolved from the model in the
+   * Anthropic usage metadata (claude-opus-4-7 → 1_000_000, claude-haiku-4-5
+   * → 200_000, etc.). Carried on the SSE payload so the client doesn't have
+   * to cross-reference the 10s-polling /api/context snapshot — the SSE
+   * event arrives with the freshly-resolved cap, while the API may still
+   * have the stale 200K default. Single source of truth for "X / Y" UI.
+   */
+  readonly contextWindow: number;
   readonly breakdown: {
     readonly system: number;
     readonly tools: number;

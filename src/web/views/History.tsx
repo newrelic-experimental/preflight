@@ -1,8 +1,8 @@
-import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { EmptyState } from '../components/EmptyState';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
+import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -675,84 +675,24 @@ export function aggregateToolUsage(rows: SessionRow[]): Array<{ tool: string; co
     .slice(0, 8);
 }
 
-const BLOCK_COLOR = 'rgba(0, 212, 170, 0.7)';
-const BLOCK_COLOR_PEAK_CELL = 'rgba(0, 212, 170, 1)';
-
+// Tooltip positioning here was previously `left: tooltip.x` (raw px in
+// viewBox units), which misaligned by hundreds of pixels at any non-native
+// render width. Routing through the shared `DiscreteBlockChart` fixes that
+// for free — the shared component uses %-based positioning that survives
+// the SVG's `xMidYMax meet` scaling.
 function ConcurrencyBlockChart({
   data,
 }: {
   data: Array<{ date: string; peak: number }>;
-}): JSX.Element {
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
-  const maxPeak = Math.max(...data.map((d) => d.peak), 1);
-
-  const blockSize = 10;
-  const blockGap = 2;
-  const colGap = 3;
-  const colWidth = blockSize + colGap;
-  const chartHeight = maxPeak * (blockSize + blockGap);
-  const chartWidth = data.length * colWidth;
-
+}): JSX.Element | null {
+  const items: DiscreteBlockChartItem[] = data.map((day) => ({
+    count: day.peak,
+    tooltip: `${day.date.slice(5)}: ${day.peak}`,
+  }));
   return (
-    <div className="relative">
-      <svg
-        width="100%"
-        height={chartHeight}
-        role="img"
-        aria-label={`Peak concurrent sessions over ${data.length} days`}
-        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-        preserveAspectRatio="xMidYMax meet"
-        onMouseLeave={() => setTooltip(null)}
-      >
-        {data.map((day, colIdx) => {
-          const blocks: JSX.Element[] = [];
-          for (let b = 0; b < day.peak; b++) {
-            const isMax = day.peak === maxPeak;
-            blocks.push(
-              <rect
-                key={`${colIdx}-${b}`}
-                x={colIdx * colWidth}
-                y={chartHeight - (b + 1) * (blockSize + blockGap)}
-                width={blockSize}
-                height={blockSize}
-                rx={1}
-                fill={isMax ? BLOCK_COLOR_PEAK_CELL : BLOCK_COLOR}
-                className="heatmap-cell"
-                style={{ animationDelay: `${colIdx * 10 + b * 8}ms` }}
-              />,
-            );
-          }
-          return (
-            <g
-              key={colIdx}
-              onMouseEnter={() => {
-                setTooltip({
-                  x: colIdx * colWidth,
-                  y: chartHeight - day.peak * (blockSize + blockGap) - 14,
-                  text: `${day.date.slice(5)}: ${day.peak}`,
-                });
-              }}
-            >
-              <rect
-                x={colIdx * colWidth}
-                y={0}
-                width={colWidth}
-                height={chartHeight}
-                fill="transparent"
-              />
-              {blocks}
-            </g>
-          );
-        })}
-      </svg>
-      {tooltip && (
-        <div
-          className="absolute px-1.5 py-0.5 bg-bg-elevated text-[10px] text-ink-default rounded shadow-md pointer-events-none whitespace-nowrap"
-          style={{ left: tooltip.x, top: Math.max(0, tooltip.y) }}
-        >
-          {tooltip.text}
-        </div>
-      )}
-    </div>
+    <DiscreteBlockChart
+      data={items}
+      ariaLabel={`Peak concurrent sessions over ${data.length} days`}
+    />
   );
 }

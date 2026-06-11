@@ -1,27 +1,26 @@
 import { useState, useEffect, useRef } from 'react';
+import { DiscreteBlockChart, type DiscreteBlockChartItem } from './DiscreteBlockChart';
 
 export interface ConcurrencyData {
   readonly current: number;
   readonly peak: number;
   readonly allTimePeak?: number;
-  readonly timeSeries: ReadonlyArray<{ timestamp: number; count: number }>;
+  readonly bucketSizeMs: number;
+  readonly startTimestamp: number;
+  readonly buckets: ReadonlyArray<{ timestamp: number; count: number }>;
 }
 
-const BLOCK_COLOR = 'rgba(0, 212, 170, 0.7)';
-const BLOCK_COLOR_PEAK = 'rgba(0, 212, 170, 1)';
 const STORAGE_KEY = 'nr-observe-peak-concurrent';
 
 export function ConcurrencyIndicator({
   current,
   peak,
   allTimePeak,
-  timeSeries,
+  buckets,
 }: ConcurrencyData): JSX.Element {
-  const [tooltip, setTooltip] = useState<{ x: number; text: string } | null>(null);
   const [celebration, setCelebration] = useState(false);
   const prevPeakRef = useRef<number | null>(null);
-  const maxCount = Math.max(peak, 1);
-  const hasData = timeSeries.length > 0 && timeSeries.some((s) => s.count > 0);
+  const hasData = buckets.some((b) => b.count > 0);
 
   useEffect(() => {
     const effectivePeak = allTimePeak ?? peak;
@@ -39,11 +38,17 @@ export function ConcurrencyIndicator({
     }
   }, [peak, allTimePeak]);
 
-  const blockSize = 6;
-  const blockGap = 1;
-  const colWidth = blockSize + 2;
-  const chartHeight = maxCount * (blockSize + blockGap);
-  const chartWidth = timeSeries.length * colWidth;
+  const items: DiscreteBlockChartItem[] = buckets.map((bucket) => {
+    const d = new Date(bucket.timestamp);
+    const time = d.toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    return {
+      count: bucket.count,
+      tooltip: `${time} — ${bucket.count} concurrent`,
+    };
+  });
 
   return (
     <div
@@ -66,67 +71,8 @@ export function ConcurrencyIndicator({
         )}
       </div>
       {hasData && (
-        <div className="mt-2 relative">
-          <svg
-            width={chartWidth}
-            height={chartHeight}
-            role="img"
-            aria-label={`Concurrency over time, peak ${peak}`}
-            className="w-full"
-            style={{ maxWidth: chartWidth }}
-            viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-            onMouseLeave={() => setTooltip(null)}
-          >
-            {timeSeries.map((sample, colIdx) => {
-              const blocks: JSX.Element[] = [];
-              for (let b = 0; b < sample.count; b++) {
-                const isPeak = sample.count === peak;
-                blocks.push(
-                  <rect
-                    key={`${colIdx}-${b}`}
-                    x={colIdx * colWidth}
-                    y={chartHeight - (b + 1) * (blockSize + blockGap)}
-                    width={blockSize}
-                    height={blockSize}
-                    rx={1}
-                    fill={isPeak ? BLOCK_COLOR_PEAK : BLOCK_COLOR}
-                    className="heatmap-cell"
-                    style={{ animationDelay: `${colIdx * 20 + b * 10}ms` }}
-                  />,
-                );
-              }
-              return (
-                <g
-                  key={colIdx}
-                  onMouseEnter={() => {
-                    const d = new Date(sample.timestamp);
-                    const time = d.toLocaleTimeString(undefined, {
-                      hour: 'numeric',
-                      minute: '2-digit',
-                    });
-                    setTooltip({ x: colIdx * colWidth, text: `${time}: ${sample.count}` });
-                  }}
-                >
-                  <rect
-                    x={colIdx * colWidth}
-                    y={0}
-                    width={colWidth}
-                    height={chartHeight}
-                    fill="transparent"
-                  />
-                  {blocks}
-                </g>
-              );
-            })}
-          </svg>
-          {tooltip && (
-            <div
-              className="absolute -top-5 px-1.5 py-0.5 bg-bg-elevated text-[10px] text-ink-default rounded shadow-md pointer-events-none whitespace-nowrap"
-              style={{ left: tooltip.x }}
-            >
-              {tooltip.text}
-            </div>
-          )}
+        <div className="mt-2">
+          <DiscreteBlockChart data={items} ariaLabel={`Concurrency over time, peak ${peak}`} />
         </div>
       )}
     </div>

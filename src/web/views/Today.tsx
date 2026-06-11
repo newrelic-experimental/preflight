@@ -30,6 +30,7 @@ import {
   qk,
 } from '../api/client';
 import { formatNumber, shortToolName } from '../lib/format';
+import { isSameLocalDay } from '../../lib/date.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
   weekday: 'short',
@@ -82,6 +83,7 @@ interface SessionSummary {
   readonly sessionId: string;
   readonly sessionName?: string | null;
   readonly startTime?: number;
+  readonly durationMs?: number;
   readonly toolCallCount?: number;
   readonly estimatedCostUsd?: number | null;
   readonly antiPatterns?: SessionAntiPattern[];
@@ -168,6 +170,7 @@ export function Today(): JSX.Element {
   const { data: todaySessions, isPending: sessionsPending } = useQuery<SessionSummary[]>({
     queryKey: qk.sessionsList(200),
     queryFn: () => fetchSessionsList(200) as Promise<SessionSummary[]>,
+    refetchInterval: 10_000,
   });
   const { data: apiAntiPatterns, isPending: antiPatternsPending } = useQuery<SessionAntiPattern[]>({
     queryKey: qk.antiPatterns,
@@ -330,11 +333,14 @@ export function Today(): JSX.Element {
                 costApi?.cost?.sessionTotalCostUsd ?? 0,
               )}
             />
-            {concurrency && concurrency.timeSeries && (
+            {concurrency && concurrency.buckets && (
               <ConcurrencyIndicator
                 current={concurrency.current}
                 peak={concurrency.peak}
-                timeSeries={concurrency.timeSeries}
+                allTimePeak={concurrency.allTimePeak}
+                bucketSizeMs={concurrency.bucketSizeMs}
+                startTimestamp={concurrency.startTimestamp}
+                buckets={concurrency.buckets}
               />
             )}
           </AnimatedCard>
@@ -392,12 +398,6 @@ export function Today(): JSX.Element {
           <AnimatedCard index={4}>
             <LiveSessionPane sessions={todaySessions ?? []} liveSessions={liveSessions ?? []} />
           </AnimatedCard>
-
-          {/* Task #17 (D3): per-session ContextBar tied to the selected
-              session. Stays per-session (not aggregate) — context-window
-              fill is a per-session concept and aggregating it across N
-              sessions wouldn't be meaningful. */}
-          <ActiveSessionContextBar liveSessions={liveSessions ?? []} />
 
           {todayHeatmap && todayHeatmap.buckets?.length > 0 && (
             <AnimatedCard index={5} className="glass-card p-3 mb-3">
@@ -796,14 +796,37 @@ function LiveSessionPane({
 
   // Sort today's sessions by startTime descending (newest first), then merge
   // in any live sessions that haven't yet persisted to disk so the selector
-  // shows them immediately. Limit to 10.
+  // shows them immediately. A session counts as "today" if it started today
+  // OR is currently live OR had recent activity today (last activity within
+  // RECENT_ACTIVITY_MS of now AND falling on today's calendar date).
+  //
+  // The recent-activity window matters because lastActivity = startTime +
+  // durationMs naively: a session that started yesterday at 23:55 with
+  // durationMs=10min has lastActivity=00:05 today and would be classified
+  // "active today" — but the work was almost entirely yesterday. On a
+  // busy day with 11+ today-started sessions, the slice(0, 10) below would
+  // silently drop a real today-started session in favor of this stale entry.
+  // Live sessions are always included regardless of the window — the
+  // registry already enforces a 3-min staleness threshold upstream.
+  // Limit to 10.
   const todaySessions = useMemo(() => {
+    const RECENT_ACTIVITY_MS = 6 * 60 * 60 * 1000; // 6 hours
+    const recentCutoff = Date.now() - RECENT_ACTIVITY_MS;
+    const liveById = new Map<string, LiveSessionApiEntry>();
+    for (const ls of liveSessions) liveById.set(ls.sessionId, ls);
+
     const byId = new Map<string, SessionSummary>();
     for (const s of sessions) {
       // Skip malformed entries — defensive against `[]`-style fixtures and
       // fetch mocks that may not include sessionId on every record.
       if (!s.sessionId) continue;
-      if (s.startTime && isToday(s.startTime)) byId.set(s.sessionId, s);
+      const startedToday = s.startTime != null && isToday(s.startTime);
+      const isLiveNow = liveById.has(s.sessionId);
+      const lastActivity =
+        s.startTime != null && s.durationMs != null ? s.startTime + s.durationMs : null;
+      const recentlyActive =
+        lastActivity != null && lastActivity >= recentCutoff && isToday(lastActivity);
+      if (startedToday || isLiveNow || recentlyActive) byId.set(s.sessionId, s);
     }
     for (const ls of liveSessions) {
       if (!ls.sessionId) continue;
@@ -981,6 +1004,15 @@ function LiveSessionPane({
             </div>
           )}
         </div>
+        {/* Per-session ContextBar — pinned to the bottom of the tail so it
+            shows for both Gantt and List view modes. Hidden when no session
+            is selected or the selected session has ended (the context
+            numbers would be stale and the SSE feed won't be updating). */}
+        {isLive && activeId && (
+          <div className="border-t border-bg-line px-3 py-2 shrink-0">
+            <ContextBar sessionId={activeId} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -994,28 +1026,6 @@ function sessionPillLabel(sessionId: string, liveSessions: LiveSessionApiEntry[]
   const match = liveSessions.find((ls) => ls.sessionId === sessionId);
   if (match?.sessionName) return match.sessionName;
   return sessionId.slice(0, 8);
-}
-
-// Task #17 (D3): wraps the existing ContextBar component for the Today view's
-// "active session" slot. The selected session_id lives in the local LiveStore
-// (set by LiveSessionPane); when nothing is selected (no live sessions yet)
-// we render nothing rather than a sad empty bar.
-function ActiveSessionContextBar({
-  liveSessions,
-}: {
-  liveSessions: LiveSessionApiEntry[];
-}): JSX.Element | null {
-  const activeSessionId = useLiveStore((s) => s.activeSessionId);
-  if (!activeSessionId) return null;
-  // Hide if this session ended — the context numbers are stale and the
-  // live SSE feed won't be updating them anymore.
-  const isLive = liveSessions.some((ls) => ls.sessionId === activeSessionId);
-  if (!isLive) return null;
-  return (
-    <AnimatedCard index={5}>
-      <ContextBar sessionId={activeSessionId} />
-    </AnimatedCard>
-  );
 }
 
 function RecentAlertsPanel(): JSX.Element | null {
@@ -1121,15 +1131,10 @@ function fmtTime(value: number): string {
   });
 }
 
-function isToday(ts: number): boolean {
-  const d = new Date(ts);
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
-}
+// `isToday` is now `isSameLocalDay` from `src/lib/date.ts` — shared with the
+// dashboard server so both surfaces draw the day boundary at the same moment.
+
+const isToday = (ts: number): boolean => isSameLocalDay(ts);
 
 function computeTodaySpend(sessions: SessionSummary[]): number {
   let total = 0;
@@ -1195,7 +1200,7 @@ function ForecastEodCard({
   const pct = hasForecast && todayTotal > 0 ? (delta / todayTotal) * 100 : 0;
 
   return (
-    <div className="glass-card p-3 mb-3">
+    <div className="glass-card p-3">
       <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1.5">
         forecast · end of day
       </div>

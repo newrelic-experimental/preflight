@@ -1,5 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { localStartOfDay } from '../../lib/date.js';
 import { redactSensitive, normalizeDeveloperName } from '../../config.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
@@ -283,6 +284,137 @@ function mergeActivityWindows(
     }
   }
   return windows;
+}
+
+// 96 × 15-minute buckets covering today (00:00 → 24:00 local). Each bucket
+// holds the peak concurrent session count observed within its window — see
+// computeTodayConcurrencyBuckets() below.
+const CONCURRENCY_BUCKET_SIZE_MS = 15 * 60 * 1000;
+const CONCURRENCY_BUCKET_COUNT = 96;
+
+interface ConcurrencyBucket {
+  readonly timestamp: number;
+  readonly count: number;
+}
+
+interface SessionInterval {
+  readonly startTime: number;
+  readonly endTime: number;
+}
+
+// Build [startTime, endTime] intervals for every session that has any activity
+// today. Persisted sessions contribute their stored startTime/endTime.
+// Currently-live sessions (in the registry but not yet persisted) derive
+// startTime from the in-memory tool-call buffer (oldest observed timestamp)
+// and use `now` as endTime — matching the convention used by /api/sessions/live.
+// Sessions that appear in both the persisted store and the live registry are
+// deduped by sessionId; the live (extended-to-now) interval wins.
+function collectTodaySessionIntervals(
+  todaySessions: readonly unknown[],
+  liveSessionIds: readonly string[],
+  bufferRecords: readonly ToolCallRecord[],
+  now: number,
+): SessionInterval[] {
+  const byId = new Map<string, SessionInterval>();
+
+  for (const raw of todaySessions) {
+    const s = raw as { sessionId?: string; startTime?: number; endTime?: number | null };
+    if (typeof s.startTime !== 'number') continue;
+    const end = typeof s.endTime === 'number' ? s.endTime : now;
+    if (end <= s.startTime) continue;
+    if (typeof s.sessionId === 'string' && s.sessionId.length > 0) {
+      byId.set(s.sessionId, { startTime: s.startTime, endTime: end });
+    } else {
+      // No id — use a synthetic key so it still contributes.
+      byId.set(`__anon_${byId.size}`, { startTime: s.startTime, endTime: end });
+    }
+  }
+
+  if (liveSessionIds.length > 0) {
+    const firstTsBySession = new Map<string, number>();
+    for (const r of bufferRecords) {
+      const sid = (r as { sessionId?: string | null }).sessionId;
+      if (!sid) continue;
+      const ts = (r as { timestamp?: number }).timestamp ?? 0;
+      if (!ts) continue;
+      const prev = firstTsBySession.get(sid);
+      if (prev === undefined || ts < prev) firstTsBySession.set(sid, ts);
+    }
+    for (const sid of liveSessionIds) {
+      const existing = byId.get(sid);
+      const bufferStart = firstTsBySession.get(sid);
+      // Prefer the EARLIER startTime: a persisted entry's startTime is
+      // authoritative (e.g. 09:00) and would be clobbered if we keyed solely
+      // off the buffer's earliest record (which may be much later if the
+      // buffer was drained between flushes). Extend endTime to `now` —
+      // that's the original intent of this loop (a live session is, by
+      // definition, ongoing).
+      const candidates: number[] = [];
+      if (existing !== undefined) candidates.push(existing.startTime);
+      if (bufferStart !== undefined) candidates.push(bufferStart);
+      if (candidates.length === 0) continue;
+      const startTime = Math.min(...candidates);
+      if (now <= startTime) continue;
+      byId.set(sid, { startTime, endTime: now });
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
+function computeTodayConcurrencyBuckets(
+  intervals: readonly SessionInterval[],
+  startTimestamp: number,
+): ConcurrencyBucket[] {
+  // Single pass O(N log N) — build delta events from every interval,
+  // clamped to today's window, then sort once and sweep across the 96
+  // buckets in lockstep with the event cursor. Buckets containing no
+  // events still need a count: the value carried over from the previous
+  // bucket's tail (a session that spans many buckets without a delta in
+  // between must propagate as count=1+ in those buckets).
+  const dayEnd = startTimestamp + CONCURRENCY_BUCKET_COUNT * CONCURRENCY_BUCKET_SIZE_MS;
+  const events: Array<{ ts: number; delta: number }> = [];
+  for (const interval of intervals) {
+    const start = Math.max(interval.startTime, startTimestamp);
+    const end = Math.min(interval.endTime, dayEnd);
+    if (start < end) {
+      events.push({ ts: start, delta: 1 }, { ts: end, delta: -1 });
+    }
+  }
+  // Sort by ts ascending; at ties, +1 deltas precede -1 (open-before-close)
+  // so that exact-touch session boundaries (one ends as another starts)
+  // count as overlap for one instant. Matches computeTodayPeakConcurrency's
+  // sort and the headline `peak` semantics — without this, a bucket peak
+  // can fall 1 below the day peak at boundary conditions.
+  events.sort((a, b) => a.ts - b.ts || b.delta - a.delta);
+
+  const buckets: ConcurrencyBucket[] = new Array(CONCURRENCY_BUCKET_COUNT);
+  let current = 0;
+  let cursor = 0;
+  for (let b = 0; b < CONCURRENCY_BUCKET_COUNT; b++) {
+    const bucketStart = startTimestamp + b * CONCURRENCY_BUCKET_SIZE_MS;
+    const bucketEnd = bucketStart + CONCURRENCY_BUCKET_SIZE_MS;
+    // Flush any boundary events whose ts falls AT OR BEFORE bucketStart.
+    // Without this, a session ending at exactly t=bucketStart (e.g. a
+    // 15-min-aligned endTime) would still be carried as current=1 into
+    // this bucket before the -1 fires, inflating the bucket's initial peak
+    // by 1. Flushing first means peak is initialised from the correct
+    // post-close concurrency level.
+    while (cursor < events.length && events[cursor]!.ts <= bucketStart) {
+      current += events[cursor]!.delta;
+      cursor++;
+    }
+    // Peak starts at the carried-over (post-flush) level. Sessions spanning
+    // many buckets with no mid-bucket events propagate as count=N+ here.
+    let peak = current;
+    while (cursor < events.length && events[cursor]!.ts < bucketEnd) {
+      current += events[cursor]!.delta;
+      if (current > peak) peak = current;
+      cursor++;
+    }
+    buckets[b] = { timestamp: bucketStart, count: peak };
+  }
+  return buckets;
 }
 
 function computeTodayPeakConcurrency(sessions: readonly unknown[]): number {
@@ -653,9 +785,7 @@ export function createApiHandler(
       return;
     }
 
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const startMs = startOfDay.getTime();
+    const startMs = localStartOfDay(now);
     const minuteBuckets = Math.max(1, Math.ceil((now - startMs) / 60_000));
     const sparkline = new Array<number>(minuteBuckets).fill(0);
 
@@ -921,9 +1051,8 @@ export function createApiHandler(
       if (view === 'history') {
         const daysParam = url.searchParams.get('days');
         const days = daysParam ? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90) : 30;
-        const since = new Date();
+        const since = new Date(localStartOfDay());
         since.setDate(since.getDate() - days);
-        since.setHours(0, 0, 0, 0);
         const allSessions = deps.sessionStore?.loadAllSessions?.({ since }) ?? [];
         const dailyPeaks = computeDailyPeakConcurrency(allSessions, days);
         // Override today's bucket with the live peak — disk-derived
@@ -943,15 +1072,38 @@ export function createApiHandler(
       const allSessions = deps.sessionStore?.loadAllSessions?.() ?? [];
       const allTimePeak = computeTodayPeakConcurrency(allSessions);
 
+      // 96 × 15-minute fixed-grid buckets covering today (local midnight →
+      // local midnight + 24h). Each bucket holds the peak concurrent
+      // session count within its window. Bounded payload (~10 KB) and
+      // renders cleanly at any zoom level. Replaces the prior unbounded
+      // 30-second rolling timeSeries.
+      const startTimestamp = localStartOfDay();
+      const liveIds = deps.liveSessionRegistry?.getLiveSessions() ?? [];
+      const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
+      // Synthetic session ids (`local-*`, `proxy-*`) are hidden from
+      // /api/sessions and /api/sessions/live. Apply the same filter here
+      // so persisted synthetic records on disk don't contribute to bucket
+      // counts either — otherwise the buckets disagree with the session
+      // list shown alongside the chart.
+      const filteredTodaySessions = todaySessions.filter((s) => {
+        const sid = (s as { sessionId?: string | null }).sessionId;
+        return !isSyntheticSessionId(sid);
+      });
+      const intervals = collectTodaySessionIntervals(
+        filteredTodaySessions,
+        liveIds.filter((id) => !isSyntheticSessionId(id)),
+        bufferRecords,
+        Date.now(),
+      );
+      const buckets = computeTodayConcurrencyBuckets(intervals, startTimestamp);
+
       jsonOk(res, {
         current: deps.concurrencyTracker.getConcurrentCount(),
         peak: Math.max(livePeak, historicalPeak),
         allTimePeak: Math.max(livePeak, historicalPeak, allTimePeak),
-        // Live 30-second samples from LiveSessionRegistry. The previous
-        // implementation derived this from disk-persisted sessions only
-        // and reported empty until sessions ended — leaving the chart
-        // blank during exactly the windows it's most useful.
-        timeSeries: deps.concurrencyTracker.getConcurrencyTimeSeries(),
+        bucketSizeMs: CONCURRENCY_BUCKET_SIZE_MS,
+        startTimestamp,
+        buckets,
       });
     } catch {
       res.writeHead(500, { 'content-type': 'application/json' });
@@ -966,9 +1118,7 @@ export function createApiHandler(
 
       if (view === 'today') {
         const now = Date.now();
-        const startOfDay = new Date(now);
-        startOfDay.setHours(0, 0, 0, 0);
-        const startMs = startOfDay.getTime();
+        const startMs = localStartOfDay(now);
         const bucketSizeMs = 900_000;
         const bucketCount = Math.ceil((now - startMs) / bucketSizeMs) || 1;
         const buckets = new Array<number>(bucketCount).fill(0);

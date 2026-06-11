@@ -48,6 +48,13 @@ export interface ContextUpdateEvent {
   readonly turnNumber: number;
   readonly totalTokens: number;
   readonly fillPercent: number;
+  /**
+   * Per-model context window cap (tokens). Mirrors the server-side
+   * ContextUpdateEvent so the SSE feed is the single source of truth for
+   * the "X / Y" denominator — avoiding the X-from-SSE / Y-from-API cap
+   * mismatch on the first Opus turn.
+   */
+  readonly contextWindow: number;
   readonly breakdown: {
     readonly system: number;
     readonly tools: number;

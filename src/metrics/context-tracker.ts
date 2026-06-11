@@ -1,3 +1,4 @@
+import { resolveModelPricing } from '../shared/index.js';
 import type { TokenEvent, ToolCallRecord } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ export interface ContextTrackerMetrics {
   readonly growth: ContextGrowthSummary;
   readonly currentBreakdown: ContextBreakdown;
   readonly fillPercent: number;
+  readonly contextWindow: number;
   readonly toolContributions: readonly ToolContextContribution[];
   readonly history: readonly ContextTurnSnapshot[];
 }
@@ -63,7 +65,14 @@ const DEFAULT_BYTES_PER_TOKEN = 4;
 // ---------------------------------------------------------------------------
 
 export class ContextTracker {
-  private readonly modelContextWindow: number;
+  // Initial cap from the constructor option (or default). Each recorded turn
+  // can refine this via the model name in the TokenEvent — e.g. claude-opus-4-7
+  // is a 1M-token window; without the lookup the bar would read 100% at 200K.
+  // Invariant: this value is monotonically non-decreasing within a session
+  // (max-only update, never shrink). A mid-session sub-agent dispatch to a
+  // smaller model must not collapse the cap, because cached history is still
+  // indexed against the larger context window.
+  private modelContextWindow: number;
   private readonly maxHistorySize: number;
   private readonly bytesPerToken: number;
 
@@ -91,6 +100,24 @@ export class ContextTracker {
   recordTurn(event: TokenEvent): ContextTurnSnapshot {
     this.turnCount++;
     const now = event.timestamp;
+
+    // Refine the context window from the model on this event. Anthropic
+    // returns the model in usage metadata (e.g. claude-opus-4-7 → 1M window).
+    // Without this lookup, a 250K-token Opus 4.7 conversation would render
+    // as 125% fill against the 200K default.
+    //
+    // Take the max — never shrink. The cap can grow during a session
+    // (default 200K → resolved 1M on first Opus turn) but must not shrink
+    // when a smaller-window model (e.g. Haiku sub-agent at 200K) follows
+    // a larger one (Opus at 1M). Cached history is still indexed against
+    // the larger context, so a 605K-token snapshot would otherwise read as
+    // 302% fillPercent against a shrunken 200K cap.
+    if (event.model) {
+      const pricing = resolveModelPricing(event.model);
+      if (pricing && pricing.contextWindow > this.modelContextWindow) {
+        this.modelContextWindow = pricing.contextWindow;
+      }
+    }
 
     // Total context = new tokens + cached tokens (Anthropic reports input_tokens
     // as only the uncached portion; cache_read + cache_creation are the rest)
@@ -166,6 +193,7 @@ export class ContextTracker {
       growth: this.getGrowth(),
       currentBreakdown: this.getCurrentBreakdown(),
       fillPercent: Math.round(fillPercent * 100) / 100,
+      contextWindow: this.modelContextWindow,
       toolContributions: this.getToolContributions(),
       history: this.history,
     };
@@ -255,6 +283,7 @@ export class ContextTrackerRegistry {
       growth: { startTokens: 0, currentTokens: 0, deltaTokens: 0 },
       currentBreakdown: { system: 0, tools: 0, user: 0, assistant: 0 },
       fillPercent: 0,
+      contextWindow: this.options?.modelContextWindow ?? DEFAULT_CONTEXT_WINDOW,
       toolContributions: [],
       history: [],
     };

@@ -1301,6 +1301,10 @@ async function main(): Promise<void> {
             turnNumber: ctxSnapshot.turnNumber,
             totalTokens: ctxSnapshot.inputTokens,
             fillPercent: ctxSnapshot.fillPercent,
+            // Carry the model-aware cap so the client renders "X / Y"
+            // from a single source of truth — see ContextUpdateEvent
+            // doc-comment for the rationale.
+            contextWindow: ctxMetrics.contextWindow,
             breakdown: ctxSnapshot.breakdown,
             growth: {
               startTokens: ctxMetrics.growth.startTokens,

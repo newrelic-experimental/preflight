@@ -144,6 +144,7 @@ describe('LiveEventBus', () => {
       turnNumber: 1,
       totalTokens: 100,
       fillPercent: 0.1,
+      contextWindow: 200_000,
       breakdown: { system: 10, tools: 20, user: 30, assistant: 40 },
       growth: { startTokens: 0, currentTokens: 100, delta: 100 },
       topTools: [],

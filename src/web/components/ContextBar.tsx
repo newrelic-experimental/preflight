@@ -18,6 +18,13 @@ export interface ContextApiResponse {
     readonly assistant: number;
   };
   readonly fillPercent: number;
+  /**
+   * Per-model context window cap (tokens). Resolved from the model in the
+   * Anthropic usage metadata — claude-opus-4-7 → 1_000_000, claude-haiku-4-5 →
+   * 200_000, etc. UI formats this as "X / Y" so a 250K Opus session reads as
+   * "250K / 1M (25%)" instead of "250K (125%)".
+   */
+  readonly contextWindow: number;
   readonly toolContributions: ReadonlyArray<{
     readonly tool: string;
     readonly totalBytes: number;
@@ -73,6 +80,7 @@ function toContextEvent(api: ContextApiResponse, sessionId = ''): ContextUpdateE
     turnNumber: api.turnCount,
     totalTokens: api.growth.currentTokens,
     fillPercent: api.fillPercent,
+    contextWindow: api.contextWindow,
     breakdown: api.currentBreakdown,
     growth: {
       startTokens: api.growth.startTokens,
@@ -129,6 +137,13 @@ export function ContextBar({ data, sessionId }: ContextBarProps): JSX.Element | 
 
   const { breakdown, growth, fillPercent, totalTokens } = ctx;
   const atCapacity = fillPercent >= 100;
+  // contextWindow now lives on ctx (mirrored on both SSE liveContext and the
+  // API snapshot). Reading from ctx.contextWindow keeps the numerator and
+  // denominator coming from the same source — without this, a freshly-
+  // resolved 1M Opus cap on the SSE event could render against a stale
+  // 200K default still cached on the 10s-polling apiContext, producing a
+  // bar like "250K / 200K" with a 25% legend.
+  const contextWindow = ctx.contextWindow;
 
   return (
     <div className="group">
@@ -143,19 +158,14 @@ export function ContextBar({ data, sessionId }: ContextBarProps): JSX.Element | 
           )}
         </div>
         <div className="text-[11px] text-ink-subtle tabular-nums">
-          {growth.delta >= 0 ? (
-            <>
-              {formatTokens(growth.currentTokens)}
-              {growth.delta > 0 && (
-                <span className="text-accent-amber ml-1">+{formatTokens(growth.delta)}</span>
-              )}
-            </>
-          ) : (
-            <>
-              {formatTokens(growth.currentTokens)}
-              <span className="text-accent-cyan ml-1">compacted</span>
-            </>
+          {formatTokens(growth.currentTokens)}
+          {contextWindow && contextWindow > 0 && (
+            <span className="text-ink-muted">{` / ${formatTokens(contextWindow)}`}</span>
           )}
+          {growth.delta > 0 && (
+            <span className="text-accent-amber ml-1">+{formatTokens(growth.delta)}</span>
+          )}
+          {growth.delta < 0 && <span className="text-accent-cyan ml-1">compacted</span>}
         </div>
       </div>
 
