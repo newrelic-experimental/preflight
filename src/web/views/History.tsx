@@ -1,8 +1,4 @@
 import { useQuery } from '@tanstack/react-query';
-import { EmptyState } from '../components/EmptyState';
-import { ActivityHeatmap } from '../components/ActivityHeatmap';
-import { GeoBanner } from '../components/GeoBanner';
-import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -15,6 +11,12 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
+
+import { EmptyState } from '../components/EmptyState';
+import { ActivityHeatmap } from '../components/ActivityHeatmap';
+import { GeoBanner } from '../components/GeoBanner';
+import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
+import { Card, Eyebrow } from '../components/ui';
 import {
   fetchWeekly,
   fetchSessionsList,
@@ -178,7 +180,7 @@ export function History(): JSX.Element {
       <h1 className="text-xl font-semibold gradient-text mb-4">History</h1>
 
       <div className="grid grid-cols-2 gap-3">
-        <Panel title="Weekly efficiency · last 8">
+        <Panel title="Weekly Efficiency · Last 8">
           <div className="h-44 min-w-0">
             <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
               <AreaChart data={weeklyData}>
@@ -210,7 +212,7 @@ export function History(): JSX.Element {
           </div>
         </Panel>
 
-        <Panel title="Daily spend · last 30 days">
+        <Panel title="Daily Spend · Last 30 Days">
           <div className="h-44 min-w-0">
             <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
               <BarChart data={dailyData}>
@@ -245,7 +247,7 @@ export function History(): JSX.Element {
           </div>
         </Panel>
 
-        <Panel title="Cost per outcome · last 30 days">
+        <Panel title="Cost Per Outcome · Last 30 Days">
           {outcomeData.length === 0 ? (
             <EmptyState
               icon="radar"
@@ -284,7 +286,7 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
-        <Panel title="Anti-pattern frequency · weekly">
+        <Panel title="Anti-Pattern Frequency · Weekly">
           {antiPatternSeries.length === 0 ? (
             <EmptyState
               icon="checkmark"
@@ -317,7 +319,7 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
-        <Panel title="Model performance">
+        <Panel title="Model Performance">
           {modelPerf.length === 0 ? (
             <EmptyState
               icon="radar"
@@ -369,7 +371,7 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
-        <Panel title="Top tools · all sessions">
+        <Panel title="Top Tools · All Sessions">
           {topTools.length === 0 ? (
             <EmptyState
               icon="code"
@@ -412,7 +414,7 @@ export function History(): JSX.Element {
 
       <div className="grid grid-cols-2 gap-3 mt-3">
         {activityGrid.data && activityGrid.data.days.length > 0 && (
-          <Panel title="Activity · last 12 weeks">
+          <Panel title="Activity · Last 12 Weeks">
             <ActivityHeatmap
               variant="grid"
               buckets={[]}
@@ -427,13 +429,13 @@ export function History(): JSX.Element {
             a fresh install with no historical concurrency yet — the
             dashboard previously omitted the entire Panel when every
             day's peak was 0, which read as a missing feature. */}
-        <div className="glass-card p-4 flex flex-col">
-          <div className="text-[11px] text-ink-muted uppercase tracking-wider font-medium mb-3">
-            Peak concurrent sessions ·{' '}
+        <Card padding="md" className="flex flex-col">
+          <Eyebrow className="mb-3">
+            Peak Concurrent Sessions ·{' '}
             {hasConcurrencyData
-              ? `all-time: ${Math.max(...concurrencyData.map((d) => d.peak))}`
-              : 'last 30 days'}
-          </div>
+              ? `All-Time: ${Math.max(...concurrencyData.map((d) => d.peak))}`
+              : 'Last 30 Days'}
+          </Eyebrow>
           {hasConcurrencyData ? (
             <div className="flex-1 flex items-end justify-center">
               <ConcurrencyBlockChart data={concurrencyData} />
@@ -445,7 +447,7 @@ export function History(): JSX.Element {
               subtitle="Run two or more Claude Code sessions at the same time to populate this chart."
             />
           )}
-        </div>
+        </Card>
       </div>
 
       <div className="mt-3">
@@ -457,26 +459,24 @@ export function History(): JSX.Element {
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }): JSX.Element {
   return (
-    <div className="glass-card p-4">
-      <div className="text-[11px] text-ink-muted uppercase tracking-wider font-medium mb-3">
-        {title}
-      </div>
-      {children}
-    </div>
+    <Card padding="md">
+      <Eyebrow>{title}</Eyebrow>
+      <div className="mt-3">{children}</div>
+    </Card>
   );
 }
 
 function CoachCard({ data }: { data: PersonalCoachResult | undefined }): JSX.Element {
   if (!data) {
     return (
-      <Panel title="Personal coach">
-        <div className="text-ink-muted text-xs">Loading coaching insights…</div>
+      <Panel title="Personal Coach">
+        <EmptyState variant="loading" title="Loading coaching insights…" />
       </Panel>
     );
   }
   if (data.status === 'insufficient_data') {
     return (
-      <Panel title="Personal coach">
+      <Panel title="Personal Coach">
         <div className="text-ink-muted text-xs">{data.message}</div>
       </Panel>
     );
@@ -489,14 +489,14 @@ function CoachCard({ data }: { data: PersonalCoachResult | undefined }): JSX.Ele
           {data.topRecommendation}
         </div>
         {data.highlights.length > 0 && (
-          <ul className="list-disc list-inside text-emerald-400">
+          <ul className="list-disc list-inside text-accent-green">
             {data.highlights.map((h) => (
               <li key={`hl-${h}`}>{h}</li>
             ))}
           </ul>
         )}
         {data.regressions.length > 0 && (
-          <ul className="list-disc list-inside text-amber-400">
+          <ul className="list-disc list-inside text-accent-amber">
             {data.regressions.map((r) => (
               <li key={`rg-${r}`}>{r}</li>
             ))}

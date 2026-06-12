@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { fetchContext, qk } from '../api/client';
 import { useLiveStore, type ContextUpdateEvent } from '../store/liveStore';
+import { Eyebrow, Pill } from './ui';
 
 export interface ContextApiResponse {
   readonly turnCount: number;
@@ -41,7 +42,7 @@ export interface ContextBarProps {
 const CATEGORIES = ['system', 'tools', 'user', 'assistant'] as const;
 
 const CATEGORY_COLORS: Record<string, string> = {
-  system: 'bg-[#6366f1]',
+  system: 'bg-accent-indigo',
   tools: 'bg-accent-amber',
   user: 'bg-accent-blue',
   assistant: 'bg-accent-green',
@@ -55,7 +56,7 @@ const CATEGORY_GLOW: Record<string, string> = {
 };
 
 const CATEGORY_DOT_COLORS: Record<string, string> = {
-  system: 'bg-[#6366f1]',
+  system: 'bg-accent-indigo',
   tools: 'bg-accent-amber',
   user: 'bg-accent-blue',
   assistant: 'bg-accent-green',
@@ -150,11 +151,16 @@ export function ContextBar({ data, sessionId }: ContextBarProps): JSX.Element | 
       {/* Header */}
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
-          <div className="text-[10px] text-ink-muted uppercase tracking-wider">Context</div>
+          <Eyebrow>Context</Eyebrow>
           {atCapacity && (
-            <span className="text-[9px] bg-accent-red/15 text-accent-red px-1.5 py-0.5 rounded-full font-medium animate-pulse motion-reduce:animate-none">
+            <Pill
+              tone="danger"
+              size="sm"
+              uppercase
+              className="animate-pulse motion-reduce:animate-none"
+            >
               at capacity
-            </span>
+            </Pill>
           )}
         </div>
         <div className="text-[11px] text-ink-subtle tabular-nums">
@@ -175,7 +181,7 @@ export function ContextBar({ data, sessionId }: ContextBarProps): JSX.Element | 
           <div className="absolute inset-0 rounded-full bg-accent-cyan/20 animate-compact-flash pointer-events-none" />
         )}
         <div
-          className={`w-full h-3 bg-surface-3 rounded-full overflow-hidden flex transition-shadow duration-500 ${grew ? 'shadow-[0_0_12px_rgba(255,178,36,0.3)]' : ''} ${compacting ? 'animate-compact' : ''}`}
+          className={`w-full h-3 bg-surface-3 rounded-full overflow-hidden flex transition-colors duration-150 ${grew ? 'shadow-[0_0_12px_rgba(255,178,36,0.3)]' : ''} ${compacting ? 'animate-compact' : ''}`}
         >
           {CATEGORIES.map((cat) => {
             const tokens = breakdown[cat];

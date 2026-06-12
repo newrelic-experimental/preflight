@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { X } from 'lucide-react';
 
+import { Button } from './ui';
+
 interface ShortcutOverlayProps {
   readonly open: boolean;
   readonly onClose: () => void;
@@ -47,13 +49,15 @@ export function ShortcutOverlay({ open, onClose }: ShortcutOverlayProps): JSX.El
       >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold text-ink-base">Keyboard Shortcuts</h2>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="p-1 rounded hover:bg-bg-elevated text-ink-muted hover:text-ink-base transition-colors"
+            aria-label="Close keyboard shortcuts"
+            className="px-1 py-1"
           >
             <X size={16} />
-          </button>
+          </Button>
         </div>
         <div className="space-y-2">
           {shortcuts.map((shortcut) => (
@@ -63,7 +67,7 @@ export function ShortcutOverlay({ open, onClose }: ShortcutOverlayProps): JSX.El
                 {shortcut.keys.map((k) => (
                   <kbd
                     key={k}
-                    className="inline-block px-1.5 py-0.5 text-[11px] font-mono bg-bg-elevated rounded border border-bg-line text-ink-base"
+                    className="inline-block px-1.5 py-0.5 text-[11px] font-mono bg-bg-elevated rounded-md border border-border-subtle text-ink-base"
                   >
                     {k}
                   </kbd>

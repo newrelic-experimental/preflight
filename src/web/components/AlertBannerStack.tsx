@@ -53,6 +53,7 @@ export function AlertBannerStack(): JSX.Element | null {
           className={
             `w-full flex items-center gap-2 px-3 py-2 text-xs text-left ` +
             `border-b ${SEVERITY_BORDER[headerSeverity]} ` +
+            `transition-colors duration-150 ` +
             `focus:outline-none focus:ring-2 focus:ring-accent-cyan/50`
           }
         >
@@ -77,6 +78,7 @@ export function AlertBannerStack(): JSX.Element | null {
           className={
             `w-full flex items-center gap-2 px-3 py-2 text-xs text-left bg-bg-panel ` +
             `border-b ${SEVERITY_BORDER[headerSeverity]} ` +
+            `transition-colors duration-150 ` +
             `focus:outline-none focus:ring-2 focus:ring-accent-cyan/50`
           }
         >

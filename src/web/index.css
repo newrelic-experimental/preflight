@@ -32,13 +32,31 @@
   --color-accent-red: #ff4c4c;
   --color-accent-pink: #e94e8a;
   --color-accent-coral: #ff6b6b;
+  --color-accent-indigo: #6366f1;
 
-  /* Legacy alias for existing cyan usages → map to NR green */
-  --color-accent-cyan: #1ce783;
+  /* Cyan is now a distinct color (no longer aliased to green) */
+  --color-accent-cyan: #22d3ee;
 
   /* Fonts */
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+
+  /* Radius tokens — Tailwind v4 generates rounded-* utilities from these */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 9999px;
+
+  /* Chart fills — used inside SVG fill attributes for concurrency block charts */
+  --color-chart-block: rgba(0, 212, 170, 0.7);
+  --color-chart-block-peak: rgba(0, 212, 170, 1);
+
+  /* Activity heatmap intensity scale — purple in dark mode */
+  --color-heatmap-0: rgba(255, 255, 255, 0.03);
+  --color-heatmap-1: rgba(153, 69, 255, 0.2);
+  --color-heatmap-2: rgba(153, 69, 255, 0.4);
+  --color-heatmap-3: rgba(153, 69, 255, 0.65);
+  --color-heatmap-4: rgba(153, 69, 255, 0.9);
 }
 
 /* ───── Light mode overrides ───── */
@@ -67,7 +85,19 @@ html.light {
   --color-accent-teal: #0a9b80;
   --color-accent-amber: #d97706;
   --color-accent-red: #dc2626;
-  --color-accent-cyan: #0fa968;
+  --color-accent-cyan: #0891b2;
+  --color-accent-indigo: #4f46e5;
+
+  /* Chart fills in light mode — slightly darker teal for contrast on white */
+  --color-chart-block: rgba(10, 155, 128, 0.7);
+  --color-chart-block-peak: rgba(10, 155, 128, 1);
+
+  /* Heatmap intensity in light mode — purple darkened so low intensities are visible on light bg */
+  --color-heatmap-0: rgba(0, 0, 0, 0.04);
+  --color-heatmap-1: rgba(124, 58, 237, 0.2);
+  --color-heatmap-2: rgba(124, 58, 237, 0.4);
+  --color-heatmap-3: rgba(124, 58, 237, 0.65);
+  --color-heatmap-4: rgba(124, 58, 237, 0.9);
 }
 
 html,

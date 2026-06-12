@@ -33,8 +33,11 @@ export interface DiscreteBlockChartProps {
   readonly ariaLabel: string;
 }
 
-const BLOCK_COLOR = 'rgba(0, 212, 170, 0.7)';
-const BLOCK_COLOR_PEAK = 'rgba(0, 212, 170, 1)';
+// Sourced from `--color-chart-block` / `--color-chart-block-peak` in
+// src/web/index.css so the chart flips correctly in light mode (the raw
+// teal RGBA was hardcoded for dark mode and stayed the same shade on white).
+const BLOCK_COLOR = 'var(--color-chart-block)';
+const BLOCK_COLOR_PEAK = 'var(--color-chart-block-peak)';
 
 const BLOCK_SIZE = 10;
 const BLOCK_GAP = 2;
@@ -126,7 +129,7 @@ export function DiscreteBlockChart({
       </svg>
       {tooltip && (
         <div
-          className="absolute px-1.5 py-0.5 bg-bg-elevated text-[10px] text-ink-default rounded shadow-md pointer-events-none whitespace-nowrap"
+          className="absolute px-1.5 py-0.5 bg-bg-elevated border border-border-subtle text-[10px] text-ink-base rounded-md shadow-md pointer-events-none whitespace-nowrap tabular-nums"
           // Tooltip bottom-edge sits 4 px above the column's topmost block.
           // Computed in container-relative pixels via getBoundingClientRect,
           // so it survives the SVG's scale + centering under

@@ -4,13 +4,14 @@ import { useLocation } from 'wouter';
 import { useLiveStore, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
-import { Sparkline } from '../components/Sparkline';
+import { HourlyCostBlocks, type HourlyCostEntry } from '../components/HourlyCostBlocks';
 import { EmptyState } from '../components/EmptyState';
 import { GanttTimeline } from '../components/GanttTimeline';
 import { ConcurrencyIndicator, type ConcurrencyData } from '../components/ConcurrencyIndicator';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { ContextBar } from '../components/ContextBar';
+import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
 import {
   fetchRecentAlerts,
   fetchCost,
@@ -29,7 +30,14 @@ import {
   NotFoundError,
   qk,
 } from '../api/client';
-import { formatNumber, shortToolName } from '../lib/format';
+import {
+  fmtElapsed,
+  fmtTimeOfDay,
+  formatNumber,
+  rateColor,
+  scoreColor,
+  shortToolName,
+} from '../lib/format';
 import { isSameLocalDay } from '../../lib/date.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
@@ -206,11 +214,17 @@ export function Today(): JSX.Element {
     () => computeTodayFlags(todaySessions ?? []),
     [todaySessions],
   );
+  const hourlySpend = useMemo(() => buildHourlySpend(todaySessions ?? []), [todaySessions]);
 
   // Task #17 (D3): prefer the cross-session aggregate when present; fall
   // back to the legacy persisted-sessions math during the loading window so
-  // the KPIs don't blink to zero on first paint.
-  const calls = aggregate?.toolCallCount ?? persistedTodayCalls;
+  // the KPIs don't blink to zero on first paint. Use Math.max (not `??`)
+  // because the aggregate endpoint can legitimately return 0 when its
+  // disk-only data sources see no events from today (e.g., the live
+  // session's events are in the in-memory tool-call buffer of a different
+  // MCP, not in any drained buffer-*.jsonl file). Matches the spend +
+  // flags formulas just below.
+  const calls = Math.max(aggregate?.toolCallCount ?? 0, persistedTodayCalls);
   const spendLoading =
     (costPending || sessionsPending || aggregatePending) &&
     !cost &&
@@ -287,34 +301,36 @@ export function Today(): JSX.Element {
         </>
       ) : (
         <>
-          <AnimatedCard index={0} className="glass-card glow-green p-5 mb-4">
-            <div className="grid grid-cols-4 gap-6">
-              <Kpi
-                label="efficiency"
-                hero
-                value={effDisplay}
-                sub={effSub}
-                {...(effScore !== null
-                  ? { animate: true, numericValue: Math.round(effScore * 100), suffix: '%' }
-                  : {})}
-              />
-              <Kpi
-                label="spend today"
-                tone="accent"
-                value={spendLoading ? '…' : `$${todayTotal.toFixed(2)}`}
-                {...(!spendLoading
-                  ? { animate: true, numericValue: todayTotal, prefix: '$', decimals: 2 }
-                  : {})}
-              />
-              <Kpi label="tool calls" value={String(calls)} animate numericValue={calls} />
-              <Kpi
-                label="flags"
-                tone={flagsCount > 0 ? 'warn' : 'neutral'}
-                value={String(flagsCount)}
-                animate
-                numericValue={flagsCount}
-              />
-            </div>
+          <AnimatedCard index={0} className="mb-4">
+            <Card padding="lg" tone="elevated" glow="green">
+              <div className="grid grid-cols-4 gap-4">
+                <Kpi
+                  label="efficiency"
+                  hero
+                  value={effDisplay}
+                  sub={effSub}
+                  {...(effScore !== null
+                    ? { animate: true, numericValue: Math.round(effScore * 100), suffix: '%' }
+                    : {})}
+                />
+                <Kpi
+                  label="spend today"
+                  tone="accent"
+                  value={spendLoading ? '…' : `$${todayTotal.toFixed(2)}`}
+                  {...(!spendLoading
+                    ? { animate: true, numericValue: todayTotal, prefix: '$', decimals: 2 }
+                    : {})}
+                />
+                <Kpi label="tool calls" value={String(calls)} animate numericValue={calls} />
+                <Kpi
+                  label="flags"
+                  tone={flagsCount > 0 ? 'warn' : 'neutral'}
+                  value={String(flagsCount)}
+                  animate
+                  numericValue={flagsCount}
+                />
+              </div>
+            </Card>
           </AnimatedCard>
 
           <AnimatedCard index={1} className="grid grid-cols-2 gap-3 mb-3">
@@ -328,10 +344,7 @@ export function Today(): JSX.Element {
                       ? persistedTodaySpend + costApi.forecast.forecastEndOfDayUsd
                       : null))
               }
-              spendPoints={buildSpendSparkline(
-                todaySessions ?? [],
-                costApi?.cost?.sessionTotalCostUsd ?? 0,
-              )}
+              hourlySpend={hourlySpend}
             />
             {concurrency && concurrency.buckets && (
               <ConcurrencyIndicator
@@ -347,44 +360,43 @@ export function Today(): JSX.Element {
 
           {flagsCount > 0 &&
             (antiPatterns.length > 0 || (apiAntiPatterns && apiAntiPatterns.length > 0)) && (
-              <AnimatedCard
-                index={2}
-                className="mb-3 glass-card border-accent-amber/40 p-2.5 text-xs"
-              >
-                {antiPatterns.length > 0 ? (
-                  <>
-                    <span className="text-accent-amber font-semibold">
-                      ⚠ {antiPatterns[0].type}
-                    </span>
-                    <span className="text-ink-muted"> — </span>
-                    <span>{antiPatterns[0].count}× on </span>
-                    <code className="bg-bg-line px-1 rounded">{antiPatterns[0].target}</code>
-                    {/* Task #17 (D3): per-session pill so users can identify
-                        which of N concurrent sessions triggered the alert. */}
-                    {antiPatterns[0].sessionId && (
-                      <span className="ml-2 inline-flex items-center bg-bg-line px-1.5 py-0.5 rounded text-[10px] text-ink-muted">
-                        Session: {sessionPillLabel(antiPatterns[0].sessionId, liveSessions ?? [])}
+              <AnimatedCard index={2} className="mb-3">
+                <Card padding="sm" tone="warning" className="text-xs">
+                  {antiPatterns.length > 0 ? (
+                    <>
+                      <Pill tone="warning" size="sm" className="mr-2">
+                        {antiPatterns[0].type}
+                      </Pill>
+                      <span className="text-ink-muted">— </span>
+                      <span>{antiPatterns[0].count}× on </span>
+                      <code className="bg-surface-5 px-1 rounded">{antiPatterns[0].target}</code>
+                      {/* Task #17 (D3): per-session pill so users can identify
+                          which of N concurrent sessions triggered the alert. */}
+                      {antiPatterns[0].sessionId && (
+                        <Pill tone="neutral" size="sm" className="ml-2">
+                          Session: {sessionPillLabel(antiPatterns[0].sessionId, liveSessions ?? [])}
+                        </Pill>
+                      )}
+                    </>
+                  ) : apiAntiPatterns && apiAntiPatterns.length > 0 ? (
+                    <>
+                      <Pill tone="warning" size="sm" className="mr-2">
+                        {apiAntiPatterns[0].type}
+                      </Pill>
+                      <span className="text-ink-muted">— </span>
+                      <span>
+                        {apiAntiPatterns[0].count ??
+                          apiAntiPatterns[0].iterations ??
+                          apiAntiPatterns[0].readCount ??
+                          '?'}
+                        × on{' '}
                       </span>
-                    )}
-                  </>
-                ) : apiAntiPatterns && apiAntiPatterns.length > 0 ? (
-                  <>
-                    <span className="text-accent-amber font-semibold">
-                      ⚠ {apiAntiPatterns[0].type}
-                    </span>
-                    <span className="text-ink-muted"> — </span>
-                    <span>
-                      {apiAntiPatterns[0].count ??
-                        apiAntiPatterns[0].iterations ??
-                        apiAntiPatterns[0].readCount ??
-                        '?'}
-                      × on{' '}
-                    </span>
-                    <code className="bg-bg-line px-1 rounded">
-                      {apiAntiPatterns[0].file ?? apiAntiPatterns[0].command ?? 'unknown'}
-                    </code>
-                  </>
-                ) : null}
+                      <code className="bg-surface-5 px-1 rounded">
+                        {apiAntiPatterns[0].file ?? apiAntiPatterns[0].command ?? 'unknown'}
+                      </code>
+                    </>
+                  ) : null}
+                </Card>
               </AnimatedCard>
             )}
 
@@ -400,18 +412,18 @@ export function Today(): JSX.Element {
           </AnimatedCard>
 
           {todayHeatmap && todayHeatmap.buckets?.length > 0 && (
-            <AnimatedCard index={5} className="glass-card p-3 mb-3">
-              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-                activity · today
-              </div>
-              <ActivityHeatmap
-                variant="strip"
-                buckets={todayHeatmap.buckets}
-                maxCount={todayHeatmap.maxCount}
-                bucketSizeMs={todayHeatmap.bucketSizeMs}
-                startTimestamp={todayHeatmap.startTimestamp}
-                ariaLabel="Today's activity density in 15-minute blocks"
-              />
+            <AnimatedCard index={5} className="mb-3">
+              <Card padding="sm">
+                <Eyebrow className="mb-2">Activity Today</Eyebrow>
+                <ActivityHeatmap
+                  variant="strip"
+                  buckets={todayHeatmap.buckets}
+                  maxCount={todayHeatmap.maxCount}
+                  bucketSizeMs={todayHeatmap.bucketSizeMs}
+                  startTimestamp={todayHeatmap.startTimestamp}
+                  ariaLabel="Today's activity density in 15-minute blocks"
+                />
+              </Card>
             </AnimatedCard>
           )}
 
@@ -424,13 +436,6 @@ export function Today(): JSX.Element {
   );
 }
 
-function rateColor(rate: number | null, goodThreshold = 0.8, warnThreshold = 0.5): string {
-  if (rate === null) return 'text-ink-muted';
-  if (rate >= goodThreshold) return 'text-green-400';
-  if (rate >= warnThreshold) return 'text-amber-400';
-  return 'text-red-400';
-}
-
 function QualityProxyPanel(): JSX.Element {
   const { data } = useQuery<QualityProxyMetrics>({
     queryKey: qk.qualityProxy,
@@ -439,10 +444,8 @@ function QualityProxyPanel(): JSX.Element {
   });
 
   return (
-    <div className="glass-card p-3">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-        Today · Session Quality
-      </div>
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Quality</Eyebrow>
       {!data || data.totalSignals === 0 ? (
         <EmptyState
           icon="checkmark"
@@ -466,7 +469,7 @@ function QualityProxyPanel(): JSX.Element {
             </div>
             <div>
               <span className="text-ink-muted">Backtracks </span>
-              <span className={data.backtrackCount > 0 ? 'text-amber-400' : ''}>
+              <span className={data.backtrackCount > 0 ? 'text-accent-amber' : ''}>
                 {data.backtrackCount}
               </span>
             </div>
@@ -476,18 +479,12 @@ function QualityProxyPanel(): JSX.Element {
             </div>
           </div>
           {data.degradationDetected && (
-            <div className="text-amber-400 text-xs mt-2">&#9888; Quality degrading</div>
+            <div className="text-accent-amber text-xs mt-2">&#9888; Quality degrading</div>
           )}
         </>
       )}
-    </div>
+    </Card>
   );
-}
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) return 'text-accent-cyan';
-  if (score >= 0.5) return 'text-amber-400';
-  return 'text-red-400';
 }
 
 function ToolSelectionPanel(): JSX.Element {
@@ -498,10 +495,8 @@ function ToolSelectionPanel(): JSX.Element {
   });
 
   return (
-    <div className="glass-card p-3">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-        Today · Tool Selection
-      </div>
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Tool Selection</Eyebrow>
       {!data || Array.isArray(data) || data.totalCalls === 0 ? (
         <EmptyState
           icon="radar"
@@ -530,13 +525,13 @@ function ToolSelectionPanel(): JSX.Element {
               {data.unusedOutputCount > 0 && <span>unused output: {data.unusedOutputCount}</span>}
             </div>
           )}
-          <div className="text-[9px] text-ink-subtle/60 mt-2">
+          <div className="text-[10px] text-ink-subtle/60 mt-2">
             Penalizes: reading the same file 3+ times without editing, repeated tool failures,
             fetching large outputs never referenced.
           </div>
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -562,7 +557,11 @@ function LatencyPanel(): JSX.Element {
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
-  const topTools = data
+  // Guard `data.byTool` separately — the API can return `data` with `byTool`
+  // missing (or `null`) when no tool calls have been recorded yet, and
+  // `Object.entries(undefined)` throws. Surfaced widely in test runs where
+  // mock fixtures returned `{}` and the crash bubbled up to unrelated tests.
+  const topTools = data?.byTool
     ? Object.entries(data.byTool)
         .filter(
           (entry): entry is [string, LatencyPercentiles] => entry[1] !== null && entry[1].count > 0,
@@ -572,10 +571,8 @@ function LatencyPanel(): JSX.Element {
     : [];
 
   return (
-    <div className="glass-card p-3">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-        Today · Latency (ms)
-      </div>
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Latency (ms)</Eyebrow>
       {!data || !data.overall ? (
         <EmptyState
           icon="clock"
@@ -612,7 +609,7 @@ function LatencyPanel(): JSX.Element {
           )}
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -637,7 +634,9 @@ function ModelUsagePanel(): JSX.Element {
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
-  const models = data
+  // Same shape-defensive guard as LatencyPanel — `data.byModel` can be
+  // missing or null when no token events have been recorded yet.
+  const models = data?.byModel
     ? Object.entries(data.byModel)
         .filter(([, s]) => s.requestCount > 0)
         .sort((a, b) => b[1].totalCostUsd - a[1].totalCostUsd)
@@ -645,10 +644,8 @@ function ModelUsagePanel(): JSX.Element {
     : [];
 
   return (
-    <div className="glass-card p-3">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-        Today · Model Usage
-      </div>
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Model Usage</Eyebrow>
       {!data || models.length === 0 ? (
         <EmptyState
           icon="radar"
@@ -673,7 +670,7 @@ function ModelUsagePanel(): JSX.Element {
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -713,13 +710,6 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 const LIVE_TAIL_REFETCH_MS = 3_000;
-
-function fmtElapsed(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${String(sec).padStart(2, '0')}`;
-}
 
 function LiveSessionPane({
   sessions,
@@ -852,10 +842,8 @@ function LiveSessionPane({
       style={{ height: '320px' }}
     >
       {/* Session list */}
-      <div className="border-r border-bg-line overflow-auto">
-        <div className="text-[10px] text-ink-muted uppercase tracking-wider p-2 border-b border-bg-line">
-          session live tail
-        </div>
+      <div className="border-r border-border-subtle overflow-auto">
+        <Eyebrow className="p-2 border-b border-border-subtle">Session Live Tail</Eyebrow>
         {todaySessions.map((s) => {
           const isSessionLive = liveSessionIds.has(s.sessionId);
           return (
@@ -864,8 +852,8 @@ function LiveSessionPane({
               type="button"
               onClick={() => setSelectedId(s.sessionId)}
               className={
-                'block w-full text-left p-2 border-b border-bg-line text-xs hover:bg-bg-line ' +
-                (activeId === s.sessionId ? 'bg-bg-line' : '')
+                'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
+                (activeId === s.sessionId ? 'bg-surface-5' : '')
               }
             >
               <div className="flex items-center gap-1.5">
@@ -873,13 +861,10 @@ function LiveSessionPane({
                   {s.sessionName || s.sessionId.slice(0, 8)}
                 </span>
                 {isSessionLive ? (
-                  <span className="inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
-                    live
-                  </span>
+                  <LiveBadge label="live" size="sm" />
                 ) : (
                   <span className="text-[10px] text-ink-muted">
-                    {s.startTime ? fmtTime(s.startTime) : ''}
+                    {s.startTime ? fmtTimeOfDay(s.startTime) : ''}
                   </span>
                 )}
               </div>
@@ -906,39 +891,33 @@ function LiveSessionPane({
       {/* Live tail */}
       <div className="flex flex-col overflow-hidden">
         {activeId && (
-          <div className="flex items-center justify-between px-2 py-1 border-b border-bg-line shrink-0">
-            <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={() => setViewMode('gantt')}
-                className={`px-2 py-0.5 rounded-lg text-[10px] ${viewMode === 'gantt' ? 'bg-accent-green/20 text-accent-green font-medium' : 'text-ink-muted hover:text-ink-base'}`}
-              >
-                Gantt
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('list')}
-                className={`px-2 py-0.5 rounded-lg text-[10px] ${viewMode === 'list' ? 'bg-accent-green/20 text-accent-green font-medium' : 'text-ink-muted hover:text-ink-base'}`}
-              >
-                List
-              </button>
-            </div>
+          <div className="flex items-center justify-between px-2 py-1 border-b border-border-subtle shrink-0">
+            <Tabs
+              value={viewMode}
+              onChange={setViewMode}
+              size="sm"
+              tone="green"
+              ariaLabel="Timeline view mode"
+              options={[
+                { value: 'gantt', label: 'Gantt' },
+                { value: 'list', label: 'List' },
+              ]}
+            />
             <div className="flex items-center gap-2">
               {/* Task #17 (D3): "Session ended" badge — pinned to the selected
                   session even after it leaves the live set, so the user can
                   finish reviewing without an auto-switch. */}
               {sessionEnded && (
-                <span
-                  data-testid="session-ended-badge"
-                  className="inline-flex items-center bg-bg-line text-ink-muted text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded"
-                >
-                  Session ended
+                <span data-testid="session-ended-badge">
+                  <Pill tone="neutral" size="sm" uppercase>
+                    Session ended
+                  </Pill>
                 </span>
               )}
               <button
                 type="button"
                 onClick={() => navigate(`/sessions?id=${activeId}`)}
-                className="text-[10px] text-accent-cyan hover:underline"
+                className="text-[10px] text-accent-cyan hover:underline transition-colors duration-150"
               >
                 full session &rarr;
               </button>
@@ -970,7 +949,7 @@ function LiveSessionPane({
                 return (
                   <div
                     key={`${idx}-${entry.timestamp}`}
-                    className="flex items-center gap-1.5 px-1 py-0.5 text-xs border-b border-bg-line/50 last:border-b-0"
+                    className="flex items-center gap-1.5 px-1 py-0.5 text-xs border-b border-border-subtle/50 last:border-b-0"
                   >
                     <span className="w-10 text-ink-muted tabular-nums text-[11px] shrink-0">
                       +{fmtElapsed(elapsed)}
@@ -985,7 +964,7 @@ function LiveSessionPane({
                       {shortToolName(entry.toolName)}
                     </span>
                     <span
-                      className="flex-1 truncate text-ink-subtle text-[10px]"
+                      className="flex-1 truncate font-mono text-ink-subtle text-[10px]"
                       title={entry.filePath ?? entry.command ?? ''}
                     >
                       {entry.filePath ?? entry.command ?? ''}
@@ -1060,9 +1039,9 @@ function RecentAlertsPanel(): JSX.Element | null {
   const sortedEntries = [...entries].sort((a, b) => b.firedAt - a.firedAt);
 
   return (
-    <div className="glass-card p-3">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">recent alerts</div>
-      {isLoading && <div className="text-ink-muted text-xs">Loading…</div>}
+    <Card padding="sm">
+      <Eyebrow className="mb-2">Recent Alerts</Eyebrow>
+      {isLoading && <EmptyState variant="loading" title="Loading..." />}
       {error && <div className="text-accent-red text-xs">Error loading recent alerts.</div>}
       {!isLoading && !error && sortedEntries.length === 0 && (
         <div className="text-ink-muted text-xs">No alerts in recent history.</div>
@@ -1080,7 +1059,7 @@ function RecentAlertsPanel(): JSX.Element | null {
           </thead>
           <tbody>
             {sortedEntries.slice(0, 50).map((a) => (
-              <tr key={`${a.id}-${a.firedAt}-${a.state}`} className="border-t border-bg-line">
+              <tr key={`${a.id}-${a.firedAt}-${a.state}`} className="border-t border-border-subtle">
                 <td className="py-1 text-ink-subtle tabular-nums whitespace-nowrap">
                   {formatRelativeTime(a.firedAt)}
                 </td>
@@ -1108,7 +1087,7 @@ function RecentAlertsPanel(): JSX.Element | null {
           </tbody>
         </table>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -1122,13 +1101,6 @@ function formatRelativeTime(ts: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function fmtTime(value: number): string {
-  return new Date(value).toLocaleString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
 }
 
 // `isToday` is now `isSameLocalDay` from `src/lib/date.ts` — shared with the
@@ -1166,44 +1138,39 @@ function computeTodayFlags(sessions: SessionSummary[]): number {
   return total;
 }
 
-function buildSpendSparkline(sessions: SessionSummary[], currentSessionCost: number): number[] {
-  const todaySorted = sessions
-    .filter((s) => s.startTime && isToday(s.startTime) && s.estimatedCostUsd != null)
-    .sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
-
-  if (todaySorted.length === 0 && currentSessionCost <= 0) return [];
-
-  const points: number[] = [0];
-  let cumulative = 0;
-  for (const s of todaySorted) {
-    cumulative += s.estimatedCostUsd ?? 0;
-    points.push(cumulative);
+function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
+  // The /api/sessions route always injects the live session with its current
+  // in-memory cost (when not yet persisted) or returns the persisted entry
+  // (when already on disk). Either way the live session is represented once in
+  // `sessions`, so no separate currentSessionCost addition is needed — adding
+  // it separately caused the live session's cost to be counted twice.
+  const buckets = new Array<number>(24).fill(0);
+  for (const s of sessions) {
+    if (!s.startTime || !isToday(s.startTime) || s.estimatedCostUsd == null) continue;
+    const hour = new Date(s.startTime).getHours();
+    buckets[hour]! += s.estimatedCostUsd;
   }
-  if (currentSessionCost > 0) {
-    points.push(cumulative + currentSessionCost);
-  }
-  return points;
+  return buckets.map((cost, hour) => ({ hour, cost }));
 }
 
 function ForecastEodCard({
   todayTotal,
   forecastEod,
-  spendPoints,
+  hourlySpend,
 }: {
   todayTotal: number;
   forecastEod: number | null;
-  spendPoints: number[];
+  hourlySpend: HourlyCostEntry[];
 }): JSX.Element {
   const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
   const effectiveForecast = hasForecast ? Math.max(forecastEod, todayTotal) : 0;
   const delta = hasForecast ? effectiveForecast - todayTotal : 0;
   const pct = hasForecast && todayTotal > 0 ? (delta / todayTotal) * 100 : 0;
+  const hasSpend = hourlySpend.some((h) => h.cost > 0);
 
   return (
-    <div className="glass-card p-3">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1.5">
-        forecast · end of day
-      </div>
+    <Card padding="sm" className="mb-3 h-full">
+      <Eyebrow className="mb-1.5">Forecast · End of Day</Eyebrow>
       {hasForecast ? (
         <>
           <div className="flex items-baseline gap-3">
@@ -1221,9 +1188,9 @@ function ForecastEodCard({
               )}
             </span>
           </div>
-          {spendPoints.length >= 2 && (
+          {hasSpend && (
             <div className="mt-2">
-              <Sparkline values={spendPoints} height={36} animate ariaLabel="Today spend" />
+              <HourlyCostBlocks hours={hourlySpend} />
             </div>
           )}
         </>
@@ -1232,6 +1199,6 @@ function ForecastEodCard({
           Insufficient data — forecast appears once burn rate stabilizes.
         </div>
       )}
-    </div>
+    </Card>
   );
 }

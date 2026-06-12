@@ -16,11 +16,11 @@ export interface ActivityHeatmapProps {
 
 const INTENSITY_LEVELS = 5;
 const COLORS = [
-  'rgba(255,255,255,0.03)',
-  'rgba(153,69,255,0.2)',
-  'rgba(153,69,255,0.4)',
-  'rgba(153,69,255,0.65)',
-  'rgba(153,69,255,0.9)',
+  'var(--color-heatmap-0)',
+  'var(--color-heatmap-1)',
+  'var(--color-heatmap-2)',
+  'var(--color-heatmap-3)',
+  'var(--color-heatmap-4)',
 ];
 
 function intensityColor(count: number, maxCount: number): string {
@@ -135,7 +135,7 @@ function StripHeatmap({
       </svg>
       {tooltip && (
         <div
-          className="absolute -top-7 px-1.5 py-0.5 bg-bg-elevated text-[10px] text-ink-default rounded shadow-md pointer-events-none whitespace-nowrap"
+          className="absolute -top-7 px-1.5 py-0.5 bg-bg-elevated border border-border-subtle text-[10px] text-ink-base rounded-md shadow-md pointer-events-none whitespace-nowrap tabular-nums"
           style={{ left: tooltip.x }}
         >
           {tooltip.text}
@@ -214,7 +214,7 @@ function GridHeatmap({ days, maxCount, ariaLabel }: GridProps): JSX.Element {
               x={0}
               y={headerHeight + i * (cellSize + cellGap) + cellSize - 2}
               className="fill-ink-muted"
-              fontSize={9}
+              fontSize={10}
             >
               {label}
             </text>
@@ -228,7 +228,7 @@ function GridHeatmap({ days, maxCount, ariaLabel }: GridProps): JSX.Element {
             x={labelWidth + col * (cellSize + cellGap)}
             y={10}
             className="fill-ink-muted"
-            fontSize={9}
+            fontSize={10}
           >
             {text}
           </text>
@@ -259,14 +259,14 @@ function GridHeatmap({ days, maxCount, ariaLabel }: GridProps): JSX.Element {
       </svg>
       {tooltip && (
         <div
-          className="absolute px-1.5 py-0.5 bg-bg-elevated text-[10px] text-ink-default rounded shadow-md pointer-events-none whitespace-nowrap"
+          className="absolute px-1.5 py-0.5 bg-bg-elevated border border-border-subtle text-[10px] text-ink-base rounded-md shadow-md pointer-events-none whitespace-nowrap tabular-nums"
           style={{ left: tooltip.x, top: tooltip.y }}
         >
           {tooltip.text}
         </div>
       )}
       {/* Color legend */}
-      <div className="flex items-center gap-1 mt-1.5 text-[9px] text-ink-muted">
+      <div className="flex items-center gap-1 mt-1.5 text-[10px] text-ink-muted">
         <span>Less</span>
         {COLORS.map((color, i) => (
           <span

@@ -9,9 +9,12 @@ import {
   Settings2,
   Bell,
 } from 'lucide-react';
+
 import { useLiveAlerts } from '../hooks/useLiveAlerts';
 import type { AlertEvent } from '../store/liveStore';
 import type { Theme } from '../hooks/useTheme';
+import { Button, Pill } from './ui';
+import type { PillTone } from './ui';
 
 const NAV_OBSERVE = [
   { path: '/', label: 'Today', Icon: Home },
@@ -29,10 +32,10 @@ const NAV_CONFIGURE = [
   { path: '/alerts', label: 'Alerts', Icon: Bell },
 ] as const;
 
-const BADGE_TONE: Record<AlertEvent['severity'], string> = {
-  info: 'bg-bg-line text-ink-base',
-  warning: 'bg-accent-amber/20 text-accent-amber',
-  critical: 'bg-accent-red/20 text-accent-red',
+const SEVERITY_TONE: Record<AlertEvent['severity'], PillTone> = {
+  info: 'neutral',
+  warning: 'warning',
+  critical: 'danger',
 };
 
 export interface SidebarProps {
@@ -63,6 +66,7 @@ export function Sidebar({
   }) {
     const active = currentPath === path;
     const showBadge = path === '/' && alertCount > 0;
+    const severity = maxSeverity ?? 'info';
     return (
       <button
         key={path}
@@ -70,26 +74,25 @@ export function Sidebar({
         aria-current={active ? 'page' : undefined}
         onClick={() => onNavigate(path)}
         className={
-          'flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all duration-150 ' +
+          'flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-left transition-colors duration-150 ' +
           (active
-            ? 'border-l-[3px] border-l-accent-green bg-[rgba(28,231,131,0.06)] text-ink-base font-medium pl-2.5'
+            ? 'border-l-[3px] border-l-accent-green bg-accent-green/8 text-ink-base font-medium pl-2.5'
             : 'border-l-[3px] border-l-transparent text-ink-subtle hover:text-ink-base hover:bg-surface-3')
         }
       >
         <Icon size={14} aria-hidden="true" focusable="false" />
         <span>{label}</span>
         {showBadge && (
-          <span
+          <Pill
+            tone={SEVERITY_TONE[severity]}
+            size="sm"
+            className="ml-auto font-semibold tabular-nums"
             data-testid="alert-badge"
-            data-severity={maxSeverity ?? 'info'}
+            data-severity={severity}
             aria-label={`${alertCount > 99 ? '99+' : alertCount} firing ${alertCount === 1 ? 'alert' : 'alerts'}`}
-            className={
-              `ml-auto px-1.5 rounded text-[10px] font-semibold tabular-nums ` +
-              BADGE_TONE[maxSeverity ?? 'info']
-            }
           >
             {alertCount > 99 ? '99+' : alertCount}
-          </span>
+          </Pill>
         )}
       </button>
     );
@@ -170,7 +173,7 @@ export function Sidebar({
 
       {/* Footer */}
       <div className="mt-auto pt-3 border-t border-border-subtle">
-        <div className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-surface-3">
+        <div className="flex items-center justify-between px-2 py-1.5 rounded-md bg-surface-3 transition-colors duration-150">
           <div className="flex items-center gap-1.5">
             <span
               className={`w-2 h-2 rounded-full ${connected ? 'bg-accent-green animate-pulse' : 'bg-accent-amber'}`}
@@ -179,14 +182,15 @@ export function Sidebar({
               {connected ? 'live' : 'reconnecting'}
             </span>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onToggleTheme}
             aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="p-1 rounded text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors"
+            className="px-1 py-1"
           >
             {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
-          </button>
+          </Button>
         </div>
       </div>
     </aside>

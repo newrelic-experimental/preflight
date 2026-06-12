@@ -1,9 +1,12 @@
 type EmptyIcon = 'radar' | 'code' | 'timeline' | 'checkmark' | 'clock';
 
+type EmptyStateVariant = 'empty' | 'loading';
+
 interface EmptyStateProps {
-  readonly icon: EmptyIcon;
+  readonly icon?: EmptyIcon;
   readonly title: string;
   readonly subtitle?: string;
+  readonly variant?: EmptyStateVariant;
 }
 
 function RadarIcon(): JSX.Element {
@@ -173,11 +176,36 @@ const ICON_MAP: Record<EmptyIcon, () => JSX.Element> = {
   clock: ClockIcon,
 };
 
-export function EmptyState({ icon, title, subtitle }: EmptyStateProps): JSX.Element {
-  const Icon = ICON_MAP[icon];
+function LoadingDot(): JSX.Element {
+  return (
+    <div
+      className="flex items-center justify-center"
+      style={{ width: 48, height: 48 }}
+      aria-hidden="true"
+    >
+      <span
+        className="rounded-full animate-pulse"
+        style={{
+          width: 10,
+          height: 10,
+          backgroundColor: 'var(--color-accent-green)',
+          boxShadow: '0 0 0 4px color-mix(in srgb, var(--color-accent-green) 15%, transparent)',
+        }}
+      />
+    </div>
+  );
+}
+
+export function EmptyState({
+  icon,
+  title,
+  subtitle,
+  variant = 'empty',
+}: EmptyStateProps): JSX.Element {
+  const Icon = icon !== undefined ? ICON_MAP[icon] : undefined;
   return (
     <div className="py-8 flex flex-col items-center justify-center gap-3">
-      <Icon />
+      {variant === 'loading' ? <LoadingDot /> : Icon && <Icon />}
       <span className="text-sm font-medium text-ink-subtle">{title}</span>
       {subtitle && (
         <span className="text-xs text-ink-muted text-center max-w-[240px]">{subtitle}</span>

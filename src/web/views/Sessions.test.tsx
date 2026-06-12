@@ -133,8 +133,9 @@ describe('Sessions view', () => {
     await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
     expect(screen.getAllByText('Edit').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Bash').length).toBeGreaterThanOrEqual(1);
-    // Switch to list view to verify per-row duration text
-    fireEvent.click(screen.getByText('List'));
+    // Switch to list view to verify per-row duration text. Use role=tab to
+    // disambiguate from the aside "List" eyebrow heading, which has the same text.
+    fireEvent.click(screen.getByRole('tab', { name: 'List' }));
     await waitFor(() => expect(screen.getByText('120ms')).toBeInTheDocument());
     expect(screen.getByText('240ms')).toBeInTheDocument();
     expect(screen.getByText('80ms')).toBeInTheDocument();
@@ -151,9 +152,10 @@ describe('Sessions view', () => {
     renderSessions(SAMPLE_LIST, { s1: detail });
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/s1/)[0]);
-    // Switch to list view to verify per-row duration text
-    await waitFor(() => expect(screen.getByText('List')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('List'));
+    // Switch to list view to verify per-row duration text. Use role=tab to
+    // disambiguate from the aside "List" eyebrow heading, which has the same text.
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'List' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'List' }));
     await waitFor(() => expect(screen.getByText('50ms')).toBeInTheDocument());
     expect(screen.getByText('80ms')).toBeInTheDocument();
     expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(2);
@@ -169,9 +171,12 @@ describe('Sessions view', () => {
     renderSessions(SAMPLE_LIST, { s1: detail });
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/s1/)[0]);
-    // Header is now split across two spans: session ID and call/duration info
+    // Header is split across multiple spans (identifier in mono, bullet
+    // separators outside any uppercase scope, "5 calls" in uppercase, the
+    // duration in its own tabular-nums span) — assert each piece independently.
     await waitFor(() => expect(screen.getByText(/s1-abcde/)).toBeInTheDocument());
-    expect(screen.getByText(/· 5 calls · 5s/)).toBeInTheDocument();
+    expect(screen.getByText(/5 calls/)).toBeInTheDocument();
+    expect(screen.getByText('5s')).toBeInTheDocument();
   });
 });
 
@@ -259,7 +264,8 @@ describe('Sessions view — real API shapes', () => {
     renderSessions(REAL_API_LIST, { 'abc-123': detailWithBreakdownOnly });
     await waitFor(() => expect(screen.getByText(/abc-123/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/abc-123/)[0]);
-    await waitFor(() => expect(screen.getByText(/tool breakdown/i)).toBeInTheDocument());
+    // The breakdown lives under the "Tools" eyebrow section.
+    await waitFor(() => expect(screen.getByText(/^Tools$/)).toBeInTheDocument());
     expect(screen.getByText('Bash')).toBeInTheDocument();
     expect(screen.getByText('Read')).toBeInTheDocument();
     expect(screen.getByText('Edit')).toBeInTheDocument();

@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAuditLog, qk } from '../api/client';
+import { EmptyState } from '../components/EmptyState';
 import { GeoBanner } from '../components/GeoBanner';
+import { Button, Card, Pill } from '../components/ui';
 
 interface AuditEntry {
   readonly ts: number;
@@ -62,34 +64,25 @@ export function Audit(): JSX.Element {
       <GeoBanner theme="audit" />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Audit</h1>
-        <button
-          type="button"
-          onClick={() => downloadJsonl(rows)}
-          className="text-xs px-2 py-1 bg-surface-5 border border-border-medium rounded-lg hover:border-accent-green hover:glow-green transition-all duration-150"
-        >
+        <Button variant="secondary" size="md" onClick={() => downloadJsonl(rows)}>
           Export JSONL
-        </button>
+        </Button>
       </header>
 
       <div className="flex gap-2 mb-3 flex-wrap">
         {FILTERS.map(({ key, label }) => (
-          <button
+          <Button
             key={key}
-            type="button"
+            variant={filter === key ? 'primary' : 'secondary'}
+            size="sm"
             onClick={() => setFilter(key)}
-            className={
-              'text-xs px-2 py-1 rounded border ' +
-              (filter === key
-                ? 'bg-accent-green/8 border-accent-green text-ink-base'
-                : 'bg-surface-3 border-surface-8 text-ink-subtle hover:border-border-strong')
-            }
           >
             {label}
-          </button>
+          </Button>
         ))}
       </div>
 
-      {isLoading && <div className="text-ink-muted text-xs">Loading…</div>}
+      {isLoading && <EmptyState icon="clock" variant="loading" title="Loading..." />}
       {error && <div className="text-accent-red text-xs">Error loading audit log.</div>}
 
       {!isLoading && !error && visible.length > VISIBLE_LIMIT && (
@@ -99,7 +92,7 @@ export function Audit(): JSX.Element {
       )}
 
       {!isLoading && !error && (
-        <div className="glass-card">
+        <Card padding="sm" tone="static" className="overflow-hidden">
           <table className="w-full text-xs">
             <thead className="text-ink-muted bg-surface-3">
               <tr>
@@ -131,16 +124,16 @@ export function Audit(): JSX.Element {
                   <td className="p-2">{r.tool}</td>
                   <td className="p-2 font-mono text-[11px]">{r.target}</td>
                   <td className="p-2">
-                    <span className="px-1.5 py-0.5 bg-surface-8 rounded text-[10px]">
+                    <Pill tone="neutral" size="sm">
                       {r.classification}
-                    </span>
+                    </Pill>
                   </td>
                   <td className="p-2 text-ink-subtle">{r.sessionId ?? '—'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </Card>
       )}
     </section>
   );

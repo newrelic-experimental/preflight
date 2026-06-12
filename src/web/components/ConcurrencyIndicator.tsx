@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from './DiscreteBlockChart';
 
+import { Card, Eyebrow } from './ui';
+
 export interface ConcurrencyData {
   readonly current: number;
   readonly peak: number;
@@ -51,13 +53,9 @@ export function ConcurrencyIndicator({
   });
 
   return (
-    <div
-      className={`glass-card p-3 relative overflow-hidden${celebration ? ' new-peak-glow' : ''}`}
-    >
+    <Card padding="sm" className={`relative overflow-hidden${celebration ? ' new-peak-glow' : ''}`}>
       {celebration && <CelebrationBurst />}
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1.5">
-        concurrent sessions
-      </div>
+      <Eyebrow className="mb-1.5">Concurrent Sessions</Eyebrow>
       <div className="flex items-baseline gap-3">
         <span className="text-lg font-semibold text-accent-teal tabular-nums">{current}</span>
         <span className="text-xs text-ink-muted tabular-nums">
@@ -75,7 +73,7 @@ export function ConcurrencyIndicator({
           <DiscreteBlockChart data={items} ariaLabel={`Concurrency over time, peak ${peak}`} />
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -90,6 +88,7 @@ function CelebrationBurst(): JSX.Element {
         style={{
           left: '50%',
           top: '50%',
+          // Hardcoded hex: short-lived celebration animation; light/dark divergence is acceptable.
           backgroundColor: i % 3 === 0 ? '#1CE783' : i % 3 === 1 ? '#00D4AA' : '#9945FF',
           animation: `particle-burst 1s ease-out forwards`,
           animationDelay: `${i * 40}ms`,

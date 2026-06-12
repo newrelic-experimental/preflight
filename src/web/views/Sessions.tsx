@@ -20,7 +20,15 @@ import {
   qk,
 } from '../api/client';
 import { ContextBar, type ContextApiResponse } from '../components/ContextBar';
-import { shortToolName } from '../lib/format';
+import { Button, Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import {
+  fmtDateTime,
+  fmtElapsed,
+  formatDuration,
+  rateColor,
+  scoreColor,
+  shortToolName,
+} from '../lib/format';
 import { bucketTimeline, autoBucketSize } from '../lib/bucket';
 
 // F-051: keep the query limit and the "showing N most recent" notice in
@@ -119,16 +127,6 @@ const LIVE_REFETCH_MS = 3_000;
 
 type SortKey = 'date' | 'cost' | 'calls';
 
-function fmtTime(value: string | number): string {
-  const d = new Date(value);
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
 function sortSessions(rows: SessionRow[], key: SortKey): SessionRow[] {
   const sorted = [...rows];
   switch (key) {
@@ -214,14 +212,14 @@ export function Sessions(): JSX.Element {
       </div>
       <h1 className="text-lg font-semibold gradient-text mb-2 shrink-0">Sessions</h1>
       <div className="grid grid-cols-[260px_1fr] gap-3 flex-1 min-h-0">
-        <aside className="glass-card overflow-hidden flex flex-col">
+        <Card padding="none" tone="static" className="overflow-hidden flex flex-col">
           <header className="p-2 border-b border-border-subtle">
             <div className="flex items-center justify-between">
-              <h2 className="text-xs uppercase tracking-wider text-ink-muted">List</h2>
+              <Eyebrow as="h2">List</Eyebrow>
               <select
                 value={sortKey}
                 onChange={(e) => setSortKey(e.target.value as SortKey)}
-                className="text-[10px] bg-surface-5 border border-border-medium rounded px-1.5 py-0.5 text-ink-subtle"
+                className="text-[10px] bg-surface-5 border border-border-medium rounded-md px-1.5 py-0.5 text-ink-subtle"
               >
                 <option value="date">Newest</option>
                 <option value="cost">Cost</option>
@@ -230,7 +228,9 @@ export function Sessions(): JSX.Element {
             </div>
           </header>
           <div className="overflow-auto">
-            {list.isLoading && <div className="p-3 text-ink-muted text-xs">Loading…</div>}
+            {list.isLoading && (
+              <EmptyState variant="loading" icon="timeline" title="Loading sessions" />
+            )}
             {!list.isLoading && rows.length === 0 && liveSessionIds.size === 0 && (
               <EmptyState
                 icon="code"
@@ -246,25 +246,20 @@ export function Sessions(): JSX.Element {
                   type="button"
                   onClick={() => handleSessionClick(r.sessionId)}
                   className={
-                    'block w-full text-left p-2 border-b border-border-subtle text-xs hover:bg-bg-line ' +
-                    (selectedId === r.sessionId ? 'bg-bg-line' : '')
+                    'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
+                    (selectedId === r.sessionId ? 'bg-surface-5' : '')
                   }
                 >
                   <div className="flex items-center gap-1.5 min-w-0">
                     <span className="font-mono text-ink-base truncate">
                       {r.sessionName || r.sessionId.slice(0, 8)}
                     </span>
-                    {isLive && (
-                      <span className="shrink-0 inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
-                        <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
-                        live
-                      </span>
-                    )}
+                    {isLive && <LiveBadge size="sm" label="live" className="shrink-0" />}
                   </div>
-                  <div className="flex justify-between mt-1 text-ink-subtle text-[11px]">
+                  <div className="flex justify-between mt-1 text-ink-subtle text-[11px] tabular-nums">
                     <span>{r.toolCallCount ?? 0} calls</span>
                     <span className="text-ink-muted">
-                      {r.startTime ? fmtTime(r.startTime) : '—'}
+                      {r.startTime ? fmtDateTime(r.startTime) : '—'}
                     </span>
                     <span>
                       {r.estimatedCostUsd != null ? `$${r.estimatedCostUsd.toFixed(2)}` : '—'}
@@ -284,7 +279,7 @@ export function Sessions(): JSX.Element {
               </div>
             )}
           </div>
-        </aside>
+        </Card>
 
         <div className="glass-card glass-card-static p-4 overflow-auto">
           {!selectedId && (
@@ -295,7 +290,7 @@ export function Sessions(): JSX.Element {
             />
           )}
           {selectedId && detail.isLoading && (
-            <div className="text-ink-muted text-xs">Loading detail…</div>
+            <EmptyState variant="loading" icon="timeline" title="Loading detail" />
           )}
           {selectedId && detail.data && (
             <SessionTimeline
@@ -307,19 +302,6 @@ export function Sessions(): JSX.Element {
       </div>
     </section>
   );
-}
-
-function qualityRateColor(rate: number | null, goodThreshold = 0.8, warnThreshold = 0.5): string {
-  if (rate === null) return 'text-ink-muted';
-  if (rate >= goodThreshold) return 'text-green-400';
-  if (rate >= warnThreshold) return 'text-amber-400';
-  return 'text-red-400';
-}
-
-function toolScoreColor(score: number): string {
-  if (score >= 0.8) return 'text-accent-cyan';
-  if (score >= 0.5) return 'text-amber-400';
-  return 'text-red-400';
 }
 
 function toolBarColor(toolName: string): string {
@@ -334,7 +316,7 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
   const breakdown = data.toolBreakdown ?? {};
   const breakdownEntries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
   const totalCalls = data.toolCallCount ?? 0;
-  const durationSec = data.durationMs ? Math.round(data.durationMs / 1000) : null;
+  const durationLabel = data.durationMs != null ? formatDuration(data.durationMs) : null;
   const entries = data.timeline ?? [];
   const first = entries.length > 0 ? entries[0]!.timestamp : 0;
 
@@ -353,20 +335,25 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
       <div className="flex items-baseline justify-between mb-3">
         <div>
           <h2 className="text-xs tracking-wider text-ink-muted flex items-center gap-2">
+            {/* Identifier in mono so it looks identical to the left-aside list.
+                Each meta segment is its own span — the bullet separators sit
+                outside any uppercase scope, and the duration ("15h 30m")
+                escapes the uppercase span so its abbreviated units don't get
+                rendered as "15H 30M". */}
             <span
-              className={data.sessionName ? 'font-medium text-ink-base' : 'uppercase font-mono'}
+              className={`font-mono text-ink-base ${data.sessionName ? 'font-medium' : 'uppercase'}`}
             >
               {data.sessionName || data.sessionId.slice(0, 8)}
             </span>
-            <span className="uppercase">
-              · {totalCalls} calls{durationSec !== null ? ` · ${durationSec}s` : ''}
-            </span>
-            {isLive && (
-              <span className="inline-flex items-center gap-0.5 bg-accent-cyan/20 text-accent-cyan text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
-                live
-              </span>
+            <span aria-hidden="true">·</span>
+            <span className="uppercase">{totalCalls} calls</span>
+            {durationLabel && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">{durationLabel}</span>
+              </>
             )}
+            {isLive && <LiveBadge size="sm" label="live" />}
           </h2>
           {first > 0 && (
             <div className="text-[11px] text-ink-subtle mt-0.5">
@@ -385,19 +372,19 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
       <div className="grid grid-cols-3 gap-2 mb-4 text-xs">
         {data.model && (
           <div className="bg-surface-3 rounded-lg p-2.5">
-            <div className="text-ink-muted text-[10px] uppercase">Model</div>
+            <Eyebrow>Model</Eyebrow>
             <div className="font-mono">{data.model}</div>
           </div>
         )}
         {data.estimatedCostUsd != null && (
           <div className="bg-surface-3 rounded-lg p-2.5">
-            <div className="text-ink-muted text-[10px] uppercase">Cost</div>
-            <div className="tabular-nums">${data.estimatedCostUsd.toFixed(3)}</div>
+            <Eyebrow>Cost</Eyebrow>
+            <div className="tabular-nums">${data.estimatedCostUsd.toFixed(4)}</div>
           </div>
         )}
         {data.outcome && (
           <div className="bg-surface-3 rounded-lg p-2.5">
-            <div className="text-ink-muted text-[10px] uppercase">Outcome</div>
+            <Eyebrow>Outcome</Eyebrow>
             <div>{data.outcome}</div>
           </div>
         )}
@@ -407,13 +394,11 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         <div className="grid grid-cols-2 gap-3 mb-4">
           {data.qualityProxy && (
             <div className="bg-surface-3 rounded-lg p-3">
-              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-                Session Quality
-              </div>
+              <Eyebrow className="mb-2">Session Quality</Eyebrow>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
                   <span className="text-ink-muted">Diff Apply </span>
-                  <span className={qualityRateColor(data.qualityProxy.diffApplyRate)}>
+                  <span className={rateColor(data.qualityProxy.diffApplyRate)}>
                     {data.qualityProxy.diffApplyRate !== null
                       ? `${(data.qualityProxy.diffApplyRate * 100).toFixed(0)}%`
                       : '—'}
@@ -421,7 +406,7 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
                 </div>
                 <div>
                   <span className="text-ink-muted">Test Pass </span>
-                  <span className={qualityRateColor(data.qualityProxy.testPassRate)}>
+                  <span className={rateColor(data.qualityProxy.testPassRate)}>
                     {data.qualityProxy.testPassRate !== null
                       ? `${(data.qualityProxy.testPassRate * 100).toFixed(0)}%`
                       : '—'}
@@ -429,7 +414,7 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
                 </div>
                 <div>
                   <span className="text-ink-muted">Backtracks </span>
-                  <span className={data.qualityProxy.backtrackCount > 0 ? 'text-amber-400' : ''}>
+                  <span className={data.qualityProxy.backtrackCount > 0 ? 'text-accent-amber' : ''}>
                     {data.qualityProxy.backtrackCount}
                   </span>
                 </div>
@@ -442,11 +427,9 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
           )}
           {data.toolSelectionScore && (
             <div className="bg-surface-3 rounded-lg p-3">
-              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-                Tool Selection
-              </div>
+              <Eyebrow className="mb-2">Tool Selection</Eyebrow>
               <div
-                className={`text-2xl font-semibold tabular-nums ${toolScoreColor(data.toolSelectionScore.score)}`}
+                className={`text-2xl font-semibold tabular-nums ${scoreColor(data.toolSelectionScore.score)}`}
               >
                 {data.toolSelectionScore.score.toFixed(2)}
               </div>
@@ -477,9 +460,7 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
 
       {(data.filesModified?.length ?? 0) > 0 && (
         <div className="mb-4">
-          <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">
-            Files modified
-          </div>
+          <Eyebrow className="mb-1">Files Modified</Eyebrow>
           <ul className="text-[11px] text-ink-subtle space-y-0.5">
             {data.filesModified!.map((f) => (
               <li key={f} className="font-mono truncate">
@@ -524,22 +505,19 @@ function ToolsSection({
   return (
     <div className="mb-4">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-[10px] text-ink-muted uppercase tracking-wider">Tools</div>
+        <Eyebrow>Tools</Eyebrow>
         {isLive && (
-          <div className="flex gap-0.5 text-[10px]">
-            <button
-              onClick={() => setTab('calls')}
-              className={`px-2 py-0.5 rounded ${tab === 'calls' ? 'bg-accent-cyan/20 text-accent-cyan font-semibold' : 'text-ink-muted hover:text-ink-subtle'}`}
-            >
-              Calls
-            </button>
-            <button
-              onClick={() => setTab('context')}
-              className={`px-2 py-0.5 rounded ${tab === 'context' ? 'bg-accent-cyan/20 text-accent-cyan font-semibold' : 'text-ink-muted hover:text-ink-subtle'}`}
-            >
-              Context
-            </button>
-          </div>
+          <Tabs<'calls' | 'context'>
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: 'calls', label: 'Calls' },
+              { value: 'context', label: 'Context' },
+            ]}
+            size="sm"
+            tone="cyan"
+            ariaLabel="Tools view"
+          />
         )}
       </div>
       <div className="flex flex-col gap-1">
@@ -617,9 +595,7 @@ function SessionActivityStrip({
 
   return (
     <div className="mb-4">
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">
-        Activity density
-      </div>
+      <Eyebrow className="mb-1">Activity Density</Eyebrow>
       <ActivityHeatmap
         variant="strip"
         buckets={heatmap.buckets}
@@ -630,13 +606,6 @@ function SessionActivityStrip({
       />
     </div>
   );
-}
-
-function fmtElapsed(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `+${min}:${String(sec).padStart(2, '0')}`;
 }
 
 const ScrollableTimeline = forwardRef<
@@ -690,13 +659,14 @@ const ScrollableTimeline = forwardRef<
         {children}
       </div>
       {showJump && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={jumpToBottom}
-          className="absolute bottom-2 right-3 px-2 py-1 rounded-lg bg-bg-elevated/90 border border-bg-line text-[10px] text-ink-subtle hover:text-ink-base hover:border-accent-green/40 backdrop-blur-sm transition-all shadow-lg"
+          className="absolute bottom-2 right-3 backdrop-blur-sm shadow-lg"
         >
           ↓ Jump to bottom
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -706,7 +676,13 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<'gantt' | 'list'>('gantt');
 
-  const { data, isLoading } = useQuery<ReplayData>({
+  // Reset view mode when the selected session changes without remounting —
+  // remounting via key= causes a loading flash and discards the query cache.
+  useEffect(() => {
+    setViewMode('gantt');
+  }, [sessionId]);
+
+  const { data, isLoading, error } = useQuery<ReplayData>({
     queryKey: qk.sessionReplay(sessionId),
     queryFn: () => fetchSessionReplay(sessionId) as Promise<ReplayData>,
     retry: false,
@@ -720,7 +696,23 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
   }, [data?.timeline.length, isLive]);
 
   if (isLoading) {
-    return <div className="text-ink-muted text-xs mt-3">Loading replay…</div>;
+    return (
+      <div className="mt-3">
+        <EmptyState variant="loading" icon="timeline" title="Loading replay" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="mt-3">
+        <EmptyState
+          icon="timeline"
+          title="Replay not available for this session"
+          subtitle="This session may predate the replay feature or have no recorded tool calls."
+        />
+      </div>
+    );
   }
 
   if (!data || data.timeline.length === 0) {
@@ -740,44 +732,36 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
           </div>
           <div className="flex flex-wrap gap-1.5">
             {aggregateSegments(segments).map(({ type, count, worstSeverity }) => (
-              <span
+              <Pill
                 key={type}
-                className={
-                  'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ' +
-                  (worstSeverity === 'critical'
-                    ? 'bg-accent-red/10 text-accent-red border border-accent-red/30'
-                    : 'bg-accent-amber/10 text-accent-amber border border-accent-amber/30')
-                }
+                tone={worstSeverity === 'critical' ? 'danger' : 'warning'}
+                size="sm"
+                bordered
               >
                 {SEGMENT_LABELS[type] ?? type}
                 <span className="opacity-70">× {count}</span>
-              </span>
+              </Pill>
             ))}
           </div>
         </div>
       )}
 
       <div className="flex items-center justify-between mb-2">
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onClick={() => setViewMode('gantt')}
-            className={`px-2 py-0.5 rounded-lg text-[10px] ${viewMode === 'gantt' ? 'bg-accent-green/20 text-accent-green font-medium' : 'text-ink-muted hover:text-ink-base'}`}
-          >
-            Gantt
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('list')}
-            className={`px-2 py-0.5 rounded-lg text-[10px] ${viewMode === 'list' ? 'bg-accent-green/20 text-accent-green font-medium' : 'text-ink-muted hover:text-ink-base'}`}
-          >
-            List
-          </button>
-        </div>
-        <div className="text-[10px] text-ink-muted uppercase tracking-wider">
-          replay · {data.timeline.length} calls
-          {isLive && <span className="text-accent-cyan ml-1">· auto-updating</span>}
-        </div>
+        <Tabs<'gantt' | 'list'>
+          value={viewMode}
+          onChange={setViewMode}
+          options={[
+            { value: 'gantt', label: 'Gantt' },
+            { value: 'list', label: 'List' },
+          ]}
+          size="sm"
+          tone="green"
+          ariaLabel="Replay view mode"
+        />
+        <Eyebrow>
+          Replay · {data.timeline.length} calls
+          {isLive && <span className="text-accent-cyan ml-1">· Auto-Updating</span>}
+        </Eyebrow>
       </div>
 
       <ScrollableTimeline ref={scrollRef} isLive={isLive} timelineLength={data.timeline.length}>
@@ -805,7 +789,7 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
                   className={`flex items-center gap-1.5 px-2 py-0.5 border-l-2 ${borderColor} ${bgColor} text-[11px]`}
                 >
                   <span className="w-10 text-ink-muted tabular-nums shrink-0">
-                    {fmtElapsed(elapsed)}
+                    +{fmtElapsed(elapsed)}
                   </span>
                   <span className="w-4 text-center shrink-0" aria-hidden="true">
                     {TOOL_ICONS[entry.toolName] ?? '·'}
@@ -817,7 +801,7 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
                     {shortToolName(entry.toolName)}
                   </span>
                   <span
-                    className="flex-1 truncate text-ink-subtle min-w-0"
+                    className="flex-1 truncate font-mono text-ink-subtle min-w-0"
                     title={entry.filePath ?? entry.command ?? ''}
                   >
                     {entry.filePath ?? entry.command ?? ''}
@@ -831,16 +815,13 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
                     {entry.success ? '✓' : '✗'}
                   </span>
                   {seg && idx === seg.startIndex && (
-                    <span
-                      className={
-                        'ml-0.5 px-1 py-0.5 rounded text-[9px] font-medium shrink-0 ' +
-                        (seg.severity === 'critical'
-                          ? 'bg-accent-red/20 text-accent-red'
-                          : 'bg-accent-amber/20 text-accent-amber')
-                      }
+                    <Pill
+                      tone={seg.severity === 'critical' ? 'danger' : 'warning'}
+                      size="sm"
+                      className="ml-0.5 font-medium shrink-0"
                     >
                       {SEGMENT_LABELS[seg.type] ?? seg.type}
-                    </span>
+                    </Pill>
                   )}
                 </div>
               );

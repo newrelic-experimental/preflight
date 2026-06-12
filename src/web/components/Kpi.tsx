@@ -48,7 +48,7 @@ export function Kpi({
 
   return (
     <div className="px-1">
-      <div className="text-[11px] text-ink-muted uppercase tracking-wider font-medium">{label}</div>
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider font-medium">{label}</div>
       <div className={valueClass}>{display}</div>
       {sub && <div className="text-[10px] text-ink-muted mt-0.5">{sub}</div>}
     </div>
