@@ -58,6 +58,21 @@ export interface AlertSnapshotCollectorDeps {
     getMetrics(): { sessionTotalCostUsd?: number | null };
   };
   /**
+   * Optional source for daily/weekly cumulative spend. When supplied, the
+   * snapshot's `cost.todayUsd` and `cost.weekUsd` reflect prior-session +
+   * current-session today/weekly totals (the same numbers fed to
+   * BudgetTracker.updateCost), enabling cost.window rules with `today`/
+   * `week` periods to fire. Without this, today/week fall back to 0 — the
+   * pre-fix behavior — so cost.window rules with non-session periods
+   * effectively become no-ops.
+   */
+  readonly budgetTracker?: {
+    getStatus(): {
+      daily: { spentUsd: number };
+      weekly: { spentUsd: number };
+    };
+  };
+  /**
    * Thunk that returns the rolling cost forecast snapshot. Currently unused
    * by the snapshot path (kept for symmetry with index.ts wiring); v1.2
    * may consume it for true rolling-window cost.
@@ -264,10 +279,17 @@ export class AlertSnapshotCollector {
     try {
       const m = this.deps.costTracker?.getMetrics();
       const sessionUsd = m?.sessionTotalCostUsd ?? 0;
-      // v1.1 only wires sessionUsd; today/week are zero placeholders. Once
-      // the daily/weekly cost trackers expose APIs the collector can consume,
-      // these can be filled in without rule changes.
-      return { sessionUsd: sessionUsd ?? 0, todayUsd: 0, weekUsd: 0 };
+      // Today/week fall through to BudgetTracker's accumulated daily/weekly
+      // spent — same numbers that feed budget alerts, computed in index.ts
+      // from costTracker.getCostForDay() + cross-midnight-aware prior session
+      // baseline. Falls back to 0 when no budgetTracker is wired (older
+      // configs / tests), matching the pre-fix placeholder behavior.
+      const status = this.deps.budgetTracker?.getStatus();
+      return {
+        sessionUsd: sessionUsd ?? 0,
+        todayUsd: status?.daily.spentUsd ?? 0,
+        weekUsd: status?.weekly.spentUsd ?? 0,
+      };
     } catch (err) {
       logger.warn('costTracker.getMetrics() threw — defaulting to 0', {
         error: String(err),

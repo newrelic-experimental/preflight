@@ -69,12 +69,14 @@ describe('buildCostForecast', () => {
 
   // ISO week (Mon–Sun) end-of-week math — one test per weekday.
   // Pinned to 2024-01-01 (Mon) through 2024-01-07 (Sun) at 12:00 UTC.
+  //
   // msUntilEndOfWeek = daysRemaining * 86_400_000 + msUntilEndOfDay
-  // where msUntilEndOfDay = 23:59:59.999 - 12:00:00.000 = 43_199_999 ms
+  // where msUntilEndOfDay is computed from the *local* day boundary (the
+  // forecast aligns with the dashboard's local-time day bucketing). The
+  // expected value below is derived from localStartOfDay so the test passes
+  // in any host timezone — previously it hard-coded UTC and failed in PST.
   describe('msUntilEndOfWeek is correct for each ISO weekday', () => {
     const MS_IN_DAY = 86_400_000;
-    const NOON_OFFSET_MS = 12 * 60 * 60 * 1000; // 12:00 UTC
-    const MS_UNTIL_END_OF_DAY = 23 * 3_600_000 + 59 * 60_000 + 59_000 + 999 - NOON_OFFSET_MS;
 
     const cases: Array<{ label: string; date: string; daysRemaining: number }> = [
       { label: 'Monday', date: '2024-01-01', daysRemaining: 6 },
@@ -91,8 +93,14 @@ describe('buildCostForecast', () => {
         const nowMs = new Date(`${date}T12:00:00.000Z`).getTime();
         const startMs = nowMs - 60 * 60_000; // 1 hour elapsed
         const f = buildCostForecast(1.0, startMs, nowMs);
-        const expected = daysRemaining * MS_IN_DAY + MS_UNTIL_END_OF_DAY;
-        // rate * msUntilEndOfWeek gives the remaining portion; total = spent + remaining
+
+        // Local end-of-day boundary — same helper the forecast uses.
+        const localDayStart = new Date(nowMs);
+        localDayStart.setHours(0, 0, 0, 0);
+        const localDayEnd = localDayStart.getTime() + MS_IN_DAY;
+        const msUntilEndOfDay = Math.max(0, localDayEnd - nowMs);
+        const expected = daysRemaining * MS_IN_DAY + msUntilEndOfDay;
+
         const rate = f.rateUsdPerMs!;
         const remaining = (f.forecastEndOfWeekUsd! - f.spentUsd) / rate;
         expect(remaining).toBeCloseTo(expected, -1); // within 1 ms

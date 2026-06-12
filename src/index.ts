@@ -14,7 +14,7 @@ import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import { HookEventProcessor } from './hooks/index.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { CostTracker } from './metrics/cost-tracker.js';
-import { buildCostForecast } from './metrics/cost-forecast.js';
+import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
@@ -52,6 +52,7 @@ import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
 import { AlertLog } from './alerts/alert-log.js';
 import { OsNotifier } from './alerts/os-notifier.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
+import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
 import { FeedbackCollector } from './tools/workflow-tools.js';
 import { registerTools, registerPendingTools } from './tools/session-stats.js';
 import type { ConfigSummary } from './tools/session-stats.js';
@@ -790,10 +791,42 @@ async function main(): Promise<void> {
       }
     }
 
-    const { priorDailyCostUsd, priorWeeklyCostUsd } = computeHistoricalCosts(
-      sessionStore,
-      currentSessionId,
-    );
+    // Cached prior-cost baseline. Refreshed lazily so:
+    //   - sessions persisted by other MCPs during this session land in totals
+    //   - day rollover invalidates immediately (a long-running session past
+    //     midnight previously kept yesterday-as-today bookkeeping forever
+    //     because the baseline was computed once at startup)
+    //   - cross-midnight prior sessions contribute only their today-portion
+    //     (todayPortionOfSessionCost pro-rates by timeline overlap)
+    //
+    // Cache TTL is 30 s so the disk scan over ~/.nr-ai-observe/sessions/ runs
+    // at most twice a minute even when cost-updates fire on every token event.
+    const PRIOR_COST_CACHE_TTL_MS = 30_000;
+    // Capture a non-null reference so the refresh closures don't have to
+    // re-narrow `sessionStore: SessionStore | undefined` on every call.
+    const sessionStoreForCostBaseline = sessionStore;
+    const priorCostCache = {
+      priorDailyCostUsd: 0,
+      priorWeeklyCostUsd: 0,
+      // Date key used to invalidate on day rollover even mid-TTL.
+      lastDayKey: localDateKey(),
+      lastRefreshMs: 0,
+    };
+    const refreshPriorCostBaseline = (): void => {
+      const now = Date.now();
+      const baseline = computeHistoricalCosts(sessionStoreForCostBaseline, currentSessionId, now);
+      priorCostCache.priorDailyCostUsd = baseline.priorDailyCostUsd;
+      priorCostCache.priorWeeklyCostUsd = baseline.priorWeeklyCostUsd;
+      priorCostCache.lastDayKey = localDateKey(now);
+      priorCostCache.lastRefreshMs = now;
+    };
+    const refreshPriorCostBaselineIfStale = (): void => {
+      const now = Date.now();
+      const dayChanged = priorCostCache.lastDayKey !== localDateKey(now);
+      const expired = now - priorCostCache.lastRefreshMs > PRIOR_COST_CACHE_TTL_MS;
+      if (dayChanged || expired) refreshPriorCostBaseline();
+    };
+    refreshPriorCostBaseline();
     weeklySummaryGenerator = new WeeklySummaryGenerator({
       storagePath: config.storagePath,
       sessionStore,
@@ -871,6 +904,10 @@ async function main(): Promise<void> {
         };
         alertSnapshotCollector = new AlertSnapshotCollector({
           costTracker,
+          // BudgetTracker carries the cumulative daily/weekly totals that
+          // feed cost.window alert rules with `today`/`week` periods. Without
+          // this dep those rules silently match against 0 forever.
+          budgetTracker,
           efficiencyScorer: efficiencyAdapter,
           antiPatternDetector,
           latencyTracker,
@@ -944,8 +981,15 @@ async function main(): Promise<void> {
           auditTrailManager: auditTrail,
           sessionStore,
           costTracker,
-          costForecast: () =>
-            buildCostForecast(costTracker.getMetrics().sessionTotalCostUsd ?? 0, sessionStartMs),
+          costForecast: () => {
+            const todayKey = localDateKey();
+            return buildCostForecastFromInputs({
+              sessionSpentUsd: costTracker.getMetrics().sessionTotalCostUsd ?? 0,
+              sessionStartMs,
+              dailySpentUsd: costTracker.getCostForDay(todayKey),
+              dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
+            });
+          },
           antiPatternDetector,
           weeklySummaryGenerator,
           budgetTracker,
@@ -1204,24 +1248,31 @@ async function main(): Promise<void> {
 
         const costMetrics = costTracker.getMetrics();
         if (costMetrics.sessionTotalCostUsd !== null) {
-          budgetTracker.updateCost(
-            costMetrics.sessionTotalCostUsd,
-            priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
-            priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd,
-          );
-          const sessionForecast = buildCostForecast(
-            costMetrics.sessionTotalCostUsd,
+          refreshPriorCostBaselineIfStale();
+          const todayKey = localDateKey();
+          const sessionTodayUsd = costTracker.getCostForDay(todayKey);
+          const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
+          const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
+          // Weekly total still uses session-total because the whole session
+          // falls within the rolling 7-day window for the prior baseline.
+          const weeklyTotalUsd =
+            priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
+          budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
+          const sessionForecast = buildCostForecastFromInputs({
+            sessionSpentUsd: costMetrics.sessionTotalCostUsd,
             sessionStartMs,
-          );
+            dailySpentUsd: sessionTodayUsd,
+            dailyFirstActivityMs,
+          });
           liveBus.emit('cost-update', {
             // Task #17 (D3): MCP-owned cost totals — sessionId is always the
             // resolved Claude Code session_id for this MCP instance.
             sessionId: sessionTraceId,
             sessionTotalUsd: costMetrics.sessionTotalCostUsd,
-            todayTotalUsd: priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
+            todayTotalUsd,
             forecastEodUsd:
               sessionForecast.forecastEndOfDayUsd !== null
-                ? priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
+                ? priorCostCache.priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
                 : null,
           });
         }
@@ -1321,24 +1372,29 @@ async function main(): Promise<void> {
 
         const costMetrics = costTracker.getMetrics();
         if (costMetrics.sessionTotalCostUsd !== null) {
-          budgetTracker.updateCost(
-            costMetrics.sessionTotalCostUsd,
-            priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
-            priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd,
-          );
-          const sessionForecast = buildCostForecast(
-            costMetrics.sessionTotalCostUsd,
+          refreshPriorCostBaselineIfStale();
+          const todayKey = localDateKey();
+          const sessionTodayUsd = costTracker.getCostForDay(todayKey);
+          const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
+          const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
+          const weeklyTotalUsd =
+            priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
+          budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
+          const sessionForecast = buildCostForecastFromInputs({
+            sessionSpentUsd: costMetrics.sessionTotalCostUsd,
             sessionStartMs,
-          );
+            dailySpentUsd: sessionTodayUsd,
+            dailyFirstActivityMs,
+          });
           liveBus.emit('cost-update', {
             // Task #17 (D3): same as the per-tool-call cost-update emission —
             // tag with the MCP's owning session_id.
             sessionId: sessionTraceId,
             sessionTotalUsd: costMetrics.sessionTotalCostUsd,
-            todayTotalUsd: priorDailyCostUsd + costMetrics.sessionTotalCostUsd,
+            todayTotalUsd,
             forecastEodUsd:
               sessionForecast.forecastEndOfDayUsd !== null
-                ? priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
+                ? priorCostCache.priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
                 : null,
           });
         }
@@ -1584,15 +1640,26 @@ function loadAlertRulesFromDisk(engine: LocalAlertEngine, rulesPath: string): vo
 }
 
 // Compute cost baselines from prior sessions for daily/weekly budget tracking.
-// Called once at session start; the current in-flight session is excluded so costs
-// aren't double-counted with the live sessionTotalCostUsd on each tool call.
+//
+// Called on every cost-update emission, not just at session start. Three reasons:
+//   1) Sessions persisted by other MCP instances during this session need to
+//      land in the daily/weekly totals.
+//   2) Day rollover — a session running past midnight needs a refreshed
+//      "today" baseline. Snapshotting at startup left long-running sessions
+//      with stale yesterday-as-today bookkeeping forever.
+//   3) Cross-midnight prior sessions need today-portion attribution, not
+//      whole-session attribution by startTime. We use timeline-based
+//      pro-rating via todayPortionOfSessionCost() so a session that ran
+//      11pm→2am only contributes its 2-hour today slice to the daily total.
+//
+// The current in-flight session is excluded from the prior totals so we don't
+// double-count with costTracker.getCostForDay(today) on the caller side.
 function computeHistoricalCosts(
   sessionStore: SessionStore,
   currentSessionId: string,
+  refTs: number = Date.now(),
 ): { priorDailyCostUsd: number; priorWeeklyCostUsd: number } {
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
-  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const weekAgo = new Date(refTs - 7 * 24 * 60 * 60 * 1000);
   let priorDailyCostUsd = 0;
   let priorWeeklyCostUsd = 0;
   try {
@@ -1600,8 +1667,7 @@ function computeHistoricalCosts(
     for (const session of sessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.estimatedCostUsd === null) continue;
-      const sessionDate = new Date(session.startTime).toISOString().slice(0, 10);
-      if (sessionDate === todayStr) priorDailyCostUsd += session.estimatedCostUsd;
+      priorDailyCostUsd += todayPortionOfSessionCost(session, refTs);
       priorWeeklyCostUsd += session.estimatedCostUsd;
     }
   } catch (err) {

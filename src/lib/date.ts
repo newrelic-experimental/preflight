@@ -38,3 +38,63 @@ export function isSameLocalDay(ts: number, refTs?: number): boolean {
     a.getDate() === b.getDate()
   );
 }
+
+/**
+ * Local-time YYYY-MM-DD key for `ts` (or now). Used as a Map key for per-day
+ * cost buckets. Must agree with localStartOfDay/isSameLocalDay so server-side
+ * bucketing and client-side filters draw the day boundary at the same instant.
+ */
+export function localDateKey(ts?: number): string {
+  const d = ts == null ? new Date() : new Date(ts);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * How much of `session.estimatedCostUsd` was spent during today's local day,
+ * given the session's start, end, and timeline. Fixes the cross-midnight bug
+ * where whole-session cost was attributed to the day a session started.
+ *
+ * Strategy:
+ *  - Session entirely before today's local day: return 0.
+ *  - Session entirely after today's local day: return 0.
+ *  - Session entirely within today: return total cost.
+ *  - Session straddling midnight: pro-rate by tool-call count when a timeline
+ *    is available (better correlated with cost than wall time, which can
+ *    include long idle stretches), else by elapsed-time overlap.
+ */
+export function todayPortionOfSessionCost(
+  session: {
+    startTime: number;
+    endTime: number;
+    estimatedCostUsd: number | null;
+    timeline?: ReadonlyArray<{ timestamp: number }>;
+  },
+  refTs?: number,
+): number {
+  const cost = session.estimatedCostUsd;
+  if (cost == null || cost <= 0) return 0;
+
+  const dayStart = localStartOfDay(refTs);
+  const dayEnd = dayStart + 86_400_000;
+
+  if (session.endTime < dayStart) return 0;
+  if (session.startTime >= dayEnd) return 0;
+
+  const entirelyToday = session.startTime >= dayStart && session.endTime < dayEnd;
+  if (entirelyToday) return cost;
+
+  if (session.timeline && session.timeline.length > 0) {
+    const total = session.timeline.length;
+    const todayCount = session.timeline.filter(
+      (t) => t.timestamp >= dayStart && t.timestamp < dayEnd,
+    ).length;
+    if (total > 0) return cost * (todayCount / total);
+  }
+
+  const overlapMs = Math.min(session.endTime, dayEnd) - Math.max(session.startTime, dayStart);
+  const totalMs = Math.max(1, session.endTime - session.startTime);
+  return cost * (overlapMs / totalMs);
+}

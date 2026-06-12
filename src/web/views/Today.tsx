@@ -38,7 +38,7 @@ import {
   scoreColor,
   shortToolName,
 } from '../lib/format';
-import { isSameLocalDay } from '../../lib/date.js';
+import { isSameLocalDay, localStartOfDay } from '../../lib/date.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
   weekday: 'short',
@@ -91,6 +91,7 @@ interface SessionSummary {
   readonly sessionId: string;
   readonly sessionName?: string | null;
   readonly startTime?: number;
+  readonly endTime?: number;
   readonly durationMs?: number;
   readonly toolCallCount?: number;
   readonly estimatedCostUsd?: number | null;
@@ -1122,13 +1123,44 @@ function formatRelativeTime(ts: number): string {
 
 const isToday = (ts: number): boolean => isSameLocalDay(ts);
 
+/**
+ * Today-portion of a session's cost. Mirrors the server-side
+ * todayPortionOfSessionCost helper but with the more limited fields the
+ * dashboard list endpoint exposes (no timeline). For sessions straddling
+ * midnight, pro-rates by elapsed-time overlap with today's local day.
+ *
+ * Without this, "Spend Today" double-counts a session that started yesterday
+ * but is still running — its full cost gets attributed to today.
+ */
+function todayPortionOfSession(s: SessionSummary): number {
+  const cost = s.estimatedCostUsd;
+  if (cost == null || cost <= 0) return 0;
+  if (s.startTime == null) return 0;
+
+  const dayStart = localStartOfDay();
+  const dayEnd = dayStart + 86_400_000;
+
+  const start = s.startTime;
+  const end =
+    typeof s.endTime === 'number'
+      ? s.endTime
+      : typeof s.durationMs === 'number'
+        ? s.startTime + s.durationMs
+        : Date.now(); // live session with no end info: assume still running
+
+  if (end < dayStart) return 0;
+  if (start >= dayEnd) return 0;
+
+  if (start >= dayStart && end < dayEnd) return cost;
+
+  const overlapMs = Math.min(end, dayEnd) - Math.max(start, dayStart);
+  const totalMs = Math.max(1, end - start);
+  return cost * (overlapMs / totalMs);
+}
+
 function computeTodaySpend(sessions: SessionSummary[]): number {
   let total = 0;
-  for (const s of sessions) {
-    if (s.startTime && isToday(s.startTime) && s.estimatedCostUsd != null) {
-      total += s.estimatedCostUsd;
-    }
-  }
+  for (const s of sessions) total += todayPortionOfSession(s);
   return total;
 }
 

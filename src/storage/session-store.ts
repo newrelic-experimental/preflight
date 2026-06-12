@@ -212,6 +212,29 @@ export class SessionStore {
     today.setHours(0, 0, 0, 0);
     return this.loadAllSessions({ since: today });
   }
+
+  /**
+   * Sessions whose wall-clock spans today's local day at all — i.e. include
+   * a session that started yesterday and ended this morning. The "today
+   * spend" calculation needs these to attribute the today-portion of any
+   * cross-midnight session, since `loadTodaySessions()` filters by file-name
+   * date (= start date) and would silently drop them.
+   *
+   * Loads a 2-day window (yesterday + today's date prefixes) and filters by
+   * endTime overlap with [startOfToday, now].
+   */
+  loadSessionsOverlappingToday(): FullSessionSummary[] {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today.getTime() - 86_400_000);
+    const startOfToday = today.getTime();
+    const all = this.loadAllSessions({ since: yesterday });
+    // endTime=0 is the deserialisation default for sessions that crashed or
+    // were written by an older build without the endTime field. Treat those as
+    // "unknown end" and include them — they are already bounded to the 2-day
+    // window by loadAllSessions({ since: yesterday }).
+    return all.filter((s) => s.endTime === 0 || s.endTime >= startOfToday);
+  }
 }
 
 // ---------------------------------------------------------------------------

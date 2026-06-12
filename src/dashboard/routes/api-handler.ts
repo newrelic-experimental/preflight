@@ -1,6 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { localStartOfDay } from '../../lib/date.js';
+import { localDateKey, localStartOfDay, todayPortionOfSessionCost } from '../../lib/date.js';
 import { redactSensitive, normalizeDeveloperName } from '../../config.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
@@ -171,6 +171,11 @@ export interface ApiHandlerDeps {
   readonly sessionTracker?: { getMetrics: () => LiveSessionMetrics };
   readonly sessionStore?: {
     loadTodaySessions: () => unknown[];
+    // Optional: introduced for the cross-midnight cost fix (sessions that
+    // started yesterday and ended today need their today-portion summed).
+    // Older fakes/mocks that don't implement it fall through to the legacy
+    // path which sees only same-day-started sessions.
+    loadSessionsOverlappingToday?: () => unknown[];
     listSessions: (opts?: { since?: Date; developer?: string }) => unknown[];
     loadSession: (id: string) => unknown | null;
     loadAllSessions?: (opts?: {
@@ -180,6 +185,10 @@ export interface ApiHandlerDeps {
   };
   readonly costTracker?: {
     getMetrics: () => { sessionTotalCostUsd?: number | null; model?: string | null };
+    // Optional: per-day cost attribution. Fixes the cross-midnight bug where
+    // a session that started yesterday counted its full cost as today's. When
+    // present, the aggregate route uses it instead of session-total.
+    getCostForDay?: (dayKey: string) => number;
   };
   readonly costForecast?: () => unknown;
   readonly antiPatternDetector?: { getCurrentPatterns: () => unknown };
@@ -854,7 +863,9 @@ export function createApiHandler(
         timeline?: ReadonlyArray<{ timestamp: number; durationMs: number | null }>;
       };
       if (typeof session.sessionId === 'string') sessionsSeen.add(session.sessionId);
-      totalCostUsd += session.estimatedCostUsd ?? 0;
+      // Cost is summed in a separate pass below so cross-midnight sessions
+      // (loaded via loadSessionsOverlappingToday) contribute their today
+      // portion only. See "(2b) cost from sessions overlapping today" below.
       antiPatternCount += session.antiPatterns?.length ?? 0;
 
       // Walk timeline entries within today. Persisted timelines and the
@@ -883,21 +894,64 @@ export function createApiHandler(
       }
     }
 
-    // (3) include this MCP's own session_total cost from the cost tracker
-    // when present. This is the only authoritative source for the dashboard
-    // owner's session because per-session buffer events don't carry rolled-up
-    // pricing — token events hit the cost tracker, not the buffer.
-    // Single snapshot of the live session ID — used by both the cost and
-    // anti-pattern guards below to avoid calling getMetrics() twice and
-    // risking two different snapshots in the same request.
+    // (2b) cost from sessions overlapping today (separate pass so cross-
+    // midnight sessions started yesterday but ending after midnight contribute
+    // their today portion to spend, while NOT inflating tool-call or
+    // anti-pattern counts above which are already today-bounded by timeline).
+    //
+    // Why a separate loader: loadTodaySessions() filters by file-name date
+    // (= start date), so it drops sessions that started yesterday and ended
+    // today. The cost path needs them; the tool-call path doesn't (its
+    // timeline filter would skip pre-midnight entries anyway).
     const liveSid = deps.sessionTracker?.getMetrics().sessionId;
+    // Prefer overlapping-today loader (catches yesterday→today sessions).
+    // When the store doesn't implement it (older tests/fakes), reuse the
+    // already-loaded `todaySessions` rather than re-invoking
+    // loadTodaySessions — keeps disk reads at one per request and preserves
+    // the cache-hit assertions in api-handler.test.ts.
+    const overlappingTodaySessions =
+      deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+    for (const raw of overlappingTodaySessions) {
+      const s = raw as {
+        sessionId?: string;
+        startTime: number;
+        endTime: number;
+        estimatedCostUsd: number | null;
+        antiPatterns?: ReadonlyArray<unknown>;
+        timeline?: ReadonlyArray<{ timestamp: number }>;
+      };
+      // Skip the live session here — its today-portion is added below from
+      // costTracker.getCostForDay(), which is more accurate (per-token-event)
+      // than pro-rating from a periodically-persisted snapshot.
+      if (s.sessionId === liveSid) continue;
+      totalCostUsd += todayPortionOfSessionCost(s, now);
+      // Count anti-patterns and session for cross-midnight sessions not already
+      // captured by the todaySessions loop (which filtered by start-date).
+      if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
+        sessionsSeen.add(s.sessionId);
+        antiPatternCount += s.antiPatterns?.length ?? 0;
+      }
+    }
+
+    // (3) include this MCP's live session today-portion. Per-day attribution
+    // comes from CostTracker, which buckets each token event by local-day at
+    // record time (see CostTracker.accumulateTokens). Falls back to session
+    // total if no per-day data is available (older deployments / first event).
     const liveAlreadyPersisted = todaySessions.some(
       (s) => (s as { sessionId?: string }).sessionId === liveSid,
     );
 
-    const sessionCost = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
-    if (typeof sessionCost === 'number' && !liveAlreadyPersisted) {
-      totalCostUsd += sessionCost;
+    if (!liveAlreadyPersisted) {
+      const todayKey = localDateKey(now);
+      const liveTodayUsd = deps.costTracker?.getCostForDay?.(todayKey) ?? null;
+      if (typeof liveTodayUsd === 'number') {
+        totalCostUsd += liveTodayUsd;
+      } else {
+        // Fallback for older deployments without per-day API. This is the
+        // pre-fix behavior; only hit when getCostForDay is missing.
+        const sessionCost = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
+        if (typeof sessionCost === 'number') totalCostUsd += sessionCost;
+      }
     }
 
     // Live session anti-patterns (in-memory, not yet persisted).

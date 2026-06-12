@@ -494,4 +494,118 @@ describe('CostTracker', () => {
       expect(costMetric?.attributes).toEqual(expect.objectContaining({ model: 'claude-sonnet-4' }));
     });
   });
+
+  describe('per-day cost attribution', () => {
+    // Each token event is bucketed by the *local* day at the moment it was
+    // recorded. Without this bucket the dashboard's "Today Spend" credits
+    // pre-midnight tokens to today when a session crosses midnight.
+    it('attributes a token event to the local day at time of record', () => {
+      const tracker = new CostTracker();
+      const noonToday = new Date();
+      noonToday.setHours(12, 0, 0, 0);
+      jest.useFakeTimers().setSystemTime(noonToday);
+      try {
+        tracker.recordTokenUsage(
+          makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
+          'claude-sonnet-4',
+        );
+        const dayKey = `${noonToday.getFullYear()}-${String(noonToday.getMonth() + 1).padStart(2, '0')}-${String(noonToday.getDate()).padStart(2, '0')}`;
+        expect(tracker.getCostForDay(dayKey)).toBeGreaterThan(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('keeps yesterday and today buckets separate when a session crosses midnight', () => {
+      const tracker = new CostTracker();
+      const yesterday11pm = new Date();
+      yesterday11pm.setDate(yesterday11pm.getDate() - 1);
+      yesterday11pm.setHours(23, 0, 0, 0);
+      const today1am = new Date(yesterday11pm.getTime() + 2 * 3_600_000);
+      const yKey = `${yesterday11pm.getFullYear()}-${String(yesterday11pm.getMonth() + 1).padStart(2, '0')}-${String(yesterday11pm.getDate()).padStart(2, '0')}`;
+      const tKey = `${today1am.getFullYear()}-${String(today1am.getMonth() + 1).padStart(2, '0')}-${String(today1am.getDate()).padStart(2, '0')}`;
+
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(yesterday11pm);
+        tracker.recordTokenUsage(
+          makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
+          'claude-sonnet-4',
+        );
+        const yesterdayCost = tracker.getCostForDay(yKey);
+        expect(yesterdayCost).toBeGreaterThan(0);
+
+        jest.setSystemTime(today1am);
+        tracker.recordTokenUsage(
+          makeUsage({ inputTokens: 2000, outputTokens: 1000, totalTokens: 3000 }),
+          'claude-sonnet-4',
+        );
+        const todayCost = tracker.getCostForDay(tKey);
+        expect(todayCost).toBeGreaterThan(0);
+
+        // Today cost is roughly 2x yesterday (same model, 2x tokens). Crucial
+        // assertion: yesterday's bucket did NOT grow when today's tokens landed.
+        expect(tracker.getCostForDay(yKey)).toBe(yesterdayCost);
+        expect(todayCost).toBeGreaterThan(yesterdayCost);
+        expect(yesterdayCost + todayCost).toBeCloseTo(
+          tracker.getMetrics().sessionTotalCostUsd ?? 0,
+          10,
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('records first-activity-of-day so forecast can compute today-only burn rate', () => {
+      const tracker = new CostTracker();
+      const morning = new Date();
+      morning.setHours(9, 0, 0, 0);
+      const afternoon = new Date(morning.getTime() + 4 * 3_600_000);
+      const dayKey = `${morning.getFullYear()}-${String(morning.getMonth() + 1).padStart(2, '0')}-${String(morning.getDate()).padStart(2, '0')}`;
+
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(morning);
+        tracker.recordTokenUsage(
+          makeUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150 }),
+          'claude-sonnet-4',
+        );
+        const firstAt = tracker.getFirstActivityMsForDay(dayKey);
+        expect(firstAt).toBe(morning.getTime());
+
+        // A second event later the same day must NOT move first-activity
+        // (otherwise the forecast denominator shrinks and rate spikes).
+        jest.setSystemTime(afternoon);
+        tracker.recordTokenUsage(
+          makeUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150 }),
+          'claude-sonnet-4',
+        );
+        expect(tracker.getFirstActivityMsForDay(dayKey)).toBe(morning.getTime());
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('returns 0 for days with no recorded activity', () => {
+      const tracker = new CostTracker();
+      expect(tracker.getCostForDay('2026-01-01')).toBe(0);
+      expect(tracker.getFirstActivityMsForDay('2026-01-01')).toBeNull();
+    });
+
+    it('clears day buckets on reset', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
+        'claude-sonnet-4',
+      );
+      const today = new Date();
+      const dayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      expect(tracker.getCostForDay(dayKey)).toBeGreaterThan(0);
+
+      tracker.reset();
+
+      expect(tracker.getCostForDay(dayKey)).toBe(0);
+      expect(tracker.getFirstActivityMsForDay(dayKey)).toBeNull();
+    });
+  });
 });

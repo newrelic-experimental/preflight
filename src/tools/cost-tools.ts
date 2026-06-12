@@ -10,7 +10,8 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { BudgetTracker } from '../metrics/budget-tracker.js';
 import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
-import { buildCostForecast } from '../metrics/cost-forecast.js';
+import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
+import { localDateKey } from '../lib/date.js';
 import type { TokenUsage } from '../shared/index.js';
 
 // ---------------------------------------------------------------------------
@@ -218,7 +219,12 @@ export function handleGetCostForecast(
   sessionStartMs: number,
 ): { content: Array<{ type: 'text'; text: string }> } {
   const metrics = costTracker.getMetrics();
-  const spentUsd = metrics.sessionTotalCostUsd ?? 0;
-  const forecast = buildCostForecast(spentUsd, sessionStartMs);
+  const todayKey = localDateKey();
+  const forecast = buildCostForecastFromInputs({
+    sessionSpentUsd: metrics.sessionTotalCostUsd ?? 0,
+    sessionStartMs,
+    dailySpentUsd: costTracker.getCostForDay(todayKey),
+    dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
+  });
   return { content: [{ type: 'text', text: JSON.stringify(forecast, null, 2) }] };
 }

@@ -10,6 +10,7 @@
 
 import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
 import { calculateCost } from '../shared/index.js';
+import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,13 @@ export class CostTracker {
   private estimationCount = 0;
   private latestCostBreakdown: CostBreakdown | null = null;
   private costByModel = new Map<string, number>();
+  // Per-day cost attribution. Each token event is bucketed into the local-day
+  // it was recorded in, so consumers asking "how much did this session spend
+  // today" can get a real answer when a session crosses midnight. Without
+  // this, dashboard "Today Spend" counts the entire session against today,
+  // including tokens spent before midnight.
+  private costByDayUsd = new Map<string, number>();
+  private firstActivityMsByDay = new Map<string, number>();
   private totalLinesChanged = 0;
 
   constructor(sessionTracker?: SessionTracker) {
@@ -98,7 +106,35 @@ export class CostTracker {
     this.latestCostBreakdown = breakdown;
     this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + breakdown.totalUsd);
 
+    const nowMs = Date.now();
+    const dayKey = localDateKey(nowMs);
+    this.costByDayUsd.set(dayKey, (this.costByDayUsd.get(dayKey) ?? 0) + breakdown.totalUsd);
+    if (!this.firstActivityMsByDay.has(dayKey)) {
+      this.firstActivityMsByDay.set(dayKey, nowMs);
+    }
+
     return breakdown;
+  }
+
+  /**
+   * Cost spent during a specific local-time day, attributed at the moment
+   * each token event was recorded. Used to fix the cross-midnight inflation
+   * of "Today Spend" — when a session that started yesterday continues into
+   * today, this returns only today's portion.
+   */
+  getCostForDay(dayKey: string): number {
+    return this.costByDayUsd.get(dayKey) ?? 0;
+  }
+
+  /**
+   * Epoch ms of the first token event recorded today (local time), or null
+   * if no spend has been booked today. The forecast burn-rate denominator
+   * should be (now - firstActivityToday), not (now - sessionStart) — the
+   * latter dilutes the rate with idle hours from previous days when a
+   * session spans midnight.
+   */
+  getFirstActivityMsForDay(dayKey: string): number | null {
+    return this.firstActivityMsByDay.get(dayKey) ?? null;
   }
 
   /**
@@ -182,6 +218,8 @@ export class CostTracker {
     this.estimationCount = 0;
     this.latestCostBreakdown = null;
     this.costByModel = new Map();
+    this.costByDayUsd = new Map();
+    this.firstActivityMsByDay = new Map();
     this.totalLinesChanged = 0;
   }
 }
