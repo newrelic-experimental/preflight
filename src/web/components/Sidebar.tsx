@@ -176,7 +176,7 @@ export function Sidebar({
         {NAV_CONFIGURE.map((item) => renderNavItem(item))}
       </nav>
 
-      {/* NR AI Observability CTA */}
+      {/* Preflight CTA */}
       <div className="mt-auto">
         <a
           href="https://newrelic.com/platform/ai-observability"

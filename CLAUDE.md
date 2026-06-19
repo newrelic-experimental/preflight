@@ -43,7 +43,7 @@ If you find yourself wanting to edit `src/shared/` directly to fix a bug or add 
 ## Project Structure
 
 ```
-nr-ai-observatory/
+preflight/
   src/
     shared/                         # READ-ONLY mirror — synced from nr-ai-typescript-shared via scripts/sync-shared.ts. Never edit here; edit upstream and re-sync.
       config.ts                     # AgentConfig loader (env > file > defaults)

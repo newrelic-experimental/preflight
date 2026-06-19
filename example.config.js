@@ -1,5 +1,5 @@
 /**
- * Example configuration for nr-ai-mcp-server.
+ * Example configuration for preflight.
  *
  * Copy this file to ~/.nr-ai-observe/config.json (as JSON, without comments)
  * and fill in your values. Every field is optional except licenseKey and accountId.
@@ -55,7 +55,7 @@ export default {
   weeklyBudgetUsd: 100.0,
 
   // ── Personal alert thresholds ─────────────────────────────────────────────
-  // Used by: nr-ai-mcp-server deploy-alerts --developer <name>
+  // Used by: preflight deploy-alerts --developer <name>
   // Defaults: dailyCostUsd: 2, sessionCostUsd: 0.50, efficiencyScoreMin: 40, stuckLoopCountMax: 2
 
   alerts: {
@@ -217,7 +217,7 @@ export default {
   model: 'claude-sonnet-4-6',
 
   // ── Proxy upstreams (proxy mode only) ─────────────────────────────────────
-  // Used when running: nr-ai-observe proxy --port 9847
+  // Used when running: preflight proxy --port 9847
   // Env: NEW_RELIC_AI_MCP_PROXY_UPSTREAMS (JSON array string)
 
   proxyUpstreams: [

@@ -90,7 +90,7 @@ npx tsc -b .
 This is a flat single-package repo. Source lives directly under `src/`. There is no `packages/` directory and no npm workspaces.
 
 ```
-nr-ai-observatory/
+preflight/
   src/
     shared/        # Transport, events, pricing, harvest scheduler (synced from nr-ai-typescript-shared)
     hooks/         # Hook collector + pre/post event pairing
@@ -386,7 +386,7 @@ After making changes, run through these checkpoints to confirm end-to-end behavi
 
 ```bash
 git clone <repo-url>
-cd nr-ai-observatory
+cd preflight
 nvm use
 npm install
 npm run build
