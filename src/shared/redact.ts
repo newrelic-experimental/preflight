@@ -17,9 +17,16 @@ import type { AgentConfig } from './config.js';
 
 // Pattern notes:
 // - `key(?!s)` matches `apiKey`, `licenseKey`, bare `key`, but NOT `keys` (plural, §RE1).
+//   The `\b` word-boundary upgrade that was applied to `token\b` (§LR1) and
+//   `credentials?\b` (§LR2) cannot be applied here: CamelCase names like `licenseKey`
+//   and `apiKey` do NOT have a word boundary before the `K` (both sides are word chars),
+//   so `\bkey` would FAIL to match them (§11.6, deliberate false-positive trade-off).
+//   Mid-word false positives (`monkey`, `jockey`) are accepted in exchange for reliably
+//   redacting all camelCase key properties. A regex-only fix is not feasible without
+//   enumerating every legitimate CamelCase prefix, which would miss future additions.
 // - `token\b` matches `apiToken`, `accessToken`, bare `token`, but NOT `tokenCount`,
-//   `tokenize`, `tokenAmount`, etc. (§LR1). The earlier `token(?!s)` only excluded
-//   `tokens`; \b also excludes any compound suffix.
+//   `tokenize`, `tokenAmount`, etc. (§LR1). The `\b` works here because `token` almost
+//   never appears mid-word in legitimate property names.
 // - `credentials?\b` matches `credential` and `credentials`, but NOT `credentialType`,
 //   `credentialProvider`, etc. (§LR2). Same fix applied to `passwords?\b`.
 const SECRET_KEY_RE = /key(?!s)|token\b|secret|passwords?\b|authorization|credentials?\b|bearer/i;

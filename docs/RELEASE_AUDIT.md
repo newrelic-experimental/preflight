@@ -54,8 +54,8 @@ The code references `staging-insights-collector.newrelic.com`, `staging-metric-a
 | npm scope                             | ✅ N/A       | Shared code is synced as source, not a published package; scope claim not required                                                                                                                                           |
 | `license` field in package.json       | ✅ Added     | `"Apache-2.0"`                                                                                                                                                                                                               |
 | `engines` field in package.json       | ✅ Added     | `>=22.0.0`                                                                                                                                                                                                                   |
-| `repository` field in package.json    | ✅ Added     | `github.com/newrelic/nr-ai-coding-observability` — confirm org before publish                                                                                                                                                |
-| GitHub org confirmed                  | ⚠️ Confirm   | Verify `newrelic` vs `newrelic-experimental` (or other) before publishing                                                                                                                                                    |
+| `repository` field in package.json    | ✅ Added     | `https://github.com/newrelic-experimental/preflight`                                                                                                                                                                         |
+| GitHub org confirmed                  | ✅ Confirmed | `newrelic-experimental/preflight`                                                                                                                                                                                            |
 | Workspace wildcard deps               | ✅ Resolved  | Flat repo — no workspaces                                                                                                                                                                                                    |
 | README quality                        | ✅ Excellent | Comprehensive                                                                                                                                                                                                                |
 | Security practices                    | ✅ Strong    | Redaction, input validation, audit trail                                                                                                                                                                                     |
@@ -98,19 +98,19 @@ As of June 2026, all publishing to the `newrelic` account on npmjs.com is gated 
 
 **Process:**
 
-- Contact the Node.js agent team to register `nr-ai-observe` under the `newrelic` account (or org, once converted)
+- Contact the Node.js agent team to register `@newrelic/preflight` under the `newrelic` npm org
 - Add a publish GitHub Actions workflow to `.github/workflows/publish.yml` using the template in the NPM Trusted Publishing doc:
   - Node.js 24.x, npm 11.5.1+
   - `permissions: { contents: write, id-token: write }`
   - `registry-url: https://registry.npmjs.org`
-  - `npm publish` (no `--access public` needed for unscoped packages)
+  - `npm publish --access public` (required for scoped packages)
 - On the npmjs.com package settings page, set the GitHub Actions trusted publisher (org, repo, workflow filename) and require 2FA for local publish
 - `repository.url` in `package.json` must exactly match the publishing repo URL
 
 **Install command for users:**
 
 ```
-npx nr-ai-observe setup
+npx preflight setup
 ```
 
 ---
@@ -124,12 +124,12 @@ The internal `newrelic/commune` tap on `source.datanerd.us` is for internal tool
 **Process:**
 
 - Create a new public repo `newrelic-experimental/homebrew-tap` on GitHub.com
-- Add a Ruby formula file `Formula/nr-ai-observe.rb` that downloads the binary from GitHub Releases (not Artifactory)
+- Add a Ruby formula file `Formula/preflight.rb` that downloads the binary from GitHub Releases (not Artifactory)
 - Add a CI workflow (or extend the npm publish workflow) that auto-updates the formula's `url` and `sha256` after each release, via a PR to `homebrew-tap`
 - Users install via:
   ```
   brew tap newrelic-experimental/homebrew-tap
-  brew install nr-ai-observe
+  brew install preflight
   ```
 
 A macOS binary (arm64 + x86_64 universal or separate bottles) must be included in each GitHub Release for the formula to download.
@@ -168,11 +168,11 @@ The I/O catalog is NR's internal and customer-facing integration directory. List
 ## Recommended Pre-Release Order
 
 1. Confirm credential rotation in `nr-ai-typescript-agent` repo's `test-app/.env` (15 min)
-2. Contact OSPO to create `newrelic-experimental/nr-ai-coding-observability` repo; link GitHub identity via Okta if not already done (30 min)
+2. Contact OSPO to create `newrelic-experimental/preflight` repo; link GitHub identity via Okta if not already done (30 min)
 3. Confirm final GitHub org and update `repository.url` in `package.json` AND the clone URL in `README.md` to the public repo URL — required for npm trusted publishing (5 min)
    3a. Add NR Experimental category header/badge to `README.md` — required for the Experimental category (10 min)
    3b. Review `docs/RELEASE_AUDIT.md` for internal-only content (Confluence links, `source.datanerd.us` references) and remove or replace before the repo goes public (15 min)
-4. Contact Node.js agent team to register `nr-ai-observe` on npmjs.com and set up trusted publishing (async — allow 1–3 business days)
+4. Contact Node.js agent team to register `@newrelic/preflight` on npmjs.com and set up trusted publishing (async — allow 1–3 business days)
 5. Add `.github/workflows/publish.yml` trusted publishing workflow (30 min)
 6. Create `newrelic-experimental/homebrew-tap` repo and initial formula (1–2 hours)
 7. Cut first public release: push tag → GitHub Release with macOS binary → npm publish → Homebrew formula update

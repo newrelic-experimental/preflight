@@ -67,7 +67,7 @@ describe('shared package', () => {
 
   // CODE_REVIEW §6.10 — EVENT_SCHEMA_VERSION must be importable from the
   // package root so consumers can `import { EVENT_SCHEMA_VERSION } from
-  // '@nr-ai-observatory/shared'` per the documented public API.
+  // '@newrelic/ai-telemetry'` per the documented public API.
   it('exports EVENT_SCHEMA_VERSION from the package root (§6.10)', () => {
     expect(EVENT_SCHEMA_VERSION).toBe(1);
   });

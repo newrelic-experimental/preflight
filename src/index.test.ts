@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe('parseArgs()', () => {
   // Commander expects argv[0]=node binary, argv[1]=script name
-  const base = ['node', 'nr-ai-mcp-server'];
+  const base = ['node', 'preflight'];
 
   it('defaults port to 9847', () => {
     const opts = parseArgs([...base]);
@@ -218,7 +218,7 @@ describe('classifyDashboardStartError()', () => {
 // ---------------------------------------------------------------------------
 
 describe('F-137: CLI argument edge cases', () => {
-  const base = ['node', 'nr-ai-mcp-server'];
+  const base = ['node', 'preflight'];
 
   it('--port=0 throws (zero is not a valid port)', () => {
     expect(() => parseArgs([...base, '--port', '0'])).toThrow(/Invalid port/);
@@ -587,7 +587,7 @@ describe('stdio integration', () => {
       await client.connect(transport);
 
       const serverInfo = client.getServerVersion();
-      expect(serverInfo?.name).toBe('nr-ai-observability');
+      expect(serverInfo?.name).toBe('preflight');
 
       const tools = await client.listTools();
       expect(tools.tools.length).toBeGreaterThan(0);

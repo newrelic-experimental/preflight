@@ -3,7 +3,7 @@ import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import type { NrEventData } from '../events/types.js';
 import { createLogger } from '../logger.js';
-import { validateOtlpEndpoint, hasOtlpAuthHeader } from './otlp-shared.js';
+import { validateOtlpEndpoint, hasOtlpAuthHeader, DEFAULT_CLIENT_NAME } from './otlp-shared.js';
 
 const logger = createLogger('otlp-event-bridge');
 
@@ -11,6 +11,13 @@ export interface OtlpEventBridgeOptions {
   endpoint: string;
   headers?: Record<string, string>;
   appName: string;
+  /**
+   * OTel logger name used to identify the source of log records emitted by
+   * this bridge. Defaults to `'ai-telemetry'` when not provided. Pass
+   * `'preflight'`, `'nr-ai-agent'`, etc. so telemetry from different
+   * consumers is distinguishable in the NR Logs UI.
+   */
+  clientName?: string;
 }
 
 export class OtlpEventBridge {
@@ -38,7 +45,7 @@ export class OtlpEventBridge {
       processors: [new BatchLogRecordProcessor(exporter)],
     });
 
-    this.otelLogger = this.loggerProvider.getLogger('nr-ai-observatory');
+    this.otelLogger = this.loggerProvider.getLogger(options.clientName || DEFAULT_CLIENT_NAME);
   }
 
   sendEvents(events: NrEventData[]): void {

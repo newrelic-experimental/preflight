@@ -813,29 +813,21 @@ describe('setupWizard auto-update step', () => {
   }
 
   it('calls installSchedule with parsed hour and minute when user accepts', async () => {
-    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/nr-ai-observe');
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
     cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', 'n', 'y', '09:00');
 
     await runSetupWizard();
 
-    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith(
-      '/usr/local/bin/nr-ai-observe',
-      9,
-      0,
-    );
+    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith('/usr/local/bin/preflight', 9, 0);
   });
 
   it('uses 08:00 as default time when user presses enter', async () => {
-    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/nr-ai-observe');
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
     cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', 'n', 'y', '');
 
     await runSetupWizard();
 
-    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith(
-      '/usr/local/bin/nr-ai-observe',
-      8,
-      0,
-    );
+    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith('/usr/local/bin/preflight', 8, 0);
   });
 
   it('does not call installSchedule when user declines auto-update', async () => {

@@ -66,9 +66,22 @@ function encodeAttributeValue(v: MetricAttributeValue): string {
   }
 }
 
+// §11.10: escape the separator characters used by makeKey so that a metric
+// name containing '|' (or an attribute key containing '=' or '&') cannot
+// produce a key string that collides with a different (name, attributes) pair.
+// The type-sigil prefix on values ('s:', 'n:', 'b:') already prevents
+// value-side collisions, so only name and attribute keys need escaping.
+function escapeKeyPart(s: string): string {
+  return s.replace(/[|=&]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
 function makeKey(name: string, attributes: Record<string, MetricAttributeValue>): string {
   const sorted = Object.entries(attributes).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return name + '|' + sorted.map(([k, v]) => `${k}=${encodeAttributeValue(v)}`).join('&');
+  return (
+    escapeKeyPart(name) +
+    '|' +
+    sorted.map(([k, v]) => `${escapeKeyPart(k)}=${encodeAttributeValue(v)}`).join('&')
+  );
 }
 
 export class MetricAggregator {

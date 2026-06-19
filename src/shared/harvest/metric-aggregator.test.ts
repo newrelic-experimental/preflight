@@ -476,4 +476,37 @@ describe('MetricAggregator', () => {
       expect(agg.bucketCount).toBe(1);
     });
   });
+
+  // §11.10 — makeKey separator escaping prevents bucket collision
+  describe('§11.10 makeKey separator escaping', () => {
+    it('treats metric name containing "|" as distinct from a shorter name with matching attribute', () => {
+      // Without escaping: name="a|b" (no attrs) → key "a|b|"
+      //                   name="a"  attr {b:1}  → key "a|b=n:1"
+      // These are distinct already due to trailing "|", but ensure both land in separate buckets.
+      // The real collision risk: name="a" attr {"b=n:1": x} → key "a|b=n:1=s:x"
+      //                 vs.     name="a" attr {"b": 1}     → key "a|b=n:1"
+      // With escaping, "b=n:1" key becomes "b%3Dn%3A1" so no collision.
+      const agg = new MetricAggregator();
+      agg.record('a', 10, { 'b=n:1': 'x' }); // adversarial attr key
+      agg.record('a', 20, { b: 1 }); // normal numeric attr
+      expect(agg.bucketCount).toBe(2); // two separate buckets, not merged
+    });
+
+    it('treats metric name containing "|" as a separate bucket from split name+attr', () => {
+      const agg = new MetricAggregator();
+      agg.record('a|b', 10, {}); // name contains pipe
+      agg.record('a', 20, { b: 'x' }); // name "a" + attr "b"
+      expect(agg.bucketCount).toBe(2);
+    });
+
+    it('still merges genuinely identical (name, attrs) pairs into the same bucket', () => {
+      const agg = new MetricAggregator();
+      agg.record('my|metric', 5, { 'key=val': 'data&more' });
+      agg.record('my|metric', 7, { 'key=val': 'data&more' });
+      expect(agg.bucketCount).toBe(1);
+      const [snap] = agg.harvestSnapshots();
+      expect(snap.count).toBe(2);
+      expect(snap.sum).toBe(12);
+    });
+  });
 });

@@ -218,7 +218,7 @@ describe('OtlpTransport', () => {
           'api-key': 'test-key',
           // CODE_REVIEW §10.7 — User-Agent identifies this library on NR's
           // collector access logs.
-          'User-Agent': expect.stringMatching(/^nr-ai-observatory-shared\/\d+\.\d+\.\d+/),
+          'User-Agent': expect.stringMatching(/^ai-telemetry\/\d+\.\d+\.\d+/),
         }),
       }),
     );
@@ -265,7 +265,7 @@ describe('OtlpTransport', () => {
       expect(resource.resource.attributes[0].key).toBe('service.name');
       expect(resource.resource.attributes[0].value.stringValue).toBe('test-app');
       expect(resource.scopeMetrics).toHaveLength(1);
-      expect(resource.scopeMetrics[0].scope.name).toBe('nr-ai-observatory');
+      expect(resource.scopeMetrics[0].scope.name).toBe('ai-telemetry');
       expect(resource.scopeMetrics[0].metrics).toHaveLength(1);
     });
 

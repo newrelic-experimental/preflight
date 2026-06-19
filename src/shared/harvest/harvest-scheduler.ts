@@ -714,11 +714,25 @@ export class HarvestScheduler {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.warn('Error sending metrics to OTLP — re-queuing batch for retry', {
-        batchSize: batch.length,
-        error: message,
-      });
-      this.requeueOtlpMetrics(snapshots, log);
+      // §11.1 — OtlpTransport.exportMetrics throws { code: 'OTLP_BAD_REQUEST' } for
+      // HTTP 400 to signal that the payload is permanently malformed and will always
+      // fail. Drop the batch instead of requeuing so it does not occupy the retry
+      // buffer indefinitely. All other errors are retried normally.
+      const isNonRetryable =
+        err instanceof Error && (err as Error & { code?: string }).code === 'OTLP_BAD_REQUEST';
+      if (isNonRetryable) {
+        log.error('OTLP metric export rejected (bad request) — dropping batch, will not retry', {
+          batchSize: batch.length,
+          snapshotCount: snapshots.length,
+          error: message,
+        });
+      } else {
+        log.warn('Error sending metrics to OTLP — re-queuing batch for retry', {
+          batchSize: batch.length,
+          error: message,
+        });
+        this.requeueOtlpMetrics(snapshots, log);
+      }
     }
   }
 

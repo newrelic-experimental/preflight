@@ -472,11 +472,13 @@ export class NrIngestManager {
         endpoint: options.otlpEndpoint,
         headers: options.otlpHeaders,
         appName: options.appName,
+        clientName: 'preflight',
       });
       otlpEventBridge = new OtlpEventBridge({
         endpoint: options.otlpEndpoint,
         headers: options.otlpHeaders,
         appName: options.appName,
+        clientName: 'preflight',
       });
       // OtlpTransport no longer has an explicit start() — providers initialise in the constructor.
     }
@@ -512,9 +514,14 @@ export class NrIngestManager {
       return result;
     };
 
+    const transportOptions: TransportOptions = {
+      ...options.transportOptions,
+      clientName: 'preflight',
+    };
+
     this.scheduler = new HarvestScheduler({
       licenseKey: options.licenseKey,
-      transportOptions: options.transportOptions,
+      transportOptions,
       eventHarvestIntervalMs: options.eventHarvestIntervalMs,
       metricHarvestIntervalMs: options.metricHarvestIntervalMs,
       sendEventsFn: classifyingEventsFn,
@@ -527,7 +534,7 @@ export class NrIngestManager {
 
     this.logIngest = new LogIngestManager({
       licenseKey: options.licenseKey,
-      transportOptions: options.transportOptions,
+      transportOptions,
       developer: options.developer,
       appName: options.appName,
       logHarvestIntervalMs: options.logHarvestIntervalMs,

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { useTheme } from './useTheme';
 
-const STORAGE_KEY = 'nr-ai-observe-theme';
+const STORAGE_KEY = 'preflight-theme';
 
 function mockMatchMedia(prefersLight: boolean): void {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: prefersLight } as MediaQueryList));

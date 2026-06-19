@@ -429,7 +429,10 @@ describe('extractOpenAITokens', () => {
       },
     });
 
-    expect(result.totalTokens).toBe(170); // 100 + 50 + 0 + 20
+    // §11.3: cacheReadTokens (cached_tokens) is a SUBSET of inputTokens
+    // (prompt_tokens) for OpenAI, not additive. Correct total = 100 + 50 = 150,
+    // not 170. The old assertion (170) encoded the double-count bug.
+    expect(result.totalTokens).toBe(150); // 100 + 50 (cached already in prompt_tokens)
   });
 
   it('defaults missing optional fields to 0', () => {
@@ -675,6 +678,29 @@ describe('TokenAccumulator', () => {
 
       const result = acc.finalize();
       expect(result.totalTokens).toBe(0);
+    });
+
+    it('§11.3 uses inputTokens+outputTokens fallback when total_tokens is absent', () => {
+      // When total_tokens is missing, cacheReadTokens (cached_tokens) and
+      // thinkingTokens (reasoning_tokens) are subsets, not additive — the old
+      // formula would have yielded 80+30+5+12=127. Correct value is 80+30=110.
+      const acc = new TokenAccumulator('openai');
+      acc.addChunk({
+        usage: {
+          prompt_tokens: 80,
+          completion_tokens: 30,
+          // total_tokens intentionally absent
+          prompt_tokens_details: { cached_tokens: 12 },
+          completion_tokens_details: { reasoning_tokens: 5 },
+        },
+      });
+
+      const result = acc.finalize();
+      expect(result.inputTokens).toBe(80);
+      expect(result.outputTokens).toBe(30);
+      expect(result.cacheReadTokens).toBe(12);
+      expect(result.thinkingTokens).toBe(5);
+      expect(result.totalTokens).toBe(110); // 80 + 30, not 80+30+5+12
     });
   });
 

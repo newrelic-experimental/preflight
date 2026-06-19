@@ -164,7 +164,7 @@ export class GenericMcpAdapter implements PlatformAdapter {
     return [
       'Generic MCP Client Setup:',
       "1. Add this MCP server to your AI assistant's MCP configuration",
-      '   Command: npx nr-ai-mcp-server --stdio',
+      '   Command: npx preflight --stdio',
       '2. Set environment variables: NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID',
       '3. MCP tool calls are captured automatically via the proxy',
       '4. Use nr_observe_report_tool_call to report non-MCP tool activity',

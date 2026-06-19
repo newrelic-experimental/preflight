@@ -249,9 +249,9 @@ function makeConfigSummary(overrides?: Partial<ConfigSummary>): ConfigSummary {
     licenseKeyMasked: 'NRAA...1234',
     nrApiKeyMasked: 'NRAK...5678',
     region: 'us',
-    storagePath: '/home/alice/.nr-ai-observe',
+    storagePath: '/home/alice/.preflight',
     dashboardUrl: 'http://127.0.0.1:9847',
-    configFilePath: '/home/alice/.nr-ai-observe/config.json',
+    configFilePath: '/home/alice/.preflight/config.json',
     ...overrides,
   };
 }
@@ -268,9 +268,9 @@ describe('handleGetConfig()', () => {
     expect(data.licenseKeyMasked).toBe('NRAA...1234');
     expect(data.nrApiKeyMasked).toBe('NRAK...5678');
     expect(data.region).toBe('us');
-    expect(data.storagePath).toBe('/home/alice/.nr-ai-observe');
+    expect(data.storagePath).toBe('/home/alice/.preflight');
     expect(data.dashboardUrl).toBe('http://127.0.0.1:9847');
-    expect(data.configFilePath).toBe('/home/alice/.nr-ai-observe/config.json');
+    expect(data.configFilePath).toBe('/home/alice/.preflight/config.json');
   });
 
   it('handles null sensitive fields (local mode)', () => {

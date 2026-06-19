@@ -774,7 +774,7 @@ export function createApiHandler(
   // Task #17 (D3): cross-session aggregate KPIs for the Today view. Reads:
   //   1. every per-session buffer-*.jsonl in read-only mode (post-Fix-3
   //      each MCP only drains its own; the dashboard owner needs the union)
-  //   2. completed session JSONs at ~/.nr-ai-observe/sessions/ (loaded via
+  //   2. completed session JSONs at ~/.preflight/sessions/ (loaded via
   //      sessionStore.loadTodaySessions())
   //   3. the in-memory tool call buffer (events from this MCP that have
   //      already been processed but not yet persisted)

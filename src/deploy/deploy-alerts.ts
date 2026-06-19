@@ -1,7 +1,7 @@
 /**
  * Deploy AI Coding Assistant alert conditions to a New Relic account.
  *
- * Exposed as the `nr-ai-mcp-server deploy-alerts` subcommand so users who
+ * Exposed as the `preflight deploy-alerts` subcommand so users who
  * installed via `npm install -g` can run it without cloning the repo. The
  * alert policy + conditions JSON ships in `dist/data/alerts/` after build.
  */
@@ -152,7 +152,7 @@ export interface AlertsDeployOptions {
   readonly fetchImpl?: typeof fetch;
   /**
    * Override personal thresholds. Production reads from
-   * `~/.nr-ai-observe/config.json`; tests inject directly.
+   * `~/.preflight/config.json`; tests inject directly.
    */
   readonly personalThresholdsOverride?: PersonalAlertThresholds;
   /** Stream for stdout writes — defaults to process.stdout. */
@@ -251,7 +251,7 @@ export function loadPersonalDefinitions(
 }
 
 export function loadPersonalThresholds(): PersonalAlertThresholds {
-  const configPath = resolve(homedir(), '.nr-ai-observe', 'config.json');
+  const configPath = resolve(homedir(), '.preflight', 'config.json');
   try {
     const file = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
     const alertsSection = file.alerts;

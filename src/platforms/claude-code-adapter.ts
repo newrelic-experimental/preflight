@@ -46,7 +46,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
   getHookInstallInstructions(): string {
     return [
       'Claude Code Hook Setup:',
-      '1. Run: npx nr-ai-mcp-server install',
+      '1. Run: npx preflight install',
       '2. This adds PreToolUse/PostToolUse hooks to ~/.claude/settings.json',
       '3. Restart Claude Code to activate the hooks',
       '4. Add the MCP server to your .mcp.json configuration',

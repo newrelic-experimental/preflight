@@ -29,16 +29,21 @@ function safeFiniteOrNull(v: number | null | undefined): number | null {
  * NR's entity model usually requires both `appName` and `entityGuid` to attach
  * events to a specific entity surface (APM service, browser app, etc.).
  * Without an entityGuid, events still ingest but land in a "standalone events"
- * view rather than attaching to a service. We warn the first time a factory
- * is called without entityGuid so this is discoverable in stderr; subsequent
- * calls are silent to avoid log spam in steady state.
+ * view rather than attaching to a service.
+ *
+ * §11.8: warn once PER EVENT TYPE rather than once globally. The old boolean
+ * flag would silence all subsequent factory calls after the very first
+ * missing-entityGuid event, regardless of type — an operator who added
+ * entityGuid to AiRequest but not AiAgentTaskSummary would never see the
+ * warning for the summary events. A Set keyed by eventType gives one warning
+ * per type, covering partial-coverage scenarios without flooding stderr.
  */
-let entityGuidWarned = false;
+const entityGuidWarnedTypes = new Set<string>();
 
 function warnIfMissingEntityGuid(eventType: string, entityGuid: string | null | undefined): void {
-  if (entityGuidWarned) return;
+  if (entityGuidWarnedTypes.has(eventType)) return;
   if (entityGuid === null || entityGuid === undefined || entityGuid === '') {
-    entityGuidWarned = true;
+    entityGuidWarnedTypes.add(eventType);
     factoryLogger.warn(
       `${eventType} created without entityGuid — events will not attach to an NR entity. ` +
         'Pass entityGuid alongside appName for entity-scoped routing.',
@@ -47,11 +52,11 @@ function warnIfMissingEntityGuid(eventType: string, entityGuid: string | null | 
 }
 
 /**
- * Reset the warn-once flag. Test-only — production code never resets.
+ * Reset the warn-once set. Test-only — production code never resets.
  * Exported behind a `__` prefix so it's clearly internal.
  */
 export function __resetEntityGuidWarning(): void {
-  entityGuidWarned = false;
+  entityGuidWarnedTypes.clear();
 }
 
 export interface CreateAiRequestParams {
@@ -166,14 +171,22 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
   // For Google and OpenAI, inputTokens already includes cached content (cache
   // tokens are a subset, not additive). Adding them again double-counts (§EV2).
   // Same provider-aware logic as serialize.ts gen_ai.usage.input_tokens (§S1).
-  // NOTE: thinkingTokens is added unconditionally. For OpenAI, reasoning_tokens
-  // from completion_tokens_details is already counted inside outputTokens — if a
-  // future extractor populates thinkingTokens for OpenAI, this will double-count.
-  // Today extractors produce thinkingTokens=0 for OpenAI, so it is safe (§EV5).
+  //
+  // §11.2: For OpenAI, thinkingTokens (reasoning_tokens from
+  // completion_tokens_details) is already a SUBSET of outputTokens
+  // (completion_tokens) — not a separate additive field. The prior code
+  // added it unconditionally, relying on a comment that said "extractors
+  // produce thinkingTokens=0 for OpenAI" — which is false for o1/o3/o4-mini.
+  // Fix: OpenAI totalTokens = inputTokens + outputTokens (no thinking, no cache).
+  // For Google, thinkingTokens (thoughtsTokenCount) IS disjoint from
+  // outputTokens (candidatesTokenCount) per the Gemini API spec, so it is
+  // still added for that provider.
   const totalTokens =
-    params.provider === 'google' || params.provider === 'openai'
-      ? inputTokens + outputTokens + thinkingTokens
-      : inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens;
+    params.provider === 'openai'
+      ? inputTokens + outputTokens
+      : params.provider === 'google'
+        ? inputTokens + outputTokens + thinkingTokens
+        : inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens;
 
   // durationMs: coerce to a non-negative integer, matching createAiAgentTaskSummary
   // (§FAC1). safeInt(NaN|Infinity|negative) → 0. Fractional ms is caller error.

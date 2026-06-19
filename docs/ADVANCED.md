@@ -1,4 +1,4 @@
-# NR AI Coding Observability — Advanced Configuration
+# NR AI Coding Observability: Preflight — Advanced Configuration
 
 Power-user features: OTLP export, proxy mode, local alerts, per-developer alerts, session backfill, and Terraform deployment.
 
@@ -8,7 +8,7 @@ Power-user features: OTLP export, proxy mode, local alerts, per-developer alerts
 
 By default, the Observatory sends telemetry to New Relic's proprietary Events API and Metrics API. You can optionally export to **any OpenTelemetry-compatible backend** — Datadog, Grafana Cloud, Honeycomb, a self-hosted OpenTelemetry Collector, or New Relic's OTLP endpoint — without losing the NR path.
 
-Add these settings to `~/.nr-ai-observe/config.json`:
+Add these settings to `~/.preflight/config.json`:
 
 ```json
 {
@@ -44,7 +44,7 @@ export NEW_RELIC_AI_TRANSPORT=both
 
 When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`) and forwarded to NR, linking application traces to the AI session that produced them.
 
-Add to `~/.nr-ai-observe/config.json`:
+Add to `~/.preflight/config.json`:
 
 ```json
 {
@@ -77,15 +77,15 @@ Point your application's OTel SDK at `http://localhost:4318`. JSON OTLP payloads
 
 ## Setup Wizard — Environment Variable Pre-Fill
 
-If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are set in the environment when `nr-ai-observe setup` is run, the wizard pre-fills those prompts and shows the env var name as the hint (`$NEW_RELIC_LICENSE_KEY`). Pressing Enter accepts the value — no copy-paste needed. This makes the wizard scriptable in CI pipelines or Docker-based dev environments where credentials are already injected as environment variables.
+If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are set in the environment when `preflight setup` is run, the wizard pre-fills those prompts and shows the env var name as the hint (`$NEW_RELIC_LICENSE_KEY`). Pressing Enter accepts the value — no copy-paste needed. This makes the wizard scriptable in CI pipelines or Docker-based dev environments where credentials are already injected as environment variables.
 
 ---
 
 ## Local Alerts
 
-Local-mode users get threshold alerting evaluated in-process, with no New Relic dependency. The engine reads rules from `~/.nr-ai-observe/alerts/rules.json`, evaluates them on a fixed cadence (default 30s), and surfaces firing/clearing events through the embedded dashboard.
+Local-mode users get threshold alerting evaluated in-process, with no New Relic dependency. The engine reads rules from `~/.preflight/alerts/rules.json`, evaluates them on a fixed cadence (default 30s), and surfaces firing/clearing events through the embedded dashboard.
 
-**Setting up rules.** The `nr-ai-observe setup` wizard offers to copy a starter rule set from `examples/local-alert-rules.json` into place when you choose local or both mode. Re-running setup never overwrites a user-edited rules file.
+**Setting up rules.** The `preflight setup` wizard offers to copy a starter rule set from `examples/local-alert-rules.json` into place when you choose local or both mode. Re-running setup never overwrites a user-edited rules file.
 
 **Eight rule types:**
 
@@ -100,19 +100,19 @@ Local-mode users get threshold alerting evaluated in-process, with no New Relic 
 
 **Channels.** Each rule has a `channels` array — `["banner"]` (default) shows a dismissible banner in the dashboard; `["banner", "os"]` also fires a native OS notification (macOS/Linux/Windows) when `alerts.osNotifications` is enabled in config. `[]` is silent (logged only).
 
-**Alert log.** Every fire/clear is appended to `~/.nr-ai-observe/alerts/log.jsonl` (rotated at the configured retention size). The dashboard's "Recent alerts" panel reads this file.
+**Alert log.** Every fire/clear is appended to `~/.preflight/alerts/log.jsonl` (rotated at the configured retention size). The dashboard's "Recent alerts" panel reads this file.
 
 **Live reload.** Editing `rules.json` reloads the rule set within ~200ms — no server restart needed. One malformed rule is logged and skipped; the rest keeps evaluating.
 
 **Configuration knobs** (under `alerts` in the config file or via env vars):
 
-| Field                              | Env var                         | Default                              |
-| ---------------------------------- | ------------------------------- | ------------------------------------ |
-| `alerts.enabled`                   | `NR_AI_ALERTS_ENABLED`          | `true` outside cloud-only mode       |
-| `alerts.evaluationIntervalSeconds` | `NR_AI_ALERTS_INTERVAL_SECONDS` | `30` (5–300)                         |
-| `alerts.osNotifications`           | `NR_AI_ALERTS_OS_NOTIFICATIONS` | `false`                              |
-| `alerts.logRetentionMb`            | `NR_AI_ALERTS_LOG_RETENTION_MB` | `10` (1–1024)                        |
-| `alerts.rulesPath`                 | `NR_AI_ALERTS_RULES_PATH`       | `~/.nr-ai-observe/alerts/rules.json` |
+| Field                              | Env var                         | Default                          |
+| ---------------------------------- | ------------------------------- | -------------------------------- |
+| `alerts.enabled`                   | `NR_AI_ALERTS_ENABLED`          | `true` outside cloud-only mode   |
+| `alerts.evaluationIntervalSeconds` | `NR_AI_ALERTS_INTERVAL_SECONDS` | `30` (5–300)                     |
+| `alerts.osNotifications`           | `NR_AI_ALERTS_OS_NOTIFICATIONS` | `false`                          |
+| `alerts.logRetentionMb`            | `NR_AI_ALERTS_LOG_RETENTION_MB` | `10` (1–1024)                    |
+| `alerts.rulesPath`                 | `NR_AI_ALERTS_RULES_PATH`       | `~/.preflight/alerts/rules.json` |
 
 ---
 
@@ -122,7 +122,7 @@ To deploy alert conditions scoped to a single developer identity — with separa
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --developer <your-name>
+  preflight deploy-alerts --developer <your-name>
 ```
 
 This creates a separate policy `AI Coding — Personal — <name>` from the JSON files in `alerts/conditions-personal/`, with `developer = '<name>'` injected into every NRQL query. Running without `--developer` deploys only the team policy; running with it deploys only the personal policy.
@@ -131,12 +131,12 @@ To remove just the personal policy:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --teardown --developer <your-name>
+  preflight deploy-alerts --teardown --developer <your-name>
 ```
 
 ### Override personal thresholds
 
-Add an `alerts.personal` block to `~/.nr-ai-observe/config.json`:
+Add an `alerts.personal` block to `~/.preflight/config.json`:
 
 ```json
 {
@@ -170,7 +170,7 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   --developer <your-name> [--days 90] [--dry-run] [--staging]
 ```
 
-The script queries NR for your past sessions, reconstructs session summaries, writes them to `~/.nr-ai-observe/sessions/`, and regenerates weekly summaries. Sessions already present locally are skipped. Run `--dry-run` first to preview what would be written.
+The script queries NR for your past sessions, reconstructs session summaries, writes them to `~/.preflight/sessions/`, and regenerates weekly summaries. Sessions already present locally are skipped. Run `--dry-run` first to preview what would be written.
 
 | Flag          | What it does                                             |
 | ------------- | -------------------------------------------------------- |

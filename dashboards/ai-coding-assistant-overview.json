@@ -1,6 +1,6 @@
 {
   "name": "AI Coding Assistant \u2014 Overview",
-  "description": "Pre-built dashboard for nr-ai-mcp-server observability. Requires AiToolCall custom events and ai.* metrics sent by the MCP server hook collector. Widgets will show 'No data' until the server is actively sending telemetry.",
+  "description": "Pre-built dashboard for Preflight observability. Requires AiToolCall custom events and ai.* metrics sent by the MCP server hook collector. Widgets will show 'No data' until the server is actively sending telemetry.",
   "permissions": "PUBLIC_READ_WRITE",
   "pages": [
     {

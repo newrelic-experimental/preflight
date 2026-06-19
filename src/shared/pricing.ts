@@ -332,7 +332,7 @@ export function loadCustomPricing(filePath: string): Record<string, ModelPricing
  * caller doing
  *
  * ```ts
- * import { DEFAULT_PRICING_TABLE } from '@nr-ai-observatory/shared';
+ * import { DEFAULT_PRICING_TABLE } from '@newrelic/ai-telemetry';
  * DEFAULT_PRICING_TABLE['claude-opus-4-7'].outputPerMTok = 99999;
  * ```
  *
@@ -450,14 +450,18 @@ export class PricingTable {
       }
     }
     if (ambiguous && bestKey !== null) {
-      // `bestKey` is iteration-order-dependent when two keys share the same length;
-      // logging it as `selected` implies reliable resolution it does not provide (§PR1).
+      // §11.5: returning a non-deterministic result is worse than returning null,
+      // because the caller cannot distinguish "pricing found" from "pricing guessed".
+      // Returning null forces the table maintainer to add an explicit alias entry
+      // rather than silently accepting iteration-order-dependent pricing.
       logger.warn(
-        'Ambiguous forward-prefix match — two same-length candidates, result is non-deterministic',
+        'Ambiguous forward-prefix match — two same-length candidates; returning null. ' +
+          'Add an explicit MODEL_ALIASES entry to resolve.',
         {
           model: modelName,
         },
       );
+      return null;
     }
 
     if (bestKey && Object.hasOwn(this.table, bestKey)) {

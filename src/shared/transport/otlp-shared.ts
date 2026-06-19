@@ -3,6 +3,13 @@ import { createLogger } from '../logger.js';
 const logger = createLogger('otlp-shared');
 
 /**
+ * Default client name stamped on User-Agent headers and OTel scope/logger
+ * names when the consumer does not provide one. Single source of truth —
+ * import this constant rather than repeating the literal.
+ */
+export const DEFAULT_CLIENT_NAME = 'ai-telemetry';
+
+/**
  * Returns true when `headers` contains at least one recognised auth header
  * (`api-key`, `authorization`, or `x-license-key`). Shared by OtlpTransport
  * and OtlpEventBridge so both warn when no auth header is present (§TR4).

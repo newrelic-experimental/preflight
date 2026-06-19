@@ -1,6 +1,7 @@
 import type { LogLevel } from './logger.js';
 import { createLogger } from './logger.js';
 import type { TransportMode } from './transport/types.js';
+import { DEFAULT_CLIENT_NAME } from './transport/otlp-shared.js';
 
 /**
  * Strings that count as `true` (CODE_REVIEW §3.3.8). The lowercased env
@@ -37,6 +38,16 @@ export interface AgentConfig {
   readonly otlpEndpoint: string | null;
   readonly otlpHeaders: Readonly<Record<string, string>>;
   readonly transport: TransportMode;
+  /**
+   * Identifies the consuming client in telemetry identifiers: HTTP
+   * `User-Agent` headers and OTel instrumentation scope / logger names.
+   * Defaults to `'ai-telemetry'` when not set.
+   *
+   * Pass `'preflight'` from the Preflight MCP server or `'nr-ai-agent'`
+   * from the TypeScript agent so telemetry from each consumer is
+   * distinguishable in the NR UI.
+   */
+  readonly clientName: string;
 }
 
 /**
@@ -202,13 +213,22 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
     try {
       key = decodeURIComponent(rawKey);
     } catch {
-      // Malformed percent-encoding in key — fall back to raw.
+      // §11.4: warn so operators can diagnose a misconfigured auth header that
+      // will be forwarded malformed and likely rejected by the OTLP collector.
+      configLogger.warn(
+        'OTEL_EXPORTER_OTLP_HEADERS: malformed percent-encoding in key — using raw string',
+        { rawKey },
+      );
       key = rawKey;
     }
     try {
       value = decodeURIComponent(rawValue);
     } catch {
-      // Malformed percent-encoding in value — fall back to raw.
+      // §11.4: same as key path — warn so a broken Authorization value is visible.
+      configLogger.warn(
+        'OTEL_EXPORTER_OTLP_HEADERS: malformed percent-encoding in value — using raw string',
+        { rawKey },
+      );
       value = rawValue;
     }
     result[key] = value;
@@ -357,6 +377,8 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
     ),
     otlpHeaders: overrides?.otlpHeaders ?? parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS),
     transport,
+    clientName:
+      overrides?.clientName || process.env.NEW_RELIC_AI_CLIENT_NAME || DEFAULT_CLIENT_NAME,
   };
 
   return deepFreeze(config);

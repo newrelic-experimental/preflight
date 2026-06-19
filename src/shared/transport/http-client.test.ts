@@ -283,7 +283,7 @@ describe('sendWithRetry', () => {
     // CODE_REVIEW §10.7 — User-Agent identifies this library on NR's
     // collector access logs. Pin the format so a regression that drops
     // the USER_AGENT line surfaces here.
-    expect(headers['User-Agent']).toMatch(/^nr-ai-observatory-shared\/\d+\.\d+\.\d+/);
+    expect(headers['User-Agent']).toMatch(/^ai-telemetry\/\d+\.\d+\.\d+/);
 
     // Body should be a Buffer (gzip output)
     const body = init!.body as Buffer;

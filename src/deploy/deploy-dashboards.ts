@@ -1,7 +1,7 @@
 /**
  * Deploy AI Coding Assistant dashboards to a New Relic account.
  *
- * Exposed as the `nr-ai-mcp-server deploy-dashboards` subcommand so users who
+ * Exposed as the `preflight deploy-dashboards` subcommand so users who
  * installed via `npm install -g` can run it without cloning the repo. The
  * dashboard JSON definitions are bundled into `dist/data/dashboards/` at build
  * time (see `package.json:build:server`).

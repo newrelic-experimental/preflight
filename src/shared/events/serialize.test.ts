@@ -749,6 +749,25 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.usage.output_tokens']).toBe(250); // 50 + 200
       expect(data['gen_ai.usage.reasoning.output_tokens']).toBe(200);
     });
+
+    it('§11.2 does NOT add reasoning into gen_ai.usage.output_tokens for OpenAI', () => {
+      // For OpenAI o1/o3/o4-mini, reasoning_tokens is already inside
+      // completion_tokens, so gen_ai.usage.output_tokens should equal
+      // outputTokens alone. gen_ai.usage.reasoning.output_tokens is still
+      // emitted as an informational breakdown.
+      const event = createAiResponse({
+        provider: 'openai',
+        model: 'o1',
+        durationMs: 100,
+        inputTokens: 100,
+        outputTokens: 500,
+        thinkingTokens: 300, // subset of outputTokens for OpenAI
+        appName: 'test',
+      });
+      const data = aiResponseToNrEvent(event);
+      expect(data['gen_ai.usage.output_tokens']).toBe(500); // outputTokens only, NOT 800
+      expect(data['gen_ai.usage.reasoning.output_tokens']).toBe(300); // informational breakdown
+    });
   });
 });
 

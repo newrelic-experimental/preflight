@@ -13,14 +13,15 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 const HOOK_MATCHER = '';
-const MCP_SERVER_KEY = 'nr-ai-observability';
-const MCP_SERVER_COMMAND = 'nr-ai-mcp-server';
+const MCP_SERVER_KEY = 'preflight';
+const MCP_SERVER_COMMAND = 'preflight';
+const COLLECTOR_COMMAND = 'preflight-collector';
 // Matches the hook commands this installer writes, in both bare-name and
 // absolute-path forms (quoted or unquoted):
-//   nr-ai-observe pre-tool
-//   /abs/path/nr-ai-observe pre-tool
-//   "/quoted/path/nr-ai-observe" pre-tool
-const NR_HOOK_RE = /nr-ai-observe"?\s+(?:pre|post)-tool/;
+//   preflight-collector pre-tool
+//   /abs/path/preflight-collector pre-tool
+//   "/quoted/path/preflight-collector" pre-tool
+const NR_HOOK_RE = /preflight-collector"?\s+(?:pre|post)-tool/;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,7 +58,10 @@ export interface NrObserveConfig {
 
 export function generateHookEntries(binPath?: string | null): HookEntries {
   // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
-  const bin = binPath ? `"${binPath.replace(/"/g, '\\"')}"` : 'nr-ai-observe';
+  // Hook commands use preflight-collector (lightweight, <5ms budget).
+  const bin = binPath
+    ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/"/g, '\\"')}"`
+    : COLLECTOR_COMMAND;
   return {
     PreToolUse: [
       { matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: `${bin} pre-tool` }] },
@@ -69,8 +73,7 @@ export function generateHookEntries(binPath?: string | null): HookEntries {
 }
 
 export function generateMcpServerEntry(binPath?: string | null): Record<string, McpServerConfig> {
-  // Both binaries are declared in the same package.json bin: field, so a
-  // global npm install / npm link always places them in the same directory.
+  // MCP server uses the main preflight binary.
   const command = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
   return {
     [MCP_SERVER_KEY]: { command, args: ['--stdio'] },

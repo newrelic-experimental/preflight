@@ -568,7 +568,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
     appName:
       process.env.NEW_RELIC_AI_MCP_APP_NAME ??
-      (typeof file.appName === 'string' ? file.appName : 'nr-ai-mcp-server'),
+      (typeof file.appName === 'string' ? file.appName : 'preflight'),
 
     model:
       process.env.NEW_RELIC_AI_MODEL ??
@@ -947,7 +947,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 }
 
 // ---------------------------------------------------------------------------
-// Config file validation (used by `nr-ai-observe validate` CLI command)
+// Config file validation (used by `preflight validate` CLI command)
 // ---------------------------------------------------------------------------
 
 export interface ConfigValidationResult {

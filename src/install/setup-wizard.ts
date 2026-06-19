@@ -190,7 +190,7 @@ export async function runSetupWizard(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
   try {
-    print('\n=== NR AI Coding Observability Setup ===\n');
+    print('\n=== Preflight Setup ===\n');
     print('This wizard will configure observability for your AI coding assistant.');
     print('Press Ctrl+C at any time to cancel.\n');
 
@@ -506,12 +506,12 @@ export async function runSetupWizard(): Promise<void> {
       print('Hooks installed.');
 
       if (verifyBinaryOnPath()) {
-        print('✓ nr-ai-observe is on your PATH');
+        print('✓ preflight is on your PATH');
       } else {
-        print('\n⚠ nr-ai-observe is not on your PATH.');
+        print('\n⚠ preflight is not on your PATH.');
         print('  Claude Code hooks will fail with "command not found" until this is resolved.');
         print('  Fix: run `npm link` in the project directory, or install globally:');
-        print('    npm install -g nr-ai-mcp-server');
+        print('    npm install -g @newrelic/preflight');
       }
     }
 
@@ -541,11 +541,11 @@ export async function runSetupWizard(): Promise<void> {
             installSchedule(binaryPath, hour, minute);
             print(`✓ Daily auto-update scheduled for ${hh}:${mm}`);
           } catch {
-            print(`⚠ Could not register schedule — run: nr-ai-observe schedule --time ${hh}:${mm}`);
+            print(`⚠ Could not register schedule — run: preflight schedule --time ${hh}:${mm}`);
           }
         } else {
-          print('\n⚠ Cannot schedule — nr-ai-observe not found on PATH.');
-          print(`  Run nr-ai-observe schedule --time ${hh}:${mm} after fixing PATH.`);
+          print('\n⚠ Cannot schedule — preflight not found on PATH.');
+          print(`  Run preflight schedule --time ${hh}:${mm} after fixing PATH.`);
         }
       }
     }
@@ -561,16 +561,16 @@ export async function runSetupWizard(): Promise<void> {
         : 'NEW_RELIC_API_KEY=<NRAK-...>';
       print('\nTo deploy dashboards, run:');
       print(
-        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} nr-ai-mcp-server deploy-dashboards --all${regionFlag}`,
+        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} preflight deploy-dashboards --all${regionFlag}`,
       );
       print(`\nFor a personal dashboard pre-filtered to you:`);
       print(
-        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} nr-ai-mcp-server deploy-dashboards ai-coding-assistant-personal.json --developer ${developer}${regionFlag}`,
+        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} preflight deploy-dashboards ai-coding-assistant-personal.json --developer ${developer}${regionFlag}`,
       );
 
       print(`\nFor personal alerts scoped to you:`);
       print(
-        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} nr-ai-mcp-server deploy-alerts --developer ${developer}${regionFlag}`,
+        `  ${apiKeyVar} NEW_RELIC_ACCOUNT_ID=${accountId} preflight deploy-alerts --developer ${developer}${regionFlag}`,
       );
     } else if (mode === 'local') {
       print(`\nLocal mode selected — dashboard and metrics will be available locally.`);
@@ -578,7 +578,7 @@ export async function runSetupWizard(): Promise<void> {
 
     // The MCP server is launched automatically by Claude Code based on the
     // .mcp.json entry written above — there is no manual start step. Telling
-    // testers to run `nr-ai-mcp-server --stdio` themselves leads them to
+    // testers to run `preflight --stdio` themselves leads them to
     // start a second process that competes with the auto-launched one for
     // the buffer file lock and produces interleaved metrics.
     print('\n✓ Setup complete.');

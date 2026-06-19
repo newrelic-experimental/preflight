@@ -13,7 +13,7 @@ import type { AddressInfo } from 'node:net';
 //
 // Validates the user-visible behaviors from docs/MULTI_INSTANCE_PROPOSAL.md
 // "What done looks like" section by spawning three concurrent
-// `nr-ai-mcp-server --stdio` processes against a single shared storage dir
+// `preflight --stdio` processes against a single shared storage dir
 // and asserting:
 //
 //   #1 — All three boot without "✗ failed". (proxy: their stdout speaks
@@ -191,7 +191,7 @@ describe('multi-instance integration (proposal #11)', () => {
         c.stderr.includes(`Dashboard ready at http://127.0.0.1:${dashboardPort}`),
       );
       const dashboardSkippers = children.filter((c) =>
-        c.stderr.includes('Dashboard already owned by another nr-ai-mcp-server instance'),
+        c.stderr.includes('Dashboard already owned by another preflight instance'),
       );
 
       expect(dashboardOwners).toHaveLength(1);
@@ -277,7 +277,7 @@ describe('multi-instance integration (proposal #11)', () => {
       b = spawnChildOnPort(sessionB, storagePath, jobDirB, distIndex, takeoverPort, REPOLL_MS);
       children.push(b);
       await waitForBoot(b, BOOT_TIMEOUT_MS);
-      await waitForStderr(b, 'Dashboard already owned by another nr-ai-mcp-server instance', 4000);
+      await waitForStderr(b, 'Dashboard already owned by another preflight instance', 4000);
 
       // Sanity check: A serves /api/health.
       const healthA = await fetchHealth(takeoverPort, 2000);

@@ -32,5 +32,6 @@ export async function sendEvents(
     baseDelayMs: options.baseDelayMs ?? 1000,
     maxDelayMs: options.maxDelayMs ?? 30_000,
     requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
+    clientName: options.clientName,
   });
 }

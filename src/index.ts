@@ -128,7 +128,7 @@ export type DashboardStartFailure =
 /**
  * Decide how to handle a failure returned from `DashboardServer.start()`.
  *
- * When N concurrent `nr-ai-mcp-server --stdio` instances launch (one per
+ * When N concurrent `preflight --stdio` instances launch (one per
  * Claude Code session) only one can bind the dashboard port; the rest receive
  * EADDRINUSE. Rather than fataling the whole MCP server (which would render
  * the session's tools unusable in Claude Code's UI), we log an INFO line and
@@ -148,7 +148,7 @@ export function classifyDashboardStartError(
     return {
       kind: 'skip',
       message:
-        `Dashboard already owned by another nr-ai-mcp-server instance at ` +
+        `Dashboard already owned by another preflight instance at ` +
         `http://${host}:${port}; continuing without dashboard.`,
     };
   }
@@ -293,10 +293,19 @@ export function startDashboardRepoll(opts: DashboardRepollOptions): NodeJS.Timeo
  * Subcommand names handled by `dispatchSubcommand` below. When `argv[2]` is one
  * of these, we route to a dedicated handler and bypass the flag-driven main()
  * path entirely. This lets users who installed via `npm install -g` invoke
- * `nr-ai-mcp-server deploy-dashboards [...]` and similar without cloning the
+ * `preflight deploy-dashboards [...]` and similar without cloning the
  * repo to run a `scripts/*.ts` file.
  */
-const SUBCOMMAND_NAMES = ['deploy-dashboards', 'deploy-alerts'] as const;
+const SUBCOMMAND_NAMES = [
+  'deploy-dashboards',
+  'deploy-alerts',
+  'install',
+  'uninstall',
+  'setup',
+  'validate',
+  'update',
+  'schedule',
+] as const;
 type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
 
 function isSubcommand(value: string | undefined): value is SubcommandName {
@@ -311,10 +320,17 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
   const sub = argv[2];
   if (!isSubcommand(sub)) return null;
 
-  const program = new Command();
-  program.name('nr-ai-mcp-server').version(VERSION);
+  // CLI subcommands (install/setup/etc.) delegate entirely to the install CLI.
+  if (['install', 'uninstall', 'setup', 'validate', 'update', 'schedule'].includes(sub)) {
+    const { runInstallCli } = await import('./install/cli.js');
+    await runInstallCli(argv.slice(2));
+    return typeof process.exitCode === 'number' ? process.exitCode : 0;
+  }
 
-  const subargs = ['node', 'nr-ai-mcp-server', ...argv.slice(2)];
+  const program = new Command();
+  program.name('preflight').version(VERSION);
+
+  const subargs = ['node', 'preflight', ...argv.slice(2)];
 
   if (sub === 'deploy-dashboards') {
     program
@@ -380,7 +396,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
 export function parseArgs(argv: string[]): CliOptions {
   const program = new Command();
   program
-    .name('nr-ai-mcp-server')
+    .name('preflight')
     .description('New Relic MCP server for observing AI coding assistants')
     .version(VERSION)
     .option('-p, --port <number>', 'HTTP port for proxy mode', '9847')
@@ -424,7 +440,7 @@ export function parseArgs(argv: string[]): CliOptions {
 }
 
 async function main(): Promise<void> {
-  // Subcommand dispatch (e.g. `nr-ai-mcp-server deploy-dashboards --all`)
+  // Subcommand dispatch (e.g. `preflight deploy-dashboards --all`)
   // happens before flag parsing — they don't share the option schema with the
   // server modes (--stdio / --local / --validate / proxy), and they exit
   // independently rather than booting the full pipeline.
@@ -439,7 +455,7 @@ async function main(): Promise<void> {
   // Must be set before any subsystem loggers are constructed.
   process.env.NEW_RELIC_AI_LOG_LEVEL = options.logLevel;
 
-  logger.info('Starting nr-ai-mcp-server', {
+  logger.info('Starting preflight', {
     version: VERSION,
     stdio: options.stdio,
     port: options.port,
@@ -1024,7 +1040,7 @@ async function main(): Promise<void> {
       try {
         addr = await dashboardServer.start();
       } catch (err) {
-        // Multi-instance launch: when several `nr-ai-mcp-server --stdio`
+        // Multi-instance launch: when several `preflight --stdio`
         // processes start at once (e.g. one per Claude Code session) only
         // the first can bind the dashboard port; the rest receive
         // EADDRINUSE. Treat that case as a graceful no-op so the MCP
@@ -1680,7 +1696,7 @@ function computeHistoricalCosts(
 }
 
 // Only run main() when executed directly (not when imported for testing).
-// Resolve symlinks so this also matches when invoked via the `nr-ai-mcp-server` bin link.
+// Resolve symlinks so this also matches when invoked via the `preflight` bin link.
 const resolvedArgv1 = (() => {
   try {
     return realpathSync(process.argv[1]);

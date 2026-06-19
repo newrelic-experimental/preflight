@@ -20,7 +20,7 @@ function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-const PLIST_LABEL = 'com.nr-ai-observe.update';
+const PLIST_LABEL = 'com.preflight.update';
 
 function plistPath(): string {
   return resolve(homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
@@ -119,7 +119,7 @@ export function resolveBinaryPath(): string | null {
   // for Nix/Homebrew installs where binaries live outside /usr/bin.
   const pathDirs = (process.env.PATH ?? '').split(':').filter(Boolean);
   for (const dir of pathDirs) {
-    const candidate = join(dir, 'nr-ai-observe');
+    const candidate = join(dir, 'preflight');
     try {
       if (statSync(candidate).isFile()) {
         accessSync(candidate, constants.X_OK);

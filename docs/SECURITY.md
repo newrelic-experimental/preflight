@@ -1,4 +1,4 @@
-# Security Guidelines — NR AI Coding Observability
+# Security Guidelines — NR AI Coding Observability: Preflight
 
 This document captures the security practices and invariants baked into this codebase. It was distilled from a full security audit (April 2026) in which all findings were resolved. Use it as a reference when writing new code and as a checklist during code review.
 
@@ -101,7 +101,7 @@ A set of compiled regular expressions that cover:
 **Where applied:**
 
 - `collector-script.ts` — redacts tool input/output before writing to the hook buffer
-- `nr-ai-mcp-server/src/config.ts` — `redactSensitive()` for config-level redaction
+- `src/config.ts` — `redactSensitive()` for config-level redaction
 - `nr-ai-agent` wrapper (in the separate `nr-ai-typescript-agent` repo) — error messages from the upstream API are run through `redact()` before being stored in NR events
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through these patterns first. Use `redact(text, config.redactionPatterns)` (agent) or `redactSensitive(text)` (MCP server).
@@ -116,7 +116,7 @@ License key and account ID must never appear in logger calls. The debug config l
 
 ### Storage permissions
 
-All directories and files created under `~/.nr-ai-observe/` use restrictive permissions so other users on the same machine cannot read session data or tool call history:
+All directories and files created under `~/.preflight/` use restrictive permissions so other users on the same machine cannot read session data or tool call history:
 
 ```typescript
 // Directories

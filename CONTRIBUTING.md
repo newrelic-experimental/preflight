@@ -1,4 +1,4 @@
-# Contributing to NR AI Coding Observability
+# Contributing to NR AI Coding Observability: Preflight
 
 This guide covers everything you need to get productive in this repo: environment setup, project architecture, code conventions, testing, and how to verify your changes end-to-end.
 
@@ -6,7 +6,7 @@ This guide covers everything you need to get productive in this repo: environmen
 
 ## What Is This Project?
 
-NR AI Coding Observability provides **observability for AI coding assistants**. When developers use tools like Claude Code, Cursor, Windsurf, or Copilot, this project captures what's happening — tool calls, token usage, costs, efficiency patterns — and sends it all to New Relic.
+Preflight provides **observability for AI coding assistants**. When developers use tools like Claude Code, Cursor, Windsurf, or Copilot, this project captures what's happening — tool calls, token usage, costs, efficiency patterns — and sends it all to New Relic.
 
 There are two main integration points:
 
@@ -32,14 +32,14 @@ nvm install        # Install the right Node version (v24, from .nvmrc)
 nvm use            # Activate it
 npm install        # Install dependencies
 npm run build      # Build TypeScript and chmod +x the CLI binaries
-npm link           # Register nr-ai-observe on PATH (required for Claude Code hooks)
+npm link           # Register preflight on PATH (required for Claude Code hooks)
 npm test           # Verify everything works
 ```
 
 To pull the latest changes and rebuild later:
 
 ```bash
-nr-ai-observe update
+preflight update
 ```
 
 ### Commands
@@ -103,7 +103,7 @@ nr-ai-observatory/
     transport/     # NR ingest manager + log ingest
     platforms/     # 8 platform adapters (Claude Code, Cursor, Windsurf, …)
     digest/        # Slack digest formatter and sender
-    install/       # nr-ai-observe install / setup CLI
+    install/       # preflight install / setup CLI
     alerts/        # Alert TS types (JSON files live in alerts/ at repo root)
     deploy/        # `deploy-dashboards` and `deploy-alerts` subcommands
   alerts/          # Alert policy + condition JSON definitions (bundled into dist/data/alerts/)
@@ -134,7 +134,7 @@ The foundation layer is synced from `nr-ai-typescript-shared`. Provides:
 
 - **Proxy** (`src/proxy/`) — HTTP proxy layer that forwards requests to upstream MCP servers while recording latency and tool call metrics.
 
-- **Storage** (`src/storage/`) — Local file persistence for session summaries and weekly aggregations under `~/.nr-ai-observe/`.
+- **Storage** (`src/storage/`) — Local file persistence for session summaries and weekly aggregations under `~/.preflight/`.
 
 - **Security** (`src/security/`) — Audit trail that classifies tool calls and flags sensitive file access or destructive commands; SSRF validation for outbound URLs.
 
@@ -289,15 +289,15 @@ See [SECURITY.md](./docs/SECURITY.md) for the full guidelines and code review ch
 
 The MCP server automatically detects and supports multiple AI coding platforms:
 
-| Platform           | Setup                                     | Notes                                                      |
-| ------------------ | ----------------------------------------- | ---------------------------------------------------------- |
-| **Claude Code**    | Built-in                                  | Default platform; install hook via `nr-ai-observe install` |
-| **Cursor**         | Env var: `NEW_RELIC_AI_PLATFORM=cursor`   | Auto-detected if Cursor config present                     |
-| **Windsurf**       | Env var: `NEW_RELIC_AI_PLATFORM=windsurf` | Auto-detected if Windsurf config present                   |
-| **GitHub Copilot** | Env var: `NEW_RELIC_AI_PLATFORM=copilot`  | Requires manual hook setup                                 |
-| **Zed**            | Env var: `NEW_RELIC_AI_PLATFORM=zed`      | Auto-detected from Zed config directory                    |
-| **Continue.dev**   | Env var: `NEW_RELIC_AI_PLATFORM=continue` | Auto-detected from Continue config                         |
-| **Amazon Q**       | Env var: `NEW_RELIC_AI_PLATFORM=amazonq`  | Requires AWS IDE plugin setup                              |
+| Platform           | Setup                                     | Notes                                                  |
+| ------------------ | ----------------------------------------- | ------------------------------------------------------ |
+| **Claude Code**    | Built-in                                  | Default platform; install hook via `preflight install` |
+| **Cursor**         | Env var: `NEW_RELIC_AI_PLATFORM=cursor`   | Auto-detected if Cursor config present                 |
+| **Windsurf**       | Env var: `NEW_RELIC_AI_PLATFORM=windsurf` | Auto-detected if Windsurf config present               |
+| **GitHub Copilot** | Env var: `NEW_RELIC_AI_PLATFORM=copilot`  | Requires manual hook setup                             |
+| **Zed**            | Env var: `NEW_RELIC_AI_PLATFORM=zed`      | Auto-detected from Zed config directory                |
+| **Continue.dev**   | Env var: `NEW_RELIC_AI_PLATFORM=continue` | Auto-detected from Continue config                     |
+| **Amazon Q**       | Env var: `NEW_RELIC_AI_PLATFORM=amazonq`  | Requires AWS IDE plugin setup                          |
 
 ---
 
@@ -306,7 +306,7 @@ The MCP server automatically detects and supports multiple AI coding platforms:
 ### Dashboards
 
 ```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 nr-ai-mcp-server deploy-dashboards --all
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 preflight deploy-dashboards --all
 ```
 
 Add `--staging` if your account is on the New Relic staging environment (`staging-one.newrelic.com`). Deploys all seven pre-built dashboards. Use `--print` to output JSON for manual import via the NR UI.
@@ -315,27 +315,27 @@ For a self-reflection dashboard pre-filtered to your identity:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards ai-coding-assistant-personal.json --developer <your-name>
+  preflight deploy-dashboards ai-coding-assistant-personal.json --developer <your-name>
 ```
 
 To replace existing dashboards in place (preserves GUID and URL), add `--update`:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --update
+  preflight deploy-dashboards --all --update
 ```
 
 To remove all deployed dashboards:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --teardown
+  preflight deploy-dashboards --all --teardown
 ```
 
 ### Alert conditions
 
 ```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 nr-ai-mcp-server deploy-alerts
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 preflight deploy-alerts
 ```
 
 Add `--staging` if your account is on the staging environment. Deploys the "AI Coding Assistant Alerts" policy with five NRQL conditions. Use `--dry-run` to preview without hitting the API.
@@ -343,14 +343,14 @@ Add `--staging` if your account is on the staging environment. Deploys the "AI C
 To sync conditions in place on an existing policy (preserves policy ID; matches conditions by name to update, creates new ones, deletes removed ones):
 
 ```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 nr-ai-mcp-server deploy-alerts --update
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 preflight deploy-alerts --update
 ```
 
 For per-developer alerts scoped to one identity:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --developer <your-name>
+  preflight deploy-alerts --developer <your-name>
 ```
 
 This creates a separate policy `AI Coding — Personal — <name>` from `alerts/conditions-personal/`, with `developer = '<name>'` injected into every NRQL query. Use `--teardown --developer <name>` to remove just the personal policy.
@@ -358,7 +358,7 @@ This creates a separate policy `AI Coding — Personal — <name>` from `alerts/
 To remove all deployed alert conditions:
 
 ```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 nr-ai-mcp-server deploy-alerts --teardown
+NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 preflight deploy-alerts --teardown
 ```
 
 ### Terraform (IaC alternative)
@@ -393,17 +393,17 @@ npm run build
 npm link
 ```
 
-**Checkpoint:** `nr-ai-observe --help` prints the command list. If you see `command not found`, the `npm link` step didn't work.
+**Checkpoint:** `preflight --help` prints the command list. If you see `command not found`, the `npm link` step didn't work.
 
 ### 2. Run the setup wizard
 
 ```bash
-nr-ai-observe setup
+preflight setup
 ```
 
 For cloud path, choose `cloud` and supply your license key, account ID, and (optionally) your user API key. For local path, choose `local`.
 
-**Checkpoint:** `cat ~/.nr-ai-observe/config.json` shows the values you entered.
+**Checkpoint:** `cat ~/.preflight/config.json` shows the values you entered.
 
 ### 3. Restart Claude Code
 
@@ -425,7 +425,7 @@ Expected:
 }
 ```
 
-If you see `tool not found` or `MCP server unavailable`, the server didn't start. Check Claude Code's MCP output panel (View → Output → MCP) for errors, then re-run `nr-ai-observe install` and restart.
+If you see `tool not found` or `MCP server unavailable`, the server didn't start. Check Claude Code's MCP output panel (View → Output → MCP) for errors, then re-run `preflight install` and restart.
 
 **Checkpoint — local dashboard (local path only):**
 
@@ -467,11 +467,11 @@ Expected: a `re_reading` entry for `README.md` with `read_count: 3`.
 ```bash
 # Dashboards
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --staging
+  preflight deploy-dashboards --all --staging
 
 # Alerts (optional)
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --staging
+  preflight deploy-alerts --staging
 ```
 
 > Re-deploying? Use `--update` to sync in place and avoid creating duplicates.
@@ -483,14 +483,14 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
 To remove all hooks and start fresh:
 
 ```bash
-nr-ai-observe uninstall
-rm -rf ~/.nr-ai-observe
+preflight uninstall
+rm -rf ~/.preflight
 
 # Cloud: remove dashboards and alerts from NR
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --teardown --staging
+  preflight deploy-dashboards --all --teardown --staging
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --teardown --staging
+  preflight deploy-alerts --teardown --staging
 ```
 
 Then restart Claude Code.
@@ -499,15 +499,15 @@ Then restart Claude Code.
 
 ## Troubleshooting
 
-| Symptom                                    | Likely cause                                          | Fix                                                                                 |
-| ------------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `nr-ai-observe: command not found`         | `npm link` not run                                    | Run `npm link` in the repo root                                                     |
-| `nr_observe_health` returns tool-not-found | MCP server not started                                | Restart Claude Code; check MCP output panel                                         |
-| No data in NR after 5 minutes              | Wrong license key or account ID                       | Re-run `nr-ai-observe setup` with correct credentials                               |
-| Dashboard at 7777 unreachable              | Port in use or mode is not local                      | Check `lsof -i:7777`; confirm `config.json` has `"mode": "local"`                   |
-| Hook not firing                            | `nr-ai-observe` not on PATH when Claude Code launched | Run `npm link`, then restart Claude Code                                            |
-| `Invalid account ID` in wizard             | Entered a non-numeric value                           | Account IDs are digits only (e.g. `3456789`)                                        |
-| `HTTP 401` on deploy                       | Using a production key against staging                | Use a key from `staging-one.newrelic.com` and add `--staging` to the deploy command |
+| Symptom                                    | Likely cause                                      | Fix                                                                                 |
+| ------------------------------------------ | ------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `preflight: command not found`             | `npm link` not run                                | Run `npm link` in the repo root                                                     |
+| `nr_observe_health` returns tool-not-found | MCP server not started                            | Restart Claude Code; check MCP output panel                                         |
+| No data in NR after 5 minutes              | Wrong license key or account ID                   | Re-run `preflight setup` with correct credentials                                   |
+| Dashboard at 7777 unreachable              | Port in use or mode is not local                  | Check `lsof -i:7777`; confirm `config.json` has `"mode": "local"`                   |
+| Hook not firing                            | `preflight` not on PATH when Claude Code launched | Run `npm link`, then restart Claude Code                                            |
+| `Invalid account ID` in wizard             | Entered a non-numeric value                       | Account IDs are digits only (e.g. `3456789`)                                        |
+| `HTTP 401` on deploy                       | Using a production key against staging            | Use a key from `staging-one.newrelic.com` and add `--staging` to the deploy command |
 
 ---
 

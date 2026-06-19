@@ -1,4 +1,4 @@
-# NR AI Coding Observability — Product Brief
+# NR AI Coding Observability: Preflight — Product Brief
 
 ## Table of Contents
 
@@ -40,17 +40,17 @@
 
 ## Overview Questions
 
-|       Product / Initiative Name       | Marketing Name TBD / NR AI Coding Observability / AI Coding Insights |
-| :-----------------------------------: | :------------------------------------------------------------------- |
-| Product Manager & Engineering Manager | PM: TBD EM: TBD                                                      |
+|       Product / Initiative Name       | Marketing Name TBD / Preflight / AI Coding Insights |
+| :-----------------------------------: | :-------------------------------------------------- |
+| Product Manager & Engineering Manager | PM: TBD EM: TBD                                     |
 
 ## Executive Summary
 
 The software development industry is in the middle of the fastest tooling transition in its history. AI coding assistants — Claude Code, GitHub Copilot, Cursor, Windsurf, and a long tail of emerging entrants — are being adopted by engineering organisations at unprecedented speed, yet are operating almost entirely outside the existing observability stack. AI tooling vendors are starting to release usage telemetry, but coverage is uneven and rarely composes across tools. Engineering leaders today have limited visibility into how much these tools cost per session, per project, or per developer; whether their teams are using them effectively; whether security and compliance controls are being respected; or whether the productivity gains they were promised are actually materialising.
 
-NR AI Coding Observability represents New Relic's strategic response to this emerging discipline. Building on New Relic's foundational strength as the observability platform for production systems, NR AI Coding Observability extends that same data model and query surface to the AI development workflow itself. The solution captures every tool call, model interaction, anti-pattern, and cost event from a developer's AI assistant; correlates it with the existing telemetry New Relic already collects; and surfaces it through MCP tools, dashboards, alerts, and OpenTelemetry traces.
+Preflight represents New Relic's strategic response to this emerging discipline. Building on New Relic's foundational strength as the observability platform for production systems, Preflight extends that same data model and query surface to the AI development workflow itself. The solution captures every tool call, model interaction, anti-pattern, and cost event from a developer's AI assistant; correlates it with the existing telemetry New Relic already collects; and surfaces it through MCP tools, dashboards, alerts, and OpenTelemetry traces.
 
-NR AI Coding Observability fundamentally extends the New Relic value proposition into the build phase of the software lifecycle. Rather than monitoring only what runs in production, New Relic now also illuminates how that production software is being created, by whom, with which AI assistants, at what cost, and with what efficiency. This addresses an urgent customer imperative: bring AI development spending under the same observability discipline already applied to compute, storage, APM, and the rest of the stack. NR AI Coding Observability establishes a powerful new category — AI development observability — and positions New Relic as the platform of record for the AI-augmented engineering organisation.
+Preflight fundamentally extends the New Relic value proposition into the build phase of the software lifecycle. Rather than monitoring only what runs in production, New Relic now also illuminates how that production software is being created, by whom, with which AI assistants, at what cost, and with what efficiency. This addresses an urgent customer imperative: bring AI development spending under the same observability discipline already applied to compute, storage, APM, and the rest of the stack. Preflight establishes a powerful new category — AI development observability — and positions New Relic as the platform of record for the AI-augmented engineering organisation.
 
 ---
 
@@ -58,7 +58,7 @@ NR AI Coding Observability fundamentally extends the New Relic value proposition
 
 ### Target Audience and Market
 
-NR AI Coding Observability has a three-tiered audience because adoption depends on different people for different reasons: champions who deploy and drive rollout, users who must consent to instrumentation, and beneficiaries who consume the reports without directly using the product.
+Preflight has a three-tiered audience because adoption depends on different people for different reasons: champions who deploy and drive rollout, users who must consent to instrumentation, and beneficiaries who consume the reports without directly using the product.
 
 **Primary — Champions and Adopters**
 
@@ -117,7 +117,7 @@ The AI app-observability space (Langfuse, Helicone, LangSmith, Braintrust, Arize
 
 **New Relic's Existing Telemetry Advantage**
 
-The customers who most need this capability — engineering organisations already running observability platforms — are New Relic's existing customers. NR AI Coding Observability does not require a new buying centre, a new procurement cycle, or a new agent. It extends the platform our customers already trust into a new dimension of their engineering operation.
+The customers who most need this capability — engineering organisations already running observability platforms — are New Relic's existing customers. Preflight does not require a new buying centre, a new procurement cycle, or a new agent. It extends the platform our customers already trust into a new dimension of their engineering operation.
 
 ### Why Now?
 
@@ -129,7 +129,7 @@ The window to define the category, set the schema, and become the platform of re
 
 ## 2 — Business Impact
 
-The NR AI Coding Observability initiative establishes New Relic as the platform of record for the fastest-growing new category of engineering spend: AI-assisted software development. It opens a new revenue surface tied directly to AI tooling adoption, deepens platform stickiness with our largest customers, and protects New Relic's existing footprint against competitive observability platforms moving to claim the category first.
+The Preflight initiative establishes New Relic as the platform of record for the fastest-growing new category of engineering spend: AI-assisted software development. It opens a new revenue surface tied directly to AI tooling adoption, deepens platform stickiness with our largest customers, and protects New Relic's existing footprint against competitive observability platforms moving to claim the category first.
 
 ### What We Stand to Gain
 
@@ -139,15 +139,15 @@ The strategic prize is category definition. Every engineering organisation will 
 
 **Indirect Revenue Through Increased Platform Consumption**
 
-NR AI Coding Observability is published as a free open-source Labs asset, so it does not generate direct licence or SKU revenue (see [Resolved: Free via New Relic Labs](#resolved-free-via-new-relic-labs-was-oq1)). Revenue accrues indirectly: customers running NR AI Coding Observability emit events, metrics, and logs that are ingested, stored, and queried through the standard New Relic platform — billed at standard ingest and compute rates. As AI coding adoption grows, the volume of that telemetry grows with it, expanding existing accounts' platform consumption.
+Preflight is published as a free open-source Labs asset, so it does not generate direct licence or SKU revenue (see [Resolved: Free via New Relic Labs](#resolved-free-via-new-relic-labs-was-oq1)). Revenue accrues indirectly: customers running Preflight emit events, metrics, and logs that are ingested, stored, and queried through the standard New Relic platform — billed at standard ingest and compute rates. As AI coding adoption grows, the volume of that telemetry grows with it, expanding existing accounts' platform consumption.
 
 **Deepen Platform Stickiness**
 
-Customers who ingest AI coding telemetry into New Relic become significantly harder to displace. The data is high-cardinality, longitudinal, and joinable with their existing APM and Infra telemetry. Once an engineering leader is using NR AI Coding Observability to brief their executive team on AI ROI, displacing the underlying observability platform becomes a cross-functional decision involving engineering leadership, FinOps, and compliance — not just a tools team comparison.
+Customers who ingest AI coding telemetry into New Relic become significantly harder to displace. The data is high-cardinality, longitudinal, and joinable with their existing APM and Infra telemetry. Once an engineering leader is using Preflight to brief their executive team on AI ROI, displacing the underlying observability platform becomes a cross-functional decision involving engineering leadership, FinOps, and compliance — not just a tools team comparison.
 
 **Protect Against Competitive Encroachment**
 
-Datadog, Honeycomb, and the LLM-native observability vendors (Langfuse, Helicone, Braintrust) are all positioned to extend into this space. Each has a partial answer; none has shipped a coding-assistant-specific solution at platform scale. Shipping NR AI Coding Observability denies them the category-defining position and forces any future entrant to compete against an established New Relic offering rather than greenfield.
+Datadog, Honeycomb, and the LLM-native observability vendors (Langfuse, Helicone, Braintrust) are all positioned to extend into this space. Each has a partial answer; none has shipped a coding-assistant-specific solution at platform scale. Shipping Preflight denies them the category-defining position and forces any future entrant to compete against an established New Relic offering rather than greenfield.
 
 ### Business Goals and Measurement
 
@@ -213,7 +213,7 @@ Without a dedicated solution, engineering organisations are stuck reconciling fo
 
 ### How We Are Different
 
-NR AI Coding Observability is strategically different because it is the first solution purpose-built for the engineering organisation as the unit of analysis, layered on a general-purpose observability platform that customers already trust.
+Preflight is strategically different because it is the first solution purpose-built for the engineering organisation as the unit of analysis, layered on a general-purpose observability platform that customers already trust.
 
 **Multi-Platform, Multi-Provider Coverage Out of the Box**
 
@@ -221,11 +221,11 @@ The product ships with adapters for eight AI coding clients (Claude Code, Cursor
 
 **Workflow-Aware, Not Just Request-Aware**
 
-Where LLM application observability tools capture individual model requests, NR AI Coding Observability captures the developer's session structure: tool calls grouped into tasks, file-access patterns, anti-patterns, CLAUDE.md change impact, and personal coaching trends. This is the data shape engineering leaders actually need to govern AI usage; no other vendor produces it.
+Where LLM application observability tools capture individual model requests, Preflight captures the developer's session structure: tool calls grouped into tasks, file-access patterns, anti-patterns, CLAUDE.md change impact, and personal coaching trends. This is the data shape engineering leaders actually need to govern AI usage; no other vendor produces it.
 
 **Joins Natively With Existing New Relic Telemetry**
 
-Because NR AI Coding Observability is a layer on top of New Relic, the AI coding telemetry is queryable in NRQL alongside APM, Infra, Logs, and Browser data. Engineering leaders can correlate AI coding activity with deployment events, production incidents, and customer-facing performance — the kind of cross-domain question that no point solution can answer.
+Because Preflight is a layer on top of New Relic, the AI coding telemetry is queryable in NRQL alongside APM, Infra, Logs, and Browser data. Engineering leaders can correlate AI coding activity with deployment events, production incidents, and customer-facing performance — the kind of cross-domain question that no point solution can answer.
 
 **Built for the Engineering Organisation, Not the Application**
 
@@ -233,7 +233,7 @@ The data model is keyed on developer, team, project, and organisation — the di
 
 **Vendor-Neutral by Design**
 
-Adopting NR AI Coding Observability does not require choosing or excluding any AI tool vendor. The product treats Claude Code, Copilot, and Cursor as peers and lets the customer's tooling decisions drive the data. This neutrality is critical because most engineering organisations explicitly want to retain optionality across AI vendors.
+Adopting Preflight does not require choosing or excluding any AI tool vendor. The product treats Claude Code, Copilot, and Cursor as peers and lets the customer's tooling decisions drive the data. This neutrality is critical because most engineering organisations explicitly want to retain optionality across AI vendors.
 
 **Compliance and Audit as a First-Class Concern**
 
@@ -245,9 +245,9 @@ _Note: The first iteration focuses on the core observability surface — telemet
 
 ## 4 — Elevator Pitch & TAM
 
-New Relic's NR AI Coding Observability is the observability platform for AI-assisted software development. It captures every AI coding tool call, model interaction, anti-pattern, and cost event from your developers' AI assistants — across Claude Code, Copilot, Cursor, Windsurf, and every other major coding tool — and turns that data into the dashboards, alerts, and audit trails your engineering, FinOps, and compliance teams need to govern AI spend and prove AI ROI.
+New Relic's Preflight is the observability platform for AI-assisted software development. It captures every AI coding tool call, model interaction, anti-pattern, and cost event from your developers' AI assistants — across Claude Code, Copilot, Cursor, Windsurf, and every other major coding tool — and turns that data into the dashboards, alerts, and audit trails your engineering, FinOps, and compliance teams need to govern AI spend and prove AI ROI.
 
-NR AI Coding Observability directly addresses the urgent customer need to bring AI development under the same observability discipline already applied to production systems. It positions New Relic as the platform of record for the AI-augmented engineering organisation, capturing a new and rapidly growing observability spend category that did not exist 24 months ago.
+Preflight directly addresses the urgent customer need to bring AI development under the same observability discipline already applied to production systems. It positions New Relic as the platform of record for the AI-augmented engineering organisation, capturing a new and rapidly growing observability spend category that did not exist 24 months ago.
 
 Market opportunity is sized by the global AI coding assistant market (TBD: insert sized estimate from market analysis), of which we estimate 5–10% will flow to associated observability and governance tooling — the same ratio observability historically captures from underlying infrastructure spend.
 
@@ -255,7 +255,7 @@ Market opportunity is sized by the global AI coding assistant market (TBD: inser
 
 ## 5 — Monetization & Pricing
 
-NR AI Coding Observability will be released as a free open-source asset through New Relic Labs (see [Resolved: Free via New Relic Labs](#resolved-free-via-new-relic-labs-was-oq1)). The product itself has no SKU, no licence fee, no entitlement, and no paywall.
+Preflight will be released as a free open-source asset through New Relic Labs (see [Resolved: Free via New Relic Labs](#resolved-free-via-new-relic-labs-was-oq1)). The product itself has no SKU, no licence fee, no entitlement, and no paywall.
 
 **Distribution and Licensing**
 
@@ -263,7 +263,7 @@ The asset is published to the `newrelic` or `newrelic-experimental` GitHub organ
 
 **Indirect Monetisation Through Platform Consumption**
 
-Revenue is generated indirectly through standard New Relic platform consumption: customers running NR AI Coding Observability emit events, metrics, and logs that flow through the platform's existing billing model (data ingest, query compute, dashboard rendering, alert evaluation). The volume of that consumption scales with the customer's AI-coding adoption.
+Revenue is generated indirectly through standard New Relic platform consumption: customers running Preflight emit events, metrics, and logs that flow through the platform's existing billing model (data ingest, query compute, dashboard rendering, alert evaluation). The volume of that consumption scales with the customer's AI-coding adoption.
 
 **Customer Control of Consumption**
 
@@ -277,13 +277,13 @@ Labs assets are supported through Labs' own channels — GitHub issues, the `#he
 
 ## 6 — User Must-Haves
 
-From the user's perspective, NR AI Coding Observability must transform AI coding governance from an after-the-fact invoice review exercise into a continuous, opt-in, multi-stakeholder workflow. It must serve four user roles simultaneously — engineering leaders, platform owners, finance and compliance reviewers, and individual senior developers — each of whom needs a distinct surface drawing on the same underlying telemetry.
+From the user's perspective, Preflight must transform AI coding governance from an after-the-fact invoice review exercise into a continuous, opt-in, multi-stakeholder workflow. It must serve four user roles simultaneously — engineering leaders, platform owners, finance and compliance reviewers, and individual senior developers — each of whom needs a distinct surface drawing on the same underlying telemetry.
 
 ### Discovery and Onboarding
 
 **Open Source, Self-Install**
 
-Customers discover NR AI Coding Observability in the New Relic Labs catalog and on GitHub. There is no paywall and no trial — the asset can be installed by any New Relic customer at any time. The core onboarding moment is the customer connecting their first AI assistant to New Relic — a process that must take under ten minutes from initial install to first telemetry visible in a dashboard.
+Customers discover Preflight in the New Relic Labs catalog and on GitHub. There is no paywall and no trial — the asset can be installed by any New Relic customer at any time. The core onboarding moment is the customer connecting their first AI assistant to New Relic — a process that must take under ten minutes from initial install to first telemetry visible in a dashboard.
 
 **Per-Tool, Per-Developer Opt-In**
 
@@ -291,11 +291,11 @@ Onboarding is centred on user control. The customer enables the capability at th
 
 **Setup Wizard and CLI**
 
-The product includes an interactive setup wizard that walks through account configuration, hook installation, and first dashboard deployment in a single session. A backfill script (`scripts/backfill-sessions.ts`) is available for state-recovery scenarios — customers who already had NR AI Coding Observability telemetry in NR but whose local session files are missing can reconstruct that state from the existing events. Net-new customers do not have anything to backfill and will accumulate session data over a roughly two-week warm-up before personal coaching reports return useful output; until then, `nr_observe_get_personal_insights` returns an `insufficient_data` status with a clear message.
+The product includes an interactive setup wizard that walks through account configuration, hook installation, and first dashboard deployment in a single session. A backfill script (`scripts/backfill-sessions.ts`) is available for state-recovery scenarios — customers who already had Preflight telemetry in NR but whose local session files are missing can reconstruct that state from the existing events. Net-new customers do not have anything to backfill and will accumulate session data over a roughly two-week warm-up before personal coaching reports return useful output; until then, `nr_observe_get_personal_insights` returns an `insufficient_data` status with a clear message.
 
 **Clear Consumption Communication**
 
-Although NR AI Coding Observability itself is free, customer cost flows through standard New Relic platform consumption (data ingest, query compute). Documentation and the setup wizard should help a customer estimate the consumption impact of their instrumentation before deploying it — answering "if I instrument my entire platform team, how much additional ingest does that produce, and what does that mean for my New Relic bill?" before committing.
+Although Preflight itself is free, customer cost flows through standard New Relic platform consumption (data ingest, query compute). Documentation and the setup wizard should help a customer estimate the consumption impact of their instrumentation before deploying it — answering "if I instrument my entire platform team, how much additional ingest does that produce, and what does that mean for my New Relic bill?" before committing.
 
 ### Core User Experience
 
@@ -381,7 +381,7 @@ The personal coaching report is designed to read like advice from a teammate rat
 
 **Noise in Anti-Pattern Detection**
 
-NR AI Coding Observability promises high-confidence detection of AI coding anti-patterns. If our analysers produce false positives — flagging legitimate exploratory sessions as "thrashing" or treating intentional re-reads as inefficiency — engineering leaders will lose trust quickly and developers will resent being measured against a noisy metric. The bar for analyser quality is the bar for the product overall.
+Preflight promises high-confidence detection of AI coding anti-patterns. If our analysers produce false positives — flagging legitimate exploratory sessions as "thrashing" or treating intentional re-reads as inefficiency — engineering leaders will lose trust quickly and developers will resent being measured against a noisy metric. The bar for analyser quality is the bar for the product overall.
 
 **Surveillance Concerns**
 
@@ -389,7 +389,7 @@ The personal coaching report and per-developer cost breakdowns are powerful, but
 
 **Consumption Surprises**
 
-Although NR AI Coding Observability itself is free, the telemetry it generates flows through standard New Relic ingest and compute billing. Customers who instrument aggressively without first understanding their AI usage scale may see unexpected New Relic bills. Documentation and the setup wizard must communicate the projected ingest volume clearly; if customers feel ambushed by their first invoice, they will turn the product off rather than tune it.
+Although Preflight itself is free, the telemetry it generates flows through standard New Relic ingest and compute billing. Customers who instrument aggressively without first understanding their AI usage scale may see unexpected New Relic bills. Documentation and the setup wizard must communicate the projected ingest volume clearly; if customers feel ambushed by their first invoice, they will turn the product off rather than tune it.
 
 **Coverage Gaps for a Specific Tool**
 
@@ -413,13 +413,13 @@ The product will be promoted through the New Relic developer-relations channels 
 
 **Onboarding Path**
 
-Customers begin with the interactive setup wizard, which configures the New Relic account binding, installs the AI client hooks, and deploys the team and personal dashboards in a single guided session. Customers migrating from a prior NR AI Coding Observability installation can run a backfill script to recover missing local session state from existing NR telemetry. Net-new customers accumulate session data over a roughly two-week warm-up before personal coaching reports return useful output (the `nr_observe_get_personal_insights` MCP tool returns an `insufficient_data` status until enough history exists).
+Customers begin with the interactive setup wizard, which configures the New Relic account binding, installs the AI client hooks, and deploys the team and personal dashboards in a single guided session. Customers migrating from a prior Preflight installation can run a backfill script to recover missing local session state from existing NR telemetry. Net-new customers accumulate session data over a roughly two-week warm-up before personal coaching reports return useful output (the `nr_observe_get_personal_insights` MCP tool returns an `insufficient_data` status until enough history exists).
 
 ### Access Model
 
 **No Entitlement Required**
 
-Because NR AI Coding Observability is a free open-source Labs asset (see [Resolved: Free via New Relic Labs](#resolved-free-via-new-relic-labs-was-oq1)), no entitlement, paywall, or trial gate stands between the customer and the product. Any New Relic customer can install it at any time.
+Because Preflight is a free open-source Labs asset (see [Resolved: Free via New Relic Labs](#resolved-free-via-new-relic-labs-was-oq1)), no entitlement, paywall, or trial gate stands between the customer and the product. Any New Relic customer can install it at any time.
 
 **Per-Developer and Per-Tool Activation**
 
@@ -429,39 +429,39 @@ Within a customer account, individual developers and individual AI tools must be
 
 ## 9 — Overlap & Category
 
-NR AI Coding Observability establishes a new product category — AI development observability — distinct from any existing New Relic capability. There is meaningful adjacency to several existing surfaces, but no overlap that would create cannibalisation risk.
+Preflight establishes a new product category — AI development observability — distinct from any existing New Relic capability. There is meaningful adjacency to several existing surfaces, but no overlap that would create cannibalisation risk.
 
 ### Adjacencies Worth Calling Out
 
 **New Relic AI / GenAI Application Observability**
 
-New Relic's existing AI application observability capabilities focus on customer-built LLM applications running in production — instrumented model calls, prompt observability, and inference-cost reporting at the application layer. NR AI Coding Observability operates at a different stage of the lifecycle: it observes the developer's AI assistant during code authoring, not the application's AI calls during runtime. The two are complementary; some customers will deploy both.
+New Relic's existing AI application observability capabilities focus on customer-built LLM applications running in production — instrumented model calls, prompt observability, and inference-cost reporting at the application layer. Preflight operates at a different stage of the lifecycle: it observes the developer's AI assistant during code authoring, not the application's AI calls during runtime. The two are complementary; some customers will deploy both.
 
 **Logs and Custom Events**
 
-The MCP server emits New Relic custom events and metrics. There is technically nothing preventing a customer from approximating a fraction of this capability by instrumenting their AI assistant manually and shipping events to Logs or the Events API. The difference is that NR AI Coding Observability ships pre-built event schemas, dashboards, alert conditions, anti-pattern detectors, OpenTelemetry GenAI semantic convention mappings, and the analytical surface — none of which a customer assembling raw logging would receive.
+The MCP server emits New Relic custom events and metrics. There is technically nothing preventing a customer from approximating a fraction of this capability by instrumenting their AI assistant manually and shipping events to Logs or the Events API. The difference is that Preflight ships pre-built event schemas, dashboards, alert conditions, anti-pattern detectors, OpenTelemetry GenAI semantic convention mappings, and the analytical surface — none of which a customer assembling raw logging would receive.
 
 **Errors Inbox**
 
-No overlap. Errors Inbox surfaces production errors in deployed applications. NR AI Coding Observability surfaces workflow patterns in AI-assisted development. Different audience, different data, different time horizon.
+No overlap. Errors Inbox surfaces production errors in deployed applications. Preflight surfaces workflow patterns in AI-assisted development. Different audience, different data, different time horizon.
 
 ### Net Effect on Existing Products
 
-NR AI Coding Observability does not replace, deprecate, or shrink the scope of any existing New Relic product. It opens a new buying centre — engineering leaders concerned with AI tooling governance, FinOps teams concerned with AI spend, compliance teams concerned with AI audit — that has not historically been the primary buyer for any New Relic capability. Existing customers who already have APM, Logs, or Infra in place will see NR AI Coding Observability as an additive capability, not as a substitute.
+Preflight does not replace, deprecate, or shrink the scope of any existing New Relic product. It opens a new buying centre — engineering leaders concerned with AI tooling governance, FinOps teams concerned with AI spend, compliance teams concerned with AI audit — that has not historically been the primary buyer for any New Relic capability. Existing customers who already have APM, Logs, or Infra in place will see Preflight as an additive capability, not as a substitute.
 
 ### Category Positioning
 
-A new category needs to be established. Internal naming will treat NR AI Coding Observability as a sibling capability to the GenAI Application Observability product — both fall under the broader AI Observability area — but with explicit positioning as the development-time complement to GenAI Application Observability's runtime focus. (Final category and product-area placement TBD during launch planning.)
+A new category needs to be established. Internal naming will treat Preflight as a sibling capability to the GenAI Application Observability product — both fall under the broader AI Observability area — but with explicit positioning as the development-time complement to GenAI Application Observability's runtime focus. (Final category and product-area placement TBD during launch planning.)
 
 ---
 
 ## 10 — Rollout Plan
 
-NR AI Coding Observability follows the New Relic Labs publication workflow rather than the standard CZ → LP → PP → GA progression (see [Resolved: Labs publication workflow](#resolved-labs-publication-workflow-not-cz--lp--pp--ga-was-oq5)).
+Preflight follows the New Relic Labs publication workflow rather than the standard CZ → LP → PP → GA progression (see [Resolved: Labs publication workflow](#resolved-labs-publication-workflow-not-cz--lp--pp--ga-was-oq5)).
 
 ### Customer Zero (Internal Validation)
 
-**In-Scope:** New Relic engineering organisation deploys NR AI Coding Observability against its own AI tooling usage. Validates the multi-platform adapter set, the dashboard surface, the alert library, and the personal coaching report against real production engineers. Generates the testimonial data and cost-optimisation case studies that accompany the public Labs publication.
+**In-Scope:** New Relic engineering organisation deploys Preflight against its own AI tooling usage. Validates the multi-platform adapter set, the dashboard surface, the alert library, and the personal coaching report against real production engineers. Generates the testimonial data and cost-optimisation case studies that accompany the public Labs publication.
 
 **Out-of-Scope:** External customer onboarding, marketplace listings.
 
@@ -506,7 +506,7 @@ _Add or delete rows as needed. Grid is helpful way to visualize the milestones y
 
 ## 12 — Domain & Support
 
-NR AI Coding Observability aligns with the AI domain and is best understood as the development-time complement to New Relic's existing GenAI Application Observability capability. Where GenAI Application Observability instruments customer-built LLM applications running in production, NR AI Coding Observability instruments the AI assistants developers use to write code. The two surfaces share an underlying philosophy and a shared OpenTelemetry GenAI semantic convention foundation, but address different audiences and different lifecycle stages.
+Preflight aligns with the AI domain and is best understood as the development-time complement to New Relic's existing GenAI Application Observability capability. Where GenAI Application Observability instruments customer-built LLM applications running in production, Preflight instruments the AI assistants developers use to write code. The two surfaces share an underlying philosophy and a shared OpenTelemetry GenAI semantic convention foundation, but address different audiences and different lifecycle stages.
 
 Support skillset spans AI/observability (the primary specialisation), Developer Experience (the audience), and FinOps and Compliance (the secondary stakeholder set). Support staff will need fluency in the AI coding assistant landscape and the MCP protocol in addition to standard New Relic platform support skills.
 
@@ -538,7 +538,7 @@ All five original open questions have now been resolved — four through researc
 
 ### Resolved: Free via New Relic Labs (was OQ1)
 
-NR AI Coding Observability will be released as a free open-source asset through New Relic Labs. Affected sections of this brief — [§2 — Business Impact](#2--business-impact), [§5 — Monetization & Pricing](#5--monetization--pricing), [§6 — User Must-Haves](#6--user-must-haves), [§7 — Mindset Shift & Risks](#7--mindset-shift--risks), and [§8 — Discovery & Access](#8--discovery--access) — have been updated to reflect this model.
+Preflight will be released as a free open-source asset through New Relic Labs. Affected sections of this brief — [§2 — Business Impact](#2--business-impact), [§5 — Monetization & Pricing](#5--monetization--pricing), [§6 — User Must-Haves](#6--user-must-haves), [§7 — Mindset Shift & Risks](#7--mindset-shift--risks), and [§8 — Discovery & Access](#8--discovery--access) — have been updated to reflect this model.
 
 **Concrete implications:**
 
@@ -553,7 +553,7 @@ NR AI Coding Observability will be released as a free open-source asset through 
 
 ### Resolved: UI surface depends on Labs category (was OQ2)
 
-Whether NR AI Coding Observability has a dedicated in-platform UI is determined by which Labs category the asset lands in:
+Whether Preflight has a dedicated in-platform UI is determined by which Labs category the asset lands in:
 
 - **Public Catalog** assets are surfaced inside the New Relic UI under _Integrations & Agents → Apps & Visualizations_ — these can include custom UIs built on the Programmability platform (Pathpoint is the precedent).
 - **Community** and **Experimental** assets are GitHub-distributed code with no in-platform UI; users consume the analytical surface entirely through pre-built dashboards, alerts, NRQL queries, and the MCP tool surface.
@@ -565,18 +565,18 @@ The current product surface is dashboards + alerts + MCP tools + NRQL — no cus
 The original brief assumed an account-level entitlement, an activation UI showing projected billing, and per-developer / per-AI-tool opt-in gated by that entitlement. Labs assets work differently:
 
 - **No entitlement** — Labs assets don't use entitlements; any New Relic customer can install the asset from GitHub at any time. (Resolved in §8.)
-- **No activation UI** — Labs assets typically use config files and setup scripts, not in-platform UIs. The product's `~/.nr-ai-observe/config.json` plus the `nr-ai-observe install` / `nr-ai-observe setup` CLIs serve this role. (§6 has been reframed accordingly.)
+- **No activation UI** — Labs assets typically use config files and setup scripts, not in-platform UIs. The product's `~/.preflight/config.json` plus the `preflight install` / `preflight setup` CLIs serve this role. (§6 has been reframed accordingly.)
 - **Per-developer / per-tool activation already exists at the config level** — the `developer` field is normalised per-machine; AI client hooks are installed per-client; opt-in scope is per-tool by virtue of which adapters the customer enables.
 
 Net: the activation gaps in the original brief disappear once you reframe activation as "configure and install" rather than "click through an entitlement UI." The brief's §6 and §8 sections have been updated.
 
 ### Resolved: Backfill is state recovery, not new-user onboarding (was OQ4)
 
-After auditing `scripts/backfill-sessions.ts`, the script's actual purpose is state recovery for users with existing NR AI Coding Observability telemetry, not seeding new users with synthetic data:
+After auditing `scripts/backfill-sessions.ts`, the script's actual purpose is state recovery for users with existing Preflight telemetry, not seeding new users with synthetic data:
 
 - The script queries New Relic for events with `developer = '<name>'` and reconstructs local session summaries from `AiToolCall`, `AiCodingTask`, `AiAntiPattern`, and `Metric` events already present in NR.
 - **For existing users** whose local state is missing (for example, users who were running the MCP server before personal coaching was added): the script recovers their session history correctly.
-- **For truly net-new customers** with no prior NR AI Coding Observability telemetry: the script exits gracefully with `"No sessions found in New Relic for this developer and time range."` — there is no synthetic seeding because there is nothing to recover.
+- **For truly net-new customers** with no prior Preflight telemetry: the script exits gracefully with `"No sessions found in New Relic for this developer and time range."` — there is no synthetic seeding because there is nothing to recover.
 
 The brief's original framing — that the backfill provides useful day-one coaching for new customers — was misleading. New customers genuinely need to accumulate roughly two weeks of session data before personal coaching reports return useful output. This is already handled gracefully by `nr_observe_get_personal_insights`, which returns an `insufficient_data` status with a message until enough history exists.
 
@@ -599,4 +599,4 @@ The June 9, 2026 launch date corresponds to **initial publication**, not to a Pu
 - _MCP tool surface — 27 tools currently exposed to AI coding clients; full specification at `docs/COMMANDS_TABLE.md` in the open-source repository._
 - _NRQL event schema — public event types (`AiToolCall`, `AiCodingTask`, `AiAntiPattern`, `AiMcpToolCall`, `AiProxyRequest`, `AiAuditEvent`, `AiBudgetWarning`, `AiCostGrowthAlert`, `AiCostForecastAlert`, `AiExperimentSummary`, `AiExperimentConclusion`, `AiRecommendation`); see `docs/EVENT_SCHEMA.md`._
 - _OpenTelemetry GenAI semantic convention mapping — span attributes follow OTel GenAI conventions for portability._
-- _Hook collector binary — `nr-ai-observe` CLI for AI client integration._
+- _Hook collector binary — `preflight` CLI for AI client integration._

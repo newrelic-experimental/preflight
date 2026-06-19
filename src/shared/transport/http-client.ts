@@ -4,14 +4,17 @@ import { randomUUID } from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { VERSION } from '../version.js';
 import type { HttpSendOptions, TransportResult } from './types.js';
+import { DEFAULT_CLIENT_NAME } from './otlp-shared.js';
 
 /**
- * `User-Agent` value stamped on every outbound NR ingest request
- * (CODE_REVIEW §10.7). NR's collector logs the UA, so identifying this
- * library by name and version makes operator-side investigation tractable
- * (e.g. "which library version is producing the malformed payload?").
+ * Builds the `User-Agent` header value for outbound NR ingest requests
+ * (CODE_REVIEW §10.7). NR's collector logs the UA, so identifying the
+ * consuming client by name and version makes operator-side investigation
+ * tractable (e.g. "which client version is producing the malformed payload?").
  */
-const USER_AGENT = `nr-ai-observatory-shared/${VERSION}`;
+function buildUserAgent(clientName: string | undefined): string {
+  return `${clientName || DEFAULT_CLIENT_NAME}/${VERSION}`;
+}
 
 const gzipAsync = promisify(gzip);
 const logger = createLogger('transport');
@@ -310,7 +313,7 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
           'Api-Key': licenseKey,
           'Content-Type': 'application/json',
           'Content-Encoding': 'gzip',
-          'User-Agent': USER_AGENT,
+          'User-Agent': buildUserAgent(options.clientName),
         },
         body: fetchBody,
         signal: AbortSignal.timeout(requestTimeoutMs),

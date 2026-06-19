@@ -1,4 +1,4 @@
-# NR AI Coding Observability — Metrics Reference
+# NR AI Coding Observability: Preflight — Metrics Reference
 
 Every metric and event that this project sends to New Relic, organized by delivery API and source package.
 
@@ -36,7 +36,7 @@ Source: `src/shared/harvest/harvest-scheduler.ts`, `src/transport/log-ingest.ts`
 
 ### MCP Server Events
 
-These events are emitted by the MCP server (`nr-ai-mcp-server`) when Claude Code or another IDE uses a tool.
+These events are emitted by the MCP server (`preflight`) when Claude Code or another IDE uses a tool.
 
 #### `AiToolCall`
 
@@ -50,7 +50,7 @@ Emitted for every tool call captured by the hook collector.
 | `tool_use_id`       | string  | Unique tool use identifier from the AI assistant                                                                                                                           |
 | `success`           | boolean | Whether the tool call succeeded                                                                                                                                            |
 | `developer`         | string  | Developer identifier                                                                                                                                                       |
-| `app_name`          | string  | Application name (default: `nr-ai-mcp-server`)                                                                                                                             |
+| `app_name`          | string  | Application name (default: `preflight`)                                                                                                                                    |
 | `session_id`        | string  | Session identifier (if available)                                                                                                                                          |
 | `team_id`           | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not configured.                                              |
 | `project_id`        | string  | Project identifier (derived from git remote or configured)                                                                                                                 |

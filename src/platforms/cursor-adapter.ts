@@ -72,7 +72,7 @@ export class CursorAdapter implements PlatformAdapter {
     return [
       'Cursor IDE Setup:',
       '1. Open Cursor Settings > MCP',
-      '2. Add a new MCP server with command: npx nr-ai-mcp-server --stdio',
+      '2. Add a new MCP server with command: npx preflight --stdio',
       '3. Set the environment variables: NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID',
       '4. MCP tool calls are captured automatically via the proxy',
       '5. Built-in tool calls (file edits, terminal) require the file watcher or Cursor extension',

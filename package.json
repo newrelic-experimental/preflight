@@ -1,5 +1,5 @@
 {
-  "name": "nr-ai-mcp-server",
+  "name": "@newrelic/preflight",
   "version": "0.1.0",
   "type": "module",
   "license": "Apache-2.0",
@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://source.datanerd.us/cdehaan/nr-ai-coding-observability"
+    "url": "https://github.com/newrelic-experimental/preflight"
   },
   "description": "New Relic MCP server for observing AI coding assistants (Claude Code)",
   "main": "dist/index.js",
@@ -24,8 +24,8 @@
     }
   },
   "bin": {
-    "nr-ai-mcp-server": "dist/index.js",
-    "nr-ai-observe": "dist/hooks/collector-script.js"
+    "preflight": "dist/index.js",
+    "preflight-collector": "dist/hooks/collector-script.js"
   },
   "files": [
     "dist/",

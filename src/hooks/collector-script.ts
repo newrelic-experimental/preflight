@@ -247,7 +247,7 @@ function setLastTranscriptSize(sessionId: string, size: number): void {
   } catch (err) {
     if (!_transcriptSizeWriteFailed) {
       process.stderr.write(
-        `[nr-ai-observe] Warning: cannot persist transcript size: ${String(err)}\n`,
+        `[preflight-collector] Warning: cannot persist transcript size: ${String(err)}\n`,
       );
       _transcriptSizeWriteFailed = true;
     }
@@ -369,7 +369,7 @@ function writePpidBreadcrumb(sessionId: string): void {
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
-        `[nr-ai-observe] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
+        `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
       );
       _breadcrumbWriteFailed = true;
     }
@@ -700,35 +700,12 @@ const _isDirectExecution =
   _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
 
 if (_isDirectExecution) {
-  const _subcommand = process.argv[2];
-  if (
-    _subcommand === 'install' ||
-    _subcommand === 'uninstall' ||
-    _subcommand === 'setup' ||
-    _subcommand === 'update' ||
-    _subcommand === 'validate' ||
-    _subcommand === 'start' ||
-    _subcommand === 'stop' ||
-    _subcommand === 'status' ||
-    _subcommand === 'serve' ||
-    (_subcommand !== undefined && _subcommand.startsWith('-'))
-  ) {
-    // Dynamic import keeps the hook path lightweight — commander and friends
-    // are only loaded when the user explicitly runs install/uninstall/setup.
-    import('../install/cli.js')
-      .then((mod) => mod.runInstallCli(process.argv.slice(2)))
-      .catch((err: unknown) => {
-        process.stderr.write(`Error: ${String(err)}\n`);
-        process.exitCode = 1;
-      });
-  } else {
-    try {
-      const stdin = readFileSync('/dev/stdin', 'utf-8');
-      if (stdin.trim()) {
-        processHook(stdin);
-      }
-    } catch {
-      // Silent failure — never block Claude Code
+  try {
+    const stdin = readFileSync('/dev/stdin', 'utf-8');
+    if (stdin.trim()) {
+      processHook(stdin);
     }
+  } catch {
+    // Silent failure — never block Claude Code
   }
 }

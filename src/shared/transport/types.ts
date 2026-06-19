@@ -6,7 +6,7 @@
  * widen the union here.
  *
  * **This is a TypeScript-only type alias, not a runtime value.** Consumers
- * import it with `import type { TransportMode } from '@nr-ai-observatory/shared'`
+ * import it with `import type { TransportMode } from '@newrelic/ai-telemetry'`
  * and pass the bare string literals at runtime — `transport: 'otlp'` rather
  * than `transport: TransportMode.OTLP`. There is no enum-like object to
  * dot-access; a runtime membership check should compare against the
@@ -106,6 +106,12 @@ export interface TransportOptions {
    * indefinitely with no recovery.
    */
   readonly requestTimeoutMs?: number;
+  /**
+   * Identifies the consuming client in the `User-Agent` header sent to NR
+   * ingest endpoints (e.g. `'preflight'`, `'nr-ai-agent'`). Defaults to
+   * `'ai-telemetry'` when not provided.
+   */
+  readonly clientName?: string;
 }
 
 export interface TransportResult {
@@ -123,4 +129,9 @@ export interface HttpSendOptions {
   readonly baseDelayMs: number;
   readonly maxDelayMs: number;
   readonly requestTimeoutMs: number;
+  /**
+   * Identifies the consuming client in the `User-Agent` header. Defaults to
+   * `'ai-telemetry'` when not provided.
+   */
+  readonly clientName?: string;
 }

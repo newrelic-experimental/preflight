@@ -9,7 +9,7 @@ describe('mcp-tracer', () => {
   test('initMcpTracer initializes the tracer', () => {
     const traceSpy = jest.spyOn(trace, 'getTracer');
     initMcpTracer();
-    expect(traceSpy).toHaveBeenCalledWith('nr-ai-mcp-server', '1.0.0');
+    expect(traceSpy).toHaveBeenCalledWith('preflight', '1.0.0');
     traceSpy.mockRestore();
   });
 

@@ -114,7 +114,7 @@ export class NrMcpServer {
 
 export function createServer(options?: Partial<ServerOptions>): NrMcpServer {
   const resolved: ServerOptions = {
-    name: options?.name ?? 'nr-ai-observability',
+    name: options?.name ?? 'preflight',
     version: options?.version ?? VERSION,
     developer: options?.developer,
     teamId: options?.teamId,

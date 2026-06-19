@@ -1,4 +1,4 @@
-# New Relic AI Coding Observability
+# NR AI Coding Observability: Preflight
 
 **Observability for AI coding assistants.** Captures every action your AI coding tool takes — file reads, edits, commands, searches — and sends the data to New Relic so you can see exactly what's happening, how much it costs, and where it's wasting time.
 
@@ -58,22 +58,22 @@ You'll also need your **Account ID** — a number visible in the URL when you're
 > **Pre-release:** The npm package will be available after the public launch. Until then, install from source:
 >
 > ```bash
-> git clone https://source.datanerd.us/cdehaan/nr-ai-coding-observability
-> cd nr-ai-coding-observability
+> git clone https://github.com/newrelic-experimental/preflight
+> cd preflight
 > nvm use        # Node 22+
 > npm install
 > npm run build
-> npm link       # puts nr-ai-observe on your PATH
+> npm link       # puts preflight on your PATH
 > ```
 >
-> After launch, Step 1 will simplify to `npm install -g nr-ai-mcp-server`.
+> After launch, Step 1 will simplify to `npm install -g @newrelic/preflight`.
 
-**Step 1 — Put `nr-ai-observe` on your PATH** _(see above)_
+**Step 1 — Put `preflight` on your PATH** _(see above)_
 
 **Step 2 — Run the interactive setup wizard**
 
 ```bash
-nr-ai-observe setup
+preflight setup
 ```
 
 The wizard asks for your license key, account ID, environment/region (US, EU, FedRAMP), and optionally a NR API key for team queries. It validates both keys live against New Relic before continuing, and pre-fills your developer name from the email on the API key. Most people are running in under 5 minutes.
@@ -83,7 +83,7 @@ If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are a
 Prefer non-interactive? Skip the wizard and run:
 
 ```bash
-nr-ai-observe install \
+preflight install \
   --license-key YOUR_LICENSE_KEY \
   --account-id YOUR_ACCOUNT_ID
 ```
@@ -96,10 +96,10 @@ Replace `NRAK-...` with your user API key and `12345` with your account ID:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all
+  preflight deploy-dashboards --all
 ```
 
-This creates 7 dashboards in your NR account. Find them under **Dashboards** → search "AI Coding". The deploy commands ship with the package — both `nr-ai-mcp-server deploy-dashboards` and `nr-ai-mcp-server deploy-alerts` are available immediately after `npm install -g`.
+This creates 7 dashboards in your NR account. Find them under **Dashboards** → search "AI Coding". The deploy commands ship with the package — both `preflight deploy-dashboards` and `preflight deploy-alerts` are available immediately after `npm install -g`.
 
 > **Staging vs production:** Use your account's license key and account ID from whichever environment you're targeting — both work. Add `--staging` if your account is on `staging-one.newrelic.com`, `--eu` for EU region accounts, or omit both flags for standard production (`one.newrelic.com`). Don't mix keys across environments (a production license key won't ingest to staging and vice versa).
 
@@ -118,15 +118,15 @@ If you get back a response with tool call counts and timing data, it's working.
 This is also the current install path until the npm package is published. Use it to develop the project, deploy dashboards/alerts, or stay on the latest unreleased changes:
 
 ```bash
-git clone https://source.datanerd.us/cdehaan/nr-ai-coding-observability
-cd nr-ai-coding-observability
+git clone https://github.com/newrelic-experimental/preflight
+cd preflight
 nvm use          # Switch to the right Node version (24+)
 npm install      # Install all dependencies
 npm run build    # Compile TypeScript
-npm link         # Register nr-ai-observe binary on PATH (required for hooks)
+npm link         # Register preflight binary on PATH (required for hooks)
 ```
 
-Then run `nr-ai-observe setup` exactly as in the Quick Start.
+Then run `preflight setup` exactly as in the Quick Start.
 
 > **`npm link` permission error?** If you see `EACCES: permission denied` pointing at `/usr/local/lib/node_modules`, your system Node.js is installed in a root-owned directory. Pick one fix:
 >
@@ -189,7 +189,7 @@ Deploy a dashboard pre-filtered to your name (it opens already showing your data
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards \
+  preflight deploy-dashboards \
   ai-coding-assistant-personal.json --developer your-name
 ```
 
@@ -199,14 +199,14 @@ To replace existing dashboards in place after pulling new fixes (preserves the d
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --update
+  preflight deploy-dashboards --all --update
 ```
 
 To delete the deployed dashboards, add `--teardown`. Dashboards are matched by name; missing ones are skipped:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --teardown
+  preflight deploy-dashboards --all --teardown
 ```
 
 ### Terraform (IaC alternative)
@@ -221,7 +221,7 @@ Optional: get notified in NR when something goes wrong.
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts
+  preflight deploy-alerts
 ```
 
 Add `--staging` if your account is on the New Relic staging environment, or `--eu` for accounts on the EU region. This creates five alert conditions: daily cost spike, low efficiency score, stuck loop rate, anti-pattern rate, and session cost budget. To remove them, add `--teardown`.
@@ -230,21 +230,21 @@ To apply changes to alert JSONs without losing the existing policy, add `--updat
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --update
+  preflight deploy-alerts --update
 ```
 
 For personal alerts scoped to your developer name:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --developer your-name
+  preflight deploy-alerts --developer your-name
 ```
 
 ---
 
 ## Configuration
 
-The easiest way to configure is through the setup wizard (`nr-ai-observe setup`). To edit manually, open `~/.nr-ai-observe/config.json`:
+The easiest way to configure is through the setup wizard (`preflight setup`). To edit manually, open `~/.preflight/config.json`:
 
 ```json
 {
@@ -279,7 +279,7 @@ All settings can also be set via environment variables — see [example.config.j
 If the MCP server fails to connect, run:
 
 ```bash
-nr-ai-observe validate
+preflight validate
 ```
 
 This checks your config file for JSON syntax errors, invalid field types, and misspelled or unknown keys — and suggests corrections:
@@ -302,7 +302,7 @@ To export telemetry to other OpenTelemetry-compatible backends (Datadog, Grafana
 To pull the latest changes and rebuild in one step:
 
 ```bash
-nr-ai-observe update
+preflight update
 ```
 
 This runs `git pull` followed by `npm run build` in the repo directory. Restart Claude Code afterwards to pick up the new version.
@@ -314,7 +314,7 @@ This runs `git pull` followed by `npm run build` in the repo directory. Restart 
 To remove the Observatory hooks and MCP server from Claude Code:
 
 ```bash
-nr-ai-observe uninstall
+preflight uninstall
 ```
 
 This removes the hooks from your user-level Claude Code settings and deregisters the MCP server. A timestamped backup of your settings is saved automatically before any changes are made.
@@ -322,7 +322,7 @@ This removes the hooks from your user-level Claude Code settings and deregisters
 If you installed at the project level, add `--project`:
 
 ```bash
-nr-ai-observe uninstall --project
+preflight uninstall --project
 ```
 
 Restart Claude Code after uninstalling for the changes to take effect.
@@ -333,18 +333,18 @@ If you deployed dashboards or alerts, tear them down separately:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-dashboards --all --teardown
+  preflight deploy-dashboards --all --teardown
 
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  nr-ai-mcp-server deploy-alerts --teardown
+  preflight deploy-alerts --teardown
 ```
 
 ### Removing local data
 
-Session history and configuration are stored in `~/.nr-ai-observe/`. To remove everything:
+Session history and configuration are stored in `~/.preflight/`. To remove everything:
 
 ```bash
-rm -rf ~/.nr-ai-observe
+rm -rf ~/.preflight
 ```
 
 ### Unlinking the binary
@@ -352,7 +352,7 @@ rm -rf ~/.nr-ai-observe
 If you registered the CLI globally via `npm link`, remove it with:
 
 ```bash
-npm unlink -g nr-ai-observatory
+npm unlink -g @newrelic/preflight
 ```
 
 ---
@@ -371,10 +371,10 @@ In local mode:
 
 - The MCP server does **not** construct `NrIngestManager` and never makes outbound HTTP calls to NR.
 - An embedded dashboard boots at **http://127.0.0.1:7777** (configurable via `dashboard.port` or `NR_AI_DASHBOARD_PORT`).
-- All telemetry stays in `~/.nr-ai-observe/` on your machine.
+- All telemetry stays in `~/.preflight/` on your machine.
 - `licenseKey` and `accountId` are not required.
 
-**With Claude Code** (default): the server runs via the MCP connection (`--stdio`). You don't launch it manually — Claude Code starts it automatically when you open a session, because `nr-ai-observe install` registered it as an MCP server. The dashboard stays alive as long as your Claude Code session is open.
+**With Claude Code** (default): the server runs via the MCP connection (`--stdio`). You don't launch it manually — Claude Code starts it automatically when you open a session, because `preflight install` registered it as an MCP server. The dashboard stays alive as long as your Claude Code session is open.
 
 **Standalone** (no Claude Code required): pass `--local` to run the dashboard server directly, without an MCP transport. Use this to browse the dashboard when Claude Code isn't running, or to observe non-Claude-Code sources that hit the hooks (e.g. Claude Agent SDK scripts). If the per-session MCP is also installed, only one process owns the dashboard at a time — whichever started first — and the other runs headless.
 
@@ -398,13 +398,13 @@ The dashboard has six views:
 - **Settings** — edit developer name, team ID, budget caps, and session retention from the browser (no config file editing required).
 - **Alerts** — live budget spend vs. caps, editable personal alert thresholds, and Slack digest configuration.
 
-Run `nr-ai-observe setup` to choose a mode interactively.
+Run `preflight setup` to choose a mode interactively.
 
 ---
 
 ## Local Alerts
 
-Local-mode users get threshold alerting evaluated in-process — no New Relic dependency. Rules live at `~/.nr-ai-observe/alerts/rules.json`; a starter set is copied into place by the setup wizard.
+Local-mode users get threshold alerting evaluated in-process — no New Relic dependency. Rules live at `~/.preflight/alerts/rules.json`; a starter set is copied into place by the setup wizard.
 
 For the full list of rule types, channel options, alert log configuration, and live reload behavior, see [ADVANCED.md](./docs/ADVANCED.md#local-alerts).
 
@@ -424,7 +424,7 @@ Or set it in your config file as `digestWebhookUrl`, or configure it directly fr
 
 | Platform           | How to enable                                          |
 | ------------------ | ------------------------------------------------------ |
-| Claude Code        | `nr-ai-observe install` (automatic)                    |
+| Claude Code        | `preflight install` (automatic)                        |
 | Cursor             | Set `NEW_RELIC_AI_PLATFORM=cursor` in your environment |
 | Windsurf           | Set `NEW_RELIC_AI_PLATFORM=windsurf`                   |
 | GitHub Copilot     | Set `NEW_RELIC_AI_PLATFORM=copilot`                    |

@@ -33,6 +33,35 @@ describe('entityGuid warn-once (§FAC3)', () => {
     expect(calls).toHaveLength(1);
     stderrSpy.mockRestore();
   });
+
+  it('§11.8 warns once PER event type so partial entityGuid coverage is visible', () => {
+    // Before this fix, one warning from createAiRequest would silence ALL subsequent
+    // factory types. Now each type gets its own warn-once slot.
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const requestBase = {
+      provider: 'anthropic' as const,
+      model: 'm',
+      requestMethod: 'messages.create' as const,
+      messageCount: 1,
+      streamingEnabled: false,
+      appName: 'app',
+    };
+    createAiRequest(requestBase); // AiRequest → warn fires
+    createAiRequest(requestBase); // AiRequest again → suppressed (same type)
+    createAiResponse({
+      provider: 'anthropic',
+      model: 'm',
+      durationMs: 100,
+      inputTokens: 0,
+      outputTokens: 0,
+      appName: 'app',
+      // no entityGuid
+    }); // AiResponse → warn fires (different type)
+
+    const calls = stderrSpy.mock.calls.filter((c) => String(c[0]).includes('entityGuid'));
+    expect(calls).toHaveLength(2); // one per type, not one globally
+    stderrSpy.mockRestore();
+  });
 });
 
 describe('createAiRequest', () => {
@@ -183,6 +212,22 @@ describe('createAiResponse', () => {
       cacheCreationTokens: 20,
     });
     expect(event.totalTokens).toBe(400); // 100 + 50 + 200 + 30 + 20
+  });
+
+  it('§11.2 computes totalTokens WITHOUT thinkingTokens for OpenAI (reasoning is subset)', () => {
+    // For OpenAI o1/o3/o4-mini, reasoning_tokens (→ thinkingTokens) is already
+    // included in completion_tokens (→ outputTokens). Adding thinkingTokens again
+    // would inflate totalTokens (the bug fixed in §11.2).
+    const event = createAiResponse({
+      ...baseParams,
+      provider: 'openai',
+      model: 'o1',
+      inputTokens: 100,
+      outputTokens: 500,
+      thinkingTokens: 300, // subset of outputTokens for OpenAI, NOT additive
+      cacheReadTokens: 20, // also a subset of inputTokens for OpenAI
+    });
+    expect(event.totalTokens).toBe(600); // 100 + 500 only (thinking and cache not added)
   });
 
   it('computes tokensPerSecond from outputTokens and durationMs', () => {

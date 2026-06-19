@@ -22,7 +22,7 @@ import {
 
 const mockedExecFileSync = childProcess.execFileSync as jest.Mock;
 
-const PLIST_PATH = join(TEST_HOME, 'Library', 'LaunchAgents', 'com.nr-ai-observe.update.plist');
+const PLIST_PATH = join(TEST_HOME, 'Library', 'LaunchAgents', 'com.preflight.update.plist');
 
 beforeAll(() => {
   mkdirSync(join(TEST_HOME, 'Library', 'LaunchAgents'), { recursive: true });
@@ -44,27 +44,27 @@ beforeEach(() => {
 
 describe('installSchedule', () => {
   it('writes a plist file to the LaunchAgents directory', () => {
-    installSchedule('/usr/local/bin/nr-ai-observe', 8, 0);
+    installSchedule('/usr/local/bin/preflight', 8, 0);
     expect(existsSync(PLIST_PATH)).toBe(true);
   });
 
   it('embeds the binary path, hour, and minute in the plist', () => {
-    installSchedule('/usr/local/bin/nr-ai-observe', 14, 30);
+    installSchedule('/usr/local/bin/preflight', 14, 30);
     const content = readFileSync(PLIST_PATH, 'utf-8');
-    expect(content).toContain('<string>/usr/local/bin/nr-ai-observe</string>');
+    expect(content).toContain('<string>/usr/local/bin/preflight</string>');
     expect(content).toContain('<integer>14</integer>');
     expect(content).toContain('<integer>30</integer>');
   });
 
   it('redirects stdout and stderr to update.log', () => {
-    installSchedule('/usr/local/bin/nr-ai-observe', 8, 0);
+    installSchedule('/usr/local/bin/preflight', 8, 0);
     const content = readFileSync(PLIST_PATH, 'utf-8');
-    expect(content).toContain('.nr-ai-observe/update.log');
+    expect(content).toContain('\.nr-ai-observe/update.log');
   });
 
   it('calls launchctl unload then load', () => {
     mockedExecFileSync.mockImplementation(() => Buffer.from(''));
-    installSchedule('/usr/local/bin/nr-ai-observe', 8, 0);
+    installSchedule('/usr/local/bin/preflight', 8, 0);
     const calls = mockedExecFileSync.mock.calls.map((c) => (c as unknown[])[1] as string[]);
     expect(calls.some((args) => args[0] === 'unload')).toBe(true);
     expect(calls.some((args) => args[0] === 'load')).toBe(true);
@@ -76,7 +76,7 @@ describe('installSchedule', () => {
         throw new Error('not loaded');
       })
       .mockImplementation(() => Buffer.from('') as unknown as string);
-    expect(() => installSchedule('/usr/local/bin/nr-ai-observe', 8, 0)).not.toThrow();
+    expect(() => installSchedule('/usr/local/bin/preflight', 8, 0)).not.toThrow();
   });
 });
 
@@ -87,7 +87,7 @@ describe('removeSchedule', () => {
   });
 
   it('calls launchctl unload and deletes the plist', () => {
-    installSchedule('/usr/local/bin/nr-ai-observe', 8, 0);
+    installSchedule('/usr/local/bin/preflight', 8, 0);
     mockedExecFileSync.mockClear();
     removeSchedule();
     const calls = mockedExecFileSync.mock.calls.map((c) => (c as unknown[])[1] as string[]);
@@ -101,10 +101,10 @@ const FIXTURE_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.nr-ai-observe.update</string>
+  <string>com.preflight.update</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/nr-ai-observe</string>
+    <string>/opt/homebrew/bin/preflight</string>
     <string>update</string>
   </array>
   <key>StartCalendarInterval</key>
@@ -115,9 +115,9 @@ const FIXTURE_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
     <integer>45</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>/Users/testuser/.nr-ai-observe/update.log</string>
+  <string>/Users/testuser/\.nr-ai-observe/update.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/testuser/.nr-ai-observe/update.log</string>
+  <string>/Users/testuser/\.nr-ai-observe/update.log</string>
   <key>RunAtLoad</key>
   <false/>
 </dict>
@@ -129,12 +129,12 @@ describe('getScheduleStatus', () => {
   });
 
   it('returns installed:true with hour, minute, binaryPath after install', () => {
-    installSchedule('/usr/local/bin/nr-ai-observe', 9, 15);
+    installSchedule('/usr/local/bin/preflight', 9, 15);
     const status = getScheduleStatus();
     expect(status.installed).toBe(true);
     expect(status.hour).toBe(9);
     expect(status.minute).toBe(15);
-    expect(status.binaryPath).toBe('/usr/local/bin/nr-ai-observe');
+    expect(status.binaryPath).toBe('/usr/local/bin/preflight');
   });
 
   it('parses hour, minute, and binaryPath from a fixture plist string', () => {
@@ -143,7 +143,7 @@ describe('getScheduleStatus', () => {
     expect(status.installed).toBe(true);
     expect(status.hour).toBe(22);
     expect(status.minute).toBe(45);
-    expect(status.binaryPath).toBe('/opt/homebrew/bin/nr-ai-observe');
+    expect(status.binaryPath).toBe('/opt/homebrew/bin/preflight');
   });
 });
 
@@ -169,7 +169,7 @@ describe('resolveBinaryPath', () => {
   it('returns null for a non-executable file (mode 0o644)', () => {
     const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'schedule-test-'));
     try {
-      const binaryPath = join(tmpDir, 'nr-ai-observe');
+      const binaryPath = join(tmpDir, 'preflight');
       writeFileSync(binaryPath, '#!/usr/bin/env node\n', { mode: 0o644 });
       process.env.PATH = tmpDir;
       expect(resolveBinaryPath()).toBeNull();

@@ -571,6 +571,15 @@ describe('loadConfig', () => {
       expect(config.otlpHeaders).toEqual({ key: 'abc%' });
     });
 
+    it('§11.4 warns when percent-encoding in value is malformed', () => {
+      const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      process.env.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%ZZtoken';
+      loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
+      const logs = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(logs.some((l) => l.includes('malformed percent-encoding in value'))).toBe(true);
+      warnSpy.mockRestore();
+    });
+
     // CODE_REVIEW §3.3.4 — keys must be percent-decoded too. Headers names
     // rarely need encoding in practice (they're usually plain ASCII tokens),
     // but the OTel spec applies the same encoding rules to both sides of
@@ -585,6 +594,15 @@ describe('loadConfig', () => {
       process.env.OTEL_EXPORTER_OTLP_HEADERS = 'bad%key=val';
       const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
       expect(config.otlpHeaders).toEqual({ 'bad%key': 'val' });
+    });
+
+    it('§11.4 warns when percent-encoding in key is malformed', () => {
+      const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      process.env.OTEL_EXPORTER_OTLP_HEADERS = 'bad%key=val';
+      loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
+      const logs = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(logs.some((l) => l.includes('malformed percent-encoding in key'))).toBe(true);
+      warnSpy.mockRestore();
     });
   });
 

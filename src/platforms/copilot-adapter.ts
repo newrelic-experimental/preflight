@@ -107,7 +107,7 @@ export class CopilotAdapter implements PlatformAdapter {
       'GitHub Copilot Observability Setup:',
       '1. Install the nr-ai-copilot-observer VS Code extension',
       '2. Configure the extension to point to the MCP server endpoint:',
-      '   Set "nr-ai-observer.endpoint" to "http://localhost:9847" in VS Code settings',
+      '   Set "preflightr.endpoint" to "http://localhost:9847" in VS Code settings',
       '3. Set environment variables: NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID',
       '4. The extension detects Copilot-initiated changes and forwards events to the server',
       '5. Note: tool call timing is approximate (inferred from VS Code event timestamps)',

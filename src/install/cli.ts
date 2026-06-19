@@ -1,5 +1,5 @@
 /**
- * CLI handlers for `nr-ai-observe install` and `nr-ai-observe uninstall`.
+ * CLI handlers for `preflight install` and `preflight uninstall`.
  *
  * Dynamically imported from collector-script.ts when argv[2] is install/uninstall,
  * so commander and other heavy deps are never loaded on the hot hook path.
@@ -90,7 +90,7 @@ function writeJsonFile(path: string, data: Record<string, unknown>): void {
 
 export function verifyBinaryOnPath(): boolean {
   try {
-    execSync('which nr-ai-observe', { stdio: 'pipe' });
+    execSync('which preflight', { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -98,10 +98,10 @@ export function verifyBinaryOnPath(): boolean {
 }
 
 function printPathWarning(): void {
-  print('\n⚠ nr-ai-observe is not on your PATH.');
+  print('\n⚠ preflight is not on your PATH.');
   print('  Claude Code hooks will fail with "command not found" until this is resolved.');
   print('  Fix: run `npm link` in the project directory, or install globally:');
-  print('    npm install -g nr-ai-mcp-server');
+  print('    npm install -g @newrelic/preflight');
   print('');
 }
 
@@ -136,7 +136,7 @@ function handleUpdate(): void {
     process.exit(1);
   }
 
-  print(`Updating NR AI Coding Observability from ${repoRoot}...\n`);
+  print(`Updating Preflight from ${repoRoot}...\n`);
 
   try {
     print('→ git pull');
@@ -181,9 +181,7 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
     }
     const binaryPath = resolveBinaryPath();
     if (!binaryPath) {
-      print(
-        '✗ nr-ai-observe not found on PATH. Fix PATH then run: nr-ai-observe schedule --time HH:MM',
-      );
+      print('✗ preflight not found on PATH. Fix PATH then run: preflight schedule --time HH:MM');
       process.exit(1);
     }
     installSchedule(binaryPath, hour, minute);
@@ -201,11 +199,11 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
     const mm = String(status.minute ?? 0).padStart(2, '0');
     print(`Auto-update schedule: ${hh}:${mm} daily`);
     print(`  Binary: ${status.binaryPath ?? 'unknown'}`);
-    print('  To change: nr-ai-observe schedule --time HH:MM');
-    print('  To remove: nr-ai-observe schedule --disable');
+    print('  To change: preflight schedule --time HH:MM');
+    print('  To remove: preflight schedule --disable');
   } else {
     print('No auto-update schedule installed.');
-    print('  To enable: nr-ai-observe schedule --time 08:00');
+    print('  To enable: preflight schedule --time 08:00');
   }
 }
 
@@ -255,7 +253,7 @@ function handleInstall(options: {
   print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
   print('  - Added PreToolUse and PostToolUse hooks');
   print(`✓ MCP server registered: ${mcpPath}`);
-  print('  - Added nr-ai-observability MCP server');
+  print('  - Added preflight MCP server');
 
   if (options.licenseKey && options.accountId) {
     const config = generateNrConfig(options.licenseKey, options.accountId);
@@ -266,7 +264,7 @@ function handleInstall(options: {
   }
 
   if (binPath !== null) {
-    print('\n✓ nr-ai-observe is on your PATH');
+    print('\n✓ preflight is on your PATH');
   } else {
     printPathWarning();
   }
@@ -276,7 +274,7 @@ function handleInstall(options: {
   print('  2. Verify: ask Claude Code to call nr_observe_get_session_stats');
   print('');
   print('  Tip: if the MCP server fails to connect, run:');
-  print('    nr-ai-observe validate');
+  print('    preflight validate');
   print('  to check your config file for typos or unsupported fields.');
 }
 
@@ -337,7 +335,7 @@ function handleValidate(options: { config?: string }): void {
 
   if (!result.fileExists) {
     print('No config file found at this path — defaults will apply.');
-    print("Run 'nr-ai-observe setup' to create one.");
+    print("Run 'preflight setup' to create one.");
     return;
   }
 
@@ -376,7 +374,7 @@ function handleValidate(options: { config?: string }): void {
 
 export function createInstallProgram(): Command {
   const program = new Command();
-  program.name('nr-ai-observe').description('New Relic AI observability for Claude Code');
+  program.name('preflight').description('New Relic AI observability for Claude Code');
 
   program
     .command('install')
@@ -388,7 +386,7 @@ export function createInstallProgram(): Command {
 
   program
     .command('uninstall')
-    .description('Remove nr-ai-observe hooks and MCP server from Claude Code settings')
+    .description('Remove preflight hooks and MCP server from Claude Code settings')
     .option('--project', 'Remove from project-level .claude/settings.json instead of user-level')
     .action(handleUninstall);
 
@@ -430,5 +428,5 @@ export function createInstallProgram(): Command {
 
 export async function runInstallCli(argv: string[]): Promise<void> {
   const program = createInstallProgram();
-  await program.parseAsync(['node', 'nr-ai-observe', ...argv]);
+  await program.parseAsync(['node', 'preflight', ...argv]);
 }

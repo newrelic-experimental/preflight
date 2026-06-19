@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react
 
 export type Theme = 'dark' | 'light';
 
-const STORAGE_KEY = 'nr-ai-observe-theme';
+const STORAGE_KEY = 'preflight-theme';
 
 function getInitialTheme(): Theme {
   try {

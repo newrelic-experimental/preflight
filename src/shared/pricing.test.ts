@@ -1209,4 +1209,32 @@ describe('PricingTable (instance-based)', () => {
     const fresh = new PricingTable();
     expect(fresh.resolve('claude-opus-4-7')!.inputPerMTok).toBe(originalRate);
   });
+
+  it('§11.5 returns null (not a non-deterministic entry) when two equal-length keys forward-match', () => {
+    // Construct a table with two same-length keys that both forward-prefix-match 'test-model'
+    // via the forward-prefix heuristic (key starts with modelName, suffix matches /^-\d/).
+    // The old code returned whichever key happened last in Object.keys() order.
+    // The fix must return null and emit a warning instead.
+    const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pricing-test-'));
+    const tmpFile = join(tmpDir, 'ambiguous.json');
+    writeFileSync(
+      tmpFile,
+      JSON.stringify({
+        'test-model-1a': { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 128_000 },
+        'test-model-2b': { inputPerMTok: 3, outputPerMTok: 6, contextWindow: 128_000 },
+      }),
+    );
+
+    const table = new PricingTable(tmpFile);
+    rmSync(tmpDir, { recursive: true });
+
+    const result = table.resolve('test-model');
+    expect(result).toBeNull();
+    const logs = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(logs.some((l) => l.includes('Ambiguous forward-prefix match'))).toBe(true);
+
+    warnSpy.mockRestore();
+  });
 });

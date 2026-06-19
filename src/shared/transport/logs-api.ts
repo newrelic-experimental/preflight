@@ -18,6 +18,15 @@ export interface NrLogEntry {
  * don't use it because each log entry already carries its own `attributes`
  * map, but the option is open if a future caller wants to deduplicate
  * across-batch attributes.
+ *
+ * **⚠️ Standalone transport helper — no harvest-scheduler integration (§11.9).**
+ * Unlike `sendEvents` and `sendMetrics`, this function is NOT wired into
+ * `HarvestScheduler`. It has no in-memory buffer, no overflow protection, no
+ * retry-buffer cap, and no self-monitoring drop metrics. Call it directly only
+ * when you own the batching and retry logic yourself. For managed delivery
+ * analogous to event/metric harvest, a `NrLogEntry[]` buffer inside
+ * `HarvestScheduler` would be the right surface — that work is tracked under
+ * §11.9 in CODE_REVIEW.md.
  */
 export async function sendLogs(
   logs: NrLogEntry[],
@@ -39,5 +48,6 @@ export async function sendLogs(
     baseDelayMs: options.baseDelayMs ?? 1000,
     maxDelayMs: options.maxDelayMs ?? 30_000,
     requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
+    clientName: options.clientName,
   });
 }

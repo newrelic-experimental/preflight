@@ -1189,4 +1189,80 @@ describe('HarvestScheduler', () => {
       removeSpy.mockRestore();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // §11.1 — OTLP_BAD_REQUEST is dropped, not requeued
+  // ---------------------------------------------------------------------------
+  describe('§11.1 OTLP_BAD_REQUEST non-retryable handling', () => {
+    it('drops OTLP metric batch on OTLP_BAD_REQUEST and does not requeue', async () => {
+      const badRequestError = Object.assign(new Error('bad request'), {
+        code: 'OTLP_BAD_REQUEST',
+      });
+      const otlpExportFn = jest
+        .fn<Promise<void>, [NrMetric[]]>()
+        .mockRejectedValue(badRequestError);
+      const otlpTransport = {
+        exportMetrics: otlpExportFn,
+        flush: jest.fn().mockResolvedValue(undefined),
+        shutdown: jest.fn().mockResolvedValue(undefined),
+      } as unknown as OtlpTransport;
+
+      const { scheduler } = makeScheduler({
+        transport: 'otlp',
+        otlpTransport,
+        metricHarvestIntervalMs: 60_000,
+      });
+
+      scheduler.recordMetric('test.metric', 42);
+      scheduler.start();
+
+      // First metric harvest at 60s — exportMetrics throws OTLP_BAD_REQUEST
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(otlpExportFn).toHaveBeenCalledTimes(1);
+      const logAfterFirst = getLogOutput(stderrSpy);
+      expect(logAfterFirst).toContain('OTLP metric export rejected (bad request)');
+
+      // Second metric harvest at 120s — no fresh data AND retry buffer should
+      // be empty (batch was dropped, not requeued). exportMetrics must NOT be
+      // called again.
+      stderrSpy.mockClear();
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(otlpExportFn).toHaveBeenCalledTimes(1); // no second attempt
+
+      await scheduler.stop();
+    });
+
+    it('requeues OTLP metric batch on generic errors (non-BAD_REQUEST)', async () => {
+      const networkError = new Error('connection refused');
+      const otlpExportFn = jest
+        .fn<Promise<void>, [NrMetric[]]>()
+        .mockRejectedValueOnce(networkError)
+        .mockResolvedValue(undefined);
+      const otlpTransport = {
+        exportMetrics: otlpExportFn,
+        flush: jest.fn().mockResolvedValue(undefined),
+        shutdown: jest.fn().mockResolvedValue(undefined),
+      } as unknown as OtlpTransport;
+
+      const { scheduler } = makeScheduler({
+        transport: 'otlp',
+        otlpTransport,
+        metricHarvestIntervalMs: 60_000,
+      });
+
+      scheduler.recordMetric('test.metric', 1);
+      scheduler.start();
+
+      // First harvest fails with a generic network error — should requeue
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(otlpExportFn).toHaveBeenCalledTimes(1);
+      expect(getLogOutput(stderrSpy)).toContain('re-queuing batch for retry');
+
+      // Second harvest should retry the requeued batch
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(otlpExportFn).toHaveBeenCalledTimes(2);
+
+      await scheduler.stop();
+    });
+  });
 });

@@ -83,18 +83,38 @@ function applyCustomAttributes(
 const NR_VALUE_MAX_BYTES = 4096;
 const NR_VALUE_SUFFIX = '...'; // 3 bytes (ASCII)
 
+// §11.7: shared helper used by both truncate() and clipCustomAttribute().
+// Finds the longest code-point prefix of `s` whose UTF-8 byte length fits
+// within `maxBytes`, then appends '...'. Called only when the string is
+// already known to exceed `maxBytes`.
+//
+// Uses binary search (O(log n) Buffer.byteLength calls) instead of the
+// previous linear-decrement loop (O(n) calls). For a worst-case string of
+// all 4-byte emoji at the 4096-byte cap, this reduces ~1024 Buffer.byteLength
+// calls to ~12.
+const SUFFIX_BYTES = Buffer.byteLength(NR_VALUE_SUFFIX, 'utf8'); // 3 (ASCII)
+function truncateToBytes(s: string, maxBytes: number): string {
+  const target = maxBytes - SUFFIX_BYTES;
+  const codePoints = Array.from(s);
+  // Binary search for the largest cut that fits within target bytes.
+  let lo = 0;
+  let hi = codePoints.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (Buffer.byteLength(codePoints.slice(0, mid).join(''), 'utf8') <= target) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return codePoints.slice(0, lo).join('') + NR_VALUE_SUFFIX;
+}
+
 function truncate(s: string): string {
   // Fast path: ASCII-only strings — byte length == char length.
   if (s.length <= NR_VALUE_MAX_BYTES / 4) return s;
   if (Buffer.byteLength(s, 'utf8') <= NR_VALUE_MAX_BYTES) return s;
-  // Slow path: find the longest code-point prefix that fits in (cap - 3) bytes.
-  const target = NR_VALUE_MAX_BYTES - Buffer.byteLength(NR_VALUE_SUFFIX, 'utf8');
-  const codePoints = Array.from(s);
-  let cut = codePoints.length;
-  while (cut > 0 && Buffer.byteLength(codePoints.slice(0, cut).join(''), 'utf8') > target) {
-    cut--;
-  }
-  return codePoints.slice(0, cut).join('') + NR_VALUE_SUFFIX;
+  return truncateToBytes(s, NR_VALUE_MAX_BYTES);
 }
 
 // CODE_REVIEW §3.3.5 — `customAttributes` is the one channel that lets a
@@ -120,13 +140,7 @@ function clipCustomAttribute(
   if (typeof value !== 'string') return value;
   const maxBytes = options?.highSecurity === true ? CUSTOM_ATTR_MAX_HS_BYTES : NR_VALUE_MAX_BYTES;
   if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
-  const target = maxBytes - Buffer.byteLength(NR_VALUE_SUFFIX, 'utf8');
-  const codePoints = Array.from(value);
-  let cut = codePoints.length;
-  while (cut > 0 && Buffer.byteLength(codePoints.slice(0, cut).join(''), 'utf8') > target) {
-    cut--;
-  }
-  return codePoints.slice(0, cut).join('') + NR_VALUE_SUFFIX;
+  return truncateToBytes(value, maxBytes);
 }
 
 /**
@@ -366,13 +380,18 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
       : event.inputTokens + event.cacheReadTokens + event.cacheCreationTokens;
 
   data['gen_ai.usage.input_tokens'] = otelInputTokens;
-  // thinkingTokens is added unconditionally. This is correct when thinkingTokens
-  // is DISJOINT from outputTokens (Anthropic, Google). For any future provider
-  // where thinkingTokens is already included in outputTokens, adding it again
-  // would double-count — verify the extractor semantics before enabling thinking
-  // for that provider (§EV5). Today: OpenAI/Bedrock/Mistral/Cohere all produce
-  // thinkingTokens=0, so the formula is a safe no-op for them.
-  data['gen_ai.usage.output_tokens'] = event.outputTokens + event.thinkingTokens;
+  // §11.2: gen_ai.usage.output_tokens semantics differ by provider.
+  //
+  // Anthropic / Google: thinkingTokens is DISJOINT from outputTokens
+  //   (extended-thinking and thought-summary tokens are separate) → add both.
+  // OpenAI: reasoning_tokens (→ thinkingTokens) is a SUBSET of
+  //   completion_tokens (→ outputTokens) — adding it again double-counts.
+  //   outputTokens alone equals completion_tokens which is what OTel
+  //   gen_ai.usage.output_tokens should reflect for OpenAI.
+  // Bedrock / Mistral / Cohere: thinkingTokens is always 0, so both
+  //   formulas produce the same result; disjoint form is correct.
+  data['gen_ai.usage.output_tokens'] =
+    event.provider === 'openai' ? event.outputTokens : event.outputTokens + event.thinkingTokens;
 
   if (event.thinkingTokens > 0) data['gen_ai.usage.reasoning.output_tokens'] = event.thinkingTokens;
   if (event.cacheReadTokens > 0)

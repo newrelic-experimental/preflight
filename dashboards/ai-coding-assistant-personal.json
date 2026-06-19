@@ -1,6 +1,6 @@
 {
   "name": "AI Coding Assistant — Personal",
-  "description": "Self-reflection dashboard for a single developer. Pre-filtered to your identity. Deploy with: nr-ai-mcp-server deploy-dashboards ai-coding-assistant-personal.json --developer <your-name>",
+  "description": "Self-reflection dashboard for a single developer. Pre-filtered to your identity. Deploy with: preflight deploy-dashboards ai-coding-assistant-personal.json --developer <your-name>",
   "permissions": "PRIVATE",
   "pages": [
     {

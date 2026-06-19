@@ -109,7 +109,14 @@ export function Sidebar({
             fill="#080F11"
           />
           <defs>
-            <linearGradient id="preflightGrad" x1="64" y1="0" x2="64" y2="128" gradientUnits="userSpaceOnUse">
+            <linearGradient
+              id="preflightGrad"
+              x1="64"
+              y1="0"
+              x2="64"
+              y2="128"
+              gradientUnits="userSpaceOnUse"
+            >
               <stop offset="0.12" stopColor="#D2FA37" />
               <stop offset="0.88" stopColor="#1CE783" />
             </linearGradient>
@@ -208,25 +215,25 @@ export function Sidebar({
 
         {/* Footer */}
         <div className="pt-3 border-t border-border-subtle">
-        <div className="flex items-center justify-between px-2 py-1.5 rounded-md bg-surface-3 transition-colors duration-150">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full ${connected ? 'bg-accent-green animate-pulse' : 'bg-accent-amber'}`}
-            />
-            <span className="text-[10px] text-ink-subtle tracking-wide">
-              {connected ? 'live' : 'reconnecting'}
-            </span>
+          <div className="flex items-center justify-between px-2 py-1.5 rounded-md bg-surface-3 transition-colors duration-150">
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`w-2 h-2 rounded-full ${connected ? 'bg-accent-green animate-pulse' : 'bg-accent-amber'}`}
+              />
+              <span className="text-[10px] text-ink-subtle tracking-wide">
+                {connected ? 'live' : 'reconnecting'}
+              </span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onToggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="px-1 py-1"
+            >
+              {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
+            </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onToggleTheme}
-            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="px-1 py-1"
-          >
-            {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
-          </Button>
-        </div>
         </div>
       </div>
     </aside>

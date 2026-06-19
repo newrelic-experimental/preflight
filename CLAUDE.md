@@ -1,4 +1,4 @@
-# NR AI Coding Observability
+# NR AI Coding Observability: Preflight
 
 Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Shared transport/events/pricing code lives in `src/shared/` (synced from `nr-ai-typescript-shared` via `npm run sync:shared`). All telemetry flows to New Relic. The TypeScript SDK agent lives in the separate `nr-ai-typescript-agent` repo. CI/CD tooling and GitHub App webhook server live in the separate `nr-ai-github-tools` repo.
 
@@ -59,7 +59,7 @@ nr-ai-observatory/
     server.ts                       # NrMcpServer — MCP server over stdio transport
     config.ts                       # McpServerConfig loader
     hooks/
-      collector-script.ts           # nr-ai-observe binary (hook event collector)
+      collector-script.ts           # preflight binary (hook event collector)
       event-processor.ts            # Pairs pre/post hook events into ToolCallRecords
       tool-parsers.ts               # INPUT_PARSERS / OUTPUT_PARSERS for tool fields
       bash-classifier.ts            # classifyBash() — coarse Bash command classifier (category/leading/isDestructive/isNetwork)
@@ -121,8 +121,8 @@ nr-ai-observatory/
       nr-ingest.ts                  # NrIngestManager (events + metrics + logs)
       log-ingest.ts                 # Log ingestion with buffering
     install/                        # Claude Code hook installation CLI
-      cli.ts                        # nr-ai-observe install/uninstall commands
-      setup-wizard.ts               # nr-ai-observe setup interactive wizard
+      cli.ts                        # preflight install/uninstall commands
+      setup-wizard.ts               # preflight setup interactive wizard
     alerts/                         # Alert TypeScript types + validation tests
       types.ts                      # AlertConditionDefinition, AlertPolicyDefinition interfaces
       alerts.test.ts                # JSON structure validation (reads from ../alerts/)
@@ -141,7 +141,7 @@ nr-ai-observatory/
 Claude Code
   │
   ├─ PreToolUse / PostToolUse hooks
-  │    └─> nr-ai-observe (collector-script.ts)
+  │    └─> preflight (collector-script.ts)
   │         └─> writes to buffer.jsonl (LocalStore)
   │
   └─ MCP stdio connection
@@ -309,7 +309,7 @@ See [COMMANDS_TABLE.md](./docs/COMMANDS_TABLE.md) for complete tool specificatio
 
 Config loading priority: **CLI > environment variables > config file > defaults**.
 
-The config file path defaults to `~/.nr-ai-observe/config.json` or can be passed via `--config`.
+The config file path defaults to `~/.preflight/config.json` or can be passed via `--config`.
 
 Key config interfaces:
 
@@ -382,7 +382,7 @@ SDK agent wrappers now support 6 AI providers:
 
 ## Storage
 
-All local persistence lives under `~/.nr-ai-observe/` by default:
+All local persistence lives under `~/.preflight/` by default:
 
 | Path                | Format     | Purpose                                                        |
 | ------------------- | ---------- | -------------------------------------------------------------- |

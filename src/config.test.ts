@@ -203,7 +203,7 @@ describe('loadMcpConfig()', () => {
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
 
-    expect(config.appName).toBe('nr-ai-mcp-server');
+    expect(config.appName).toBe('preflight');
     expect(config.model).toBe('claude-sonnet-4-6');
     expect(config.enabled).toBe(true);
     expect(config.recordContent).toBe(false);

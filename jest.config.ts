@@ -29,7 +29,7 @@ const config: Config = {
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts', '!src/**/index.ts'],
   coverageReporters: ['text', 'lcov'],
   coverageDirectory: 'coverage',
-  displayName: 'nr-ai-mcp-server',
+  displayName: 'preflight',
   maxWorkers: 1,
   forceExit: true,
   // src/shared/index.test.ts verifies that VERSION matches the upstream package.json.

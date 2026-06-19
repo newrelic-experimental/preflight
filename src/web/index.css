@@ -139,7 +139,7 @@ html.light .glass-card:not(.glass-card-static):hover {
 /* Preflight brand text (yellow-green, matches logo gradient) */
 .brand-text {
   width: fit-content;
-  background: linear-gradient(90deg, #D2FA37 0%, #1CE783 100%);
+  background: linear-gradient(90deg, #d2fa37 0%, #1ce783 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

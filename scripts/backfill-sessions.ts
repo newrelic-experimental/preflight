@@ -4,7 +4,7 @@
  *
  * Sessions are reconstructed from AiToolCall, AiCodingTask, AiAntiPattern,
  * and Metric events already in New Relic, then written to
- * ~/.nr-ai-observe/sessions/ in the same format the MCP server produces at
+ * ~/.preflight/sessions/ in the same format the MCP server produces at
  * shutdown. Weekly summary files are regenerated for all affected weeks.
  *
  * Usage:
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const storagePath = join(homedir(), '.nr-ai-observe');
+  const storagePath = join(homedir(), '.preflight');
   const sessionStore = new SessionStore({ storagePath });
   const weeklySummaryGenerator = new WeeklySummaryGenerator({ storagePath, sessionStore });
 

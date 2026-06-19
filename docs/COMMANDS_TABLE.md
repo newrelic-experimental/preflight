@@ -1,6 +1,6 @@
-# NR AI Coding Observability — MCP Commands Reference
+# NR AI Coding Observability: Preflight — MCP Commands Reference
 
-Every MCP tool exposed by the `nr-ai-mcp-server`, what it returns, how it computes each finding, and which trackers it queries.
+Every MCP tool exposed by the `preflight`, what it returns, how it computes each finding, and which trackers it queries.
 
 Tools are conditionally registered — each tool only appears when its required tracker dependencies are provided to `registerTools()`.
 
@@ -53,9 +53,9 @@ Show the current server configuration with sensitive fields masked.
   "licenseKeyMasked": "175cae4b...NRAL",
   "nrApiKeyMasked": "NRAK-****",
   "region": "US",
-  "storagePath": "/Users/alice/.nr-ai-observe",
+  "storagePath": "/Users/alice/.preflight",
   "dashboardUrl": "https://one.newrelic.com/dashboards/...",
-  "configFilePath": "/Users/alice/.nr-ai-observe/config.json"
+  "configFilePath": "/Users/alice/.preflight/config.json"
 }
 ```
 
@@ -86,7 +86,7 @@ Current session metrics snapshot.
   },
   "session_trace_id": "uuid-string-or-null",
   "session_id": "string",
-  "session_name": "nr-ai-observatory",
+  "session_name": "my-project",
   "session_duration_ms": 0,
   "tool_calls": 0,
   "tool_calls_by_type": { "Read": 5, "Edit": 3 },
@@ -416,7 +416,7 @@ Source: `src/tools/workflow-tools.ts`
 
 ## Cross-Session Tools
 
-These tools query persisted session data from disk (`~/.nr-ai-observe/sessions/`). They are only registered when `SessionStore` and related analyzers are available.
+These tools query persisted session data from disk (`~/.preflight/sessions/`). They are only registered when `SessionStore` and related analyzers are available.
 
 ### `nr_observe_get_session_history`
 
@@ -454,7 +454,7 @@ Paginated list of past sessions with summary metrics.
 
 **Data source:** `SessionStore`
 
-**How it works:** Loads all session summary JSON files from `~/.nr-ai-observe/sessions/`, applies optional date and developer filters, returns the last N sessions ordered by start time.
+**How it works:** Loads all session summary JSON files from `~/.preflight/sessions/`, applies optional date and developer filters, returns the last N sessions ordered by start time.
 
 **Requires:** `SessionStore`
 
@@ -1584,7 +1584,7 @@ Register a Slack webhook URL to receive weekly AI coding cost and efficiency sum
 }
 ```
 
-**Data source:** Config file (`~/.nr-ai-observe/config.json`)
+**Data source:** Config file (`~/.preflight/config.json`)
 
 **How it works:**
 
@@ -1618,7 +1618,7 @@ Remove the registered Slack webhook for weekly digests.
 }
 ```
 
-**Data source:** Config file (`~/.nr-ai-observe/config.json`)
+**Data source:** Config file (`~/.preflight/config.json`)
 
 **How it works:**
 

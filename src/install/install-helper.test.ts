@@ -43,42 +43,42 @@ describe('generateHookEntries', () => {
     const hooks = generateHookEntries();
 
     expect(hooks.PreToolUse).toEqual([
-      { matcher: '', hooks: [{ type: 'command', command: 'nr-ai-observe pre-tool' }] },
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }] },
     ]);
     expect(hooks.PostToolUse).toEqual([
-      { matcher: '', hooks: [{ type: 'command', command: 'nr-ai-observe post-tool' }] },
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector post-tool' }] },
     ]);
   });
 
   it('uses quoted full path when binPath is provided', () => {
-    const hooks = generateHookEntries('/usr/local/bin/nr-ai-observe');
+    const hooks = generateHookEntries('/usr/local/bin/preflight');
 
     expect(hooks.PreToolUse).toEqual([
       {
         matcher: '',
-        hooks: [{ type: 'command', command: '"/usr/local/bin/nr-ai-observe" pre-tool' }],
+        hooks: [{ type: 'command', command: '"/usr/local/bin/preflight-collector" pre-tool' }],
       },
     ]);
     expect(hooks.PostToolUse).toEqual([
       {
         matcher: '',
-        hooks: [{ type: 'command', command: '"/usr/local/bin/nr-ai-observe" post-tool' }],
+        hooks: [{ type: 'command', command: '"/usr/local/bin/preflight-collector" post-tool' }],
       },
     ]);
   });
 
   it('quotes paths that contain spaces', () => {
-    const hooks = generateHookEntries('/Users/John Doe/.nvm/versions/node/v24/bin/nr-ai-observe');
+    const hooks = generateHookEntries('/Users/John Doe/.nvm/versions/node/v24/bin/preflight');
 
     expect(hooks.PreToolUse[0].hooks[0].command).toBe(
-      '"/Users/John Doe/.nvm/versions/node/v24/bin/nr-ai-observe" pre-tool',
+      '"/Users/John Doe/.nvm/versions/node/v24/bin/preflight-collector" pre-tool',
     );
   });
 
   it('falls back to bare command when binPath is null', () => {
     const hooks = generateHookEntries(null);
 
-    expect(hooks.PreToolUse[0].hooks[0].command).toBe('nr-ai-observe pre-tool');
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe('preflight-collector pre-tool');
   });
 });
 
@@ -87,23 +87,23 @@ describe('generateMcpServerEntry', () => {
     const entry = generateMcpServerEntry();
 
     expect(entry).toEqual({
-      'nr-ai-observability': { command: 'nr-ai-mcp-server', args: ['--stdio'] },
+      preflight: { command: 'preflight', args: ['--stdio'] },
     });
   });
 
   it('uses full path derived from binPath bin directory', () => {
-    const entry = generateMcpServerEntry('/usr/local/bin/nr-ai-observe');
+    const entry = generateMcpServerEntry('/usr/local/bin/preflight');
 
     expect(entry).toEqual({
-      'nr-ai-observability': { command: '/usr/local/bin/nr-ai-mcp-server', args: ['--stdio'] },
+      preflight: { command: '/usr/local/bin/preflight', args: ['--stdio'] },
     });
   });
 
   it('falls back to bare command when binPath is null', () => {
     const entry = generateMcpServerEntry(null);
 
-    expect(entry['nr-ai-observability']).toEqual({
-      command: 'nr-ai-mcp-server',
+    expect(entry['preflight']).toEqual({
+      command: 'preflight',
       args: ['--stdio'],
     });
   });
@@ -163,9 +163,9 @@ describe('mergeSettings', () => {
     expect(hooks.PostToolUse).toHaveLength(1);
 
     const pre = hooks.PreToolUse[0] as Record<string, unknown>;
-    expect(pre.hooks).toEqual([{ type: 'command', command: 'nr-ai-observe pre-tool' }]);
+    expect(pre.hooks).toEqual([{ type: 'command', command: 'preflight-collector pre-tool' }]);
     const post = hooks.PostToolUse[0] as Record<string, unknown>;
-    expect(post.hooks).toEqual([{ type: 'command', command: 'nr-ai-observe post-tool' }]);
+    expect(post.hooks).toEqual([{ type: 'command', command: 'preflight-collector post-tool' }]);
 
     // MCP servers are NOT managed in settings.json
     expect(result.mcpServers).toBeUndefined();
@@ -189,7 +189,7 @@ describe('mergeSettings', () => {
     expect((existingEntry.hooks as Array<Record<string, string>>)[0].command).toBe('my-other-hook');
     const ourEntry = hooks.PreToolUse[1] as Record<string, unknown>;
     expect((ourEntry.hooks as Array<Record<string, string>>)[0].command).toBe(
-      'nr-ai-observe pre-tool',
+      'preflight-collector pre-tool',
     );
     // Non-Pre/Post hook preserved
     expect(hooks.StopToolUse).toEqual([
@@ -215,13 +215,13 @@ describe('mergeSettings', () => {
     expect(hooks.PreToolUse).toHaveLength(2);
     expect(hooks.PreToolUse[0]).toEqual({ matcher: 'Bash', command: 'some-other-tool --pre' });
     const preNr = hooks.PreToolUse[1] as Record<string, unknown>;
-    expect(preNr.hooks).toEqual([{ type: 'command', command: 'nr-ai-observe pre-tool' }]);
+    expect(preNr.hooks).toEqual([{ type: 'command', command: 'preflight-collector pre-tool' }]);
 
     // Post: same behaviour on the PostToolUse branch
     expect(hooks.PostToolUse).toHaveLength(2);
     expect(hooks.PostToolUse[0]).toEqual({ matcher: 'Edit', command: 'some-other-tool --post' });
     const postNr = hooks.PostToolUse[1] as Record<string, unknown>;
-    expect(postNr.hooks).toEqual([{ type: 'command', command: 'nr-ai-observe post-tool' }]);
+    expect(postNr.hooks).toEqual([{ type: 'command', command: 'preflight-collector post-tool' }]);
   });
 
   it('is idempotent — running twice does not duplicate entries', () => {
@@ -235,38 +235,38 @@ describe('mergeSettings', () => {
 
   it('upgrades a bare-name hook entry to a quoted absolute path on re-install', () => {
     const withBare = mergeSettings({});
-    const withAbsolute = mergeSettings(withBare, '/usr/local/bin/nr-ai-observe');
+    const withAbsolute = mergeSettings(withBare, '/usr/local/bin/preflight');
 
     const hooks = withAbsolute.hooks as Record<string, unknown[]>;
     expect(hooks.PreToolUse).toHaveLength(1);
     expect(hooks.PostToolUse).toHaveLength(1);
     const pre = hooks.PreToolUse[0] as Record<string, unknown>;
     expect((pre.hooks as Array<Record<string, string>>)[0].command).toBe(
-      '"/usr/local/bin/nr-ai-observe" pre-tool',
+      '"/usr/local/bin/preflight-collector" pre-tool',
     );
   });
 
   it('upgrades a stale absolute-path hook entry to a new quoted path on re-install', () => {
-    const withOld = mergeSettings({}, '/old/path/nr-ai-observe');
-    const withNew = mergeSettings(withOld, '/new/path/nr-ai-observe');
+    const withOld = mergeSettings({}, '/old/path/preflight');
+    const withNew = mergeSettings(withOld, '/new/path/preflight');
 
     const hooks = withNew.hooks as Record<string, unknown[]>;
     expect(hooks.PreToolUse).toHaveLength(1);
     const pre = hooks.PreToolUse[0] as Record<string, unknown>;
     expect((pre.hooks as Array<Record<string, string>>)[0].command).toBe(
-      '"/new/path/nr-ai-observe" pre-tool',
+      '"/new/path/preflight-collector" pre-tool',
     );
   });
 
   it('preserves an existing absolute-path hook when re-installing with null binPath', () => {
-    const withAbsolute = mergeSettings({}, '/usr/local/bin/nr-ai-observe');
+    const withAbsolute = mergeSettings({}, '/usr/local/bin/preflight');
     const reInstalled = mergeSettings(withAbsolute, null);
 
     const hooks = reInstalled.hooks as Record<string, unknown[]>;
     expect(hooks.PreToolUse).toHaveLength(1);
     const pre = hooks.PreToolUse[0] as Record<string, unknown>;
     expect((pre.hooks as Array<Record<string, string>>)[0].command).toBe(
-      '"/usr/local/bin/nr-ai-observe" pre-tool',
+      '"/usr/local/bin/preflight-collector" pre-tool',
     );
   });
 });
@@ -276,15 +276,15 @@ describe('mergeSettings', () => {
 // ---------------------------------------------------------------------------
 
 describe('removeSettings', () => {
-  it('removes only nr-ai-observe hook entries, keeps others', () => {
+  it('removes only preflight hook entries, keeps others', () => {
     const settings = {
       hooks: {
         PreToolUse: [
           { matcher: '', hooks: [{ type: 'command', command: 'my-other-hook' }] },
-          { matcher: '', hooks: [{ type: 'command', command: 'nr-ai-observe pre-tool' }] },
+          { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }] },
         ],
         PostToolUse: [
-          { matcher: '', hooks: [{ type: 'command', command: 'nr-ai-observe post-tool' }] },
+          { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector post-tool' }] },
         ],
       },
     };
@@ -306,7 +306,7 @@ describe('removeSettings', () => {
   });
 
   it('removes quoted absolute-path entries installed by the new code path', () => {
-    const settings = mergeSettings({}, '/usr/local/bin/nr-ai-observe');
+    const settings = mergeSettings({}, '/usr/local/bin/preflight');
     const result = removeSettings(settings);
 
     expect(result.hooks).toBeUndefined();
@@ -336,8 +336,8 @@ describe('mergeMcpConfig', () => {
 
     expect(result.mcpServers).toBeDefined();
     const servers = result.mcpServers as Record<string, unknown>;
-    expect(servers['nr-ai-observability']).toEqual({
-      command: 'nr-ai-mcp-server',
+    expect(servers['preflight']).toEqual({
+      command: 'preflight',
       args: ['--stdio'],
     });
   });
@@ -353,7 +353,7 @@ describe('mergeMcpConfig', () => {
 
     const servers = result.mcpServers as Record<string, unknown>;
     expect(servers['my-server']).toEqual({ command: 'my-mcp', args: [] });
-    expect(servers['nr-ai-observability']).toBeDefined();
+    expect(servers['preflight']).toBeDefined();
   });
 
   it('is idempotent', () => {
@@ -366,23 +366,23 @@ describe('mergeMcpConfig', () => {
 
   it('upgrades a bare-name MCP command to an absolute path on re-install', () => {
     const withBare = mergeMcpConfig({});
-    const withAbsolute = mergeMcpConfig(withBare, '/usr/local/bin/nr-ai-observe');
+    const withAbsolute = mergeMcpConfig(withBare, '/usr/local/bin/preflight');
 
     const servers = withAbsolute.mcpServers as Record<string, unknown>;
     expect(Object.keys(servers)).toHaveLength(1);
-    expect(servers['nr-ai-observability']).toEqual({
-      command: '/usr/local/bin/nr-ai-mcp-server',
+    expect(servers['preflight']).toEqual({
+      command: '/usr/local/bin/preflight',
       args: ['--stdio'],
     });
   });
 
   it('upgrades a stale absolute-path MCP command on re-install', () => {
-    const withOld = mergeMcpConfig({}, '/old/path/nr-ai-observe');
-    const withNew = mergeMcpConfig(withOld, '/new/path/nr-ai-observe');
+    const withOld = mergeMcpConfig({}, '/old/path/preflight');
+    const withNew = mergeMcpConfig(withOld, '/new/path/preflight');
 
     const servers = withNew.mcpServers as Record<string, unknown>;
-    expect(servers['nr-ai-observability']).toEqual({
-      command: '/new/path/nr-ai-mcp-server',
+    expect(servers['preflight']).toEqual({
+      command: '/new/path/preflight',
       args: ['--stdio'],
     });
   });
@@ -390,31 +390,31 @@ describe('mergeMcpConfig', () => {
   it('preserves user-added fields when upgrading the MCP command', () => {
     const existing = {
       mcpServers: {
-        'nr-ai-observability': {
-          command: 'nr-ai-mcp-server',
+        preflight: {
+          command: 'preflight',
           args: ['--stdio', '--config', '/custom/config.json'],
           env: { MY_VAR: 'value' },
         },
       },
     };
 
-    const result = mergeMcpConfig(existing, '/usr/local/bin/nr-ai-observe');
+    const result = mergeMcpConfig(existing, '/usr/local/bin/preflight');
 
     const servers = result.mcpServers as Record<string, unknown>;
-    expect(servers['nr-ai-observability']).toEqual({
-      command: '/usr/local/bin/nr-ai-mcp-server',
+    expect(servers['preflight']).toEqual({
+      command: '/usr/local/bin/preflight',
       args: ['--stdio'],
       env: { MY_VAR: 'value' },
     });
   });
 
   it('preserves an existing absolute-path MCP command when re-installing with null binPath', () => {
-    const withAbsolute = mergeMcpConfig({}, '/usr/local/bin/nr-ai-observe');
+    const withAbsolute = mergeMcpConfig({}, '/usr/local/bin/preflight');
     const reInstalled = mergeMcpConfig(withAbsolute, null);
 
     const servers = reInstalled.mcpServers as Record<string, unknown>;
-    expect(servers['nr-ai-observability']).toEqual({
-      command: '/usr/local/bin/nr-ai-mcp-server',
+    expect(servers['preflight']).toEqual({
+      command: '/usr/local/bin/preflight',
       args: ['--stdio'],
     });
   });
@@ -430,7 +430,7 @@ describe('mergeMcpConfig', () => {
 
     const servers = result.mcpServers as Record<string, unknown>;
     expect(servers['remote-server']).toEqual({ url: 'https://example.com/mcp', transport: 'sse' });
-    expect(servers['nr-ai-observability']).toBeDefined();
+    expect(servers['preflight']).toBeDefined();
   });
 });
 
@@ -439,11 +439,11 @@ describe('mergeMcpConfig', () => {
 // ---------------------------------------------------------------------------
 
 describe('removeMcpConfig', () => {
-  it('removes nr-ai-observability, keeps other servers', () => {
+  it('removes preflight, keeps other servers', () => {
     const config = {
       mcpServers: {
         'my-server': { command: 'my-mcp', args: [] },
-        'nr-ai-observability': { command: 'nr-ai-mcp-server', args: ['--stdio'] },
+        preflight: { command: 'preflight', args: ['--stdio'] },
       },
     };
 
@@ -451,7 +451,7 @@ describe('removeMcpConfig', () => {
 
     const servers = result.mcpServers as Record<string, unknown>;
     expect(servers['my-server']).toBeDefined();
-    expect(servers['nr-ai-observability']).toBeUndefined();
+    expect(servers['preflight']).toBeUndefined();
   });
 
   it('removes mcpServers key when empty', () => {
@@ -508,8 +508,8 @@ describe('integration: install/uninstall cycle', () => {
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8')) as Record<string, unknown>;
     expect(mcp.mcpServers).toBeDefined();
     const servers = mcp.mcpServers as Record<string, unknown>;
-    expect(servers['nr-ai-observability']).toEqual({
-      command: 'nr-ai-mcp-server',
+    expect(servers['preflight']).toEqual({
+      command: 'preflight',
       args: ['--stdio'],
     });
   });
@@ -550,7 +550,7 @@ describe('integration: install/uninstall cycle', () => {
     const readBackMcp = JSON.parse(readFileSync(mcpPath, 'utf-8')) as Record<string, unknown>;
     const servers = readBackMcp.mcpServers as Record<string, unknown>;
     expect(servers['keep-server']).toBeDefined();
-    expect(servers['nr-ai-observability']).toBeUndefined();
+    expect(servers['preflight']).toBeUndefined();
   });
 
   it('generateNrConfig produces valid config file content', () => {

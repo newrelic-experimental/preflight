@@ -215,7 +215,11 @@ export function extractOpenAITokens(response: OpenAIResponse): TokenUsage {
   if (usage.total_tokens !== undefined) {
     totalTokens = safeInt(usage.total_tokens);
   } else {
-    totalTokens = inputTokens + outputTokens + thinkingTokens + cacheReadTokens;
+    // §11.3: for OpenAI, cacheReadTokens (prompt_tokens_details.cached_tokens)
+    // is a SUBSET of inputTokens (prompt_tokens), not an additive field.
+    // thinkingTokens (reasoning_tokens) is a SUBSET of outputTokens (completion_tokens).
+    // Including either again would double-count when total_tokens is absent.
+    totalTokens = inputTokens + outputTokens;
   }
 
   return {
@@ -680,11 +684,9 @@ export class TokenAccumulator {
       this.latestUsage.totalTokens =
         u.total_tokens !== undefined
           ? safeInt(u.total_tokens)
-          : this.latestUsage.inputTokens +
-            this.latestUsage.outputTokens +
-            this.latestUsage.thinkingTokens +
-            this.latestUsage.cacheReadTokens +
-            this.latestUsage.cacheCreationTokens;
+          : // §11.3: same subset semantics as extractOpenAITokens — neither
+            // cacheReadTokens nor thinkingTokens is additive for OpenAI.
+            this.latestUsage.inputTokens + this.latestUsage.outputTokens;
     }
   }
 

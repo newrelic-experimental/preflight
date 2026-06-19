@@ -18,7 +18,7 @@ jest.mock('./schedule.js', () => ({
   installSchedule: jest.fn(),
   removeSchedule: jest.fn(),
   getScheduleStatus: jest.fn(() => ({ installed: false })),
-  resolveBinaryPath: jest.fn(() => '/usr/local/bin/nr-ai-observe'),
+  resolveBinaryPath: jest.fn(() => '/usr/local/bin/preflight'),
 }));
 jest.mock('./install-helper.js', () => ({
   mergeSettings: jest.fn((s: unknown) => s),
@@ -74,7 +74,7 @@ describe('schedule subcommand', () => {
       installed: true,
       hour: 9,
       minute: 30,
-      binaryPath: '/usr/local/bin/nr-ai-observe',
+      binaryPath: '/usr/local/bin/preflight',
     });
     await runInstallCli(['schedule']);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
@@ -83,21 +83,13 @@ describe('schedule subcommand', () => {
 
   it('installs schedule with --time 08:00', async () => {
     await runInstallCli(['schedule', '--time', '08:00']);
-    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith(
-      '/usr/local/bin/nr-ai-observe',
-      8,
-      0,
-    );
+    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith('/usr/local/bin/preflight', 8, 0);
   });
 
   it('replaces existing schedule without prompting when --time given', async () => {
     mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true, hour: 8, minute: 0 });
     await runInstallCli(['schedule', '--time', '09:30']);
-    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith(
-      '/usr/local/bin/nr-ai-observe',
-      9,
-      30,
-    );
+    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith('/usr/local/bin/preflight', 9, 30);
   });
 
   it('exits 1 when --time format is invalid', async () => {

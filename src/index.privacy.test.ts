@@ -217,7 +217,7 @@ describe('privacy proof — built binary in mode=local', () => {
       });
 
       // No fatal errors and a successful boot/shutdown cycle.
-      expect(stderrBuf).toMatch(/Starting nr-ai-mcp-server/);
+      expect(stderrBuf).toMatch(/Starting preflight/);
       expect(stderrBuf).toMatch(/Server running on stdio transport/);
       expect(stderrBuf).not.toMatch(/Fatal error/);
 

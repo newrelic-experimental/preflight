@@ -7,13 +7,10 @@ import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { createLogger } from '../logger.js';
 import type { NrMetric, NrGaugeMetric, NrCountMetric, NrSummaryMetric } from './types.js';
-import { validateOtlpEndpoint, hasOtlpAuthHeader } from './otlp-shared.js';
+import { validateOtlpEndpoint, hasOtlpAuthHeader, DEFAULT_CLIENT_NAME } from './otlp-shared.js';
 import { VERSION } from '../version.js';
 
 const gzipAsync = promisify(gzip);
-
-/** CODE_REVIEW §10.7 — identify this library on the OTLP collector side. */
-const USER_AGENT = `nr-ai-observatory-shared/${VERSION}`;
 
 const logger = createLogger('otlp-transport');
 
@@ -23,6 +20,13 @@ export interface OtlpTransportOptions {
   appName: string;
   /** Override the default 30-second request timeout for exportMetrics (§TR7). */
   requestTimeoutMs?: number;
+  /**
+   * Identifies the consuming client in the `User-Agent` header and as the
+   * OTel instrumentation scope name (CODE_REVIEW §10.7). Defaults to
+   * `'ai-telemetry'` when not provided. Pass `'preflight'`, `'nr-ai-agent'`,
+   * etc. so telemetry from different consumers is distinguishable.
+   */
+  clientName?: string;
 }
 
 export class OtlpTransport {
@@ -33,6 +37,7 @@ export class OtlpTransport {
   private readonly endpoint: string;
   private readonly headers: Record<string, string>;
   private readonly requestTimeoutMs: number;
+  private readonly clientName: string;
   private hasWarnedNoAuth = false;
   /**
    * Resource attributes shared by both the SDK-driven path (tracer/meter
@@ -47,6 +52,7 @@ export class OtlpTransport {
   constructor(options: OtlpTransportOptions) {
     validateOtlpEndpoint(options.endpoint, 'OtlpTransport');
 
+    this.clientName = options.clientName || DEFAULT_CLIENT_NAME;
     this.resourceAttributes = Object.freeze({ 'service.name': options.appName });
     const resource = resourceFromAttributes({ ...this.resourceAttributes });
 
@@ -218,7 +224,7 @@ export class OtlpTransport {
           },
           scopeMetrics: [
             {
-              scope: { name: 'nr-ai-observatory' },
+              scope: { name: this.clientName },
               metrics: metrics.map(otlpMetric),
             },
           ],
@@ -245,7 +251,7 @@ export class OtlpTransport {
       headers: {
         'Content-Type': 'application/json',
         'Content-Encoding': 'gzip',
-        'User-Agent': USER_AGENT,
+        'User-Agent': `${this.clientName}/${VERSION}`,
         ...this.headers,
       },
       body: compressed as unknown as BodyInit,
