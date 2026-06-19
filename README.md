@@ -16,7 +16,7 @@ Think of it like Google Analytics for your AI pair programmer.
 
 ## Before You Start
 
-You need three things before installation.
+Two things are required. A New Relic account is optional — the tool works in [local mode](#local-mode) without one.
 
 ### 1. An AI coding tool
 
@@ -36,9 +36,11 @@ If it shows `v22.x.x` or higher, you're set. v24 is recommended (and what the pr
 nvm install 24 && nvm use 24
 ```
 
-### 3. A New Relic account with two keys
+### 3. A New Relic account (optional)
 
-You use two different NR keys at different points:
+> Skip this section if you plan to use [local mode](#local-mode) — no NR account needed.
+
+To send telemetry to New Relic, you need two keys:
 
 | Key              | What it does                            | Where to find it                                                                                                              |
 | ---------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -46,6 +48,8 @@ You use two different NR keys at different points:
 | **User API key** | Deploys dashboards and alerts _into_ NR | NR One → top-right menu → API keys → create a key of type **User**. Starts with `NRAK-`. Only needed for the deploy commands. |
 
 You'll also need your **Account ID** — a number visible in the URL when you're logged into NR One: `https://one.newrelic.com/nr1-core?account=`**`12345`**.
+
+**Data ingest:** this tool is free and open source, but the telemetry it sends counts against your NR data ingest. Standard ingest rates apply on paid plans. Monitor your usage in **NR One → Data Management → Data Ingestion**.
 
 ---
 

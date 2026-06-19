@@ -359,6 +359,11 @@ export async function runSetupWizard(): Promise<void> {
       }
     }
 
+    print(
+      '\n  ℹ  Telemetry note: this server sends events and metrics to your NR account — ingest costs',
+    );
+    print('     apply on paid plans. Monitor usage via NR One → Data Management → Data Ingestion.');
+
     // Step 3: Developer name — prefer existing config, then email local-part, then $USER
     const emailLocalPart = validatedEmail ? (validatedEmail.split('@')[0] ?? '') : '';
     const defaultDeveloper =
