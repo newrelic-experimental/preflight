@@ -1,13 +1,20 @@
-import { existsSync, renameSync, cpSync, rmSync, readSync } from 'node:fs';
+import { existsSync, renameSync, cpSync, rmSync, readSync, openSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { DEFAULT_STORAGE_PATH } from '../config.js';
 
 function promptYesNo(question: string): boolean {
   process.stderr.write(question);
-  const buf = Buffer.alloc(256);
-  const n = readSync(0, buf, 0, buf.length, null);
-  return buf.subarray(0, n).toString().trim().toLowerCase().startsWith('y');
+  // Open /dev/tty directly — Node.js sets fd 0 to O_NONBLOCK on TTY startup,
+  // causing readSync(0,...) to return 0 immediately. A freshly opened fd blocks.
+  const fd = openSync('/dev/tty', 'r');
+  try {
+    const buf = Buffer.alloc(256);
+    const n = readSync(fd, buf, 0, buf.length, null);
+    return buf.subarray(0, n).toString().trim().toLowerCase().startsWith('y');
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
