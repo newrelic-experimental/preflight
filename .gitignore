@@ -18,3 +18,4 @@ terraform/*.tfstate.backup
 terraform/*.tfvars
 terraform/override.tf
 terraform/override.tf.json
+scripts/migrate-to-public.sh
