@@ -32,7 +32,7 @@ npx jest -- src/shared/harvest/harvest-scheduler.test.ts
 
 **Rules:**
 
-1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot. If you find a bug in `src/shared/`, open an issue — the upstream source is not publicly available for direct contribution.
+1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot. If you find a bug there, open an issue.
 
 ## Project Structure
 
@@ -125,7 +125,7 @@ preflight/
     policy.json                     # Policy metadata (name, incident preference)
     conditions/                     # NRQL alert condition JSON files
   dashboards/                       # Pre-built NR dashboard JSON files (data, not source)
-  scripts/                          # deploy scripts (deploy-dashboard.ts, deploy-alerts.ts) + backfill-sessions.ts
+  scripts/                          # backfill-sessions.ts, check-bundle-size.ts
 ```
 
 ## Architecture

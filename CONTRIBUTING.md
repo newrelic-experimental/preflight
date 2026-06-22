@@ -78,7 +78,7 @@ npx tsc -b .
 
 ### Working with shared code
 
-Do not edit `src/shared/` directly — it is a vendored snapshot. If you find a bug there, please open an issue; the upstream source is not publicly available for direct contribution.
+Do not edit `src/shared/` directly — it is a vendored snapshot. If you find a bug there, please open an issue.
 
 ---
 
