@@ -62,12 +62,16 @@ git rm docs/IMPLEMENTATION.md
 git rm docs/PRODUCT_BRIEF.md
 git rm docs/RELEASE_AUDIT.md
 git rm docs/ROADMAP.md
-git rm scripts/migrate-to-public.sh
+git rm docs/PUBLIC_RELEASE_PLAN.md
 git rm scripts/sync-shared.ts
 git rm scripts/remove-staging.ts
+
+# Use --cached for the migration script so it stays on disk and can still be executed.
+# git ls-files (not -f) is what the pre-flight check validates, so --cached is correct.
+git rm --cached scripts/migrate-to-public.sh
 ```
 
-`docs/PUBLIC_RELEASE_PLAN.md` (this file) is also internal — git rm it as part of the same commit.
+Note: run `scripts/remove-staging.ts` (step 5) **before** `git rm`'ing the scripts above — once they're removed from disk via `git rm`, you can't run them.
 
 ### 2b. Update package.json, CLAUDE.md, CONTRIBUTING.md, and SECURITY.md after removing sync-shared.ts
 
@@ -181,7 +185,28 @@ Three files are in `git stash@{0}` on main:
 
 These are launch marketing assets, not repo documentation. Recommended: do not pop them into the public repo. Keep the stash locally on the private repo for use when submitting the What's New post.
 
-### 7. Verify package.json
+### 7. Verify the GitHub Actions release workflow
+
+`.github/workflows/release.yml` is **not** pre-committed to the private repo — the migration script creates it directly in the public clone after the push. This keeps the private GHE repo free of GitHub Actions configs that serve no purpose there.
+
+The workflow triggers on `v*.*.*` tags and:
+- Runs `npm ci`, `npm run build`, `npm test`
+- Publishes to npm via OIDC provenance (`--access public --provenance`)
+- Creates a GitHub release with auto-generated notes
+
+`scripts/migrate-to-public.sh` writes and commits the file to the public clone automatically. If the public clone isn't present at the expected path, the script prints instructions to set it up first.
+
+**Before the first publish works**, the package must be registered for OIDC trusted publishing on npmjs.com. Contact James Sumners (Node.js agent team) to register `@newrelic/preflight`. Until that's done, the workflow will fail at the publish step — that's expected for v0.1.0 which is published manually.
+
+**To cut a release after the public repo is live:**
+```bash
+# On the public repo (newrelic-experimental/preflight)
+npm version patch   # or minor / major
+git push origin main --follow-tags
+# The v* tag triggers the release workflow automatically
+```
+
+### 8. Verify package.json
 
 Confirm these fields are correct for the public package:
 

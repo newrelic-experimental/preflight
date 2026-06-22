@@ -41,7 +41,10 @@ require_clean_branch() {
 }
 
 check_excluded_files() {
-  local missing=0
+  # Check the git INDEX (not the filesystem) — what will actually be pushed.
+  # This lets scripts/migrate-to-public.sh stay on disk via `git rm --cached`
+  # so it can still be executed after the pre-flight commit.
+  local tracked=0
   for f in \
     "docs/IMPLEMENTATION.md" \
     "docs/PRODUCT_BRIEF.md" \
@@ -52,13 +55,13 @@ check_excluded_files() {
     "scripts/sync-shared.ts" \
     "scripts/remove-staging.ts"
   do
-    if [[ -f "$f" ]]; then
-      check_fail "Internal file still present: $f (must be removed before pushing)"
-      missing=1
+    if git ls-files --error-unmatch "$f" &>/dev/null 2>&1; then
+      check_fail "Internal file still tracked in git index: $f (run: git rm $f)"
+      tracked=1
     fi
   done
-  if [[ "$missing" -eq 0 ]]; then
-    check_pass "Internal files removed"
+  if [[ "$tracked" -eq 0 ]]; then
+    check_pass "Internal files removed from git index"
   fi
 }
 
@@ -84,7 +87,7 @@ check_nr_experimental_badge() {
 
 check_staging_internal_refs() {
   local matches
-  matches=$(grep -rn "staging-one\.newrelic\.com\|NR-internal use\|internal staging" \
+  matches=$(grep -rEn "staging-one\.newrelic\.com|NR-internal use|internal staging" \
     --include="*.md" --include="*.ts" . 2>/dev/null \
     | grep -v ".git/" || true)
   if [[ -n "$matches" ]]; then
@@ -97,10 +100,10 @@ check_staging_internal_refs() {
 
 check_internal_repo_refs() {
   local matches
-  matches=$(grep -rn \
-    "nr-ai-typescript-shared\|nr-ai-typescript-agent\|nr-ai-github-tools\|sync:shared\|sync-shared" \
-    --include="*.md" --include="*.json" . 2>/dev/null \
-    | grep -v ".git/\|package-lock" || true)
+  matches=$(grep -rEn \
+    "nr-ai-typescript-shared|nr-ai-typescript-agent|nr-ai-github-tools|sync:shared|sync-shared" \
+    --include="*.md" --include="*.json" --include="*.ts" . 2>/dev/null \
+    | grep -vE ".git/|package-lock" || true)
   if [[ -n "$matches" ]]; then
     check_fail "Internal repo references still present:"
     echo "$matches" | sed 's/^/      /'
@@ -122,8 +125,8 @@ check_history_for_secrets() {
 
   if [[ "$found" -eq 0 ]]; then
     check_pass "No obvious secrets found in git history"
-    check_warn "Consider running trufflehog for a deeper scan: trufflehog git file://\$(pwd)"
   fi
+  check_warn "Consider running trufflehog for a deeper scan: trufflehog git file://\$(pwd)"
 }
 
 check_package_json() {
@@ -212,19 +215,89 @@ fi
 branch=$(git rev-parse --abbrev-ref HEAD)
 git push "$REMOTE_NAME" "${branch}:main"
 
-# Push tags if any exist
-if git tag | grep -q .; then
-  git push "$REMOTE_NAME" --tags
-  echo "  Tags pushed."
+# Push version tags only (v*) — avoids leaking internal dev/scratch tags
+if git tag -l 'v*' | grep -q .; then
+  git push "$REMOTE_NAME" 'refs/tags/v*'
+  echo "  Version tags pushed."
+fi
+
+echo ""
+echo "Creating GitHub Actions release workflow in public repo..."
+echo ""
+
+PUBLIC_CLONE_DIR="/Users/cdehaan/Documents/development/newrelic-experimental/preflight"
+PRIVATE_REPO_DIR="$(pwd)"
+
+if [[ -d "$PUBLIC_CLONE_DIR/.git" ]]; then
+  cd "$PUBLIC_CLONE_DIR"
+  git checkout main
+  git pull --ff-only origin main
+  mkdir -p .github/workflows
+  cat > .github/workflows/release.yml << 'WORKFLOW_EOF'
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+WORKFLOW_EOF
+  git add .github/workflows/release.yml
+  if git diff --cached --quiet; then
+    echo "  Release workflow already present — skipping commit."
+  else
+    git commit -m "Chore: add GitHub Actions release workflow"
+    git push origin main
+    echo "  Release workflow committed and pushed."
+  fi
+  cd "$PRIVATE_REPO_DIR"
+else
+  echo "  ! Public clone not found at $PUBLIC_CLONE_DIR"
+  echo "    Clone first: git clone https://github.com/newrelic-experimental/preflight $PUBLIC_CLONE_DIR"
+  echo "    Then re-run this script, or add .github/workflows/release.yml manually."
 fi
 
 echo ""
 echo "Done. Verify at: https://github.com/newrelic-experimental/preflight"
 echo ""
 echo "Post-migration steps:"
-echo "  1. cd /Users/cdehaan/Documents/development/newrelic-experimental/preflight && git pull"
-echo "  2. Confirm excluded docs are absent: ls docs/"
-echo "  3. Submit npm publish request to James Sumners (Node.js agent team)"
-echo "  4. Submit to NR I/O Catalog via the I/O Ecosystem Runbook"
-echo "  5. Register on Smithery: npx @smithery/cli publish (from repo root)"
+echo ""
+echo "  Verify:"
+echo "    cd /Users/cdehaan/Documents/development/newrelic-experimental/preflight && git pull"
+echo "    ls docs/   # excluded files must be absent"
+echo "    open https://github.com/newrelic-experimental/preflight"
+echo ""
+echo "  First release (v0.1.0 — manual, OIDC not yet wired):"
+echo "    cd $PUBLIC_CLONE_DIR   # must run from the public clone"
+echo "    npm version patch   # bumps package.json + creates git tag"
+echo "    git push origin main --follow-tags"
+echo "    npm publish --access public   # manual until OIDC trusted publishing is set up"
+echo "    gh release create v\$(node -p 'require(\"./package.json\").version') --generate-notes"
+echo ""
+echo "  OIDC trusted publishing setup (one-time):"
+echo "    Contact James Sumners (Node.js agent team) to register @newrelic/preflight"
+echo "    on npmjs.com. Once done, .github/workflows/release.yml handles all future"
+echo "    releases automatically on version tag push."
+echo ""
+echo "  Distribution:"
+echo "    Smithery:     npx @smithery/cli publish (from repo root)"
+echo "    NR I/O:       Submit via I/O Ecosystem Runbook on Confluence"
 echo ""
