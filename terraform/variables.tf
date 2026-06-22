@@ -20,12 +20,6 @@ variable "region" {
   }
 }
 
-variable "staging" {
-  description = "Target the New Relic staging environment. Requires a staging license key and account. Overrides nerdgraph_api_url."
-  type        = bool
-  default     = false
-}
-
 variable "developer" {
   description = "Developer identifier used as a filter dimension in personal dashboards (optional)"
   type        = string

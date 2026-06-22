@@ -213,21 +213,12 @@ terraform apply
 | `account_id`                    | Yes      | —       | New Relic account ID                                           |
 | `api_key`                       | Yes      | —       | User API key (`NRAK-...`)                                      |
 | `region`                        | No       | `US`    | `US` or `EU`                                                   |
-| `staging`                       | No       | `false` | Target staging environment (`staging-api.newrelic.com`)        |
 | `developer`                     | No       | `""`    | Developer name — enables personal alert conditions when set    |
 | `personal_daily_cost_usd`       | No       | `10`    | Personal daily cost alert threshold (USD)                      |
 | `personal_session_cost_usd`     | No       | `5`     | Personal per-session cost alert threshold (USD)                |
 | `personal_efficiency_score_min` | No       | `40`    | Alert when efficiency score drops below this                   |
 | `personal_anti_pattern_max`     | No       | `10`    | Alert when anti-pattern count exceeds this per 5-minute window |
 | `personal_stuck_loop_max`       | No       | `3`     | Alert when stuck loop count exceeds this per 5-minute window   |
-
-### Staging accounts
-
-```bash
-TF_VAR_account_id=... TF_VAR_api_key=... TF_VAR_staging=true terraform apply
-```
-
-The `staging = true` flag routes NerdGraph calls to `staging-api.newrelic.com/graphql`. The provider emits a deprecation warning for `nerdgraph_api_url` — this is expected.
 
 ### Teardown
 
