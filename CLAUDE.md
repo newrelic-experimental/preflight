@@ -352,9 +352,9 @@ All MCP server events (`AiToolCall`, `AiCodingTask`, `AiAntiPattern`, `AiMcpTool
 
 ### SDK Agent Events
 
-_(Emitted by `nr-ai-agent`, in the companion SDK agent repo.)_
+_(Emitted by the companion SDK agent.)_
 
-Emitted by `nr-ai-agent` from the intelligence modules (Phases 4.1–4.7):
+Emitted by the companion SDK agent from its intelligence modules:
 
 | Event Type               | Emitted By             | Cadence         | Use Case                                                        |
 | ------------------------ | ---------------------- | --------------- | --------------------------------------------------------------- |

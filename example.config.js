@@ -106,7 +106,7 @@ export default {
   // ── Connectivity ──────────────────────────────────────────────────────────
 
   // New Relic region. Set to "eu" for EU accounts; auto-detected from license key prefix.
-  // Env: NEW_RELIC_HOST  ("us", "eu", or "staging")
+  // Env: NEW_RELIC_HOST  ("us" or "eu")
   // Default: null (US)
   collectorHost: null,
 

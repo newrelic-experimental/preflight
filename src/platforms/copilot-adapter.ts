@@ -6,9 +6,8 @@ import type {
 } from './types.js';
 
 /**
- * Event types forwarded by the companion VS Code extension
- * (nr-ai-copilot-observer). The extension itself is a separate package —
- * this adapter only consumes its events.
+ * Event types forwarded by the companion Copilot VS Code extension.
+ * The extension is a separate package — this adapter only consumes its events.
  */
 export interface CopilotToolCallEvent {
   readonly type:
@@ -62,7 +61,7 @@ export class CopilotAdapter implements PlatformAdapter {
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Copilot does not support MCP natively. Data arrives from the
-    // companion VS Code extension (nr-ai-copilot-observer) via HTTP.
+    // companion Copilot VS Code extension via HTTP.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -105,9 +104,9 @@ export class CopilotAdapter implements PlatformAdapter {
   getHookInstallInstructions(): string {
     return [
       'GitHub Copilot Observability Setup:',
-      '1. Install the nr-ai-copilot-observer VS Code extension',
+      '1. Install the preflight Copilot VS Code extension (see README for link)',
       '2. Configure the extension to point to the MCP server endpoint:',
-      '   Set "preflightr.endpoint" to "http://localhost:9847" in VS Code settings',
+      '   Set "preflight.endpoint" to "http://localhost:9847" in VS Code settings',
       '3. Set environment variables: NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID',
       '4. The extension detects Copilot-initiated changes and forwards events to the server',
       '5. Note: tool call timing is approximate (inferred from VS Code event timestamps)',
