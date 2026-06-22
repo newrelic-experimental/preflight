@@ -50,7 +50,7 @@ Show the current server configuration with sensitive fields masked.
   "mode": "cloud",
   "developer": "alice",
   "accountId": "12345",
-  "licenseKeyMasked": "175cae4b...NRAL",
+  "licenseKeyMasked": "aabbccdd...NRAL",
   "nrApiKeyMasked": "NRAK-****",
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
