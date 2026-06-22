@@ -551,7 +551,7 @@ export async function runSetupWizard(): Promise<void> {
       }
     }
 
-    // Step 8: Dashboard deploy — show manual command (deploy-dashboard.ts is not a library)
+    // Step 8: Dashboard deploy — show manual command
     if (mode !== 'local') {
       const regionFlag = collectorHost === 'eu' ? ' --eu' : '';
       // Mask the API key in printed commands — users copy these snippets to

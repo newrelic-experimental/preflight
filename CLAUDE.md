@@ -32,9 +32,7 @@ npx jest -- src/shared/harvest/harvest-scheduler.test.ts
 
 **Rules:**
 
-1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot; changes must be made upstream and re-vendored here.
-
-If you find yourself wanting to edit `src/shared/` directly to fix a bug or add a feature, stop — changes must be made in the upstream source and re-vendored here.
+1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot. If you find a bug in `src/shared/`, open an issue — the upstream source is not publicly available for direct contribution.
 
 ## Project Structure
 
@@ -366,7 +364,7 @@ Emitted by the companion SDK agent from its intelligence modules:
 
 ### Provider Support
 
-_(In the companion SDK agent repo.)_
+_(The companion SDK agent is not yet publicly available.)_
 
 SDK agent wrappers now support 6 AI providers:
 
