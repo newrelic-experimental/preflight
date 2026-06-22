@@ -1,25 +1,37 @@
 name: Release
 
-on:
-  release:
-    types: [published]
+# Triggered manually from the GitHub Actions UI.
+# Creates a git tag, a GitHub release, and publishes to npm via
+# npm Trusted Publishing (OIDC — no NPM_TOKEN secret required).
+# Requires the Node.js Agent team to configure the OIDC connection
+# on npmjs.com for @newrelic/preflight before first use.
+on: [workflow_dispatch]
+
+permissions:
+  contents: write # to create git tag and GitHub release
+  id-token: write # for npm trusted publishing OIDC exchange
 
 jobs:
   publish:
-    name: Publish to npm
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # for npm provenance attestation
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - name: Setup git
+        env:
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+
+      - uses: actions/setup-node@v5
         with:
-          node-version-file: '.nvmrc'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          # npm trusted publishing requires npm@11.5.1+, which ships with
+          # Node.js v24.5.0+. Do not downgrade below Node 24.
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
@@ -27,7 +39,18 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+      - name: Create tag
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag v$(node -p "require('./package.json').version")
+          git push --tags
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v$(node -p "require('./package.json').version") --generate-notes
+
+      - name: Publish to npm
+        run: npm publish
