@@ -3,10 +3,10 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { LiveEventBus, LiveEventMap, LiveEventName, SeqEntry } from '../live-event-bus.js';
 
 const HEARTBEAT_MS = 30_000;
-// Task #17 (D3): only validate the same character class the rest of the
-// codebase uses for session_id (collector-script.ts, local-store.ts).
-// A bad input is silently ignored — the filter falls open to "all events"
-// rather than 400ing, since SSE clients can't easily react to a 4xx.
+// Only validate the same character class the rest of the codebase uses for
+// session_id (collector-script.ts, local-store.ts). A bad input is silently
+// ignored — the filter falls open to "all events" rather than 400ing, since
+// SSE clients can't easily react to a 4xx.
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 // Narrow a payload to its sessionId field if present. ToolCall, AntiPattern,
@@ -42,13 +42,13 @@ export function createSseHandler(
     });
     res.write(': stream-open\n\n');
 
-    // Task #17 (D3): optional `?sessionId=` query parameter scopes the stream
-    // to events emitted from a single Claude Code session. Events without a
-    // `sessionId` field (heartbeat) and AlertEvents whose sessionId is unset
-    // are always delivered — heartbeat is a connection keepalive and
-    // unscoped alerts are system-level. An invalid sessionId is treated as
-    // "no filter" so a typo in the query string degrades to the existing
-    // global stream behavior rather than a permanently silent connection.
+    // Optional `?sessionId=` query parameter scopes the stream to events
+    // emitted from a single Claude Code session. Events without a `sessionId`
+    // field (heartbeat) and AlertEvents whose sessionId is unset are always
+    // delivered — heartbeat is a connection keepalive and unscoped alerts are
+    // system-level. An invalid sessionId is treated as "no filter" so a typo
+    // in the query string degrades to the existing global stream behavior
+    // rather than a permanently silent connection.
     const url = new URL(req.url ?? '/', 'http://localhost');
     const rawSessionId = url.searchParams.get('sessionId');
     const filterSessionId =

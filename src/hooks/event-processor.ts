@@ -41,10 +41,10 @@ const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_PENDING = 2_000;
 
 export class HookEventProcessor {
-  private readonly store: LocalStore;
+  private store: LocalStore;
   private readonly pollIntervalMs: number;
   private readonly orphanTimeoutMs: number;
-  private readonly drainAllSessions: boolean;
+  private drainAllSessions: boolean;
   private readonly onRecord: (record: ToolCallRecord) => void;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
 
@@ -124,6 +124,19 @@ export class HookEventProcessor {
     // or when stop() is called without start(). A second call on an already-empty
     // pending map is a no-op.
     this.flushPending();
+  }
+
+  /**
+   * Hot-swap the underlying LocalStore and session-drain mode without
+   * recreating the processor or its callbacks. Used when the provisional
+   * unscoped store is replaced by the real session-scoped store once the
+   * Claude Code session ID is resolved asynchronously.
+   */
+  replaceStore(newStore: LocalStore, drainAllSessions: boolean): void {
+    this.stop();
+    this.store = newStore;
+    this.drainAllSessions = drainAllSessions;
+    this.start();
   }
 
   /**

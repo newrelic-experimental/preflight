@@ -211,5 +211,5 @@ export async function resolveSessionId(
  */
 export function isSyntheticSessionId(id: string | null | undefined): boolean {
   if (!id) return false;
-  return id.startsWith('local-') || id.startsWith('proxy-');
+  return id.startsWith('local-') || id.startsWith('proxy-') || id.startsWith('pending-');
 }

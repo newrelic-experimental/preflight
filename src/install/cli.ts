@@ -34,6 +34,8 @@ import {
   installSchedule,
   removeSchedule,
   getScheduleStatus,
+  removeDashboardDaemon,
+  getDashboardDaemonStatus,
   resolveBinaryPath,
 } from './schedule.js';
 
@@ -325,6 +327,10 @@ function handleUninstall(options: { project?: boolean }): void {
   const scheduleWasInstalled = getScheduleStatus().installed;
   removeSchedule();
   if (scheduleWasInstalled) print('✓ Auto-update schedule removed');
+
+  const daemonWasInstalled = getDashboardDaemonStatus().installed;
+  removeDashboardDaemon();
+  if (daemonWasInstalled) print('✓ Background dashboard daemon removed');
 }
 
 // ---------------------------------------------------------------------------

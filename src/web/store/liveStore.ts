@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 
-// Task #17 (D3): events that originate from a specific Claude Code session
-// carry `sessionId` so the Today view can filter by `activeId`. Optional on
-// the client side because (a) the SSE feed may be subscribed without a
-// sessionId filter (aggregate view), and (b) older / synthetic events from
-// hydrateFromApi flows may not have it set yet — we treat missing sessionId
-// as "always visible" to avoid surprise empty UIs during the rollout window.
+// Events that originate from a specific Claude Code session carry `sessionId`
+// so the Today view can filter by `activeId`. Optional on the client side
+// because (a) the SSE feed may be subscribed without a sessionId filter
+// (aggregate view), and (b) older / synthetic events from hydrateFromApi flows
+// may not have it set yet — we treat missing sessionId as "always visible" to
+// avoid surprise empty UIs during the rollout window.
 export interface ToolCallEvent {
   readonly id: string;
   readonly sessionId?: string;
@@ -77,12 +77,12 @@ interface LiveState {
   readonly contextBySession: Map<string, ContextUpdateEvent>;
   readonly firingAlerts: Map<string, AlertEvent>;
   readonly dismissedAlerts: Set<string>;
-  // Task #17 (D3): the user-selected session in the Today selector list.
-  // When this changes, the per-session caches (recentToolCalls,
-  // antiPatterns, cost) re-key so the previous session's events don't
-  // pollute the new selection. `null` = no session selected (e.g. nothing
-  // live yet); events with a sessionId still flow into the store but views
-  // that filter on activeSessionId render empty until a selection is made.
+  // The user-selected session in the Today selector list. When this changes,
+  // the per-session caches (recentToolCalls, antiPatterns, cost) re-key so
+  // the previous session's events don't pollute the new selection. `null` =
+  // no session selected (e.g. nothing live yet); events with a sessionId
+  // still flow into the store but views that filter on activeSessionId render
+  // empty until a selection is made.
   readonly activeSessionId: string | null;
   setConnected(v: boolean): void;
   pushToolCall(e: ToolCallEvent): void;
@@ -110,14 +110,14 @@ export const useLiveStore = create<LiveState>((set) => ({
 
   setConnected: (v) => set({ connected: v }),
 
-  // Task #17 (D3): switching the active session must not leave the previous
-  // session's tool calls and anti-patterns in view. We re-key the per-session
-  // caches by dropping entries whose sessionId doesn't match the new id.
-  // Events without a sessionId (legacy fixtures, hydrateFromApi prior to the
-  // server-side change) are dropped on switch — keeping them would create
-  // ambiguous "is this mine?" rendering. Cost is treated similarly: the SSE
-  // feed will replace it on the next cost-update from the new session, so
-  // clearing it here avoids showing an old session's last-known total.
+  // Switching the active session must not leave the previous session's tool
+  // calls and anti-patterns in view. We re-key the per-session caches by
+  // dropping entries whose sessionId doesn't match the new id. Events without
+  // a sessionId (legacy fixtures, hydrateFromApi prior to the server-side
+  // change) are dropped on switch — keeping them would create ambiguous
+  // "is this mine?" rendering. Cost is treated similarly: the SSE feed will
+  // replace it on the next cost-update from the new session, so clearing it
+  // here avoids showing an old session's last-known total.
   setActiveSession: (id) =>
     set((s) => {
       if (s.activeSessionId === id) return {};
