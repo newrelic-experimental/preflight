@@ -60,7 +60,7 @@ export function generateHookEntries(binPath?: string | null): HookEntries {
   // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
   // Hook commands use preflight-collector (lightweight, <5ms budget).
   const bin = binPath
-    ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/"/g, '\\"')}"`
+    ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
     : COLLECTOR_COMMAND;
   return {
     PreToolUse: [

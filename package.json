@@ -79,9 +79,13 @@
     "zod": "4.4.3"
   },
   "overrides": {
+    "@opentelemetry/core": "^2.8.0",
     "eslint-plugin-react": {
       "eslint": "$eslint"
-    }
+    },
+    "hono": "^4.12.25",
+    "js-yaml": "^4.2.0",
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",
