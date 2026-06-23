@@ -1,86 +1,113 @@
-# NR AI Coding Observability: Preflight
+<div align="center">
+  <img src="demo/preflight-logo.svg" alt="Preflight" width="96" height="96" />
+  <h1>Preflight</h1>
+  <p><strong>Observability for AI Coding Assistants</strong></p>
 
-**Observability for AI coding assistants.** Captures every action your AI coding tool takes — file reads, edits, commands, searches — and sends the data to New Relic so you can see exactly what's happening, how much it costs, and where it's wasting time.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
+[![Node 22+](https://img.shields.io/badge/Node-22%2B-brightgreen)](.nvmrc)
+[![Local First](https://img.shields.io/badge/Local%20First-Offline%20by%20default-brightgreen)](#quick-start)
+[![Dashboards Included](https://img.shields.io/badge/Dashboards-7%20Included-blue)](#dashboards)
 
-Think of it like Google Analytics for your AI pair programmer.
+[**Docs**](docs/ADVANCED.md) • [**Examples**](examples/) • [**Community**](https://support.newrelic.com/s/) • [**Contributing**](CONTRIBUTING.md)
 
-## What It Does
-
-- **Tracks every action** — sees every file the AI reads, every command it runs, every edit it makes
-- **Tracks costs** — calculates USD spend per session, day, and week, broken down by model
-- **Detects waste** — catches inefficiencies like re-reading the same file repeatedly, making edits without reading first, or running the same failing command in a loop
-- **Measures efficiency** — computes a 0-100 score per task based on how directly the AI worked toward the goal
-- **Sends to New Relic** — all data lands in your NR account as queryable events and metrics, ready for dashboards and alerts
+</div>
 
 ---
 
-## Before You Start
+## Why Your AI Tool Needs Observability
 
-Two things are required. A New Relic account is optional — the tool works in [local mode](#local-mode) without one.
+Your AI coding assistant makes hundreds of decisions every session — what to read, what to edit, when to run commands. But you can't see any of it. You know it was fast, but was it *efficient*? You got a PR merged, but how much did it cost? You fixed a bug, but did it get stuck in a loop first?
 
-### 1. An AI coding tool
+**Preflight is observability for agentic coding** — the actions, cost, and efficiency of your AI coding assistant as it works. See exactly what's happening, how much it costs, and where your AI is wasting time.
 
-This works with **Claude Code**, Cursor, Windsurf, GitHub Copilot, Zed, Continue.dev, or Amazon Q Developer. The examples below use Claude Code, which has the deepest integration.
+**Local-first by design.** Preflight runs entirely on your machine and sends your data nowhere by default. A live dashboard at `localhost:7777` shows your sessions in real time, fully offline. Connect a New Relic account only when you want more — team rollups, alerting, and cross-session history. You choose: **local-only**, **New Relic**, or **both**.
 
-### 2. Node.js v22 or higher (v24 recommended)
+---
 
-Open a terminal and run:
+## Demo
 
-```bash
-node --version
-```
+![Preflight dashboard animation](demo/preflight-readme.gif)
 
-If it shows `v22.x.x` or higher, you're set. v24 is recommended (and what the project uses for development). If you need to upgrade, install it from [nodejs.org](https://nodejs.org) or via nvm:
+See cost breakdown, efficiency scoring, anti-patterns, and live session tracking in action.
 
-```bash
-nvm install 24 && nvm use 24
-```
+---
 
-### 3. A New Relic account (optional)
+## What You Get
 
-> Skip this section if you plan to use [local mode](#local-mode) — no NR account needed.
+### Visibility
+- **Every action captured** — file reads, edits, commands, searches
+- **Live session dashboard** — see what's happening right now
+- **Historical trends** — analyze patterns over weeks and months
 
-To send telemetry to New Relic, you need two keys:
+### Cost Control
+- **USD spend tracking** — per session, day, and week
+- **Per-model breakdown** — know which models cost most
+- **Budget alerts** — get notified before you overspend
+- **Forecasting** — project monthly burn rate
 
-| Key              | What it does                            | Where to find it                                                                                                              |
-| ---------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **License key**  | Sends telemetry data _into_ NR (ingest) | NR One → top-right menu → API keys → create a key of type **License**. Long hex string ending in `NRAL`. Not `NRAK-`.         |
-| **User API key** | Deploys dashboards and alerts _into_ NR | NR One → top-right menu → API keys → create a key of type **User**. Starts with `NRAK-`. Only needed for the deploy commands. |
+### Efficiency Insights
+- **Efficiency score** — 0–100 score per task, based on how directly the AI worked
+- **Anti-pattern detection** — catches re-reads, blind edits, stuck loops
+- **Personalized recommendations** — optimize your AI workflow
+- **Weekly coaching reports** — narrative analysis vs. your historical baseline
 
-You'll also need your **Account ID** — a number visible in the URL when you're logged into NR One: `https://one.newrelic.com/nr1-core?account=`**`12345`**.
-
-**Data ingest:** this tool is free and open source, but the telemetry it sends counts against your NR data ingest. Standard ingest rates apply on paid plans. Monitor your usage in **NR One → Data Management → Data Ingestion**.
+### Dashboards
+- **Local dashboard** — live session view at `localhost:7777`, no account required
+- **7 pre-built New Relic dashboards** — deploy in seconds _(New Relic mode)_:
+  - **Overview** — session stats, cost summary, top tools
+  - **Personal** — 30-day self-reflection scoped to you
+  - **Team View** — aggregated cost and efficiency across developers
+  - **Manager View** — high-level team metrics, no tool-call content
+  - **Platform Comparison** — Claude Code vs. Cursor vs. Windsurf, etc.
+  - **Security Audit** — audit trail of sensitive file access
 
 ---
 
 ## Quick Start
 
-> **Pre-release:** The npm package will be available after the public launch. Until then, install from source:
->
-> ```bash
-> git clone https://github.com/newrelic-experimental/preflight
-> cd preflight
-> nvm use        # Node 22+
-> npm install
-> npm run build
-> npm link       # puts preflight on your PATH
-> ```
->
-> After launch, Step 1 will simplify to `npm install -g @newrelic/preflight`.
+### 1. Install
 
-**Step 1 — Put `preflight` on your PATH** _(see above)_
+```bash
+npm install -g @newrelic/preflight
+```
 
-**Step 2 — Run the interactive setup wizard**
+### 2. Run setup
 
 ```bash
 preflight setup
 ```
 
-The wizard asks for your license key, account ID, environment/region (US, EU, FedRAMP), and optionally a NR API key for team queries. It validates both keys live against New Relic before continuing, and pre-fills your developer name from the email on the API key. Most people are running in under 5 minutes.
+The wizard defaults to **local mode** — press Enter through the prompts and you're set. It wires Preflight into your AI tool (hooks + MCP server) and writes config to `~/.newrelic-preflight/`. Takes under a minute, no account required.
 
-If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are already set in your shell environment, the wizard detects them and lets you press Enter to accept — no copy-paste needed.
+When prompted, pick a mode:
 
-Prefer non-interactive? Skip the wizard and run:
+| Mode | What it does | New Relic account? |
+| --- | --- | --- |
+| **local** _(default)_ | Everything stays on your machine; live dashboard at `localhost:7777` | Not needed |
+| **cloud** | Ships telemetry to New Relic | Required |
+| **both** | Local dashboard **and** New Relic | Required |
+
+### 3. Start coding
+
+Restart your AI tool — hooks and the MCP server load at session start. Every tool call is captured automatically. Open **http://localhost:7777** to watch your session live.
+
+---
+
+## Works With
+
+**Claude Code** • **Cursor** • **Windsurf** • **GitHub Copilot** • **Zed** • **Continue.dev** • **Amazon Q Developer**
+
+---
+
+## Connect New Relic (optional)
+
+Local mode is fully featured on its own. Connect a New Relic account to unlock:
+
+- **Team & manager dashboards** across multiple developers
+- **Alerting** on cost spikes, low efficiency, and stuck loops
+- **Cross-session history**, trends, and weekly coaching reports
+
+Re-run `preflight setup` and choose **cloud** or **both**, or configure it non-interactively:
 
 ```bash
 preflight install \
@@ -88,416 +115,66 @@ preflight install \
   --account-id YOUR_ACCOUNT_ID
 ```
 
-This registers a hook in your Claude Code settings so every tool call is captured automatically. You only run this once.
-
-**Step 3 — Deploy dashboards** _(optional but recommended)_
-
-Replace `NRAK-...` with your user API key and `12345` with your account ID:
+Then deploy the prebuilt dashboards:
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   preflight deploy-dashboards --all
 ```
 
-This creates 7 dashboards in your NR account. Find them under **Dashboards** → search "AI Coding". The deploy commands ship with the package — both `preflight deploy-dashboards` and `preflight deploy-alerts` are available immediately after `npm install -g`.
-
-> **Staging vs production:** Use your account's license key and account ID from whichever environment you're targeting — both work. Add `--staging` if your account is on `staging-one.newrelic.com`, `--eu` for EU region accounts, or omit both flags for standard production (`one.newrelic.com`). Don't mix keys across environments (a production license key won't ingest to staging and vice versa).
-
-**Step 4 — Restart Claude Code and verify**
-
-Restart Claude Code, then type this into the chat:
-
-> _Can you call the `nr_observe_get_session_stats` tool and show me the result?_
-
-If you get back a response with tool call counts and timing data, it's working.
-
----
-
-## From source / contributing
-
-This is also the current install path until the npm package is published. Use it to develop the project, deploy dashboards/alerts, or stay on the latest unreleased changes:
-
-```bash
-git clone https://github.com/newrelic-experimental/preflight
-cd preflight
-nvm use          # Switch to the right Node version (24+)
-npm install      # Install all dependencies
-npm run build    # Compile TypeScript
-npm link         # Register preflight binary on PATH (required for hooks)
-```
-
-Then run `preflight setup` exactly as in the Quick Start.
-
-> **`npm link` permission error?** If you see `EACCES: permission denied` pointing at `/usr/local/lib/node_modules`, your system Node.js is installed in a root-owned directory. Pick one fix:
->
-> _Quick fix — set a user-writable npm prefix (keeps your existing Node.js):_
->
-> ```bash
-> npm config set prefix ~/.npm-global
-> export PATH="$HOME/.npm-global/bin:$PATH"   # also add to ~/.zshrc or ~/.bash_profile
-> npm link
-> ```
->
-> _Recommended — use nvm (better if you switch Node versions):_
->
-> ```bash
-> curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-> # restart your shell, then:
-> nvm install 24 && nvm use 24
-> npm install && npm run build && npm link
-> ```
->
-> Do not use `sudo npm link` — it creates root-owned files that break future `npm install` runs.
-
----
-
-## Talking to the Observatory
-
-Once installed, Claude Code can query live session data on your behalf. Just ask it in plain English — or use the tool names directly:
-
-| What to ask                                                           | What you get back                                                                           |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| _"Show me my session stats"_ → `nr_observe_get_session_stats`         | Tool call counts, success rate, total duration                                              |
-| _"What's my efficiency score?"_ → `nr_observe_get_efficiency_score`   | A 0-100 score with a breakdown of where points were lost                                    |
-| _"How much has this session cost?"_ → `nr_observe_get_cost_breakdown` | USD cost broken down by tool type and AI model                                              |
-| _"Any budget warnings?"_ → `nr_observe_get_budget_status`             | Current spend vs. your configured caps (if set)                                             |
-| _"Any wasteful patterns?"_ → `nr_observe_get_anti_patterns`           | Detected inefficiencies — repeated reads, blind edits, stuck loops                          |
-| _"Any recommendations?"_ → `nr_observe_get_recommendations`           | Personalized suggestions for this session                                                   |
-| _"How am I doing this week?"_ → `nr_observe_get_personal_insights`    | A narrative coaching report vs. your own historical baseline (requires 2+ weeks of history) |
-
-Everything also flows into your New Relic dashboards automatically — you don't have to ask Claude to see it there.
-
----
-
-## Dashboards
-
-After deploying, you'll have seven dashboards in NR One:
-
-| Dashboard               | What it shows                                                   |
-| ----------------------- | --------------------------------------------------------------- |
-| **Overview**            | Session stats, efficiency score, cost summary, top tools        |
-| **Session Detail**      | Every tool call in a specific session, in order                 |
-| **Personal**            | 30-day self-reflection view scoped to one developer             |
-| **Team View**           | Aggregated cost and efficiency across multiple developers       |
-| **Manager View**        | Team-level cost by developer with no tool-call content visible  |
-| **Platform Comparison** | Side-by-side metrics across Claude Code, Cursor, Windsurf, etc. |
-| **Security Audit**      | Audit trail of sensitive file access and destructive commands   |
-
-### Personal dashboard
-
-Deploy a dashboard pre-filtered to your name (it opens already showing your data):
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-dashboards \
-  ai-coding-assistant-personal.json --developer your-name
-```
-
-### Updating or removing dashboards
-
-To replace existing dashboards in place after pulling new fixes (preserves the dashboard's GUID and URL), add `--update`:
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-dashboards --all --update
-```
-
-To delete the deployed dashboards, add `--teardown`. Dashboards are matched by name; missing ones are skipped:
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-dashboards --all --teardown
-```
-
-### Terraform (IaC alternative)
-
-A Terraform module in `terraform/` deploys all 7 dashboards and the full alert policy as an alternative to the deploy scripts — useful for GitOps workflows or when you want state tracking. See [ADVANCED.md — Terraform Deployment](./docs/ADVANCED.md#terraform-deployment) for usage.
-
----
-
-## Alert Conditions
-
-Optional: get notified in NR when something goes wrong.
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-alerts
-```
-
-Add `--staging` if your account is on the New Relic staging environment, or `--eu` for accounts on the EU region. This creates five alert conditions: daily cost spike, low efficiency score, stuck loop rate, anti-pattern rate, and session cost budget. To remove them, add `--teardown`.
-
-To apply changes to alert JSONs without losing the existing policy, add `--update`. This syncs conditions in place (matched by name): updates existing ones, creates new ones, and deletes any that have been removed locally:
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-alerts --update
-```
-
-For personal alerts scoped to your developer name:
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-alerts --developer your-name
-```
-
----
-
-## Configuration
-
-The easiest way to configure is through the setup wizard (`preflight setup`). To edit manually, open `~/.newrelic-preflight/config.json`:
-
-```json
-{
-  "licenseKey": "175cae4b...",
-  "accountId": 12345,
-  "developer": "your-name",
-  "sessionBudgetUsd": 1.0,
-  "dailyBudgetUsd": 5.0,
-  "weeklyBudgetUsd": 20.0
-}
-```
-
-### Key settings
-
-| Setting              | What it does                                                                                                                                                                                                                                                              | Default      |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| `developer`          | Your identifier on all NR events. Automatically normalized to lowercase with underscores — e.g., "John Doe" → "john_doe". Falls back to `$USER` or your git name if not set.                                                                                              | Inferred     |
-| `collectorHost`      | Region override: `null` = US (default), `'eu'` = EU, `'gov'` = FedRAMP/GovCloud. The wizard auto-detects from your license key prefix and lets you confirm.                                                                                                               | `null` (US)  |
-| `nrApiKey`           | User API key (`NRAK-...`) for NerdGraph queries (team summaries, dashboard/alert deploy). The wizard prompts for it and validates it live.                                                                                                                                | Not set      |
-| `sessionBudgetUsd`   | Emits a warning event at 50%, 80%, 100% of this amount per session                                                                                                                                                                                                        | No limit     |
-| `dailyBudgetUsd`     | Emits a warning event at 50%, 80%, 100% of this amount per day                                                                                                                                                                                                            | No limit     |
-| `weeklyBudgetUsd`    | Emits a warning event at 50%, 80%, 100% of this amount per week                                                                                                                                                                                                           | No limit     |
-| `retainSessionsDays` | Auto-deletes local session files older than N days                                                                                                                                                                                                                        | Keep forever |
-| `teamId`             | A label **you define** (e.g. `"platform-eng"`, `"nova-team"`) stamped on all NR events as `team_id`, enabling cross-developer queries like `WHERE team_id = 'platform-eng'`. This is **not** your NR account ID — it's a free-form slug you choose to identify your team. | Not set      |
-| `projectId`          | Tags all events with a project name (auto-derived from your git remote URL if not set)                                                                                                                                                                                    | Auto-derived |
-| `digestWebhookUrl`   | Slack webhook URL for weekly cost and efficiency summaries                                                                                                                                                                                                                | Not set      |
-
-All settings can also be set via environment variables — see [example.config.js](./example.config.js) for the full annotated reference.
-
-### Validating your config
-
-If the MCP server fails to connect, run:
-
-```bash
-preflight validate
-```
-
-This checks your config file for JSON syntax errors, invalid field types, and misspelled or unknown keys — and suggests corrections:
-
-```
-✗ Error: mode: Invalid enum value. Expected 'cloud' | 'local' | 'both', received 'clod'
-⚠ Warning: Unknown key "licensekey" — did you mean "licenseKey"?
-```
-
-Pass `--config <path>` to check a file at a non-default location.
-
-### OTLP Transport
-
-To export telemetry to other OpenTelemetry-compatible backends (Datadog, Grafana Cloud, Honeycomb, or New Relic's OTLP endpoint), or to enable an inbound OTLP receiver in proxy mode, see [ADVANCED.md](./docs/ADVANCED.md#otlp-transport).
-
----
-
-## Updating
-
-To pull the latest changes and rebuild in one step:
-
-```bash
-preflight update
-```
-
-This runs `git pull` followed by `npm run build` in the repo directory. Restart Claude Code afterwards to pick up the new version.
-
----
-
-## Uninstalling
-
-To remove the Observatory hooks and MCP server from Claude Code:
-
-```bash
-preflight uninstall
-```
-
-This removes the hooks from your user-level Claude Code settings and deregisters the MCP server. A timestamped backup of your settings is saved automatically before any changes are made.
-
-If you installed at the project level, add `--project`:
-
-```bash
-preflight uninstall --project
-```
-
-Restart Claude Code after uninstalling for the changes to take effect.
-
-### Removing dashboards and alerts
-
-If you deployed dashboards or alerts, tear them down separately:
-
-```bash
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-dashboards --all --teardown
-
-NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  preflight deploy-alerts --teardown
-```
-
-### Removing local data
-
-Session history and configuration are stored in `~/.newrelic-preflight/`. To remove everything:
-
-```bash
-rm -rf ~/.newrelic-preflight
-```
-
-### Unlinking the binary
-
-If you registered the CLI globally via `npm link`, remove it with:
-
-```bash
-npm unlink -g @newrelic/preflight
-```
-
----
-
-## Local mode
-
-If you'd rather not ship telemetry to New Relic, set `mode: 'local'` in your config:
-
-```json
-{
-  "mode": "local"
-}
-```
-
-In local mode:
-
-- The MCP server does **not** construct `NrIngestManager` and never makes outbound HTTP calls to NR.
-- An embedded dashboard boots at **http://127.0.0.1:7777** (configurable via `dashboard.port` or `NR_AI_DASHBOARD_PORT`).
-- All telemetry stays in `~/.newrelic-preflight/` on your machine.
-- `licenseKey` and `accountId` are not required.
-
-**With Claude Code** (default): the server runs via the MCP connection (`--stdio`). You don't launch it manually — Claude Code starts it automatically when you open a session, because `preflight install` registered it as an MCP server. The dashboard stays alive as long as your Claude Code session is open.
-
-**Standalone** (no Claude Code required): pass `--local` to run the dashboard server directly, without an MCP transport. Use this to browse the dashboard when Claude Code isn't running, or to observe non-Claude-Code sources that hit the hooks (e.g. Claude Agent SDK scripts). If the per-session MCP is also installed, only one process owns the dashboard at a time — whichever started first — and the other runs headless.
-
-```bash
-npm run build          # build once
-node dist/index.js --local
-# or:
-npm run dev            # shortcut: assumes dist/ already built
-npm run dev:all        # build + start in one step
-npm run start:local    # alias for npm run dev
-```
-
-Open `http://127.0.0.1:7777` in your browser. The process stays alive until you press Ctrl+C.
-
-The dashboard has six views:
-
-- **Today** — live KPIs, sparkline of tool latencies, recent calls, anti-pattern alerts.
-- **Sessions** — list of past sessions with a per-session timeline of every tool call.
-- **History** — weekly efficiency and daily spend trends.
-- **Audit** — every classified tool call (sensitive file access, destructive commands, external network), with a JSONL export button.
-- **Settings** — edit developer name, team ID, budget caps, and session retention from the browser (no config file editing required).
-- **Alerts** — live budget spend vs. caps, editable personal alert thresholds, and Slack digest configuration.
-
-Run `preflight setup` to choose a mode interactively.
-
----
-
-## Local Alerts
-
-Local-mode users get threshold alerting evaluated in-process — no New Relic dependency. Rules live at `~/.newrelic-preflight/alerts/rules.json`; a starter set is copied into place by the setup wizard.
-
-For the full list of rule types, channel options, alert log configuration, and live reload behavior, see [ADVANCED.md](./docs/ADVANCED.md#local-alerts).
-
----
-
-## Weekly Digest
-
-Register a Slack webhook to receive a weekly summary every Monday morning:
-
-In Claude Code, ask: _"Call `nr_observe_subscribe_digest` with this webhook URL: `https://hooks.slack.com/services/...`"_
-
-Or set it in your config file as `digestWebhookUrl`, or configure it directly from the **Alerts** tab in the local dashboard.
-
----
-
-## Supported Platforms
-
-| Platform           | How to enable                                          |
-| ------------------ | ------------------------------------------------------ |
-| Claude Code        | `preflight install` (automatic)                        |
-| Cursor             | Set `NEW_RELIC_AI_PLATFORM=cursor` in your environment |
-| Windsurf           | Set `NEW_RELIC_AI_PLATFORM=windsurf`                   |
-| GitHub Copilot     | Set `NEW_RELIC_AI_PLATFORM=copilot`                    |
-| Zed                | Set `NEW_RELIC_AI_PLATFORM=zed`                        |
-| Continue.dev       | Set `NEW_RELIC_AI_PLATFORM=continue`                   |
-| Amazon Q Developer | Set `NEW_RELIC_AI_PLATFORM=amazonq`                    |
-
----
-
-## Glossary
-
-**MCP (Model Context Protocol)** — A standard that lets AI assistants like Claude Code discover and call external tools. The Observatory registers itself as an MCP server so Claude Code can call it directly.
-
-**License key** — A NR credential for _sending_ data into New Relic. Looks like a long hex string (e.g., `175cae4b...`). Found under API Keys in NR One.
-
-**User API key** — A NR credential for _reading_ data and managing resources (dashboards, alerts). Starts with `NRAK-`. Create one under API Keys in NR One.
-
-**Anti-pattern** — A detected waste pattern. Examples: re-reading the same file multiple times without making changes between reads (the AI lost context and is reloading it), making edits to a file without reading it first (blind edit), running the same failing command in a loop (stuck loop).
-
-**Efficiency score** — A 0-100 number per task. High means the AI worked directly toward the goal. Low means wasted tool calls — repeated reads, blind edits, unnecessary backtracking.
-
-**Token** — The unit AI models use to measure text length for billing. Roughly 3-4 characters per token. One page of text ≈ 500 tokens.
-
-**Hook** — A script that Claude Code calls automatically before and after every tool call. The Observatory uses this to capture tool call data without interrupting your workflow.
+You'll need a **license key** (telemetry ingest) and your **account ID**, plus a **user API key** (`NRAK-…`) to deploy dashboards and alerts. See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
 
 ---
 
 ## Requirements
 
-- **Node.js**: v22 or higher (`.nvmrc` pins v24 for development)
-- **New Relic account**: free tier works; you need a license key and a user API key
-- **An AI coding tool**: Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, or Amazon Q
+### Required
+- **Node.js v22 or higher** ([get it](https://nodejs.org) or use [nvm](https://github.com/nvm-sh/nvm))
+- **An AI coding tool** (Claude Code recommended for deepest integration)
+
+### Optional
+- **New Relic account** — only for `cloud`/`both` mode. Skip it to run local-only (the default).
+- **User API key** (`NRAK-…`) — only needed to deploy dashboards and alerts
 
 ---
 
 ## Documentation
 
-- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, architecture, conventions, testing, and end-to-end verification
-- **[ADVANCED.md](./docs/ADVANCED.md)** — OTLP export, local alerts, per-developer alerts, session backfill, Terraform deployment
-- **[COMMANDS_TABLE.md](./docs/COMMANDS_TABLE.md)** — All MCP tools with parameters and return values
-- **[METRICS_TABLE.md](./docs/METRICS_TABLE.md)** — Every event and metric sent to New Relic
-- **[SECURITY.md](./docs/SECURITY.md)** — Security practices and audit trail
+- [**ADVANCED.md**](docs/ADVANCED.md) — Configuration, dashboards, alerts, Terraform
+- [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
+- [**SECURITY.md**](docs/SECURITY.md) — Security guidelines and best practices
 
 ---
 
-## For Contributors
+## From Source
 
-### Development setup
+Develop, test, or run the latest unreleased version:
 
 ```bash
-nvm install && nvm use
-npm install
-npm run build
-npm test
+git clone https://github.com/newrelic-experimental/preflight
+cd preflight
+nvm use              # Switch to Node v24
+npm install          # Install dependencies
+npm run build        # Compile TypeScript
+npm link             # Register preflight on PATH
 ```
 
-### Common tasks
-
-| Command                | Purpose                                                    |
-| ---------------------- | ---------------------------------------------------------- |
-| `npm run build`        | Build TypeScript server + Vite web dashboard               |
-| `npm run build:server` | Build only the TypeScript server (`tsc --build`)           |
-| `npm run build:web`    | Build only the Vite web dashboard (output: `dist/web/`)    |
-| `npm test`             | Run all tests                                              |
-| `npm run lint`         | Check code style                                           |
-| `npm run format`       | Auto-format code                                           |
-| `npm run dev`          | Start local dashboard (assumes pre-built `dist/`)          |
-| `npm run dev:all`      | Build then start local dashboard                           |
-| `npm run dev:full`     | Build backend, then run backend + Vite dev server together |
-| `npm run start:local`  | Alias for `npm run dev`                                    |
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full development guide, conventions, and architecture.
+Then run `preflight setup` as usual.
 
 ---
 
-**Questions?** Start with [CONTRIBUTING.md](./CONTRIBUTING.md) or open an issue.
+## License
+
+Preflight is open source under the [Apache License 2.0](LICENSE).
+
+---
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started. Join the [New Relic Community](https://support.newrelic.com/s/) to share ideas, ask questions, or discuss features.
+
+---
+
+<div align="center">
+  <p><strong>Built by New Relic • Designed for developers who use AI</strong></p>
+</div>
