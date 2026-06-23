@@ -56,23 +56,47 @@ export interface NrObserveConfig {
 // Generators
 // ---------------------------------------------------------------------------
 
-export function generateHookEntries(binPath?: string | null): HookEntries {
-  // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
-  // Hook commands use preflight-collector (lightweight, <5ms budget).
-  const bin = binPath
-    ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-    : COLLECTOR_COMMAND;
+export function generateHookEntries(
+  binPath?: string | null,
+  options?: { wsl?: boolean },
+): HookEntries {
+  let pre: string;
+  let post: string;
+
+  if (options?.wsl) {
+    // Windows Claude Code runs hooks via wsl.exe — call the WSL binary through interop.
+    // Quote the path so cmd.exe doesn't split on spaces (e.g. /home/john doe/...).
+    const collectorPath = binPath ? join(dirname(binPath), COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
+    const quotedPath = collectorPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    pre = `wsl.exe -e "${quotedPath}" pre-tool`;
+    post = `wsl.exe -e "${quotedPath}" post-tool`;
+  } else {
+    // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
+    // Hook commands use preflight-collector (lightweight, <5ms budget).
+    const bin = binPath
+      ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      : COLLECTOR_COMMAND;
+    pre = `${bin} pre-tool`;
+    post = `${bin} post-tool`;
+  }
+
   return {
-    PreToolUse: [
-      { matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: `${bin} pre-tool` }] },
-    ],
-    PostToolUse: [
-      { matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: `${bin} post-tool` }] },
-    ],
+    PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: pre }] }],
+    PostToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: post }] }],
   };
 }
 
-export function generateMcpServerEntry(binPath?: string | null): Record<string, McpServerConfig> {
+export function generateMcpServerEntry(
+  binPath?: string | null,
+  options?: { wsl?: boolean },
+): Record<string, McpServerConfig> {
+  if (options?.wsl) {
+    // Windows Claude Code launches MCP servers as Windows processes — use wsl.exe interop.
+    const serverPath = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
+    return {
+      [MCP_SERVER_KEY]: { command: 'wsl.exe', args: ['-e', serverPath, '--stdio'] },
+    };
+  }
   // MCP server uses the main preflight binary.
   const command = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
   return {
@@ -88,16 +112,21 @@ export function generateNrConfig(licenseKey: string, accountId: string): NrObser
 // Settings path detection
 // ---------------------------------------------------------------------------
 
-export function detectSettingsPath(scope: 'user' | 'project'): string {
+export function detectSettingsPath(scope: 'user' | 'project', windowsHome?: string | null): string {
   if (scope === 'user') {
-    return resolve(homedir(), '.claude', 'settings.json');
+    const base = windowsHome ?? homedir();
+    return resolve(base, '.claude', 'settings.json');
   }
   return resolve(process.cwd(), '.claude', 'settings.json');
 }
 
-export function detectMcpConfigPath(scope: 'user' | 'project'): string {
+export function detectMcpConfigPath(
+  scope: 'user' | 'project',
+  windowsHome?: string | null,
+): string {
   if (scope === 'user') {
-    return resolve(homedir(), '.mcp.json');
+    const base = windowsHome ?? homedir();
+    return resolve(base, '.mcp.json');
   }
   return resolve(process.cwd(), '.mcp.json');
 }
@@ -164,6 +193,7 @@ const McpConfigSchema = z
 export function mergeSettings(
   existing: Record<string, unknown>,
   binPath?: string | null,
+  options?: { wsl?: boolean },
 ): Record<string, unknown> {
   const parsed = SettingsSchema.safeParse(existing);
   if (!parsed.success) {
@@ -173,7 +203,7 @@ export function mergeSettings(
   }
 
   const result = { ...existing };
-  const hookEntries = generateHookEntries(binPath);
+  const hookEntries = generateHookEntries(binPath, options);
 
   // --- Hooks ---
   const hooks: Record<string, unknown> =
@@ -211,6 +241,7 @@ export function mergeSettings(
 export function mergeMcpConfig(
   existing: Record<string, unknown>,
   binPath?: string | null,
+  options?: { wsl?: boolean },
 ): Record<string, unknown> {
   const parsed = McpConfigSchema.safeParse(existing);
   if (!parsed.success) {
@@ -235,7 +266,7 @@ export function mergeMcpConfig(
   if (binPath !== null && binPath !== undefined) {
     // Resolved path available: merge new command/args into existing entry,
     // preserving any user-added fields (env, timeout, etc.).
-    const newEntry = generateMcpServerEntry(binPath);
+    const newEntry = generateMcpServerEntry(binPath, options);
     const existingEntry =
       typeof mcpServers[MCP_SERVER_KEY] === 'object' && mcpServers[MCP_SERVER_KEY] !== null
         ? (mcpServers[MCP_SERVER_KEY] as Record<string, unknown>)
@@ -244,7 +275,7 @@ export function mergeMcpConfig(
   } else if (!(MCP_SERVER_KEY in mcpServers)) {
     // No path resolved: only add if absent so a working absolute-path entry
     // is not downgraded to a bare name.
-    mcpServers[MCP_SERVER_KEY] = generateMcpServerEntry(null)[MCP_SERVER_KEY];
+    mcpServers[MCP_SERVER_KEY] = generateMcpServerEntry(null, options)[MCP_SERVER_KEY];
   }
 
   result.mcpServers = mcpServers;
