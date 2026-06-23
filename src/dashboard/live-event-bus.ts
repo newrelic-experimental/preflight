@@ -1,12 +1,11 @@
 import { EventEmitter } from 'node:events';
 
-// Task #17 (D3): events that can be attributed to a single Claude Code
-// session_id carry it explicitly so dashboard clients can subscribe with a
-// `?sessionId=` filter and so the Today view can render a per-session pill on
-// each anti-pattern row. `AlertEvent.sessionId` stays optional because some
-// alerts (system-level) don't originate from a specific session. The
-// `HeartbeatEvent` deliberately stays global — it's a connection keepalive,
-// not a data event.
+// Events that can be attributed to a single Claude Code session_id carry it
+// explicitly so dashboard clients can subscribe with a `?sessionId=` filter
+// and so the Today view can render a per-session pill on each anti-pattern row.
+// `AlertEvent.sessionId` stays optional because some alerts (system-level)
+// don't originate from a specific session. The `HeartbeatEvent` deliberately
+// stays global — it's a connection keepalive, not a data event.
 export interface ToolCallEvent {
   readonly id: string;
   readonly sessionId: string;

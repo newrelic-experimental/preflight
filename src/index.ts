@@ -60,6 +60,7 @@ import {
   resolveSessionId,
   resolveFromJobDir,
   resolveFromBreadcrumb,
+  isSyntheticSessionId,
 } from './hooks/session-resolver.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -158,7 +159,7 @@ export function classifyDashboardStartError(
 
 /**
  * Default interval (ms) between dashboard re-bind attempts when this MCP
- * started in headless mode (Fix 1 EADDRINUSE skip path). Overridable via
+ * started in headless mode (EADDRINUSE skip). Overridable via
  * NR_AI_DASHBOARD_REPOLL_MS — kept simple to avoid threading a new config
  * field through the loader for what is essentially a knob for tests.
  */
@@ -193,10 +194,10 @@ export function setupDashboardPostBind(
   const log = createLogger('mcp-cli');
   log.info(`Dashboard ready at http://${addr.address}:${addr.port}`);
 
-  // Task #18: only the dashboard owner runs orphan-buffer/breadcrumb GC —
-  // running it from every MCP would race with itself and re-archive files
-  // repeatedly. Run once at startup, then every 5 minutes. The interval is
-  // unref'd so it doesn't keep the event loop alive.
+  // Only the dashboard owner runs orphan-buffer/breadcrumb GC — running it
+  // from every MCP would race with itself and re-archive files repeatedly.
+  // Run once at startup, then every 5 minutes. The interval is unref'd so
+  // it doesn't keep the event loop alive.
   const { localStore, liveSessionRegistry } = deps;
   const runGc = (): void => {
     try {
@@ -228,12 +229,12 @@ export function setupDashboardPostBind(
 }
 
 /**
- * Schedule periodic re-bind attempts after a headless start (Fix 1 path).
+ * Schedule periodic re-bind attempts after a headless start (EADDRINUSE skip).
  *
- * After Fix 1 the first MCP to launch wins port 7777 and serves the
- * dashboard; the rest run headless. If the owner exits while the headless
- * MCPs are still alive, the port is freed and nobody picks it up — the
- * dashboard goes dead. This re-poll closes that gap: every
+ * The first MCP to launch wins port 7777 and serves the dashboard; the rest
+ * run headless. If the owner exits while the headless MCPs are still alive,
+ * the port is freed and nobody picks it up — the dashboard goes dead. This
+ * re-poll closes that gap: every
  * `intervalMs` (default 30s) the headless MCP retries `start()`, and the
  * first one to succeed promotes itself to dashboard owner and runs the
  * post-bind setup (GC interval, etc.).
@@ -504,15 +505,21 @@ async function main(): Promise<void> {
   let alertRulesWatchTimer: NodeJS.Timeout | undefined;
   let localStoreForShutdown: LocalStore | undefined;
   let gcInterval: NodeJS.Timeout | undefined;
-  // Task #13: when this MCP starts headless (Fix 1 EADDRINUSE skip), this
-  // interval retries dashboardServer.start() periodically so we can take
-  // over if the current owner exits. Cleared in the shutdown handler.
+  // When this MCP starts headless (EADDRINUSE skip), this interval retries
+  // dashboardServer.start() periodically so we can take over if the current
+  // owner exits. Cleared in the shutdown handler.
   let dashboardRepollInterval: NodeJS.Timeout | undefined;
+  // Aborts the async resolveSessionId polling loop when shutdown fires so
+  // the breadcrumb poll does not outlive the process.
+  let sessionResolutionAbort: AbortController | undefined;
 
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Abort any in-progress session resolution so its polling loop exits
+    // cleanly rather than continuing after process.exit() is called.
+    sessionResolutionAbort?.abort();
     logger.info('Shutting down...');
     try {
       persistSession?.();
@@ -525,8 +532,8 @@ async function main(): Promise<void> {
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
       if (gcInterval) clearInterval(gcInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
-      // Task #18: remove this MCP's heartbeat so the next dashboard-owner GC
-      // pass doesn't have to mtime-archive our buffer file.
+      // Remove this MCP's heartbeat so the next dashboard-owner GC pass
+      // doesn't have to mtime-archive our buffer file.
       localStoreForShutdown?.removeHeartbeat();
       if (alertRulesWatchTimer) clearTimeout(alertRulesWatchTimer);
       if (alertRulesWatcher) {
@@ -596,25 +603,6 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      // Fix 3 / D2: resolve the Claude Code session_id BEFORE constructing
-      // anything that takes sessionTraceId as input. We try the cheap
-      // synchronous paths first (CLAUDE_JOB_DIR, then a one-shot breadcrumb
-      // probe). If both miss, register a "pending" tool handler so the MCP
-      // can answer health/config requests while we poll for the breadcrumb,
-      // then await full resolution.
-      const configFilePathEarly = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-      const configSummaryEarly: ConfigSummary = {
-        mode: config.mode,
-        developer: config.developer,
-        accountId: config.accountId ?? null,
-        licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
-        nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
-        region: config.collectorHost ?? 'us',
-        storagePath: config.storagePath,
-        dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
-        configFilePath: configFilePathEarly,
-      };
-
       const synchronouslyResolved =
         resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null) ??
         resolveFromBreadcrumb(config.storagePath, process.ppid);
@@ -622,31 +610,28 @@ async function main(): Promise<void> {
         sessionTraceId = synchronouslyResolved;
         logger.info('Session ID resolved synchronously', { sessionTraceId });
       } else {
-        // Tools must respond with a structured error during the resolution
-        // window — registerPendingTools wires that up. Once resolved we
-        // overwrite the handlers via registerTools().
-        registerPendingTools(mcpServer.server, {
-          sessionStartMs: Date.now(),
-          developer: config.developer,
-          configSummary: configSummaryEarly,
-        });
-        logger.info('Awaiting session_id resolution (breadcrumb poll)');
-        try {
-          sessionTraceId = await resolveSessionId({ storagePath: config.storagePath });
-        } catch (err) {
-          logger.error('Session ID resolution failed; shutting down', { error: String(err) });
-          await shutdown();
-          return;
-        }
+        // Use a provisional ID so the shared section (including dashboard) can
+        // start immediately. The real session ID is resolved asynchronously in
+        // the tail section below after all shared infrastructure is ready.
+        sessionTraceId = `pending-${Date.now()}`;
+        logger.info(
+          'Session ID not yet available; using provisional ID, dashboard will start early',
+        );
       }
 
+      // Create the span objects in Phase A so shutdown always has a valid
+      // sessionSpan reference. For the provisional case (pending-{ts}), defer
+      // start() to Phase B when the real session ID is known — starting here
+      // would emit a ghost span with a placeholder ID to the OTLP backend.
+      // SessionSpan.end() guards on started=false, so an unstarted provisional
+      // span is a safe no-op on shutdown.
       if (config.transport !== 'nr-events-api') {
         initMcpTracer();
-      }
-      sessionSpan = new SessionSpan(sessionTraceId, config.developer);
-      taskSpanTracker = new TaskSpanTracker();
-      if (config.transport !== 'nr-events-api') {
-        sessionSpan.start();
+        sessionSpan = new SessionSpan(sessionTraceId, config.developer);
+        taskSpanTracker = new TaskSpanTracker();
+        if (!sessionTraceId.startsWith('pending-')) {
+          sessionSpan.start();
+        }
       }
     } else {
       // --local: force local mode so config validation skips cloud credentials.
@@ -666,18 +651,20 @@ async function main(): Promise<void> {
 
     // Per-session buffer scoping: in --stdio mode the LocalStore is bound to
     // this MCP's resolved session_id so drainBuffer() only sees this session's
-    // events. In --local mode no single session owns the buffer; we drain all
-    // buffer-*.jsonl files via drainAllBuffers() instead.
-    const localStore = options.stdio
-      ? new LocalStore(config.storagePath, sessionTraceId)
-      : new LocalStore(config.storagePath);
+    // events. In --local mode (or the provisional window before session ID
+    // resolution) we use an unscoped store that drains all session buffers.
+    const isProvisional = options.stdio && sessionTraceId.startsWith('pending-');
+    const localStore =
+      options.stdio && !isProvisional
+        ? new LocalStore(config.storagePath, sessionTraceId)
+        : new LocalStore(config.storagePath);
     localStore.initialize();
 
-    // Task #18: every MCP writes its heartbeat once it has bound a session_id
-    // so the dashboard owner's GC pass can tell which buffer files still have
-    // a live owner. Removed in the shutdown handler below. No-op in --local
-    // mode (no sessionId).
-    if (options.stdio) localStore.writeHeartbeat();
+    // Every MCP writes its heartbeat once it has bound a session_id so the
+    // dashboard owner's GC pass can tell which buffer files still have a live
+    // owner. Removed in the shutdown handler below. Skipped during the
+    // provisional window — the real heartbeat is written after resolution.
+    if (options.stdio && !isProvisional) localStore.writeHeartbeat();
     localStoreForShutdown = localStore;
 
     // Migrate any pre-Fix-3 events from the legacy shared `buffer.jsonl` into
@@ -1023,8 +1010,8 @@ async function main(): Promise<void> {
           contextTracker,
           config,
           configFilePath: options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'),
-          // Task #17 (D3): the dashboard owner reads every per-session
-          // buffer file in read-only mode for the Today aggregate endpoint.
+          // The dashboard owner reads every per-session buffer file in
+          // read-only mode for the Today aggregate endpoint.
           // peekAllBuffers() returns HookEvent[] — widen at the boundary
           // so the dashboard tree stays decoupled from storage internals.
           localStore: {
@@ -1053,16 +1040,11 @@ async function main(): Promise<void> {
         if (decision.kind === 'rethrow') {
           throw decision.error;
         }
-        // In --local mode the HTTP server IS the process — without it there is
-        // nothing to keep the event loop alive. Treat EADDRINUSE as fatal so
-        // the user gets an actionable error instead of a silent exit.
-        if (options.local) {
-          logger.error(
-            `Dashboard port ${config.dashboard.port} is already in use. ` +
-              `Stop the existing --local instance before starting another.`,
-          );
-          process.exit(1);
-        }
+        // In --local mode (e.g. a launchd daemon) EADDRINUSE means the port is
+        // owned by a --stdio MCP instance. Instead of exiting fatally, poll
+        // until the port is free and take over — same as the --stdio repoll
+        // path. This lets the daemon coexist with active Claude Code sessions
+        // and seamlessly reclaim the dashboard when sessions end.
         logger.info(decision.message);
         addr = undefined;
       }
@@ -1070,7 +1052,7 @@ async function main(): Promise<void> {
       // Capture deps for the post-bind helper. Both the initial-bind path
       // and the re-poll takeover path call this; keeping the closure small
       // ensures the two paths produce identical side effects (GC interval,
-      // openOnStart warning, etc. — Task #18 + #13).
+      // openOnStart warning, etc.).
       const postBindDeps: DashboardPostBindDeps = {
         localStore,
         liveSessionRegistry,
@@ -1082,9 +1064,9 @@ async function main(): Promise<void> {
       if (addr) {
         gcInterval = runPostBind(addr);
       } else {
-        // Task #13: this MCP is headless. Schedule periodic re-bind attempts
-        // so it can take over if the current dashboard owner exits. The
-        // interval is unref'd and cleared by the shutdown handler.
+        // This MCP is headless. Schedule periodic re-bind attempts so it can
+        // take over if the current dashboard owner exits. The interval is
+        // unref'd and cleared by the shutdown handler.
         dashboardRepollInterval = startDashboardRepoll({
           dashboardServer,
           host: config.dashboard.host,
@@ -1095,11 +1077,19 @@ async function main(): Promise<void> {
           },
           logger,
         });
+        // In --local mode the dashboard IS the process — the HTTP listener is
+        // the only thing that keeps the event loop alive. When EADDRINUSE fires
+        // the listener is never bound, so the repoll interval must be ref'd or
+        // Node exits immediately before it ever fires. In --stdio mode stdin
+        // acts as the keepalive, so leaving the interval unref'd is correct.
+        if (options.local) {
+          dashboardRepollInterval.ref?.();
+        }
       }
     }
 
     let capturedNrIngest: NrIngestManager | undefined;
-    if (config.mode !== 'local') {
+    if (config.mode !== 'local' && !isProvisional) {
       if (!config.licenseKey || !config.accountId) {
         throw new Error(
           'licenseKey and accountId must be defined. ' +
@@ -1166,9 +1156,11 @@ async function main(): Promise<void> {
     });
     eventProcessor = new HookEventProcessor({
       store: localStore,
-      // --local mode owns no specific Claude Code session, so drain every
-      // per-session buffer so the dashboard sees all live sessions' events.
-      drainAllSessions: !options.stdio,
+      // --local mode and the provisional --stdio window own no specific Claude
+      // Code session; drain every per-session buffer so the dashboard sees all
+      // live sessions' events. After real session ID resolution the processor
+      // is hot-swapped to the scoped store via replaceStore().
+      drainAllSessions: !options.stdio || isProvisional,
       onRecord: (record) => {
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
@@ -1222,12 +1214,12 @@ async function main(): Promise<void> {
         const auditRecord = auditTrail.recordToolCall(record);
         capturedNrIngest?.ingestToolCall(record, auditRecord);
 
-        // Task #17 (D3): SSE consumers filter by sessionId for the per-
-        // session live tail. Records without a sessionId are pre-Fix-3
-        // legacy buffer leaks during the migrateLegacyBuffer() window on
-        // first boot — skip the live emit rather than fabricate a session
-        // by falling back to the MCP's resolved sessionTraceId, which would
-        // re-introduce the fictional-session-ID bug Fix 3 removed.
+        // SSE consumers filter by sessionId for the per-session live tail.
+        // Records without a sessionId are legacy buffer entries that surfaced
+        // during the migrateLegacyBuffer() window on first boot — skip the
+        // live emit rather than fabricate a session by falling back to the
+        // MCP's resolved sessionTraceId, which would re-introduce the
+        // fictional-session-ID bug the session-ID resolver removed.
         if (record.sessionId) {
           liveBus.emit('tool-call', {
             id: record.id,
@@ -1280,8 +1272,8 @@ async function main(): Promise<void> {
             dailyFirstActivityMs,
           });
           liveBus.emit('cost-update', {
-            // Task #17 (D3): MCP-owned cost totals — sessionId is always the
-            // resolved Claude Code session_id for this MCP instance.
+            // sessionId is always the resolved Claude Code session_id for
+            // this MCP instance so cost totals can be attributed per-session.
             sessionId: sessionTraceId,
             sessionTotalUsd: costMetrics.sessionTotalCostUsd,
             todayTotalUsd,
@@ -1302,9 +1294,9 @@ async function main(): Promise<void> {
             taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
           }
           const firstRecord = task.toolCalls[0];
-          // Fix 3: sessionTraceId is the resolved Claude Code session_id and is
+          // sessionTraceId is the resolved Claude Code session_id and is
           // shared across the whole MCP, so we use it directly rather than
-          // peeking at the first record's sessionId (which may now be null).
+          // peeking at the first record's sessionId (which may be null).
           const context = {
             sessionId: sessionTraceId,
             platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
@@ -1315,8 +1307,8 @@ async function main(): Promise<void> {
           for (const pattern of patterns) {
             capturedNrIngest?.ingestAntiPattern(pattern, context);
             liveBus.emit('anti-pattern', {
-              // Task #17 (D3): tag with the originating session so the Today
-              // view can render a "Session: <name>" pill on each alert row.
+              // Tag with the originating session so the Today view can render
+              // a "Session: <name>" pill on each alert row.
               sessionId: sessionTraceId,
               type: pattern.type,
               target: pattern.file ?? pattern.command ?? 'unknown',
@@ -1402,8 +1394,8 @@ async function main(): Promise<void> {
             dailyFirstActivityMs,
           });
           liveBus.emit('cost-update', {
-            // Task #17 (D3): same as the per-tool-call cost-update emission —
-            // tag with the MCP's owning session_id.
+            // Same as the per-tool-call cost-update emission — tag with the
+            // MCP's owning session_id for per-session attribution.
             sessionId: sessionTraceId,
             sessionTotalUsd: costMetrics.sessionTotalCostUsd,
             todayTotalUsd,
@@ -1433,8 +1425,7 @@ async function main(): Promise<void> {
         // bookkeeping; they don't correspond to a real Claude Code session
         // and produce confusing `local-...` rows in the dashboard's history
         // view that have no useful content to show.
-        const isSyntheticId =
-          summary.sessionId.startsWith('local-') || summary.sessionId.startsWith('proxy-');
+        const isSyntheticId = isSyntheticSessionId(summary.sessionId);
         if (isSyntheticId) {
           logger.info('Skipping synthetic session JSON persistence', {
             sessionId: summary.sessionId,
@@ -1456,67 +1447,236 @@ async function main(): Promise<void> {
       // three see the same audit log.
       mcpServer!.auditTrailManager = auditTrail;
 
-      // Re-register tools with full dependencies (replaces empty handlers)
-      const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-      const configSummary: ConfigSummary = {
-        mode: config.mode,
-        developer: config.developer,
-        accountId: config.accountId ?? null,
-        licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
-        nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
-        region: config.collectorHost ?? 'us',
-        storagePath: config.storagePath,
-        dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
-        configFilePath,
-      };
-      registerTools(mcpServer!.server, {
-        sessionTracker,
-        costTracker,
-        budgetTracker,
-        taskDetector,
-        antiPatternDetector,
-        efficiencyScorer,
-        feedbackCollector,
-        sessionStore,
-        weeklySummaryGenerator,
-        trendAnalyzer,
-        collaborationProfiler,
-        claudeMdTracker,
-        costPerOutcomeAnalyzer,
-        recommendationEngine,
-        contextWindowTracker,
-        contextTracker,
-        latencyTracker,
-        taskCompletionTracker,
-        modelUsageTracker,
-        retryDetector,
-        contextCompositionTracker,
-        latencyDecompositionTracker,
-        decisionTracker,
-        instructionDriftTracker,
-        toolSelectionScorer,
-        toolCallBuffer: toolCallBufferAccessor,
-        qualityProxyTracker,
-        apiFailureTracker,
-        turnCostAttributor,
-        turnTracker,
-        gitEfficiencyTracker,
-        sessionTraceId,
-        sessionStartMs,
-        accountId: config.accountId,
-        teamId: config.teamId,
-        projectId: config.projectId,
-        developer: config.developer,
-        nrApiKey: config.nrApiKey,
-        collectorHost: config.collectorHost,
-        configFilePath,
-        configSummary,
-      });
+      if (isProvisional) {
+        // Dashboard is already live. Register pending tools so the MCP can
+        // respond to health/config requests while the real session ID resolves.
+        const pendingConfigFilePath =
+          options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
+        registerPendingTools(mcpServer!.server, {
+          sessionStartMs: Date.now(),
+          developer: config.developer,
+          configSummary: {
+            mode: config.mode,
+            developer: config.developer,
+            accountId: config.accountId ?? null,
+            licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
+            nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
+            region: config.collectorHost ?? 'us',
+            storagePath: config.storagePath,
+            dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
+            configFilePath: pendingConfigFilePath,
+          },
+        });
+        logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 
-      nrIngest?.start();
-      logger.info('Server running on stdio transport');
-      // stdin 'end' and 'error' handlers are registered immediately after
-      // connectStdio() above so shutdown fires even during session-ID resolution.
+        sessionResolutionAbort = new AbortController();
+        void (async () => {
+          try {
+            const realId = await resolveSessionId({
+              storagePath: config!.storagePath,
+              signal: sessionResolutionAbort!.signal,
+            });
+
+            // Adopt the real session ID without clearing accumulated metrics.
+            sessionTraceId = realId;
+            sessionTracker!.adoptSessionId(realId);
+
+            // Replace the provisional unscoped LocalStore with the session-scoped one.
+            const realLocalStore = new LocalStore(config!.storagePath, realId);
+            realLocalStore.initialize();
+            realLocalStore.writeHeartbeat();
+            localStoreForShutdown = realLocalStore;
+            try {
+              realLocalStore.migrateLegacyBuffer();
+            } catch (err) {
+              logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
+            }
+
+            // Hot-swap the event processor to the scoped store so it only
+            // drains this session's events going forward.
+            eventProcessor!.replaceStore(realLocalStore, false);
+
+            // Replace the provisional span with a real-ID span. End the
+            // provisional one first (end() is a no-op if never started).
+            // initMcpTracer() was already called in Phase A — skip it here.
+            if (config!.transport !== 'nr-events-api') {
+              sessionSpan?.end(0, 0);
+              // Close any task spans opened against the provisional tracker
+              // (cross-session events can open them during Phase A) before
+              // replacing it with a clean real-session instance.
+              taskSpanTracker?.closeAll();
+              sessionSpan = new SessionSpan(realId, config!.developer);
+              taskSpanTracker = new TaskSpanTracker();
+              sessionSpan.start();
+            }
+
+            // Complete NrIngest setup.
+            if (config!.mode !== 'local') {
+              if (!config!.licenseKey || !config!.accountId) {
+                throw new Error(
+                  'licenseKey and accountId must be defined for non-local mode. ' +
+                    'This should have been caught by config validation.',
+                );
+              }
+              nrIngest = new NrIngestManager({
+                licenseKey: config!.licenseKey,
+                transportOptions: {
+                  accountId: config!.accountId,
+                  collectorHost: config!.collectorHost,
+                },
+                developer: config!.developer,
+                appName: config!.appName,
+                teamId: config!.teamId,
+                projectId: config!.projectId,
+                orgId: config!.orgId,
+                sessionTracker: sessionTracker!,
+                localStore: realLocalStore,
+                auditTrail,
+                eventHarvestIntervalMs: config!.harvestIntervalMs.events,
+                metricHarvestIntervalMs: config!.harvestIntervalMs.metrics,
+                costTracker,
+                efficiencyScorer,
+                turnCostAttributor,
+                sessionTraceId: realId,
+              });
+              capturedNrIngest = nrIngest;
+              nrIngest.start();
+            }
+
+            // Register full tools, replacing the pending handlers.
+            const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
+            const configSummary: ConfigSummary = {
+              mode: config!.mode,
+              developer: config!.developer,
+              accountId: config!.accountId ?? null,
+              licenseKeyMasked: config!.licenseKey ? maskCredential(config!.licenseKey) : null,
+              nrApiKeyMasked: config!.nrApiKey ? maskCredential(config!.nrApiKey) : null,
+              region: config!.collectorHost ?? 'us',
+              storagePath: config!.storagePath,
+              dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
+              configFilePath,
+            };
+            registerTools(mcpServer!.server, {
+              sessionTracker: sessionTracker!,
+              costTracker,
+              budgetTracker,
+              taskDetector: taskDetector!,
+              antiPatternDetector,
+              efficiencyScorer,
+              feedbackCollector,
+              sessionStore,
+              weeklySummaryGenerator,
+              trendAnalyzer,
+              collaborationProfiler,
+              claudeMdTracker,
+              costPerOutcomeAnalyzer,
+              recommendationEngine,
+              contextWindowTracker,
+              contextTracker,
+              latencyTracker,
+              taskCompletionTracker,
+              modelUsageTracker,
+              retryDetector,
+              contextCompositionTracker,
+              latencyDecompositionTracker,
+              decisionTracker,
+              instructionDriftTracker,
+              toolSelectionScorer,
+              toolCallBuffer: toolCallBufferAccessor,
+              qualityProxyTracker,
+              apiFailureTracker,
+              turnCostAttributor,
+              turnTracker,
+              gitEfficiencyTracker,
+              sessionTraceId: realId,
+              sessionStartMs,
+              accountId: config!.accountId,
+              teamId: config!.teamId,
+              projectId: config!.projectId,
+              developer: config!.developer,
+              nrApiKey: config!.nrApiKey,
+              collectorHost: config!.collectorHost,
+              configFilePath,
+              configSummary,
+            });
+
+            logger.info('Session ID resolved, full initialization complete', {
+              sessionTraceId: realId,
+            });
+          } catch (err) {
+            // Use the signal's own aborted flag rather than matching the error
+            // message string — robust against future changes to the throw site.
+            if (sessionResolutionAbort?.signal.aborted) {
+              logger.info('Session ID resolution aborted by shutdown');
+              return;
+            }
+            logger.error('Session ID resolution failed; shutting down', { error: String(err) });
+            await shutdown();
+          }
+        })();
+      } else {
+        // Session ID resolved synchronously — proceed as normal.
+        const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
+        const configSummary: ConfigSummary = {
+          mode: config.mode,
+          developer: config.developer,
+          accountId: config.accountId ?? null,
+          licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
+          nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
+          region: config.collectorHost ?? 'us',
+          storagePath: config.storagePath,
+          dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
+          configFilePath,
+        };
+        registerTools(mcpServer!.server, {
+          sessionTracker,
+          costTracker,
+          budgetTracker,
+          taskDetector,
+          antiPatternDetector,
+          efficiencyScorer,
+          feedbackCollector,
+          sessionStore,
+          weeklySummaryGenerator,
+          trendAnalyzer,
+          collaborationProfiler,
+          claudeMdTracker,
+          costPerOutcomeAnalyzer,
+          recommendationEngine,
+          contextWindowTracker,
+          contextTracker,
+          latencyTracker,
+          taskCompletionTracker,
+          modelUsageTracker,
+          retryDetector,
+          contextCompositionTracker,
+          latencyDecompositionTracker,
+          decisionTracker,
+          instructionDriftTracker,
+          toolSelectionScorer,
+          toolCallBuffer: toolCallBufferAccessor,
+          qualityProxyTracker,
+          apiFailureTracker,
+          turnCostAttributor,
+          turnTracker,
+          gitEfficiencyTracker,
+          sessionTraceId,
+          sessionStartMs,
+          accountId: config.accountId,
+          teamId: config.teamId,
+          projectId: config.projectId,
+          developer: config.developer,
+          nrApiKey: config.nrApiKey,
+          collectorHost: config.collectorHost,
+          configFilePath,
+          configSummary,
+        });
+
+        nrIngest?.start();
+        logger.info('Server running on stdio transport');
+        // stdin 'end' and 'error' handlers are registered immediately after
+        // connectStdio() above so shutdown fires even during session-ID resolution.
+      }
     } else {
       logger.info('Server running in local dashboard mode (Ctrl+C to stop)');
       // DashboardServer HTTP listener keeps the process alive.
@@ -1541,7 +1701,7 @@ async function main(): Promise<void> {
 
     // Proxy mode has no Claude Code session to resolve; use a deterministic
     // identifier instead of randomUUID so we don't fabricate something that
-    // looks like a real session id (Fix 3).
+    // looks like a real session id.
     const sessionTraceId = `proxy-${Date.now()}`;
 
     proxyManager = new ProxyManager({

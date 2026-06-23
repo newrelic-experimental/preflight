@@ -21,11 +21,11 @@ export const fetchSessionCurrent = (): Promise<unknown> => getJson<unknown>('/ap
 export const fetchSessionToday = (): Promise<unknown> => getJson<unknown>('/api/session/today');
 export const fetchSessionsList = (limit = 50): Promise<unknown> =>
   getJson<unknown>(`/api/sessions?limit=${limit}`);
-// Task #17 (D3): cross-session aggregate KPIs for the Today view.
+// Cross-session aggregate KPIs for the Today view.
 export const fetchTodayAggregate = (): Promise<unknown> =>
   getJson<unknown>('/api/sessions/today/aggregate');
-// Task #17 (D3): currently-live session list (for the Today selector default
-// to most-recently-active).
+// Currently-live session list (for the Today selector to default to the
+// most-recently-active session).
 export const fetchLiveSessions = (): Promise<unknown> => getJson<unknown>('/api/sessions/live');
 export const fetchSessionDetail = (id: string): Promise<unknown> =>
   getJson<unknown>(`/api/sessions/${encodeURIComponent(id)}`);
@@ -124,7 +124,7 @@ export const qk = {
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
   settings: ['settings'] as const,
-  // Task #17 (D3) query keys
+  // Query keys for live session and today aggregate endpoints
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,
 };

@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import { normalizeDeveloperName, ConfigFileSchema } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import { runInstallCli, verifyBinaryOnPath } from './cli.js';
-import { installSchedule, resolveBinaryPath } from './schedule.js';
+import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
 
 const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
@@ -513,6 +513,45 @@ export async function runSetupWizard(): Promise<void> {
         print('  Claude Code hooks will fail with "command not found" until this is resolved.');
         print('  Fix: run `npm link` in the project directory, or install globally:');
         print('    npm install -g @newrelic/preflight');
+      }
+    }
+
+    // Step 6b: Always-on background dashboard daemon (local/both mode, macOS only)
+    if ((mode === 'local' || mode === 'both') && process.platform === 'darwin') {
+      const binaryPath = resolveBinaryPath();
+      const daemonAnswer = (
+        await rl.question(
+          '\nInstall always-on background dashboard? Keeps the local dashboard running even when Claude Code is closed [Y/n]: ',
+        )
+      )
+        .trim()
+        .toLowerCase();
+      if (daemonAnswer !== 'n' && daemonAnswer !== 'no') {
+        if (binaryPath) {
+          try {
+            // installDashboardDaemon calls launchctl unload before load, so
+            // it handles the upgrade case atomically — no need to remove first.
+            // Removing before installing would leave the user with no daemon if
+            // the install step fails.
+            installDashboardDaemon(binaryPath);
+            print(
+              `✓ Background dashboard daemon installed — dashboard will be available at http://127.0.0.1:${dashboardPort ?? 7777} after login.`,
+            );
+            print(
+              '  To stop: preflight uninstall  (or: launchctl unload ~/Library/LaunchAgents/com.preflight.dashboard.plist)',
+            );
+          } catch (err) {
+            print(
+              `⚠ Could not install dashboard daemon: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            print('  You can start the dashboard manually at any time with: preflight --local');
+          }
+        } else {
+          print('\n⚠ Cannot install dashboard daemon — preflight not found on PATH.');
+          print(
+            '  Fix PATH first, then run: preflight setup  (or start manually: preflight --local)',
+          );
+        }
       }
     }
 

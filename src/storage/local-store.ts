@@ -72,7 +72,7 @@ export class LocalStore {
       resolvedSessionId =
         typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : null;
     } else if (bufferPathOrSessionId !== undefined && SESSION_ID_RE.test(bufferPathOrSessionId)) {
-      // Per-session buffer scoping (Fix 3 happy path).
+      // Per-session buffer scoping.
       resolvedBufferPath = resolve(storagePath, `buffer-${bufferPathOrSessionId}.jsonl`);
       resolvedSessionId = bufferPathOrSessionId;
     } else if (bufferPathOrSessionId === undefined) {

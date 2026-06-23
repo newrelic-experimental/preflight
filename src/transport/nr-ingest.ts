@@ -346,7 +346,7 @@ export function codingTaskToNrEvent(
   if (attrs.projectId) event.project_id = attrs.projectId;
   if (attrs.orgId) event.org_id = attrs.orgId;
 
-  // Fix 3: sessionTraceId is the resolved Claude Code session_id; the
+  // sessionTraceId is the resolved Claude Code session_id; the
   // firstRecord?.sessionId fallback was only meaningful when the MCP fabricated
   // its own UUID and lost cross-reference with the tool-call records.
   if (attrs.sessionTraceId != null) event.session_id = attrs.sessionTraceId;

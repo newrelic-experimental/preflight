@@ -18,6 +18,9 @@ jest.mock('./schedule.js', () => ({
   installSchedule: jest.fn(),
   removeSchedule: jest.fn(),
   getScheduleStatus: jest.fn(() => ({ installed: false })),
+  installDashboardDaemon: jest.fn(),
+  removeDashboardDaemon: jest.fn(),
+  getDashboardDaemonStatus: jest.fn(() => ({ installed: false })),
   resolveBinaryPath: jest.fn(() => '/usr/local/bin/preflight'),
 }));
 jest.mock('./install-helper.js', () => ({

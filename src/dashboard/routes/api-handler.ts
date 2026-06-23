@@ -229,8 +229,8 @@ export interface ApiHandlerDeps {
   readonly contextTracker?: { getMetrics: (sessionId?: string) => unknown };
   readonly config?: McpServerConfig;
   readonly configFilePath?: string;
-  // Task #17 (D3): the dashboard owner reads every per-session buffer file
-  // in read-only mode for the cross-session aggregate endpoint.
+  // The dashboard owner reads every per-session buffer file in read-only
+  // mode for the cross-session aggregate endpoint.
   // `peekAllBuffers()` does NOT drain — only the owning MCP's own
   // `drainBuffer()` consumes events for ingestion.
   readonly localStore?: { peekAllBuffers: () => readonly { readonly [key: string]: unknown }[] };
@@ -716,11 +716,10 @@ export function createApiHandler(
     jsonOk(res, slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
   });
 
-  // Task #17 (D3): currently-live session list with metadata. Sourced from
-  // LiveSessionRegistry (touch-based liveness within a 3-minute window) so
-  // the Today selector can default to the most-recently-active session even
-  // when nothing has been persisted to disk yet. The dashboard owner sees
-  // every live session — Fix 3 partitioned per-session buffer files but the
+  // Currently-live session list with metadata. Sourced from LiveSessionRegistry
+  // (touch-based liveness within a 3-minute window) so the Today selector can
+  // default to the most-recently-active session even when nothing has been
+  // persisted to disk yet. The dashboard owner sees every live session — the
   // registry is in-memory and shared via this MCP, so the data is one
   // authoritative read.
   //
@@ -771,9 +770,9 @@ export function createApiHandler(
     jsonOk(res, sessions);
   });
 
-  // Task #17 (D3): cross-session aggregate KPIs for the Today view. Reads:
-  //   1. every per-session buffer-*.jsonl in read-only mode (post-Fix-3
-  //      each MCP only drains its own; the dashboard owner needs the union)
+  // Cross-session aggregate KPIs for the Today view. Reads:
+  //   1. every per-session buffer-*.jsonl in read-only mode (each MCP only
+  //      drains its own; the dashboard owner needs the union)
   //   2. completed session JSONs at ~/.newrelic-preflight/sessions/ (loaded via
   //      sessionStore.loadTodaySessions())
   //   3. the in-memory tool call buffer (events from this MCP that have

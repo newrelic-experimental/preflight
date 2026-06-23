@@ -44,10 +44,10 @@ export class LiveSessionRegistry {
     return this.sessionNames.get(sessionId) ?? null;
   }
 
-  // Task #17 (D3): the dashboard's `/api/sessions/live` endpoint surfaces
-  // last-activity per live session so the Today selector can default to the
-  // most-recently-active live session. Returns null when the session is not
-  // tracked (e.g. already gc'd as stale).
+  // The dashboard's `/api/sessions/live` endpoint surfaces last-activity per
+  // live session so the Today selector can default to the most-recently-active
+  // live session. Returns null when the session is not tracked (e.g. already
+  // gc'd as stale).
   getLastActivity(sessionId: string): number | null {
     return this.lastActivity.get(sessionId) ?? null;
   }

@@ -117,8 +117,8 @@ export class SessionTracker {
 
   constructor(sessionId: string) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
-      // Fix 3: the MCP no longer fabricates session_ids. Callers must pass
-      // the resolved Claude Code session_id (or a real UUID for tests).
+      // The MCP no longer fabricates session_ids. Callers must pass the
+      // resolved Claude Code session_id (or a real UUID for tests).
       throw new Error('SessionTracker requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
@@ -297,6 +297,14 @@ export class SessionTracker {
     aggregator.record('ai.session.duration_ms', Date.now() - this.sessionStartTime);
     aggregator.record('ai.session.unique_files_read', this.filesRead.size);
     aggregator.record('ai.session.unique_files_written', this.filesWritten.size);
+  }
+
+  /** Update the session ID in place without clearing any accumulated metrics. */
+  adoptSessionId(sessionId: string): void {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
+    }
+    this.sessionId = sessionId;
   }
 
   reset(sessionId: string): void {

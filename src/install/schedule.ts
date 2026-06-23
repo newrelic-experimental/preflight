@@ -21,13 +21,22 @@ function escapeXml(s: string): string {
 }
 
 const PLIST_LABEL = 'com.preflight.update';
+const DASHBOARD_PLIST_LABEL = 'com.preflight.dashboard';
 
 function plistPath(): string {
   return resolve(homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
 }
 
+function dashboardPlistPath(): string {
+  return resolve(homedir(), 'Library', 'LaunchAgents', `${DASHBOARD_PLIST_LABEL}.plist`);
+}
+
 function updateLogPath(): string {
   return resolve(homedir(), '.newrelic-preflight', 'update.log');
+}
+
+function dashboardLogPath(): string {
+  return resolve(homedir(), '.newrelic-preflight', 'dashboard.log');
 }
 
 function buildPlist(binaryPath: string, hour: number, minute: number): string {
@@ -107,6 +116,79 @@ export function getScheduleStatus(): ScheduleStatus {
       installed: true,
       hour: hourMatch ? parseInt(hourMatch[1], 10) : undefined,
       minute: minuteMatch ? parseInt(minuteMatch[1], 10) : undefined,
+      binaryPath: binaryMatch ? binaryMatch[1] : undefined,
+    };
+  } catch {
+    return { installed: false };
+  }
+}
+
+function buildDashboardPlist(binaryPath: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${DASHBOARD_PLIST_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${escapeXml(binaryPath)}</string>
+    <string>--local</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(dashboardLogPath())}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(dashboardLogPath())}</string>
+</dict>
+</plist>`;
+}
+
+export interface DashboardDaemonStatus {
+  readonly installed: boolean;
+  readonly binaryPath?: string;
+}
+
+export function installDashboardDaemon(binaryPath: string): void {
+  const path = dashboardPlistPath();
+  mkdirSync(resolve(homedir(), 'Library', 'LaunchAgents'), { recursive: true, mode: 0o755 });
+  writeFileSync(path, buildDashboardPlist(binaryPath), { mode: 0o600 });
+  try {
+    execFileSync('launchctl', ['unload', path], { stdio: 'pipe' });
+  } catch {
+    // Not yet loaded — that's fine.
+  }
+  try {
+    execFileSync('launchctl', ['load', path], { stdio: 'pipe' });
+  } catch (err) {
+    throw new Error(`launchctl load failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export function removeDashboardDaemon(): void {
+  const path = dashboardPlistPath();
+  if (!existsSync(path)) return;
+  try {
+    execFileSync('launchctl', ['unload', path], { stdio: 'pipe' });
+  } catch {
+    // Already unloaded.
+  }
+  unlinkSync(path);
+}
+
+export function getDashboardDaemonStatus(): DashboardDaemonStatus {
+  const path = dashboardPlistPath();
+  if (!existsSync(path)) return { installed: false };
+  try {
+    const content = readFileSync(path, 'utf-8');
+    const binaryMatch = content.match(
+      /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/,
+    );
+    return {
+      installed: true,
       binaryPath: binaryMatch ? binaryMatch[1] : undefined,
     };
   } catch {
