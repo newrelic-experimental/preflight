@@ -28,6 +28,7 @@ import {
   detectMcpConfigPath,
   generateNrConfig,
 } from './install-helper.js';
+import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateConfigFile, DEFAULT_STORAGE_PATH } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import {
@@ -58,22 +59,30 @@ function readJsonFile(path: string): Record<string, unknown> {
   }
 }
 
-function writeJsonFile(path: string, data: Record<string, unknown>): void {
+function writeJsonFile(
+  path: string,
+  data: Record<string, unknown>,
+  additionalAllowedBase?: string,
+): void {
   const dir = dirname(path);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
   // Symlink guard: verify both the resolved parent directory AND the resolved
-  // target file path are under HOME or cwd. Checking only the directory misses
-  // the case where the file itself (e.g. settings.json) is a symlink pointing
-  // outside HOME (e.g. to /etc/cron.d/evil).
+  // target file path are under HOME, cwd, or an explicitly allowed base (e.g.
+  // the Windows home path under /mnt/c/... when writing from WSL).
   const resolvedDir = realpathSync(dir);
   const resolvedPath = existsSync(path) ? realpathSync(path) : resolve(resolvedDir, basename(path));
   const home = homedir();
   const cwd = process.cwd();
   const check = (p: string) =>
-    p === home || p.startsWith(home + sep) || p === cwd || p.startsWith(cwd + sep);
+    p === home ||
+    p.startsWith(home + sep) ||
+    p === cwd ||
+    p.startsWith(cwd + sep) ||
+    (additionalAllowedBase !== undefined &&
+      (p === additionalAllowedBase || p.startsWith(additionalAllowedBase + sep)));
   if (!check(resolvedDir) || !check(resolvedPath)) {
     throw new Error(`Refusing to write outside HOME or project root: ${resolvedPath}`);
   }
@@ -229,33 +238,53 @@ function handleInstall(options: {
   // shells (e.g. /bin/sh) that don't inherit NVM/nix/Homebrew PATH entries.
   const binPath = resolveBinaryPath();
 
-  // Hooks go in settings.json
-  const settingsPath = detectSettingsPath(scope);
+  // On WSL, Claude Code for Windows reads settings from the Windows user home
+  // (accessible via /mnt/c/Users/<name>/). Hook commands must use wsl.exe -e
+  // so Windows Claude Code can invoke the WSL binary.
+  const wslEnv = isWsl();
+  const windowsHome = wslEnv ? resolveWindowsHome() : null;
+  const useWslMode = wslEnv && windowsHome !== null;
+
+  if (wslEnv && !useWslMode) {
+    print('\n  ⚠ WSL detected but Windows home directory could not be resolved.');
+    print('  Hooks will be written to the WSL home (~/.claude/settings.json).');
+    print('  If you are using Windows Claude Code, restart WSL interop and re-run install.');
+  }
+
+  // Hooks go in settings.json (Windows path when running under WSL)
+  const settingsPath = detectSettingsPath(scope, windowsHome);
   let mergedSettings: ReturnType<typeof mergeSettings>;
   try {
     const existingSettings = readJsonFile(settingsPath);
-    mergedSettings = mergeSettings(existingSettings, binPath);
+    mergedSettings = mergeSettings(existingSettings, binPath, { wsl: useWslMode });
   } catch (err) {
     console.error(
       `✗ Failed to update ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
     process.exit(1);
   }
-  writeJsonFile(settingsPath, mergedSettings);
+  writeJsonFile(settingsPath, mergedSettings, windowsHome ?? undefined);
 
-  // MCP server goes in .mcp.json
-  const mcpPath = detectMcpConfigPath(scope);
+  // MCP server goes in .mcp.json (Windows path when running under WSL)
+  const mcpPath = detectMcpConfigPath(scope, windowsHome);
   let mergedMcp: ReturnType<typeof mergeMcpConfig>;
   try {
     const existingMcp = readJsonFile(mcpPath);
-    mergedMcp = mergeMcpConfig(existingMcp, binPath);
+    mergedMcp = mergeMcpConfig(existingMcp, binPath, { wsl: useWslMode });
   } catch (err) {
     console.error(
       `✗ Failed to update ${mcpPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
     process.exit(1);
   }
-  writeJsonFile(mcpPath, mergedMcp);
+  writeJsonFile(mcpPath, mergedMcp, windowsHome ?? undefined);
+
+  if (useWslMode) {
+    print(`\n  ℹ WSL detected — configuring for Windows Claude Code`);
+    print(`  Hooks written to: ${settingsPath}`);
+    print(`  MCP config written to: ${mcpPath}`);
+    print('  Hook commands use wsl.exe -e so Windows Claude Code can invoke them.');
+  }
 
   print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
   print('  - Added PreToolUse and PostToolUse hooks');
@@ -292,34 +321,55 @@ function handleInstall(options: {
 function handleUninstall(options: { project?: boolean }): void {
   const scope = options.project ? 'project' : 'user';
 
-  // Remove hooks from settings.json
-  const settingsPath = detectSettingsPath(scope);
-  if (existsSync(settingsPath)) {
-    const settingsBackup = `${settingsPath}.backup-${Date.now()}`;
-    copyFileSync(settingsPath, settingsBackup);
-    print(`\n  Backup saved: ${settingsBackup}`);
-    const existingSettings = readJsonFile(settingsPath);
-    const cleanedSettings = removeSettings(existingSettings);
-    writeJsonFile(settingsPath, cleanedSettings);
-    print(`✓ Hooks removed: ${settingsPath}`);
-  } else {
-    print(`\nNo settings file found at ${settingsPath}. Skipping hooks.`);
+  // On WSL, attempt to clean up both the Windows-side paths (current install
+  // format) and the WSL-side paths (legacy pre-WSL-support installs).
+  const wslEnv = isWsl();
+  const windowsHome = wslEnv ? resolveWindowsHome() : null;
+
+  const settingsPathsToClean = new Set<string>();
+  settingsPathsToClean.add(detectSettingsPath(scope, windowsHome));
+  if (windowsHome) settingsPathsToClean.add(detectSettingsPath(scope, null));
+
+  const mcpPathsToClean = new Set<string>();
+  mcpPathsToClean.add(detectMcpConfigPath(scope, windowsHome));
+  if (windowsHome) mcpPathsToClean.add(detectMcpConfigPath(scope, null));
+
+  print('');
+
+  // Remove hooks from settings.json (all candidate paths)
+  let settingsFound = false;
+  for (const settingsPath of settingsPathsToClean) {
+    if (existsSync(settingsPath)) {
+      settingsFound = true;
+      const settingsBackup = `${settingsPath}.backup-${Date.now()}`;
+      copyFileSync(settingsPath, settingsBackup);
+      print(`  Backup saved: ${settingsBackup}`);
+      const existingSettings = readJsonFile(settingsPath);
+      const cleanedSettings = removeSettings(existingSettings);
+      writeJsonFile(settingsPath, cleanedSettings, windowsHome ?? undefined);
+      print(`✓ Hooks removed: ${settingsPath}`);
+    }
+  }
+  if (!settingsFound) {
+    print(`No settings file found at ${[...settingsPathsToClean].join(', ')}. Skipping hooks.`);
   }
 
-  // Remove MCP server from .mcp.json
-  const mcpPath = detectMcpConfigPath(scope);
-  if (existsSync(mcpPath)) {
-    const mcpBackup = `${mcpPath}.backup-${Date.now()}`;
-    copyFileSync(mcpPath, mcpBackup);
-    print(`  Backup saved: ${mcpBackup}`);
-    const existingMcp = readJsonFile(mcpPath);
-    const cleanedMcp = removeMcpConfig(existingMcp);
-
-    // If .mcp.json is now empty (no mcpServers key or empty object), leave it minimal
-    writeJsonFile(mcpPath, cleanedMcp);
-    print(`✓ MCP server removed: ${mcpPath}`);
-  } else {
-    print(`No MCP config found at ${mcpPath}. Skipping MCP server.`);
+  // Remove MCP server from .mcp.json (all candidate paths)
+  let mcpFound = false;
+  for (const mcpPath of mcpPathsToClean) {
+    if (existsSync(mcpPath)) {
+      mcpFound = true;
+      const mcpBackup = `${mcpPath}.backup-${Date.now()}`;
+      copyFileSync(mcpPath, mcpBackup);
+      print(`  Backup saved: ${mcpBackup}`);
+      const existingMcp = readJsonFile(mcpPath);
+      const cleanedMcp = removeMcpConfig(existingMcp);
+      writeJsonFile(mcpPath, cleanedMcp, windowsHome ?? undefined);
+      print(`✓ MCP server removed: ${mcpPath}`);
+    }
+  }
+  if (!mcpFound) {
+    print(`No MCP config file found at ${[...mcpPathsToClean].join(', ')}. Skipping MCP server.`);
   }
 
   print('\nRestart Claude Code for changes to take effect.\n');
