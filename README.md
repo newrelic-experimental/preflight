@@ -60,6 +60,7 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
 - **7 pre-built New Relic dashboards** — deploy in seconds _(New Relic mode)_:
   - **Overview** — session stats, cost summary, top tools
   - **Personal** — 30-day self-reflection scoped to you
+  - **Session Detail** — deep-dive into a single session's tool calls
   - **Team View** — aggregated cost and efficiency across developers
   - **Manager View** — high-level team metrics, no tool-call content
   - **Platform Comparison** — Claude Code vs. Cursor vs. Windsurf, etc.
@@ -115,9 +116,12 @@ Re-run `preflight setup` and choose **cloud** or **both**, or configure it non-i
 
 ```bash
 preflight install \
+  --mode cloud \
   --license-key YOUR_LICENSE_KEY \
   --account-id YOUR_ACCOUNT_ID
 ```
+
+EU accounts add `--eu`. FedRAMP accounts add `--fedramp`.
 
 Then deploy the prebuilt dashboards:
 
@@ -127,6 +131,8 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
 ```
 
 You'll need a **license key** (telemetry ingest) and your **account ID**, plus a **user API key** (`NRAK-…`) to deploy dashboards and alerts. See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
+
+> **Data ingest note:** Telemetry sent to New Relic counts against your account's data ingest. On paid plans, standard ingest rates apply. Monitor your usage under **NR One → Data Management → Data Ingestion**.
 
 ---
 
@@ -141,6 +147,18 @@ You'll need a **license key** (telemetry ingest) and your **account ID**, plus a
 
 - **New Relic account** — only for `cloud`/`both` mode. Skip it to run local-only (the default).
 - **User API key** (`NRAK-…`) — only needed to deploy dashboards and alerts
+
+---
+
+## Other Commands
+
+```bash
+preflight validate    # Check config for syntax errors and unknown keys
+preflight update      # Pull latest version and rebuild
+preflight uninstall   # Remove hooks and MCP config from your AI tool
+```
+
+Add `--project` to `install`/`uninstall` to scope changes to the current directory only.
 
 ---
 
