@@ -50,6 +50,42 @@ describe('generateHookEntries', () => {
     ]);
   });
 
+  it('wsl mode: uses quoted wsl.exe -e with absolute path', () => {
+    const hooks = generateHookEntries('/home/user/bin/preflight', { wsl: true });
+
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe(
+      'wsl.exe -e "/home/user/bin/preflight-collector" pre-tool',
+    );
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe(
+      'wsl.exe -e "/home/user/bin/preflight-collector" post-tool',
+    );
+  });
+
+  it('wsl mode: quotes path with spaces so cmd.exe does not split tokens', () => {
+    const hooks = generateHookEntries('/home/john doe/bin/preflight', { wsl: true });
+
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe(
+      'wsl.exe -e "/home/john doe/bin/preflight-collector" pre-tool',
+    );
+  });
+
+  it('wsl mode: escapes backslashes before quotes, matching non-wsl branch behaviour', () => {
+    const hooks = generateHookEntries('/path/with\\backslash/preflight', { wsl: true });
+
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe(
+      'wsl.exe -e "/path/with\\\\backslash/preflight-collector" pre-tool',
+    );
+  });
+
+  it('wsl mode: falls back to quoted bare command name when binPath is null', () => {
+    const hooks = generateHookEntries(null, { wsl: true });
+
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe('wsl.exe -e "preflight-collector" pre-tool');
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe(
+      'wsl.exe -e "preflight-collector" post-tool',
+    );
+  });
+
   it('uses quoted full path when binPath is provided', () => {
     const hooks = generateHookEntries('/usr/local/bin/preflight');
 
@@ -93,6 +129,55 @@ describe('generateHookEntries', () => {
   });
 });
 
+describe('mergeSettings — WSL mode', () => {
+  it('generates quoted wsl.exe hook commands', () => {
+    const result = mergeSettings({}, '/home/user/bin/preflight', { wsl: true });
+    const hooks = result.hooks as Record<string, unknown[]>;
+    const pre = hooks.PreToolUse[0] as Record<string, unknown>;
+    expect((pre.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'wsl.exe -e "/home/user/bin/preflight-collector" pre-tool',
+    );
+  });
+
+  it('is idempotent — re-installing with wsl mode does not duplicate entries', () => {
+    const once = mergeSettings({}, '/home/user/bin/preflight', { wsl: true });
+    const twice = mergeSettings(once, '/home/user/bin/preflight', { wsl: true });
+    const hooks = twice.hooks as Record<string, unknown[]>;
+    expect(hooks.PreToolUse).toHaveLength(1);
+    expect(hooks.PostToolUse).toHaveLength(1);
+  });
+});
+
+describe('mergeMcpConfig — WSL mode', () => {
+  it('generates wsl.exe MCP server entry', () => {
+    const result = mergeMcpConfig({}, '/home/user/bin/preflight', { wsl: true });
+    const servers = result.mcpServers as Record<string, unknown>;
+    expect(servers['newrelic-preflight']).toEqual({
+      command: 'wsl.exe',
+      args: ['-e', '/home/user/bin/preflight', '--stdio'],
+    });
+  });
+});
+
+describe('detectSettingsPath — windowsHome override', () => {
+  it('uses windowsHome as the base for user scope', () => {
+    const path = detectSettingsPath('user', '/mnt/c/Users/alice');
+    expect(path).toBe(resolve('/mnt/c/Users/alice', '.claude', 'settings.json'));
+  });
+
+  it('ignores windowsHome for project scope', () => {
+    const path = detectSettingsPath('project', '/mnt/c/Users/alice');
+    expect(path).toBe(resolve(process.cwd(), '.claude', 'settings.json'));
+  });
+});
+
+describe('detectMcpConfigPath — windowsHome override', () => {
+  it('uses windowsHome as the base for user scope', () => {
+    const path = detectMcpConfigPath('user', '/mnt/c/Users/alice');
+    expect(path).toBe(resolve('/mnt/c/Users/alice', '.mcp.json'));
+  });
+});
+
 describe('generateMcpServerEntry', () => {
   it('returns bare command when no binPath provided', () => {
     const entry = generateMcpServerEntry();
@@ -116,6 +201,24 @@ describe('generateMcpServerEntry', () => {
     expect(entry['newrelic-preflight']).toEqual({
       command: 'preflight',
       args: ['--stdio'],
+    });
+  });
+
+  it('wsl mode: uses wsl.exe -e with absolute path', () => {
+    const entry = generateMcpServerEntry('/home/user/bin/preflight', { wsl: true });
+
+    expect(entry['newrelic-preflight']).toEqual({
+      command: 'wsl.exe',
+      args: ['-e', '/home/user/bin/preflight', '--stdio'],
+    });
+  });
+
+  it('wsl mode: falls back to bare command name when binPath is null', () => {
+    const entry = generateMcpServerEntry(null, { wsl: true });
+
+    expect(entry['newrelic-preflight']).toEqual({
+      command: 'wsl.exe',
+      args: ['-e', 'preflight', '--stdio'],
     });
   });
 });

@@ -15,6 +15,7 @@ import { normalizeDeveloperName, ConfigFileSchema } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import { runInstallCli, verifyBinaryOnPath } from './cli.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
+import { isWsl } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
 
 const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
@@ -519,7 +520,8 @@ export async function runSetupWizard(): Promise<void> {
       }
     }
 
-    // Step 6b: Always-on background dashboard daemon (local/both mode, macOS only)
+    // Step 6b: Always-on background dashboard daemon
+    const wslEnv = isWsl();
     if ((mode === 'local' || mode === 'both') && process.platform === 'darwin') {
       const binaryPath = resolveBinaryPath();
       const daemonAnswer = (
@@ -556,6 +558,18 @@ export async function runSetupWizard(): Promise<void> {
           );
         }
       }
+    } else if ((mode === 'local' || mode === 'both') && process.platform === 'linux') {
+      // Covers both native Linux and WSL — neither has an integrated system daemon manager.
+      if (wslEnv) {
+        print(`\n  ℹ WSL detected — background dashboard daemon is not available.`);
+      } else {
+        print(`\n  ℹ No system daemon manager available on Linux.`);
+      }
+      print(
+        `  To keep the dashboard running, start it in a background terminal before launching Claude Code:`,
+      );
+      print(`    preflight --local &`);
+      print(`  Or add it to your ~/.bashrc / ~/.zshrc so it starts automatically with your shell.`);
     }
 
     // Step 7: Auto-update schedule (macOS only)
