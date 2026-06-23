@@ -16,7 +16,7 @@
 
 ## Why Your AI Tool Needs Observability
 
-Your AI coding assistant makes hundreds of decisions every session — what to read, what to edit, when to run commands. But you can't see any of it. You know it was fast, but was it *efficient*? You got a PR merged, but how much did it cost? You fixed a bug, but did it get stuck in a loop first?
+Your AI coding assistant makes hundreds of decisions every session — what to read, what to edit, when to run commands. But you can't see any of it. You know it was fast, but was it _efficient_? You got a PR merged, but how much did it cost? You fixed a bug, but did it get stuck in a loop first?
 
 **Preflight is observability for agentic coding** — the actions, cost, and efficiency of your AI coding assistant as it works. See exactly what's happening, how much it costs, and where your AI is wasting time.
 
@@ -35,27 +35,32 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
 ## What You Get
 
 ### Visibility
+
 - **Every action captured** — file reads, edits, commands, searches
 - **Live session dashboard** — see what's happening right now
 - **Historical trends** — analyze patterns over weeks and months
 
 ### Cost Control
+
 - **USD spend tracking** — per session, day, and week
 - **Per-model breakdown** — know which models cost most
 - **Budget alerts** — get notified before you overspend
 - **Forecasting** — project monthly burn rate
 
 ### Efficiency Insights
+
 - **Efficiency score** — 0–100 score per task, based on how directly the AI worked
 - **Anti-pattern detection** — catches re-reads, blind edits, stuck loops
 - **Personalized recommendations** — optimize your AI workflow
 - **Weekly coaching reports** — narrative analysis vs. your historical baseline
 
 ### Dashboards
+
 - **Local dashboard** — live session view at `localhost:7777`, no account required
 - **7 pre-built New Relic dashboards** — deploy in seconds _(New Relic mode)_:
   - **Overview** — session stats, cost summary, top tools
   - **Personal** — 30-day self-reflection scoped to you
+  - **Session Detail** — deep-dive into a single session's tool calls
   - **Team View** — aggregated cost and efficiency across developers
   - **Manager View** — high-level team metrics, no tool-call content
   - **Platform Comparison** — Claude Code vs. Cursor vs. Windsurf, etc.
@@ -81,11 +86,11 @@ The wizard defaults to **local mode** — press Enter through the prompts and yo
 
 When prompted, pick a mode:
 
-| Mode | What it does | New Relic account? |
-| --- | --- | --- |
-| **local** _(default)_ | Everything stays on your machine; live dashboard at `localhost:7777` | Not needed |
-| **cloud** | Ships telemetry to New Relic | Required |
-| **both** | Local dashboard **and** New Relic | Required |
+| Mode                  | What it does                                                         | New Relic account? |
+| --------------------- | -------------------------------------------------------------------- | ------------------ |
+| **local** _(default)_ | Everything stays on your machine; live dashboard at `localhost:7777` | Not needed         |
+| **cloud**             | Ships telemetry to New Relic                                         | Required           |
+| **both**              | Local dashboard **and** New Relic                                    | Required           |
 
 ### 3. Start coding
 
@@ -111,9 +116,12 @@ Re-run `preflight setup` and choose **cloud** or **both**, or configure it non-i
 
 ```bash
 preflight install \
+  --mode cloud \
   --license-key YOUR_LICENSE_KEY \
   --account-id YOUR_ACCOUNT_ID
 ```
+
+EU accounts add `--eu`. FedRAMP accounts add `--fedramp`.
 
 Then deploy the prebuilt dashboards:
 
@@ -124,17 +132,33 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
 
 You'll need a **license key** (telemetry ingest) and your **account ID**, plus a **user API key** (`NRAK-…`) to deploy dashboards and alerts. See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
 
+> **Data ingest note:** Telemetry sent to New Relic counts against your account's data ingest. On paid plans, standard ingest rates apply. Monitor your usage under **NR One → Data Management → Data Ingestion**.
+
 ---
 
 ## Requirements
 
 ### Required
+
 - **Node.js v22 or higher** ([get it](https://nodejs.org) or use [nvm](https://github.com/nvm-sh/nvm))
 - **An AI coding tool** (Claude Code recommended for deepest integration)
 
 ### Optional
+
 - **New Relic account** — only for `cloud`/`both` mode. Skip it to run local-only (the default).
 - **User API key** (`NRAK-…`) — only needed to deploy dashboards and alerts
+
+---
+
+## Other Commands
+
+```bash
+preflight validate    # Check config for syntax errors and unknown keys
+preflight update      # Pull latest version and rebuild
+preflight uninstall   # Remove hooks and MCP config from your AI tool
+```
+
+Add `--project` to `install`/`uninstall` to scope changes to the current directory only.
 
 ---
 
