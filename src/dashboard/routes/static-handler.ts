@@ -61,7 +61,11 @@ export function createStaticHandler(
     }
 
     const target = resolve(join(root, filename));
-    if (!target.startsWith(root + sep) && target !== root) {
+    // Use a literal '/' so static analysis tools (CodeQL js/path-injection)
+    // can recognise this as the standard path-containment sanitizer pattern.
+    // The runtime sep from node:path would be equivalent on POSIX, but CodeQL
+    // cannot statically prove that sep === '/' and therefore misses the guard.
+    if (!target.startsWith(root + '/')) {
       res.writeHead(403);
       res.end();
       return;

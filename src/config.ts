@@ -191,16 +191,20 @@ export function sanitizeDeveloper(raw: string): string {
  * "John Doe" → "john_doe", "my.user@host" → "my_user_host"
  */
 export function normalizeDeveloperName(raw: string): string {
-  return (
-    raw
-      .replace(/[\x00-\x1f\x7f]/g, '') // strip control chars
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, '_') // collapse non-alphanumeric runs to _
-      .replace(/^_+/, '') // strip leading underscores
-      .replace(/_+$/, '') // strip trailing underscores
-      .slice(0, 64) || 'unknown'
-  );
+  const normalized = raw
+    .replace(/[\x00-\x1f\x7f]/g, '') // strip control chars
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '_'); // collapse non-alphanumeric runs to _
+
+  // Trim leading/trailing underscores with an index walk instead of
+  // anchored-quantifier regexes (/^_+/ and /_+$/) — the latter causes
+  // O(n²) backtracking on underscore-heavy strings (CodeQL js/polynomial-redos).
+  let start = 0;
+  let end = normalized.length;
+  while (start < end && normalized[start] === '_') start++;
+  while (end > start && normalized[end - 1] === '_') end--;
+  return (normalized.slice(start, end) || 'unknown').slice(0, 64);
 }
 
 function sanitizeOrgField(value: string | null | undefined): string | null {
