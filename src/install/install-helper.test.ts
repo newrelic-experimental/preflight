@@ -75,6 +75,17 @@ describe('generateHookEntries', () => {
     );
   });
 
+  it('escapes backslashes before quotes in paths containing backslashes', () => {
+    // A POSIX path whose directory component contains a literal backslash character.
+    // Backslashes must be doubled before quote-escaping so a backslash adjacent to
+    // the closing " cannot break the shell quoting.
+    const hooks = generateHookEntries('/path/with\\backslash/preflight');
+
+    expect(hooks.PreToolUse[0].hooks[0].command).toBe(
+      '"/path/with\\\\backslash/preflight-collector" pre-tool',
+    );
+  });
+
   it('falls back to bare command when binPath is null', () => {
     const hooks = generateHookEntries(null);
 

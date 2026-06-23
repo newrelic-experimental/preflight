@@ -197,7 +197,8 @@ export function normalizeDeveloperName(raw: string): string {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9-]+/g, '_') // collapse non-alphanumeric runs to _
-      .replace(/^_+|_+$/g, '') // strip leading/trailing underscores
+      .replace(/^_+/, '') // strip leading underscores
+      .replace(/_+$/, '') // strip trailing underscores
       .slice(0, 64) || 'unknown'
   );
 }

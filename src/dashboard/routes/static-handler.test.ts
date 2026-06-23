@@ -118,11 +118,30 @@ describe('static-handler', () => {
     expect(Buffer.concat(chunks).toString()).not.toContain('<!doctype html>');
   });
 
+  it('returns 403 for files with extensions not in the MIME allow-list', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'static-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html>');
+    writeFileSync(join(dir, 'config.yaml'), 'secret: value');
+    const handler = createStaticHandler(dir);
+    const { req, res, status } = makeReqRes('/config.yaml');
+    await handler(req, res);
+    expect(status()).toBe(403);
+  });
+
   it('rejects path traversal (../)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'static-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html>');
     const handler = createStaticHandler(dir);
     const { req, res, status } = makeReqRes('/../../etc/passwd');
+    await handler(req, res);
+    expect(status()).toBe(403);
+  });
+
+  it('rejects null bytes in the path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'static-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html>');
+    const handler = createStaticHandler(dir);
+    const { req, res, status } = makeReqRes('/index.html\0.txt');
     await handler(req, res);
     expect(status()).toBe(403);
   });

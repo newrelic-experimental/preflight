@@ -50,6 +50,16 @@ export function createStaticHandler(
     const url = req.url ?? '/';
     const reqPath = url.split('?')[0] ?? '/';
     const filename = reqPath === '/' ? 'index.html' : reqPath.replace(/^\/+/, '');
+
+    // Reject null bytes and explicit traversal components before path resolution.
+    // resolve() would eliminate these too, but the explicit check here makes the
+    // sanitization visible to static analysis (CodeQL js/path-injection).
+    if (filename.includes('\0') || filename.split('/').some((c) => c === '..')) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+
     const target = resolve(join(root, filename));
     if (!target.startsWith(root + sep) && target !== root) {
       res.writeHead(403);
@@ -58,6 +68,16 @@ export function createStaticHandler(
     }
     const ext = extname(target).toLowerCase();
     const hasFileExtension = ext.length > 0;
+
+    // Only serve files whose extension appears in the explicit MIME allow-list.
+    // This limits what readFile() can reach to known web-asset types even if a
+    // future change inadvertently widens the path-containment check above.
+    if (hasFileExtension && !(ext in MIME)) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+
     try {
       const st = await stat(target);
       if (!st.isFile()) {
