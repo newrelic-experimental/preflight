@@ -50,7 +50,7 @@ Show the current server configuration with sensitive fields masked.
   "mode": "cloud",
   "developer": "alice",
   "accountId": "12345",
-  "licenseKeyMasked": "175cae4b...NRAL",
+  "licenseKeyMasked": "aabbccdd...NRAL",
   "nrApiKeyMasked": "NRAK-****",
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
@@ -1243,7 +1243,7 @@ Source: `src/tools/session-stats.ts`, `src/metrics/git-efficiency-tracker.ts`
 
 ## Extended Analytics Tools
 
-These tools expose deeper session-level analysis from the Phase 2 extended metric trackers. They are always registered when the trackers are available (no cross-session store dependency).
+These tools expose deeper session-level analysis. They are always registered when the trackers are available (no cross-session store dependency).
 
 ### `nr_observe_get_retry_alerts`
 

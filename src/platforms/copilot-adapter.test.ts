@@ -6,7 +6,7 @@ let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
 
 const ENV_KEYS = [
-  'NR_AI_COPILOT_OBSERVER',
+  'NEW_RELIC_AI_PLATFORM',
   'MCP_CLIENT',
   'VSCODE_VERSION',
   'COPILOT_EXTENSION_VERSION',
@@ -221,8 +221,8 @@ describe('CopilotAdapter', () => {
   });
 
   describe('isSupported', () => {
-    it('returns true when NR_AI_COPILOT_OBSERVER is "active"', () => {
-      process.env.NR_AI_COPILOT_OBSERVER = 'active';
+    it('returns true when NEW_RELIC_AI_PLATFORM is "copilot"', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot';
       expect(adapter.isSupported()).toBe(true);
     });
 
@@ -231,7 +231,7 @@ describe('CopilotAdapter', () => {
       expect(adapter.isSupported()).toBe(true);
     });
 
-    it('returns false when companion extension is not installed', () => {
+    it('returns false when copilot env vars are absent', () => {
       expect(adapter.isSupported()).toBe(false);
     });
   });

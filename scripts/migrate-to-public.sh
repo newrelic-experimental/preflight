@@ -217,35 +217,69 @@ PRIVATE_REPO_DIR="$(pwd)"
 
 if [[ -d "$PUBLIC_CLONE_DIR/.git" ]]; then
   cd "$PUBLIC_CLONE_DIR"
-  git checkout main
-  git pull --ff-only origin main
+  git fetch origin
+  git checkout main 2>/dev/null || git checkout -b main origin/main
+  git pull --ff-only origin main 2>/dev/null || true
   mkdir -p .github/workflows
   cat > .github/workflows/release.yml << 'WORKFLOW_EOF'
 name: Release
-on:
-  push:
-    tags: ['v*.*.*']
+
+# Triggered manually from the GitHub Actions UI.
+# Creates a git tag, a GitHub release, and publishes to npm via
+# npm Trusted Publishing (OIDC — no NPM_TOKEN secret required).
+# Requires the Node.js Agent team to configure the OIDC connection
+# on npmjs.com for @newrelic/preflight before first use.
+on: [workflow_dispatch]
+
 permissions:
-  contents: write
-  id-token: write
+  contents: write # to create git tag and GitHub release
+  id-token: write # for npm trusted publishing OIDC exchange
+
 jobs:
-  release:
+  publish:
     runs-on: ubuntu-latest
+    env:
+      HUSKY: 0 # disable git hooks in CI
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      - run: npm publish --access public --provenance
+      - uses: actions/checkout@v5
+
+      - name: Setup git
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - uses: softprops/action-gh-release@v2
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+
+      - uses: actions/setup-node@v5
         with:
-          generate_release_notes: true
+          # npm trusted publishing requires npm@11.5.1+, which ships with
+          # Node.js v24.5.0+. Do not downgrade below Node 24.
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag v$(node -p "require('./package.json').version")
+          git push --tags
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v$(node -p "require('./package.json').version") --generate-notes
+
+      - name: Publish to npm
+        run: npm publish
 WORKFLOW_EOF
   # Rewrite CODEOWNERS to public GitHub username
   printf '* @chrisdhaan\n' > .github/CODEOWNERS

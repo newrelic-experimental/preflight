@@ -48,11 +48,11 @@ const antiPatternTypeSchema = z.enum([
 
 const percentileSchema = z.union([z.literal(50), z.literal(95), z.literal(99)]);
 
-// Default to 'session' because v1.1's snapshot collector only populates
+// Default to 'session' because the snapshot collector only populates
 // sessionUsd — today/week always read 0 and any rule asking for those
 // periods silently never fires. parseLocalAlertRules logs a warning when
 // today/week is configured so users editing rules.json don't get a silent
-// no-op. See F-008 in docs/CODE_REVIEW.md.
+// no-op..
 const costPeriodSchema = z.enum(['session', 'today', 'week']).default('session');
 
 // ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ export function parseLocalAlertRules(input: unknown): ParsedRules {
     }
   }
 
-  // F-022: two rules with the same `id` both pass schema validation, but
+  // two rules with the same `id` both pass schema validation, but
   // LocalAlertEngine keys per-rule state by id (`Map<string, RuleState>`),
   // so the second rule shadows the first's state — A is firing, B's
   // condition becomes true, B silently won't fire because it sees

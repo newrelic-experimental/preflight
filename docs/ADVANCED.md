@@ -6,7 +6,7 @@ Power-user features: OTLP export, proxy mode, local alerts, per-developer alerts
 
 ## OTLP Transport
 
-By default, the Observatory sends telemetry to New Relic's proprietary Events API and Metrics API. You can optionally export to **any OpenTelemetry-compatible backend** — Datadog, Grafana Cloud, Honeycomb, a self-hosted OpenTelemetry Collector, or New Relic's OTLP endpoint — without losing the NR path.
+By default, Preflight sends telemetry to New Relic's proprietary Events API and Metrics API. You can optionally export to **any OpenTelemetry-compatible backend** — Datadog, Grafana Cloud, Honeycomb, a self-hosted OpenTelemetry Collector, or New Relic's OTLP endpoint — without losing the NR path.
 
 Add these settings to `~/.newrelic-preflight/config.json`:
 

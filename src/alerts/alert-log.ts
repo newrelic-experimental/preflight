@@ -50,10 +50,10 @@ export class AlertLog {
     this.pending = this.pending.then(async () => {
       try {
         await this.ensureInitialized();
-        // F-021: rotateIfNeeded() can rename log.jsonl → log.jsonl.1 and
+        // rotateIfNeeded() can rename log.jsonl → log.jsonl.1 and
         // a process crash before the appendFile below would lose the
         // current event (not in .1, not in the new file). Acceptable for
-        // v1.1 because: (a) rotation is rare — tens of MB of alert
+        // Acceptable trade-off: (a) rotation is rare — tens of MB of alert
         // history per device — so the crash window is small; (b) the
         // alternative (write-temp + rename + append) doubles the I/O
         // cost on every append. Revisit if audit-trail compliance ever
@@ -134,7 +134,7 @@ export class AlertLog {
       const rotated = `${this.path}.1`;
       // Replace any existing .1 (only one rotation kept).
       await fs.rename(this.path, rotated);
-      // F-046: rename preserves source perms, so a manually pre-created
+      // rename preserves source perms, so a manually pre-created
       // log with looser modes would carry that into .1. Force 0o600
       // explicitly. Best-effort — Windows/NFS may not support chmod, and
       // a perms failure shouldn't break rotation itself.

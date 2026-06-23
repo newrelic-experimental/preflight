@@ -315,9 +315,8 @@ describe('Local alerts — Phase 2 acceptance (full starter rule set)', () => {
     // rule. The session-cost-budget rule ALSO clears here because
     // sessionUsd drops to 0 (below the firing spentUsd of 4), which the
     // engine treats as a session reset (CostTracker reset on new Claude
-    // Code session). See F-009 in docs/CODE_REVIEW.md — daily/weekly rules
-    // still rely on calendar period rollover, but session can reset
-    // mid-process so it must clear by cost drop.
+    // Code session). Daily/weekly rules still rely on calendar period rollover,
+    // but session can reset mid-process so it must clear by cost drop.
     t += 30_000;
     engine.evaluate(
       emptySnapshot(t, {

@@ -11,7 +11,7 @@
     "windowSeconds": 3600,
     "costPeriod": "session",
     "channels": ["banner"],
-    "description": "Session cumulative spend has crossed $10. (today/week variants of cost.window are stubbed in v1.1; use costPeriod: 'session' until v1.2 wires daily/weekly aggregation.)"
+    "description": "Session cumulative spend has crossed $10."
   },
   {
     "id": "low-efficiency-score",

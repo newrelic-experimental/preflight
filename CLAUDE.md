@@ -1,6 +1,6 @@
 # NR AI Coding Observability: Preflight
 
-Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Shared transport/events/pricing code lives in `src/shared/` (synced from `nr-ai-typescript-shared` via `npm run sync:shared`). All telemetry flows to New Relic. The TypeScript SDK agent lives in the separate `nr-ai-typescript-agent` repo. CI/CD tooling and GitHub App webhook server live in the separate `nr-ai-github-tools` repo.
+Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Shared transport/events/pricing code lives in `src/shared/`. All telemetry flows to New Relic.
 
 ## Development Commands
 
@@ -19,8 +19,6 @@ Build directly:
 npx tsc -b .
 ```
 
-To pull in upstream changes from `nr-ai-typescript-shared`: `npm run sync:shared` (then commit the result).
-
 Run tests for a single file:
 
 ```bash
@@ -30,22 +28,18 @@ npx jest -- src/shared/harvest/harvest-scheduler.test.ts
 
 ## Shared Code (`src/shared/`)
 
-**`src/shared/` is a read-only mirror, not a source of truth.** It is overwritten in full by `npm run sync:shared` from the `nr-ai-typescript-shared` repo.
+**`src/shared/` is a vendored snapshot — do not edit directly.**
 
 **Rules:**
 
-1. **Never edit files under `src/shared/` in this repo.** Any change here will be wiped out on the next sync. Make the change in the upstream `nr-ai-typescript-shared` repo, then run `npm run sync:shared` here to pull it in and commit the regenerated tree.
-2. **Only code shared between this MCP server and `nr-ai-typescript-agent` belongs in `nr-ai-typescript-shared`.** If a piece of code is consumed by exactly one of those two repos, it does not belong in shared — keep it local to the consuming repo. Examples of code that _does_ belong: transport clients for NR Events / Metrics / Logs APIs, OTLP transport, event schemas and serialization, harvest scheduler, token extraction, pricing tables, logger, error classification.
-3. **If you need to add a new shared module:** add it in `nr-ai-typescript-shared`, verify both this repo and `nr-ai-typescript-agent` will consume it, then sync into both. Don't introduce a shared file here first and "promote" it later.
-
-If you find yourself wanting to edit `src/shared/` directly to fix a bug or add a feature, stop and switch to the upstream repo instead.
+1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot. If you find a bug there, open an issue.
 
 ## Project Structure
 
 ```
 preflight/
   src/
-    shared/                         # READ-ONLY mirror — synced from nr-ai-typescript-shared via scripts/sync-shared.ts. Never edit here; edit upstream and re-sync.
+    shared/                         # vendored snapshot — do not edit directly
       config.ts                     # AgentConfig loader (env > file > defaults)
       logger.ts                     # createLogger() — stderr JSON logger
       pricing.ts / pricing-data.ts  # Token pricing tables (Anthropic, Gemini)
@@ -63,7 +57,7 @@ preflight/
       event-processor.ts            # Pairs pre/post hook events into ToolCallRecords
       tool-parsers.ts               # INPUT_PARSERS / OUTPUT_PARSERS for tool fields
       bash-classifier.ts            # classifyBash() — coarse Bash command classifier (category/leading/isDestructive/isNetwork)
-    metrics/                        # 19 analyzer classes
+    metrics/                        # metric analyzer classes
       session-tracker.ts            # Per-session tool call tracking
       cost-tracker.ts               # Token cost calculation (per-model)
       cost-forecast.ts              # Burn-rate-based session/day/week cost projections
@@ -131,7 +125,7 @@ preflight/
     policy.json                     # Policy metadata (name, incident preference)
     conditions/                     # NRQL alert condition JSON files
   dashboards/                       # Pre-built NR dashboard JSON files (data, not source)
-  scripts/                          # sync-shared.ts + deploy scripts (deploy-dashboard.ts, deploy-alerts.ts) + backfill-sessions.ts
+  scripts/                          # backfill-sessions.ts, check-bundle-size.ts
 ```
 
 ## Architecture
@@ -163,13 +157,13 @@ Claude Code
                  ├─ nr_observe_get_cost_breakdown
                  ├─ nr_observe_get_anti_patterns
                  ├─ nr_observe_get_recommendations
-                 └─ ... (36 tools total)
+                 └─ ... (tools listed below)
 ```
 
 ### Package Dependencies
 
 - Runtime dependencies: `@modelcontextprotocol/sdk`, `zod`, `commander`, `@opentelemetry/*`
-- Shared code in `src/shared/` has no additional dependencies (pure TypeScript, synced from `nr-ai-typescript-shared`)
+- Shared code in `src/shared/` has no additional dependencies (pure TypeScript)
 
 ## TypeScript Conventions
 
@@ -217,7 +211,7 @@ Logger writes to stderr as JSON. Never write to stdout (reserved for MCP stdio t
 
 ## Metric Tracker Pattern
 
-All 12 metric trackers in `src/metrics/` follow the same shape:
+All metric trackers in `src/metrics/` follow the same shape:
 
 ```typescript
 class XxxTracker {
@@ -245,7 +239,7 @@ Tools are registered in `src/tools/session-stats.ts` via `registerTools()`, whic
 
 Tools are conditionally registered based on available dependencies (e.g., cross-session tools only register when `SessionStore` + `WeeklySummaryGenerator` are available).
 
-### MCP Tools (36 total)
+### MCP Tools
 
 **Session Tools:**
 
@@ -317,7 +311,7 @@ Key config interfaces:
 - `McpServerConfig` in `src/config.ts`
 - `AgentConfig` in `src/shared/config.ts`
 
-### New Configuration Fields (Phases 6–10)
+### Additional Configuration Fields
 
 | Field                 | Env Var                             | Type                                  | Purpose                                                                                                                                                                                                |
 | --------------------- | ----------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -340,46 +334,19 @@ Key config interfaces:
 | `otlpForwardEndpoint` | `NR_AI_OTLP_FORWARD_ENDPOINT`       | string \| null                        | Where the receiver forwards enriched payloads. Defaults to NR US OTLP when `licenseKey` is set; `null` to receive and enrich only.                                                                     |
 | `otlpForwardHeaders`  | `NR_AI_OTLP_FORWARD_HEADERS`        | Record\<string, string\>              | HTTP headers added to every forwarded OTLP request. Defaults to `{ 'api-key': licenseKey }`.                                                                                                           |
 
-### New Event Types
+### Event Types
 
 | Event Type        | Emitted By      | Use Case                                  |
 | ----------------- | --------------- | ----------------------------------------- |
 | `AiBudgetWarning` | `BudgetTracker` | Budget threshold crossed (50%, 80%, 100%) |
 
-### Enhanced Events
+### Team Attribution Fields
 
-All MCP server events (`AiToolCall`, `AiCodingTask`, `AiAntiPattern`, `AiMcpToolCall`, `AiProxyRequest`, `AiAuditEvent`) now include team attribution fields:
+All MCP server events (`AiToolCall`, `AiCodingTask`, `AiAntiPattern`, `AiMcpToolCall`, `AiProxyRequest`, `AiAuditEvent`) include team attribution fields:
 
 - `team_id` — team identifier (from config)
 - `project_id` — project identifier (auto-derived or configured)
 - `org_id` — organization identifier (from config)
-
-### Phase 4 SDK Agent Events
-
-_(Emitted by `nr-ai-agent`, now in the `nr-ai-typescript-agent` repo.)_
-
-Emitted by `nr-ai-agent` from the intelligence modules (Phases 4.1–4.7):
-
-| Event Type               | Emitted By             | Cadence         | Use Case                                                        |
-| ------------------------ | ---------------------- | --------------- | --------------------------------------------------------------- |
-| `AiCostGrowthAlert`      | `CostForecaster`       | On threshold    | Monthly cost growth rate exceeded configured threshold          |
-| `AiCostForecastAlert`    | `CostForecaster`       | On threshold    | Projected monthly cost exceeds configured budget                |
-| `AiExperimentSummary`    | `ExperimentTracker`    | Every 6 hours   | Per-experiment results snapshot with per-variant stats          |
-| `AiExperimentConclusion` | `ExperimentTracker`    | On conclusion   | Winner declared or end date reached — fires once per experiment |
-| `AiRecommendation`       | `RecommendationEngine` | Every 5 minutes | Automated optimization recommendations (cache, model, context)  |
-
-### Provider Support
-
-_(Now in the `nr-ai-typescript-agent` repo.)_
-
-SDK agent wrappers now support 6 AI providers:
-
-- `anthropic` — Anthropic Claude models
-- `google` — Google Gemini models
-- `openai` — OpenAI GPT/o1/o3 models
-- `bedrock` — AWS Bedrock models
-- `mistral` — Mistral AI models
-- `cohere` — Cohere models
 
 ## Storage
 
@@ -443,7 +410,7 @@ Run `npm run lint` before committing to verify the lint target is still met.
 
 - Format: `Type: Short description` (e.g., `Fix #13: Re-queue events on send failure`)
 - Types: `Fix`, `Feat`, `Refactor`, `Chore`, `Test`, `Docs`
-- Include `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>` when AI-assisted
+- Include `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` when AI-assisted
 - One logical change per commit
 
 ## Pull Requests

@@ -283,35 +283,20 @@ async function main(): Promise<void> {
     antiPatterns.set(sessionId, list);
   }
 
-  // Step 6: Efficiency score and cost from Metric (more reliable than task-level)
-  process.stdout.write('  [6/6] Fetching efficiency scores and costs from Metric...\n');
-  const [efficiencyRows, costRows] = await Promise.all([
-    runNrql(
-      apiKey,
-      accountId,
-      `FROM Metric SELECT average(ai.efficiency.score) AS efficiencyScore ` +
-        `WHERE ${devFilter} SINCE ${since} FACET session_id LIMIT MAX`,
-    ),
-    runNrql(
-      apiKey,
-      accountId,
-      `FROM Metric SELECT sum(ai.cost.session_total_usd) AS estimatedCostUsd ` +
-        `WHERE ${devFilter} SINCE ${since} FACET session_id LIMIT MAX`,
-    ),
-  ]);
+  // Step 6: Efficiency score from Metric
+  process.stdout.write('  [6/6] Fetching efficiency scores from Metric...\n');
+  const efficiencyRows = await runNrql(
+    apiKey,
+    accountId,
+    `FROM Metric SELECT average(ai.efficiency.score) AS efficiencyScore ` +
+      `WHERE ${devFilter} SINCE ${since} FACET session_id LIMIT MAX`,
+  );
   const efficiencyScores = new Map<string, number>();
   for (const row of efficiencyRows) {
     const sessionId = String(row['session_id'] ?? '');
     const score = Number(row['efficiencyScore']);
     if (!sessionId || Number.isNaN(score)) continue;
     efficiencyScores.set(sessionId, score);
-  }
-  const metricCosts = new Map<string, number>();
-  for (const row of costRows) {
-    const sessionId = String(row['session_id'] ?? '');
-    const cost = Number(row['estimatedCostUsd']);
-    if (!sessionId || Number.isNaN(cost)) continue;
-    metricCosts.set(sessionId, cost);
   }
 
   // ---------------------------------------------------------------------------
@@ -330,8 +315,7 @@ async function main(): Promise<void> {
     }
 
     const tasks = taskAggregates.get(sessionId);
-    // Prefer Metric cost (already de-duped by session) over task-event sum
-    const estimatedCostUsd = metricCosts.get(sessionId) ?? tasks?.estimatedCostUsd ?? null;
+    const estimatedCostUsd = tasks?.estimatedCostUsd ?? null;
     const testRunCount = tasks?.testRunCount ?? 0;
     const testPassCount = tasks?.testPassCount ?? 0;
 

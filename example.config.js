@@ -1,8 +1,9 @@
 /**
  * Example configuration for preflight.
  *
- * Copy this file to ~/.newrelic-preflight/config.json (as JSON, without comments)
- * and fill in your values. Every field is optional except licenseKey and accountId.
+ * Use this as a reference when creating ~/.newrelic-preflight/config.json.
+ * The config file must be valid JSON — copy individual fields you want to set
+ * and omit the JS comments. Every field is optional except licenseKey and accountId.
  *
  * Load priority: CLI flags > environment variables > config file > defaults.
  * Environment variable names are noted inline for each field.
@@ -105,8 +106,8 @@ export default {
 
   // ── Connectivity ──────────────────────────────────────────────────────────
 
-  // New Relic region. Set to "eu" for EU accounts; auto-detected from license key prefix.
-  // Env: NEW_RELIC_HOST  ("us", "eu", or "staging")
+  // New Relic region. Auto-detected from license key prefix; override only if needed.
+  // Env: NEW_RELIC_HOST  (null = US default, "eu" = EU, "gov" = FedRAMP)
   // Default: null (US)
   collectorHost: null,
 
@@ -204,9 +205,8 @@ export default {
   //
   // dashboard: {
   //   port: 7777,             // local HTTP port for the dashboard
-  //   host: '127.0.0.1',      // loopback only in v1; non-loopback values
-  //                           // are warned and overridden
-  //   openOnStart: false,     // (future) auto-open in your default browser
+  //   host: '127.0.0.1',      // non-loopback values are warned and overridden
+  //   openOnStart: false,
   // },
 
   // ── Model ─────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ const ENV_KEYS = [
   'CURSOR_TRACE_ID',
   'WINDSURF_SESSION_ID',
   'WINDSURF_CONTEXT_ID',
-  'NR_AI_COPILOT_OBSERVER',
+  'NEW_RELIC_AI_PLATFORM',
   'ZED_SESSION_ID',
   'ZED_EXTENSION_API_VERSION',
   'ZED_ITEM_ID',
@@ -200,8 +200,8 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('claude-code');
     });
 
-    it('selects Copilot adapter when Copilot extension env is present', () => {
-      process.env.NR_AI_COPILOT_OBSERVER = 'active';
+    it('selects Copilot adapter when Copilot platform env is set', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot';
       const registry = createDefaultRegistry();
 
       const detected = registry.detect();

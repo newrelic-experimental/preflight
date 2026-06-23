@@ -1030,7 +1030,6 @@ function RecentAlertsPanel(): JSX.Element | null {
   // alert engine), so callers can render an empty / hidden state instead
   // of a permanent red error banner. retry: false avoids the 4× request
   // multiplier React Query would otherwise produce on every refetch.
-  // See F-007 in docs/CODE_REVIEW.md.
   const { data, isLoading, error } = useQuery<readonly AlertEvent[] | null>({
     queryKey: qk.alertsRecent,
     queryFn: async () => {

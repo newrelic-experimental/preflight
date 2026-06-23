@@ -125,7 +125,7 @@ export class LocalAlertEngine {
       if (!idsAfter.has(id)) this.state.delete(id);
     }
     this.rules = [...rules];
-    // Note: the v1.1-only warning about cost.window today/week rules
+    // Note: the warning about cost.window today/week rules
     // lives in loadAlertRulesFromDisk (src/index.ts) so it fires once
     // per disk load with the rule id and exact costPeriod inline. We
     // deliberately don't duplicate it here — programmatic callers (tests,
@@ -312,9 +312,9 @@ export class LocalAlertEngine {
   // ---------------------------------------------------------------------------
 
   /**
-   * v1.1 cost windows are session/today/week cumulative — not a true rolling
-   * window. The engine reads whichever bucket the rule names; v1.2 will
-   * swap in a real rolling-N-second cost calculation.
+   * Cost windows are session/today/week cumulative — not a true rolling
+   * window. The engine reads whichever bucket the rule names; a real
+   * rolling-N-second cost calculation is not yet implemented.
    */
   private computeCostWindowValue(rule: CostWindowRule, snapshot: AlertSnapshot): number | null {
     switch (rule.costPeriod) {

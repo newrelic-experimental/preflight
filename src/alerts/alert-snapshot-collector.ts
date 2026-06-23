@@ -18,8 +18,8 @@ const logger = createLogger('alert-snapshot-collector');
  * - `toolFailures` is one entry per (tool, windowMs) tuple, same matching
  *   rule.
  *
- * Cost is currently session-cumulative (not a rolling window). v1.1 ships
- * with this approximation; v1.2 will add a true rolling-hour cost window.
+ * Cost is currently session-cumulative (not a rolling window). A true
+ * rolling-hour cost window is not yet implemented.
  */
 export interface AlertSnapshot {
   readonly timestamp: number;
@@ -74,8 +74,8 @@ export interface AlertSnapshotCollectorDeps {
   };
   /**
    * Thunk that returns the rolling cost forecast snapshot. Currently unused
-   * by the snapshot path (kept for symmetry with index.ts wiring); v1.2
-   * may consume it for true rolling-window cost.
+   * by the snapshot path (kept for symmetry with index.ts wiring); may be
+   * consumed in the future for true rolling-window cost.
    */
   readonly costForecast?: () => unknown;
   readonly efficiencyScorer?: {
@@ -331,7 +331,7 @@ export class AlertSnapshotCollector {
         // percentiles surface as 0 to the rule comparator, which treats 0
         // as below any positive threshold — so a `latency.percentile`
         // rule asking for p99 still fires when the tracker has p99 data
-        // even if p95 happens to be missing. See F-006: gating on p95
+        // even if p95 happens to be missing. gating on p95
         // alone caused p50/p99 rules to silently never fire when sample
         // count was too low to compute all three.
         const hasAny =
