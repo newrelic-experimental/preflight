@@ -432,6 +432,8 @@ Expected:
 
 If you see `tool not found` or `MCP server unavailable`, the server didn't start. Check Claude Code's MCP output panel (View → Output → MCP) for errors, then re-run `preflight install` and restart.
 
+**WSL users:** Pass `--windows-cc` or `--linux-cc` to target the right Claude Code installation. Run `preflight setup` if unsure — the wizard will ask.
+
 **Checkpoint — local dashboard (local path only):**
 
 ```bash

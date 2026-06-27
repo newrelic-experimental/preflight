@@ -1,7 +1,5 @@
 import { createInterface } from 'node:readline/promises';
 import {
-  writeFileSync,
-  renameSync,
   mkdirSync,
   readFileSync,
   existsSync,
@@ -10,15 +8,14 @@ import {
   realpathSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { homedir } from 'node:os';
-import { normalizeDeveloperName, ConfigFileSchema } from '../config.js';
+import { normalizeDeveloperName, ConfigFileSchema, DEFAULT_STORAGE_PATH } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
-import { runInstallCli, verifyBinaryOnPath } from './cli.js';
+import { runInstallCli, verifyBinaryOnPath, findRepoRoot } from './cli.js';
+import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
-import { isWsl } from './platform.js';
+import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
 
-const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
 const CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
 const ALERT_RULES_DEST = resolve(DEFAULT_STORAGE_PATH, 'alerts', 'rules.json');
 
@@ -27,26 +24,20 @@ interface WizardLogger {
   info(msg: string, meta?: object): void;
 }
 
-/**
- * Resolve the path to the bundled `examples/local-alert-rules.json`. The
- * wizard ships from either `dist/install/` (when installed via npm) or
- * `src/install/` (when executed via `npx tsx`); both resolve to the repo
- * root by walking up two directories from the running script.
- *
- * Uses `process.argv[1]` rather than `__dirname` (which doesn't exist in
- * ESM) or `import.meta.url` (which trips Jest's TS module check). Same
- * pattern as `src/index.ts` for resolving the static dashboard dir.
- */
 function defaultStarterRulesSource(): string {
-  const rawPath = process.argv[1] ?? process.cwd();
-  const scriptPath = (() => {
-    try {
-      return realpathSync(rawPath);
-    } catch {
-      return rawPath;
-    }
-  })();
-  return resolve(dirname(scriptPath), '..', '..', 'examples', 'local-alert-rules.json');
+  const root = findRepoRoot();
+  if (root !== null) return resolve(root, 'examples', 'local-alert-rules.json');
+  // findRepoRoot() failed — fall back to walking two directories up from the
+  // real entry-point path. Resolve symlinks first so a globally-installed binary
+  // (e.g. /usr/local/bin/preflight → .../node_modules/preflight/dist/index.js)
+  // correctly walks up to the package root rather than /usr/local/bin.
+  let entryPoint: string;
+  try {
+    entryPoint = realpathSync(process.argv[1] ?? process.cwd());
+  } catch {
+    entryPoint = process.argv[1] ?? process.cwd();
+  }
+  return resolve(dirname(entryPoint), '..', '..', 'examples', 'local-alert-rules.json');
 }
 
 export interface CopyStarterAlertRulesOptions {
@@ -191,6 +182,14 @@ function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
 export async function runSetupWizard(): Promise<void> {
   migrateStoragePath(true);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Safety net: process.exit() bypasses finally blocks but still runs 'exit' handlers.
+  // If runInstallCli's resolvePlatform calls process.exit(1) (e.g. saved wsl-windows-cc
+  // with WSL interop now disabled), rl.close() would otherwise be skipped, leaving stdin
+  // with dangling readline event listeners. rl.close() is idempotent so the finally
+  // block calling it again is harmless. The listener is explicitly removed in the finally
+  // block (normal completion path) to prevent accumulation across repeated invocations.
+  const rlCleanupOnExit = () => rl.close();
+  process.once('exit', rlCleanupOnExit);
 
   try {
     print('\n=== Preflight Setup ===\n');
@@ -446,8 +445,11 @@ export async function runSetupWizard(): Promise<void> {
       }
     }
 
-    // Write config
-    const config = buildConfig(existing, {
+    // Write config. Strip platformTarget before spreading — only the install subcommand
+    // (runInstallCli) should own this field. Preserving a stale value here would silently
+    // drive the next bare install toward the wrong platform if the user declines hooks.
+    const { platformTarget: _platformTarget, ...existingForWizard } = existing;
+    const config = buildConfig(existingForWizard, {
       accountId,
       licenseKey,
       developer,
@@ -460,10 +462,7 @@ export async function runSetupWizard(): Promise<void> {
       collectorHost,
     });
 
-    mkdirSync(DEFAULT_STORAGE_PATH, { recursive: true, mode: 0o700 });
-    const configTmp = CONFIG_PATH + '.tmp';
-    writeFileSync(configTmp, JSON.stringify(config, null, 2), { mode: 0o600 });
-    renameSync(configTmp, CONFIG_PATH);
+    writeJsonFile(CONFIG_PATH, config, DEFAULT_STORAGE_PATH);
     print(`\nConfig written to ${CONFIG_PATH}`);
 
     // Step 5c: Starter alert rules (local + both modes only).
@@ -499,26 +498,83 @@ export async function runSetupWizard(): Promise<void> {
     // Step 6: Hook install
     // Config is already written above; pass no credentials to install so it only
     // wires hooks and MCP without overwriting the config we just wrote.
+    const wslEnv = isWsl();
     const installHooks = (await rl.question('\nInstall Claude Code hooks now? [Y/n]: '))
       .trim()
       .toLowerCase();
-    if (installHooks !== 'n') {
-      print('\nRunning hook installer...');
-      await runInstallCli(['install']);
-      print('Hooks installed.');
+    if (installHooks !== 'n' && installHooks !== 'no') {
+      // In WSL there are two distinct Claude Code setups that need different hook formats:
+      //   Windows CC (desktop app on Windows): hooks must use wsl.exe -e, go in Windows paths
+      //   Linux CC in WSL (npm install inside WSL): hooks are direct Linux commands, WSL paths
+      const installArgs = ['install'];
+      let skipInstall = false;
+      if (wslEnv) {
+        print('\n  ℹ WSL detected. How is Claude Code installed on this machine?');
+        print('    [1] Claude Code for Windows (the desktop app running on Windows)');
+        print('    [2] Claude Code installed inside WSL via npm (default)');
+        let wslChoice = '';
+        for (let attempt = 0; attempt < 3; attempt++) {
+          wslChoice = (await rl.question('  Choice [2]: ')).trim();
+          if (wslChoice === '1' || wslChoice === '2' || wslChoice === '') break;
+          print('  ⚠ Enter 1 or 2 (or press Enter for the default).');
+        }
+        if (wslChoice !== '1' && wslChoice !== '2' && wslChoice !== '') {
+          print(
+            '  ⚠ No valid choice entered after 3 attempts — defaulting to Linux Claude Code mode.',
+          );
+        }
+        if (wslChoice === '1') {
+          // Pre-validate before committing to --windows-cc: handleInstall calls
+          // process.exit(1) when windowsHome is null, which skips the wizard's
+          // finally block and leaves stdin with readline listeners attached.
+          const windowsHome = resolveWindowsHome();
+          if (windowsHome === null) {
+            print(
+              '  ⚠ Windows home directory could not be resolved (WSL interop may be disabled).',
+            );
+            print('  Skipping hook installation. Fix WSL interop first, then re-run:');
+            print('    preflight install --windows-cc');
+            // Skip the install entirely — falling back to --linux-cc would write
+            // wsl-linux-cc as the saved platform, silently corrupting the user's
+            // Windows CC intent on all future bare installs.
+            skipInstall = true;
+          } else {
+            installArgs.push('--windows-cc');
+            print('  → Using Windows Claude Code mode (wsl.exe hooks, Windows paths).');
+          }
+        } else {
+          // Pass --linux-cc explicitly so the installer honours this choice even
+          // when a prior Windows CC install would otherwise trigger auto-detection.
+          installArgs.push('--linux-cc');
+          print('  → Using Linux Claude Code mode (direct hooks, WSL home paths).');
+        }
+      }
+      let hooksInstalled = false;
+      if (!skipInstall) {
+        print('\nRunning hook installer...');
+        try {
+          await runInstallCli(installArgs);
+          hooksInstalled = true;
+        } catch {
+          // handleInstall already printed the specific error. Set exit code and continue
+          // so daemon, schedule, and dashboard steps still run — they do not depend on
+          // hook installation.
+          process.exitCode = 1;
+        }
+        if (hooksInstalled) print('Hooks installed.');
 
-      if (verifyBinaryOnPath()) {
-        print('✓ preflight is on your PATH');
-      } else {
-        print('\n⚠ preflight is not on your PATH.');
-        print('  Claude Code hooks will fail with "command not found" until this is resolved.');
-        print('  Fix: run `npm link` in the project directory, or install globally:');
-        print('    npm install -g @newrelic/preflight');
+        if (verifyBinaryOnPath()) {
+          print('✓ preflight is on your PATH');
+        } else {
+          print('\n⚠ preflight is not on your PATH.');
+          print('  Claude Code hooks will fail with "command not found" until this is resolved.');
+          print('  Fix: run `npm link` in the project directory, or install globally:');
+          print('    npm install -g @newrelic/preflight');
+        }
       }
     }
 
     // Step 6b: Always-on background dashboard daemon
-    const wslEnv = isWsl();
     if ((mode === 'local' || mode === 'both') && process.platform === 'darwin') {
       const binaryPath = resolveBinaryPath();
       const daemonAnswer = (
@@ -651,6 +707,7 @@ export async function runSetupWizard(): Promise<void> {
     }
     print('');
   } finally {
+    process.removeListener('exit', rlCleanupOnExit);
     rl.close();
   }
 }

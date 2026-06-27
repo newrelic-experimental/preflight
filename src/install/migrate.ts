@@ -1,7 +1,70 @@
-import { existsSync, renameSync, cpSync, rmSync, readSync, openSync, closeSync } from 'node:fs';
+import {
+  existsSync,
+  renameSync,
+  cpSync,
+  rmSync,
+  readSync,
+  openSync,
+  closeSync,
+  readFileSync,
+  unlinkSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { DEFAULT_STORAGE_PATH } from '../config.js';
+import type { PlatformTarget } from '../config.js';
+import { readJsonFileStrict, writeJsonFile } from './json-utils.js';
+
+function migrateWslMarker(): void {
+  const markerPath = resolve(DEFAULT_STORAGE_PATH, '.wsl-mode');
+  if (!existsSync(markerPath)) return;
+  try {
+    const raw = readFileSync(markerPath, 'utf8').trim();
+    const platform = raw === 'windows' ? 'wsl-windows-cc' : raw === 'linux' ? 'wsl-linux-cc' : null;
+    if (platform !== null) {
+      const configPath = resolve(DEFAULT_STORAGE_PATH, 'config.json');
+      // Use strict read: if config.json is malformed or unreadable (EBUSY, EPERM),
+      // throw so the outer catch skips the write and leaves credentials intact.
+      // ENOENT (file absent) still returns {} — safe to write a fresh config.
+      const existing = readJsonFileStrict(configPath);
+      // Skip the write if config.json already has a WSL platformTarget set by a
+      // ≥1.0.4 install on this machine — that value reflects a deliberate WSL
+      // mode choice and must not be overwritten by a stale marker.
+      // 'native' is intentionally excluded: it can arrive via cross-machine
+      // config copy (e.g. macOS → WSL) and must not suppress a real WSL marker.
+      // Typed constants: TypeScript will error here if these drift from PlatformTarget.
+      const wslWindowsCc: PlatformTarget = 'wsl-windows-cc';
+      const wslLinuxCc: PlatformTarget = 'wsl-linux-cc';
+      const alreadyMigrated =
+        existing.platformTarget === wslWindowsCc || existing.platformTarget === wslLinuxCc;
+      if (!alreadyMigrated) {
+        // Pass DEFAULT_STORAGE_PATH as the allowed base so the symlink guard accepts
+        // writes when the storage directory is symlinked outside HOME.
+        writeJsonFile(configPath, { ...existing, platformTarget: platform }, DEFAULT_STORAGE_PATH);
+      }
+      // Delete marker after the rename is committed (or skipped). Wrapped in its own
+      // catch so a failure here (e.g. WSL1 DrvFs read-only file attribute on .wsl-mode)
+      // is handled inline rather than propagating to the outer catch — which would
+      // exit the function without deleting the marker on the current call, but would
+      // not cause re-migration loops because config.json is already correct.
+      try {
+        unlinkSync(markerPath);
+      } catch {
+        /* re-migration on next startup is idempotent */
+      }
+    } else {
+      // Unrecognized marker content — cannot migrate, but deleting it prevents this
+      // function from re-running on every startup (existsSync would fire each time).
+      try {
+        unlinkSync(markerPath);
+      } catch {
+        /* WSL1 DrvFs read-only attribute — re-run on next startup is harmless */
+      }
+    }
+  } catch {
+    // Non-fatal: next install falls back to filesystem detection.
+  }
+}
 
 function promptYesNo(question: string): boolean {
   process.stderr.write(question);
@@ -28,6 +91,8 @@ function promptYesNo(question: string): boolean {
  * (server startup, update) print a notice instead.
  */
 export function migrateStoragePath(interactive = false): void {
+  migrateWslMarker();
+
   const oldPath = resolve(homedir(), '.nr-ai-observe');
   const newPath = DEFAULT_STORAGE_PATH;
   if (!existsSync(oldPath)) return;

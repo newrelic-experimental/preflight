@@ -5,20 +5,12 @@
  * so commander and other heavy deps are never loaded on the hot hook path.
  */
 
-import { Command } from 'commander';
 import { execSync, execFileSync } from 'node:child_process';
-import {
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  existsSync,
-  renameSync,
-  unlinkSync,
-  copyFileSync,
-  realpathSync,
-} from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { existsSync, copyFileSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { Command } from 'commander';
+
 import {
   mergeSettings,
   removeSettings,
@@ -29,7 +21,8 @@ import {
   generateNrConfig,
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
-import { validateConfigFile, DEFAULT_STORAGE_PATH } from '../config.js';
+import { validateConfigFile, DEFAULT_STORAGE_PATH, ConfigFileSchema } from '../config.js';
+import type { PlatformTarget } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import {
   installSchedule,
@@ -39,61 +32,123 @@ import {
   getDashboardDaemonStatus,
   resolveBinaryPath,
 } from './schedule.js';
+import { readJsonFileStrict, writeJsonFile } from './json-utils.js';
 
-const NR_CONFIG_DIR = resolve(homedir(), '.newrelic-preflight');
-const NR_CONFIG_PATH = resolve(NR_CONFIG_DIR, 'config.json');
+const NR_CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
+
+// ---------------------------------------------------------------------------
+// Platform persistence helpers — read/write platformTarget in config.json
+// ---------------------------------------------------------------------------
+
+function parsePlatformTarget(value: unknown): PlatformTarget | null {
+  const result = ConfigFileSchema.shape.platformTarget.safeParse(value);
+  return result.success && result.data !== undefined ? result.data : null;
+}
+
+function clearSavedPlatform(): void {
+  try {
+    if (!existsSync(NR_CONFIG_PATH)) return;
+    const { platformTarget: _pt, ...rest } = readJsonFileStrict(NR_CONFIG_PATH);
+    writeJsonFile(NR_CONFIG_PATH, rest, DEFAULT_STORAGE_PATH);
+  } catch (err) {
+    eprint(
+      `\n⚠ Could not clear saved platform target: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    eprint(
+      '  The next install may use the stale platform target. Fix the issue and re-run uninstall.',
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Platform resolution — single function, single place for all errors
+// ---------------------------------------------------------------------------
+
+function resolvePlatform(
+  options: { windowsCc?: boolean; linuxCc?: boolean },
+  savedPlatform: PlatformTarget | null,
+): {
+  platform: PlatformTarget;
+  windowsHome: string | null;
+} {
+  if (options.windowsCc && options.linuxCc) {
+    print('\n  ⚠ --windows-cc and --linux-cc are mutually exclusive. Pass only one.');
+    process.exit(1);
+  }
+  if (options.windowsCc) {
+    if (!isWsl()) {
+      print('\n  ⚠ --windows-cc only works inside WSL — this machine is not running WSL.');
+      print('  Run without --windows-cc to install normally.');
+      process.exit(1);
+    }
+    const windowsHome = resolveWindowsHome();
+    if (!windowsHome) {
+      print('\n  ⚠ --windows-cc: Windows home directory could not be resolved.');
+      print('  Check that WSL interop is enabled:');
+      print('    wsl.exe --status');
+      process.exit(1);
+    }
+    return { platform: 'wsl-windows-cc', windowsHome };
+  }
+  if (options.linuxCc) {
+    if (!isWsl()) {
+      print('\n  ⚠ --linux-cc only works inside WSL — this machine is not running WSL.');
+      print('  Run without --linux-cc to install normally.');
+      process.exit(1);
+    }
+    return { platform: 'wsl-linux-cc', windowsHome: null };
+  }
+
+  if (!isWsl()) return { platform: 'native', windowsHome: null };
+
+  // WSL auto-detect: use the savedPlatform already read by handleInstall.
+  // 'native' is excluded — it was written on a non-WSL machine and must not
+  // suppress WSL-mode guidance or the --windows-cc hint below.
+  if (savedPlatform && savedPlatform !== 'native') {
+    if (savedPlatform === 'wsl-windows-cc') {
+      const windowsHome = resolveWindowsHome();
+      if (!windowsHome) {
+        print(
+          '\n  ⚠ Saved install target is Windows Claude Code but Windows home could not be resolved.',
+        );
+        print('  WSL interop may be disabled. Re-run with --windows-cc when interop is restored,');
+        print('  or use --linux-cc to switch to Linux Claude Code mode permanently.');
+        process.exit(1);
+      }
+      return { platform: 'wsl-windows-cc', windowsHome };
+    }
+    return { platform: savedPlatform, windowsHome: null };
+  }
+
+  // WSL: no prior state — default to Linux CC, inform user about the Windows option.
+  print('\n  ℹ WSL detected with no prior install state. Defaulting to Linux Claude Code mode.');
+  print('  If you are using the Windows Claude Code desktop app, re-run with --windows-cc:');
+  print('    preflight install --windows-cc');
+  return { platform: 'wsl-linux-cc', windowsHome: null };
+}
+
+function resolveInstallPaths(
+  _platform: PlatformTarget,
+  scope: 'user' | 'project',
+  windowsHome: string | null,
+): { settingsPath: string; mcpPath: string; allowedBase: string | undefined } {
+  return {
+    settingsPath: detectSettingsPath(scope, windowsHome),
+    mcpPath: detectMcpConfigPath(scope, windowsHome),
+    allowedBase: windowsHome ?? undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// print helper
+// ---------------------------------------------------------------------------
 
 function print(msg = ''): void {
   process.stdout.write(msg + '\n');
 }
 
-// ---------------------------------------------------------------------------
-// File I/O helpers
-// ---------------------------------------------------------------------------
-
-function readJsonFile(path: string): Record<string, unknown> {
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-function writeJsonFile(
-  path: string,
-  data: Record<string, unknown>,
-  additionalAllowedBase?: string,
-): void {
-  const dir = dirname(path);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
-
-  // Symlink guard: verify both the resolved parent directory AND the resolved
-  // target file path are under HOME, cwd, or an explicitly allowed base (e.g.
-  // the Windows home path under /mnt/c/... when writing from WSL).
-  const resolvedDir = realpathSync(dir);
-  const resolvedPath = existsSync(path) ? realpathSync(path) : resolve(resolvedDir, basename(path));
-  const home = homedir();
-  const cwd = process.cwd();
-  const check = (p: string) =>
-    p === home ||
-    p.startsWith(home + sep) ||
-    p === cwd ||
-    p.startsWith(cwd + sep) ||
-    (additionalAllowedBase !== undefined &&
-      (p === additionalAllowedBase || p.startsWith(additionalAllowedBase + sep)));
-  if (!check(resolvedDir) || !check(resolvedPath)) {
-    throw new Error(`Refusing to write outside HOME or project root: ${resolvedPath}`);
-  }
-
-  const tmp = path + '.tmp';
-  try {
-    writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
-    renameSync(tmp, path);
-  } finally {
-    if (existsSync(tmp)) unlinkSync(tmp);
-  }
+function eprint(msg = ''): void {
+  process.stderr.write(msg + '\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +173,10 @@ function printPathWarning(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Repo root discovery (for update command)
+// Repo root discovery (for update command and setup wizard)
 // ---------------------------------------------------------------------------
 
-function findRepoRoot(): string | null {
+export function findRepoRoot(): string | null {
   try {
     let dir = dirname(realpathSync(process.argv[1]));
     while (true) {
@@ -230,60 +285,118 @@ function handleInstall(options: {
   licenseKey?: string;
   accountId?: string;
   project?: boolean;
+  windowsCc?: boolean;
+  linuxCc?: boolean;
 }): void {
   migrateStoragePath(true);
   const scope = options.project ? 'project' : 'user';
-
-  // Resolve the full binary path at install time so hooks work in non-login
-  // shells (e.g. /bin/sh) that don't inherit NVM/nix/Homebrew PATH entries.
   const binPath = resolveBinaryPath();
+  const credentialsProvided = !!(options.licenseKey && options.accountId);
+  const inWsl = isWsl();
 
-  // On WSL, Claude Code for Windows reads settings from the Windows user home
-  // (accessible via /mnt/c/Users/<name>/). Hook commands must use wsl.exe -e
-  // so Windows Claude Code can invoke the WSL binary.
-  const wslEnv = isWsl();
-  const windowsHome = wslEnv ? resolveWindowsHome() : null;
-  const useWslMode = wslEnv && windowsHome !== null;
-
-  if (wslEnv && !useWslMode) {
-    print('\n  ⚠ WSL detected but Windows home directory could not be resolved.');
-    print('  Hooks will be written to the WSL home (~/.claude/settings.json).');
-    print('  If you are using Windows Claude Code, restart WSL interop and re-run install.');
-  }
-
-  // Hooks go in settings.json (Windows path when running under WSL)
-  const settingsPath = detectSettingsPath(scope, windowsHome);
-  let mergedSettings: ReturnType<typeof mergeSettings>;
+  // Read config.json once. Serves two purposes:
+  // (a) extract savedPlatform for resolvePlatform (needed on WSL auto-detect)
+  // (b) preserve existing fields when writing back platformTarget + credentials
+  // Fatal conditions: SyntaxError (can't safely write back to corrupt JSON),
+  // WSL without explicit platform flag + any IO error (EACCES/EPERM could mask a
+  //   saved wsl-windows-cc platform — explicit flags make savedPlatform irrelevant),
+  // credentials provided + any IO error (can't preserve without knowing existing state).
+  const explicitPlatform = !!(options.windowsCc || options.linuxCc);
+  let existingNrConfig: Record<string, unknown> = {};
+  let skipNrConfigWrite = false;
   try {
-    const existingSettings = readJsonFile(settingsPath);
-    mergedSettings = mergeSettings(existingSettings, binPath, { wsl: useWslMode });
+    // readJsonFileStrict returns {} on ENOENT; throws on IO errors or malformed JSON.
+    existingNrConfig = readJsonFileStrict(NR_CONFIG_PATH);
   } catch (err) {
-    console.error(
-      `✗ Failed to update ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`,
+    const isSyntaxError = err instanceof SyntaxError;
+    if (isSyntaxError || (inWsl && !explicitPlatform) || credentialsProvided) {
+      eprint(
+        `\n✗ Cannot read existing NR config to determine install target: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      eprint(
+        isSyntaxError
+          ? '  config.json contains invalid JSON — fix or delete it, then re-run install.'
+          : '  Fix file permissions then re-run install.',
+      );
+      throw err;
+    }
+    eprint(
+      `\n⚠ Could not read existing NR config to persist platform target: ${err instanceof Error ? err.message : String(err)}`,
     );
-    process.exit(1);
+    eprint('  Platform target not persisted — hook installation will continue. Re-run to save it.');
+    skipNrConfigWrite = true;
   }
-  writeJsonFile(settingsPath, mergedSettings, windowsHome ?? undefined);
 
-  // MCP server goes in .mcp.json (Windows path when running under WSL)
-  const mcpPath = detectMcpConfigPath(scope, windowsHome);
+  const savedPlatform = parsePlatformTarget(existingNrConfig.platformTarget);
+  const { platform, windowsHome } = resolvePlatform(options, savedPlatform);
+  const { settingsPath, mcpPath, allowedBase } = resolveInstallPaths(platform, scope, windowsHome);
+
+  let mergedSettings: ReturnType<typeof mergeSettings>;
   let mergedMcp: ReturnType<typeof mergeMcpConfig>;
   try {
-    const existingMcp = readJsonFile(mcpPath);
-    mergedMcp = mergeMcpConfig(existingMcp, binPath, { wsl: useWslMode });
+    mergedSettings = mergeSettings(readJsonFileStrict(settingsPath), binPath, { platform });
+    mergedMcp = mergeMcpConfig(readJsonFileStrict(mcpPath), binPath, { platform });
   } catch (err) {
-    console.error(
-      `✗ Failed to update ${mcpPath}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    process.exit(1);
+    eprint(`\n✗ Failed to prepare config: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
   }
-  writeJsonFile(mcpPath, mergedMcp, windowsHome ?? undefined);
 
-  if (useWslMode) {
-    print(`\n  ℹ WSL detected — configuring for Windows Claude Code`);
+  try {
+    writeJsonFile(settingsPath, mergedSettings, allowedBase);
+  } catch (err) {
+    eprint(
+      `\n✗ Failed to write hooks config (${settingsPath}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    throw err;
+  }
+  try {
+    writeJsonFile(mcpPath, mergedMcp, allowedBase);
+  } catch (err) {
+    eprint(
+      `\n✗ Failed to write MCP config (${mcpPath}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    throw err;
+  }
+
+  // Persist platformTarget (and credentials if provided) — only after both hook files written.
+  let nrConfigWritten = false;
+  if (!skipNrConfigWrite) {
+    try {
+      const nrConfig: Record<string, unknown> = { ...existingNrConfig, platformTarget: platform };
+      if (credentialsProvided) {
+        Object.assign(
+          nrConfig,
+          generateNrConfig(options.licenseKey as string, options.accountId as string),
+        );
+      }
+      writeJsonFile(NR_CONFIG_PATH, nrConfig, DEFAULT_STORAGE_PATH);
+      nrConfigWritten = credentialsProvided;
+    } catch (err) {
+      if (credentialsProvided) {
+        eprint(
+          `\n✗ Failed to save New Relic config: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
+      eprint(
+        `\n⚠ Could not persist platform target: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      eprint('  The next install will re-detect the target platform from scratch.');
+    }
+  }
+
+  if (platform === 'wsl-windows-cc') {
+    print('\n  ℹ Configured for Windows Claude Code (desktop app).');
     print(`  Hooks written to: ${settingsPath}`);
     print(`  MCP config written to: ${mcpPath}`);
     print('  Hook commands use wsl.exe -e so Windows Claude Code can invoke them.');
+    print('  To switch to Linux Claude Code mode, re-run with --linux-cc:');
+    print('    preflight install --linux-cc');
+  } else if (platform === 'wsl-linux-cc') {
+    print('\n  ℹ Configured for Linux Claude Code (npm in WSL).');
+    print(`  Hooks written to: ${settingsPath}`);
+    print('  To switch to Windows Claude Code mode, re-run with --windows-cc:');
+    print('    preflight install --windows-cc');
   }
 
   print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
@@ -291,11 +404,9 @@ function handleInstall(options: {
   print(`✓ MCP server registered: ${mcpPath}`);
   print('  - Added preflight MCP server');
 
-  if (options.licenseKey && options.accountId) {
-    const config = generateNrConfig(options.licenseKey, options.accountId);
-    writeJsonFile(NR_CONFIG_PATH, config as unknown as Record<string, unknown>);
+  if (nrConfigWritten) {
     print(`\n✓ New Relic config written: ${NR_CONFIG_PATH}`);
-  } else if (options.licenseKey || options.accountId) {
+  } else if (!credentialsProvided && (options.licenseKey || options.accountId)) {
     print('\n⚠ Both --license-key and --account-id are required to save NR config. Skipped.');
   }
 
@@ -318,58 +429,173 @@ function handleInstall(options: {
 // Uninstall handler
 // ---------------------------------------------------------------------------
 
-function handleUninstall(options: { project?: boolean }): void {
+function handleUninstall(options: {
+  project?: boolean;
+  windowsCc?: boolean;
+  linuxCc?: boolean;
+}): void {
   const scope = options.project ? 'project' : 'user';
 
-  // On WSL, attempt to clean up both the Windows-side paths (current install
-  // format) and the WSL-side paths (legacy pre-WSL-support installs).
+  if (options.windowsCc && options.linuxCc) {
+    print('\n  ⚠ --windows-cc and --linux-cc are mutually exclusive. Pass only one.');
+    process.exit(1);
+  }
+  if (options.windowsCc && !isWsl()) {
+    print('\n  ⚠ --windows-cc only works inside WSL — this machine is not running WSL.');
+    print('  Run without --windows-cc to uninstall normally.');
+    process.exit(1);
+  }
+  if (options.linuxCc && !isWsl()) {
+    print('\n  ⚠ --linux-cc only works inside WSL — this machine is not running WSL.');
+    print('  Run without --linux-cc to uninstall normally.');
+    process.exit(1);
+  }
+
   const wslEnv = isWsl();
   const windowsHome = wslEnv ? resolveWindowsHome() : null;
 
-  const settingsPathsToClean = new Set<string>();
-  settingsPathsToClean.add(detectSettingsPath(scope, windowsHome));
-  if (windowsHome) settingsPathsToClean.add(detectSettingsPath(scope, null));
+  if (options.windowsCc && windowsHome === null) {
+    print('\n  ⚠ --windows-cc: Windows home directory could not be resolved.');
+    print('  Nothing to uninstall for Windows Claude Code.');
+    process.exit(1);
+  }
 
-  const mcpPathsToClean = new Set<string>();
-  mcpPathsToClean.add(detectMcpConfigPath(scope, windowsHome));
-  if (windowsHome) mcpPathsToClean.add(detectMcpConfigPath(scope, null));
+  // For bare uninstall (no flags), read the saved platform so we only clean the
+  // paths that were actually written during the matching install. Users who never
+  // ran preflight ≥1.0.4 have no saved platform, so fall back to cleaning both
+  // paths as a migration safety net.
+  // If config.json is unreadable, fall back to cleaning both paths — over-cleaning
+  // is safe, under-cleaning is not.
+  let savedPlatform: PlatformTarget | null = null;
+  if (!options.windowsCc && !options.linuxCc) {
+    try {
+      const config = readJsonFileStrict(NR_CONFIG_PATH);
+      savedPlatform = parsePlatformTarget(config.platformTarget);
+    } catch {
+      /* unreadable config — clean both paths */
+    }
+  }
+
+  let includeWindows: boolean;
+  let includeLinux: boolean;
+  if (options.windowsCc) {
+    includeWindows = true;
+    includeLinux = false;
+  } else if (options.linuxCc) {
+    includeWindows = false;
+    includeLinux = true;
+  } else if (savedPlatform === 'wsl-windows-cc') {
+    if (!wslEnv) {
+      // Not in WSL — Windows CC paths from a prior WSL install are unreachable on this machine
+      // (e.g. config copied to macOS/Linux). Clean Linux-side paths and clear the stale target.
+      includeWindows = false;
+      includeLinux = true;
+    } else if (windowsHome === null) {
+      // In WSL but interop unavailable — cannot reach Windows-side hooks without windowsHome.
+      // Exit with an actionable message rather than silently cleaning nothing and clearing the
+      // saved platform (which would make the next bare install forget the user's Windows CC intent).
+      print(
+        '\n  ⚠ Saved install target is Windows Claude Code but Windows home could not be resolved.',
+      );
+      print('  WSL interop may be disabled. To uninstall:');
+      print('    Re-enable WSL interop, then re-run: preflight uninstall');
+      print('    Or clean Linux-side hooks only:       preflight uninstall --linux-cc');
+      process.exit(1);
+    } else {
+      // Also clean Linux-side hooks — the user may have previously run --linux-cc and then
+      // switched to --windows-cc without uninstalling first. Linux paths are always reachable.
+      includeWindows = true;
+      includeLinux = true;
+    }
+  } else if (savedPlatform === 'wsl-linux-cc') {
+    // Clean Linux hooks. Also clean Windows hooks if reachable — the user may have
+    // previously run --windows-cc and then switched to --linux-cc without uninstalling first.
+    if (windowsHome !== null) {
+      print('\n  ℹ Also removing Windows-side hooks (leftover from a prior --windows-cc install).');
+    }
+    includeWindows = windowsHome !== null;
+    includeLinux = true;
+  } else if (savedPlatform === 'native') {
+    includeWindows = false;
+    includeLinux = true;
+  } else {
+    // No saved platform (pre-1.0.4 install): clean both paths as a safety net.
+    includeWindows = windowsHome !== null;
+    includeLinux = true;
+  }
+
+  // Map value is the allowedBase for writeJsonFile's symlink guard.
+  const settingsPathsToClean = new Map<string, string | undefined>();
+  const mcpPathsToClean = new Map<string, string | undefined>();
+
+  if (includeWindows && windowsHome) {
+    settingsPathsToClean.set(detectSettingsPath(scope, windowsHome), windowsHome);
+    mcpPathsToClean.set(detectMcpConfigPath(scope, windowsHome), windowsHome);
+  }
+  if (includeLinux) {
+    settingsPathsToClean.set(detectSettingsPath(scope, null), undefined);
+    mcpPathsToClean.set(detectMcpConfigPath(scope, null), undefined);
+  }
 
   print('');
 
-  // Remove hooks from settings.json (all candidate paths)
   let settingsFound = false;
-  for (const settingsPath of settingsPathsToClean) {
+  for (const [settingsPath, allowedBase] of settingsPathsToClean) {
     if (existsSync(settingsPath)) {
+      const backup = `${settingsPath}.backup-${Date.now()}`;
+      copyFileSync(settingsPath, backup);
+      print(`  Backup saved: ${backup}`);
+      try {
+        writeJsonFile(settingsPath, removeSettings(readJsonFileStrict(settingsPath)), allowedBase);
+      } catch (err) {
+        eprint(
+          `\n✗ Failed to clean hooks config (${settingsPath}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
       settingsFound = true;
-      const settingsBackup = `${settingsPath}.backup-${Date.now()}`;
-      copyFileSync(settingsPath, settingsBackup);
-      print(`  Backup saved: ${settingsBackup}`);
-      const existingSettings = readJsonFile(settingsPath);
-      const cleanedSettings = removeSettings(existingSettings);
-      writeJsonFile(settingsPath, cleanedSettings, windowsHome ?? undefined);
       print(`✓ Hooks removed: ${settingsPath}`);
     }
   }
   if (!settingsFound) {
-    print(`No settings file found at ${[...settingsPathsToClean].join(', ')}. Skipping hooks.`);
+    print(
+      `No settings file found at ${[...settingsPathsToClean.keys()].join(', ')}. Skipping hooks.`,
+    );
   }
 
-  // Remove MCP server from .mcp.json (all candidate paths)
   let mcpFound = false;
-  for (const mcpPath of mcpPathsToClean) {
+  for (const [mcpPath, allowedBase] of mcpPathsToClean) {
     if (existsSync(mcpPath)) {
+      const backup = `${mcpPath}.backup-${Date.now()}`;
+      copyFileSync(mcpPath, backup);
+      print(`  Backup saved: ${backup}`);
+      try {
+        writeJsonFile(mcpPath, removeMcpConfig(readJsonFileStrict(mcpPath)), allowedBase);
+      } catch (err) {
+        eprint(
+          `\n✗ Failed to clean MCP config (${mcpPath}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
       mcpFound = true;
-      const mcpBackup = `${mcpPath}.backup-${Date.now()}`;
-      copyFileSync(mcpPath, mcpBackup);
-      print(`  Backup saved: ${mcpBackup}`);
-      const existingMcp = readJsonFile(mcpPath);
-      const cleanedMcp = removeMcpConfig(existingMcp);
-      writeJsonFile(mcpPath, cleanedMcp, windowsHome ?? undefined);
       print(`✓ MCP server removed: ${mcpPath}`);
     }
   }
   if (!mcpFound) {
-    print(`No MCP config file found at ${[...mcpPathsToClean].join(', ')}. Skipping MCP server.`);
+    print(`No MCP config found at ${[...mcpPathsToClean.keys()].join(', ')}. Skipping MCP server.`);
+  }
+
+  // Update persisted platform after cleanup.
+  // --windows-cc or bare: clear savedPlatform so the next install re-detects from scratch.
+  //   After --windows-cc uninstall, the user must pass --windows-cc again to reinstall
+  //   Windows CC mode — re-detection has no heuristic for Windows CC intent.
+  // --linux-cc: leave savedPlatform untouched — this only cleans Linux-side paths and must
+  //   not destroy a wsl-windows-cc record that the user still intends to use.
+  if (options.windowsCc) {
+    print('  To reinstall Windows Claude Code mode, re-run: preflight install --windows-cc');
+  }
+  if (!options.linuxCc) {
+    clearSavedPlatform();
   }
 
   print('\nRestart Claude Code for changes to take effect.\n');
@@ -443,12 +669,16 @@ export function createInstallProgram(): Command {
     .option('--license-key <key>', 'New Relic license key')
     .option('--account-id <id>', 'New Relic account ID')
     .option('--project', 'Write to project-level .claude/settings.json instead of user-level')
+    .option('--windows-cc', 'Target Windows Claude Code (desktop app) when running inside WSL')
+    .option('--linux-cc', 'Target Linux Claude Code (npm in WSL) when running inside WSL')
     .action(handleInstall);
 
   program
     .command('uninstall')
     .description('Remove preflight hooks and MCP server from Claude Code settings')
     .option('--project', 'Remove from project-level .claude/settings.json instead of user-level')
+    .option('--windows-cc', 'Remove Windows Claude Code hooks only (WSL only)')
+    .option('--linux-cc', 'Remove Linux Claude Code hooks only (WSL only)')
     .action(handleUninstall);
 
   program
