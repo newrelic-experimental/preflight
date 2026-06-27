@@ -325,7 +325,12 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
   // CLI subcommands (install/setup/etc.) delegate entirely to the install CLI.
   if (['install', 'uninstall', 'setup', 'validate', 'update', 'schedule'].includes(sub)) {
     const { runInstallCli } = await import('./install/cli.js');
-    await runInstallCli(argv.slice(2));
+    try {
+      await runInstallCli(argv.slice(2));
+    } catch {
+      // Error message already printed by the action handler before throwing.
+      return 1;
+    }
     return typeof process.exitCode === 'number' ? process.exitCode : 0;
   }
 

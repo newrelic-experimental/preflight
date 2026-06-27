@@ -7,6 +7,7 @@
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
+import type { PlatformTarget } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,12 +59,12 @@ export interface NrObserveConfig {
 
 export function generateHookEntries(
   binPath?: string | null,
-  options?: { wsl?: boolean },
+  options?: { platform?: PlatformTarget },
 ): HookEntries {
   let pre: string;
   let post: string;
 
-  if (options?.wsl) {
+  if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code runs hooks via wsl.exe — call the WSL binary through interop.
     // Quote the path so cmd.exe doesn't split on spaces (e.g. /home/john doe/...).
     const collectorPath = binPath ? join(dirname(binPath), COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
@@ -88,9 +89,9 @@ export function generateHookEntries(
 
 export function generateMcpServerEntry(
   binPath?: string | null,
-  options?: { wsl?: boolean },
+  options?: { platform?: PlatformTarget },
 ): Record<string, McpServerConfig> {
-  if (options?.wsl) {
+  if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code launches MCP servers as Windows processes — use wsl.exe interop.
     const serverPath = binPath ? join(dirname(binPath), MCP_SERVER_COMMAND) : MCP_SERVER_COMMAND;
     return {
@@ -193,7 +194,7 @@ const McpConfigSchema = z
 export function mergeSettings(
   existing: Record<string, unknown>,
   binPath?: string | null,
-  options?: { wsl?: boolean },
+  options?: { platform?: PlatformTarget },
 ): Record<string, unknown> {
   const parsed = SettingsSchema.safeParse(existing);
   if (!parsed.success) {
@@ -241,7 +242,7 @@ export function mergeSettings(
 export function mergeMcpConfig(
   existing: Record<string, unknown>,
   binPath?: string | null,
-  options?: { wsl?: boolean },
+  options?: { platform?: PlatformTarget },
 ): Record<string, unknown> {
   const parsed = McpConfigSchema.safeParse(existing);
   if (!parsed.success) {

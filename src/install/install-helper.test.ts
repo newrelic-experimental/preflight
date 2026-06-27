@@ -51,7 +51,7 @@ describe('generateHookEntries', () => {
   });
 
   it('wsl mode: uses quoted wsl.exe -e with absolute path', () => {
-    const hooks = generateHookEntries('/home/user/bin/preflight', { wsl: true });
+    const hooks = generateHookEntries('/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
 
     expect(hooks.PreToolUse[0].hooks[0].command).toBe(
       'wsl.exe -e "/home/user/bin/preflight-collector" pre-tool',
@@ -62,7 +62,9 @@ describe('generateHookEntries', () => {
   });
 
   it('wsl mode: quotes path with spaces so cmd.exe does not split tokens', () => {
-    const hooks = generateHookEntries('/home/john doe/bin/preflight', { wsl: true });
+    const hooks = generateHookEntries('/home/john doe/bin/preflight', {
+      platform: 'wsl-windows-cc',
+    });
 
     expect(hooks.PreToolUse[0].hooks[0].command).toBe(
       'wsl.exe -e "/home/john doe/bin/preflight-collector" pre-tool',
@@ -70,7 +72,9 @@ describe('generateHookEntries', () => {
   });
 
   it('wsl mode: escapes backslashes before quotes, matching non-wsl branch behaviour', () => {
-    const hooks = generateHookEntries('/path/with\\backslash/preflight', { wsl: true });
+    const hooks = generateHookEntries('/path/with\\backslash/preflight', {
+      platform: 'wsl-windows-cc',
+    });
 
     expect(hooks.PreToolUse[0].hooks[0].command).toBe(
       'wsl.exe -e "/path/with\\\\backslash/preflight-collector" pre-tool',
@@ -78,7 +82,7 @@ describe('generateHookEntries', () => {
   });
 
   it('wsl mode: falls back to quoted bare command name when binPath is null', () => {
-    const hooks = generateHookEntries(null, { wsl: true });
+    const hooks = generateHookEntries(null, { platform: 'wsl-windows-cc' });
 
     expect(hooks.PreToolUse[0].hooks[0].command).toBe('wsl.exe -e "preflight-collector" pre-tool');
     expect(hooks.PostToolUse[0].hooks[0].command).toBe(
@@ -129,9 +133,9 @@ describe('generateHookEntries', () => {
   });
 });
 
-describe('mergeSettings — WSL mode', () => {
+describe('mergeSettings — wsl-windows-cc platform', () => {
   it('generates quoted wsl.exe hook commands', () => {
-    const result = mergeSettings({}, '/home/user/bin/preflight', { wsl: true });
+    const result = mergeSettings({}, '/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
     const hooks = result.hooks as Record<string, unknown[]>;
     const pre = hooks.PreToolUse[0] as Record<string, unknown>;
     expect((pre.hooks as Array<Record<string, string>>)[0].command).toBe(
@@ -140,17 +144,17 @@ describe('mergeSettings — WSL mode', () => {
   });
 
   it('is idempotent — re-installing with wsl mode does not duplicate entries', () => {
-    const once = mergeSettings({}, '/home/user/bin/preflight', { wsl: true });
-    const twice = mergeSettings(once, '/home/user/bin/preflight', { wsl: true });
+    const once = mergeSettings({}, '/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
+    const twice = mergeSettings(once, '/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
     const hooks = twice.hooks as Record<string, unknown[]>;
     expect(hooks.PreToolUse).toHaveLength(1);
     expect(hooks.PostToolUse).toHaveLength(1);
   });
 });
 
-describe('mergeMcpConfig — WSL mode', () => {
+describe('mergeMcpConfig — wsl-windows-cc platform', () => {
   it('generates wsl.exe MCP server entry', () => {
-    const result = mergeMcpConfig({}, '/home/user/bin/preflight', { wsl: true });
+    const result = mergeMcpConfig({}, '/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
     const servers = result.mcpServers as Record<string, unknown>;
     expect(servers['newrelic-preflight']).toEqual({
       command: 'wsl.exe',
@@ -205,7 +209,9 @@ describe('generateMcpServerEntry', () => {
   });
 
   it('wsl mode: uses wsl.exe -e with absolute path', () => {
-    const entry = generateMcpServerEntry('/home/user/bin/preflight', { wsl: true });
+    const entry = generateMcpServerEntry('/home/user/bin/preflight', {
+      platform: 'wsl-windows-cc',
+    });
 
     expect(entry['newrelic-preflight']).toEqual({
       command: 'wsl.exe',
@@ -214,7 +220,7 @@ describe('generateMcpServerEntry', () => {
   });
 
   it('wsl mode: falls back to bare command name when binPath is null', () => {
-    const entry = generateMcpServerEntry(null, { wsl: true });
+    const entry = generateMcpServerEntry(null, { platform: 'wsl-windows-cc' });
 
     expect(entry['newrelic-preflight']).toEqual({
       command: 'wsl.exe',

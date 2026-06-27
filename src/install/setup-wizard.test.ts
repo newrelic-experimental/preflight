@@ -1,9 +1,12 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
-import * as rlMod from 'node:readline/promises';
 import * as fsMod from 'node:fs';
+import * as rlMod from 'node:readline/promises';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
+import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
 import * as scheduleMod from './schedule.js';
 import * as keyValidator from './key-validator.js';
+import * as cliMod from './cli.js';
+import * as platformMod from './platform.js';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted above imports by jest at runtime).
@@ -20,7 +23,15 @@ jest.mock('node:fs', () => ({
   chmodSync: jest.fn(),
   realpathSync: jest.fn((p: unknown) => p),
 }));
-jest.mock('./cli.js', () => ({ runInstallCli: jest.fn(), verifyBinaryOnPath: jest.fn() }));
+jest.mock('./cli.js', () => ({
+  runInstallCli: jest.fn(),
+  verifyBinaryOnPath: jest.fn(),
+  findRepoRoot: jest.fn(() => null),
+}));
+jest.mock('./platform.js', () => ({
+  isWsl: jest.fn(() => false),
+  resolveWindowsHome: jest.fn(() => null),
+}));
 jest.mock('./key-validator.js', () => ({
   validateLicenseKey: jest.fn(),
   validateApiKey: jest.fn(),
@@ -56,9 +67,17 @@ const mockedSchedule = scheduleMod as unknown as {
   installSchedule: jest.Mock;
   resolveBinaryPath: jest.Mock;
 };
+const mockedCli = cliMod as unknown as {
+  runInstallCli: jest.Mock;
+  verifyBinaryOnPath: jest.Mock;
+};
+const mockedPlatform = platformMod as unknown as {
+  isWsl: jest.Mock;
+  resolveWindowsHome: jest.Mock;
+};
 
 // ---------------------------------------------------------------------------
-// copyStarterAlertRules — Phase 4 task 24
+// copyStarterAlertRules
 // ---------------------------------------------------------------------------
 
 describe('copyStarterAlertRules', () => {
@@ -299,9 +318,9 @@ describe('buildConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-138: setup-wizard idempotency and env-detection tests
+// setup-wizard idempotency and env-detection tests
 // ---------------------------------------------------------------------------
-describe('F-138: setup-wizard idempotency and env-detection', () => {
+describe('setup-wizard idempotency and env-detection', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
   let stderrSpy: ReturnType<typeof jest.spyOn>;
   let mockRl: { question: jest.Mock; close: jest.Mock };
@@ -384,10 +403,10 @@ describe('F-138: setup-wizard idempotency and env-detection', () => {
     expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
   });
 
-  // task #22: loadExisting() must validate via ConfigFileSchema and strip
-  // unknown top-level keys, so wizard's later spread (`...existing`) doesn't
-  // perpetuate stale fields. Recognized keys still pass through.
-  it('strips unknown top-level keys from existing config (task #22)', async () => {
+  // loadExisting() must validate via ConfigFileSchema and strip unknown top-level
+  // keys, so wizard's later spread (`...existing`) doesn't perpetuate stale fields.
+  // Recognized keys still pass through.
+  it('strips unknown top-level keys from existing config', async () => {
     const existingConfig = {
       accountId: '12345',
       licenseKey: 'NRLIC-existing',
@@ -410,10 +429,9 @@ describe('F-138: setup-wizard idempotency and env-detection', () => {
     expect(written.licenseKey).toBe('NRLIC-existing');
   });
 
-  // task #22: validation failure on a recognized key (e.g. malformed type)
-  // logs a warning and falls back to defaults rather than carrying bad data
-  // forward via the spread.
-  it('falls back to defaults when recognized key has invalid value (task #22)', async () => {
+  // Validation failure on a recognized key (e.g. malformed type) logs a warning
+  // and falls back to defaults rather than carrying bad data forward via the spread.
+  it('falls back to defaults when recognized key has invalid value', async () => {
     const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
       // accountId must be a string; passing a number triggers safeParse failure.
@@ -532,13 +550,10 @@ describe('setupWizard mode branch', () => {
     expect(written.dashboard).toEqual({ port: 7777, host: '127.0.0.1', openOnStart: false });
   });
 
-  // F-020: in cloud mode, the wizard MUST NOT copy the starter alert
-  // rules — the alert engine isn't constructed, so the on-disk rules
-  // file would be ignored and would just clutter the user's home dir.
-  // The mode-gating in setup-wizard.ts:276 was correct, but no test
-  // pinned the negative case; removing the guard would not have broken
-  // any existing test.
-  it("when mode='cloud', does NOT copy starter alert rules (F-020)", async () => {
+  // In cloud mode the wizard must not copy the starter alert rules — the alert
+  // engine isn't constructed, so the on-disk rules file would be ignored and
+  // would just clutter the user's home dir.
+  it("when mode='cloud', does NOT copy starter alert rules", async () => {
     // Cloud mode skips the dashboardPort and copyStarterRules prompts,
     // so the answer sequence is shorter than the local/both flows.
     // Order: mode, accountId, licenseKey, environment, nrApiKey, developer, teamId, projectId,
@@ -559,7 +574,7 @@ describe('setupWizard mode branch', () => {
 });
 
 // ---------------------------------------------------------------------------
-// I11: Validation rejection paths
+// Validation rejection paths
 // ---------------------------------------------------------------------------
 describe('setupWizard input validation', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -1214,5 +1229,97 @@ describe('setupWizard environment and nrApiKey steps', () => {
     const licensePrompt = promptMessages.find((m) => m.toLowerCase().includes('license key'));
     expect(licensePrompt).toContain('(already set)');
     expect(licensePrompt).toMatch(/\[.*\]/); // brackets
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WSL CC-mode selection in the hook install step
+// ---------------------------------------------------------------------------
+describe('setupWizard WSL CC-mode selection', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+  const savedPlatform = process.platform;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
+    // Linux platform avoids the macOS-only daemon and schedule prompts.
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    mockedPlatform.isWsl.mockReturnValue(true);
+    // Default: Windows home is resolvable (needed for wslChoice='1' tests).
+    mockedPlatform.resolveWindowsHome.mockReturnValue('/mnt/c/Users/testuser');
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
+    mockedPlatform.isWsl.mockReturnValue(false);
+    mockedPlatform.resolveWindowsHome.mockReturnValue(null);
+  });
+
+  // Answer order for cloud mode + WSL + installHooks='y':
+  // mode, accountId, licenseKey, environment, nrApiKey, developer, teamId, projectId,
+  // sessionBudget, installHooks='y', wslChoice
+  function answers(...values: string[]): void {
+    let i = 0;
+    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+  }
+
+  it("calls runInstallCli with ['install', '--windows-cc'] when wslChoice is '1'", async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y', '1');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--windows-cc']);
+  });
+
+  it("calls runInstallCli with ['install', '--linux-cc'] when wslChoice is '2'", async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y', '2');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--linux-cc']);
+  });
+
+  it("calls runInstallCli with ['install', '--linux-cc'] when wslChoice is empty (press Enter)", async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y', '');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--linux-cc']);
+  });
+
+  it('skips hook install (does not fall back to --linux-cc) when wslChoice is 1 but Windows home cannot be resolved', async () => {
+    mockedPlatform.resolveWindowsHome.mockReturnValue(null);
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y', '1');
+
+    await runSetupWizard();
+
+    // Must NOT install with --linux-cc — that would silently write wsl-linux-cc as the
+    // saved platform, corrupting Windows CC intent on all future bare installs.
+    expect(mockedCli.runInstallCli).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Windows home directory could not be resolved');
+    expect(output).toContain('preflight install --windows-cc');
+  });
+
+  it("defaults to --linux-cc and prints '3 attempts' message after 3 consecutive invalid inputs", async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y', 'x', 'x', 'x');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--linux-cc']);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('No valid choice entered after 3 attempts');
   });
 });
