@@ -231,6 +231,22 @@ describe('loadMcpConfig()', () => {
     expect(config.model).toBe('claude-haiku-4-5');
   });
 
+  it('platformTarget is read from config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ platformTarget: 'wsl-linux-cc' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.platformTarget).toBe('wsl-linux-cc');
+  });
+
+  it('platformTarget is undefined when absent from config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.platformTarget).toBeUndefined();
+  });
+
   it('developer defaults to $USER env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';

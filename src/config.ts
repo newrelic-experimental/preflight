@@ -44,6 +44,7 @@ export interface McpServerConfig {
   readonly otlpHeaders: Readonly<Record<string, string>>;
   readonly transport: 'nr-events-api' | 'otlp' | 'both';
   readonly mode: 'cloud' | 'local' | 'both';
+  readonly platformTarget?: PlatformTarget;
   /** Enable the local OTLP/HTTP receiver. Default: false. */
   readonly otlpReceiverEnabled: boolean;
   /** Port for the local OTLP/HTTP receiver. Default: 4318. */
@@ -82,6 +83,8 @@ export interface McpServerConfig {
 }
 
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
+
+export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
 
 const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
@@ -134,6 +137,7 @@ export const ConfigFileSchema = z
     otlpHeaders: z.record(z.string(), z.string()).optional(),
     transport: z.enum(['nr-events-api', 'otlp', 'both']).optional(),
     mode: z.enum(['cloud', 'local', 'both']).optional(),
+    platformTarget: z.enum(['native', 'wsl-windows-cc', 'wsl-linux-cc']).optional(),
     otlpReceiverEnabled: z.boolean().optional(),
     otlpReceiverPort: z.number().optional(),
     otlpReceiverBindAddress: z.string().optional(),
@@ -869,6 +873,8 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         openOnStart: dashboardOpenOnStart,
       };
     })(),
+
+    platformTarget: file.platformTarget as PlatformTarget | undefined,
 
     alerts: (() => {
       // The alerts config is a separate top-level block from

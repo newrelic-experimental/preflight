@@ -160,6 +160,11 @@ preflight uninstall   # Remove hooks and MCP config from your AI tool
 
 Add `--project` to `install`/`uninstall` to scope changes to the current directory only.
 
+**WSL users:** `preflight setup` will ask which Claude Code you're running. You can also set it explicitly:
+
+- `--windows-cc` — Windows Claude Code (the desktop app); uses `wsl.exe` hooks and Windows paths
+- `--linux-cc` — Linux Claude Code installed via npm inside WSL
+
 ---
 
 ## Documentation
