@@ -222,14 +222,6 @@ terraform apply
 | `personal_anti_pattern_max`     | No       | `10`    | Alert when anti-pattern count exceeds this per 5-minute window |
 | `personal_stuck_loop_max`       | No       | `3`     | Alert when stuck loop count exceeds this per 5-minute window   |
 
-### Staging accounts
-
-```bash
-TF_VAR_account_id=... TF_VAR_api_key=... TF_VAR_staging=true terraform apply
-```
-
-The `staging = true` flag routes NerdGraph calls to `staging-api.newrelic.com/graphql`. The provider emits a deprecation warning for `nerdgraph_api_url` — this is expected and intentional for NR-internal use.
-
 ### Teardown
 
 ```bash

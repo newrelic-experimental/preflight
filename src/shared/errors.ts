@@ -5,7 +5,7 @@ import type { AiProvider } from './events/types.js';
  * {@link classifyErrorDetailed}.
  *
  * Implemented as a `const` object plus derived string-literal union
- * (CODE_REVIEW §7.20) rather than a TypeScript `enum`, so that:
+ * rather than a TypeScript `enum`, so that:
  *   - runtime usage (`AiErrorClassification.RATE_LIMIT`) keeps working
  *     identically for existing call sites;
  *   - the type is a string-literal union, matching every other
@@ -66,7 +66,7 @@ export const RETRYABLE: ReadonlySet<AiErrorClassification> = new Set<AiErrorClas
 // Returns the first code that is in NETWORK_CODES or TIMEOUT_CODES; if none
 // is classified, falls back to the first string code found anywhere in the
 // chain. This prevents a spurious top-level SDK code (e.g. 'UNKNOWN_ERROR')
-// from blocking a classified cause-chain code (e.g. 'ECONNREFUSED') (§ER1).
+// from blocking a classified cause-chain code (e.g. 'ECONNREFUSED').
 // Bounded to 5 hops to guard against pathological chains.
 function extractCode(error: unknown): string | undefined {
   let firstFound: string | undefined;
@@ -87,7 +87,7 @@ function extractCode(error: unknown): string | undefined {
  * one of the canonical {@link AiErrorClassification} categories. The
  * decision routes through HTTP status (when present), Node `code` for
  * network/timeout cases, and provider-specific 400 disambiguation
- * (CODE_REVIEW §7.14) — content policy vs. context length vs. generic.
+ * — content policy vs. context length vs. generic.
  *
  * Designed for retry-loop consumption — see {@link isRetryable} and
  * {@link RETRYABLE} for the policy applied downstream. For UI / logging
@@ -109,7 +109,7 @@ export function classifyError(error: unknown, provider: AiProvider): AiErrorClas
 
   // Modern Node fetch (undici) wraps the underlying syscall code in
   // error.cause.code rather than error.code directly. Walk the cause chain
-  // (bounded to 5 hops) to find the first code string (§E1).
+  // (bounded to 5 hops) to find the first code string.
   const code = extractCode(err);
 
   // 1. Network errors (no HTTP status, connection-level failure)
@@ -124,9 +124,9 @@ export function classifyError(error: unknown, provider: AiProvider): AiErrorClas
   const nameOrMessage = `${err.name ?? ''} ${err.message ?? ''}`;
   // Only apply the message-based timeout check when there is no HTTP status —
   // for HTTP responses the switch below handles classified codes; the default
-  // case handles unknown statuses and will also check the message (§ER2).
+  // case handles unknown statuses and will also check the message.
   // Use typeof check (not falsiness) so status:0 doesn't spuriously trigger
-  // message-based timeout detection (§ER1).
+  // message-based timeout detection.
   if (typeof err.status !== 'number' && /timeout/i.test(nameOrMessage)) {
     return AiErrorClassification.TIMEOUT;
   }
@@ -161,7 +161,7 @@ export function classifyError(error: unknown, provider: AiProvider): AiErrorClas
     case 402:
       // Payment Required — used by some providers for billing/quota exhaustion.
       // Classified as UNKNOWN (non-retryable) because a payment issue cannot
-      // be resolved by retrying the same request (§ER4).
+      // be resolved by retrying the same request.
       return AiErrorClassification.UNKNOWN;
     case 404:
       return AiErrorClassification.NOT_FOUND;
@@ -180,7 +180,7 @@ export function classifyError(error: unknown, provider: AiProvider): AiErrorClas
       return classify400(err, provider);
     default:
       // For unclassified numeric statuses (e.g. 425 "Too Early"), fall back to
-      // message-based timeout detection before returning UNKNOWN (§ER2).
+      // message-based timeout detection before returning UNKNOWN.
       if (/timeout/i.test(nameOrMessage)) return AiErrorClassification.TIMEOUT;
       return AiErrorClassification.UNKNOWN;
   }
@@ -188,7 +188,7 @@ export function classifyError(error: unknown, provider: AiProvider): AiErrorClas
 
 // Provider-typed error codes (body-level `error.code` or `error.type`). Prefer
 // these over message substring matching — SDKs expose stable typed codes that
-// don't drift with version-to-version wording changes (CODE_REVIEW §7.14).
+// don't drift with version-to-version wording changes.
 const CONTENT_POLICY_TYPED_CODES = new Set<string>([
   // OpenAI
   'content_filter',
@@ -263,7 +263,7 @@ export interface RateLimitInfo {
 }
 
 // Internal mutable builder — extractRateLimitHeaders fills fields one at a
-// time; RateLimitInfo is readonly for callers (§IN1).
+// time; RateLimitInfo is readonly for callers.
 type MutableRateLimitInfo = { -readonly [K in keyof RateLimitInfo]: RateLimitInfo[K] };
 
 // Header names verified June 2026.
@@ -318,7 +318,7 @@ function readHeader(headers: unknown, names: readonly string[]): string | null {
   if (typeof hdr.get === 'function') {
     // Headers API path: use .get() exclusively. A null return from .get()
     // means the header is absent — do NOT fall through to property access,
-    // which would read unrelated inherited properties (§E5).
+    // which would read unrelated inherited properties.
     const getter = hdr.get as (name: string) => string | null;
     for (const name of names) {
       const val = getter.call(hdr, name);
@@ -341,7 +341,7 @@ function readHeader(headers: unknown, names: readonly string[]): string | null {
 /**
  * Extract rate-limit metadata from a provider error's `headers` field.
  *
- * Returns `null` when the error carries no `headers` at all (CODE_REVIEW §7.17),
+ * Returns `null` when the error carries no `headers` at all,
  * letting callers distinguish "no headers in the response" from "headers
  * present but no rate-limit headers parsed". When `headers` is present but
  * none of the recognized rate-limit headers parse, returns a `RateLimitInfo`
@@ -370,7 +370,7 @@ export function extractRateLimitHeaders(error: unknown): RateLimitInfo | null {
 
     if (field === 'tokensRemaining' || field === 'requestsRemaining') {
       // Guard against empty string: Number('') === 0, which is valid but
-      // indistinguishable from a genuine "0 remaining" (§ER3).
+      // indistinguishable from a genuine "0 remaining".
       const trimmed = raw.trim();
       const parsed = Number(trimmed);
       if (trimmed !== '' && !Number.isNaN(parsed)) {
@@ -392,7 +392,7 @@ export function extractRateLimitHeaders(error: unknown): RateLimitInfo | null {
  *
  * The minimum effective `maxLength` is 4 — a shorter cap is silently
  * clamped to 4 so the result is always at least `'X...'` for some single
- * character of the original message (CODE_REVIEW §7.16).
+ * character of the original message.
  *
  * Examples:
  * ```
@@ -410,7 +410,7 @@ export function truncateErrorMessage(message: string, maxLength = 1024): string 
   const safeMax = Math.max(4, maxLength);
   if (message.length <= safeMax) return message;
   // Slice by code units but step back if we land on a high surrogate to avoid
-  // emitting a lone surrogate that produces malformed UTF-16 / UTF-8 (§E4).
+  // emitting a lone surrogate that produces malformed UTF-16 / UTF-8.
   let cut = safeMax - 3;
   const charCode = message.charCodeAt(cut - 1);
   if (charCode >= 0xd800 && charCode <= 0xdbff) cut -= 1;
@@ -420,7 +420,7 @@ export function truncateErrorMessage(message: string, maxLength = 1024): string 
 /**
  * Rich classification result that pairs the {@link AiErrorClassification}
  * enum value with the original error context — message, HTTP status, and
- * Node system code (CODE_REVIEW §7.15, §E6).
+ * Node system code.
  *
  * `code` is the Node system-level error code (e.g. `'ECONNREFUSED'`,
  * `'ETIMEDOUT'`), extracted by walking the cause chain. It is NOT the
@@ -451,7 +451,7 @@ export interface ClassifiedError {
 export function classifyErrorDetailed(error: unknown, provider: AiProvider): ClassifiedError {
   const err = error as { status?: unknown; message?: unknown };
   const status = typeof err?.status === 'number' ? err.status : null;
-  // Use extractCode() to walk the cause chain, matching classifyError() (§E1/§E6).
+  // Use extractCode() to walk the cause chain, matching classifyError().
   const code = extractCode(error) ?? null;
   const originalMessage =
     typeof err?.message === 'string' && err.message.length > 0 ? err.message : null;

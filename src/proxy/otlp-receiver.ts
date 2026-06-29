@@ -327,8 +327,7 @@ export class OtlpReceiver {
     // Also handle resourceMetrics and resourceLogs for /v1/metrics and /v1/logs
     for (const key of ['resourceSpans', 'resourceMetrics', 'resourceLogs']) {
       const resources = payload[key] as
-        | Array<{ resource?: { attributes?: unknown[] } }>
-        | undefined;
+        Array<{ resource?: { attributes?: unknown[] } }> | undefined;
       if (!Array.isArray(resources)) continue;
 
       for (const resource of resources) {

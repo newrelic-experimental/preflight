@@ -7,7 +7,7 @@ export type AiRequestMethod =
   | 'models.generateContentStream'
   | 'models.embedContent'
   | 'chat.completions.create'
-  // CODE_REVIEW §6.17 — OpenAI's embeddings endpoint. Added so consumers
+  // OpenAI's embeddings endpoint. Added so consumers
   // calling `client.embeddings.create({...})` (the OpenAI Node SDK shape)
   // can pass the verbatim method name and have it map to
   // `gen_ai.operation.name = 'embeddings'` in serialize.ts.
@@ -18,7 +18,7 @@ export type AiRequestMethod =
   | 'chat.stream'
   | 'chat'
   | 'chatStream'
-  // CODE_REVIEW §6.17 — Cohere's embeddings endpoint (`client.embed(...)`).
+  // Cohere's embeddings endpoint (`client.embed(...)`).
   | 'embed';
 
 export interface AiRequest {
@@ -95,7 +95,7 @@ export interface AiMessage {
 
 export type NrEventData = Record<string, string | number | boolean>;
 
-// WIP (§EVT1): SpanType and SpanAttributes are reserved for a future distributed
+// WIP: SpanType and SpanAttributes are reserved for a future distributed
 // tracing feature. No factory or serializer exists yet — intentionally NOT exported
 // from index.ts. Implement createSpanAttributes() + spanAttributesToNrEvent() before
 // re-exporting. Do not use from consumer code until backed by implementations.

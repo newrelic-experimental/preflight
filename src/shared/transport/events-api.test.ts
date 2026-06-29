@@ -89,7 +89,7 @@ describe('sendEvents', () => {
     expect(url).toBe('https://insights-collector.eu01.nr-data.net/v1/accounts/12345/events');
   });
 
-  // §5.9: collectorHost containing a dot is treated as a literal host override.
+  // collectorHost containing a dot is treated as a literal host override.
   it('uses literal collectorHost as URL host when it contains a dot', async () => {
     await sendEvents(testEvents, 'us01xxUSKEY', {
       ...baseOptions,
@@ -110,7 +110,7 @@ describe('sendEvents', () => {
     expect(url).toBe('https://my-proxy.example.com:8443/v1/accounts/12345/events');
   });
 
-  // §5.9: bare 'staging' keyword (no dot) is still routed via region detection.
+  // bare 'staging' keyword (no dot) is still routed via region detection.
   it('routes bare staging keyword to NR staging events endpoint', async () => {
     await sendEvents(testEvents, 'us01xxUSKEY', {
       ...baseOptions,

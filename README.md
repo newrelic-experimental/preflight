@@ -8,7 +8,7 @@
 [![Local First](https://img.shields.io/badge/Local%20First-Offline%20by%20default-brightgreen)](#quick-start)
 [![Dashboards Included](https://img.shields.io/badge/Dashboards-7%20Included-blue)](#dashboards)
 
-[**Docs**](docs/ADVANCED.md) • [**Examples**](examples/) • [**Community**](https://support.newrelic.com/s/) • [**Contributing**](CONTRIBUTING.md)
+[**Docs**](docs/ADVANCED.md) • [**Examples**](examples/) • [**Community**](https://support.newrelic.com/s/) • [**Contributing**](CONTRIBUTING.md) • [**Internal**](docs/INTERNAL_USAGE.md)
 
 </div>
 
@@ -171,7 +171,8 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 
 - [**ADVANCED.md**](docs/ADVANCED.md) — Configuration, dashboards, alerts, Terraform
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
-- [**SECURITY.md**](docs/SECURITY.md) — Security guidelines and best practices
+- [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
+- [**PRIVACY.md**](./PRIVACY.md) — Data collection inventory and pre-cloud checklist
 
 ---
 

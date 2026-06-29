@@ -21,11 +21,7 @@ import type { ToolCallRecord } from '../storage/types.js';
 // ---------------------------------------------------------------------------
 
 export type AntiPatternType =
-  | 'thrashing'
-  | 're_reading'
-  | 'stuck_loop'
-  | 'blind_editing'
-  | 'over_delegation';
+  'thrashing' | 're_reading' | 'stuck_loop' | 'blind_editing' | 'over_delegation';
 
 export interface AntiPattern {
   readonly type: AntiPatternType;

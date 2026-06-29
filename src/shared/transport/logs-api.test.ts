@@ -90,7 +90,7 @@ describe('sendLogs', () => {
     expect(url).toBe('https://log-api.eu.newrelic.com/log/v1');
   });
 
-  // §5.9: collectorHost containing a dot is treated as a literal host override
+  // collectorHost containing a dot is treated as a literal host override
   // and used verbatim in the URL — the path is per-API but the host is whatever
   // the caller provided. This lets users route through proxies or to non-NR
   // collectors without us second-guessing their hostname.
@@ -114,7 +114,7 @@ describe('sendLogs', () => {
     expect(url).toBe('https://my-proxy.example.com:8443/log/v1');
   });
 
-  // §5.9: bare 'staging' keyword (no dot) is still routed via region detection
+  // bare 'staging' keyword (no dot) is still routed via region detection
   // to NR's per-service staging hostnames — the literal-hostname override only
   // kicks in for FQDN-shaped values. This preserves NR-internal staging usage.
   it('routes bare staging keyword to NR staging log endpoint', async () => {

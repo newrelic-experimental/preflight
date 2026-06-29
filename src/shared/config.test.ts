@@ -7,7 +7,7 @@ describe('loadConfig', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    // CODE_REVIEW §7.5: env-resolved log level is cached on first use; clear
+    // Env-resolved log level is cached on first use; clear
     // it so per-test NEW_RELIC_AI_LOG_LEVEL changes are observable.
     __resetLogLevelCache();
     delete process.env.NEW_RELIC_LICENSE_KEY;
@@ -32,7 +32,7 @@ describe('loadConfig', () => {
     delete process.env.OTEL_EXPORTER_OTLP_HEADERS;
     delete process.env.NEW_RELIC_AI_TRANSPORT;
 
-    // CODE_REVIEW F3 — `loadConfig` now requires accountId when transport is
+    // `loadConfig` now requires accountId when transport is
     // 'nr-events-api' or 'both' (the default is 'nr-events-api'). Most tests
     // here exercise non-accountId, non-transport behavior, so set a default
     // accountId in env to keep them focused. Tests that need accountId=null
@@ -49,7 +49,7 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ appName: 'test-app' })).toThrow('NEW_RELIC_LICENSE_KEY');
   });
 
-  // CODE_REVIEW §3.3.2 + §5.12 — license key format validation
+  // license key format validation
   it('throws when license key is too short', () => {
     expect(() => loadConfig({ licenseKey: 'short', appName: 'app' })).toThrow('printable ASCII');
   });
@@ -80,25 +80,25 @@ describe('loadConfig', () => {
     );
   });
 
-  it('throws when appName contains a newline (header injection guard, §CF2)', () => {
+  it('throws when appName contains a newline (header injection guard)', () => {
     expect(() =>
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'my-app\nX-Evil: y' }),
     ).toThrow('control characters');
   });
 
-  it('throws when appName contains a null byte (§CF2)', () => {
+  it('throws when appName contains a null byte', () => {
     expect(() =>
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'my-app\x00' }),
     ).toThrow('control characters');
   });
 
-  it('throws when appName exceeds 255 characters (§CF2)', () => {
+  it('throws when appName exceeds 255 characters', () => {
     expect(() =>
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'a'.repeat(256) }),
     ).toThrow('control characters');
   });
 
-  it('accepts appName exactly 255 characters (§CF2)', () => {
+  it('accepts appName exactly 255 characters', () => {
     const longName = 'a'.repeat(255);
     const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: longName });
     expect(config.appName).toBe(longName);
@@ -141,6 +141,8 @@ describe('loadConfig', () => {
     expect(config.highSecurity).toBe(false);
     expect(config.logLevel).toBe('info');
     expect(config.collectorHost).toBeNull();
+    expect(config.clientName).toBe('ai-telemetry');
+    expect(config.clientVersion).toBe('');
   });
 
   it('maps all env vars to config fields', () => {
@@ -171,6 +173,93 @@ describe('loadConfig', () => {
     expect(config.collectorHost).toBe('collector.eu.newrelic.com');
   });
 
+  it('reads clientName and clientVersion from env vars', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'us01xxFAKEKEYFORTESTSONLY1234';
+    process.env.NEW_RELIC_APP_NAME = 'app';
+    process.env.NEW_RELIC_AI_CLIENT_NAME = 'preflight';
+    process.env.NEW_RELIC_AI_CLIENT_VERSION = '1.2.3';
+
+    const config = loadConfig();
+
+    expect(config.clientName).toBe('preflight');
+    expect(config.clientVersion).toBe('1.2.3');
+  });
+
+  it('strips control characters from clientVersion', () => {
+    const config = loadConfig({
+      licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
+      appName: 'app',
+      clientVersion: '1.2.3\n',
+    });
+
+    expect(config.clientVersion).toBe('1.2.3');
+  });
+
+  it('strips control characters from clientName', () => {
+    const config = loadConfig({
+      licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
+      appName: 'app',
+      clientName: 'preflight\r\n',
+    });
+
+    expect(config.clientName).toBe('preflight');
+  });
+
+  it('trims whitespace-only clientVersion to empty string', () => {
+    const config = loadConfig({
+      licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
+      appName: 'app',
+      clientVersion: '   ',
+    });
+
+    expect(config.clientVersion).toBe('');
+  });
+
+  it('trims leading/trailing spaces from clientVersion', () => {
+    const config = loadConfig({
+      licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
+      appName: 'app',
+      clientVersion: ' 1.2.3 ',
+    });
+
+    expect(config.clientVersion).toBe('1.2.3');
+  });
+
+  it('empty-string clientVersion override suppresses env var', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'us01xxFAKEKEYFORTESTSONLY1234';
+    process.env.NEW_RELIC_APP_NAME = 'app';
+    process.env.NEW_RELIC_AI_CLIENT_VERSION = '9.9.9';
+
+    const config = loadConfig({ clientVersion: '' });
+
+    expect(config.clientVersion).toBe('');
+  });
+
+  it('empty-string clientName override suppresses env var and falls back to default name', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'us01xxFAKEKEYFORTESTSONLY1234';
+    process.env.NEW_RELIC_APP_NAME = 'app';
+    process.env.NEW_RELIC_AI_CLIENT_NAME = 'preflight';
+
+    const config = loadConfig({ clientName: '' });
+
+    // '' suppresses the env var (env value 'preflight' is not used), but after
+    // sanitization the empty result falls back to DEFAULT_CLIENT_NAME so
+    // config.clientName is always a non-empty string.
+    expect(config.clientName).toBe('ai-telemetry');
+  });
+
+  it('override wins over env var for clientName and clientVersion', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'us01xxFAKEKEYFORTESTSONLY1234';
+    process.env.NEW_RELIC_APP_NAME = 'app';
+    process.env.NEW_RELIC_AI_CLIENT_NAME = 'from-env';
+    process.env.NEW_RELIC_AI_CLIENT_VERSION = '9.9.9';
+
+    const config = loadConfig({ clientName: 'from-override', clientVersion: '1.0.0' });
+
+    expect(config.clientName).toBe('from-override');
+    expect(config.clientVersion).toBe('1.0.0');
+  });
+
   it('highSecurity=true forces recordContent=false even if explicitly set', () => {
     const config = loadConfig({
       licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
@@ -199,7 +288,7 @@ describe('loadConfig', () => {
     expect(Object.isFrozen(config)).toBe(true);
   });
 
-  // CODE_REVIEW §3.3.3 — nested objects must also be frozen
+  // nested objects must also be frozen
   it('deep-freezes attributionDefaults and otlpHeaders', () => {
     const config = loadConfig({
       licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
@@ -222,7 +311,7 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
   });
 
-  it('emits a warn log when NEW_RELIC_AI_LOG_LEVEL is unrecognized (§CFG2)', () => {
+  it('emits a warn log when NEW_RELIC_AI_LOG_LEVEL is unrecognized', () => {
     process.env.NEW_RELIC_AI_LOG_LEVEL = 'verbose';
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -231,13 +320,13 @@ describe('loadConfig', () => {
     stderrSpy.mockRestore();
   });
 
-  it('trims whitespace from NEW_RELIC_AI_LOG_LEVEL (§CFG2)', () => {
+  it('trims whitespace from NEW_RELIC_AI_LOG_LEVEL', () => {
     process.env.NEW_RELIC_AI_LOG_LEVEL = ' debug ';
     const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
     expect(config.logLevel).toBe('debug');
   });
 
-  it('empty-string collectorHost override normalizes to null (§CFG3)', () => {
+  it('empty-string collectorHost override normalizes to null', () => {
     process.env.NEW_RELIC_HOST = 'collector.newrelic.com';
     const config = loadConfig({
       licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
@@ -249,7 +338,7 @@ describe('loadConfig', () => {
     expect(config.collectorHost).toBeNull();
   });
 
-  it('null collectorHost override wins over env var (§CFG3)', () => {
+  it('null collectorHost override wins over env var', () => {
     process.env.NEW_RELIC_HOST = 'collector.newrelic.com';
     const config = loadConfig({
       licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
@@ -259,7 +348,7 @@ describe('loadConfig', () => {
     expect(config.collectorHost).toBeNull(); // explicit null wins over env var
   });
 
-  // S-03: accountId format validation (CODE_REVIEW §3.3.6 — relaxed to
+  // S-03: accountId format validation (relaxed to
   // positive integer with no leading zeros; upper bound enforced server-side)
   it('throws when accountId contains path-traversal characters', () => {
     expect(() =>
@@ -278,7 +367,7 @@ describe('loadConfig', () => {
   });
 
   it('accepts accountIds longer than 12 digits (NR may issue 13+ in the future)', () => {
-    // CODE_REVIEW §3.3.6 — the prior /^\d{1,12}$/ cap forced a library bump
+    // The prior /^\d{1,12}$/ cap forced a library bump
     // every time NR widened the account-ID space. Validation now accepts
     // any positive decimal integer length; server-side enforces the real bound.
     const config = loadConfig({
@@ -290,7 +379,7 @@ describe('loadConfig', () => {
   });
 
   it('throws when accountId is "0"', () => {
-    // CODE_REVIEW §3.3.6 — "0" passed the old regex but is not a real NR
+    // "0" passed the old regex but is not a real NR
     // account ID. New positive-integer validation rejects it.
     expect(() =>
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app', accountId: '0' }),
@@ -298,7 +387,7 @@ describe('loadConfig', () => {
   });
 
   it('throws when accountId has leading zeros (e.g. "07", "00123")', () => {
-    // CODE_REVIEW §3.3.6 — leading-zero strings passed the old regex but no
+    // Leading-zero strings passed the old regex but no
     // NR account uses leading zeros; they almost always indicate config drift.
     expect(() =>
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app', accountId: '07' }),
@@ -328,7 +417,7 @@ describe('loadConfig', () => {
     expect(config.accountId).toBe('12345');
   });
 
-  // CODE_REVIEW F3 — null accountId is acceptable ONLY for the OTLP transport.
+  // null accountId is acceptable ONLY for the OTLP transport.
   // For 'nr-events-api' or 'both', loadConfig fails fast (the URL would
   // otherwise become .../accounts/null/events and silently 404 every batch).
   it('accepts null accountId in OTLP-only transport mode', () => {
@@ -342,7 +431,7 @@ describe('loadConfig', () => {
     expect(config.accountId).toBeNull();
   });
 
-  it('accountId: null override wins over env var — explicit null is honored (§CFG1)', () => {
+  it('accountId: null override wins over env var — explicit null is honored', () => {
     // Pre-fix: null fell through `??` to the env var and was silently ignored.
     process.env.NEW_RELIC_ACCOUNT_ID = '99999';
     const config = loadConfig({
@@ -354,7 +443,7 @@ describe('loadConfig', () => {
     expect(config.accountId).toBeNull(); // override wins, not '99999'
   });
 
-  // CODE_REVIEW F3 — null accountId is valid for OTLP-only; for nr-events-api
+  // null accountId is valid for OTLP-only; for nr-events-api
   // or both it must throw (the URL would become .../accounts/null/... and 404).
   it('throws when accountId is null and transport defaults to nr-events-api', () => {
     delete process.env.NEW_RELIC_ACCOUNT_ID;
@@ -407,7 +496,7 @@ describe('loadConfig', () => {
     expect(config.contentMaxLength).toBe(8192);
   });
 
-  it('rejects trailing garbage in envInt values and falls back to default (§C2)', () => {
+  it('rejects trailing garbage in envInt values and falls back to default', () => {
     // '4kb' should NOT silently become 4 via parseInt
     process.env.NEW_RELIC_AI_CONTENT_MAX_LENGTH = '4kb';
     const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -419,15 +508,15 @@ describe('loadConfig', () => {
     expect(config2.contentMaxLength).toBe(4096); // default, not 1
   });
 
-  // CODE_REVIEW §3.3.7 — envInt clamps emit a debug log
-  describe('envInt clamp logging (§3.3.7)', () => {
+  // envInt clamps emit a debug log
+  describe('envInt clamp logging', () => {
     let stderrSpy: jest.SpyInstance;
     let originalLogLevel: string | undefined;
 
     beforeEach(() => {
       originalLogLevel = process.env.NEW_RELIC_AI_LOG_LEVEL;
       process.env.NEW_RELIC_AI_LOG_LEVEL = 'debug';
-      // §7.5: log level is cached; reset so the new env value applies.
+      // Log level is cached; reset so the new env value applies.
       __resetLogLevelCache();
       stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     });
@@ -463,8 +552,8 @@ describe('loadConfig', () => {
     });
   });
 
-  // CODE_REVIEW §3.3.8 — envBool accepts yes/no/on/off
-  describe('envBool extended truthy/falsy values (§3.3.8)', () => {
+  // envBool accepts yes/no/on/off
+  describe('envBool extended truthy/falsy values', () => {
     it.each([
       ['true', true],
       ['TRUE', true],
@@ -530,7 +619,7 @@ describe('loadConfig', () => {
     });
   });
 
-  // CODE_REVIEW §3.3.4 — parseOtlpHeaders should follow OTel spec
+  // parseOtlpHeaders should follow OTel spec
   describe('OTLP headers parsing', () => {
     it('parses simple key=value pairs', () => {
       process.env.OTEL_EXPORTER_OTLP_HEADERS = 'api-key=abc123,x-trace=on';
@@ -550,7 +639,7 @@ describe('loadConfig', () => {
       expect(config.otlpHeaders).toEqual({ 'x-list': 'a,b,c' });
     });
 
-    it('strips whitespace from keys but NOT from values (OTel spec §CF1)', () => {
+    it('strips whitespace from keys but NOT from values (OTel spec)', () => {
       // OTel spec: trim key whitespace; do NOT trim value whitespace.
       process.env.OTEL_EXPORTER_OTLP_HEADERS = ' key1 = val1 ,key2= val2';
       const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -571,7 +660,7 @@ describe('loadConfig', () => {
       expect(config.otlpHeaders).toEqual({ key: 'abc%' });
     });
 
-    it('§11.4 warns when percent-encoding in value is malformed', () => {
+    it('warns when percent-encoding in value is malformed', () => {
       const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       process.env.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%ZZtoken';
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -580,7 +669,7 @@ describe('loadConfig', () => {
       warnSpy.mockRestore();
     });
 
-    // CODE_REVIEW §3.3.4 — keys must be percent-decoded too. Headers names
+    // Keys must be percent-decoded too. Headers names
     // rarely need encoding in practice (they're usually plain ASCII tokens),
     // but the OTel spec applies the same encoding rules to both sides of
     // the `=` and the parser must honor that for spec compliance.
@@ -596,7 +685,7 @@ describe('loadConfig', () => {
       expect(config.otlpHeaders).toEqual({ 'bad%key': 'val' });
     });
 
-    it('§11.4 warns when percent-encoding in key is malformed', () => {
+    it('warns when percent-encoding in key is malformed', () => {
       const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       process.env.OTEL_EXPORTER_OTLP_HEADERS = 'bad%key=val';
       loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -606,7 +695,7 @@ describe('loadConfig', () => {
     });
   });
 
-  // CODE_REVIEW §9.7 — buildAttributionDefaults coverage
+  // buildAttributionDefaults coverage
   describe('attributionDefaults', () => {
     it('returns null when no env vars or overrides are set', () => {
       const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -629,7 +718,7 @@ describe('loadConfig', () => {
       });
     });
 
-    it('passing undefined for a key in attributionDefaults clears an env-set default (§C1)', () => {
+    it('passing undefined for a key in attributionDefaults clears an env-set default', () => {
       process.env.NEW_RELIC_AI_ATTRIBUTION_FEATURE = 'env-feature';
       process.env.NEW_RELIC_AI_ATTRIBUTION_TEAM = 'env-team';
 
@@ -662,7 +751,7 @@ describe('loadConfig', () => {
     });
   });
 
-  // CODE_REVIEW §9.7 — transport field default + override
+  // transport field default + override
   describe('transport', () => {
     it("defaults to 'nr-events-api'", () => {
       const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -687,7 +776,7 @@ describe('loadConfig', () => {
       expect(config.transport).toBe('both');
     });
 
-    // CODE_REVIEW §3.3.10 — env-var support for transport
+    // env-var support for transport
     it("reads NEW_RELIC_AI_TRANSPORT='otlp' from env", () => {
       process.env.NEW_RELIC_AI_TRANSPORT = 'otlp';
       const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -755,7 +844,7 @@ describe('loadConfig', () => {
     });
   });
 
-  // CODE_REVIEW §9.7 — otlpEndpoint env var + override
+  // otlpEndpoint env var + override
   describe('otlpEndpoint', () => {
     it('defaults to null when no env var or override is set', () => {
       const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });
@@ -778,7 +867,7 @@ describe('loadConfig', () => {
       expect(config.otlpEndpoint).toBe('https://override.example.com:4318');
     });
 
-    it('empty-string env var is treated as null for string-or-null fields (§C3)', () => {
+    it('empty-string env var is treated as null for string-or-null fields', () => {
       // `export OTEL_EXPORTER_OTLP_ENDPOINT=` in a shell produces ''
       process.env.OTEL_EXPORTER_OTLP_ENDPOINT = '';
       process.env.NEW_RELIC_HOST = '';

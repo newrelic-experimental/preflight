@@ -1,9 +1,9 @@
 import { trace, type Tracer } from '@opentelemetry/api';
 import { createLogger } from '../shared/index.js';
+import { VERSION } from '../version.js';
 
 const logger = createLogger('mcp-tracer');
 const SCOPE = 'preflight';
-const VERSION = '1.0.0'; // keep in sync with package.json
 
 let _tracer: Tracer | null = null;
 

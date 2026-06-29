@@ -16,7 +16,7 @@ const serializeLogger = createLogger('events-serialize');
 
 /**
  * NR-reserved attribute names + library-internal namespaces a custom
- * attribute key must NOT collide with (CODE_REVIEW §6.12). The `custom.`
+ * attribute key must NOT collide with. The `custom.`
  * prefix already scopes most user-supplied keys safely, but we enforce a
  * deny-list against the bare key (pre-prefix) so callers can't smuggle a
  * reserved attribute name in via `customAttributes` and confuse NRQL
@@ -32,9 +32,9 @@ const serializeLogger = createLogger('events-serialize');
  *     after prefixing — which doesn't collide, but is misleading because
  *     the bare `nr.<x>` and `gen_ai.<x>` namespaces ARE reserved at the
  *     top level. Reject the bare-key form to avoid the cognitive trap.
- *   - `schemaVersion` (§6.10) — reserved for the library's own use.
+ *   - `schemaVersion` — reserved for the library's own use.
  *   - `type` — easy to confuse with NR's `eventType`; many dashboards
- *     use `type` for log/event categorization (CODE_REVIEW §6.2 history).
+ *     use `type` for log/event categorization.
  */
 const RESERVED_CUSTOM_KEYS: ReadonlySet<string> = new Set([
   'eventType',
@@ -54,8 +54,8 @@ function isReservedCustomKey(key: string): boolean {
 }
 
 /**
- * Apply customAttribute clipping (§3.3.5, §6.3) and reject keys that
- * would collide with reserved/internal namespaces (§6.12). Drop +
+ * Apply customAttribute clipping and reject keys that
+ * would collide with reserved/internal namespaces. Drop +
  * debug-log on rejection so misuse is discoverable but doesn't fail
  * the entire event.
  */
@@ -77,13 +77,13 @@ function applyCustomAttributes(
   }
 }
 
-// NR Events API caps attribute values at 4096 UTF-8 bytes (§S2).
+// NR Events API caps attribute values at 4096 UTF-8 bytes.
 // Truncating by character count can still exceed the byte cap for multi-byte
 // scripts (CJK = 3 bytes/char, emoji = 4 bytes/char). Truncate by byte count.
 const NR_VALUE_MAX_BYTES = 4096;
 const NR_VALUE_SUFFIX = '...'; // 3 bytes (ASCII)
 
-// §11.7: shared helper used by both truncate() and clipCustomAttribute().
+// Shared helper used by both truncate() and clipCustomAttribute().
 // Finds the longest code-point prefix of `s` whose UTF-8 byte length fits
 // within `maxBytes`, then appends '...'. Called only when the string is
 // already known to exceed `maxBytes`.
@@ -117,7 +117,7 @@ function truncate(s: string): string {
   return truncateToBytes(s, NR_VALUE_MAX_BYTES);
 }
 
-// CODE_REVIEW §3.3.5 — `customAttributes` is the one channel that lets a
+// `customAttributes` is the one channel that lets a
 // caller smuggle arbitrary string content into telemetry. In high-security
 // mode we clip every string custom attribute to 256 chars so a misuse like
 // `customAttributes: { lastUserMessage: <whole prompt> }` cannot exfiltrate
@@ -125,7 +125,7 @@ function truncate(s: string): string {
 // `toolNames`, `contentBlockTypes`, and `description` are NOT clipped —
 // they are bounded enum/identifier metadata, not free-form user input.
 //
-// CODE_REVIEW §6.3 — Even in normal mode, a string custom attribute that
+// Even in normal mode, a string custom attribute that
 // exceeds NR's per-attribute byte cap (4096) gets the entire event rejected
 // or silently truncated by the Events API. Apply NR_VALUE_MAX as a floor on
 // every string custom attribute so callers cannot accidentally drop their
@@ -136,7 +136,7 @@ function clipCustomAttribute(
   value: string | number | boolean,
   options?: SerializeOptions,
 ): string | number | boolean {
-  // CODE_REVIEW §6.9 — booleans pass through alongside strings and numbers.
+  // Booleans pass through alongside strings and numbers.
   if (typeof value !== 'string') return value;
   const maxBytes = options?.highSecurity === true ? CUSTOM_ATTR_MAX_HS_BYTES : NR_VALUE_MAX_BYTES;
   if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
@@ -144,7 +144,7 @@ function clipCustomAttribute(
 }
 
 /**
- * High-security mode field-suppression contract (CODE_REVIEW §3.3.5, §6.4).
+ * High-security mode field-suppression contract.
  *
  * When `highSecurity: true` is passed to a serializer, the resulting
  * NrEventData has the following content-bearing fields suppressed:
@@ -160,7 +160,7 @@ function clipCustomAttribute(
  *     attributes pass through unchanged. Applies to **all** serializers.
  *     In normal mode (highSecurity: false / omitted), string values are
  *     still truncated at 4000 chars so a long attribute cannot push the
- *     event past NR's 4096-byte per-attribute cap (CODE_REVIEW §6.3).
+ *     event past NR's 4096-byte per-attribute cap.
  *
  * Structural / metadata fields are intentionally NOT suppressed in
  * high-security mode — they are bounded identifiers, not free-form
@@ -184,7 +184,7 @@ export interface SerializeOptions {
 /**
  * Maps the library's internal `AiProvider` literal to the canonical
  * `gen_ai.provider.name` value defined by the OpenTelemetry GenAI semantic
- * conventions (CODE_REVIEW §6.16). The wire field is still emitted as
+ * conventions. The wire field is still emitted as
  * `gen_ai.system` for backward-compat with existing NR dashboards — that
  * was the previous OTel attribute name (the spec renamed `gen_ai.system`
  * to `gen_ai.provider.name` but the value enum is the same registry).
@@ -206,7 +206,7 @@ export interface SerializeOptions {
  * spelling fix).
  */
 // Typed as Record<AiProvider, string> so a new AiProvider value causes a
-// compile error until a gen_ai.system mapping is added here (§SER3).
+// compile error until a gen_ai.system mapping is added here.
 const PROVIDER_TO_GENAI_SYSTEM: Record<AiProvider, string> = {
   anthropic: 'anthropic',
   google: 'gcp.gemini',
@@ -218,14 +218,14 @@ const PROVIDER_TO_GENAI_SYSTEM: Record<AiProvider, string> = {
 
 /**
  * Maps the library's `AiRequestMethod` literal onto the canonical
- * `gen_ai.operation.name` value (CODE_REVIEW §6.17). Predefined OTel
+ * `gen_ai.operation.name` value. Predefined OTel
  * values today are `chat`, `generate_content`, `embeddings`, plus
  * `text_completion`. Method names that don't match any entry fall
  * through and the `gen_ai.operation.name` attribute is omitted from
  * the wire payload — this is the OTel-recommended behavior for
  * unrecognized operations.
  */
-// Partial<Record<...>> so unrecognized methods fall through cleanly (§EV7).
+// Partial<Record<...>> so unrecognized methods fall through cleanly.
 // Unlike PROVIDER_TO_GENAI_SYSTEM (which uses non-Partial Record to enforce exhaustiveness),
 // coverage here is intentionally partial — adding a new AiRequestMethod without an
 // entry produces no compile error; the attribute is simply omitted per the OTel fallthrough
@@ -237,7 +237,7 @@ const METHOD_TO_GENAI_OPERATION: Partial<Record<AiRequestMethod, string>> = {
   'models.generateContentStream': 'generate_content',
   'models.embedContent': 'embeddings',
   'chat.completions.create': 'chat',
-  // §6.17 — OpenAI Node SDK: `client.embeddings.create({...})`.
+  // OpenAI Node SDK: `client.embeddings.create({...})`.
   'embeddings.create': 'embeddings',
   converse: 'chat',
   'converse-stream': 'chat',
@@ -245,12 +245,12 @@ const METHOD_TO_GENAI_OPERATION: Partial<Record<AiRequestMethod, string>> = {
   'chat.stream': 'chat',
   chat: 'chat',
   chatStream: 'chat',
-  // §6.17 — Cohere Node SDK: `client.embed(...)`.
+  // Cohere Node SDK: `client.embed(...)`.
   embed: 'embeddings',
 };
 
 /**
- * Event schema version (CODE_REVIEW §6.10). Bump whenever the wire-format
+ * Event schema version. Bump whenever the wire-format
  * shape of any serializer changes in a way that downstream NR dashboards
  * built on the previous shape would silently mis-render. The current value
  * is stamped on every emitted event (`schemaVersion: 1`) so dashboards can
@@ -263,7 +263,7 @@ const METHOD_TO_GENAI_OPERATION: Partial<Record<AiRequestMethod, string>> = {
  *   - Change a field's type or unit: bump.
  *   - Change a field's semantic meaning: bump.
  *
- * The §4.9 metric-API summary migration is an analogous (separate) wire
+ * The metric-API summary migration is an analogous (separate) wire
  * change and is covered by NR's metric `type` field, not this schema version.
  */
 export const EVENT_SCHEMA_VERSION = 1;
@@ -328,7 +328,7 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
     'nr.appName': event['nr.appName'],
   };
 
-  // CODE_REVIEW §6.8 — emit `nr.entityGuid` so AiResponse events route to the
+  // Emit `nr.entityGuid` so AiResponse events route to the
   // owning NR entity surface, matching `aiRequestToNrEvent`. Without this the
   // factory's entityGuid input was silently dropped at serialization time
   // even though the AiResponse interface declared the field.
@@ -352,7 +352,7 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
 
   if (event.error !== null) {
     data['error.type'] = truncate(event.error.type);
-    // §6.4 — In high-security mode, drop error.message (may contain verbatim
+    // In high-security mode, drop error.message (may contain verbatim
     // prompt fragments). error.type + error.statusCode still surface enough
     // signal for triage without leaking user content via the error path.
     if (options?.highSecurity !== true) {
@@ -372,7 +372,7 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
   // Anthropic: inputTokens = fresh only; cache tokens are disjoint → sum all.
   // Gemini / OpenAI: inputTokens already includes cached content (the cache
   //   tokens are a SUBSET of inputTokens, not separate) → using inputTokens
-  //   alone is correct; adding cacheReadTokens would double-count (§S1).
+  //   alone is correct; adding cacheReadTokens would double-count.
   // Bedrock, Mistral, Cohere: no cache token overlap → same as Anthropic.
   const otelInputTokens =
     event.provider === 'google' || event.provider === 'openai'
@@ -380,7 +380,7 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
       : event.inputTokens + event.cacheReadTokens + event.cacheCreationTokens;
 
   data['gen_ai.usage.input_tokens'] = otelInputTokens;
-  // §11.2: gen_ai.usage.output_tokens semantics differ by provider.
+  // gen_ai.usage.output_tokens semantics differ by provider.
   //
   // Anthropic / Google: thinkingTokens is DISJOINT from outputTokens
   //   (extended-thinking and thought-summary tokens are separate) → add both.
@@ -419,7 +419,7 @@ export function aiMessageToNrEvent(event: AiMessage, options?: SerializeOptions)
     'nr.appName': event['nr.appName'],
   };
 
-  // CODE_REVIEW §6.8 — emit `nr.entityGuid` so AiMessage events route to the
+  // Emit `nr.entityGuid` so AiMessage events route to the
   // owning NR entity surface, matching `aiRequestToNrEvent` / `aiResponseToNrEvent`.
   if (event['nr.entityGuid'] !== null) data['nr.entityGuid'] = event['nr.entityGuid'];
 
@@ -429,7 +429,7 @@ export function aiMessageToNrEvent(event: AiMessage, options?: SerializeOptions)
 }
 
 /**
- * CODE_REVIEW §6.14 — dotted-key naming convention for the four newer
+ * Dotted-key naming convention for the four newer
  * agent-shaped event types (`AiAgentTaskSummary`, `AiAntiPattern`,
  * `AiAgentMessage`, `AiContextReset`). These serializers emit attributes
  * with a `<namespace>.<field>` shape (e.g. `ai.agent.task_duration_ms`,
@@ -451,7 +451,7 @@ export function aiMessageToNrEvent(event: AiMessage, options?: SerializeOptions)
  * fields to these event types should follow it for consistency, but the
  * library does not validate the shape at runtime.
  */
-// NOTE (§EV6): The four agent-shaped event types below do not emit gen_ai.*
+// NOTE: The four agent-shaped event types below do not emit gen_ai.*
 // OTel SemConv attributes (e.g. gen_ai.system) because they lack a `provider`
 // field. Adding provider to these types is a post-0.1.0 task; until then,
 // NRQL queries on gen_ai.* will not return these event types.

@@ -11,12 +11,12 @@ import {
 
 // Reset the warn-once flag before each test so module state does not leak
 // across tests — any test that creates an event without entityGuid would
-// otherwise silence the warning for all subsequent tests (§FAC3).
+// otherwise silence the warning for all subsequent tests.
 beforeEach(() => __resetEntityGuidWarning());
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-describe('entityGuid warn-once (§FAC3)', () => {
+describe('entityGuid warn-once', () => {
   it('warns exactly once for missing entityGuid across multiple factory calls', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const base = {
@@ -34,7 +34,7 @@ describe('entityGuid warn-once (§FAC3)', () => {
     stderrSpy.mockRestore();
   });
 
-  it('§11.8 warns once PER event type so partial entityGuid coverage is visible', () => {
+  it('warns once PER event type so partial entityGuid coverage is visible', () => {
     // Before this fix, one warning from createAiRequest would silence ALL subsequent
     // factory types. Now each type gets its own warn-once slot.
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -189,7 +189,7 @@ describe('createAiResponse', () => {
     expect(event.timestamp).toBeLessThanOrEqual(after);
   });
 
-  it('computes totalTokens WITHOUT cache tokens for Google (cache is subset, §EV2)', () => {
+  it('computes totalTokens WITHOUT cache tokens for Google (cache is subset)', () => {
     // baseParams uses provider:'google' — inputTokens already includes cached tokens,
     // so cacheReadTokens are NOT added again to avoid double-counting.
     const event = createAiResponse({
@@ -201,7 +201,7 @@ describe('createAiResponse', () => {
     expect(event.totalTokens).toBe(350); // 100 + 50 + 200 (cache tokens NOT added for Google)
   });
 
-  it('computes totalTokens WITH cache tokens for Anthropic (cache is disjoint, §EV2)', () => {
+  it('computes totalTokens WITH cache tokens for Anthropic (cache is disjoint)', () => {
     // For Anthropic, inputTokens is fresh-only and cache tokens are additive.
     const event = createAiResponse({
       ...baseParams,
@@ -214,10 +214,10 @@ describe('createAiResponse', () => {
     expect(event.totalTokens).toBe(400); // 100 + 50 + 200 + 30 + 20
   });
 
-  it('§11.2 computes totalTokens WITHOUT thinkingTokens for OpenAI (reasoning is subset)', () => {
+  it('computes totalTokens WITHOUT thinkingTokens for OpenAI (reasoning is subset)', () => {
     // For OpenAI o1/o3/o4-mini, reasoning_tokens (→ thinkingTokens) is already
     // included in completion_tokens (→ outputTokens). Adding thinkingTokens again
-    // would inflate totalTokens (the bug fixed in §11.2).
+    // would inflate totalTokens.
     const event = createAiResponse({
       ...baseParams,
       provider: 'openai',
@@ -329,7 +329,7 @@ describe('createAiResponse', () => {
     expect(() => createAiResponse({ ...baseParams, appName: '' })).toThrow('requires an appName');
   });
 
-  // CODE_REVIEW §6.5 — token field sanitization
+  // Token field sanitization
   it('coerces NaN/Infinity/negative token counts to 0', () => {
     const event = createAiResponse({
       ...baseParams,
@@ -345,11 +345,11 @@ describe('createAiResponse', () => {
     expect(event.thinkingTokens).toBe(0);
     expect(event.cacheReadTokens).toBe(5);
     expect(event.cacheCreationTokens).toBe(0);
-    // baseParams uses provider:'google' — cache tokens are NOT added to totalTokens (§EV2)
+    // baseParams uses provider:'google' — cache tokens are NOT added to totalTokens
     expect(event.totalTokens).toBe(0);
   });
 
-  it('coerces NaN/Infinity cost fields to null (§F1)', () => {
+  it('coerces NaN/Infinity cost fields to null', () => {
     const event = createAiResponse({
       ...baseParams,
       costInputUsd: NaN,
@@ -377,13 +377,13 @@ describe('createAiResponse', () => {
     expect(event.tokensPerSecond).toBeNull();
   });
 
-  it('coerces negative durationMs to 0 (§FAC1)', () => {
+  it('coerces negative durationMs to 0', () => {
     const event = createAiResponse({ ...baseParams, durationMs: -100, outputTokens: 50 });
     expect(event.durationMs).toBe(0);
     expect(event.tokensPerSecond).toBeNull();
   });
 
-  it('coerces invalid timeToFirstTokenMs values to null (§FAC2)', () => {
+  it('coerces invalid timeToFirstTokenMs values to null', () => {
     const nan = createAiResponse({ ...baseParams, timeToFirstTokenMs: NaN });
     expect(nan.timeToFirstTokenMs).toBeNull();
 
@@ -458,7 +458,7 @@ describe('createAiMessage', () => {
     expect(() => createAiMessage({ ...baseParams, appName: '' })).toThrow('requires an appName');
   });
 
-  // CODE_REVIEW §6.13 — required-field validation made uniform across
+  // Required-field validation made uniform across
   // the three factory functions; null/undefined `content` is rejected
   // (empty string is allowed: an empty assistant response is a valid record).
   it('throws on null content', () => {
@@ -479,8 +479,8 @@ describe('createAiMessage', () => {
   });
 });
 
-// CODE_REVIEW §6.15 — factory functions for the four newer event types
-describe('createAiAgentTaskSummary (CODE_REVIEW §6.15)', () => {
+// Factory functions for the four newer event types
+describe('createAiAgentTaskSummary', () => {
   const base = {
     traceId: 'trace-1',
     spanId: 'span-1',
@@ -510,7 +510,7 @@ describe('createAiAgentTaskSummary (CODE_REVIEW §6.15)', () => {
     expect(e.durationMs).toBe(0);
   });
 
-  it('coerces NaN/Infinity totalCostUsd to null (§F1)', () => {
+  it('coerces NaN/Infinity totalCostUsd to null', () => {
     const e = createAiAgentTaskSummary({ ...base, totalCostUsd: NaN });
     expect(e.totalCostUsd).toBeNull();
   });
@@ -525,7 +525,7 @@ describe('createAiAgentTaskSummary (CODE_REVIEW §6.15)', () => {
   });
 });
 
-describe('createAiAntiPattern (CODE_REVIEW §6.15)', () => {
+describe('createAiAntiPattern', () => {
   const base = {
     traceId: 'trace-1',
     patternType: 'overthinking' as const,
@@ -552,14 +552,14 @@ describe('createAiAntiPattern (CODE_REVIEW §6.15)', () => {
     expect(() => createAiAntiPattern({ ...base, [field]: '' as unknown as never })).toThrow(msg);
   });
 
-  it('coerces NaN/Infinity contextPressure and tokenShare to null (§F1)', () => {
+  it('coerces NaN/Infinity contextPressure and tokenShare to null', () => {
     const e = createAiAntiPattern({ ...base, contextPressure: NaN, tokenShare: Infinity });
     expect(e.contextPressure).toBeNull();
     expect(e.tokenShare).toBeNull();
   });
 });
 
-describe('createAiAgentMessage (CODE_REVIEW §6.15)', () => {
+describe('createAiAgentMessage', () => {
   const base = {
     traceId: 'trace-1',
     fromAgent: 'planner',
@@ -592,7 +592,7 @@ describe('createAiAgentMessage (CODE_REVIEW §6.15)', () => {
   });
 });
 
-describe('createAiContextReset (CODE_REVIEW §6.15)', () => {
+describe('createAiContextReset', () => {
   const base = {
     traceId: 'trace-1',
     conversationId: 'conv-1',
@@ -613,12 +613,12 @@ describe('createAiContextReset (CODE_REVIEW §6.15)', () => {
     expect(e.tokensRemoved).toBe(0);
   });
 
-  it('returns compressionRatio of 1.0 for empty-input reset (tokensBefore === 0) — identity, not compression (§F2)', () => {
+  it('returns compressionRatio of 1.0 for empty-input reset (tokensBefore === 0) — identity, not compression', () => {
     const e = createAiContextReset({ ...base, tokensBefore: 0, tokensAfter: 0 });
     expect(e.compressionRatio).toBe(1);
   });
 
-  it('allows compressionRatio > 1 (post-reset tokens exceed pre-reset) without clamping (§F2)', () => {
+  it('allows compressionRatio > 1 (post-reset tokens exceed pre-reset) without clamping', () => {
     const e = createAiContextReset({ ...base, tokensBefore: 100, tokensAfter: 150 });
     expect(e.compressionRatio).toBeCloseTo(1.5);
     expect(e.tokensRemoved).toBe(0); // still clamped at 0 (can't remove negative)

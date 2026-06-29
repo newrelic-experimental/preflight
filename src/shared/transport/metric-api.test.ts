@@ -48,7 +48,7 @@ describe('sendMetrics', () => {
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe('https://metric-api.newrelic.com/metric/v1');
 
-    // Decompress and verify payload structure. CODE_REVIEW §4.9: the
+    // Decompress and verify payload structure. The
     // wire payload renames `intervalMs` to `'interval.ms'` per NR Metric
     // API contract; verify both shape and that the rename took effect.
     const body = init!.body as Buffer;
@@ -72,7 +72,7 @@ describe('sendMetrics', () => {
     expect(payload[0].metrics[1]).not.toHaveProperty('intervalMs');
   });
 
-  // CODE_REVIEW §4.9 — summary metric round-trips with structured value
+  // summary metric round-trips with structured value
   it('serializes a summary metric with structured value and interval.ms', async () => {
     const summaryMetric: NrMetric = {
       name: 'ai.duration',

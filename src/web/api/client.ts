@@ -17,6 +17,16 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface HealthResponse {
+  readonly ok: boolean;
+  readonly uptime: number;
+  readonly version: string;
+  readonly latestVersion: string | null;
+  readonly updateAvailable: boolean;
+}
+
+export const fetchHealth = (): Promise<HealthResponse> => getJson<HealthResponse>('/api/health');
+
 export const fetchSessionCurrent = (): Promise<unknown> => getJson<unknown>('/api/session/current');
 export const fetchSessionToday = (): Promise<unknown> => getJson<unknown>('/api/session/today');
 export const fetchSessionsList = (limit = 50): Promise<unknown> =>

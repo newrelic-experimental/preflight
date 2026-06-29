@@ -85,6 +85,14 @@ function applyChanges(
 
 console.log('\nRemoving staging support for public release...\n');
 
+// ── README.md ────────────────────────────────────────────────────────────────
+applyChanges('README.md', [
+  {
+    from: ` • [**Internal**](docs/INTERNAL_USAGE.md)`,
+    to: '',
+  },
+]);
+
 // ── src/shared/transport/http-client.ts ─────────────────────────────────────
 // One-time edit: sync-shared.ts is excluded from public repo, so this file
 // will not be overwritten by a future sync on the public side.

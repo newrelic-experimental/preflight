@@ -40,7 +40,7 @@ export async function sendMetrics(
 
   // NR Metric API expects: [{ metrics: [...] }]. Rewrite each metric so the
   // camelCase `intervalMs` becomes the literal wire key `interval.ms` per NR
-  // Metric API contract (CODE_REVIEW §4.9).
+  // Metric API contract.
   const payload = [{ metrics: metrics.map(toWireMetric) }];
 
   return sendWithRetry({
@@ -52,5 +52,6 @@ export async function sendMetrics(
     maxDelayMs: options.maxDelayMs ?? 30_000,
     requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     clientName: options.clientName,
+    clientVersion: options.clientVersion,
   });
 }

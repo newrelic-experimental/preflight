@@ -6,11 +6,11 @@ import { sendWithRetry, resolveRegion, getEventsApiUrl } from './http-client.js'
  * Send a batch of events to NR's Events API. Compresses with gzip, retries
  * with exponential backoff (capped, jittered, Retry-After-aware), and
  * surfaces 4xx response bodies in the result so callers can distinguish
- * license-key from payload-shape failures (CODE_REVIEW §5.7 / §5.8).
+ * license-key from payload-shape failures.
  *
  * Returns a {@link TransportResult} the harvest scheduler uses to decide
  * whether to requeue the batch. Per-request timeout is honored via
- * `AbortSignal.timeout` (CODE_REVIEW §5.1).
+ * `AbortSignal.timeout`.
  */
 export async function sendEvents(
   events: NrEventData[],
@@ -33,5 +33,6 @@ export async function sendEvents(
     maxDelayMs: options.maxDelayMs ?? 30_000,
     requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     clientName: options.clientName,
+    clientVersion: options.clientVersion,
   });
 }

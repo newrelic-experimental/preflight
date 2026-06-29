@@ -167,7 +167,7 @@ describe('aiResponseToNrEvent', () => {
     expect(nrEvent).not.toHaveProperty('error.statusCode');
   });
 
-  // §6.4: provider error messages may include verbatim user-prompt fragments
+  // Provider error messages may include verbatim user-prompt fragments
   // ("the prompt 'tell me about <X>' was rejected because…"). When the
   // consumer's config has `highSecurity: true`, error.message must be omitted
   // so it doesn't leak via the error path. error.type and error.statusCode
@@ -256,10 +256,10 @@ describe('aiMessageToNrEvent', () => {
   });
 });
 
-// CODE_REVIEW §6.8 — all three serializers must emit nr.entityGuid when set.
+// All three serializers must emit nr.entityGuid when set.
 // Pre-fix, only aiRequestToNrEvent stamped the field; aiResponseToNrEvent and
 // aiMessageToNrEvent silently dropped it even though the factory accepted it.
-describe('nr.entityGuid emission across all three serializers (§6.8)', () => {
+describe('nr.entityGuid emission across all three serializers', () => {
   it('aiRequestToNrEvent emits nr.entityGuid when provided', () => {
     const event = createAiRequest({
       provider: 'anthropic',
@@ -327,7 +327,7 @@ describe('nr.entityGuid emission across all three serializers (§6.8)', () => {
     expect(aiMessageToNrEvent(msg)).not.toHaveProperty('nr.entityGuid');
   });
 
-  it('four newer event types emit nr.entityGuid when provided (§X1)', () => {
+  it('four newer event types emit nr.entityGuid when provided', () => {
     const guid = 'GUID-XYZ';
     const taskSummary = createAiAgentTaskSummary({
       traceId: 't1',
@@ -376,7 +376,7 @@ describe('nr.entityGuid emission across all three serializers (§6.8)', () => {
     expect(aiContextResetToNrEvent(contextReset)['nr.entityGuid']).toBe(guid);
   });
 
-  it('four newer event types omit nr.entityGuid when null (§X1)', () => {
+  it('four newer event types omit nr.entityGuid when null', () => {
     const taskSummary = createAiAgentTaskSummary({
       traceId: 't1',
       spanId: 's1',
@@ -408,7 +408,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.system']).toBe('anthropic');
     });
 
-    // CODE_REVIEW §6.16 — `google` maps to the OTel-canonical `gcp.gemini`
+    // `google` maps to the OTel-canonical `gcp.gemini`
     // (was `google_genai` pre-fix; the OTel SemConv canonical value for
     // generativelanguage.googleapis.com is `gcp.gemini`).
     it('maps google provider to gcp.gemini per OTel SemConv', () => {
@@ -463,7 +463,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.operation.name']).toBe('embeddings');
     });
 
-    // CODE_REVIEW §6.17 — OpenAI's `client.embeddings.create({...})`.
+    // OpenAI's `client.embeddings.create({...})`.
     it('maps embeddings.create (OpenAI) to gen_ai.operation.name = embeddings', () => {
       const event = createAiRequest({
         provider: 'openai',
@@ -477,7 +477,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.operation.name']).toBe('embeddings');
     });
 
-    // CODE_REVIEW §6.17 — Cohere's `client.embed(...)`.
+    // Cohere's `client.embed(...)`.
     it('maps embed (Cohere) to gen_ai.operation.name = embeddings', () => {
       const event = createAiRequest({
         provider: 'cohere',
@@ -656,7 +656,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.usage.input_tokens']).toBe(1600); // 1000 + 600
     });
 
-    it('Gemini: gen_ai.usage.input_tokens uses inputTokens only (cache is a subset, not additive) (§S1)', () => {
+    it('Gemini: gen_ai.usage.input_tokens uses inputTokens only (cache is a subset, not additive)', () => {
       // Gemini: promptTokenCount (inputTokens=1000) already includes cached content;
       // cachedContentTokenCount (cacheReadTokens=600) is a subset — NOT additive.
       const event = createAiResponse({
@@ -672,7 +672,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.usage.input_tokens']).toBe(1000); // NOT 1600
     });
 
-    it('OpenAI: gen_ai.usage.input_tokens uses inputTokens only (cached_tokens is a subset) (§S1)', () => {
+    it('OpenAI: gen_ai.usage.input_tokens uses inputTokens only (cached_tokens is a subset)', () => {
       // OpenAI: prompt_tokens (inputTokens=1000) includes cached portion;
       // cached_tokens (cacheReadTokens=400) is a subset — NOT additive.
       const event = createAiResponse({
@@ -715,7 +715,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.response.model']).toBe('claude-sonnet-4-6');
     });
 
-    // CODE_REVIEW §6.11 — per OTel SemConv, input_tokens MUST include cache
+    // Per OTel SemConv, input_tokens MUST include cache
     // tokens (notes [16][17]) and output_tokens MUST include reasoning (note [19]).
     it('sums cache_read + cache_creation into gen_ai.usage.input_tokens', () => {
       const event = createAiResponse({
@@ -750,7 +750,7 @@ describe('GenAI semantic convention attributes', () => {
       expect(data['gen_ai.usage.reasoning.output_tokens']).toBe(200);
     });
 
-    it('§11.2 does NOT add reasoning into gen_ai.usage.output_tokens for OpenAI', () => {
+    it('does NOT add reasoning into gen_ai.usage.output_tokens for OpenAI', () => {
       // For OpenAI o1/o3/o4-mini, reasoning_tokens is already inside
       // completion_tokens, so gen_ai.usage.output_tokens should equal
       // outputTokens alone. gen_ai.usage.reasoning.output_tokens is still
@@ -771,7 +771,7 @@ describe('GenAI semantic convention attributes', () => {
   });
 });
 
-describe('aiAntiPatternToNrEvent (CODE_REVIEW §6.2)', () => {
+describe('aiAntiPatternToNrEvent', () => {
   function makeAntiPattern(overrides: Partial<AiAntiPattern> = {}): AiAntiPattern {
     return {
       id: 'ap-1',
@@ -791,7 +791,7 @@ describe('aiAntiPatternToNrEvent (CODE_REVIEW §6.2)', () => {
     const event = makeAntiPattern({ patternType: 'overthinking' });
     const nrEvent = aiAntiPatternToNrEvent(event);
 
-    // §6.2: `type` is reserved/conventional in the NR Events API surface and
+    // `type` is reserved/conventional in the NR Events API surface and
     // collides with NR's own attribute. The serializer must use `patternType`.
     expect(nrEvent.patternType).toBe('overthinking');
     expect(nrEvent).not.toHaveProperty('type');
@@ -824,16 +824,16 @@ describe('aiAntiPatternToNrEvent (CODE_REVIEW §6.2)', () => {
   });
 });
 
-describe('highSecurity customAttributes clipping (CODE_REVIEW §3.3.5)', () => {
-  // §3.3.5: customAttributes is the one channel that lets a caller smuggle
+describe('highSecurity customAttributes clipping', () => {
+  // customAttributes is the one channel that lets a caller smuggle
   // arbitrary string content into telemetry. In high-security mode we clip
-  // every string custom attribute to 256 UTF-8 BYTES (§S2) so a misuse like
+  // every string custom attribute to 256 UTF-8 BYTES so a misuse like
   // `customAttributes: { lastUserMessage: <whole prompt> }` cannot exfiltrate
   // content. Numbers pass through unchanged.
 
   const longString = 'x'.repeat(500);
 
-  it('clips long string customAttributes to 256 bytes on aiRequestToNrEvent (§S2)', () => {
+  it('clips long string customAttributes to 256 bytes on aiRequestToNrEvent', () => {
     const event = createAiRequest({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
@@ -856,7 +856,7 @@ describe('highSecurity customAttributes clipping (CODE_REVIEW §3.3.5)', () => {
     expect((unclipped['custom.longField'] as string).length).toBe(500);
   });
 
-  it('clips long string customAttributes to 256 bytes on aiResponseToNrEvent (§S2)', () => {
+  it('clips long string customAttributes to 256 bytes on aiResponseToNrEvent', () => {
     const event = createAiResponse({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
@@ -874,7 +874,7 @@ describe('highSecurity customAttributes clipping (CODE_REVIEW §3.3.5)', () => {
     expect((clipped['custom.longField'] as string).endsWith('...')).toBe(true);
   });
 
-  it('clips long string customAttributes to 256 bytes on aiAntiPatternToNrEvent (§S2)', () => {
+  it('clips long string customAttributes to 256 bytes on aiAntiPatternToNrEvent', () => {
     const event: AiAntiPattern = {
       id: 'ap-1',
       timestamp: 1700000000000,
@@ -894,7 +894,7 @@ describe('highSecurity customAttributes clipping (CODE_REVIEW §3.3.5)', () => {
     expect((clipped['custom.longField'] as string).endsWith('...')).toBe(true);
   });
 
-  it('high-security byte cap honors multi-byte CJK content (§S2)', () => {
+  it('high-security byte cap honors multi-byte CJK content', () => {
     // CJK chars are 3 bytes each; a 200-char CJK string = 600 bytes — over the 256-byte cap.
     const cjkString = '中'.repeat(200);
     const event = createAiRequest({
@@ -963,14 +963,14 @@ describe('highSecurity customAttributes clipping (CODE_REVIEW §3.3.5)', () => {
   });
 });
 
-describe('normal-mode customAttributes truncation (CODE_REVIEW §6.3)', () => {
-  // §6.3: NR Events API rejects or silently truncates events whose attribute
+describe('normal-mode customAttributes truncation', () => {
+  // NR Events API rejects or silently truncates events whose attribute
   // values exceed 4096 bytes. Even outside high-security mode, string custom
   // attributes must be truncated at 4000 chars so a long attribute cannot
   // accidentally drop the event the caller is trying to record.
   const huge = 'x'.repeat(10_000);
 
-  it('truncates long string customAttributes to 4096 bytes in normal mode (§S2)', () => {
+  it('truncates long string customAttributes to 4096 bytes in normal mode', () => {
     const event = createAiRequest({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
@@ -987,7 +987,7 @@ describe('normal-mode customAttributes truncation (CODE_REVIEW §6.3)', () => {
     expect(out.endsWith('...')).toBe(true);
   });
 
-  it('truncates long string customAttributes to 4096 bytes when highSecurity is false (§S2)', () => {
+  it('truncates long string customAttributes to 4096 bytes when highSecurity is false', () => {
     const event = createAiRequest({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
@@ -1003,7 +1003,7 @@ describe('normal-mode customAttributes truncation (CODE_REVIEW §6.3)', () => {
     expect(out.endsWith('...')).toBe(true);
   });
 
-  it('byte-truncation handles multi-byte (CJK) customAttribute strings within NR byte cap (§S2)', () => {
+  it('byte-truncation handles multi-byte (CJK) customAttribute strings within NR byte cap', () => {
     // CJK chars are 3 bytes each; a 2000-char CJK string = 6000 bytes — over cap.
     const cjkString = '中'.repeat(2000); // 6000 UTF-8 bytes
     const event = createAiRequest({
@@ -1052,8 +1052,8 @@ describe('normal-mode customAttributes truncation (CODE_REVIEW §6.3)', () => {
   });
 });
 
-// CODE_REVIEW §6.10 — every serialized event stamps schemaVersion
-describe('schemaVersion (§6.10)', () => {
+// Every serialized event stamps schemaVersion
+describe('schemaVersion', () => {
   it('EVENT_SCHEMA_VERSION is exported and equals the current version', () => {
     expect(EVENT_SCHEMA_VERSION).toBe(1);
   });
@@ -1103,8 +1103,8 @@ describe('schemaVersion (§6.10)', () => {
   });
 });
 
-// CODE_REVIEW §6.12 — RESERVED_KEYS deny-list on customAttributes
-describe('RESERVED_KEYS enforcement on customAttributes (CODE_REVIEW §6.12)', () => {
+// RESERVED_KEYS deny-list on customAttributes
+describe('RESERVED_KEYS enforcement on customAttributes', () => {
   it('drops customAttributes whose key collides with NR-reserved attributes', () => {
     const event = createAiRequest({
       provider: 'anthropic',
@@ -1182,9 +1182,9 @@ describe('RESERVED_KEYS enforcement on customAttributes (CODE_REVIEW §6.12)', (
 });
 
 // ---------------------------------------------------------------------------
-// aiAgentTaskSummaryToNrEvent (§EV9)
+// aiAgentTaskSummaryToNrEvent
 // ---------------------------------------------------------------------------
-describe('aiAgentTaskSummaryToNrEvent (§EV9)', () => {
+describe('aiAgentTaskSummaryToNrEvent', () => {
   const baseParams = {
     traceId: 'trace-abc',
     spanId: 'span-xyz',
@@ -1261,23 +1261,23 @@ describe('aiAgentTaskSummaryToNrEvent (§EV9)', () => {
     expect(out).not.toHaveProperty('nr.entityGuid');
   });
 
-  it('emits gen_ai.system when provider is set (§EV6)', () => {
+  it('emits gen_ai.system when provider is set', () => {
     const out = aiAgentTaskSummaryToNrEvent(
       createAiAgentTaskSummary({ ...baseParams, provider: 'anthropic' }),
     );
     expect(out['gen_ai.system']).toBe('anthropic');
   });
 
-  it('omits gen_ai.system when provider is absent (§EV6)', () => {
+  it('omits gen_ai.system when provider is absent', () => {
     const out = aiAgentTaskSummaryToNrEvent(createAiAgentTaskSummary(baseParams));
     expect(out).not.toHaveProperty('gen_ai.system');
   });
 });
 
 // ---------------------------------------------------------------------------
-// aiAgentMessageToNrEvent (§EV9)
+// aiAgentMessageToNrEvent
 // ---------------------------------------------------------------------------
-describe('aiAgentMessageToNrEvent (§EV9)', () => {
+describe('aiAgentMessageToNrEvent', () => {
   const baseParams = {
     traceId: 'trace-msg',
     fromAgent: 'planner',
@@ -1315,7 +1315,7 @@ describe('aiAgentMessageToNrEvent (§EV9)', () => {
     expect(out).not.toHaveProperty('nr.entityGuid');
   });
 
-  it('emits gen_ai.system when provider is set (§EV6)', () => {
+  it('emits gen_ai.system when provider is set', () => {
     const out = aiAgentMessageToNrEvent(
       createAiAgentMessage({ ...baseParams, provider: 'openai' }),
     );
@@ -1324,9 +1324,9 @@ describe('aiAgentMessageToNrEvent (§EV9)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// aiContextResetToNrEvent (§EV9)
+// aiContextResetToNrEvent
 // ---------------------------------------------------------------------------
-describe('aiContextResetToNrEvent (§EV9)', () => {
+describe('aiContextResetToNrEvent', () => {
   const baseParams = {
     traceId: 'trace-reset',
     conversationId: 'conv-abc',
@@ -1374,7 +1374,7 @@ describe('aiContextResetToNrEvent (§EV9)', () => {
     expect(out).not.toHaveProperty('nr.entityGuid');
   });
 
-  it('emits gen_ai.system when provider is set (§EV6)', () => {
+  it('emits gen_ai.system when provider is set', () => {
     const out = aiContextResetToNrEvent(
       createAiContextReset({ ...baseParams, provider: 'google' }),
     );

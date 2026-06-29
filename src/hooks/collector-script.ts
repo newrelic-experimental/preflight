@@ -76,7 +76,7 @@ const HIGH_SECURITY_FROM_FILE: boolean = (() => {
 })();
 
 function getHighSecurity(): boolean {
-  return process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY === 'true' || HIGH_SECURITY_FROM_FILE;
+  return process.env.NEW_RELIC_AI_HIGH_SECURITY === 'true' || HIGH_SECURITY_FROM_FILE;
 }
 
 function getRecordContent(): boolean {

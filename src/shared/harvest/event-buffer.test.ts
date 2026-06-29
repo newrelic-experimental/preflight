@@ -26,7 +26,7 @@ describe('EventBuffer', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 2. Head-drop FIFO — oldest events drop, newest are preserved (§4.1)
+  // 2. Head-drop FIFO — oldest events drop, newest are preserved
   // ---------------------------------------------------------------------------
   it('drops oldest events on overflow (head-drop FIFO)', () => {
     const buffer = new EventBuffer({ maxSize: 3 });
@@ -44,7 +44,7 @@ describe('EventBuffer', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 3. Head-drop preserves order across many overflows (§4.1)
+  // 3. Head-drop preserves order across many overflows
   // ---------------------------------------------------------------------------
   it('preserves recency under sustained overflow', () => {
     const buffer = new EventBuffer({ maxSize: 1000 });
@@ -65,7 +65,7 @@ describe('EventBuffer', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 4. dropCount tracks overflow drops; drainDropCount resets (§4.1)
+  // 4. dropCount tracks overflow drops; drainDropCount resets
   // ---------------------------------------------------------------------------
   it('tracks dropCount and resets on drainDropCount', () => {
     const buffer = new EventBuffer({ maxSize: 2 });
@@ -105,7 +105,7 @@ describe('EventBuffer', () => {
     const first = buffer.flush();
     expect(first.map((e) => e.index)).toEqual([2, 3]);
     expect(buffer.size).toBe(0);
-    // flush() does NOT reset totalAdded — only drainAddCount() does (§EB1).
+    // flush() does NOT reset totalAdded — only drainAddCount() does.
     expect(buffer.totalAdded).toBe(3); // all 3 adds still counted (including drop)
     expect(buffer.dropCount).toBe(1);
 
@@ -116,7 +116,7 @@ describe('EventBuffer', () => {
     expect(second.map((e) => e.index)).toEqual([10, 11]);
   });
 
-  it('drainAddCount() returns and resets totalAdded (mirrors drainDropCount) (§EB1)', () => {
+  it('drainAddCount() returns and resets totalAdded (mirrors drainDropCount)', () => {
     const buffer = new EventBuffer({ maxSize: 10 });
     buffer.add(makeEvent(1));
     buffer.add(makeEvent(2));
@@ -134,7 +134,7 @@ describe('EventBuffer', () => {
   // ---------------------------------------------------------------------------
   // 6. Empty flush returns []
   // ---------------------------------------------------------------------------
-  it('second flush() immediately after first always returns [] (§HV6)', () => {
+  it('second flush() immediately after first always returns []', () => {
     const buffer = new EventBuffer({ maxSize: 10 });
     buffer.add(makeEvent(1));
     buffer.add(makeEvent(2));
@@ -152,8 +152,8 @@ describe('EventBuffer', () => {
     expect(buffer.dropCount).toBe(0);
   });
 
-  // CODE_REVIEW §4.4 — constructor validates maxSize
-  describe('constructor maxSize validation (§4.4)', () => {
+  // Constructor validates maxSize
+  describe('constructor maxSize validation', () => {
     it('throws on maxSize: 0 (would silently /dev/null all adds)', () => {
       expect(() => new EventBuffer({ maxSize: 0 })).toThrow(RangeError);
       expect(() => new EventBuffer({ maxSize: 0 })).toThrow(/positive integer/);
@@ -195,8 +195,8 @@ describe('EventBuffer', () => {
     });
   });
 
-  // CODE_REVIEW §4.22 — add() returns boolean for backpressure
-  describe('add() return value (§4.22)', () => {
+  // add() returns boolean for backpressure
+  describe('add() return value', () => {
     it('returns true when the event was added without evicting another', () => {
       const buffer = new EventBuffer({ maxSize: 5 });
       expect(buffer.add(makeEvent(1))).toBe(true);

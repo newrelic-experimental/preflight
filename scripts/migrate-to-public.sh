@@ -46,9 +46,9 @@ check_excluded_files() {
   # so it can still be executed after the pre-flight commit.
   local tracked=0
   for f in \
+    "docs/INTERNAL_USAGE.md" \
     "docs/IMPLEMENTATION.md" \
     "docs/PRODUCT_BRIEF.md" \
-    "docs/RELEASE_AUDIT.md" \
     "docs/ROADMAP.md" \
     "docs/PUBLIC_RELEASE_PLAN.md" \
     "scripts/migrate-to-public.sh" \
