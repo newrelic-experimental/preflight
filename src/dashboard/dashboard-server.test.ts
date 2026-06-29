@@ -147,7 +147,7 @@ describe('DashboardServer', () => {
     }
   });
 
-  // Regression for this. Before the fix, the start()-time `once('error', reject)`
+  // Regression guard. Before the fix, the start()-time `once('error', reject)`
   // listener stayed attached after the listen callback resolved. A later
   // runtime error called reject() on an already-resolved promise (a no-op)
   // and Node didn't re-emit because the once listener consumed the event —
