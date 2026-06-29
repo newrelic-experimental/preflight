@@ -1,7 +1,7 @@
 import type { LogLevel } from './logger.js';
 import { createLogger } from './logger.js';
 import type { TransportMode } from './transport/types.js';
-import { DEFAULT_CLIENT_NAME } from './transport/otlp-shared.js';
+import { DEFAULT_CLIENT_NAME, sanitizeClientString } from './transport/otlp-shared.js';
 
 /**
  * Strings that count as `true`. The lowercased env
@@ -12,7 +12,7 @@ const ENV_TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const ENV_FALSY = new Set(['false', '0', 'no', 'off']);
 
 /**
- * Module-level config logger. Per 5 the underlying
+ * Module-level config logger. The underlying
  * `createLogger` now resolves the minimum log level per-call via the cached
  * `getMinLevel()`, so a runtime env mutation followed by `__resetLogLevelCache()`
  * propagates here without re-constructing this logger.
@@ -43,16 +43,22 @@ export interface AgentConfig {
    * `User-Agent` headers and OTel instrumentation scope / logger names.
    * Defaults to `'ai-telemetry'` when not set.
    *
-   * Pass `'preflight'` from the Preflight MCP server or `'my-agent'`
+   * Pass `'preflight'` from the Preflight MCP server or `'nr-ai-agent'`
    * from the TypeScript agent so telemetry from each consumer is
    * distinguishable in the NR UI.
    */
   readonly clientName: string;
+  /**
+   * Version of the consuming client, used in the `User-Agent` header
+   * (e.g. `'1.2.0'`). Pass the consuming package's own version so NR
+   * collector logs identify the exact client release. Defaults to `''`.
+   */
+  readonly clientVersion: string;
 }
 
 /**
  * Parse a boolean environment variable. Accepts `true|1|yes|on` as truthy
- * and `false|0|no|off` as falsy (case-insensitive, 8). Any
+ * and `false|0|no|off` as falsy (case-insensitive). Any
  * other value (or missing env var) returns the default. Unknown values emit
  * a debug log so misconfigurations are diagnosable.
  */
@@ -71,8 +77,7 @@ function envBool(key: string, defaultValue: boolean): boolean {
 
 /**
  * Parse an integer environment variable. Out-of-bound values are clamped to
- * the bound and emit a debug log so the override is observable
- *.
+ * the bound and emit a debug log so the override is observable.
  */
 function envInt(
   key: string,
@@ -82,7 +87,7 @@ function envInt(
   const val = process.env[key];
   if (val === undefined) return defaultValue;
   // Reject values with trailing garbage (e.g. '4kb', '1e3') that parseInt
-  // would accept silently; fall back to the default with a diagnostic log (§C2).
+  // would accept silently; fall back to the default with a diagnostic log.
   if (!/^-?\d+$/.test(val.trim())) {
     configLogger.debug(`${key}: not a valid integer, using default`, { value: val, defaultValue });
     return defaultValue;
@@ -115,7 +120,7 @@ function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
 }
 
 // Returns the env var value, or null if the var is absent or empty string.
-// `export VAR=` in a shell produces '' — treat that the same as unset (§C3).
+// `export VAR=` in a shell produces '' — treat that the same as unset.
 function envOrNull(key: string): string | null {
   const v = process.env[key];
   return v === undefined || v === '' ? null : v;
@@ -123,7 +128,7 @@ function envOrNull(key: string): string | null {
 
 // Normalize a string override value: undefined passes through (fall back to
 // env); empty string coerces to null; any other value (including null) wins
-// over the env var. Mirrors envOrNull for the override path (§CFG3).
+// over the env var. Mirrors envOrNull for the override path.
 function overrideString(v: string | null | undefined, envFn: () => string | null): string | null {
   if (v === undefined) return envFn();
   return v === '' ? null : v;
@@ -154,7 +159,7 @@ function buildAttributionDefaults(
 
   // Env-var defaults for the four standard attribution fields.
   //
-  // 11: empty-string env values are intentionally treated as
+  // Empty-string env values are intentionally treated as
   // "not set" via the truthiness check below. NR's events API rejects empty
   // string attribute values, so a deliberately-empty env var (e.g. to "clear"
   // a higher-precedence default) would only produce a 400 at ingest time —
@@ -167,8 +172,8 @@ function buildAttributionDefaults(
   const envEnvironment = process.env.NEW_RELIC_AI_ATTRIBUTION_ENVIRONMENT;
 
   // Truthiness check: exclude undefined (not set) and '' (empty — NR Events
-  // API rejects empty-string attributes, §3.3.11). Do NOT exclude '0' or
-  // 'false' — those are valid attribution tag values (§CFG4).
+  // API rejects empty-string attributes). Do NOT exclude '0' or
+  // 'false' — those are valid attribution tag values.
   if (envFeature !== undefined && envFeature !== '') result.feature = envFeature;
   if (envTeam !== undefined && envTeam !== '') result.team = envTeam;
   if (envUser !== undefined && envUser !== '') result.user = envUser;
@@ -177,7 +182,7 @@ function buildAttributionDefaults(
   // Merge override defaults (they win over env vars).
   // Passing `undefined` as a value explicitly removes the key so that
   // `attributionDefaults: { feature: undefined }` clears a prior env-set
-  // default, matching the documented "clear" pattern (§C1).
+  // default, matching the documented "clear" pattern.
   if (overrideDefaults) {
     for (const [k, v] of Object.entries(overrideDefaults)) {
       if (v === undefined) {
@@ -204,7 +209,7 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
   for (const pair of headerString.split(',')) {
     const eqIdx = pair.indexOf('=');
     if (eqIdx <= 0) continue; // missing '=' or empty key — skip
-    // OTel spec: trim key whitespace; do NOT trim value (§CF1).
+    // OTel spec: trim key whitespace; do NOT trim value.
     const rawKey = pair.slice(0, eqIdx).trim();
     const rawValue = pair.slice(eqIdx + 1);
     if (!rawKey) continue;
@@ -213,7 +218,7 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
     try {
       key = decodeURIComponent(rawKey);
     } catch {
-      // §11.4: warn so operators can diagnose a misconfigured auth header that
+      // Warn so operators can diagnose a misconfigured auth header that
       // will be forwarded malformed and likely rejected by the OTLP collector.
       configLogger.warn(
         'OTEL_EXPORTER_OTLP_HEADERS: malformed percent-encoding in key — using raw string',
@@ -224,7 +229,7 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
     try {
       value = decodeURIComponent(rawValue);
     } catch {
-      // §11.4: same as key path — warn so a broken Authorization value is visible.
+      // Same as key path — warn so a broken Authorization value is visible.
       configLogger.warn(
         'OTEL_EXPORTER_OTLP_HEADERS: malformed percent-encoding in value — using raw string',
         { rawKey },
@@ -251,7 +256,7 @@ const LICENSE_KEY_RE = /^[\x21-\x7E]{20,128}$/;
  *
  * Precedence: `overrides` (when present per key) > env vars > defaults. The
  * function is stateless from the library's perspective — call it again to
- * pick up env-var changes (12 documents the SIGHUP pattern).
+ * pick up env-var changes (the SIGHUP pattern).
  *
  * License-key validation enforces a printable-ASCII regex (20–128 chars,
  * no whitespace) — strict enough to catch trailing newlines from `cat` pipes
@@ -263,10 +268,10 @@ const LICENSE_KEY_RE = /^[\x21-\x7E]{20,128}$/;
  * @throws If `licenseKey` is missing or malformed.
  */
 // Allows callers to pass `attributionDefaults: { feature: undefined }` to
-// clear an env-set default (§C1). The resolved AgentConfig always contains
+// clear an env-set default. The resolved AgentConfig always contains
 // only string values; the undefined is consumed at merge time.
 // Exported so callers can type their partial config objects without using
-// the opaque `Parameters<typeof loadConfig>[0]` (§IN6).
+// the opaque `Parameters<typeof loadConfig>[0]`.
 export type AgentConfigInput = Omit<Partial<AgentConfig>, 'attributionDefaults'> & {
   attributionDefaults?: Record<string, string | undefined> | null;
 };
@@ -297,7 +302,7 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
     );
   }
   // Reject control characters (CR/LF etc.) to prevent header injection if
-  // appName is ever used in an HTTP context, and cap length at 255 chars (§CF2).
+  // appName is ever used in an HTTP context, and cap length at 255 chars.
   if (/[\r\n\x00-\x1f]/.test(appName) || appName.length > 255) {
     throw new Error(
       'Invalid configuration: NEW_RELIC_APP_NAME must be 1-255 characters with no control characters.',
@@ -306,13 +311,13 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
 
   // Use explicit undefined-check so `accountId: null` in overrides wins over the
   // env var — `??` would treat null as "not provided" and fall through to the
-  // env var, silently ignoring an explicit null override (§CFG1).
+  // env var, silently ignoring an explicit null override.
   const accountId =
     overrides?.accountId !== undefined
       ? overrides.accountId
       : (process.env.NEW_RELIC_ACCOUNT_ID ?? null);
   if (accountId !== null && !/^[1-9]\d*$/.test(accountId)) {
-    // 6: positive-integer-only, no leading zeros, any length.
+    // Positive-integer-only, no leading zeros, any length.
     // - Removes the prior 12-digit cap so consumers don't have to release a
     //   new version when NR issues 13+ digit account IDs server-side.
     // - Rejects '0' / leading-zero strings (e.g. '07' would have passed the
@@ -324,7 +329,7 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
     );
   }
 
-  // F3: hoist `transport` resolution so we can fail fast when
+  // Hoist `transport` resolution so we can fail fast when
   // accountId is missing for transports that need it. Without this check, the
   // NR Events API URL becomes ".../accounts/null/events", which NR returns 404
   // on; the harvest scheduler then silently retry-loops every batch until the
@@ -377,8 +382,14 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
     ),
     otlpHeaders: overrides?.otlpHeaders ?? parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS),
     transport,
-    clientName:
-      overrides?.clientName || process.env.NEW_RELIC_AI_CLIENT_NAME || DEFAULT_CLIENT_NAME,
+    clientName: sanitizeClientString(
+      overrides?.clientName ?? process.env.NEW_RELIC_AI_CLIENT_NAME,
+      DEFAULT_CLIENT_NAME,
+    ),
+    clientVersion: sanitizeClientString(
+      overrides?.clientVersion ?? process.env.NEW_RELIC_AI_CLIENT_VERSION,
+      '',
+    ),
   };
 
   return deepFreeze(config);

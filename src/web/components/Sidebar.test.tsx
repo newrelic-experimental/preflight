@@ -1,7 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { Sidebar } from './Sidebar';
+import { Sidebar, type SidebarProps } from './Sidebar';
 import { useLiveStore, type AlertEvent } from '../store/liveStore';
+import { useVersionInfo } from '../hooks/useVersionInfo';
+
+vi.mock('../hooks/useVersionInfo.js', () => ({
+  useVersionInfo: vi.fn(),
+}));
+
+const mockVersionInfo = useVersionInfo as ReturnType<typeof vi.fn>;
 
 function fireOne(overrides: Partial<AlertEvent> = {}): void {
   useLiveStore.getState().addOrUpdateAlert({
@@ -28,9 +35,23 @@ function resetStore(): void {
   });
 }
 
+function renderSidebar(overrides: Partial<SidebarProps> = {}): void {
+  render(
+    <Sidebar
+      currentPath="/"
+      onNavigate={() => {}}
+      connected={true}
+      theme="dark"
+      onToggleTheme={() => {}}
+      {...overrides}
+    />,
+  );
+}
+
 describe('Sidebar', () => {
   beforeEach(() => {
     resetStore();
+    mockVersionInfo.mockReturnValue({ installed: null, latest: null, updateAvailable: false });
   });
   afterEach(() => {
     resetStore();
@@ -76,7 +97,7 @@ describe('Sidebar', () => {
         onToggleTheme={() => {}}
       />,
     );
-    expect(screen.getByText(/connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/live/i)).toBeInTheDocument();
   });
 
   it('shows ● reconnecting when connected=false', () => {
@@ -119,7 +140,7 @@ describe('Sidebar', () => {
       />,
     );
     const icons = container.querySelectorAll('nav button svg');
-    expect(icons.length).toBe(5);
+    expect(icons.length).toBe(7);
     for (const svg of Array.from(icons)) {
       expect(svg.getAttribute('aria-hidden')).toBe('true');
     }
@@ -251,5 +272,42 @@ describe('Sidebar', () => {
       const btn = screen.getByText(label).closest('button')!;
       expect(btn.querySelector('[data-testid="alert-badge"]')).toBeNull();
     }
+  });
+
+  it('renders the version number when installed is set', () => {
+    mockVersionInfo.mockReturnValue({ installed: '1.0.4', latest: null, updateAvailable: false });
+    renderSidebar();
+    expect(screen.getByText('v1.0.4')).toBeInTheDocument();
+  });
+
+  it('renders a GitHub link pointing to the public repo', () => {
+    mockVersionInfo.mockReturnValue({ installed: '1.0.4', latest: null, updateAvailable: false });
+    renderSidebar();
+    const link = screen.getByRole('link', { name: /github/i });
+    expect(link).toHaveAttribute('href', 'https://github.com/newrelic-experimental/preflight');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('hides the version row when installed is null', () => {
+    mockVersionInfo.mockReturnValue({ installed: null, latest: null, updateAvailable: false });
+    renderSidebar();
+    expect(screen.queryByText(/^v\d/)).not.toBeInTheDocument();
+  });
+
+  it('shows update nudge when updateAvailable is true', () => {
+    mockVersionInfo.mockReturnValue({ installed: '1.0.4', latest: '1.0.5', updateAvailable: true });
+    renderSidebar();
+    expect(screen.getByText('v1.0.5 available')).toBeInTheDocument();
+  });
+
+  it('hides update nudge when updateAvailable is false', () => {
+    mockVersionInfo.mockReturnValue({
+      installed: '1.0.4',
+      latest: '1.0.5',
+      updateAvailable: false,
+    });
+    renderSidebar();
+    expect(screen.queryByText(/available/)).not.toBeInTheDocument();
   });
 });

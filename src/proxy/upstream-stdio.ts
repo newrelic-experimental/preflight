@@ -221,8 +221,7 @@ export class StdioUpstream implements ProxyUpstream {
       // rather than throwing, and the OS will clean up the orphaned child when
       // this process exits.
       const maybeProc = (transport as unknown as Record<string, unknown>)['_process'] as
-        | { kill(signal?: string): void }
-        | undefined;
+        { kill(signal?: string): void } | undefined;
       maybeProc?.kill('SIGKILL');
     }
 

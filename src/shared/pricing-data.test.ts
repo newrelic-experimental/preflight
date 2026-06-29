@@ -144,18 +144,18 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(p.outputPerMTok).toBe(0.6);
     });
 
-    it('has o1 — no separate thinkingPerMTok (reasoning billed via outputTokens, §PD1)', () => {
+    it('has o1 — no separate thinkingPerMTok (reasoning billed via outputTokens)', () => {
       const p = DEFAULT_PRICING_TABLE['o1'];
       expect(p).toBeDefined();
       expect(p.inputPerMTok).toBe(15);
       expect(p.outputPerMTok).toBe(60);
       // thinkingPerMTok intentionally absent: OpenAI includes reasoning tokens
       // in completion_tokens at outputPerMTok — a separate thinkingPerMTok would
-      // double-bill (§PD1).
+      // double-bill.
       expect(p.thinkingPerMTok).toBeUndefined();
     });
 
-    it('has o3 — no separate thinkingPerMTok (reasoning billed via outputTokens, §PD1)', () => {
+    it('has o3 — no separate thinkingPerMTok (reasoning billed via outputTokens)', () => {
       const p = DEFAULT_PRICING_TABLE['o3'];
       expect(p).toBeDefined();
       expect(p.thinkingPerMTok).toBeUndefined();

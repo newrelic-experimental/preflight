@@ -53,9 +53,9 @@ afterEach(async () => {
 
 describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
-  // 0a. stop() flushes even when start() was never called (§HVS1)
+  // 0a. stop() flushes even when start() was never called
   // ---------------------------------------------------------------------------
-  it('stop() flushes buffered events even when start() was never called (§HVS1)', async () => {
+  it('stop() flushes buffered events even when start() was never called', async () => {
     jest.useFakeTimers();
     const sendEventsFn = jest
       .fn<Promise<TransportResult>, unknown[]>()
@@ -70,9 +70,9 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 0b. Constructor warns when OTLP transport is configured but bridge absent (§HVS4)
+  // 0b. Constructor warns when OTLP transport is configured but bridge absent
   // ---------------------------------------------------------------------------
-  it('warns at construction when transport=otlp but otlpEventBridge is absent (§HVS4)', () => {
+  it('warns at construction when transport=otlp but otlpEventBridge is absent', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     makeScheduler({ transport: 'otlp' });
     const output = stderrSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
@@ -80,7 +80,7 @@ describe('HarvestScheduler', () => {
     stderrSpy.mockRestore();
   });
 
-  it('does not warn at construction when transport=nr-events-api (§HVS4)', () => {
+  it('does not warn at construction when transport=nr-events-api', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     makeScheduler({ transport: 'nr-events-api' });
     const output = stderrSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
@@ -89,7 +89,7 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 0. Interval validation (§HS2)
+  // 0. Interval validation
   // ---------------------------------------------------------------------------
   it('throws RangeError when eventHarvestIntervalMs < 100', () => {
     expect(() => makeScheduler({ eventHarvestIntervalMs: 0 }).scheduler).toThrow(RangeError);
@@ -159,7 +159,7 @@ describe('HarvestScheduler', () => {
     expect(sentEvents).toHaveLength(1);
     expect(sentEvents[0].eventType).toBe('Test');
 
-    // Verify metrics were sent (CODE_REVIEW §4.9: ONE summary metric per bucket)
+    // Verify metrics were sent (ONE summary metric per bucket)
     const sentMetrics = sendMetricsFn.mock.calls[0][0] as NrMetric[];
     expect(sentMetrics).toHaveLength(1);
     expect(sentMetrics[0].type).toBe('summary');
@@ -363,17 +363,17 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   // 8. Re-queued metric snapshots are capped to prevent unbounded growth (B-01)
   // ---------------------------------------------------------------------------
-  it('caps re-queued metric snapshots to maxRetryMetricSnapshots (500), keeping newest (CODE_REVIEW §4.6 + §4.9)', async () => {
-    // §4.6: the retry buffer holds pre-explosion bucket snapshots, not the
+  it('caps re-queued metric snapshots to maxRetryMetricSnapshots (500), keeping newest', async () => {
+    // The retry buffer holds pre-explosion bucket snapshots, not the
     // exploded NrMetric[] wire form. The cap is 500 *snapshots* (= 500 unique
     // name+attrs buckets), so to exceed it we record 600 unique metric names.
     // After failure, oldest 100 snapshots are dropped and the newest 500
     // survive into the next harvest.
     //
-    // §4.9: each surviving snapshot now becomes ONE summary metric on the
+    // Each surviving snapshot now becomes ONE summary metric on the
     // wire instead of four, so the retry batch length is 500, not 2000.
     //
-    // §9.11 — Order-independence: the assertions below use a Set so they
+    // Order-independence: the assertions below use a Set so they
     // don't depend on the order metrics appear in the retry batch. The
     // "newest 500 retained, oldest 100 dropped" guarantee itself depends
     // on insertion order being preserved by `MetricAggregator.harvestSnapshots()`
@@ -404,7 +404,7 @@ describe('HarvestScheduler', () => {
     expect(logOutput).toContain('overflow');
 
     // Second harvest — retry batch is the 500 retained snapshots plus the
-    // nr.ai.dropped_metrics self-monitoring metric recorded on overflow (§HS1).
+    // nr.ai.dropped_metrics self-monitoring metric recorded on overflow.
     await jest.advanceTimersByTimeAsync(60_000);
     expect(sendMetricsFn).toHaveBeenCalledTimes(2);
     const retryBatch = sendMetricsFn.mock.calls[1][0] as Array<{ name: string }>;
@@ -459,10 +459,9 @@ describe('HarvestScheduler', () => {
 
   // ---------------------------------------------------------------------------
   // 9b. stop() awaits in-flight interval harvest before its own final flush
-  //     (CODE_REVIEW §9.2 / §4.16)
   // ---------------------------------------------------------------------------
-  it('stop() awaits in-flight interval harvest before its own final flush (CODE_REVIEW §4.16)', async () => {
-    // §9.2 / §4.16: when an interval-driven harvest is already in flight and
+  it('stop() awaits in-flight interval harvest before its own final flush', async () => {
+    // When an interval-driven harvest is already in flight and
     // stop() is called, stop() must (1) await the in-flight harvest before
     // initiating its own final flush, and (2) ensure events added between
     // the in-flight harvest's snapshot and stop()'s final flush are
@@ -553,13 +552,13 @@ describe('HarvestScheduler', () => {
     expect(sendMetricsFn).toHaveBeenCalledTimes(2);
   });
 
-  // CODE_REVIEW §10.5 — every per-cycle log line carries a harvestId so
+  // Every per-cycle log line carries a harvestId so
   // operators can pivot on it in stderr to trace one harvest cycle through
   // batch-send, retry, and overflow logs. A future regression that reverts
   // to the module-level `logger` in any of the eight threading points (the
   // four send* helpers + four requeue* helpers) would silently break this
   // contract; this test catches it.
-  it('stamps harvestId on retry/requeue log lines (§10.5)', async () => {
+  it('stamps harvestId on retry/requeue log lines', async () => {
     const sendEventsFn = jest
       .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValue(failureResult);
@@ -574,7 +573,7 @@ describe('HarvestScheduler', () => {
     stderrSpy.mockClear();
     await jest.advanceTimersByTimeAsync(5_000);
 
-    // CODE_REVIEW §9.20 — left inline rather than collapsed to
+    // Left inline rather than collapsed to
     // `getLogOutput(stderrSpy)` because this test needs the per-frame
     // `string[]` to `.find()` a specific line, then `JSON.parse()` it
     // standalone. The helper returns a joined string, which would
@@ -594,12 +593,12 @@ describe('HarvestScheduler', () => {
     await scheduler.stop();
   });
 
-  // CODE_REVIEW §4.22 — scheduler-level boolean return for backpressure.
+  // Scheduler-level boolean return for backpressure.
   // The underlying buffer/aggregator return values are tested in their own
   // suites; these tests pin the contract at the public scheduler surface so
   // a future regression that drops the return-propagation through the
   // wrappers fails CI.
-  describe('addEvent / recordMetric boolean return (§4.22)', () => {
+  describe('addEvent / recordMetric boolean return', () => {
     it('addEvent returns true while the buffer has room and false on overflow', () => {
       const { scheduler } = makeScheduler({ maxEventBufferSize: 2 });
       expect(scheduler.addEvent({ eventType: 'T', seq: 1 })).toBe(true);
@@ -625,9 +624,9 @@ describe('HarvestScheduler', () => {
     });
   });
 
-  // CODE_REVIEW §4.25 / §4.11 — self-monitoring: rejected metric samples
+  // Self-monitoring: rejected metric samples
   // surface as an `nr.ai.dropped_metrics` summary metric on the next harvest.
-  it('emits nr.ai.dropped_metrics when MetricAggregator rejects samples (§4.25)', async () => {
+  it('emits nr.ai.dropped_metrics when MetricAggregator rejects samples', async () => {
     const { scheduler, sendMetricsFn } = makeScheduler();
     scheduler.start();
 
@@ -658,12 +657,12 @@ describe('HarvestScheduler', () => {
     }
   });
 
-  // CODE_REVIEW §9.12 — listener leak guard for repeated start/stop cycles
+  // Listener leak guard for repeated start/stop cycles
   // when `allowProcessExit: true` is in play (the only path that registers
-  // a `beforeExit` listener at all, per §4.12). Without this guard, a
+  // a `beforeExit` listener at all). Without this guard, a
   // future regression that forgot to clean up the listener after each stop
   // would silently accumulate one listener per cycle.
-  it('does not leak beforeExit listeners across repeated start/stop cycles (§9.12)', async () => {
+  it('does not leak beforeExit listeners across repeated start/stop cycles', async () => {
     const baseline = process.listeners('beforeExit').length;
     const { scheduler } = makeScheduler({ allowProcessExit: true });
 
@@ -676,9 +675,9 @@ describe('HarvestScheduler', () => {
     expect(process.listeners('beforeExit').length).toBe(baseline);
   });
 
-  // CODE_REVIEW §4.21 — maxRetryEvents and maxRetryMetricSnapshots are
+  // maxRetryEvents and maxRetryMetricSnapshots are
   // independent of maxEventBufferSize.
-  describe('decoupled retry caps (§4.21)', () => {
+  describe('decoupled retry caps', () => {
     it('maxRetryEvents defaults to maxEventBufferSize when not set', async () => {
       const sendEventsFn = jest
         .fn<Promise<TransportResult>, unknown[]>()
@@ -747,7 +746,7 @@ describe('HarvestScheduler', () => {
       await jest.advanceTimersByTimeAsync(60_000);
       await jest.advanceTimersByTimeAsync(60_000);
       const retryBatch = sendMetricsFn.mock.calls[1][0] as Array<{ name: string }>;
-      // Filter out nr.ai.dropped_metrics self-monitoring metric (§HS1)
+      // Filter out nr.ai.dropped_metrics self-monitoring metric
       const userMetrics = retryBatch.filter((m) => m.name !== 'nr.ai.dropped_metrics');
       expect(userMetrics).toHaveLength(50);
       const names = new Set(retryBatch.map((m) => m.name));
@@ -757,8 +756,8 @@ describe('HarvestScheduler', () => {
     });
   });
 
-  // CODE_REVIEW §4.19 — start() refuses while a previous stop() is in flight
-  it('start() during in-flight stop() is refused with a warn (CODE_REVIEW §4.19)', async () => {
+  // start() refuses while a previous stop() is in flight
+  it('start() during in-flight stop() is refused with a warn', async () => {
     const sendEventsFn = jest
       .fn<Promise<TransportResult>, unknown[]>()
       .mockImplementation(
@@ -987,7 +986,7 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 14b. CODE_REVIEW §4.5 / §9.4 — 'both' mode must not duplicate to OTLP
+  // 14b. 'both' mode must not duplicate to OTLP
   //      when only NR fails. Per-transport retry buffers ensure that the
   //      OTLP-bound batch isn't re-sent on the next harvest just because
   //      the NR-bound batch needs retry.
@@ -1029,9 +1028,9 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 14c. Symmetric of 14b: 'both' mode does not re-send to NR when only OTLP fails (§HV4)
+  // 14c. Symmetric of 14b: 'both' mode does not re-send to NR when only OTLP fails
   // ---------------------------------------------------------------------------
-  it("'both' mode does not re-send to NR when only OTLP send fails (§HV4)", async () => {
+  it("'both' mode does not re-send to NR when only OTLP send fails", async () => {
     const sendEventsFn = jest
       .fn<Promise<TransportResult>, unknown[]>()
       .mockResolvedValue(successResult);
@@ -1109,9 +1108,9 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // CODE_REVIEW §4.12 — Process-exit semantics
+  // Process-exit semantics
   // ---------------------------------------------------------------------------
-  describe('process exit (§4.12)', () => {
+  describe('process exit', () => {
     it('does NOT unref intervals by default (consumer must await stop())', async () => {
       const { scheduler } = makeScheduler();
       scheduler.start();
@@ -1191,9 +1190,9 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // §11.1 — OTLP_BAD_REQUEST is dropped, not requeued
+  // OTLP_BAD_REQUEST is dropped, not requeued
   // ---------------------------------------------------------------------------
-  describe('§11.1 OTLP_BAD_REQUEST non-retryable handling', () => {
+  describe('OTLP_BAD_REQUEST non-retryable handling', () => {
     it('drops OTLP metric batch on OTLP_BAD_REQUEST and does not requeue', async () => {
       const badRequestError = Object.assign(new Error('bad request'), {
         code: 'OTLP_BAD_REQUEST',

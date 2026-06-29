@@ -1,4 +1,8 @@
 import { gunzipSync } from 'node:zlib';
+
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+
 import { OtlpTransport } from './otlp-transport.js';
 import type { NrMetric } from './types.js';
 
@@ -64,7 +68,32 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 2. transport is ready immediately after construction (§OT1 — start() removed)
+  // 1b. SDK exporters include User-Agent header in their constructor headers
+  // ---------------------------------------------------------------------------
+  it('OTLPTraceExporter and OTLPMetricExporter are constructed with User-Agent header', () => {
+    new OtlpTransport({
+      endpoint: 'https://otlp.nr-data.net',
+      headers: { 'api-key': 'key' },
+      appName: 'test',
+      clientName: 'preflight',
+      clientVersion: '1.0.0',
+    });
+
+    const TraceExporterCtor = OTLPTraceExporter as unknown as jest.Mock;
+    const MetricExporterCtor = OTLPMetricExporter as unknown as jest.Mock;
+
+    expect(TraceExporterCtor.mock.calls[0][0].headers).toMatchObject({
+      'User-Agent': 'preflight/1.0.0',
+      'api-key': 'key',
+    });
+    expect(MetricExporterCtor.mock.calls[0][0].headers).toMatchObject({
+      'User-Agent': 'preflight/1.0.0',
+      'api-key': 'key',
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 2. transport is ready immediately after construction (start() removed)
   // ---------------------------------------------------------------------------
   it('transport is ready to use immediately after construction without calling start()', () => {
     const transport = new OtlpTransport({
@@ -101,6 +130,74 @@ describe('OtlpTransport', () => {
 
     // Verify flush was called (mocked implementations resolve immediately)
     expect(transport).toBeDefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 4b. flush() runs both forceFlush calls even if the first rejects
+  // ---------------------------------------------------------------------------
+  it('flush() awaits both providers even when tracerProvider.forceFlush rejects', async () => {
+    const { BasicTracerProvider } = jest.requireMock('@opentelemetry/sdk-trace-node') as {
+      BasicTracerProvider: jest.Mock;
+    };
+    const { MeterProvider } = jest.requireMock('@opentelemetry/sdk-metrics') as {
+      MeterProvider: jest.Mock;
+    };
+
+    const meterFlush = jest.fn().mockResolvedValue(undefined);
+    BasicTracerProvider.mockImplementationOnce(() => ({
+      register: jest.fn(),
+      forceFlush: jest.fn().mockRejectedValue(new Error('tracer flush failed')),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      getTracer: jest.fn().mockReturnValue({}),
+    }));
+    MeterProvider.mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.forceFlush = meterFlush;
+      this.shutdown = jest.fn().mockResolvedValue(undefined);
+      this.getMeter = jest.fn().mockReturnValue({});
+      return this;
+    });
+
+    const transport = new OtlpTransport({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test',
+    });
+
+    await expect(transport.flush()).rejects.toThrow('tracer flush failed');
+    expect(meterFlush).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 4c. flush() throws AggregateError when both providers reject
+  // ---------------------------------------------------------------------------
+  it('flush() throws AggregateError when both providers reject', async () => {
+    const { BasicTracerProvider } = jest.requireMock('@opentelemetry/sdk-trace-node') as {
+      BasicTracerProvider: jest.Mock;
+    };
+    const { MeterProvider } = jest.requireMock('@opentelemetry/sdk-metrics') as {
+      MeterProvider: jest.Mock;
+    };
+
+    BasicTracerProvider.mockImplementationOnce(() => ({
+      register: jest.fn(),
+      forceFlush: jest.fn().mockRejectedValue(new Error('tracer flush failed')),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      getTracer: jest.fn().mockReturnValue({}),
+    }));
+    MeterProvider.mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.forceFlush = jest.fn().mockRejectedValue(new Error('meter flush failed'));
+      this.shutdown = jest.fn().mockResolvedValue(undefined);
+      this.getMeter = jest.fn().mockReturnValue({});
+      return this;
+    });
+
+    const transport = new OtlpTransport({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test',
+    });
+
+    const err = await transport.flush().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors).toHaveLength(2);
   });
 
   // ---------------------------------------------------------------------------
@@ -152,9 +249,9 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 7b. exportMetrics() uses requestTimeoutMs when provided (§TR7)
+  // 7b. exportMetrics() uses requestTimeoutMs when provided
   // ---------------------------------------------------------------------------
-  it('exportMetrics() passes requestTimeoutMs to AbortSignal.timeout (§TR7)', async () => {
+  it('exportMetrics() passes requestTimeoutMs to AbortSignal.timeout', async () => {
     const transport = new OtlpTransport({
       endpoint: 'https://otlp.nr-data.net',
       appName: 'test-app',
@@ -216,9 +313,9 @@ describe('OtlpTransport', () => {
         headers: expect.objectContaining({
           'Content-Type': 'application/json',
           'api-key': 'test-key',
-          // CODE_REVIEW §10.7 — User-Agent identifies this library on NR's
-          // collector access logs.
-          'User-Agent': expect.stringMatching(/^ai-telemetry\/\d+\.\d+\.\d+/),
+          // User-Agent identifies the consuming client on
+          // NR's collector access logs. Without clientVersion, just the name.
+          'User-Agent': 'ai-telemetry',
         }),
       }),
     );
@@ -226,12 +323,42 @@ describe('OtlpTransport', () => {
     fetchSpy.mockRestore();
   });
 
-  // CODE_REVIEW §9.13 — wire-format tests for OTLP/HTTP metric export.
+  // ---------------------------------------------------------------------------
+  // 8b. exportMetrics() includes name/version User-Agent when clientVersion set
+  // ---------------------------------------------------------------------------
+  it('exportMetrics() uses name/version User-Agent when clientVersion is provided', async () => {
+    const transport = new OtlpTransport({
+      endpoint: 'https://otlp.nr-data.net',
+      headers: { 'api-key': 'test-key' },
+      appName: 'test-app',
+      clientName: 'preflight',
+      clientVersion: '2.0.0',
+    });
+
+    const fetchSpy = jest
+      .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200 } as Response);
+
+    await transport.exportMetrics([
+      { name: 'ai.tokens', type: 'gauge', value: 1, timestamp: Date.now() },
+    ]);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://otlp.nr-data.net/v1/metrics',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'User-Agent': 'preflight/2.0.0' }),
+      }),
+    );
+
+    fetchSpy.mockRestore();
+  });
+
+  // wire-format tests for OTLP/HTTP metric export.
   // These don't use a real collector (nock/msw would be heavier); they
   // intercept fetch and assert the full OTLP/HTTP payload structure
   // (resourceMetrics → scopeMetrics → metrics → gauge|sum|histogram)
   // matches the OTLP spec for each metric type.
-  describe('exportMetrics() wire format (§9.13)', () => {
+  describe('exportMetrics() wire format', () => {
     function captureWirePayload(): { transport: OtlpTransport; getPayload: () => unknown } {
       const transport = new OtlpTransport({
         endpoint: 'https://otlp.nr-data.net',
@@ -246,6 +373,65 @@ describe('OtlpTransport', () => {
         });
       return { transport, getPayload: () => captured };
     }
+
+    it('includes scope.version in OTLP payload when clientVersion is set', async () => {
+      let captured: unknown;
+      const transport = new OtlpTransport({
+        endpoint: 'https://otlp.nr-data.net',
+        appName: 'test-app',
+        clientName: 'preflight',
+        clientVersion: '3.0.0',
+      });
+      jest
+        .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
+        .mockImplementation(async (_url: unknown, init: unknown) => {
+          captured = JSON.parse(gunzipSync((init as { body: Buffer }).body).toString());
+          return new Response('', { status: 200 });
+        });
+
+      await transport.exportMetrics([
+        { name: 'ai.tokens', type: 'gauge', value: 1, timestamp: Date.now() },
+      ]);
+
+      const scope = (
+        captured as {
+          resourceMetrics: Array<{
+            scopeMetrics: Array<{ scope: { name: string; version?: string } }>;
+          }>;
+        }
+      ).resourceMetrics[0].scopeMetrics[0].scope;
+
+      expect(scope.name).toBe('preflight');
+      expect(scope.version).toBe('3.0.0');
+    });
+
+    it('omits scope.version from OTLP payload when clientVersion is empty', async () => {
+      let captured: unknown;
+      const transport = new OtlpTransport({
+        endpoint: 'https://otlp.nr-data.net',
+        appName: 'test-app',
+      });
+      jest
+        .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
+        .mockImplementation(async (_url: unknown, init: unknown) => {
+          captured = JSON.parse(gunzipSync((init as { body: Buffer }).body).toString());
+          return new Response('', { status: 200 });
+        });
+
+      await transport.exportMetrics([
+        { name: 'ai.tokens', type: 'gauge', value: 1, timestamp: Date.now() },
+      ]);
+
+      const scope = (
+        captured as {
+          resourceMetrics: Array<{
+            scopeMetrics: Array<{ scope: Record<string, unknown> }>;
+          }>;
+        }
+      ).resourceMetrics[0].scopeMetrics[0].scope;
+
+      expect(scope).not.toHaveProperty('version');
+    });
 
     it('emits resourceMetrics → scopeMetrics → metrics envelope with service.name resource attribute', async () => {
       const { transport, getPayload } = captureWirePayload();
@@ -293,7 +479,7 @@ describe('OtlpTransport', () => {
       expect(gauge.dataPoints[0].timeUnixNano).toBe(1700000000000 * 1_000_000);
     });
 
-    it('encodes type=count as OTLP Sum with isMonotonic=true and aggregationTemporality=DELTA(1) (§TR1)', async () => {
+    it('encodes type=count as OTLP Sum with isMonotonic=true and aggregationTemporality=DELTA(1)', async () => {
       const { transport, getPayload } = captureWirePayload();
       const timestamp = 1700000000000;
       const intervalMs = 60_000;
@@ -317,10 +503,10 @@ describe('OtlpTransport', () => {
         isMonotonic: boolean;
       };
       expect(sum.dataPoints[0].asDouble).toBe(5);
-      // DELTA (1) — the count is an interval delta, not a running cumulative total (§TR1).
+      // DELTA (1) — the count is an interval delta, not a running cumulative total.
       expect(sum.aggregationTemporality).toBe(1);
       expect(sum.isMonotonic).toBe(true);
-      // startTimeUnixNano required by OTLP spec for Sum data points (§TR2).
+      // startTimeUnixNano required by OTLP spec for Sum data points.
       expect(sum.dataPoints[0].startTimeUnixNano).toBe((timestamp - intervalMs) * 1_000_000);
       expect(sum.dataPoints[0].timeUnixNano).toBe(timestamp * 1_000_000);
     });
@@ -367,10 +553,10 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 9. exportMetrics() surfaces fetch errors (CODE_REVIEW §4.17)
+  // 9. exportMetrics() surfaces fetch errors
   // ---------------------------------------------------------------------------
-  it('exportMetrics() rejects on fetch errors so the scheduler can requeue (CODE_REVIEW §4.17)', async () => {
-    // §4.17: exportMetrics must throw on transport failures. The
+  it('exportMetrics() rejects on fetch errors so the scheduler can requeue', async () => {
+    // exportMetrics must throw on transport failures. The
     // HarvestScheduler.sendMetricsToOtlp catch block requeues into
     // retryOtlpMetricBatch — previously exportMetrics swallowed errors,
     // which silently dropped every OTLP metric failure and made that
@@ -400,9 +586,9 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 10. exportMetrics() surfaces non-OK responses (CODE_REVIEW §4.17)
+  // 10. exportMetrics() surfaces non-OK responses
   // ---------------------------------------------------------------------------
-  it('exportMetrics() rejects on non-OK HTTP responses so the scheduler can requeue (CODE_REVIEW §4.17)', async () => {
+  it('exportMetrics() rejects on non-OK HTTP responses so the scheduler can requeue', async () => {
     const transport = new OtlpTransport({
       endpoint: 'https://otlp.nr-data.net',
       appName: 'test-app',
@@ -428,9 +614,9 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 10a. exportMetrics() throws with code OTLP_BAD_REQUEST on 400 (§TR9)
+  // 10a. exportMetrics() throws with code OTLP_BAD_REQUEST on 400
   // ---------------------------------------------------------------------------
-  it('exportMetrics() throws with code OTLP_BAD_REQUEST on 400 — non-retryable (§TR9)', async () => {
+  it('exportMetrics() throws with code OTLP_BAD_REQUEST on 400 — non-retryable', async () => {
     const transport = new OtlpTransport({
       endpoint: 'https://otlp.nr-data.net',
       appName: 'test-app',
@@ -453,9 +639,9 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 10b-10d. hasWarnedNoAuth warn-once behaviour (§TR1)
+  // 10b-10d. hasWarnedNoAuth warn-once behaviour
   // ---------------------------------------------------------------------------
-  describe('hasWarnedNoAuth warn-once (§TR1)', () => {
+  describe('hasWarnedNoAuth warn-once', () => {
     const singleMetric: NrMetric[] = [
       { name: 'ai.tokens', type: 'gauge', value: 1, timestamp: Date.now(), attributes: {} },
     ];
@@ -513,10 +699,10 @@ describe('OtlpTransport', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 10e. exportMetrics() encodes summary type as OTLP histogram (§4.9)
+  // 10e. exportMetrics() encodes summary type as OTLP histogram
   // ---------------------------------------------------------------------------
-  it('exportMetrics() encodes type=summary as OTLP histogram with min/max/sum/count (CODE_REVIEW §4.9)', async () => {
-    // Post-§4.9, NrMetric of type 'summary' carries a structured value
+  it('exportMetrics() encodes type=summary as OTLP histogram with min/max/sum/count', async () => {
+    // NrMetric of type 'summary' carries a structured value
     // `{ count, sum, min, max }` and is mapped to OTLP histogram with
     // explicit min/max/sum/count fields and an empty bucket layout —
     // the closest faithful mapping for an unbucketed summary in OTLP.
@@ -572,16 +758,16 @@ describe('OtlpTransport', () => {
     expect(dp.max).toBe(50);
     expect(dp.bucketCounts).toEqual([4]);
     expect(dp.explicitBounds).toEqual([]);
-    // OTLP spec requires startTimeUnixNano on DELTA histogram data points (§TR2)
+    // OTLP spec requires startTimeUnixNano on DELTA histogram data points
     expect(dp.startTimeUnixNano).toBe((metrics[0].timestamp - 60_000) * 1_000_000);
 
     fetchSpy.mockRestore();
   });
 
   // ---------------------------------------------------------------------------
-  // 11-15. CODE_REVIEW §9.9 / §5.11 — endpoint scheme enforcement
+  // 11-15. endpoint scheme enforcement
   // ---------------------------------------------------------------------------
-  describe('endpoint scheme enforcement (CODE_REVIEW §9.9 / §5.11)', () => {
+  describe('endpoint scheme enforcement', () => {
     it('accepts https:// without warning', () => {
       expect(
         () =>
@@ -641,7 +827,7 @@ describe('OtlpTransport', () => {
       expect(stderrText).toMatch(/internal-collector\.example\.com/);
     });
 
-    it('emits a cleartext warning for http://0.0.0.0 — wildcard, not loopback (§TR5)', () => {
+    it('emits a cleartext warning for http://0.0.0.0 — wildcard, not loopback', () => {
       expect(
         () => new OtlpTransport({ endpoint: 'http://0.0.0.0:4318', appName: 'test-app' }),
       ).not.toThrow();

@@ -5,7 +5,7 @@ describe('createLogger', () => {
 
   beforeEach(() => {
     stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    // CODE_REVIEW §7.5: env-resolved log level is cached on first use; tests
+    // Env-resolved log level is cached on first use; tests
     // that flip NEW_RELIC_AI_LOG_LEVEL must clear the cache first so the
     // next createLogger call re-reads the new value.
     __resetLogLevelCache();
@@ -51,7 +51,7 @@ describe('createLogger', () => {
     expect(parsed.count).toBe(5);
   });
 
-  it('canonical fields (level, message) cannot be overwritten by caller data (§L1)', () => {
+  it('canonical fields (level, message) cannot be overwritten by caller data', () => {
     const logger = createLogger('test');
     logger.error('real-message', { level: 'debug', message: 'injected', component: 'fake' });
 
@@ -107,9 +107,9 @@ describe('createLogger', () => {
   });
 
   it('does not throw and preserves non-circular fields when data contains a circular reference', () => {
-    // §7.2: redact() detects cycles and replaces the back-edge with
+    // redact() detects cycles and replaces the back-edge with
     // '[circular]', so JSON.stringify no longer throws and the rest of the
-    // structure survives. (Pre-§7.2 the whole `data` field collapsed to
+    // structure survives. (Previously the whole `data` field collapsed to
     // '[unserializable]'; that fallback still exists for genuinely
     // unserializable values — see the BigInt test below.)
     const logger = createLogger('test');
@@ -126,8 +126,8 @@ describe('createLogger', () => {
     expect(parsed.self).toBe('[circular]');
   });
 
-  it('replaces only the offending field with "[unserializable]" when a value cannot be JSON-serialized (CODE_REVIEW §7.3)', () => {
-    // §7.3: per-field fallback. The redact walker handles circulars but
+  it('replaces only the offending field with "[unserializable]" when a value cannot be JSON-serialized', () => {
+    // Per-field fallback. The redact walker handles circulars but
     // passes BigInt through; BigInt then trips JSON.stringify on the whole
     // entry. The catch-block walks top-level keys and replaces only the
     // offending key with '[unserializable]' instead of collapsing the
@@ -149,8 +149,8 @@ describe('createLogger', () => {
     expect(parsed.data).toBeUndefined();
   });
 
-  it('preserves well-formed siblings when one data field is unserializable (CODE_REVIEW §7.3)', () => {
-    // §7.3: a single bad field shouldn't poison the whole log entry.
+  it('preserves well-formed siblings when one data field is unserializable', () => {
+    // A single bad field shouldn't poison the whole log entry.
     // Operators rely on these surrounding fields (request IDs, counts,
     // model names) to triage the failure — they must survive even when a
     // sibling value is unserializable.
@@ -171,7 +171,7 @@ describe('createLogger', () => {
     expect(parsed.message).toBe('mixed payload');
   });
 
-  it('redacts secret-shaped keys from data (CODE_REVIEW §7.2)', () => {
+  it('redacts secret-shaped keys from data', () => {
     const logger = createLogger('test');
     logger.info('config dump', {
       licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234',
@@ -200,7 +200,7 @@ describe('createLogger', () => {
   });
 
   it('writes to stderr, not stdout', () => {
-    // §7.4: logger uses console.error which routes to stderr; verify nothing
+    // Logger uses console.error which routes to stderr; verify nothing
     // ever leaks to stdout via console.log.
     const stdoutSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     const logger = createLogger('test');
@@ -212,8 +212,8 @@ describe('createLogger', () => {
     stdoutSpy.mockRestore();
   });
 
-  // CODE_REVIEW §7.6 — child logger pre-binds context onto every entry
-  describe('child logger (§7.6)', () => {
+  // child logger pre-binds context onto every entry
+  describe('child logger', () => {
     it('child(boundContext) prepends context onto every emitted entry', () => {
       const root = createLogger('root');
       const child = root.child({ requestId: 'abc-12345' });
@@ -261,7 +261,7 @@ describe('createLogger', () => {
       expect(childParsed.requestId).toBe('abc');
     });
 
-    it('secret-shaped keys in child() bound context are redacted (§L2)', () => {
+    it('secret-shaped keys in child() bound context are redacted', () => {
       const child = createLogger('root').child({
         authorization: 'Bearer secret-token',
         requestId: 'safe-id',
@@ -274,8 +274,8 @@ describe('createLogger', () => {
     });
   });
 
-  // CODE_REVIEW §7.7 — logger emits epoch_ms alongside ISO timestamp
-  describe('epoch_ms timestamp (§7.7)', () => {
+  // logger emits epoch_ms alongside ISO timestamp
+  describe('epoch_ms timestamp', () => {
     it('emits epoch_ms (number) alongside ISO timestamp on every entry', () => {
       const logger = createLogger('test');
       logger.info('hello');

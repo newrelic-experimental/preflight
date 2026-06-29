@@ -24,7 +24,7 @@ function extractSessionId(payload: LiveEventMap[LiveEventName]): string | undefi
 // "hb-<ts>". The browser sends it back as Last-Event-ID on reconnect; the
 // server's parseInt will return NaN for "hb-..." which falls through to "no
 // replay" — safer than letting a heartbeat id contaminate the bus seq
-// namespace..
+// namespace.
 function frame(event: string, id: string | number, data: unknown): string {
   const safeEvent = event.replace(/[\r\n]/g, '');
   return `event: ${safeEvent}\nid: ${id}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -56,14 +56,14 @@ export function createSseHandler(
 
     // Parse Last-Event-ID. Heartbeats use string ids like "hb-<ts>" which
     // produce NaN here, falling through to no replay. Negative or invalid
-    // values also fall through..
+    // values also fall through.
     const lastEventIdHeader = req.headers['last-event-id'];
     const rawSeq = typeof lastEventIdHeader === 'string' ? parseInt(lastEventIdHeader, 10) : NaN;
     const replaySeq = Number.isFinite(rawSeq) && rawSeq >= 0 ? rawSeq : -1;
     if (replaySeq >= 0) {
       // Replay buffered events with global seq > lastSeq, using the bus's
       // own seq for the frame id. This keeps replay and live frames in the
-      // same numbering namespace — fixes an issue where a per-connection
+      // same numbering namespace — where a per-connection
       // counter caused reconnect to either miss events or replay
       // pre-connection history.
       for (const entry of bus.replayFrom(replaySeq)) {

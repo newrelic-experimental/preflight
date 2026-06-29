@@ -1,6 +1,5 @@
 /**
- * Test-only helper for asserting on captured stderr output
- * (CODE_REVIEW §9.20).
+ * Test-only helper for asserting on captured stderr output.
  *
  * Across the test suite, the structured logger writes to stderr (which
  * tests stub via `jest.spyOn(console, 'error').mockImplementation(...)`)

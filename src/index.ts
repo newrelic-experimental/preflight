@@ -4,7 +4,8 @@ import 'dotenv/config';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Command } from 'commander';
-import { VERSION, createLogger } from './shared/index.js';
+import { createLogger } from './shared/index.js';
+import { VERSION } from './version.js';
 import { createServer } from './server.js';
 import { loadMcpConfig, DEFAULT_STORAGE_PATH } from './config.js';
 import { ProxyManager } from './proxy/index.js';
@@ -124,8 +125,7 @@ export function maskCredential(key: string): string {
  *   re-throw `error` unchanged.
  */
 export type DashboardStartFailure =
-  | { kind: 'skip'; message: string }
-  | { kind: 'rethrow'; error: unknown };
+  { kind: 'skip'; message: string } | { kind: 'rethrow'; error: unknown };
 
 /**
  * Decide how to handle a failure returned from `DashboardServer.start()`.

@@ -22,6 +22,7 @@ import {
 
 const logger = createLogger('nr-ingest');
 import { redactSensitive } from '../config.js';
+import { VERSION } from '../version.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
@@ -473,12 +474,14 @@ export class NrIngestManager {
         headers: options.otlpHeaders,
         appName: options.appName,
         clientName: 'newrelic-preflight',
+        clientVersion: VERSION,
       });
       otlpEventBridge = new OtlpEventBridge({
         endpoint: options.otlpEndpoint,
         headers: options.otlpHeaders,
         appName: options.appName,
         clientName: 'newrelic-preflight',
+        clientVersion: VERSION,
       });
       // OtlpTransport no longer has an explicit start() — providers initialise in the constructor.
     }
@@ -517,6 +520,7 @@ export class NrIngestManager {
     const transportOptions: TransportOptions = {
       ...options.transportOptions,
       clientName: 'newrelic-preflight',
+      clientVersion: VERSION,
     };
 
     this.scheduler = new HarvestScheduler({

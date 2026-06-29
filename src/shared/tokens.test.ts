@@ -150,7 +150,6 @@ describe('extractStreamTokens', () => {
     expect(result.outputTokens).toBe(10);
   });
 
-  // CODE_REVIEW F1 — OpenAI streaming.
   it('delegates to openai extractor', () => {
     const result = extractStreamTokens(
       { usage: { prompt_tokens: 30, completion_tokens: 15, total_tokens: 45 } },
@@ -162,7 +161,7 @@ describe('extractStreamTokens', () => {
     expect(result.totalTokens).toBe(45);
   });
 
-  // CODE_REVIEW F1 follow-up: bedrock now has a real extractor — verify
+  // bedrock now has a real extractor — verify
   // it's actually wired through extractStreamTokens (not falling through
   // to the warn-once branch).
   it('delegates to bedrock extractor (non-streaming shape)', () => {
@@ -176,7 +175,7 @@ describe('extractStreamTokens', () => {
     expect(result.totalTokens).toBe(60);
   });
 
-  it('extracts tokens from Bedrock stream final chunk (metadata.usage shape) (§T1)', () => {
+  it('extracts tokens from Bedrock stream final chunk (metadata.usage shape)', () => {
     const bedrockStreamFinal = {
       metadata: { usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 } },
     };
@@ -213,7 +212,7 @@ describe('extractStreamTokens', () => {
     expect(result.totalTokens).toBe(105);
   });
 
-  it('extracts tokens from Cohere stream final chunk (delta.usage shape) (§T1)', () => {
+  it('extracts tokens from Cohere stream final chunk (delta.usage shape)', () => {
     const cohereStreamFinal = {
       type: 'message-end',
       delta: {
@@ -229,7 +228,7 @@ describe('extractStreamTokens', () => {
     expect(result.totalTokens).toBe(150);
   });
 
-  it('extracts tokens from Cohere non-streaming embed shape (meta.billed_units) via extractStreamTokens (§TK4)', () => {
+  it('extracts tokens from Cohere non-streaming embed shape (meta.billed_units) via extractStreamTokens', () => {
     // Cohere embed responses use meta.billed_units, not usage. Verify the
     // non-streaming fallback path in extractStreamTokens handles this shape.
     const embedResponse = {
@@ -243,7 +242,7 @@ describe('extractStreamTokens', () => {
     expect(result.outputTokens).toBe(0);
   });
 
-  // CODE_REVIEW F1 follow-up: warn-once mechanism remains as a defensive
+  // warn-once mechanism remains as a defensive
   // guard for hypothetical future providers that get added to AiProvider
   // without a matching extractor. Test against a fake provider literal via
   // type assertion since every real provider in AiProvider is now wired.
@@ -264,7 +263,7 @@ describe('extractStreamTokens', () => {
   });
 });
 
-// CODE_REVIEW F1 follow-up — Bedrock Converse / ConverseStream API.
+// Bedrock Converse / ConverseStream API.
 describe('extractBedrockTokens', () => {
   it('maps all fields from a full Converse usage object', () => {
     const result = extractBedrockTokens({
@@ -317,7 +316,7 @@ describe('extractBedrockTokens', () => {
   });
 });
 
-// CODE_REVIEW F1 follow-up — Mistral La Plateforme Chat Completions API.
+// Mistral La Plateforme Chat Completions API.
 // OpenAI-compatible shape; no native cache or reasoning fields.
 describe('extractMistralTokens', () => {
   it('maps all fields from a full usage object', () => {
@@ -346,7 +345,7 @@ describe('extractMistralTokens', () => {
   });
 });
 
-// CODE_REVIEW F1 follow-up — Cohere v2 Chat API. Counts surface under
+// Cohere v2 Chat API. Counts surface under
 // `usage.tokens` (preferred) with `billed_units` as fallback. Embed
 // (`client.embed`) responses use `meta` instead of `usage` with the same
 // inner shape — extractor handles both.
@@ -399,7 +398,7 @@ describe('extractCohereTokens', () => {
   });
 });
 
-// CODE_REVIEW F1 — OpenAI Chat Completions extractor.
+// OpenAI Chat Completions extractor.
 describe('extractOpenAITokens', () => {
   it('maps all fields from a full usage object', () => {
     const result = extractOpenAITokens({
@@ -429,7 +428,7 @@ describe('extractOpenAITokens', () => {
       },
     });
 
-    // §11.3: cacheReadTokens (cached_tokens) is a SUBSET of inputTokens
+    // cacheReadTokens (cached_tokens) is a SUBSET of inputTokens
     // (prompt_tokens) for OpenAI, not additive. Correct total = 100 + 50 = 150,
     // not 170. The old assertion (170) encoded the double-count bug.
     expect(result.totalTokens).toBe(150); // 100 + 50 (cached already in prompt_tokens)
@@ -513,7 +512,7 @@ describe('TokenAccumulator', () => {
       expect(result.totalTokens).toBe(165); // 100 + 42 + 0 + 15 + 8
     });
 
-    it('accumulates thinking_tokens from message_delta when present (§TK1)', () => {
+    it('accumulates thinking_tokens from message_delta when present', () => {
       const acc = new TokenAccumulator('anthropic');
       acc.addChunk({ type: 'message_start', message: { usage: { input_tokens: 100 } } });
       acc.addChunk({
@@ -525,7 +524,7 @@ describe('TokenAccumulator', () => {
       expect(result.totalTokens).toBe(350); // 100 + 50 + 200
     });
 
-    // CODE_REVIEW §3.1.3 — message_delta usage carries FINAL counts that may
+    // message_delta usage carries FINAL counts that may
     // differ from message_start. Verified against Anthropic streaming spec.
     it('overwrites cache_read/creation/input_tokens from message_delta when present', () => {
       const acc = new TokenAccumulator('anthropic');
@@ -642,7 +641,7 @@ describe('TokenAccumulator', () => {
     });
   });
 
-  // CODE_REVIEW F1 — OpenAI streaming uses stream_options.include_usage so
+  // OpenAI streaming uses stream_options.include_usage so
   // the LAST chunk carries `usage` (same shape as non-streaming response).
   // Earlier chunks may have `choices` deltas but no usage.
   describe('openai stream', () => {
@@ -680,7 +679,7 @@ describe('TokenAccumulator', () => {
       expect(result.totalTokens).toBe(0);
     });
 
-    it('§11.3 uses inputTokens+outputTokens fallback when total_tokens is absent', () => {
+    it('uses inputTokens+outputTokens fallback when total_tokens is absent', () => {
       // When total_tokens is missing, cacheReadTokens (cached_tokens) and
       // thinkingTokens (reasoning_tokens) are subsets, not additive — the old
       // formula would have yielded 80+30+5+12=127. Correct value is 80+30=110.
@@ -704,7 +703,7 @@ describe('TokenAccumulator', () => {
     });
   });
 
-  // CODE_REVIEW F1 follow-up — Mistral streaming uses OpenAI-compatible
+  // Mistral streaming uses OpenAI-compatible
   // chunks; the final chunk carries `usage`.
   describe('mistral stream', () => {
     it('records usage from the final chunk', () => {
@@ -734,7 +733,7 @@ describe('TokenAccumulator', () => {
     });
   });
 
-  // CODE_REVIEW F1 follow-up — Bedrock ConverseStream emits a `metadata`
+  // Bedrock ConverseStream emits a `metadata`
   // event near the end of the stream carrying `usage`. Earlier events
   // (messageStart / contentBlockDelta) carry no usage and must no-op.
   describe('bedrock stream', () => {
@@ -776,7 +775,7 @@ describe('TokenAccumulator', () => {
     });
   });
 
-  // CODE_REVIEW F1 follow-up — Cohere v2 streaming events. The terminal
+  // Cohere v2 streaming events. The terminal
   // `message-end` event carries `delta.usage.tokens`; earlier events
   // (`message-start`, `content-delta`, etc.) carry no usage and no-op.
   describe('cohere stream', () => {
@@ -826,7 +825,7 @@ describe('TokenAccumulator', () => {
     });
   });
 
-  // CODE_REVIEW F1 follow-up — warn-once mechanism remains as a defensive
+  // warn-once mechanism remains as a defensive
   // guard for future provider additions to AiProvider that don't yet have
   // an extractor. Asserted against a fake provider via type assertion
   // since every real provider is now wired.
@@ -876,8 +875,8 @@ describe('TokenAccumulator', () => {
     }
   });
 
-  // CODE_REVIEW §3.1.5 — reset() allows reuse across retries
-  describe('reset() (§3.1.5)', () => {
+  // reset() allows reuse across retries
+  describe('reset()', () => {
     it('zeroes latestUsage and clears finalized state', () => {
       const acc = new TokenAccumulator('anthropic');
       acc.addChunk({
@@ -959,7 +958,7 @@ describe('TokenAccumulator', () => {
   // ---------------------------------------------------------------------------
   // S-05: safeInt rejects Infinity, -Infinity, negative values, and floats
   // ---------------------------------------------------------------------------
-  describe('safeInt guard (S-05)', () => {
+  describe('safeInt guard', () => {
     it('clamps Infinity token counts to 0', () => {
       const result = extractAnthropicTokens({
         usage: { input_tokens: Infinity, output_tokens: 50 },
@@ -1004,8 +1003,8 @@ describe('TokenAccumulator', () => {
     });
   });
 
-  // CODE_REVIEW §3.1.4 — safeInt emits a debug log when truncating fractions
-  describe('safeInt fractional truncation logging (§3.1.4)', () => {
+  // safeInt emits a debug log when truncating fractions
+  describe('safeInt fractional truncation logging', () => {
     let originalLogLevel: string | undefined;
     let stderrSpy: jest.SpyInstance;
 
@@ -1013,7 +1012,7 @@ describe('TokenAccumulator', () => {
       originalLogLevel = process.env.NEW_RELIC_AI_LOG_LEVEL;
       stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       process.env.NEW_RELIC_AI_LOG_LEVEL = 'debug';
-      // CODE_REVIEW §7.5: env-resolved level is cached on first use; reset
+      // Env-resolved level is cached on first use; reset
       // the cache so the next log call (from the module-level tokenLogger)
       // re-reads `debug` rather than the default `info` from module load.
       const { __resetLogLevelCache } = await import('./logger.js');

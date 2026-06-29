@@ -1,4 +1,11 @@
-import { fetchSessionCurrent, fetchAuditLog, patchSettings, postDigestSend, qk } from './client';
+import {
+  fetchSessionCurrent,
+  fetchAuditLog,
+  fetchHealth,
+  patchSettings,
+  postDigestSend,
+  qk,
+} from './client';
 
 describe('api/client', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -72,5 +79,24 @@ describe('api/client', () => {
     expect(qk.sessionsList(50)).toEqual(['sessions', 'list', 50]);
     expect(qk.sessionsList(200)).toEqual(['sessions', 'list', 200]);
     expect(qk.sessionsList(50)).not.toEqual(qk.sessionsList(200));
+  });
+
+  it('fetchHealth hits /api/health and returns typed response', async () => {
+    const payload = {
+      ok: true,
+      uptime: 500,
+      version: '1.0.4',
+      latestVersion: '1.0.5',
+      updateAvailable: true,
+    };
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )) as typeof globalThis.fetch;
+    const result = await fetchHealth();
+    expect(result).toEqual(payload);
   });
 });

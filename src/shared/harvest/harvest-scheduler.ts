@@ -16,8 +16,8 @@ import type { MetricAttributeValue, MetricSnapshot } from './metric-aggregator.j
 const logger = createLogger('harvest');
 
 /**
- * Generate an 8-hex-char correlation ID for one harvest cycle
- *. Stamped via `logger.child({ harvestId })` so every
+ * Generate an 8-hex-char correlation ID for one harvest cycle.
+ * Stamped via `logger.child({ harvestId })` so every
  * log line emitted during the cycle — including from `sendEvents*` /
  * `sendMetrics*` helpers — carries the same ID. Operators can pivot on
  * `harvestId` in stderr to trace one cycle through batch send, retry,
@@ -56,7 +56,7 @@ export interface HarvestSchedulerOptions {
   /**
    * Maximum number of metric snapshots kept in the per-transport retry
    * buffer when a metric harvest fails. Defaults to 500.
-   * Each snapshot represents one (name, attributes) bucket; with §4.9's
+   * Each snapshot represents one (name, attributes) bucket; with the
    * summary-metric wire format, the corresponding NrMetric count is also
    * one per snapshot.
    */
@@ -84,8 +84,7 @@ export interface HarvestSchedulerOptions {
    *    shutdown path is missed (CLI tools, short-lived scripts).
    *
    * The `beforeExit` fallback is best-effort: Node may exit before its
-   * fire-and-forget `void this.stop()` finishes, so events may be lost
-   *.
+   * fire-and-forget `void this.stop()` finishes, so events may be lost.
    */
   readonly allowProcessExit?: boolean;
 }
@@ -112,7 +111,7 @@ export class HarvestScheduler {
   private running = false;
   private stopPromise: Promise<void> | null = null;
 
-  // 15 + §4.16 — track in-flight harvests so (a) overlapping
+  // Track in-flight harvests so (a) overlapping
   // interval ticks don't double-fire harvests on the same buffers (a slow
   // network can otherwise produce N concurrent fetches if interval < latency),
   // and (b) stop() can await any harvest already in progress before kicking
@@ -125,7 +124,7 @@ export class HarvestScheduler {
   // harvest to re-send the batch to *both* transports, duplicating on OTLP.
   private retryNrEventBatch: NrEventData[] = [];
   private retryOtlpEventBatch: NrEventData[] = [];
-  // retry buffers hold pre-explosion bucket snapshots, not
+  // Retry buffers hold pre-explosion bucket snapshots, not
   // exploded NrMetric[] wire form. On the next harvest the failed snapshots
   // are merged back into the aggregator (via a temporary one, per transport)
   // so that overlapping (name, attributes) keys collapse into a single
@@ -161,7 +160,7 @@ export class HarvestScheduler {
     this.allowProcessExit = options.allowProcessExit ?? false;
 
     // Warn when the transport configuration requires an OTLP component that
-    // was not provided — events/metrics would be silently dropped (§HVS4).
+    // was not provided — events/metrics would be silently dropped.
     const wantOtlp = this.transport === 'otlp' || this.transport === 'both';
     if (wantOtlp && !this.otlpEventBridge) {
       logger.warn(
@@ -176,7 +175,7 @@ export class HarvestScheduler {
 
     this.eventBuffer = new EventBuffer({ maxSize: options.maxEventBufferSize });
     this.metricAggregator = new MetricAggregator();
-    // 21: maxRetryEvents defaults to maxEventBufferSize when
+    // maxRetryEvents defaults to maxEventBufferSize when
     // not specified, preserving prior behavior. Operators that need a
     // deeper retry cap (bursty failures, long downstream outages) can set
     // it independently — peak in-memory event count is then roughly
@@ -209,7 +208,7 @@ export class HarvestScheduler {
    *
    * Returns `true` when the sample was accepted into a bucket, and `false`
    * when it was rejected (non-finite value or invalid attribute type) per
-   * the §4.8 strict validation contract. Existing
+   * the strict validation contract. Existing
    * callers that ignore the return value see unchanged behavior.
    */
   recordMetric(
@@ -261,7 +260,7 @@ export class HarvestScheduler {
       return;
     }
 
-    // 19: refuse start() while a previous stop() is still
+    // Refuse start() while a previous stop() is still
     // resolving. `running` flips to false at the top of doStop(), so without
     // this guard a fast-cycling consumer could call start() before stop()
     // has finished tearing down intervals / removing the beforeExit
@@ -286,7 +285,7 @@ export class HarvestScheduler {
       // next clean tick picks it up.
       if (this.inFlightEventHarvest) return;
       // .catch prevents unhandled-rejection process crash if the promise
-      // rejects unexpectedly before reaching its internal try/catch (§HV3).
+      // rejects unexpectedly before reaching its internal try/catch.
       this.harvestEvents().catch((err) => {
         logger.error('Unexpected error in event harvest interval', {
           error: err instanceof Error ? err.message : String(err),
@@ -304,7 +303,7 @@ export class HarvestScheduler {
     }, this.metricHarvestIntervalMs);
 
     if (this.allowProcessExit) {
-      // opt-in path for short-lived CLI tools. unref()'d
+      // Opt-in path for short-lived CLI tools. unref()'d
       // intervals don't hold the loop open, and beforeExit is registered as
       // a best-effort final-flush attempt. Both are best-effort: Node can
       // exit before the fire-and-forget stop() finishes, so events may be
@@ -354,15 +353,15 @@ export class HarvestScheduler {
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     // Do NOT short-circuit when !this.running — a caller who added events
-    // without ever calling start() should still get a final flush (§HVS1).
+    // without ever calling start() should still get a final flush.
     // The interval teardown steps in doStop() are all safe no-ops when the
     // intervals were never started.
 
-    // 19: drive doStop to completion through stopPromise so
+    // Drive doStop to completion through stopPromise so
     // concurrent stop() callers coalesce, then clear stopPromise once it
     // resolves so a subsequent start() can pass the "no in-flight stop"
     // guard. Without the clear, a restart-after-stop sequence would be
-    // refused (the §4.19 guard sees a non-null stopPromise from the prior
+    // refused (the guard sees a non-null stopPromise from the prior
     // session and treats the next start() as racing an in-flight stop).
     const promise = this.doStop().finally(() => {
       // Only clear if the promise we registered is still the current one —
@@ -390,7 +389,7 @@ export class HarvestScheduler {
       process.removeListener('beforeExit', this.boundBeforeExit);
     }
 
-    // wait for any harvest started by an interval tick
+    // Wait for any harvest started by an interval tick
     // to complete before we initiate the final flush. Without this, stop()'s
     // own harvestEvents call could race the in-flight one (the re-entrancy
     // guard would make it a no-op, returning the existing promise — but if
@@ -463,7 +462,7 @@ export class HarvestScheduler {
   }
 
   private async doHarvestEvents(): Promise<void> {
-    // 5: scoped child logger stamps `harvestId` on every
+    // Scoped child logger stamps `harvestId` on every
     // log line emitted during this cycle (overflow, retry, requeue,
     // OTLP-export failures). Operators searching stderr for one harvest's
     // story have a single pivot.
@@ -471,7 +470,7 @@ export class HarvestScheduler {
 
     const fresh = this.eventBuffer.flush();
 
-    // §4.1: surface event-buffer head-drops as a self-monitoring metric so
+    // Surface event-buffer head-drops as a self-monitoring metric so
     // overflow loss is visible in the consumer's own NR dashboards. Drained
     // once per harvest, paired with a single warn log.
     const dropped = this.eventBuffer.drainDropCount();
@@ -482,7 +481,7 @@ export class HarvestScheduler {
       });
     }
     // Drain the add counter each cycle so totalAdded represents adds-since-
-    // last-flush (§HVS3). Not emitted as a metric today; wired here so a
+    // last-flush. Not emitted as a metric today; wired here so a
     // future nr.ai.added_events metric reads the correct per-interval value.
     this.eventBuffer.drainAddCount();
 
@@ -522,7 +521,7 @@ export class HarvestScheduler {
         });
         this.requeueNrEvents(batch, log);
       } else {
-        // §4.24 — debug-level success log so operators tailing stderr can
+        // Debug-level success log so operators tailing stderr can
         // distinguish "harvest completed cleanly with N events" from
         // "harvest never ran". Debug (not info) keeps the steady-state
         // happy-path output quiet at default log levels.
@@ -542,14 +541,14 @@ export class HarvestScheduler {
     try {
       if (this.otlpEventBridge) {
         this.otlpEventBridge.sendEvents(batch);
-        // §4.24 — paired with the NR-side success log. Note: this only
+        // Paired with the NR-side success log. Note: this only
         // confirms enqueue into the OTel BatchLogRecordProcessor, not
         // export — the SDK decides when the wire send actually fires.
         log.debug('Enqueued events to OTLP bridge', { batchSize: batch.length });
       } else {
-        // Bridge absent: the constructor already warned once (§HVS4). Warn
+        // Bridge absent: the constructor already warned once. Warn
         // at debug here so repeated harvests are traceable without flooding
-        // stderr (§HV2).
+        // stderr.
         log.debug('OTLP event bridge not configured — batch discarded', {
           batchSize: batch.length,
         });
@@ -573,14 +572,14 @@ export class HarvestScheduler {
   }
 
   private async doHarvestMetrics(): Promise<void> {
-    // 5: scoped child logger stamps a `harvestId` on every
+    // Scoped child logger stamps a `harvestId` on every
     // log line emitted during this metric harvest cycle.
     const harvestLog = logger.child({ harvestId: newHarvestId(), scope: 'metrics' });
 
-    // 25 / §4.11 — self-monitoring: drain MetricAggregator's
+    // Self-monitoring: drain MetricAggregator's
     // drop counter and emit it as a metric so non-finite-value rejections
     // and invalid-attribute rejections are visible in the consumer's own
-    // NR dashboards. Mirrors §4.1's `nr.ai.dropped_events` pattern from
+    // NR dashboards. Mirrors the `nr.ai.dropped_events` pattern from
     // doHarvestEvents. Note this is recorded BEFORE harvestSnapshots() so
     // the dropped_metrics gauge itself flows through this same harvest tick
     // (one extra bucket, one extra summary on the wire).
@@ -594,11 +593,11 @@ export class HarvestScheduler {
       });
     }
 
-    // drain the aggregator as snapshots, then per
+    // Drain the aggregator as snapshots, then per
     // transport: merge the previous failed-send snapshots with the fresh
     // ones (so duplicate name+attrs buckets accumulate), then explode to
     // wire form. Each transport gets its own merged set so a NR-only
-    // failure doesn't double-send to OTLP (preserves §4.5 semantics).
+    // failure doesn't double-send to OTLP.
     const fresh = this.metricAggregator.harvestSnapshots();
     const wantNr = this.transport === 'nr-events-api' || this.transport === 'both';
     const wantOtlp = this.transport === 'otlp' || this.transport === 'both';
@@ -642,7 +641,7 @@ export class HarvestScheduler {
    * with one entry per unique key. Uses a throwaway {@link MetricAggregator}
    * as the merge engine so the bucket-key logic is not duplicated here.
    *
-   * without this re-merge, a failed-send retry plus a
+   * Without this re-merge, a failed-send retry plus a
    * fresh harvest hitting the same metric+attrs would produce two wire
    * data points with different timestamps, breaking downstream NRQL
    * aggregation that expects one bucket per harvest interval.
@@ -673,7 +672,7 @@ export class HarvestScheduler {
         });
         this.requeueNrMetrics(snapshots, log);
       } else {
-        // §4.24 — debug-level success log so operators tailing stderr can
+        // Debug-level success log so operators tailing stderr can
         // distinguish "harvest completed cleanly with N metrics" from
         // "harvest never ran". Includes both the wire batch count and
         // the underlying snapshot count so a future cardinality-explosion
@@ -701,20 +700,20 @@ export class HarvestScheduler {
     try {
       if (this.otlpTransport) {
         await this.otlpTransport.exportMetrics(batch);
-        // §4.24 — paired with the NR-side success log.
+        // Paired with the NR-side success log.
         log.debug('Sent metrics to OTLP', {
           batchSize: batch.length,
           snapshotCount: snapshots.length,
         });
       } else {
-        // Transport absent: the constructor already warned once (§HVS4).
+        // Transport absent: the constructor already warned once.
         log.debug('OTLP transport not configured — metric batch discarded', {
           batchSize: batch.length,
         });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // §11.1 — OtlpTransport.exportMetrics throws { code: 'OTLP_BAD_REQUEST' } for
+      // OtlpTransport.exportMetrics throws { code: 'OTLP_BAD_REQUEST' } for
       // HTTP 400 to signal that the payload is permanently malformed and will always
       // fail. Drop the batch instead of requeuing so it does not occupy the retry
       // buffer indefinitely. All other errors are retried normally.
@@ -736,7 +735,7 @@ export class HarvestScheduler {
     }
   }
 
-  // NOTE (§HVS5): the self-monitoring metrics recorded below (nr.ai.dropped_events,
+  // NOTE: the self-monitoring metrics recorded below (nr.ai.dropped_events,
   // nr.ai.dropped_metrics) are written to metricAggregator AFTER the current
   // harvest cycle has already drained it via harvestSnapshots(). They will not
   // be sent until the NEXT harvest cycle — operators see overflow counts one
@@ -744,14 +743,14 @@ export class HarvestScheduler {
   // mistaken for a bug.
   private requeueNrEvents(batch: NrEventData[], log: Logger = logger): void {
     // for-of push avoids two hazards: (a) the O(n+m) intermediate array from
-    // [...old, ...new] (§HVS7), and (b) push(...batch) throwing RangeError when
-    // batch.length exceeds the engine's argument-count limit (~65k) (§HV1).
+    // [...old, ...new], and (b) push(...batch) throwing RangeError when
+    // batch.length exceeds the engine's argument-count limit (~65k).
     for (const e of batch) this.retryNrEventBatch.push(e);
     if (this.retryNrEventBatch.length > this.maxRetryEvents) {
       const dropped = this.retryNrEventBatch.length - this.maxRetryEvents;
       this.retryNrEventBatch.splice(0, dropped);
       log.warn('NR event retry buffer overflow — oldest entries dropped', { dropped });
-      // Surface as self-monitoring metric so NR dashboards show retry-buffer drops (§HS1).
+      // Surface as self-monitoring metric so NR dashboards show retry-buffer drops.
       this.metricAggregator.record('nr.ai.dropped_events', dropped, {
         source: 'retry_buffer',
         transport: 'nr-events-api',

@@ -52,8 +52,7 @@ function isValidAttributeValue(v: unknown): v is MetricAttributeValue {
 /**
  * Encode an attribute value into the bucket key with a one-character type
  * sigil so `5` (number) and `"5"` (string), or `true` (boolean) and `"true"`
- * (string), produce distinct keys instead of silently sharing a bucket
- *.
+ * (string), produce distinct keys instead of silently sharing a bucket.
  */
 function encodeAttributeValue(v: MetricAttributeValue): string {
   switch (typeof v) {
@@ -66,7 +65,7 @@ function encodeAttributeValue(v: MetricAttributeValue): string {
   }
 }
 
-// §11.10: escape the separator characters used by makeKey so that a metric
+// Escape the separator characters used by makeKey so that a metric
 // name containing '|' (or an attribute key containing '=' or '&') cannot
 // produce a key string that collides with a different (name, attributes) pair.
 // The type-sigil prefix on values ('s:', 'n:', 'b:') already prevents
@@ -88,8 +87,8 @@ export class MetricAggregator {
   private buckets: Map<string, Bucket>;
   /**
    * Number of `record()` calls rejected since the last `drainDropCount()`.
-   * Incremented on non-finite values and invalid attribute types
-   *. Mirrors the pattern in `EventBuffer.dropCount` so
+   * Incremented on non-finite values and invalid attribute types.
+   * Mirrors the pattern in `EventBuffer.dropCount` so
    * `HarvestScheduler` can emit a `nr.ai.dropped_metrics` self-monitoring
    * gauge each harvest tick — operators currently see only `logger.warn`
    * spam, with no aggregate count of "we silently dropped N samples".
@@ -105,7 +104,7 @@ export class MetricAggregator {
    *
    * Returns `true` when the sample was accepted into a bucket, and `false`
    * when it was rejected (non-finite value or invalid attribute type) per
-   * the §4.8 strict validation contract. The boolean return surface
+   * the strict validation contract. The boolean return surface
    * exposes the rejection signal so callers can implement backpressure or
    * surface invalid-input metrics. Existing callers
    * that ignore the return value see unchanged behavior.
@@ -125,8 +124,7 @@ export class MetricAggregator {
     // string | number | boolean, but JS callers bypass that. Drop the
     // entire sample when any attribute fails validation — silently
     // coercing `null` → `"null"` or `{}` → `"[object Object]"` would
-    // produce ambiguous keys that collide with legitimate string values
-    //.
+    // produce ambiguous keys that collide with legitimate string values.
     for (const [k, v] of Object.entries(attributes)) {
       if (!isValidAttributeValue(v)) {
         logger.warn('MetricAggregator.record: invalid attribute value — sample dropped', {
@@ -145,7 +143,7 @@ export class MetricAggregator {
     if (!bucket) {
       bucket = {
         name,
-        // Shallow-clone so caller mutations after record() don't alias bucket state (§MA1).
+        // Shallow-clone so caller mutations after record() don't alias bucket state.
         attributes: { ...attributes },
         count: 0,
         sum: 0,
@@ -168,7 +166,7 @@ export class MetricAggregator {
    * to wire form, or {@link merge} on a fresh harvest cycle to fold the
    * snapshots back in if a send failed.
    *
-   * retaining snapshot form across the failed-send
+   * Retaining snapshot form across the failed-send
    * boundary is what lets the next harvest produce a single rolled-up
    * data point per name+attrs combination instead of two separate ones
    * with different timestamps.
@@ -180,7 +178,7 @@ export class MetricAggregator {
     for (const bucket of drained.values()) {
       snapshots.push({
         name: bucket.name,
-        attributes: { ...bucket.attributes }, // snapshot is a value, not a window (§MA1)
+        attributes: { ...bucket.attributes }, // snapshot is a value, not a window
         count: bucket.count,
         sum: bucket.sum,
         min: bucket.min,
@@ -200,7 +198,7 @@ export class MetricAggregator {
     for (const s of snapshots) {
       // Guard against corrupt snapshots (e.g. built manually — the type is
       // exported). A negative count or non-finite sum would permanently corrupt
-      // the bucket's accumulators (§MAC1).
+      // the bucket's accumulators.
       if (
         !Number.isFinite(s.sum) ||
         !Number.isFinite(s.min) ||
@@ -220,7 +218,7 @@ export class MetricAggregator {
       } else {
         this.buckets.set(key, {
           name: s.name,
-          attributes: { ...s.attributes }, // defensive clone (§MA1)
+          attributes: { ...s.attributes }, // defensive clone
           count: s.count,
           sum: s.sum,
           min: s.min,
@@ -237,8 +235,8 @@ export class MetricAggregator {
   /**
    * Total number of `record()` calls rejected since the last
    * `drainDropCount()` (or aggregator construction). Includes both
-   * non-finite-value rejections and invalid-attribute-type rejections
-   *. Read-only — call `drainDropCount()` to read and
+   * non-finite-value rejections and invalid-attribute-type rejections.
+   * Read-only — call `drainDropCount()` to read and
    * reset atomically.
    */
   get dropCount(): number {
@@ -266,8 +264,8 @@ export class MetricAggregator {
    * `metric-aggregator.test.ts` to verify post-`harvest()` state.
    *
    * Not used by `HarvestScheduler` today; surfacing it (rather than dropping
-   * the accessor per 10) keeps the surface stable for the
-   * self-monitoring work tracked under §4.25.
+   * the accessor) keeps the surface stable for the
+   * self-monitoring work.
    */
   get bucketCount(): number {
     return this.buckets.size;
@@ -278,7 +276,7 @@ export class MetricAggregator {
  * Convert each {@link MetricSnapshot} to a single wire-format `NrMetric` of
  * type `'summary'`.
  *
- * Pre-§4.9 this function emitted four separate metrics per snapshot
+ * Previously this function emitted four separate metrics per snapshot
  * (`{name}.count`, `.sum`, `.min`, `.max`) — three of them as `gauge` (which
  * is semantically wrong for a delta-aggregated value) and one as `count`
  * (without the required `interval.ms` field). The summary type collapses

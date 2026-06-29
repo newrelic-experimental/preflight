@@ -11,12 +11,7 @@ import type {
  */
 export interface CopilotToolCallEvent {
   readonly type:
-    | 'file_edit'
-    | 'file_open'
-    | 'file_create'
-    | 'file_delete'
-    | 'terminal_command'
-    | 'task';
+    'file_edit' | 'file_open' | 'file_create' | 'file_delete' | 'terminal_command' | 'task';
   readonly timestamp?: number;
   readonly endTimestamp?: number;
   readonly filePath?: string;

@@ -166,7 +166,7 @@ If you have existing NR telemetry but no local session files — for example, be
 
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
-  npm run backfill:sessions -- \
+  npx tsx scripts/backfill-sessions.ts \
   --developer <your-name> [--days 90] [--dry-run]
 ```
 

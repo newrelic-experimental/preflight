@@ -17,7 +17,7 @@ import type {
 
 const factoryLogger = createLogger('events-factory');
 
-// Mirror safeInt but for float cost fields: NaN / Infinity -> null (§F1).
+// Mirror safeInt but for float cost fields: NaN / Infinity -> null.
 function safeFiniteOrNull(v: number | null | undefined): number | null {
   if (v == null) return null;
   return Number.isFinite(v) ? v : null;
@@ -31,7 +31,7 @@ function safeFiniteOrNull(v: number | null | undefined): number | null {
  * Without an entityGuid, events still ingest but land in a "standalone events"
  * view rather than attaching to a service.
  *
- * §11.8: warn once PER EVENT TYPE rather than once globally. The old boolean
+ * Warn once PER EVENT TYPE rather than once globally. The old boolean
  * flag would silence all subsequent factory calls after the very first
  * missing-entityGuid event, regardless of type — an operator who added
  * entityGuid to AiRequest but not AiAgentTaskSummary would never see the
@@ -102,7 +102,7 @@ export function createAiRequest(params: CreateAiRequestParams): AiRequest {
     model: params.model,
     requestMethod: params.requestMethod,
     // Sanitize numeric fields so NaN / Infinity / negative values don't reach
-    // the wire (§EV1). safeInt for integer counts; safeFiniteOrNull for floats.
+    // the wire. safeInt for integer counts; safeFiniteOrNull for floats.
     maxTokens: params.maxTokens != null ? safeInt(params.maxTokens) : null,
     temperature: safeFiniteOrNull(params.temperature),
     topP: safeFiniteOrNull(params.topP),
@@ -159,7 +159,7 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
   }
   warnIfMissingEntityGuid('AiResponse', params.entityGuid);
 
-  // coerce token fields through safeInt so NaN, Infinity,
+  // Coerce token fields through safeInt so NaN, Infinity,
   // negative numbers, and floats from buggy callers don't propagate as
   // null/Infinity into the serialized event (where JSON.stringify maps them
   // to "null", which NR Events API silently drops).
@@ -169,10 +169,10 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
   const cacheReadTokens = safeInt(params.cacheReadTokens);
   const cacheCreationTokens = safeInt(params.cacheCreationTokens);
   // For Google and OpenAI, inputTokens already includes cached content (cache
-  // tokens are a subset, not additive). Adding them again double-counts (§EV2).
-  // Same provider-aware logic as serialize.ts gen_ai.usage.input_tokens (§S1).
+  // tokens are a subset, not additive). Adding them again double-counts.
+  // Same provider-aware logic as serialize.ts gen_ai.usage.input_tokens.
   //
-  // §11.2: For OpenAI, thinkingTokens (reasoning_tokens from
+  // For OpenAI, thinkingTokens (reasoning_tokens from
   // completion_tokens_details) is already a SUBSET of outputTokens
   // (completion_tokens) — not a separate additive field. The prior code
   // added it unconditionally, relying on a comment that said "extractors
@@ -188,12 +188,12 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
         ? inputTokens + outputTokens + thinkingTokens
         : inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheCreationTokens;
 
-  // durationMs: coerce to a non-negative integer, matching createAiAgentTaskSummary
-  // (§FAC1). safeInt(NaN|Infinity|negative) → 0. Fractional ms is caller error.
+  // durationMs: coerce to a non-negative integer, matching createAiAgentTaskSummary.
+  // safeInt(NaN|Infinity|negative) → 0. Fractional ms is caller error.
   const durationMs = safeInt(
     Number.isFinite(params.durationMs) && params.durationMs >= 0 ? params.durationMs : 0,
   );
-  // timeToFirstTokenMs: apply the same non-negative finite guard (§FAC2).
+  // timeToFirstTokenMs: apply the same non-negative finite guard.
   // NaN → null; Infinity → null; negative → null.
   const timeToFirstTokenMs: number | null =
     params.timeToFirstTokenMs != null &&
@@ -249,7 +249,7 @@ export function createAiMessage(params: CreateAiMessageParams): AiMessage {
   if (!params.role) {
     throw new Error('AiMessage requires a role');
   }
-  // 13: required-field validation made uniform across the
+  // Required-field validation made uniform across the
   // three factory functions. `content` is typed as `string` but JS callers
   // bypass the type system; reject `null` / `undefined` here so downstream
   // serialization doesn't emit `content: "null"` / `content: "undefined"`
@@ -277,14 +277,14 @@ export function createAiMessage(params: CreateAiMessageParams): AiMessage {
 }
 
 // ---------------------------------------------------------------------------
-// factory functions for the four newer agent-shaped
-// event types. Pre-§6.15 these had serializers but no constructors, so
+// Factory functions for the four newer agent-shaped
+// event types. Previously these had serializers but no constructors, so
 // consumers had to hand-build the type-shape and remember to set `id` /
 // `timestamp` defaults themselves. The four factories below mirror the
 // existing `createAiRequest` / `createAiResponse` / `createAiMessage`
 // pattern: a `Create<Event>Params` interface, an `id` / `timestamp` default,
 // `safeInt`-coerced numeric fields where appropriate, and a uniform
-// `<EventName> requires a <field>` validation message shape (§6.13).
+// `<EventName> requires a <field>` validation message shape.
 // ---------------------------------------------------------------------------
 
 export interface CreateAiAgentTaskSummaryParams {
@@ -506,7 +506,7 @@ export function createAiContextReset(params: CreateAiContextResetParams): AiCont
   // tokensBefore === 0 → identity reset (no content to compress); return 1.0
   // so dashboards averaging compressionRatio don't see artificially low values
   // from no-op resets. ratio > 1.0 is possible (summarizer preamble > savings)
-  // and is preserved; a debug log makes the rare case diagnosable (§F2).
+  // and is preserved; a debug log makes the rare case diagnosable.
   let compressionRatio: number;
   if (tokensBefore === 0) {
     compressionRatio = 1;

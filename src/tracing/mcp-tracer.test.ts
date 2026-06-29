@@ -1,15 +1,16 @@
 import { trace } from '@opentelemetry/api';
 import { initMcpTracer, getMcpTracer } from './mcp-tracer.js';
+import { VERSION } from '../version.js';
 
 describe('mcp-tracer', () => {
-  beforeEach(() => {
-    jest.resetModules();
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   test('initMcpTracer initializes the tracer', () => {
     const traceSpy = jest.spyOn(trace, 'getTracer');
     initMcpTracer();
-    expect(traceSpy).toHaveBeenCalledWith('preflight', '1.0.0');
+    expect(traceSpy).toHaveBeenCalledWith('preflight', VERSION);
     traceSpy.mockRestore();
   });
 
@@ -29,6 +30,5 @@ describe('mcp-tracer', () => {
     initMcpTracer();
     initMcpTracer();
     expect(traceSpy).toHaveBeenCalledTimes(2);
-    traceSpy.mockRestore();
   });
 });

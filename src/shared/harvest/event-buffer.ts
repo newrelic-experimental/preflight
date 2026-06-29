@@ -14,7 +14,7 @@ const DEFAULT_MAX_SIZE = 1000;
  * observability data feeding alerts and dashboards — a user looking at New
  * Relic during a latency spike wants the last 30 seconds, not a uniform random
  * sample of the last hour. It also matches the head-drop policy used by the
- * scheduler's retry buffers (§4.5), so callers see consistent behavior across
+ * scheduler's retry buffers, so callers see consistent behavior across
  * the harvest pipeline.
  *
  * Each drop increments `dropCount`. `HarvestScheduler` drains this counter
@@ -29,7 +29,7 @@ export class EventBuffer {
 
   constructor(options?: EventBufferOptions) {
     const maxSize = options?.maxSize ?? DEFAULT_MAX_SIZE;
-    // 4: validate maxSize at construction. Pre-fix, values like
+    // Validate maxSize at construction. Pre-fix, values like
     // 0 / negative / NaN turned the buffer into a silent /dev/null because the
     // overflow comparison `buffer.length >= maxSize` is never true (NaN) or
     // immediately true with no event ever stored (0 / negative). All
@@ -78,7 +78,7 @@ export class EventBuffer {
   /**
    * Return the number of events added since the last call, resetting the
    * counter to 0. Mirrors `drainDropCount()` so callers that need per-flush
-   * production rate can use both symmetrically (§EB1).
+   * production rate can use both symmetrically.
    */
   drainAddCount(): number {
     const n = this.totalSeen;

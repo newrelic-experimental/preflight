@@ -16,7 +16,7 @@ export interface TokenUsage {
 
 // Internal mutable snapshot — TokenAccumulator mutates fields in-place across
 // stream chunks. TokenUsage is readonly for callers; this type is the same
-// shape without readonly so field assignments compile (§IN1, mirrors Bucket in
+// shape without readonly so field assignments compile (mirrors Bucket in
 // metric-aggregator.ts). MutableTokenUsage is assignable to TokenUsage for
 // the public finalize() return.
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
@@ -28,8 +28,8 @@ type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
  *
  * Floors fractional values (e.g. `safeInt(10.7) === 10`). When truncation
  * actually drops a fractional part, emits a debug-level log so operators can
- * diagnose buggy provider stubs that return non-integer token counts
- *. The log is debug, not warn — token counts are
+ * diagnose buggy provider stubs that return non-integer token counts.
+ * The log is debug, not warn — token counts are
  * provider-controlled and a single fractional value is not a library bug.
  */
 export function safeInt(value: unknown): number {
@@ -215,7 +215,7 @@ export function extractOpenAITokens(response: OpenAIResponse): TokenUsage {
   if (usage.total_tokens !== undefined) {
     totalTokens = safeInt(usage.total_tokens);
   } else {
-    // §11.3: for OpenAI, cacheReadTokens (prompt_tokens_details.cached_tokens)
+    // For OpenAI, cacheReadTokens (prompt_tokens_details.cached_tokens)
     // is a SUBSET of inputTokens (prompt_tokens), not an additive field.
     // thinkingTokens (reasoning_tokens) is a SUBSET of outputTokens (completion_tokens).
     // Including either again would double-count when total_tokens is absent.
@@ -340,7 +340,7 @@ interface BedrockUsage {
   totalTokens?: number;
   // Canonical AWS SDK field names from @aws-sdk/client-bedrock-runtime
   // TokenUsage interface. Previously mis-named as cacheReadInputTokenCount /
-  // cacheWriteInputTokenCount — corrected in §T2.
+  // cacheWriteInputTokenCount.
   cacheReadInputTokens?: number;
   cacheWriteInputTokens?: number;
 }
@@ -381,7 +381,7 @@ export function extractBedrockTokens(response: BedrockResponse): TokenUsage {
 
 /**
  * Track providers we've already warned about for unsupported streaming token
- * extraction One-shot per process — a noisy provider
+ * extraction. One-shot per process — a noisy provider
  * shouldn't flood stderr, but the first call is loud enough to be discovered.
  */
 const unsupportedProvidersWarned = new Set<AiProvider>();
@@ -412,7 +412,7 @@ export function extractStreamTokens(
 ): TokenUsage {
   // Guard against null/non-object for all providers — each extractor begins with
   // `if (!response.usage) return EMPTY_USAGE` but that dereferences response
-  // first, throwing TypeError if it is null (§TK2).
+  // first, throwing TypeError if it is null.
   if (finalChunk == null || typeof finalChunk !== 'object') {
     return { ...EMPTY_USAGE };
   }
@@ -427,14 +427,14 @@ export function extractStreamTokens(
   }
   if (provider === 'bedrock') {
     // Bedrock stream final chunks nest usage under metadata.usage; non-streaming
-    // responses have it at the top level. Unwrap before delegating (§T1).
-    // null/non-object already guarded above (§TK2).
+    // responses have it at the top level. Unwrap before delegating.
+    // null/non-object already guarded above.
     const bedrockChunk = finalChunk as BedrockStreamChunk | BedrockResponse;
     if ('metadata' in bedrockChunk) {
       // This is a streaming-shaped chunk (has a metadata key). Keep shape
       // detection separate from usage-presence so a future metadata event type
       // that carries no usage does not fall through to the non-streaming extractor
-      // where the top-level usage field is also absent (§TK1).
+      // where the top-level usage field is also absent.
       const streamUsage = (bedrockChunk as BedrockStreamChunk).metadata?.usage;
       if (streamUsage) {
         return extractBedrockTokens({ usage: streamUsage });
@@ -451,8 +451,8 @@ export function extractStreamTokens(
   }
   if (provider === 'cohere') {
     // Cohere stream final chunks (message-end) nest usage under delta.usage;
-    // non-streaming responses have it at the top level (§T1).
-    // null/non-object already guarded above (§TK2).
+    // non-streaming responses have it at the top level.
+    // null/non-object already guarded above.
     const cohereChunk = finalChunk as CohereStreamChunk | CohereResponse;
     const streamUsage = (cohereChunk as CohereStreamChunk).delta?.usage;
     if ('delta' in cohereChunk && streamUsage) {
@@ -484,7 +484,7 @@ interface AnthropicStreamEvent {
     // Extended-thinking field — add when Anthropic surfaces it on streaming
     // events. Present on the non-streaming AnthropicUsage but absent here
     // until confirmed in the streaming spec. Adding it now so addAnthropicChunk
-    // can pick it up automatically when the SDK starts emitting it (§TK1).
+    // can pick it up automatically when the SDK starts emitting it.
     thinking_tokens?: number;
   };
   delta?: { stop_reason?: string };
@@ -584,8 +584,8 @@ export class TokenAccumulator {
   }
 
   /**
-   * Reset the accumulator so it can be reused for a new stream
-   *. Zeroes the latest usage snapshot and clears the
+   * Reset the accumulator so it can be reused for a new stream.
+   * Zeroes the latest usage snapshot and clears the
    * `finalized` flag. The provider binding is preserved — to track a
    * different provider, construct a new `TokenAccumulator`.
    *
@@ -601,7 +601,7 @@ export class TokenAccumulator {
   }
 
   private addAnthropicChunk(event: AnthropicStreamEvent): void {
-    // message_start carries the initial usage with input token counts (§TK3).
+    // message_start carries the initial usage with input token counts.
     if (event.type === 'message_start' && event.message?.usage) {
       const usage = event.message.usage;
       this.latestUsage.inputTokens = safeInt(usage.input_tokens);
@@ -635,11 +635,11 @@ export class TokenAccumulator {
         this.latestUsage.cacheCreationTokens = safeInt(u.cache_creation_input_tokens);
       }
       // Pick up thinking_tokens when Anthropic starts emitting it on streaming
-      // events. Matches the non-streaming path in extractAnthropicTokens (§TK1).
+      // events. Matches the non-streaming path in extractAnthropicTokens.
       if (u.thinking_tokens !== undefined) {
         this.latestUsage.thinkingTokens = safeInt(u.thinking_tokens);
       }
-      // Recalculate totalTokens only when a usage update was received (§TK3).
+      // Recalculate totalTokens only when a usage update was received.
       // Moving this inside the branch avoids re-computing on every non-usage
       // event (content_block_delta etc.) and is consistent with the Gemini/
       // OpenAI/Bedrock/Cohere accumulators which all update inside their guards.
@@ -684,7 +684,7 @@ export class TokenAccumulator {
       this.latestUsage.totalTokens =
         u.total_tokens !== undefined
           ? safeInt(u.total_tokens)
-          : // §11.3: same subset semantics as extractOpenAITokens — neither
+          : // Same subset semantics as extractOpenAITokens — neither
             // cacheReadTokens nor thinkingTokens is additive for OpenAI.
             this.latestUsage.inputTokens + this.latestUsage.outputTokens;
     }

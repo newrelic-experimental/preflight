@@ -660,7 +660,7 @@ export async function runSetupWizard(): Promise<void> {
       }
     }
 
-    // Step 8: Dashboard deploy — show manual command
+    // Step 8: Dashboard deploy — show manual command (deploy-dashboard.ts is not a library)
     if (mode !== 'local') {
       const regionFlag = collectorHost === 'eu' ? ' --eu' : '';
       // Mask the API key in printed commands — users copy these snippets to
@@ -687,7 +687,7 @@ export async function runSetupWizard(): Promise<void> {
 
     // The MCP server is launched automatically by Claude Code based on the
     // .mcp.json entry written above — there is no manual start step. Telling
-    // users to run `preflight --stdio` themselves leads them to
+    // testers to run `preflight --stdio` themselves leads them to
     // start a second process that competes with the auto-launched one for
     // the buffer file lock and produces interleaved metrics.
     print('\n✓ Setup complete.');

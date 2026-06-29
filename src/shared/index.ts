@@ -1,4 +1,3 @@
-export { VERSION } from './version.js';
 export { createLogger } from './logger.js';
 export type { Logger, LogLevel } from './logger.js';
 export { redact, safeForLog } from './redact.js';

@@ -114,7 +114,7 @@ export class LiveEventBus {
   // Start at 1 so a fresh client's Last-Event-ID: 0 (or no header) replays
   // every buffered event — replayFrom filters seq > lastSeq, so seq=0 means
   // "I have nothing yet." Overflow at Number.MAX_SAFE_INTEGER is theoretical
-  // (~285k years at 1 event/ms); no wraparound logic enforced..
+  // (~285k years at 1 event/ms); no wraparound logic enforced.
   private nextSeq = 1;
 
   constructor(opts: LiveEventBusOptions = {}) {
@@ -137,7 +137,7 @@ export class LiveEventBus {
   // Subscribe with the bus's global sequence number alongside the payload.
   // The seq is the same value stored in the replay buffer, so SSE consumers
   // can use it for frame ids and reconnect-replay filtering without a
-  // namespace mismatch..
+  // namespace mismatch.
   onWithSeq<E extends LiveEventName>(event: E, handler: (entry: SeqEntry<E>) => void): void {
     this.emitter.on(SEQ_PREFIX + event, handler as (...args: unknown[]) => void);
   }

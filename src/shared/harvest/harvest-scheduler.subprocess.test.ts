@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-// CODE_REVIEW §9.3 — Subprocess smoke test for §4.12's `unref()` +
+// Subprocess smoke test for the `unref()` +
 // `beforeExit` flush. Fake timers and ts-jest cannot simulate Node's real
 // process-exit semantics, so we spawn a real Node process that runs the
 // COMPILED scheduler from `dist/`, lets it exit naturally, and asserts the
@@ -30,7 +30,7 @@ const fixturePath = resolve(
 const distExists = existsSync(distSchedulerPath);
 const describeIfBuilt = distExists ? describe : describe.skip;
 
-describeIfBuilt('HarvestScheduler subprocess smoke (CODE_REVIEW §9.3)', () => {
+describeIfBuilt('HarvestScheduler subprocess smoke', () => {
   let tmpDir: string;
   let outputPath: string;
 
@@ -109,7 +109,6 @@ if (!distExists) {
   // reason is obvious. Run `npm run build` (or `npm run prepublishOnly`)
   // before re-running tests to exercise this smoke test.
   console.warn(
-    `[CODE_REVIEW §9.3] Subprocess smoke test skipped: dist/ not built. ` +
-      `Run \`npm run build\` first to enable.`,
+    `Subprocess smoke test skipped: dist/ not built. ` + `Run \`npm run build\` first to enable.`,
   );
 }
