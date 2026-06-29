@@ -9,11 +9,7 @@ const logger = createLogger('context-composition');
 // ---------------------------------------------------------------------------
 
 export type ContextCategory =
-  | 'system_prompt'
-  | 'conversation_history'
-  | 'tool_results'
-  | 'injected_file_content'
-  | 'other';
+  'system_prompt' | 'conversation_history' | 'tool_results' | 'injected_file_content' | 'other';
 
 export interface TurnComposition {
   readonly turnNumber: number;

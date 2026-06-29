@@ -2,26 +2,15 @@ import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { createLogger } from '../logger.js';
-import { VERSION } from '../version.js';
 import type { HttpSendOptions, TransportResult } from './types.js';
-import { DEFAULT_CLIENT_NAME } from './otlp-shared.js';
-
-/**
- * Builds the `User-Agent` header value for outbound NR ingest requests
- *. NR's collector logs the UA, so identifying the
- * consuming client by name and version makes operator-side investigation
- * tractable (e.g. "which client version is producing the malformed payload?").
- */
-function buildUserAgent(clientName: string | undefined): string {
-  return `${clientName || DEFAULT_CLIENT_NAME}/${VERSION}`;
-}
+import { buildUserAgent } from './otlp-shared.js';
 
 const gzipAsync = promisify(gzip);
 const logger = createLogger('transport');
 
 /**
- * Generate a short correlation ID for an outbound batch
- * (14 / §10.5). Eight hex chars derived from a v4 UUID is
+ * Generate a short correlation ID for an outbound batch.
+ * Eight hex chars derived from a v4 UUID is
  * enough entropy to disambiguate concurrent retries in stderr without
  * adding meaningful payload weight or scanning friction.
  */
@@ -59,7 +48,7 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
   // collectorHost overrides take priority — they are an explicit user choice.
   // Only recognise the keyword form (bare word, no dots or colons).
   // Substring matching against FQDNs produced false positives: a host like
-  // 'bureau-collector.local' matches 'eu', 'eucalyptus.test' likewise (§HC2).
+  // 'bureau-collector.local' matches 'eu', 'eucalyptus.test' likewise.
   if (collectorHost) {
     const host = collectorHost.toLowerCase().trim();
     if (!host.includes('.') && !host.includes(':')) {
@@ -96,14 +85,14 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
 }
 
 /**
- * §5.9: When `collectorHost` is provided AND looks like a real hostname (has a
+ * When `collectorHost` is provided AND looks like a real hostname (has a
  * dot or colon — i.e. an FQDN or host:port), treat it as a literal override and
  * use it as the URL host for ALL three APIs (events, metric, logs). The path
  * remains per-API since the user's proxy must route by path.
  *
  * Without a dot or colon, `collectorHost` is treated as an exact region keyword
  * (one of 'us', 'eu', 'gov') — `resolveRegion` maps it to the
- * appropriate NR hostnames for all three APIs (§HC2 — no substring matching).
+ * appropriate NR hostnames for all three APIs (no substring matching).
  *
  */
 function isLiteralHostname(collectorHost: string | null | undefined): boolean {
@@ -112,7 +101,7 @@ function isLiteralHostname(collectorHost: string | null | undefined): boolean {
 }
 
 /**
- * Per-region NR ingest hostnames (23 / §5.24).
+ * Per-region NR ingest hostnames.
  *
  * Single source of truth — the three URL builders below all read from this
  * table instead of inlining the same nested-ternary three times. To add a
@@ -122,7 +111,7 @@ function isLiteralHostname(collectorHost: string | null | undefined): boolean {
  * The table is intentionally NOT exported. Hostnames are NR-operated
  * implementation detail — exposing them as a public constant invites
  * consumers to depend on specific values, which would break if NR ever
- * renames a host (§5.23). Consumers that need to override an endpoint
+ * renames a host. Consumers that need to override an endpoint
  * should use the `collectorHost` option instead, which already routes
  * through `isLiteralHostname()` above.
  */
@@ -158,7 +147,7 @@ export function getEventsApiUrl(
   region: Region,
   collectorHost?: string | null,
 ): string {
-  // F3: defensive guard against an empty/null/undefined accountId
+  // Defensive guard against an empty/null/undefined accountId
   // that bypassed `loadConfig`'s fail-fast (e.g. a JS caller, an explicit
   // `accountId: config.accountId!` non-null assertion, or a custom config
   // path that didn't go through loadConfig). Without this, the URL becomes
@@ -200,7 +189,7 @@ export function getLogsApiUrl(region: Region, collectorHost?: string | null): st
  *
  * The returned Buffer is immutable after the call (`zlib.gzip` is a
  * one-shot, not a stateful stream), so it is safe for `sendWithRetry` to
- * reuse the same `compressed` Buffer across retry attempts (§5.16). If a
+ * reuse the same `compressed` Buffer across retry attempts. If a
  * future refactor moves to a stateful gzip stream, that reuse becomes
  * unsafe — pin the call site outside the retry loop accordingly.
  */
@@ -234,7 +223,7 @@ export function decorrelatedJitter(
 ): number {
   // Clamp upper to at least baseDelayMs so the jitter band [base, upper] is
   // never negative when maxDelayMs < baseDelayMs (a misconfiguration, but
-  // unguarded — without the clamp the sample can be zero or negative, §TR3).
+  // unguarded — without the clamp the sample can be zero or negative).
   const upper = Math.max(baseDelayMs, Math.min(maxDelayMs, prevSleepMs * 3));
   // Math.random() returns [0, 1); spread baseDelayMs..upper.
   const sample = baseDelayMs + (upper - baseDelayMs) * Math.random();
@@ -270,7 +259,7 @@ function parseRetryAfterMs(response: Response): number | null {
 export async function sendWithRetry(options: HttpSendOptions): Promise<TransportResult> {
   const { url, body, licenseKey, maxRetries, baseDelayMs, maxDelayMs, requestTimeoutMs } = options;
 
-  // Per-request correlation ID (14 / §10.5). Stamped on every
+  // Per-request correlation ID. Stamped on every
   // log line emitted from this call so concurrent retries to different
   // batches can be disambiguated in stderr.
   const requestId = newRequestId();
@@ -288,6 +277,7 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
   // attempts so each subsequent retry samples from a wider [base, prev*3] band.
   // Initialize to baseDelayMs so the first retry samples [base, base*3].
   let prevSleepMs = baseDelayMs;
+  const userAgent = buildUserAgent(options.clientName, options.clientVersion);
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -301,11 +291,11 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
           'Api-Key': licenseKey,
           'Content-Type': 'application/json',
           'Content-Encoding': 'gzip',
-          'User-Agent': buildUserAgent(options.clientName),
+          'User-Agent': userAgent,
         },
         body: fetchBody,
         signal: AbortSignal.timeout(requestTimeoutMs),
-        // §5.20 — `keepalive: true` is a no-op in Node fetch (undici), but
+        // `keepalive: true` is a no-op in Node fetch (undici), but
         // safe to set. It exists for the case where this library is consumed
         // in a runtime that *does* honor it (Cloudflare Workers, Deno, browser
         // bundlers): the final shutdown send issued from `HarvestScheduler.stop()`
@@ -317,13 +307,13 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
 
       if (status >= 200 && status < 300) {
         // Drain the body so undici returns the socket to the keep-alive pool
-        // rather than tearing down the connection (§HC1).
+        // rather than tearing down the connection.
         await response.body?.cancel().catch(() => {});
         return { success: true, statusCode: status, retryCount: attempt };
       }
 
       // Read the body for all failure paths: gives useful diagnostics for 5xx
-      // errors and releases the socket to the keep-alive pool (§HC1).
+      // errors and releases the socket to the keep-alive pool.
       const responseBody = (await response.text().catch(() => '')).slice(0, 1024);
 
       if (status === 400) {
@@ -378,7 +368,7 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
           // Always carry the chosen wait forward so the next jitter window
           // widens appropriately — omitting this on the Retry-After path caused
           // the window to stall at [base, base*3] after every server-driven
-          // wait (§TR4).
+          // wait.
           prevSleepMs = waitMs;
           await delay(waitMs);
           continue;
@@ -433,6 +423,6 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
 
   // Should not reach here — every loop iteration returns or continues.
   // A throw (not a silent failure return) makes a future loop-logic regression
-  // immediately visible rather than producing a confusing success:false result (§TR6).
+  // immediately visible rather than producing a confusing success:false result.
   throw new Error('sendWithRetry: unreachable code — bug in retry loop logic');
 }

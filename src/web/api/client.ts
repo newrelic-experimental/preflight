@@ -2,7 +2,7 @@
 // "feature unavailable" differently from a real server error. Used by the
 // recent-alerts panel: in cloud mode the alert engine is not constructed,
 // so /api/alerts/recent returns 404 — the UI must render an empty state,
-// not a permanent red error banner..
+// not a permanent red error banner.
 export class NotFoundError extends Error {
   constructor(path: string) {
     super(`Not found: ${path}`);
@@ -16,6 +16,16 @@ async function getJson<T>(path: string): Promise<T> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${path}`);
   return (await res.json()) as T;
 }
+
+export interface HealthResponse {
+  readonly ok: boolean;
+  readonly uptime: number;
+  readonly version: string;
+  readonly latestVersion: string | null;
+  readonly updateAvailable: boolean;
+}
+
+export const fetchHealth = (): Promise<HealthResponse> => getJson<HealthResponse>('/api/health');
 
 export const fetchSessionCurrent = (): Promise<unknown> => getJson<unknown>('/api/session/current');
 export const fetchSessionToday = (): Promise<unknown> => getJson<unknown>('/api/session/today');

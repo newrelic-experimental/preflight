@@ -67,6 +67,51 @@ describe('DashboardServer', () => {
     expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
+  it('health response includes latestVersion and updateAvailable fields', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve(null),
+    });
+    const addr = await server.start();
+    await Promise.resolve(); // flush npm fetcher microtask
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.latestVersion).toBeNull();
+    expect(body.updateAvailable).toBe(false);
+  });
+
+  it('health updateAvailable is true when fetcher returns a newer version', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve('99.0.0'),
+    });
+    const addr = await server.start();
+    await Promise.resolve(); // flush npm fetcher microtask
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.latestVersion).toBe('99.0.0');
+    expect(body.updateAvailable).toBe(true);
+  });
+
+  it('health updateAvailable is false when fetcher returns an older version', async () => {
+    // VERSION is the installed version from package.json
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve('0.0.1'), // older than any real release
+    });
+    const addr = await server.start();
+    await Promise.resolve();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.updateAvailable).toBe(false);
+  });
+
   it('stop() closes the server cleanly', async () => {
     server = new DashboardServer({
       port: 0,
@@ -289,7 +334,7 @@ describe('DashboardServer Host validation', () => {
     expect(await requestWithHost(addr.port, '[127.0.0.1]:8080')).toBe(403);
   });
 
-  // F-012: a non-numeric port suffix on an IPv4 host snuck through the
+  // a non-numeric port suffix on an IPv4 host snuck through the
   // .indexOf(':') / .slice() parser because only the host portion was
   // checked. A raw HTTP client sending `Host: 127.0.0.1:abc.evil.com`
   // would have been served — defence-in-depth gap.

@@ -76,13 +76,7 @@ const HIGH_SECURITY_FROM_FILE: boolean = (() => {
 })();
 
 function getHighSecurity(): boolean {
-  // Accept both names — NEW_RELIC_AI_HIGH_SECURITY matches config.ts (preferred);
-  // NEW_RELIC_AI_MCP_HIGH_SECURITY is the legacy collector-only name.
-  return (
-    process.env.NEW_RELIC_AI_HIGH_SECURITY === 'true' ||
-    process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY === 'true' ||
-    HIGH_SECURITY_FROM_FILE
-  );
+  return process.env.NEW_RELIC_AI_HIGH_SECURITY === 'true' || HIGH_SECURITY_FROM_FILE;
 }
 
 function getRecordContent(): boolean {

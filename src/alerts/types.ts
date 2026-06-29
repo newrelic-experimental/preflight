@@ -8,12 +8,7 @@ export interface AlertConditionDefinition {
   readonly aggregationDelay?: number;
   readonly aggregationTimer?: number;
   readonly thresholdOperator:
-    | 'ABOVE'
-    | 'ABOVE_OR_EQUALS'
-    | 'BELOW'
-    | 'BELOW_OR_EQUALS'
-    | 'EQUALS'
-    | 'NOT_EQUALS';
+    'ABOVE' | 'ABOVE_OR_EQUALS' | 'BELOW' | 'BELOW_OR_EQUALS' | 'EQUALS' | 'NOT_EQUALS';
   readonly thresholdCritical: {
     readonly value: number;
     readonly duration: number;

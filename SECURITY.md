@@ -212,6 +212,8 @@ If you add a new subprocess invocation anywhere in the codebase, apply both chec
 
 ## Telemetry Data Safety
 
+For the full inventory of what fields are sent to New Relic, who can query them, and privacy-relevant configuration settings, see [PRIVACY.md](./PRIVACY.md).
+
 ### Metric values — `src/shared/harvest/metric-aggregator.ts`
 
 `MetricAggregator.record()` rejects non-finite values before they can corrupt metric buckets:
@@ -227,7 +229,7 @@ Always ensure any numeric value coming from an external SDK response passes thro
 
 ### High security mode
 
-When `highSecurity=true`, `recordContent` is forced to `false` regardless of any other setting. This invariant is enforced in both config loaders and must never be bypassed. The purpose is to guarantee that prompt text, tool output, and response content is never sent to New Relic even if an administrator misconfigures the system.
+When `highSecurity=true`, `recordContent` is forced to `false` regardless of any other setting. This invariant is enforced in both config loaders and must never be bypassed. The purpose is to guarantee that prompt text, tool output, and response content is never sent to New Relic even if an administrator misconfigures the system. See [PRIVACY.md → `highSecurity`](./PRIVACY.md#highsecurity--forces-content-recording-off) for the privacy use case.
 
 ### Config immutability
 

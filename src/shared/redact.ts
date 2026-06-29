@@ -10,25 +10,25 @@
 // redact() before handing it to a logger or external sink.
 //
 // safeForLog(config) — convenience wrapper that returns a redacted copy of an
-// AgentConfig, suitable for diagnostic dumps. See
+// AgentConfig, suitable for diagnostic dumps.
 // ---------------------------------------------------------------------------
 
 import type { AgentConfig } from './config.js';
 
 // Pattern notes:
-// - `key(?!s)` matches `apiKey`, `licenseKey`, bare `key`, but NOT `keys` (plural, §RE1).
-//   The `\b` word-boundary upgrade that was applied to `token\b` (§LR1) and
-//   `credentials?\b` (§LR2) cannot be applied here: CamelCase names like `licenseKey`
+// - `key(?!s)` matches `apiKey`, `licenseKey`, bare `key`, but NOT `keys` (plural).
+//   The `\b` word-boundary upgrade that was applied to `token\b` and
+//   `credentials?\b` cannot be applied here: CamelCase names like `licenseKey`
 //   and `apiKey` do NOT have a word boundary before the `K` (both sides are word chars),
-//   so `\bkey` would FAIL to match them (§11.6, deliberate false-positive trade-off).
+//   so `\bkey` would FAIL to match them (deliberate false-positive trade-off).
 //   Mid-word false positives (`monkey`, `jockey`) are accepted in exchange for reliably
 //   redacting all camelCase key properties. A regex-only fix is not feasible without
 //   enumerating every legitimate CamelCase prefix, which would miss future additions.
 // - `token\b` matches `apiToken`, `accessToken`, bare `token`, but NOT `tokenCount`,
-//   `tokenize`, `tokenAmount`, etc. (§LR1). The `\b` works here because `token` almost
+//   `tokenize`, `tokenAmount`, etc. The `\b` works here because `token` almost
 //   never appears mid-word in legitimate property names.
 // - `credentials?\b` matches `credential` and `credentials`, but NOT `credentialType`,
-//   `credentialProvider`, etc. (§LR2). Same fix applied to `passwords?\b`.
+//   `credentialProvider`, etc. Same fix applied to `passwords?\b`.
 const SECRET_KEY_RE = /key(?!s)|token\b|secret|passwords?\b|authorization|credentials?\b|bearer/i;
 const REDACTED = '***';
 const MAX_DEPTH = 8;
@@ -45,7 +45,7 @@ const MAX_DEPTH = 8;
  * - Functions, symbols, undefined are returned as-is (they don't serialize anyway).
  * - **`Map` and `Set` values are NOT walked for secrets** — they are summarized
  *   as `'[Map(N)]'` / `'[Set(N)]'` because `Object.entries` does not enumerate
- *   their contents (§RE2). If credentials are stored as Map entries under a
+ *   their contents. If credentials are stored as Map entries under a
  *   non-secret key (e.g. `{ headers: new Map([['Authorization', 'Bearer x']]) }`),
  *   they will NOT be redacted. Convert to plain objects before passing to `redact()`.
  */
@@ -105,8 +105,6 @@ function redactInner(value: unknown, depth: number, ancestors: WeakSet<object>):
  *
  * Keep `redact()` for arbitrary objects; reach for `safeForLog()` when you
  * specifically have an `AgentConfig` and want a typed return.
- *
- *
  */
 export function safeForLog(config: AgentConfig): Readonly<AgentConfig> {
   return Object.freeze(redact(config));

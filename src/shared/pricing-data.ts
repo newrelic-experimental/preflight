@@ -24,13 +24,13 @@ export const MODEL_ALIASES: Record<string, string> = {
   'gemini-3.1-pro': 'gemini-3.1-pro-preview',
   'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
   'gemini-3-flash': 'gemini-3-flash-preview',
-  // Gemini family shortcuts (§PD4): without these, bare family queries like
+  // Gemini family shortcuts: without these, bare family queries like
   // 'gemini-2.5' return null (gpt-style .x suffixes don't match -\d prefix
   // heuristic) or non-deterministically pick between pro/flash.
   'gemini-2.5': 'gemini-2.5-pro',
   'gemini-2.0': 'gemini-2.0-flash',
 
-  // OpenAI family shortcuts (§PD4): 'gpt-5' has no exact key and the .x
+  // OpenAI family shortcuts: 'gpt-5' has no exact key and the .x
   // suffix prevents the forward-prefix heuristic from matching.
   'gpt-5': 'gpt-5.5',
 };
@@ -73,7 +73,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // Dateless current-gen entry — MODEL_ALIASES['claude-haiku-4'] routes here.
   // Matches the opus/sonnet convention: alias → dateless key → dated legacy key.
   // Update this entry when Haiku 4.x rates change; the dated entry below is
-  // retained only for historical-cost backfill (§PD3).
+  // retained only for historical-cost backfill.
   'claude-haiku-4-5': {
     inputPerMTok: 1,
     outputPerMTok: 5,
@@ -92,7 +92,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Anthropic (legacy Claude 4 generation) ----
-  // these legacy entries share input/output/cache rates
+  // These legacy entries share input/output/cache rates
   // with their current-generation counterparts, but `contextWindow` differs
   // (200K legacy vs 1M current). They are NOT alias candidates: the cost
   // calculations downstream don't use contextWindow, but downstream tooling
@@ -127,7 +127,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // The reverse-prefix algorithm strips only 8-digit date suffixes, so a
   // future model named 'claude-opus-4-10' (or 'claude-opus-4-100') would
   // match this entry via reverse-prefix because
-  // 'claude-opus-4-10'.startsWith('claude-opus-4-1') is true (§PD5).
+  // 'claude-opus-4-10'.startsWith('claude-opus-4-1') is true.
   // If Anthropic releases a claude-opus-4-10 model, add an explicit alias
   // before that model key appears in the table.
   'claude-opus-4-1': {
@@ -247,7 +247,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.5,
     contextWindow: 1_000_000,
     // OpenAI long-context pricing is marginal: only tokens above 270k are
-    // billed at the tier rate — not the entire request (§PD2).
+    // billed at the tier rate — not the entire request.
     tierThreshold: 270_000,
     tierMode: 'marginal',
     tierInputPerMTok: 10,
@@ -309,7 +309,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     // completion_tokens at outputPerMTok. The extractor sets thinkingTokens
     // from completion_tokens_details.reasoning_tokens as an informational
     // breakdown, but those tokens are already counted in outputTokens, so
-    // a separate thinkingPerMTok rate would double-bill (§PD1).
+    // a separate thinkingPerMTok rate would double-bill.
     contextWindow: 200_000,
   },
   'o1-mini': {
@@ -325,7 +325,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   o3: {
     inputPerMTok: 10,
     outputPerMTok: 40,
-    // No thinkingPerMTok — see 'o1' comment above (§PD1).
+    // No thinkingPerMTok — see 'o1' comment above.
     contextWindow: 200_000,
   },
   'o3-mini': {
@@ -351,7 +351,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
 
   // ---- AWS Bedrock (Converse API pricing for on-demand) ----
   // Current Claude generation via Bedrock
-  // NOTE (§PR2): cache pricing for claude-opus-4-7 and claude-sonnet-4-6 on
+  // NOTE: cache pricing for claude-opus-4-7 and claude-sonnet-4-6 on
   // Bedrock has not been publicly documented as of 2026-06-03. Rates below are
   // omitted until verified against the AWS Bedrock pricing page.
   'anthropic.claude-opus-4-7': {
@@ -370,7 +370,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 200_000,
   },
   // Legacy Claude models via Bedrock cross-region inference
-  // Cache rates verified against AWS Bedrock pricing page (2026-06-03) (§PR2).
+  // Cache rates verified against AWS Bedrock pricing page (2026-06-03).
   'anthropic.claude-3-5-sonnet-20241022-v2:0': {
     inputPerMTok: 3,
     outputPerMTok: 15,

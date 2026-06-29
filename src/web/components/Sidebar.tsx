@@ -8,9 +8,11 @@ import {
   Moon,
   Settings2,
   Bell,
+  ExternalLink,
 } from 'lucide-react';
 
 import { useLiveAlerts } from '../hooks/useLiveAlerts';
+import { useVersionInfo } from '../hooks/useVersionInfo';
 import type { AlertEvent } from '../store/liveStore';
 import type { Theme } from '../hooks/useTheme';
 import { Button, Pill } from './ui';
@@ -54,6 +56,7 @@ export function Sidebar({
   onToggleTheme,
 }: SidebarProps): JSX.Element {
   const { count: alertCount, maxSeverity } = useLiveAlerts();
+  const versionInfo = useVersionInfo();
 
   function renderNavItem({
     path,
@@ -235,6 +238,29 @@ export function Sidebar({
             </Button>
           </div>
         </div>
+        {versionInfo.installed !== null && (
+          <div className="mt-2 px-2 flex items-center gap-1.5">
+            <span className="text-[10px] text-ink-muted">v{versionInfo.installed}</span>
+            <span className="text-[10px] text-ink-muted" aria-hidden="true">
+              ·
+            </span>
+            <a
+              href="https://github.com/newrelic-experimental/preflight"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="View Preflight on GitHub"
+              className="text-[10px] text-ink-subtle hover:text-ink-base transition-colors duration-150 flex items-center gap-0.5"
+            >
+              GitHub
+              <ExternalLink size={8} aria-hidden="true" />
+            </a>
+          </div>
+        )}
+        {versionInfo.updateAvailable && versionInfo.latest !== null && (
+          <div className="mt-0.5 px-2">
+            <span className="text-[10px] text-accent-amber">v{versionInfo.latest} available</span>
+          </div>
+        )}
       </div>
     </aside>
   );

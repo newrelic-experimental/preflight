@@ -373,7 +373,7 @@ All local persistence lives under `~/.newrelic-preflight/` by default:
 
 ## Security
 
-See [SECURITY.md](./docs/SECURITY.md) for the full guidelines, invariants, and code review checklist. Key points:
+See [SECURITY.md](./SECURITY.md) for the full guidelines, invariants, and code review checklist. Key points:
 
 - **Redaction** — `DEFAULT_REDACTION_PATTERNS` in `src/config.ts` covers API keys, Bearer tokens, AWS/Google/npm/Slack secrets, JWTs, and PEM blocks. Apply `redact()` / `redactSensitive()` before any string reaches a log or NR event field.
 - **Input validation** — `accountId` is validated as `/^\d{1,12}$/` at config load. `envInt` callers supply `{ min, max }` bounds. Tool names are truncated to 256 chars with control chars stripped.

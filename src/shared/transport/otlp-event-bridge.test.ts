@@ -1,6 +1,8 @@
-import { OtlpEventBridge } from './otlp-event-bridge.js';
 import { LoggerProvider } from '@opentelemetry/sdk-logs';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
+
 import type { NrEventData } from '../events/types.js';
+import { OtlpEventBridge } from './otlp-event-bridge.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -204,7 +206,7 @@ describe('OtlpEventBridge', () => {
     const emitMock = providerInstance._emitMock as jest.Mock;
     expect(emitMock).toHaveBeenCalledTimes(3);
 
-    // Verify LogRecord shape for the first event (§TR9)
+    // Verify LogRecord shape for the first event
     const firstCall = emitMock.mock.calls[0][0] as Record<string, unknown>;
     expect(firstCall.severityText).toBe('INFO');
     expect(firstCall.body).toBe('AiToolCall');
@@ -227,9 +229,181 @@ describe('OtlpEventBridge', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 12-16. CODE_REVIEW §9.9 / §5.11 — endpoint scheme enforcement
+  // 12. clientVersion is forwarded as the OTel scope version via getLogger
   // ---------------------------------------------------------------------------
-  describe('endpoint scheme enforcement (CODE_REVIEW §9.9 / §5.11)', () => {
+  it('passes clientVersion to loggerProvider.getLogger as the scope version', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+      clientName: 'preflight',
+      clientVersion: '1.2.3',
+    });
+
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
+      string,
+      unknown
+    >;
+    const getLoggerMock = providerInstance.getLogger as jest.Mock;
+    expect(getLoggerMock).toHaveBeenCalledWith('preflight', '1.2.3');
+  });
+
+  it('passes undefined to getLogger when clientVersion is empty string', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+      clientName: 'preflight',
+      clientVersion: '',
+    });
+
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
+      string,
+      unknown
+    >;
+    const getLoggerMock = providerInstance.getLogger as jest.Mock;
+    expect(getLoggerMock).toHaveBeenCalledWith('preflight', undefined);
+  });
+
+  it('passes undefined to getLogger when clientVersion is omitted', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+    });
+
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
+      string,
+      unknown
+    >;
+    const getLoggerMock = providerInstance.getLogger as jest.Mock;
+    expect(getLoggerMock).toHaveBeenCalledWith('ai-telemetry', undefined);
+  });
+
+  it('stamps User-Agent on OTLPLogExporter headers', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      headers: { 'api-key': 'test-key' },
+      appName: 'test-app',
+      clientName: 'preflight',
+      clientVersion: '2.0.0',
+    });
+
+    expect(OTLPLogExporter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'User-Agent': 'preflight/2.0.0' }),
+      }),
+    );
+  });
+
+  it('stamps name-only User-Agent when clientVersion is omitted', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+    });
+
+    expect(OTLPLogExporter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'User-Agent': 'ai-telemetry' }),
+      }),
+    );
+  });
+
+  it('strips control characters from clientVersion before using in User-Agent', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+      clientName: 'preflight',
+      clientVersion: '1.0\r\nX-Injected: evil',
+    });
+
+    expect(OTLPLogExporter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'User-Agent': 'preflight/1.0X-Injected: evil' }),
+      }),
+    );
+  });
+
+  it('strips control characters from clientName before using in User-Agent', () => {
+    new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+      clientName: 'pre\nflight',
+      clientVersion: '1.0.0',
+    });
+
+    expect(OTLPLogExporter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'User-Agent': 'preflight/1.0.0' }),
+      }),
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // 15-16. hasWarnedNoAuth warn-once behaviour
+  // ---------------------------------------------------------------------------
+  describe('hasWarnedNoAuth warn-once', () => {
+    it('warns on first sendEvents() call when no auth header is present', () => {
+      const bridge = new OtlpEventBridge({
+        endpoint: 'https://otlp.nr-data.net',
+        appName: 'test-app',
+      });
+
+      bridge.sendEvents([{ eventType: 'AiToolCall' }]);
+
+      const warnCount = stderrSpy.mock.calls.filter((c: unknown[]) =>
+        String(c[0] ?? '').includes('no auth header'),
+      ).length;
+      expect(warnCount).toBe(1);
+    });
+
+    it('warns only once across multiple sendEvents() calls', () => {
+      const bridge = new OtlpEventBridge({
+        endpoint: 'https://otlp.nr-data.net',
+        appName: 'test-app',
+      });
+
+      bridge.sendEvents([{ eventType: 'AiToolCall' }]);
+      bridge.sendEvents([{ eventType: 'AiAntiPattern' }]);
+      bridge.sendEvents([{ eventType: 'AiCodingTask' }]);
+
+      const warnCount = stderrSpy.mock.calls.filter((c: unknown[]) =>
+        String(c[0] ?? '').includes('no auth header'),
+      ).length;
+      expect(warnCount).toBe(1);
+    });
+
+    it('does not warn when auth header is present', () => {
+      const bridge = new OtlpEventBridge({
+        endpoint: 'https://otlp.nr-data.net',
+        headers: { 'api-key': 'test-key' },
+        appName: 'test-app',
+      });
+
+      bridge.sendEvents([{ eventType: 'AiToolCall' }]);
+
+      const warnedNoAuth = stderrSpy.mock.calls.some((c: unknown[]) =>
+        String(c[0] ?? '').includes('no auth header'),
+      );
+      expect(warnedNoAuth).toBe(false);
+    });
+
+    it('does not warn when no events are sent', () => {
+      new OtlpEventBridge({
+        endpoint: 'https://otlp.nr-data.net',
+        appName: 'test-app',
+      });
+
+      // No sendEvents call
+
+      const warnedNoAuth = stderrSpy.mock.calls.some((c: unknown[]) =>
+        String(c[0] ?? '').includes('no auth header'),
+      );
+      expect(warnedNoAuth).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 17-21. endpoint scheme enforcement
+  // ---------------------------------------------------------------------------
+  describe('endpoint scheme enforcement', () => {
     it('accepts https:// without warning', () => {
       expect(
         () =>

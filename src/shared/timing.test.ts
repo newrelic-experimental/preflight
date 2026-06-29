@@ -66,7 +66,7 @@ describe('RequestTimer', () => {
     expect(metrics.tokensPerSecond!).toBeGreaterThan(0);
   });
 
-  // CODE_REVIEW §6.6: aligned semantics with factory.ts — null when no rate
+  // Aligned semantics with factory.ts — null when no rate
   // is meaningful (outputTokens=0 OR durationMs=0).
   it('returns null tokensPerSecond when outputTokens is 0 (no rate to measure)', () => {
     const timer = new RequestTimer();
@@ -90,19 +90,19 @@ describe('RequestTimer', () => {
     expect(metrics.tokensPerSecond).toBeNull();
   });
 
-  // 6. getMetrics before stop (or start) throws with a distinct message (§TIM2)
+  // 6. getMetrics before stop (or start) throws with a distinct message
   it('throws if getMetrics() called before stop()', () => {
     const timer = new RequestTimer();
     timer.start();
     expect(() => timer.getMetrics()).toThrow('stop() must be called before getMetrics()');
   });
 
-  it('throws with distinct message if getMetrics() called before start() (§TIM2)', () => {
+  it('throws with distinct message if getMetrics() called before start()', () => {
     const timer = new RequestTimer();
     expect(() => timer.getMetrics()).toThrow('start() must be called before getMetrics()');
   });
 
-  it('start() and stop() are idempotent — second call is ignored (§TM2)', () => {
+  it('start() and stop() are idempotent — second call is ignored', () => {
     const timer = new RequestTimer();
     timer.start();
     busyWait(2);
@@ -170,8 +170,8 @@ describe('RequestTimer', () => {
     expect(metrics.overheadMs).toBeGreaterThanOrEqual(0);
   });
 
-  // CODE_REVIEW §3.2.3 — first-write-wins WITHIN an open-phase state
-  describe('first-write-wins idempotency for thinking markers (§3.2.3)', () => {
+  // first-write-wins WITHIN an open-phase state
+  describe('first-write-wins idempotency for thinking markers', () => {
     it('ignores duplicate markThinkingStart() while a phase is open', () => {
       const timer = new RequestTimer();
       timer.start();
@@ -219,8 +219,8 @@ describe('RequestTimer', () => {
     });
   });
 
-  // CODE_REVIEW §3.2.4 — multiple thinking phases per request
-  describe('multiple thinking phases (§3.2.4)', () => {
+  // multiple thinking phases per request
+  describe('multiple thinking phases', () => {
     it('records each closed (start, end) pair as a separate phase', () => {
       const timer = new RequestTimer();
       timer.start();
@@ -276,7 +276,7 @@ describe('RequestTimer', () => {
       timer.markThinkingStart();
       busyWait(2);
       timer.markThinkingEnd();
-      timer.markThinkingStart(); // never ended — should be auto-closed at stopAt (§TM1)
+      timer.markThinkingStart(); // never ended — should be auto-closed at stopAt
       busyWait(2);
       timer.stop();
 
@@ -287,7 +287,7 @@ describe('RequestTimer', () => {
       expect(metrics.thinkingDurationMs!).toBeGreaterThan(0);
     });
 
-    it('auto-closing an open phase at stop() produces non-null thinkingDurationMs (§TM1)', () => {
+    it('auto-closing an open phase at stop() produces non-null thinkingDurationMs', () => {
       const timer = new RequestTimer();
       timer.start();
       busyWait(2);

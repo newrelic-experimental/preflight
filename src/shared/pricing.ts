@@ -219,7 +219,7 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
   // future / unknown keys from the user's JSON into the merged table, where
   // they would surface in serialization (`Object.entries(...)`) and risk
   // future code mistaking them for valid pricing fields. Built as a single
-  // literal to satisfy the readonly interface (§PR5).
+  // literal to satisfy the readonly interface.
   return {
     inputPerMTok: e.inputPerMTok as number,
     outputPerMTok: e.outputPerMTok as number,
@@ -254,7 +254,7 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
  * mis-pointed multi-GB file would OOM `JSON.parse`.
  *
  * Returns the parsed override map on success, or `null` when the file is
- * missing, the wrong shape, too large, or contains no valid entries (§PR7).
+ * missing, the wrong shape, too large, or contains no valid entries.
  *
  * **Note:** `null` is returned for both "file not found" and "all entries
  * invalid" — callers cannot distinguish the two cases from the return value
@@ -292,7 +292,7 @@ export function loadCustomPricing(filePath: string): Record<string, ModelPricing
     }
 
     // Null-prototype object prevents __proto__ assignment from polluting
-    // Object.prototype even if a reserved key slips through (§P1).
+    // Object.prototype even if a reserved key slips through.
     const result: Record<string, ModelPricing> = Object.create(null) as Record<
       string,
       ModelPricing
@@ -309,7 +309,7 @@ export function loadCustomPricing(filePath: string): Record<string, ModelPricing
       }
     }
     // Return null when no valid entries were found so callers can distinguish
-    // "applied custom pricing" (truthy) from "file present but all invalid" (§PR1).
+    // "applied custom pricing" (truthy) from "file present but all invalid".
     if (Object.keys(result).length === 0) {
       logger.warn('Custom pricing file contained no valid entries', { filePath: resolvedPath });
       return null;
@@ -382,7 +382,7 @@ export class PricingTable {
   constructor(customFilePath?: string | null) {
     // Null-prototype base: Object.assign to a null-prototype target does not
     // invoke the __proto__ setter, so prototype pollution is defused even if
-    // loadCustomPricing returns a result containing that key (§P1).
+    // loadCustomPricing returns a result containing that key.
     this.table = Object.assign(
       Object.create(null) as Record<string, ModelPricing>,
       clonePricingTable(DEFAULT_PRICING_TABLE),
@@ -419,9 +419,9 @@ export class PricingTable {
    */
   resolve(modelName: string): ModelPricing | null {
     // Returns shallow copies so caller mutation cannot corrupt the instance
-    // table — resolved entries are values, not live references (§PRC1).
+    // table — resolved entries are values, not live references.
     // 1. Exact match — Object.hasOwn guards against inherited prototype values
-    // for non-null-prototype tables and makes intent explicit (§P2).
+    // for non-null-prototype tables and makes intent explicit.
     if (Object.hasOwn(this.table, modelName)) {
       return { ...this.table[modelName] };
     }
@@ -434,7 +434,7 @@ export class PricingTable {
 
     // Forward prefix: find table keys that start with the given name followed
     // by a digit-led suffix. Longest key wins on tie — but two same-length
-    // candidates would be non-deterministic (§PR1). Log a warning in that case
+    // candidates would be non-deterministic. Log a warning in that case
     // so future table additions that create ambiguity are visible.
     let bestKey: string | null = null;
     let ambiguous = false;
@@ -450,7 +450,7 @@ export class PricingTable {
       }
     }
     if (ambiguous && bestKey !== null) {
-      // §11.5: returning a non-deterministic result is worse than returning null,
+      // Returning a non-deterministic result is worse than returning null,
       // because the caller cannot distinguish "pricing found" from "pricing guessed".
       // Returning null forces the table maintainer to add an explicit alias entry
       // rather than silently accepting iteration-order-dependent pricing.
@@ -520,8 +520,8 @@ const defaultTable = new PricingTable();
  * file path to overlay user-provided prices on top of the built-in table.
  * Call with `null`/`undefined` to reset to the built-in defaults.
  *
- * **Synchronous I/O — startup-only.** Reads the custom file with `readFileSync`
- *; calling this on a hot path (e.g. a SIGHUP-triggered
+ * **Synchronous I/O — startup-only.** Reads the custom file with `readFileSync`;
+ * calling this on a hot path (e.g. a SIGHUP-triggered
  * reload while the process is serving inference traffic) blocks the event
  * loop. Schedule reloads from a worker thread or wrap in `setImmediate`.
  *
@@ -610,7 +610,7 @@ function computeCost(pricing: ModelPricing, usage: TokenUsage): CostBreakdown {
   // Savings: what the cache-read tokens would have cost at the full input rate.
   // In marginal mode, the savings rate depends on whether the fresh input
   // exceeded the tier threshold — above-threshold tokens save at the tier rate,
-  // not the base rate (§PRC3).
+  // not the base rate.
   const savingsInputRate =
     useTier &&
     tierMode === 'marginal' &&

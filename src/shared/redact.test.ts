@@ -82,7 +82,7 @@ describe('redact', () => {
     expect(out.self).toBe('[circular]');
   });
 
-  it('walks DAG-shaped objects (shared reference at sibling positions) without false [circular] (§R2)', () => {
+  it('walks DAG-shaped objects (shared reference at sibling positions) without false [circular]', () => {
     const shared = { value: 42 };
     const input = { x: shared, y: shared };
     const out = redact(input) as typeof input;
@@ -92,7 +92,7 @@ describe('redact', () => {
     expect(out.y).not.toBe('[circular]');
   });
 
-  it('truncates very deep nesting (§RE3 — 20 levels exceeds MAX_DEPTH=8)', () => {
+  it('truncates very deep nesting (20 levels exceeds MAX_DEPTH=8)', () => {
     // INVARIANT: 20 > MAX_DEPTH (currently 8). If MAX_DEPTH is raised above 20,
     // this test will fail because '[max-depth]' is never reached, making the
     // regression visible. Keep 20 comfortably above MAX_DEPTH to ensure truncation.
@@ -122,17 +122,17 @@ describe('redact', () => {
     expect(out.bucket).toBe('b');
   });
 
-  it('preserves keys (plural) — does not redact it as a secret key (§RE1)', () => {
+  it('preserves keys (plural) — does not redact it as a secret key', () => {
     const out = redact({ keys: ['feature-a', 'feature-b'] }) as Record<string, unknown>;
     expect(out.keys).toEqual(['feature-a', 'feature-b']);
   });
 
-  it('preserves apiKey (singular) — still redacted since it IS a secret (§RE1)', () => {
+  it('preserves apiKey (singular) — still redacted since it IS a secret', () => {
     const out = redact({ apiKey: 'sk-abc' }) as Record<string, string>;
     expect(out.apiKey).toBe('***');
   });
 
-  it('preserves tokenCount, tokenize, tokenAmount — compound token fields must not be redacted (§LR1)', () => {
+  it('preserves tokenCount, tokenize, tokenAmount — compound token fields must not be redacted', () => {
     const out = redact({ tokenCount: 128, tokenize: true, tokenAmount: 50 }) as Record<
       string,
       unknown
@@ -142,7 +142,7 @@ describe('redact', () => {
     expect(out.tokenAmount).toBe(50);
   });
 
-  it('preserves credentialType, credentialProvider, credentialId — compound credential fields (§LR2)', () => {
+  it('preserves credentialType, credentialProvider, credentialId — compound credential fields', () => {
     const out = redact({
       credentialType: 'api-key',
       credentialProvider: 'aws',
@@ -153,7 +153,7 @@ describe('redact', () => {
     expect(out.credentialId).toBe('my-cred');
   });
 
-  it('still redacts credential and credentials (§LR2)', () => {
+  it('still redacts credential and credentials', () => {
     const out = redact({ credential: 'secret', credentials: { user: 'a', pass: 'b' } }) as Record<
       string,
       unknown
@@ -162,7 +162,7 @@ describe('redact', () => {
     expect(out.credentials).toBe('***');
   });
 
-  it('preserves passwordPolicy, passwordStrength — compound password fields (§LR2)', () => {
+  it('preserves passwordPolicy, passwordStrength — compound password fields', () => {
     const out = redact({ passwordPolicy: 'strong', passwordStrength: 3 }) as Record<
       string,
       unknown
@@ -171,7 +171,7 @@ describe('redact', () => {
     expect(out.passwordStrength).toBe(3);
   });
 
-  it('preserves token-count fields (§R1 — input_tokens / output_tokens must not be redacted)', () => {
+  it('preserves token-count fields (input_tokens / output_tokens must not be redacted)', () => {
     const input = {
       usage: {
         input_tokens: 100,
@@ -197,7 +197,7 @@ describe('redact', () => {
     expect(out.usage.thinkingTokens).toBe(5);
   });
 
-  it('preserves Date, RegExp, URL, Buffer, Uint8Array values intact (§R5)', () => {
+  it('preserves Date, RegExp, URL, Buffer, Uint8Array values intact', () => {
     const date = new Date('2026-01-01T00:00:00Z');
     const re = /foo/i;
     const url = new URL('https://example.com/path');
@@ -211,7 +211,7 @@ describe('redact', () => {
     expect(out.u8).toBe(u8);
   });
 
-  it('summarises Map and Set as [Map(N)] / [Set(N)] instead of {} (§R5)', () => {
+  it('summarises Map and Set as [Map(N)] / [Set(N)] instead of {}', () => {
     const m = new Map([['k', 'v']]);
     const s = new Set([1, 2, 3]);
     const out = redact({ m, s }) as Record<string, unknown>;
@@ -233,9 +233,8 @@ describe('redact', () => {
 
 // ---------------------------------------------------------------------------
 // safeForLog — typed wrapper around redact() for AgentConfig diagnostic dumps
-// (CODE_REVIEW §10.1)
 // ---------------------------------------------------------------------------
-describe('safeForLog (CODE_REVIEW §10.1)', () => {
+describe('safeForLog', () => {
   it('redacts licenseKey while preserving non-secret fields', () => {
     const cfg = loadConfig({
       licenseKey: 'us01xx0000000000000000000000000000000NRAL',
@@ -258,7 +257,7 @@ describe('safeForLog (CODE_REVIEW §10.1)', () => {
     const cfg = loadConfig({
       licenseKey: 'us01xx0000000000000000000000000000000NRAL',
       appName: 'my-app',
-      // CODE_REVIEW F3 — null accountId requires the otlp transport explicitly.
+      // null accountId requires the otlp transport explicitly.
       accountId: '12345',
       otlpHeaders: {
         Authorization: 'Bearer sk_live_abc',
@@ -276,7 +275,7 @@ describe('safeForLog (CODE_REVIEW §10.1)', () => {
     const cfg = loadConfig({
       licenseKey: 'us01xx0000000000000000000000000000000NRAL',
       appName: 'my-app',
-      // CODE_REVIEW F3 — accountId required for the default nr-events-api transport.
+      // accountId required for the default nr-events-api transport.
       accountId: '12345',
     });
     const before = cfg.licenseKey;

@@ -1,6 +1,6 @@
 /**
- * Selects which downstream transport(s) the harvest scheduler ships to
- *. Single source of truth for the literal union — both
+ * Selects which downstream transport(s) the harvest scheduler ships to.
+ * Single source of truth for the literal union — both
  * `AgentConfig.transport` and `HarvestSchedulerOptions.transport` consume
  * this type so a future addition (e.g. a Datadog transport) only needs to
  * widen the union here.
@@ -108,10 +108,12 @@ export interface TransportOptions {
   readonly requestTimeoutMs?: number;
   /**
    * Identifies the consuming client in the `User-Agent` header sent to NR
-   * ingest endpoints (e.g. `'preflight'`, `'my-agent'`). Defaults to
+   * ingest endpoints (e.g. `'preflight'`, `'nr-ai-agent'`). Defaults to
    * `'ai-telemetry'` when not provided.
    */
   readonly clientName?: string;
+  /** Version of the consuming client for the `User-Agent` header. */
+  readonly clientVersion?: string;
 }
 
 export interface TransportResult {
@@ -134,4 +136,6 @@ export interface HttpSendOptions {
    * `'ai-telemetry'` when not provided.
    */
   readonly clientName?: string;
+  /** Version of the consuming client for the `User-Agent` header. */
+  readonly clientVersion?: string;
 }

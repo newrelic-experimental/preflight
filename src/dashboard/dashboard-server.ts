@@ -2,7 +2,8 @@ import { createServer, IncomingMessage, ServerResponse, Server as HttpServer } f
 import { AddressInfo } from 'node:net';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createLogger, VERSION } from '../shared/index.js';
+import { createLogger } from '../shared/index.js';
+import { VERSION } from '../version.js';
 import { LiveEventBus } from './live-event-bus.js';
 import { createStaticHandler } from './routes/static-handler.js';
 import { createApiHandler, ApiHandlerDeps } from './routes/api-handler.js';
@@ -11,6 +12,33 @@ import type { LocalAlertEngine } from '../alerts/local-alert-engine.js';
 import type { AlertLog } from '../alerts/alert-log.js';
 
 const logger = createLogger('dashboard-server');
+
+function isNewerVersion(candidate: string, installed: string): boolean {
+  const parse = (v: string): [number, number, number] => {
+    const parts = v.replace(/^v/, '').replace(/-.*$/, '').split('.').map(Number);
+    return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+  };
+  const [ca, cb, cc] = parse(candidate);
+  const [ia, ib, ic] = parse(installed);
+  if (ca !== ia) return ca > ia;
+  if (cb !== ib) return cb > ib;
+  return cc > ic;
+}
+
+async function defaultNpmFetcher(): Promise<string | null> {
+  try {
+    const res = await fetch('https://registry.npmjs.org/@newrelic/preflight/latest', {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Record<string, unknown>;
+    const v = data['version'];
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface DashboardServerOptions {
   readonly port: number;
@@ -24,6 +52,8 @@ export interface DashboardServerOptions {
   // index.ts) can route events through the engine.
   readonly alertEngine?: LocalAlertEngine;
   readonly alertLog?: AlertLog;
+  /** Override for testing — resolves to the latest version string or null. */
+  readonly npmFetcher?: () => Promise<string | null>;
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -34,14 +64,14 @@ export class DashboardServer {
   private readonly startedAt = Date.now();
   private readonly routes = new Map<string, RouteHandler>();
   private readonly staticHandler:
-    | ((req: IncomingMessage, res: ServerResponse) => Promise<void>)
-    | undefined;
+    ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined;
   private readonly apiHandler:
-    | ((req: IncomingMessage, res: ServerResponse) => Promise<void>)
-    | undefined;
+    ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined;
   // SSE responses are long-lived and would block server.close() forever.
   // Track them so stop() can force-end each one before awaiting close.
   private readonly activeSseResponses = new Set<ServerResponse>();
+  private latestVersion: string | null = null;
+  private updateAvailable = false;
 
   constructor(opts: DashboardServerOptions) {
     this.opts = opts;
@@ -77,6 +107,8 @@ export class DashboardServer {
           ok: true,
           uptime: Date.now() - this.startedAt,
           version: VERSION,
+          latestVersion: this.latestVersion,
+          updateAvailable: this.updateAvailable,
         }),
       );
     });
@@ -85,6 +117,13 @@ export class DashboardServer {
       this.activeSseResponses.add(res);
       res.on('close', () => this.activeSseResponses.delete(res));
       sseHandler(req, res);
+    });
+    const fetcher = opts.npmFetcher ?? defaultNpmFetcher;
+    void fetcher().then((v) => {
+      if (v !== null) {
+        this.latestVersion = v;
+        this.updateAvailable = isNewerVersion(v, VERSION);
+      }
     });
   }
 

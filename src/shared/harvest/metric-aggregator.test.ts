@@ -12,7 +12,7 @@ afterEach(() => {
 
 // ---------------------------------------------------------------------------
 // 1. record() computes correct count, sum, min, max
-// CODE_REVIEW §4.9 — wire format is now ONE summary metric per bucket
+// Wire format is now ONE summary metric per bucket
 // (with `value: { count, sum, min, max }`) instead of four separate metrics.
 // ---------------------------------------------------------------------------
 const TEST_INTERVAL_MS = 60_000;
@@ -145,9 +145,9 @@ describe('MetricAggregator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // §4.6 — harvestSnapshots() returns pre-explosion bucket form and resets
+  // harvestSnapshots() returns pre-explosion bucket form and resets
   // ---------------------------------------------------------------------------
-  it('harvestSnapshots() returns one snapshot per (name, attrs) bucket and drains the aggregator (CODE_REVIEW §4.6)', () => {
+  it('harvestSnapshots() returns one snapshot per (name, attrs) bucket and drains the aggregator', () => {
     const agg = new MetricAggregator();
     agg.record('ai.duration', 10, { model: 'claude' });
     agg.record('ai.duration', 20, { model: 'claude' });
@@ -172,7 +172,7 @@ describe('MetricAggregator', () => {
     expect(agg.harvestSnapshots()).toEqual([]);
   });
 
-  it('caller mutation of attributes after record() does not affect bucket state (§MA1)', () => {
+  it('caller mutation of attributes after record() does not affect bucket state', () => {
     const agg = new MetricAggregator();
     const tags: Record<string, string> = { region: 'us-east' };
     agg.record('latency', 100, tags);
@@ -182,7 +182,7 @@ describe('MetricAggregator', () => {
     expect(snapshots[0].attributes.region).toBe('us-east'); // bucket was cloned
   });
 
-  it('harvestSnapshots() returns snapshots isolated from bucket state (§MA1)', () => {
+  it('harvestSnapshots() returns snapshots isolated from bucket state', () => {
     const agg = new MetricAggregator();
     agg.record('m', 1, { k: 'v' });
     const snapshots = agg.harvestSnapshots();
@@ -194,9 +194,9 @@ describe('MetricAggregator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // §4.6 — merge() folds snapshots back, accumulating same-key buckets
+  // merge() folds snapshots back, accumulating same-key buckets
   // ---------------------------------------------------------------------------
-  it('merge() accumulates same-key snapshots into a single rolled-up bucket (CODE_REVIEW §4.6)', () => {
+  it('merge() accumulates same-key snapshots into a single rolled-up bucket', () => {
     // The retry path: a previous harvest's snapshots are merged back into a
     // fresh aggregator alongside the next interval's data. Same name+attrs
     // entries must collapse into one bucket with summed count/sum and
@@ -222,7 +222,7 @@ describe('MetricAggregator', () => {
     expect(bucket.max).toBe(300);
   });
 
-  it('merge() inserts a new bucket when the key is not present (CODE_REVIEW §4.6)', () => {
+  it('merge() inserts a new bucket when the key is not present', () => {
     const agg = new MetricAggregator();
     agg.record('ai.duration', 10, { model: 'claude' });
     const fresh = agg.harvestSnapshots();
@@ -244,10 +244,10 @@ describe('MetricAggregator', () => {
     });
   });
 
-  it('round-trip: harvestSnapshots -> merge into new aggregator -> harvest produces one rolled-up summary (CODE_REVIEW §4.6 + §4.9)', () => {
-    // End-to-end §4.6 contract: a failed-send snapshot list re-merged with
+  it('round-trip: harvestSnapshots -> merge into new aggregator -> harvest produces one rolled-up summary', () => {
+    // End-to-end contract: a failed-send snapshot list re-merged with
     // the next harvest's data must produce ONE summary per name+attrs — not
-    // two timestamped pairs and not four separate metrics (post-§4.9).
+    // two timestamped pairs and not four separate metrics.
     const agg = new MetricAggregator();
     agg.record('ai.duration', 10, { model: 'claude' });
     agg.record('ai.duration', 20, { model: 'claude' });
@@ -268,9 +268,9 @@ describe('MetricAggregator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // §4.9 — snapshotsToNrMetrics() emits one summary per snapshot
+  // snapshotsToNrMetrics() emits one summary per snapshot
   // ---------------------------------------------------------------------------
-  it('snapshotsToNrMetrics() emits one summary per snapshot with shared timestamp + intervalMs (CODE_REVIEW §4.9)', () => {
+  it('snapshotsToNrMetrics() emits one summary per snapshot with shared timestamp + intervalMs', () => {
     const ts = 1_700_000_000_000;
     const snapshots: MetricSnapshot[] = [
       {
@@ -296,10 +296,10 @@ describe('MetricAggregator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // §4.8 — Strict attribute typing: type sigils prevent key collisions, and
+  // Strict attribute typing: type sigils prevent key collisions, and
   // invalid runtime values are rejected (sample dropped) rather than coerced.
   // ---------------------------------------------------------------------------
-  describe('strict attribute validation (CODE_REVIEW §4.8)', () => {
+  describe('strict attribute validation', () => {
     it('treats number 5 and string "5" as distinct buckets', () => {
       const agg = new MetricAggregator();
       agg.record('ai.duration', 10, { tier: 5 });
@@ -373,8 +373,8 @@ describe('MetricAggregator', () => {
     });
   });
 
-  // CODE_REVIEW §4.22 — record() returns boolean for backpressure / validation
-  describe('record() return value (§4.22)', () => {
+  // record() returns boolean for backpressure / validation
+  describe('record() return value', () => {
     it('returns true when the sample is accepted', () => {
       const agg = new MetricAggregator();
       expect(agg.record('ai.duration', 10)).toBe(true);
@@ -397,8 +397,8 @@ describe('MetricAggregator', () => {
     });
   });
 
-  // CODE_REVIEW §4.11 — drop counter mirrors EventBuffer.dropCount
-  describe('dropCount (§4.11)', () => {
+  // Drop counter mirrors EventBuffer.dropCount
+  describe('dropCount', () => {
     it('starts at zero and increments on non-finite values', () => {
       const agg = new MetricAggregator();
       expect(agg.dropCount).toBe(0);
@@ -449,9 +449,9 @@ describe('MetricAggregator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // merge() validation guard (§MAC1)
+  // merge() validation guard
   // ---------------------------------------------------------------------------
-  describe('merge() validation guard (§MAC1)', () => {
+  describe('merge() validation guard', () => {
     it('skips snapshot with negative count', () => {
       const agg = new MetricAggregator();
       agg.merge([{ name: 'x', attributes: {}, count: -1, sum: 10, min: 1, max: 10 }]);
@@ -477,8 +477,8 @@ describe('MetricAggregator', () => {
     });
   });
 
-  // §11.10 — makeKey separator escaping prevents bucket collision
-  describe('§11.10 makeKey separator escaping', () => {
+  // makeKey separator escaping prevents bucket collision
+  describe('makeKey separator escaping', () => {
     it('treats metric name containing "|" as distinct from a shorter name with matching attribute', () => {
       // Without escaping: name="a|b" (no attrs) → key "a|b|"
       //                   name="a"  attr {b:1}  → key "a|b=n:1"

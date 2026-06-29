@@ -463,12 +463,12 @@ describe('collector-script', () => {
 
     describe('getRecordContent() — enforcing highSecurity (F-015)', () => {
       beforeEach(() => {
-        delete process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY;
+        delete process.env.NEW_RELIC_AI_HIGH_SECURITY;
         delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
       });
 
-      it('returns false when NEW_RELIC_AI_MCP_HIGH_SECURITY env var is set', () => {
-        process.env.NEW_RELIC_AI_MCP_HIGH_SECURITY = 'true';
+      it('returns false when NEW_RELIC_AI_HIGH_SECURITY env var is set', () => {
+        process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
         process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
 
         expect(getRecordContent()).toBe(false);

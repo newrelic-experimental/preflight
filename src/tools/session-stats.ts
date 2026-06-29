@@ -15,7 +15,8 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { createLogger, VERSION } from '../shared/index.js';
+import { createLogger } from '../shared/index.js';
+import { VERSION } from '../version.js';
 
 const logger = createLogger('session-stats');
 import type { SessionTracker } from '../metrics/session-tracker.js';
@@ -789,8 +790,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
             };
           }
           const taskId = (args as Record<string, unknown> | undefined)?.task_id as
-            | string
-            | undefined;
+            string | undefined;
           return handleGetWorkflowTrace(
             taskDetector,
             antiPatternDetector,

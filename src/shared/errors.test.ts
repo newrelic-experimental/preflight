@@ -28,7 +28,7 @@ describe('classifyError', () => {
   // ---------------------------------------------------------------------------
   // 3. Gemini/OpenAI/Bedrock 503 → OVERLOADED; Anthropic 503 → SERVER_ERROR
   // ---------------------------------------------------------------------------
-  it('classifies Gemini/OpenAI/Bedrock 503 as OVERLOADED, Anthropic 503 as SERVER_ERROR (§E2)', () => {
+  it('classifies Gemini/OpenAI/Bedrock 503 as OVERLOADED, Anthropic 503 as SERVER_ERROR', () => {
     const err = { status: 503, message: 'Service unavailable' };
     expect(classifyError(err, 'google')).toBe(AiErrorClassification.OVERLOADED);
     expect(classifyError(err, 'openai')).toBe(AiErrorClassification.OVERLOADED);
@@ -62,7 +62,7 @@ describe('classifyError', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // CODE_REVIEW §7.14 — Typed code path takes precedence over message wording
+  // Typed code path takes precedence over message wording
   // ---------------------------------------------------------------------------
   it('classifies OpenAI 400 by typed error.code (context_length_exceeded)', () => {
     const err = {
@@ -141,18 +141,18 @@ describe('classifyError', () => {
     expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.NETWORK_ERROR);
   });
 
-  it('classifies ENETUNREACH as NETWORK_ERROR (§ER2)', () => {
+  it('classifies ENETUNREACH as NETWORK_ERROR', () => {
     const err = Object.assign(new Error('Network is unreachable'), { code: 'ENETUNREACH' });
     expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.NETWORK_ERROR);
   });
 
-  it('classifies ECONNREFUSED nested in error.cause (undici fetch shape) as NETWORK_ERROR (§E1)', () => {
+  it('classifies ECONNREFUSED nested in error.cause (undici fetch shape) as NETWORK_ERROR', () => {
     const cause = Object.assign(new Error('ECONNREFUSED'), { code: 'ECONNREFUSED' });
     const err = Object.assign(new TypeError('fetch failed'), { cause });
     expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.NETWORK_ERROR);
   });
 
-  it('classifies ETIMEDOUT nested in error.cause as TIMEOUT (§E1)', () => {
+  it('classifies ETIMEDOUT nested in error.cause as TIMEOUT', () => {
     const cause = Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
     const err = Object.assign(new TypeError('fetch failed'), { cause });
     expect(classifyError(err, 'anthropic')).toBe(AiErrorClassification.TIMEOUT);
@@ -177,7 +177,7 @@ describe('classifyError', () => {
     }
   });
 
-  // CODE_REVIEW §7.12 — HTTP 408/504 are timeout statuses
+  // HTTP 408/504 are timeout statuses
   it('classifies HTTP 408 (Request Timeout) as TIMEOUT', () => {
     expect(classifyError({ status: 408 }, 'anthropic')).toBe(AiErrorClassification.TIMEOUT);
     expect(classifyError({ status: 408 }, 'google')).toBe(AiErrorClassification.TIMEOUT);
@@ -188,7 +188,7 @@ describe('classifyError', () => {
     expect(classifyError({ status: 504 }, 'openai')).toBe(AiErrorClassification.TIMEOUT);
   });
 
-  it('classifies unclassified status + timeout message as TIMEOUT via default case (§ER2)', () => {
+  it('classifies unclassified status + timeout message as TIMEOUT via default case', () => {
     // HTTP 425 "Too Early" is not in the switch — message check in default: fires
     expect(
       classifyError({ status: 425, message: 'upstream request timeout exceeded' }, 'openai'),
@@ -205,7 +205,7 @@ describe('classifyError', () => {
     }
   });
 
-  // CODE_REVIEW §7.13 — 529 should only map to OVERLOADED for Anthropic
+  // 529 should only map to OVERLOADED for Anthropic
   it('classifies non-Anthropic 529 as UNKNOWN (provider-gated)', () => {
     expect(classifyError({ status: 529 }, 'google')).toBe(AiErrorClassification.UNKNOWN);
     expect(classifyError({ status: 529 }, 'openai')).toBe(AiErrorClassification.UNKNOWN);
@@ -278,8 +278,8 @@ describe('extractRateLimitHeaders', () => {
     expect(info!.requestsReset).toBe('2025-01-15T10:00:00Z');
   });
 
-  // CODE_REVIEW §7.17 — distinguish "no headers" from "headers present, no rate-limit fields"
-  it('returns null when error has no headers (CODE_REVIEW §7.17)', () => {
+  // distinguish "no headers" from "headers present, no rate-limit fields"
+  it('returns null when error has no headers', () => {
     const err = { status: 500, message: 'Internal server error' };
     const info = extractRateLimitHeaders(err);
     expect(info).toBeNull();
@@ -298,7 +298,7 @@ describe('extractRateLimitHeaders', () => {
     expect(info!.requestsReset).toBeNull();
   });
 
-  it('extracts Gemini rate limit headers (§E3)', () => {
+  it('extracts Gemini rate limit headers', () => {
     const err = {
       status: 429,
       headers: {
@@ -313,7 +313,7 @@ describe('extractRateLimitHeaders', () => {
     expect(info!.requestsReset).toBe('2026-01-01T00:01:00Z');
   });
 
-  it('extracts Mistral rate limit headers (§E3)', () => {
+  it('extracts Mistral rate limit headers', () => {
     const err = {
       status: 429,
       headers: {
@@ -330,7 +330,7 @@ describe('extractRateLimitHeaders', () => {
     expect(info!.requestsReset).toBe('30');
   });
 
-  it('treats empty-string header value as null (not 0) for numeric fields (§ER3)', () => {
+  it('treats empty-string header value as null (not 0) for numeric fields', () => {
     const err = {
       status: 429,
       headers: { 'anthropic-ratelimit-tokens-remaining': '' },
@@ -359,11 +359,11 @@ describe('extractRateLimitHeaders', () => {
     expect(info!.requestsRemaining).toBe(5);
   });
 
-  // CODE_REVIEW §7.11 — readHeader must reject non-primitive header values
+  // readHeader must reject non-primitive header values
   // rather than `String(val)`-stringifying them into '[object Object]' or
   // 'a,b,c'. Each of these inputs gets returned as null so the caller sees
   // the same "no value" path as a missing header.
-  describe('readHeader rejects non-primitive header values (CODE_REVIEW §7.11)', () => {
+  describe('readHeader rejects non-primitive header values', () => {
     it('returns null when the header value is an array', () => {
       const err = {
         status: 429,
@@ -452,7 +452,7 @@ describe('truncateErrorMessage', () => {
     expect(truncateErrorMessage('hello', 4)).toBe('h...');
   });
 
-  it('does not produce a lone high surrogate when cut lands between a surrogate pair (§E4)', () => {
+  it('does not produce a lone high surrogate when cut lands between a surrogate pair', () => {
     // '😀' is U+1F600 — two UTF-16 code units: \uD83D (index 6) \uDE00 (index 7)
     // 'hello 😀 world': h(0) e(1) l(2) l(3) o(4) ' '(5) \uD83D(6) \uDE00(7) ' '(8)...
     const msg = 'hello 😀 world';
@@ -468,7 +468,7 @@ describe('truncateErrorMessage', () => {
   });
 });
 
-// CODE_REVIEW §7.15 — classifyErrorDetailed exposes original context
+// classifyErrorDetailed exposes original context
 describe('classifyErrorDetailed', () => {
   it('returns the same classification as classifyError plus context', () => {
     const err = { status: 429, error: { type: 'rate_limit_error' }, message: 'Slow down' };

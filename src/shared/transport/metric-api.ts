@@ -52,5 +52,6 @@ export async function sendMetrics(
     maxDelayMs: options.maxDelayMs ?? 30_000,
     requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     clientName: options.clientName,
+    clientVersion: options.clientVersion,
   });
 }

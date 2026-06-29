@@ -10,7 +10,7 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 };
 
 /**
- * type-safe narrowing helper. The previous
+ * Type-safe narrowing helper. The previous
  * `envLevel in LOG_LEVEL_ORDER` check + `as LogLevel` cast was sound at
  * runtime today but the cast hid the gap: TS can't narrow `string` to a
  * literal union via `in`, so a refactor that broadened `LOG_LEVEL_ORDER`
@@ -35,7 +35,7 @@ function resolveLogLevel(): LogLevel {
 /**
  * Cached resolved log level.
  *
- * Pre-§7.5, every `createLogger()` call re-read `NEW_RELIC_AI_LOG_LEVEL`
+ * Previously, every `createLogger()` call re-read `NEW_RELIC_AI_LOG_LEVEL`
  * from the env. If a process changed the env between two calls — common
  * in tests that flip it per-block — the two loggers ended up with
  * different levels, producing flapping behavior that was hard to debug.
@@ -73,8 +73,8 @@ export interface Logger {
   warn(message: string, data?: Record<string, unknown>): void;
   error(message: string, data?: Record<string, unknown>): void;
   /**
-   * Return a child logger that pre-binds `context` onto every emitted entry
-   *. Per-call `data` still wins on key collision. Useful
+   * Return a child logger that pre-binds `context` onto every emitted entry.
+   * Per-call `data` still wins on key collision. Useful
    * for tracing one harvest cycle / one request through multiple log lines
    * without manually threading the same `requestId` through every call.
    *
@@ -87,8 +87,7 @@ export interface Logger {
    * **Level inheritance.** The child inherits the parent's fixed `levelOverride`
    * (set at `createLogger` time). Canonical fields (`level`, `message`,
    * `component`, `timestamp`, `epoch_ms`) cannot be overridden via either
-   * bound context or per-call `data` — they always reflect the call site values
-   * (§LR4).
+   * bound context or per-call `data` — they always reflect the call site values.
    */
   child(context: Record<string, unknown>): Logger;
 }
@@ -109,7 +108,7 @@ export interface Logger {
  *
  *   makes the http-client module emit only errors regardless of how the
  *   rest of the process is configured. Without an override, the level
- *   resolves from the env (cached, see 5) and tracks
+ *   resolves from the env (cached) and tracks
  *   process-wide changes via `__resetLogLevelCache()`.
  */
 export function createLogger(component: string, levelOverride?: LogLevel): Logger {
@@ -121,7 +120,7 @@ function createLoggerInternal(
   levelOverride: LogLevel | undefined,
   boundContext: Record<string, unknown> | undefined,
 ): Logger {
-  // 5: when no override is supplied, the minimum level is
+  // When no override is supplied, the minimum level is
   // resolved per-log-call via the cached `getMinLevel()` so a process-wide
   // log-level change (env mutation + cache reset) takes effect immediately
   // for already-constructed loggers — without a Map lookup penalty in the
@@ -133,7 +132,7 @@ function createLoggerInternal(
     const minLevelOrder = fixedLevelOrder ?? LOG_LEVEL_ORDER[getMinLevel()];
     if (LOG_LEVEL_ORDER[level] < minLevelOrder) return;
 
-    // §7.2: defensively redact secret-shaped keys from caller-supplied `data`
+    // Defensively redact secret-shaped keys from caller-supplied `data`
     // before merging into the log entry. Callers occasionally pass through
     // config objects (`{ ...config }`) or response payloads that contain
     // licenseKey / authorization headers; without this guard those fields
@@ -142,13 +141,13 @@ function createLoggerInternal(
 
     const now = new Date();
     const entry = {
-      // §7.6: bound context first, per-call data wins on key collision.
+      // Bound context first, per-call data wins on key collision.
       // Canonical fields come last so callers cannot accidentally overwrite
       // level, message, component, timestamp, or epoch_ms.
       ...(boundContext ?? {}),
       ...safeData,
       timestamp: now.toISOString(),
-      // §7.7: epoch_ms alongside ISO timestamp for NR Logs API ingestion.
+      // epoch_ms alongside ISO timestamp for NR Logs API ingestion.
       epoch_ms: now.getTime(),
       level,
       component,
@@ -159,7 +158,7 @@ function createLoggerInternal(
     try {
       serialized = JSON.stringify(entry);
     } catch {
-      // §7.3: per-field fallback. JSON.stringify on the whole entry threw,
+      // Per-field fallback. JSON.stringify on the whole entry threw,
       // but most fields are probably fine — only one or two values are bad
       // (e.g. a BigInt buried in caller data). Walk top-level keys and
       // replace ONLY the offending ones with '[unserializable]', so
@@ -167,7 +166,7 @@ function createLoggerInternal(
       // and any well-formed data fields) still surface. `data` is spread
       // into entry via `...safeData` above, so its keys are already
       // top-level here.
-      // NOTE (§LG1): this walk operates on top-level entry keys only. If a
+      // NOTE: this walk operates on top-level entry keys only. If a
       // data field is a nested object containing an unserializable value
       // (e.g. `data = { outer: { amount: 1n } }`), the entire `outer` key is
       // replaced with '[unserializable]' — not just the `amount` sub-key.
@@ -183,7 +182,7 @@ function createLoggerInternal(
       }
       serialized = JSON.stringify(safeEntry);
     }
-    // §7.4: prefer console.error over a raw process.stderr.write. Both go to
+    // Prefer console.error over a raw process.stderr.write. Both go to
     // the same underlying stream, but console.error uses Node's Console
     // implementation which handles formatting and any future buffering
     // changes — and it keeps log output cooperative with consumer code that
@@ -200,8 +199,8 @@ function createLoggerInternal(
       createLoggerInternal(component, levelOverride, {
         ...(boundContext ?? {}),
         // Redacting at child-creation time avoids re-running redact() on the
-        // bound context per log call (§LG2). Note: per-call data is still
-        // redacted on every emit (line 141) — only bound context gets the
+        // bound context per log call. Note: per-call data is still
+        // redacted on every emit — only bound context gets the
         // creation-time optimization.
         ...(redact(context) as Record<string, unknown>),
       }),

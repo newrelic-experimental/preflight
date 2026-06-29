@@ -46,13 +46,13 @@ describe('resolveRegion', () => {
     expect(resolveRegion('us01xxSOMEKEY123456', null)).toBe('us');
   });
 
-  // §5.10: gov01 prefix maps to FedRAMP region
+  // gov01 prefix maps to FedRAMP region
   it('returns gov for FedRAMP license key (gov01 prefix)', () => {
     expect(resolveRegion('gov01xxSOMEKEY123456', null)).toBe('gov');
     expect(resolveRegion('GOV01xxSOMEKEY123456', null)).toBe('gov');
   });
 
-  // §5.10: legacy keys without a region-prefix shape default to US
+  // legacy keys without a region-prefix shape default to US
   it('returns us for legacy keys without a region prefix', () => {
     // Real NR legacy license keys are 40-char hex strings — they don't start
     // with a 2-4-letter prefix followed by 2 digits, so they bypass the strict
@@ -62,7 +62,7 @@ describe('resolveRegion', () => {
     expect(resolveRegion('abcdefNRAL', null)).toBe('us');
   });
 
-  // §5.10: throw on unrecognized region-shaped prefixes rather than silently
+  // throw on unrecognized region-shaped prefixes rather than silently
   // misrouting data. This catches typos and future regions we don't yet support.
   it('throws on unrecognized region-shaped license-key prefix', () => {
     expect(() => resolveRegion('apac01xxSOMEKEY', null)).toThrow(/Unrecognized.*region prefix/);
@@ -81,8 +81,13 @@ describe('resolveRegion', () => {
     }
   });
 
+  it('does not throw when collectorHost is provided to override detection', () => {
+    // Bare keyword form short-circuits the license-key check entirely.
+    expect(resolveRegion('apac01xxSOMEKEY', 'eu')).toBe('eu');
+  });
+
   // ---------------------------------------------------------------------------
-  // 2. resolveRegion — collectorHost override (§HC2 keyword-only form)
+  // 2. resolveRegion — collectorHost override (keyword-only form)
   // ---------------------------------------------------------------------------
   it('bare keyword collectorHost values are recognized (eu, gov, us)', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'eu')).toBe('eu');
@@ -90,21 +95,21 @@ describe('resolveRegion', () => {
     expect(resolveRegion('eu01xxSOMEKEY', 'us')).toBe('us');
   });
 
-  it('FQDN collectorHost falls through to license-key prefix detection (§HC2)', () => {
-    // Before §HC2, FQDNs were substring-matched ('eu' in 'collector.eu01.nr-data.net').
+  it('FQDN collectorHost falls through to license-key prefix detection', () => {
+    // Previously, FQDNs were substring-matched ('eu' in 'collector.eu01.nr-data.net').
     // Now only bare keywords are matched; FQDNs fall through to the license key.
     expect(resolveRegion('us01xxSOMEKEY', 'collector.eu01.nr-data.net')).toBe('us'); // license key is us
     expect(resolveRegion('eu01xxSOMEKEY', 'collector.eu01.nr-data.net')).toBe('eu'); // license key is eu
     expect(resolveRegion('us01xxSOMEKEY', 'collector.newrelic.com')).toBe('us');
   });
 
-  it('FQDN containing eu/gov substring does not false-positive (§HC2 footgun)', () => {
+  it('FQDN containing eu/gov substring does not false-positive', () => {
     // 'bureau-collector.local' contains 'eu', 'eucalyptus.test' likewise.
     expect(resolveRegion('us01xxSOMEKEY', 'bureau-collector.local')).toBe('us');
     expect(resolveRegion('us01xxSOMEKEY', 'eucalyptus.test')).toBe('us');
   });
 
-  // §5.10: gov collectorHost override (bare keyword only)
+  // gov collectorHost override (bare keyword only)
   it('returns gov when collectorHost is the bare keyword gov', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'gov')).toBe('gov');
     // FQDN form no longer matches — license key prefix wins instead
@@ -134,7 +139,7 @@ describe('getEventsApiUrl', () => {
     );
   });
 
-  // §5.9: literal-hostname override
+  // literal-hostname override
   it('uses collectorHost as literal URL host when it contains a dot', () => {
     expect(getEventsApiUrl('12345', 'us', 'collector.example.com')).toBe(
       'https://collector.example.com/v1/accounts/12345/events',
@@ -147,7 +152,7 @@ describe('getEventsApiUrl', () => {
     );
   });
 
-  // CODE_REVIEW F3 — defensive guard against an empty / null / undefined
+  // Defensive guard against an empty / null / undefined
   // accountId that bypassed loadConfig's fail-fast (JS callers, non-null
   // assertion casts, custom config paths). Without the guard, the URL becomes
   // `.../accounts/null/events` and NR returns 404 silently.
@@ -173,7 +178,6 @@ describe('getMetricApiUrl', () => {
     expect(getMetricApiUrl('gov')).toBe('https://gov-metric-api.newrelic.com/metric/v1');
   });
 
-  // §5.9
   it('uses collectorHost as literal URL host when it contains a dot', () => {
     expect(getMetricApiUrl('us', 'collector.example.com')).toBe(
       'https://collector.example.com/metric/v1',
@@ -186,7 +190,6 @@ describe('getLogsApiUrl', () => {
     expect(getLogsApiUrl('gov')).toBe('https://gov-log-api.newrelic.com/log/v1');
   });
 
-  // §5.9
   it('uses collectorHost as literal URL host when it contains a dot', () => {
     expect(getLogsApiUrl('us', 'collector.example.com')).toBe(
       'https://collector.example.com/log/v1',
@@ -237,10 +240,20 @@ describe('sendWithRetry', () => {
     expect(headers['Api-Key']).toBe('us01xxTESTKEY');
     expect(headers['Content-Type']).toBe('application/json');
     expect(headers['Content-Encoding']).toBe('gzip');
-    // CODE_REVIEW §10.7 — User-Agent identifies this library on NR's
-    // collector access logs. Pin the format so a regression that drops
-    // the USER_AGENT line surfaces here.
-    expect(headers['User-Agent']).toMatch(/^ai-telemetry\/\d+\.\d+\.\d+/);
+    // User-Agent identifies the consuming client on NR's
+    // collector access logs. Without clientVersion the format is just the name.
+    expect(headers['User-Agent']).toBe('ai-telemetry');
+  });
+
+  // 4b. Verifies User-Agent includes version when clientVersion is set
+  it('sends name/version User-Agent when clientVersion is provided', async () => {
+    fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
+
+    await sendWithRetry(baseOptions({ clientName: 'preflight', clientVersion: '1.2.3' }));
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const headers = init!.headers as Record<string, string>;
+    expect(headers['User-Agent']).toBe('preflight/1.2.3');
 
     // Body should be a Buffer (gzip output)
     const body = init!.body as Buffer;
@@ -289,8 +302,8 @@ describe('sendWithRetry', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  // CODE_REVIEW §9.15 — surface the 403 response body in result.error
-  it('propagates the 403 response body into result.error (CODE_REVIEW §9.15)', async () => {
+  // surface the 403 response body in result.error
+  it('propagates the 403 response body into result.error', async () => {
     fetchSpy.mockResolvedValue(
       new Response('License key invalid for account 123456', { status: 403 }),
     );
@@ -306,7 +319,7 @@ describe('sendWithRetry', () => {
     expect(result.error).toBe('forbidden');
   });
 
-  // CODE_REVIEW §9.14 — surface the 400 response body in result.error
+  // surface the 400 response body in result.error
   it('returns failure for 400 and surfaces the response body in result.error', async () => {
     fetchSpy.mockResolvedValue(
       new Response('Reserved attribute name "accountId"', { status: 400 }),
@@ -346,8 +359,8 @@ describe('sendWithRetry', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
-  // 7b. CODE_REVIEW §5.6 / §9.6 — Honor Retry-After header on 429.
-  // §TST1: removed the flaky lower-bound (≥40ms) assertion. The lower bound's
+  // 7b. Honor Retry-After header on 429.
+  // Removed the flaky lower-bound (≥40ms) assertion. The lower bound's
   // intent was to prove the delay fired, but on a loaded CI runner a 50ms
   // setTimeout can drift to 100–200ms and make the lower bound trivially true.
   // The regression guard is the upper bound (< 900ms): if Math.min cap were
@@ -376,7 +389,7 @@ describe('sendWithRetry', () => {
     expect(elapsed).toBeLessThan(900);
   });
 
-  // 7c. §5.6 — HTTP-date form of Retry-After is parsed too.
+  // 7c. HTTP-date form of Retry-After is parsed too.
   it('honors Retry-After header (HTTP-date) on 503', async () => {
     const futureDate = new Date(Date.now() + 1_000).toUTCString();
     fetchSpy
@@ -396,11 +409,11 @@ describe('sendWithRetry', () => {
 
     expect(result.success).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    // §TST1: upper-bound only — no flaky lower bound.
+    // upper-bound only — no flaky lower bound.
     expect(elapsed).toBeLessThan(900);
   });
 
-  // 7d. §5.6 — Malformed Retry-After falls back to exponential backoff
+  // 7d. Malformed Retry-After falls back to exponential backoff
   // (i.e. it must not throw, and must not stall forever).
   it('falls back to exponential backoff when Retry-After is malformed', async () => {
     fetchSpy
@@ -420,10 +433,10 @@ describe('sendWithRetry', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  // 7e. CODE_REVIEW §9.8 — Verify decorrelated-jitter backoff (§5.13) widens
+  // 7e. Verify decorrelated-jitter backoff widens
   // each retry's window. Pin Math.random so the sample is deterministic, then
   // capture setTimeout calls to assert the requested delay sequence.
-  it('decorrelated-jitter backoff: each retry samples a wider [base, prev*3] band (§5.13)', async () => {
+  it('decorrelated-jitter backoff: each retry samples a wider [base, prev*3] band', async () => {
     const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
     // With Math.random=0.5: sample = base + (upper - base) * 0.5 = (base + upper) / 2
     //   attempt 0: prev=100, upper=min(10000, 300)=300 → (100+300)/2 = 200
@@ -461,7 +474,7 @@ describe('sendWithRetry', () => {
     setTimeoutSpy.mockRestore();
   });
 
-  // 7f. §9.8 — Verify maxDelayMs caps the decorrelated-jitter backoff.
+  // 7f. Verify maxDelayMs caps the decorrelated-jitter backoff.
   it('decorrelated-jitter backoff caps at maxDelayMs', async () => {
     const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
     const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -520,16 +533,16 @@ describe('sendWithRetry', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
-  // 10. CODE_REVIEW §9.5 / §5.1 — `AbortSignal.timeout` aborts a hung fetch
+  // 10. `AbortSignal.timeout` aborts a hung fetch
   //
-  // §5.1 added `signal: AbortSignal.timeout(requestTimeoutMs)` at
-  // http-client.ts:205. Per §9.5: "mock fetch to never resolve and verify
-  // sendWithRetry rejects within timeout + retry budget". We simulate a hung
+  // `signal: AbortSignal.timeout(requestTimeoutMs)` means: mock fetch to never
+  // resolve and verify sendWithRetry rejects within timeout + retry budget.
+  // We simulate a hung
   // connection by having fetch return a promise that rejects only when the
   // abort signal fires (which AbortSignal.timeout will trigger after
-  // requestTimeoutMs). Without the §5.1 fix, this test would hang past the
+  // requestTimeoutMs). Without the timeout, this test would hang past the
   // Jest timeout.
-  it('aborts a hung fetch via AbortSignal.timeout (CODE_REVIEW §9.5)', async () => {
+  it('aborts a hung fetch via AbortSignal.timeout', async () => {
     // Hang until the per-request abort signal fires; reject with the abort
     // reason (a DOMException 'TimeoutError' from AbortSignal.timeout).
     fetchSpy.mockImplementation((_url, init) => {
@@ -556,9 +569,9 @@ describe('sendWithRetry', () => {
     expect(elapsed).toBeLessThan(2000);
   });
 
-  // 10b. §9.5 — Per-attempt timeout applies on every retry; total wall-clock
+  // 10b. Per-attempt timeout applies on every retry; total wall-clock
   // is bounded by (timeout + backoff) × (maxRetries + 1).
-  it('per-attempt timeout fires on each retry within the retry budget (CODE_REVIEW §9.5)', async () => {
+  it('per-attempt timeout fires on each retry within the retry budget', async () => {
     fetchSpy.mockImplementation((_url, init) => {
       return new Promise((_resolve, reject) => {
         const signal = (init as RequestInit).signal as AbortSignal;

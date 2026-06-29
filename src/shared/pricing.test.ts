@@ -180,7 +180,7 @@ describe('calculateCost', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 11b. Marginal-mode tiered pricing (CODE_REVIEW §2.4)
+  // 11b. Marginal-mode tiered pricing
   // ---------------------------------------------------------------------------
   describe('marginal-mode tiered pricing', () => {
     let tmpDir: string;
@@ -257,7 +257,7 @@ describe('calculateCost', () => {
       expect(cost.inputUsd).toBeCloseTo(0.1, 6);
     });
 
-    it('computes cache savings at tier rate in marginal mode when input exceeds threshold (§PRC3)', () => {
+    it('computes cache savings at tier rate in marginal mode when input exceeds threshold', () => {
       loadMarginalPricing();
       // marginal-test: inputPerMTok=1, tierInputPerMTok=4, threshold=100k, cacheReadPerMTok not set (0)
       // 200k input (above 100k threshold): savingsInputRate = tierInputPerMTok = 4
@@ -342,7 +342,7 @@ describe('resolveModelPricing', () => {
     expect(haiku!.inputPerMTok).toBe(0.8);
   });
 
-  it('resolves model name via forward-prefix when no alias exists — "claude-opus-4-5" prefix matches "claude-opus-4-5-..." (§PR4)', () => {
+  it('resolves model name via forward-prefix when no alias exists — "claude-opus-4-5" prefix matches "claude-opus-4-5-..."', () => {
     // claude-opus-4-5 is an exact key, so this exercises exact-match not forward-prefix.
     // Using claude-sonnet-4-5 which IS an exact key to verify exact-match path works.
     // For a genuine forward-prefix test: "claude-sonnet-4-5-" would match "claude-sonnet-4-5"
@@ -356,7 +356,7 @@ describe('resolveModelPricing', () => {
     expect(opusAlias!.inputPerMTok).toBe(opusDirect!.inputPerMTok);
   });
 
-  it('resolves claude-haiku-4 to the dateless claude-haiku-4-5 entry, not the dated one (§PD3)', () => {
+  it('resolves claude-haiku-4 to the dateless claude-haiku-4-5 entry, not the dated one', () => {
     const haiku4 = resolveModelPricing('claude-haiku-4');
     expect(haiku4).not.toBeNull();
     // Resolves to the dateless current-gen entry (via alias → dateless key)
@@ -364,7 +364,7 @@ describe('resolveModelPricing', () => {
     expect(haiku4!.outputPerMTok).toBe(5);
   });
 
-  it('resolves gpt-5, gemini-2.5, gemini-2.0 via added MODEL_ALIASES (§PD4)', () => {
+  it('resolves gpt-5, gemini-2.5, gemini-2.0 via added MODEL_ALIASES', () => {
     const gpt5 = resolveModelPricing('gpt-5');
     expect(gpt5).not.toBeNull();
     expect(gpt5!.inputPerMTok).toBeGreaterThan(0);
@@ -391,12 +391,12 @@ describe('resolveModelPricing', () => {
   });
 
   // 13b. Verify claude-opus-4-10 routes to current-gen Opus 4 pricing via
-  // reverse-prefix (§PR2). The concern was that claude-opus-4-1 would be
+  // reverse-prefix. The concern was that claude-opus-4-1 would be
   // matched, but the algorithm uses DATED_SUFFIX_RE to extract base names, so
   // claude-opus-4-1 (no date suffix) is skipped. The actual path is:
   // reverse-prefix matches claude-opus-4-20250514 → base 'claude-opus-4' →
   // alias → claude-opus-4-7 (correct current-gen pricing).
-  it('resolves "claude-opus-4-10" to current-gen Opus 4 via reverse-prefix+alias (§PR2)', () => {
+  it('resolves "claude-opus-4-10" to current-gen Opus 4 via reverse-prefix+alias', () => {
     const pricing = resolveModelPricing('claude-opus-4-10');
     expect(pricing).not.toBeNull();
     // Routes to claude-opus-4-7 rates (NOT claude-opus-4-1 which would be wrong)
@@ -406,7 +406,7 @@ describe('resolveModelPricing', () => {
   });
 
   // 14a. Family-name input must route to current-gen pricing, not legacy dated key
-  // (regression test for CODE_REVIEW §2.3 — `claude-opus-4` previously routed to
+  // (regression test — `claude-opus-4` previously routed to
   // `claude-opus-4-20250514` at $15/$75 instead of `claude-opus-4-7` at $5/$25.)
   it('resolves "claude-opus-4" to current-gen pricing via the alias map (not legacy)', () => {
     const pricing = resolveModelPricing('claude-opus-4');
@@ -623,7 +623,7 @@ describe('custom pricing file', () => {
     stderrSpy.mockRestore();
   });
 
-  it('rejects fractional contextWindow and tierThreshold (§PRC2)', () => {
+  it('rejects fractional contextWindow and tierThreshold', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const customFile = join(tmpDir, 'fractional.json');
 
@@ -675,7 +675,7 @@ describe('custom pricing file', () => {
     stderrSpy.mockRestore();
   });
 
-  // §2.6: sane upper bound on custom pricing rates
+  // sane upper bound on custom pricing rates
   it('rejects entries with implausibly large inputPerMTok (above ceiling)', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -721,7 +721,7 @@ describe('custom pricing file', () => {
     stderrSpy.mockRestore();
   });
 
-  it('returns null (not {}) when all entries in the file are invalid (§PR1)', () => {
+  it('returns null (not {}) when all entries in the file are invalid', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const customFile = join(tmpDir, 'all-bad.json');
     writeFileSync(
@@ -854,7 +854,7 @@ describe('custom pricing file', () => {
     stderrSpy.mockRestore();
   });
 
-  // CODE_REVIEW §2.9 — file size cap
+  // file size cap
   it('rejects custom pricing files larger than the size cap (1 MB)', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -901,7 +901,7 @@ describe('custom pricing file', () => {
     expect(result!['boundary-model'].inputPerMTok).toBe(1);
   });
 
-  // CODE_REVIEW §2.10 — fresh-object construction drops unknown fields
+  // fresh-object construction drops unknown fields
   it("drops unknown / typo'd fields from custom pricing entries", () => {
     const customFile = join(tmpDir, 'with-extras.json');
     writeFileSync(
@@ -912,10 +912,10 @@ describe('custom pricing file', () => {
           outputPerMTok: 10,
           contextWindow: 200_000,
           // Unknown fields that should NOT survive into the merged table.
-          // Note: `__proto__` key behavior is tested in the dedicated §P1 test
+          // Note: `__proto__` key behavior is tested in the dedicated test
           // above. JSON.stringify DOES serialize '__proto__' as a regular string
           // key (it does not drop it), and JSON.parse reproduces it as an own
-          // enumerable property — the §P1 denylist in loadCustomPricing is what
+          // enumerable property — the denylist in loadCustomPricing is what
           // prevents the prototype pollution, not any JSON serialization quirk.
           notes: 'free for friends',
           inpurPerMTok: 999, // typo of inputPerMTok
@@ -980,7 +980,7 @@ describe('custom pricing file', () => {
     expect(entry.tierMode).toBe('marginal');
   });
 
-  it('skips __proto__ / constructor / prototype keys without polluting Object.prototype (§P1)', () => {
+  it('skips __proto__ / constructor / prototype keys without polluting Object.prototype', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     const customFile = join(tmpDir, 'proto-poison.json');
@@ -1006,7 +1006,7 @@ describe('custom pricing file', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PricingTable class — instance-based pricing (CODE_REVIEW §2.7)
+// PricingTable class — instance-based pricing
 // ---------------------------------------------------------------------------
 describe('PricingTable (instance-based)', () => {
   let tmpDir: string;
@@ -1179,7 +1179,7 @@ describe('PricingTable (instance-based)', () => {
     );
   });
 
-  // CODE_REVIEW §8.10 — pre-fix, `{ ...DEFAULT_PRICING_TABLE }` was a
+  // Pre-fix, `{ ...DEFAULT_PRICING_TABLE }` was a
   // shallow copy: each instance's `table[name]` shared the inner
   // ModelPricing object reference with `DEFAULT_PRICING_TABLE[name]`.
   // A consumer that called `instance.resolve('claude-opus-4-7')` and
@@ -1210,7 +1210,7 @@ describe('PricingTable (instance-based)', () => {
     expect(fresh.resolve('claude-opus-4-7')!.inputPerMTok).toBe(originalRate);
   });
 
-  it('§11.5 returns null (not a non-deterministic entry) when two equal-length keys forward-match', () => {
+  it('returns null (not a non-deterministic entry) when two equal-length keys forward-match', () => {
     // Construct a table with two same-length keys that both forward-prefix-match 'test-model'
     // via the forward-prefix heuristic (key starts with modelName, suffix matches /^-\d/).
     // The old code returned whichever key happened last in Object.keys() order.
