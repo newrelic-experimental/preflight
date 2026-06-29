@@ -1188,7 +1188,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
   it('uses email local-part from API key validation as default developer name', async () => {
     mockedKeyValidator.validateApiKey.mockResolvedValue({
       valid: true,
-      detail: 'jane.smith@newrelic.com',
+      detail: 'jane.smith@example.com',
     });
     // Developer name answer is blank → should fall back to email local-part
     answers('cloud', '12345', 'NRLIC-test', '', 'NRAK-abc', '', '', '', '', 'n');
@@ -1206,7 +1206,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
     );
     mockedKeyValidator.validateApiKey.mockResolvedValue({
       valid: true,
-      detail: 'other@newrelic.com',
+      detail: 'other@example.com',
     });
     answers('cloud', '', '', 'us', 'NRAK-abc', '', '', '', '', 'n');
 
