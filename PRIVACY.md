@@ -6,7 +6,7 @@ This document describes what data this tool collects, what is sent to New Relic 
 
 ## What Is Always Collected (Local Only by Default)
 
-The following is written to `~/.nr-ai-observe/` on the developer's machine regardless of configuration. It does not leave the machine unless cloud mode is enabled (see below).
+The following is written to `~/.newrelic-preflight/` on the developer's machine regardless of configuration. It does not leave the machine unless cloud mode is enabled (see below).
 
 - Every tool call the AI assistant makes: tool name, duration, success/failure, input byte size, and a short SHA-256 hash of the input.
 - File paths accessed by Read, Write, and Edit operations.
@@ -68,7 +68,7 @@ Setting `highSecurity: true` in the config file overrides `recordContent` to `fa
 
 **Privacy implication:** Use this in environments where content must never leave the machine, regardless of how other settings are configured.
 
-See [SECURITY.md → High security mode](./SECURITY.md#high-security-mode) for the technical enforcement details. Set it in the config file (`~/.nr-ai-observe/config.json`), not only via environment variable.
+See [SECURITY.md → High security mode](./SECURITY.md#high-security-mode) for the technical enforcement details. Set it in the config file (`~/.newrelic-preflight/config.json`), not only via environment variable.
 
 ### `developer` — defaults to OS username
 
