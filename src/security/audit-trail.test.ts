@@ -446,7 +446,7 @@ describe('AuditTrailManager', () => {
     }
   });
 
-  // 18. M-08: persists each tool call record to disk immediately
+  // 18. persists each tool call record to disk immediately
   it('calls localStore.appendAuditLog on every recordToolCall', () => {
     const { store, appendSpy } = makeLocalStore();
     const mgr = makeManager({ localStore: store });
@@ -463,7 +463,7 @@ describe('AuditTrailManager', () => {
     });
   });
 
-  // 19. M-08: persists proxy call records to disk immediately
+  // 19. persists proxy call records to disk immediately
   it('calls localStore.appendAuditLog on every recordProxyCall', () => {
     const { store, appendSpy } = makeLocalStore();
     const mgr = makeManager({ localStore: store });
@@ -477,7 +477,7 @@ describe('AuditTrailManager', () => {
     });
   });
 
-  // 20. M-08: no localStore — no crash
+  // 20. no localStore — no crash
   it('does not throw when no localStore is provided', () => {
     const mgr = makeManager();
     expect(() => mgr.recordToolCall(makeRecord())).not.toThrow();
@@ -532,8 +532,8 @@ describe('securityAlertToNrEvent', () => {
   });
 });
 
-// N-11: redaction in NR event file_path and command fields
-describe('NR event field redaction (N-11)', () => {
+// redaction in NR event file_path and command fields
+describe('NR event field redaction', () => {
   it('auditRecordToNrEvent redacts secrets in file_path', () => {
     const mgr = makeManager();
     const audit = mgr.recordToolCall(
@@ -585,8 +585,8 @@ describe('NR event field redaction (N-11)', () => {
   });
 });
 
-// N-04: redaction in SecurityAlert description
-describe('SecurityAlert description redaction (N-04)', () => {
+// redaction in SecurityAlert description
+describe('SecurityAlert description redaction', () => {
   it('redacts secrets embedded in a destructive command description', () => {
     const mgr = makeManager();
     const record = makeRecord({ toolName: 'Bash', command: 'rm -rf / TOKEN=sk-secret123' });
@@ -628,10 +628,10 @@ describe('SecurityAlert description redaction (N-04)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-140: Audit-trail case/spacing/false-positive tests
+// Audit-trail case/spacing/false-positive tests
 // ---------------------------------------------------------------------------
 
-describe('F-140: Audit-trail case/spacing/false-positive tests', () => {
+describe('Audit-trail case/spacing/false-positive tests', () => {
   // Case variations — the rm regex uses \brm\s+ (no /i flag), so uppercase
   // variants do NOT currently trigger the destructive-command classifier.
   // These tests document that known limitation.

@@ -290,7 +290,7 @@ describe('HttpUpstream', () => {
       ).not.toThrow();
     });
 
-    describe('numeric IP encoding bypasses (F-122)', () => {
+    describe('numeric IP encoding bypasses', () => {
       it('blocks decimal encoding of loopback (2130706433 = 127.0.0.1)', () => {
         expect(
           () =>
@@ -350,7 +350,7 @@ describe('HttpUpstream', () => {
       });
     });
 
-    describe('RFC-1918 range boundaries and multicast (F-130)', () => {
+    describe('RFC-1918 range boundaries and multicast', () => {
       const blockedBoundaries: Array<[string, string]> = [
         // 10.0.0.0/8 range
         ['10.x first (10.0.0.0)', 'http://10.0.0.0/'],
@@ -389,7 +389,7 @@ describe('HttpUpstream', () => {
       });
     });
 
-    describe('userinfo bypass invariant (F-124)', () => {
+    describe('userinfo bypass invariant', () => {
       it('validates against url.hostname (not userinfo) when userinfo is present with blocked address', () => {
         // Node's URL parser correctly extracts hostname from `userinfo@hostname` format.
         // url.hostname returns the actual hostname (not the userinfo), so SSRF validation works correctly.
@@ -831,7 +831,7 @@ describe('HttpUpstream.forward()', () => {
     expect((upstream as unknown as { timeoutMs: number }).timeoutMs).toBe(30_000);
   });
 
-  // M-10: SSE detection must parse the media type, not just substring-match
+  // SSE detection must parse the media type, not just substring-match
   it('treats text/event-stream with charset parameter as streaming', async () => {
     ({ server: mockServer, port } = await createMockServer((_req, res) => {
       _req.on('data', () => {});
@@ -915,7 +915,7 @@ describe('HttpUpstream.forward()', () => {
     expect(p95).toBeLessThan(50);
   });
 
-  describe('DNS rebinding protection (F-120)', () => {
+  describe('DNS rebinding protection', () => {
     it('forwards requests after re-validating private URLs when allowPrivateHosts=true', async () => {
       ({ server: mockServer, port } = await createMockServer((_req, res) => {
         _req.on('data', () => {});

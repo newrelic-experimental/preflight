@@ -259,11 +259,11 @@ describe('LocalAlertEngine — budget rules', () => {
     expect(events).toEqual([]);
   });
 
-  // F-009 + loadRules interaction: loadRules() preserves state for rules
+  // loadRules() preserves state for rules
   // whose id is unchanged. A hot-reload between fire and clear must not
   // wipe `firedSpentUsd`, otherwise the next snapshot with sessionUsd=0
   // would silently keep the rule firing.
-  it('preserves firedSpentUsd across hot-reload so the F-009 clear path still fires', () => {
+  it('preserves firedSpentUsd across hot-reload so the clear path still fires', () => {
     const engine = new LocalAlertEngine();
     const rule = makeBudgetRule({ threshold: 80 });
     engine.loadRules([rule]);

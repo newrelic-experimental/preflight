@@ -150,7 +150,7 @@ export class ProxyManager {
           res.end(JSON.stringify({ error: 'internal_error' }));
         } else if (!res.writableEnded) {
           // Headers already sent (e.g. mid-SSE stream) — writing JSON would corrupt
-          // the stream. N-09: destroy the response (not just the socket) so the
+          // the stream. destroy the response (not just the socket) so the
           // writable stream and its pipe chain are fully cleaned up.
           res.on('error', () => {
             /* suppress post-destroy write errors */

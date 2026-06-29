@@ -214,10 +214,10 @@ describe('classifyDashboardStartError()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-137: CLI argument edge cases
+// CLI argument edge cases
 // ---------------------------------------------------------------------------
 
-describe('F-137: CLI argument edge cases', () => {
+describe('CLI argument edge cases', () => {
   const base = ['node', 'preflight'];
 
   it('--port=0 throws (zero is not a valid port)', () => {
@@ -578,7 +578,7 @@ describe('stdio integration', () => {
       args: [binPath, '--stdio'],
       // NR_AI_DASHBOARD_PORT=0 → OS-assigned ephemeral, so this test is
       // safe to run when port 7777 is occupied (e.g. a developer running
-      // their production instance on the same host). Enabled by F-004.
+      // their production instance on the same host).
       env: { ...process.env, NR_AI_DASHBOARD_PORT: '0', CLAUDE_JOB_DIR: tmpJobDir },
     });
 

@@ -350,7 +350,7 @@ export function handleGetWeeklySummary(
     };
   }
 
-  // N-03: validate week format before it reaches file-path construction
+  // validate week format before it reaches file-path construction
   if (!/^\d{4}-W\d{2}$/.test(args.week)) {
     return {
       content: [

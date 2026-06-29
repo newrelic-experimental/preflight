@@ -149,11 +149,11 @@ describe('sse-handler', () => {
     }
   });
 
-  // Regression for F-005. The SSE frame `id` field must use the bus's global
+  // Regression for this. The SSE frame `id` field must use the bus's global
   // sequence number, not a per-connection counter — otherwise reconnecting
   // clients send back the wrong Last-Event-ID and either miss real events
   // or replay pre-connection history.
-  it('frame id matches bus global seq (F-005 regression)', async () => {
+  it('frame id matches bus global seq', async () => {
     const bus = new LiveEventBus();
     // Prime the bus with 5 events BEFORE the client connects. Their bus
     // seqs are 1..5.
@@ -195,7 +195,7 @@ describe('sse-handler', () => {
     }
   });
 
-  // Regression for F-005. After reconnect with Last-Event-ID set to a real
+  // Regression for this. After reconnect with Last-Event-ID set to a real
   // bus seq, the server must replay only events newer than that seq. With
   // the per-connection counter bug, this test would have replayed older
   // (pre-connection) events.
@@ -254,11 +254,11 @@ describe('sse-handler', () => {
     }
   });
 
-  // Regression for F-010. A client sending Last-Event-ID: -1 (or any negative
+  // Regression for this. A client sending Last-Event-ID: -1 (or any negative
   // number) must NOT trigger a replay. With the original bug, replaySeq would
   // be -1 (no replay) but nextLocalSeq became 0; the next reconnect with
   // Last-Event-ID: 0 then replayed the entire bus buffer.
-  it('Last-Event-ID: -1 does not trigger replay (F-010 regression)', async () => {
+  it('Last-Event-ID: -1 does not trigger replay', async () => {
     const bus = new LiveEventBus();
     bus.emit('tool-call', {
       id: 'a',
@@ -302,7 +302,7 @@ describe('sse-handler', () => {
     }
   });
 
-  it('Last-Event-ID: not-a-number does not trigger replay (F-010 regression)', async () => {
+  it('Last-Event-ID: not-a-number does not trigger replay', async () => {
     const bus = new LiveEventBus();
     bus.emit('tool-call', {
       id: 'a',
@@ -348,13 +348,13 @@ describe('sse-handler', () => {
   // seq namespace. The browser sends them back as Last-Event-ID on reconnect;
   // parseInt("hb-...") → NaN → no replay. This guards against a heartbeat id
   // contaminating the seq numbering and triggering an unintended replay.
-  // Regression for F-023. Both `req.on('close')` and `res.on('close')` register
+  // Regression for this. Both `req.on('close')` and `res.on('close')` register
   // the same cleanup function — on a normal disconnect both fire. The
   // `cleaned` guard makes the second invocation a no-op so a future change
   // (e.g. wrapping cleanup in something that side-effects) can't introduce
   // a real double-execution bug. This test asserts each `bus.offWithSeq`
   // is called exactly once even when both close events fire.
-  it('cleanup runs exactly once when both req and res emit close (F-023)', () => {
+  it('cleanup runs exactly once when both req and res emit close', () => {
     const bus = new LiveEventBus();
     const offSpy = jest.spyOn(bus, 'offWithSeq');
 

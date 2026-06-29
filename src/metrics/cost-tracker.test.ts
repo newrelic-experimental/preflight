@@ -340,10 +340,10 @@ describe('CostTracker', () => {
   });
 
   // -------------------------------------------------------------------------
-  // F-135: cost calculation edge cases
+  // cost calculation edge cases
   // -------------------------------------------------------------------------
 
-  describe('F-135: cost calculation edge cases', () => {
+  describe('cost calculation edge cases', () => {
     it('unknown model name returns all-zero cost breakdown without crashing', () => {
       const tracker = new CostTracker();
       const breakdown = tracker.recordTokenUsage(

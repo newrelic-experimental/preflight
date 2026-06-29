@@ -91,7 +91,7 @@ describe('Thrashing detection', () => {
     expect(thrashing).toHaveLength(0);
   });
 
-  it('detects thrashing on flaky tests after pass without intermediate edits (F-026)', () => {
+  it('detects thrashing on flaky tests after pass without intermediate edits', () => {
     // Sequence: edit /a, test fail, test pass, test fail, test fail
     // With threshold=2, should detect after 2 consecutive fails (even after a pass)
     const detector = new AntiPatternDetector({ thrashThreshold: 2 });
@@ -493,10 +493,10 @@ describe('Over-delegation detection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-136: threshold boundary tests (threshold-1 / threshold / threshold+1)
+// threshold boundary tests (threshold-1 / threshold / threshold+1)
 // ---------------------------------------------------------------------------
 
-describe('F-136: threshold boundary tests', () => {
+describe('threshold boundary tests', () => {
   // ---- Thrashing ----
 
   it('thrashing: 2 cycles (threshold-1=2) does NOT fire', () => {

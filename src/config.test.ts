@@ -78,7 +78,7 @@ describe('loadMcpConfig()', () => {
     );
   });
 
-  // S-03: accountId format validation
+  // accountId format validation
   it('throws when accountId contains path-traversal characters', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
     process.env.NEW_RELIC_ACCOUNT_ID = '123/../other';
@@ -114,7 +114,7 @@ describe('loadMcpConfig()', () => {
     expect(config.accountId).toBe('99999');
   });
 
-  // S-06: envInt bounds clamping for harvest intervals and port
+  // envInt bounds clamping for harvest intervals and port
   it('clamps harvest events interval to minimum 100ms', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
@@ -328,7 +328,7 @@ describe('loadMcpConfig()', () => {
     expect(config.licenseKey).toBe('test-key');
   });
 
-  it('throws on invalid JSON in config file (F-033)', () => {
+  it('throws on invalid JSON in config file', () => {
     const path = resolve(tmpDir, 'bad.json');
     writeFileSync(path, 'not json{{{');
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -339,7 +339,7 @@ describe('loadMcpConfig()', () => {
     expect(stderrOutput).toMatch(/Invalid JSON in config file/);
   });
 
-  it('throws on invalid config file schema (F-036)', () => {
+  it('throws on invalid config file schema', () => {
     const path = resolve(tmpDir, 'bad-schema.json');
     writeFileSync(
       path,
@@ -411,7 +411,7 @@ describe('loadMcpConfig()', () => {
     expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
   });
 
-  it('accepts valid config file with all optional numeric fields (F-036)', () => {
+  it('accepts valid config file with all optional numeric fields', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     const path = resolve(tmpDir, 'valid-numeric.json');
@@ -528,7 +528,7 @@ describe('loadMcpConfig()', () => {
     ]);
   });
 
-  // N-10: highSecurity mode
+  // highSecurity mode
   it('highSecurity defaults to false', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
@@ -554,7 +554,7 @@ describe('loadMcpConfig()', () => {
     expect(config.highSecurity).toBe(true);
   });
 
-  it('highSecurity forces recordContent to false even when env var says true (N-10)', () => {
+  it('highSecurity forces recordContent to false even when env var says true', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
@@ -565,7 +565,7 @@ describe('loadMcpConfig()', () => {
     expect(config.recordContent).toBe(false);
   });
 
-  it('highSecurity env var overrides highSecurity=false in config file (N-10)', () => {
+  it('highSecurity env var overrides highSecurity=false in config file', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
@@ -575,7 +575,7 @@ describe('loadMcpConfig()', () => {
     expect(config.recordContent).toBe(false);
   });
 
-  it('recordContent is respected when highSecurity is false (N-10)', () => {
+  it('recordContent is respected when highSecurity is false', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
@@ -867,28 +867,28 @@ describe('redactSensitive()', () => {
     }
   });
 
-  // N-02: ReDoS protection
-  it('truncates input over 1 MB before applying patterns (N-02)', () => {
+  // ReDoS protection
+  it('truncates input over 1 MB before applying patterns', () => {
     const overLimit = 'A'.repeat(1_048_577);
     const result = redactSensitive(overLimit);
     expect(result.length).toBeLessThanOrEqual(1_048_576);
   });
 
-  it('still redacts secrets that appear within the first 1 MB of a large input (N-02)', () => {
+  it('still redacts secrets that appear within the first 1 MB of a large input', () => {
     const secret = 'sk-secretvalue12345';
     const padding = 'x'.repeat(100_000);
     const result = redactSensitive(`${padding}${secret}${padding}`);
     expect(result).not.toContain(secret);
   });
 
-  it('does not match an unterminated PEM block — bounded pattern prevents ReDoS (N-02)', () => {
+  it('does not match an unterminated PEM block — bounded pattern prevents ReDoS', () => {
     const input = '-----BEGIN RSA PRIVATE KEY-----' + 'A'.repeat(200);
     const result = redactSensitive(input);
     expect(result).toBe(input);
   });
 });
 
-describe('sanitizeDeveloper() (N-07)', () => {
+describe('sanitizeDeveloper()', () => {
   it('strips ASCII control characters', () => {
     expect(sanitizeDeveloper('alice\x00bob')).toBe('alicebob');
     expect(sanitizeDeveloper('user\x1fname')).toBe('username');
@@ -979,7 +979,7 @@ describe('budget fields', () => {
   });
 });
 
-describe('developer sanitization via loadMcpConfig() (N-07)', () => {
+describe('developer sanitization via loadMcpConfig()', () => {
   it('strips control characters from NEW_RELIC_AI_MCP_DEVELOPER env var', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';

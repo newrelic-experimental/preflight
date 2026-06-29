@@ -124,7 +124,7 @@ describe('LatencyTracker', () => {
     expect(t.getMetrics().slowestCalls).toHaveLength(0);
   });
 
-  it('byTool does not include tools with no valid samples (F-028)', () => {
+  it('byTool does not include tools with no valid samples', () => {
     const t = new LatencyTracker();
     // Record invalid duration for Read — it returns early and is never added to byTool
     t.recordToolCall(
@@ -140,7 +140,7 @@ describe('LatencyTracker', () => {
     expect(m.byTool['Bash']?.p50).toBe(100);
   });
 
-  it('overall is null when all recorded calls have null/undefined durationMs (F-028)', () => {
+  it('overall is null when all recorded calls have null/undefined durationMs', () => {
     const t = new LatencyTracker();
     t.recordToolCall(
       makeRecord({ toolName: 'Read', durationMs: null as unknown as number, success: true }),

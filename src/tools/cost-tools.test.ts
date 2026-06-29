@@ -136,8 +136,8 @@ describe('handleReportTokens()', () => {
     expect(metrics.totalCacheCreationTokens).toBe(0);
   });
 
-  // N-05: token clamping and model truncation
-  describe('N-05: unbounded token validation', () => {
+  // token clamping and model truncation
+  describe('unbounded token validation', () => {
     it('clamps negative token counts to 0', () => {
       const tracker = new CostTracker();
       handleReportTokens(tracker, { input_tokens: -999, output_tokens: -1, model: 'x' });
