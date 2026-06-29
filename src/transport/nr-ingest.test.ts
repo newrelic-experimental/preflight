@@ -262,7 +262,7 @@ describe('toolCallToNrEvent()', () => {
     expect(event.input_hash).toBe('abc123');
   });
 
-  describe('redaction (F-001)', () => {
+  describe('redaction', () => {
     // Long enough Bearer token to match the pattern's {20,200} length constraint.
     const SECRET_TOKEN = 'sk-test-deadbeef0123456789abcdef0123456789';
 
@@ -487,7 +487,7 @@ describe('NrIngestManager', () => {
     });
   });
 
-  describe('retry classification by HTTP status code (F-131)', () => {
+  describe('retry classification by HTTP status code', () => {
     beforeEach(() => {
       jest.useFakeTimers();
     });
@@ -846,7 +846,7 @@ describe('antiPatternToNrEvent()', () => {
     expect(event.command as string).toContain('[REDACTED]');
   });
 
-  it('timestamp is in milliseconds (F-021)', () => {
+  it('timestamp is in milliseconds', () => {
     const before = Date.now();
     const event = antiPatternToNrEvent(makePattern(), {
       developer: 'd',

@@ -103,10 +103,10 @@ describe('purgeOldSessions', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TOCTOU / interruption tests (F-133)
+// TOCTOU / interruption tests
 // ---------------------------------------------------------------------------
 
-describe('purgeOldSessions — interruption and TOCTOU (F-133)', () => {
+describe('purgeOldSessions — interruption and TOCTOU', () => {
   const oldDate = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
 
   it('continues purging remaining files when unlinkSync throws for one entry (EISDIR)', () => {
@@ -169,7 +169,7 @@ describe('purgeOldSessions — interruption and TOCTOU (F-133)', () => {
     );
   });
 
-  it('handles sessions-directory write permission revoked mid-purge, then succeeds on retry (F-133)', () => {
+  it('handles sessions-directory write permission revoked mid-purge, then succeeds on retry', () => {
     if (process.getuid?.() === 0) return; // root bypasses permission checks
 
     const dir = makeTempDir();

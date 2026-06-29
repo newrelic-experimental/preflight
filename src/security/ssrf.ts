@@ -111,7 +111,7 @@ export function validateSsrfUrl(label: string, url: URL): void {
     throw new Error(`${label}: scheme "${url.protocol}" is not allowed; use http: or https:`);
   }
 
-  // Strip trailing dot from hostname to prevent FQDN FQDN bypasses (F-123)
+  // Strip trailing dot from hostname to prevent FQDN FQDN bypasses
   // Node's URL parser preserves trailing dots, but they should be treated the same as the bare hostname
   const hostname = url.hostname.replace(/\.$/, '');
 

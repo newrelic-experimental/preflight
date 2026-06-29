@@ -244,43 +244,43 @@ describe('validateReportToolCallInput', () => {
     );
   });
 
-  it('rejects non-numeric duration_ms (F-035)', () => {
+  it('rejects non-numeric duration_ms', () => {
     expect(() =>
       validateReportToolCallInput({ tool: 'Read', success: true, duration_ms: 'not-a-number' }),
     ).toThrow('Field duration_ms must be a number when present');
   });
 
-  it('rejects non-numeric input_size_bytes (F-035)', () => {
+  it('rejects non-numeric input_size_bytes', () => {
     expect(() =>
       validateReportToolCallInput({ tool: 'Read', success: true, input_size_bytes: 'large' }),
     ).toThrow('Field input_size_bytes must be a number when present');
   });
 
-  it('rejects non-numeric output_size_bytes (F-035)', () => {
+  it('rejects non-numeric output_size_bytes', () => {
     expect(() =>
       validateReportToolCallInput({ tool: 'Read', success: true, output_size_bytes: '1024' }),
     ).toThrow('Field output_size_bytes must be a number when present');
   });
 
-  it('rejects non-numeric timestamp (F-035)', () => {
+  it('rejects non-numeric timestamp', () => {
     expect(() =>
       validateReportToolCallInput({ tool: 'Read', success: true, timestamp: '2000' }),
     ).toThrow('Field timestamp must be a number when present');
   });
 
-  it('rejects non-string error (F-035)', () => {
+  it('rejects non-string error', () => {
     expect(() => validateReportToolCallInput({ tool: 'Read', success: false, error: 42 })).toThrow(
       'Field error must be a string when present',
     );
   });
 
-  it('rejects non-object input field (F-035)', () => {
+  it('rejects non-object input field', () => {
     expect(() =>
       validateReportToolCallInput({ tool: 'Read', success: true, input: 'string' }),
     ).toThrow('Field input must be an object when present');
   });
 
-  it('accepts valid optional numeric and string fields (F-035)', () => {
+  it('accepts valid optional numeric and string fields', () => {
     const input = {
       tool: 'Read',
       success: true,

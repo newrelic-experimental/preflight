@@ -59,10 +59,10 @@ function makeIngestOptions(overrides?: Partial<NrIngestOptions>): NrIngestOption
 }
 
 // ---------------------------------------------------------------------------
-// F-125: End-to-end redaction in emitted NR events
+// End-to-end redaction in emitted NR events
 // ---------------------------------------------------------------------------
 
-describe('End-to-end redaction in emitted NR events (F-125)', () => {
+describe('End-to-end redaction in emitted NR events', () => {
   beforeEach(() => {
     mockSendEvents.mockClear();
     mockSendMetrics.mockClear();
@@ -220,10 +220,10 @@ describe('End-to-end redaction in emitted NR events (F-125)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-126: High-security mode content verification in emitted NR events
+// High-security mode content verification in emitted NR events
 // ---------------------------------------------------------------------------
 
-describe('High-security mode content verification in emitted NR events (F-126)', () => {
+describe('High-security mode content verification in emitted NR events', () => {
   beforeEach(() => {
     mockSendEvents.mockClear();
     mockSendMetrics.mockClear();

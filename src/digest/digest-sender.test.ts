@@ -2,7 +2,7 @@ import { describe, it, expect } from '@jest/globals';
 import { sendSlackDigest } from './digest-sender.js';
 
 describe('digest-sender', () => {
-  describe('sendSlackDigest() — SSRF validation (F-016)', () => {
+  describe('sendSlackDigest() — SSRF validation', () => {
     it('rejects non-Slack webhook URLs', async () => {
       await expect(sendSlackDigest('http://evil.com/webhook', { text: 'test' })).rejects.toThrow(
         'Invalid webhook URL: must be a valid https://hooks.slack.com/ URL',

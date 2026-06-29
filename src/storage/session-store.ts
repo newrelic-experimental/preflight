@@ -386,7 +386,7 @@ function formatDate(date: Date): string {
 }
 
 /**
- * N-06: Explicitly extract known fields from a raw session JSON string rather
+ * Explicitly extract known fields from a raw session JSON string rather
  * than blindly casting JSON.parse output. Prevents untrusted keys from disk
  * being misinterpreted as typed properties.
  */

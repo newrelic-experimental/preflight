@@ -273,7 +273,7 @@ describe('collector-script', () => {
       expect(event.isInterrupt).toBe(true);
     });
 
-    it('redacts sensitive information in error messages (F-017)', () => {
+    it('redacts sensitive information in error messages', () => {
       const errorWithToken = 'Authorization failed: Bearer eyJhbGciOiJIUzI1NiJ9.token.signature';
       processHook(makePostToolUseFailure({ error: errorWithToken }));
 
@@ -283,7 +283,7 @@ describe('collector-script', () => {
       expect(event.error).toContain('[REDACTED]');
     });
 
-    it('redacts API keys in error messages (F-017)', () => {
+    it('redacts API keys in error messages', () => {
       const errorWithApiKey = 'Failed: API_KEY = sk-1234567890abcdef';
       processHook(makePostToolUseFailure({ error: errorWithApiKey }));
 
@@ -449,19 +449,19 @@ describe('collector-script', () => {
       expect(result).toBe('hello...[truncated]');
     });
 
-    // N-02: ReDoS protection
-    it('redact() truncates input over 1 MB before applying patterns (N-02)', () => {
+    // ReDoS protection
+    it('redact() truncates input over 1 MB before applying patterns', () => {
       const overLimit = 'A'.repeat(1_048_577);
       const result = redact(overLimit);
       expect(result.length).toBeLessThanOrEqual(1_048_576);
     });
 
-    it('redact() does not match an unterminated PEM block — bounded pattern prevents ReDoS (N-02)', () => {
+    it('redact() does not match an unterminated PEM block — bounded pattern prevents ReDoS', () => {
       const input = '-----BEGIN RSA PRIVATE KEY-----' + 'B'.repeat(200);
       expect(redact(input)).toBe(input);
     });
 
-    describe('getRecordContent() — enforcing highSecurity (F-015)', () => {
+    describe('getRecordContent() — enforcing highSecurity', () => {
       beforeEach(() => {
         delete process.env.NEW_RELIC_AI_HIGH_SECURITY;
         delete process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT;
@@ -486,7 +486,7 @@ describe('collector-script', () => {
     });
   });
 
-  describe('file permissions (M-03)', () => {
+  describe('file permissions', () => {
     it('creates the buffer directory with mode 0o700', () => {
       // Point to a subdirectory that does not yet exist so mkdirSync is triggered
       const subDir = resolve(tmpDir, 'new-subdir');

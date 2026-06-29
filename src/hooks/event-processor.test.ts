@@ -423,10 +423,10 @@ describe('HookEventProcessor', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Pending map size cap (M-04)
+  // Pending map size cap
   // ---------------------------------------------------------------------------
 
-  describe('pending map size cap (M-04)', () => {
+  describe('pending map size cap', () => {
     it('does not exceed maxPendingEvents entries in the pending map', () => {
       const processor = new HookEventProcessor({ store, onRecord, maxPendingEvents: 5 });
 
@@ -524,10 +524,10 @@ describe('HookEventProcessor', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Edge cases: duplication, out-of-order arrivals, fallback collision (F-129)
+  // Edge cases: duplication, out-of-order arrivals, fallback collision
   // ---------------------------------------------------------------------------
 
-  describe('duplicate pre-events / out-of-order arrivals (F-129)', () => {
+  describe('duplicate pre-events / out-of-order arrivals', () => {
     it('second pre-event with same toolUseId overwrites the first; post pairs with the second', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 

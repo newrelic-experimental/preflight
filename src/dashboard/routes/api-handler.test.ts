@@ -787,7 +787,7 @@ describe('api-handler GET /api/alerts/recent', () => {
     expect(JSON.parse(body())).toEqual({ error: 'not_found' });
   });
 
-  it('returns 500 with a generic error code when alertLog.readRecent rejects (F-007)', async () => {
+  it('returns 500 with a generic error code when alertLog.readRecent rejects', async () => {
     // Suppress the server-side console.error log triggered by this case so the
     // expected error doesn't pollute test output.
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);

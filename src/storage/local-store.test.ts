@@ -277,7 +277,7 @@ describe('LocalStore', () => {
       expect(store.loadRecentSessions(7)).toEqual([]);
     });
 
-    it('rejects sessionId containing path traversal and writes no file (N-01)', () => {
+    it('rejects sessionId containing path traversal and writes no file', () => {
       const store = new LocalStore(tmpDir);
       store.initialize();
 
@@ -286,7 +286,7 @@ describe('LocalStore', () => {
       expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
     });
 
-    it('rejects sessionId containing a forward slash (N-01)', () => {
+    it('rejects sessionId containing a forward slash', () => {
       const store = new LocalStore(tmpDir);
       store.initialize();
 
@@ -295,7 +295,7 @@ describe('LocalStore', () => {
       expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
     });
 
-    it('accepts a valid UUID-style sessionId (N-01)', () => {
+    it('accepts a valid UUID-style sessionId', () => {
       const store = new LocalStore(tmpDir);
       store.initialize();
 
@@ -374,10 +374,10 @@ describe('LocalStore', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Fault injection (F-127)
+  // Fault injection
   // ---------------------------------------------------------------------------
 
-  describe('drainBuffer() fault injection (F-127)', () => {
+  describe('drainBuffer() fault injection', () => {
     it('returns [] and preserves .drain when .drain is unreadable; recovers on next poll', () => {
       if (process.getuid?.() === 0) {
         // Root bypasses file permission checks — this test is not meaningful as root
@@ -431,10 +431,10 @@ describe('LocalStore', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Directory permissions (M-03)
+  // Directory permissions
   // ---------------------------------------------------------------------------
 
-  describe('initialize() directory permissions (M-03)', () => {
+  describe('initialize() directory permissions', () => {
     it('creates all storage directories with mode 0o700', () => {
       // Use a fresh path that does not exist so initialize() creates everything
       const freshDir = resolve(tmpDir, 'fresh-store');

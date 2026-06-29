@@ -159,10 +159,10 @@ describe('Cross-session tool handlers', () => {
   });
 
   // -------------------------------------------------------------------------
-  // N-03: handleGetWeeklySummary — weekId validation
+  // handleGetWeeklySummary — weekId validation
   // -------------------------------------------------------------------------
 
-  it('handleGetWeeklySummary returns error for path-traversal weekId (N-03)', () => {
+  it('handleGetWeeklySummary returns error for path-traversal weekId', () => {
     const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
     const result = handleGetWeeklySummary(generator, { week: '../../../etc/passwd' });
     expect(result.isError).toBe(true);
@@ -170,7 +170,7 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.error).toMatch(/Invalid week format/);
   });
 
-  it('handleGetWeeklySummary returns error for arbitrary string weekId (N-03)', () => {
+  it('handleGetWeeklySummary returns error for arbitrary string weekId', () => {
     const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
     const result = handleGetWeeklySummary(generator, { week: 'not-a-week' });
     expect(result.isError).toBe(true);
@@ -178,7 +178,7 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.error).toMatch(/Invalid week format/);
   });
 
-  it('handleGetWeeklySummary accepts valid YYYY-Wnn weekId (N-03)', () => {
+  it('handleGetWeeklySummary accepts valid YYYY-Wnn weekId', () => {
     const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
     const result = handleGetWeeklySummary(generator, { week: '2026-W16' });
     expect(result.isError).toBeUndefined();
@@ -612,8 +612,8 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.platforms['windsurf'].average).toBeCloseTo(0.5, 2);
   });
 
-  // N-08: unbounded developer / notes inputs
-  it('handleGetSessionHistory truncates developer over 256 chars (N-08)', () => {
+  // unbounded developer / notes inputs
+  it('handleGetSessionHistory truncates developer over 256 chars', () => {
     const longDev = 'a'.repeat(300);
     store.saveSession(makeSummary({ sessionId: 'dev-long', developer: 'a'.repeat(256) }));
     // Should not throw; developer filter is truncated, returning 0 or 1 sessions
@@ -621,7 +621,7 @@ describe('Cross-session tool handlers', () => {
     expect(result.content[0]).toBeDefined();
   });
 
-  it('handleGetTrends truncates developer over 256 chars (N-08)', () => {
+  it('handleGetTrends truncates developer over 256 chars', () => {
     const analyzer = new TrendAnalyzer({ sessionStore: store });
     const longDev = 'b'.repeat(300);
     // Should not throw and returns a result object
@@ -630,7 +630,7 @@ describe('Cross-session tool handlers', () => {
     expect(parsed).toHaveProperty('data_points');
   });
 
-  it('handleGetCollaborationProfile truncates developer over 256 chars (N-08)', () => {
+  it('handleGetCollaborationProfile truncates developer over 256 chars', () => {
     const profiler = new CollaborationProfiler({ sessionStore: store });
     const longDev = 'c'.repeat(300);
     const result = handleGetCollaborationProfile(profiler, { developer: longDev });
@@ -639,7 +639,7 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.developer.length).toBeLessThanOrEqual(256);
   });
 
-  it('handleGetRecommendations truncates developer over 256 chars (N-08)', () => {
+  it('handleGetRecommendations truncates developer over 256 chars', () => {
     const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
     const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
     const claudeMdTracker = new ClaudeMdTracker({ sessionStore: store });
@@ -709,7 +709,7 @@ describe('Cross-session tool handlers', () => {
     }
   });
 
-  it('rejects non-numeric accountId (F-040)', async () => {
+  it('rejects non-numeric accountId', async () => {
     const result = await handleGetTeamSummary({
       teamId: 'my-team',
       accountId: 'not-a-number',
@@ -720,7 +720,7 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.error).toMatch(/Invalid accountId/);
   });
 
-  it('rejects NaN accountId (F-040)', async () => {
+  it('rejects NaN accountId', async () => {
     const result = await handleGetTeamSummary({
       teamId: 'my-team',
       accountId: 'NaN',
@@ -731,7 +731,7 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.error).toMatch(/Invalid accountId/);
   });
 
-  it('surfaces NerdGraph errors instead of returning empty results (F-037)', async () => {
+  it('surfaces NerdGraph errors instead of returning empty results', async () => {
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
       ok: true,
       json: async () => ({ errors: [{ message: 'Access denied' }] }),
@@ -751,7 +751,7 @@ describe('Cross-session tool handlers', () => {
     }
   });
 
-  it('surfaces missing data structure instead of returning empty results (F-037)', async () => {
+  it('surfaces missing data structure instead of returning empty results', async () => {
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({ data: { actor: { account: { nrql: null } } } }),
@@ -771,10 +771,10 @@ describe('Cross-session tool handlers', () => {
   });
 
   // -------------------------------------------------------------------------
-  // F-134: negative and out-of-range inputs
+  // negative and out-of-range inputs
   // -------------------------------------------------------------------------
 
-  describe('F-134: negative and out-of-range inputs', () => {
+  describe('negative and out-of-range inputs', () => {
     it('handleGetTrends with weeks: -1 does not crash and returns data_points array', () => {
       const analyzer = new TrendAnalyzer({ sessionStore: store });
       const result = handleGetTrends(analyzer, { weeks: -1 });
@@ -881,7 +881,7 @@ describe('Cross-session tool handlers', () => {
     });
   });
 
-  describe('toFiniteNumber (F-012)', () => {
+  describe('toFiniteNumber', () => {
     it('converts valid numbers', () => {
       expect(toFiniteNumber(123)).toBe(123);
       expect(toFiniteNumber('456')).toBe(456);
