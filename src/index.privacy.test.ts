@@ -18,7 +18,7 @@ import { resolve, join } from 'node:path';
 // proof is the second describe block, which spawns the real built binary —
 // that is the load-bearing test for the privacy promise.
 //
-// TODO(F-003 follow-up): if the in-process gating coverage becomes important,
+// TODO: if the in-process gating coverage becomes important,
 // either (a) refactor main() to extract the gate into a directly-testable
 // function, or (b) invest in a robust ESM-mock setup. For now the
 // child-process test is the privacy proof of record, and the `beforeAll`

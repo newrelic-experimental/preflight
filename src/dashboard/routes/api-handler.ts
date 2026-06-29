@@ -601,7 +601,7 @@ export function createApiHandler(
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
-    // F-050: surface the rolling efficiency score as a sibling field so the
+    // surface the rolling efficiency score as a sibling field so the
     // SPA Today KPI can render it without a second round-trip. `null` when
     // no tasks have been scored yet (or when the scorer wasn't wired in).
     const efficiencyScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;

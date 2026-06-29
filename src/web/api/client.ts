@@ -2,7 +2,7 @@
 // "feature unavailable" differently from a real server error. Used by the
 // recent-alerts panel: in cloud mode the alert engine is not constructed,
 // so /api/alerts/recent returns 404 — the UI must render an empty state,
-// not a permanent red error banner. See F-007 in docs/CODE_REVIEW.md.
+// not a permanent red error banner.
 export class NotFoundError extends Error {
   constructor(path: string) {
     super(`Not found: ${path}`);

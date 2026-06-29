@@ -248,7 +248,7 @@ describe('ProxyManager HTTP server', () => {
     expect(response.statusCode).toBe(404);
     const body = JSON.parse(response.body);
     expect(body.error).toBe('upstream_not_found');
-    // M-09: server name must not be disclosed to the client
+    // server name must not be disclosed to the client
     expect(body.message).toBeUndefined();
     expect(response.body).not.toContain('unknown-server');
   });
@@ -263,7 +263,7 @@ describe('ProxyManager HTTP server', () => {
 
     expect(response.statusCode).toBe(404);
     const body = JSON.parse(response.body);
-    // M-09: request URL must not be echoed back to the client
+    // request URL must not be echoed back to the client
     expect(body.message).toBeUndefined();
     expect(response.body).not.toContain('something-else');
   });
@@ -791,10 +791,10 @@ describe('ProxyManager lifecycle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Body limits (M-05)
+// Body limits
 // ---------------------------------------------------------------------------
 
-describe('ProxyManager body limits (M-05)', () => {
+describe('ProxyManager body limits', () => {
   let manager: ProxyManager;
   let mockServer: Server;
   let proxyPort: number;

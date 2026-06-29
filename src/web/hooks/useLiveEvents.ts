@@ -103,7 +103,7 @@ export function useLiveEvents(url: string = '/sse'): void {
       es.addEventListener('heartbeat', onHeartbeat as EventListener);
     };
 
-    // F-019: read live state inside each callback rather than capturing
+    // read live state inside each callback rather than capturing
     // a one-time snapshot at effect-run time. Zustand action references
     // are stable today, but a future memoization or selector wrapper
     // would silently break the captured-snapshot pattern.

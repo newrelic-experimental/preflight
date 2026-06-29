@@ -76,7 +76,7 @@ export class DashboardServer {
   constructor(opts: DashboardServerOptions) {
     this.opts = opts;
     this.staticHandler = opts.staticDir ? createStaticHandler(opts.staticDir) : undefined;
-    // F-036: When staticDir is configured but the SPA bundle hasn't been
+    // When staticDir is configured but the SPA bundle hasn't been
     // built (e.g. fresh checkout, skipped `npm run build:web`), every
     // route returns a silent 404 and the user sees a blank page with no
     // diagnostic. Surface a one-shot warning at boot so the cause is
@@ -151,7 +151,7 @@ export class DashboardServer {
       });
       // Reject the start() promise on any pre-listen error (e.g. EADDRINUSE).
       // Once listen() succeeds, swap in a permanent error logger so post-start
-      // errors aren't silently swallowed by the resolved promise. See F-011.
+      // errors aren't silently swallowed by the resolved promise.
       server.once('error', reject);
       server.listen(this.opts.port, this.opts.host, () => {
         const addr = server.address() as AddressInfo;
@@ -271,7 +271,7 @@ export class DashboardServer {
       firstColon === -1 ? hostHeader : hostHeader.slice(0, firstColon)
     ).toLowerCase();
     // Reject non-numeric port suffixes — `Host: 127.0.0.1:abc.evil.com` would
-    // otherwise pass with hostOnly='127.0.0.1'. See F-012.
+    // otherwise pass with hostOnly='127.0.0.1'.
     if (firstColon !== -1) {
       const portStr = hostHeader.slice(firstColon + 1);
       if (portStr === '' || !/^\d+$/.test(portStr)) return false;

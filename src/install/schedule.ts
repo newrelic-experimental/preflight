@@ -9,7 +9,7 @@ import {
   unlinkSync,
   mkdirSync,
 } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
 function escapeXml(s: string): string {
@@ -39,7 +39,14 @@ function dashboardLogPath(): string {
   return resolve(homedir(), '.newrelic-preflight', 'dashboard.log');
 }
 
-function buildPlist(binaryPath: string, hour: number, minute: number): string {
+// Returns the directory containing the node binary running this process.
+// Injected into launchd plists so the daemon can find node regardless of
+// which version manager (Homebrew, nvm, volta, asdf) the user has.
+export function resolveNodeDir(): string {
+  return dirname(process.execPath);
+}
+
+function buildPlist(binaryPath: string, hour: number, minute: number, nodeDir: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -51,6 +58,11 @@ function buildPlist(binaryPath: string, hour: number, minute: number): string {
     <string>${escapeXml(binaryPath)}</string>
     <string>update</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${escapeXml(nodeDir)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
@@ -76,9 +88,10 @@ export interface ScheduleStatus {
 }
 
 export function installSchedule(binaryPath: string, hour: number, minute: number): void {
+  const nodeDir = resolveNodeDir();
   const path = plistPath();
   mkdirSync(resolve(homedir(), 'Library', 'LaunchAgents'), { recursive: true, mode: 0o755 });
-  writeFileSync(path, buildPlist(binaryPath, hour, minute), { mode: 0o600 });
+  writeFileSync(path, buildPlist(binaryPath, hour, minute, nodeDir), { mode: 0o600 });
   try {
     execFileSync('launchctl', ['unload', path], { stdio: 'pipe' });
   } catch {
@@ -123,7 +136,7 @@ export function getScheduleStatus(): ScheduleStatus {
   }
 }
 
-function buildDashboardPlist(binaryPath: string): string {
+function buildDashboardPlist(binaryPath: string, nodeDir: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -135,6 +148,11 @@ function buildDashboardPlist(binaryPath: string): string {
     <string>${escapeXml(binaryPath)}</string>
     <string>--local</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${escapeXml(nodeDir)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>KeepAlive</key>
   <true/>
   <key>RunAtLoad</key>
@@ -153,9 +171,10 @@ export interface DashboardDaemonStatus {
 }
 
 export function installDashboardDaemon(binaryPath: string): void {
+  const nodeDir = resolveNodeDir();
   const path = dashboardPlistPath();
   mkdirSync(resolve(homedir(), 'Library', 'LaunchAgents'), { recursive: true, mode: 0o755 });
-  writeFileSync(path, buildDashboardPlist(binaryPath), { mode: 0o600 });
+  writeFileSync(path, buildDashboardPlist(binaryPath, nodeDir), { mode: 0o600 });
   try {
     execFileSync('launchctl', ['unload', path], { stdio: 'pipe' });
   } catch {

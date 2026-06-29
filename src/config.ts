@@ -180,7 +180,7 @@ export const ConfigFileSchema = z
   // warn block can see typos like `dashboard.openOnStarrt`.
   .passthrough();
 
-// N-07: strip control chars and truncate before the value reaches any NR event field or log
+// strip control chars and truncate before the value reaches any NR event field or log
 export function sanitizeDeveloper(raw: string): string {
   return (
     raw
@@ -565,7 +565,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ??
     (typeof file.storagePath === 'string' ? file.storagePath : DEFAULT_STORAGE_PATH);
 
-  // N-10: highSecurity must be resolved before recordContent so it can override it
+  // highSecurity must be resolved before recordContent so it can override it
   const highSecurity = envBool(
     'NEW_RELIC_AI_HIGH_SECURITY',
     typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
@@ -608,7 +608,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
     highSecurity,
 
-    // N-10: highSecurity forces recordContent off regardless of other settings
+    // highSecurity forces recordContent off regardless of other settings
     recordContent: highSecurity
       ? false
       : envBool(

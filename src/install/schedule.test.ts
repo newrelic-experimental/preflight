@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
 import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodeOs from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 // Prevent real launchctl calls.
 jest.mock('node:child_process', () => ({ execFileSync: jest.fn(), execSync: jest.fn() }));
@@ -18,6 +18,7 @@ import {
   removeSchedule,
   getScheduleStatus,
   resolveBinaryPath,
+  resolveNodeDir,
   installDashboardDaemon,
   removeDashboardDaemon,
   getDashboardDaemonStatus,
@@ -70,6 +71,15 @@ describe('installSchedule', () => {
     installSchedule('/usr/local/bin/preflight', 8, 0);
     const content = readFileSync(PLIST_PATH, 'utf-8');
     expect(content).toContain('.newrelic-preflight/update.log');
+  });
+
+  it('plist includes EnvironmentVariables PATH containing the node dir', () => {
+    installSchedule('/usr/local/bin/preflight', 8, 0);
+    const content = readFileSync(PLIST_PATH, 'utf-8');
+    expect(content).toContain('<key>EnvironmentVariables</key>');
+    expect(content).toContain('<key>PATH</key>');
+    expect(content).toContain(dirname(process.execPath));
+    expect(content).toContain('/usr/bin:/bin');
   });
 
   it('calls launchctl unload then load', () => {
@@ -189,6 +199,16 @@ describe('resolveBinaryPath', () => {
   });
 });
 
+describe('resolveNodeDir', () => {
+  it('returns the directory containing the current node binary', () => {
+    expect(resolveNodeDir()).toBe(dirname(process.execPath));
+  });
+
+  it('returns a non-empty string', () => {
+    expect(resolveNodeDir().length).toBeGreaterThan(0);
+  });
+});
+
 describe('installDashboardDaemon', () => {
   it('writes a plist file to the LaunchAgents directory', () => {
     installDashboardDaemon('/usr/local/bin/preflight');
@@ -209,6 +229,15 @@ describe('installDashboardDaemon', () => {
     const content = readFileSync(DASHBOARD_PLIST_PATH, 'utf-8');
     expect(content).toContain('<string>/opt/homebrew/bin/preflight</string>');
     expect(content).toContain('.newrelic-preflight/dashboard.log');
+  });
+
+  it('plist includes EnvironmentVariables PATH containing the node dir', () => {
+    installDashboardDaemon('/opt/homebrew/bin/preflight');
+    const content = readFileSync(DASHBOARD_PLIST_PATH, 'utf-8');
+    expect(content).toContain('<key>EnvironmentVariables</key>');
+    expect(content).toContain('<key>PATH</key>');
+    expect(content).toContain(dirname(process.execPath));
+    expect(content).toContain('/usr/bin:/bin');
   });
 
   it('calls launchctl unload then load', () => {

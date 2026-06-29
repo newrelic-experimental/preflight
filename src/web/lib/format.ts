@@ -1,7 +1,7 @@
 /**
  * Shared number formatting helpers for the dashboard SPA.
  *
- * Extracted in F-048 (CODE_REVIEW.md) to consolidate duplicated copies in
+ * Extracted in to consolidate duplicated copies in
  * AlertBanner.tsx and Today.tsx — keeping them in sync was a maintenance
  * hazard.
  */

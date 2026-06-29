@@ -95,7 +95,7 @@ describe('auditRecordToLogEntry()', () => {
     expect(entry.attributes).not.toHaveProperty('session_id');
   });
 
-  it('redacts secrets in detail, file_path, and command (F-003)', () => {
+  it('redacts secrets in detail, file_path, and command', () => {
     const SECRET_TOKEN = 'sk-test-deadbeef0123456789abcdef0123456789';
     const record = makeAuditRecord({
       detail: `Bash: curl -H "Authorization: Bearer ${SECRET_TOKEN}"`,

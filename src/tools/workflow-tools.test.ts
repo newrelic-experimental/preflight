@@ -589,8 +589,8 @@ describe('handleReportFeedback()', () => {
     expect(collector.getRecords()).toHaveLength(3);
   });
 
-  // N-08: unbounded free-text inputs
-  it('truncates notes longer than 1024 chars (N-08)', () => {
+  // unbounded free-text inputs
+  it('truncates notes longer than 1024 chars', () => {
     const collector = new FeedbackCollector();
     const longNotes = 'x'.repeat(2000);
     handleReportFeedback(collector, { quality: 'good', notes: longNotes });
@@ -598,7 +598,7 @@ describe('handleReportFeedback()', () => {
     expect(records[0].notes?.length).toBe(1024);
   });
 
-  it('passes notes shorter than 1024 chars unchanged (N-08)', () => {
+  it('passes notes shorter than 1024 chars unchanged', () => {
     const collector = new FeedbackCollector();
     const notes = 'short note';
     handleReportFeedback(collector, { quality: 'good', notes });

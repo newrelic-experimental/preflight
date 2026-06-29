@@ -326,10 +326,10 @@ describe('constructor SSRF guard', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-095: Body size limit (413)
+// Body size limit (413)
 // ---------------------------------------------------------------------------
 
-describe('body size limit (F-095)', () => {
+describe('body size limit', () => {
   let receiver: OtlpReceiver;
 
   beforeEach(async () => {
@@ -356,10 +356,10 @@ describe('body size limit (F-095)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-097: Slow-loris timeout (408)
+// Slow-loris timeout (408)
 // ---------------------------------------------------------------------------
 
-describe('slow-loris timeout (F-097)', () => {
+describe('slow-loris timeout', () => {
   it('returns 408 when body delivery stalls past bodyTimeoutMs', async () => {
     const receiver = makeReceiver({ bodyTimeoutMs: 200 });
     await receiver.start();
@@ -390,10 +390,10 @@ describe('slow-loris timeout (F-097)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-098: Content-Encoding decompression
+// Content-Encoding decompression
 // ---------------------------------------------------------------------------
 
-describe('Content-Encoding decompression (F-098)', () => {
+describe('Content-Encoding decompression', () => {
   let receiver: OtlpReceiver;
 
   beforeEach(async () => {
@@ -449,10 +449,10 @@ describe('Content-Encoding decompression (F-098)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-099: Rate limiting (429)
+// Rate limiting (429)
 // ---------------------------------------------------------------------------
 
-describe('rate limiting (F-099)', () => {
+describe('rate limiting', () => {
   it('returns 429 after exceeding rateLimitPerMinute requests', async () => {
     const receiver = makeReceiver({ rateLimitPerMinute: 2 });
     await receiver.start();
@@ -471,10 +471,10 @@ describe('rate limiting (F-099)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-100: API key authentication (401)
+// API key authentication (401)
 // ---------------------------------------------------------------------------
 
-describe('API key authentication (F-100)', () => {
+describe('API key authentication', () => {
   let receiver: OtlpReceiver;
 
   beforeEach(async () => {
@@ -522,10 +522,10 @@ describe('API key authentication (F-100)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-101: Content-Type validation (415)
+// Content-Type validation (415)
 // ---------------------------------------------------------------------------
 
-describe('Content-Type validation (F-101)', () => {
+describe('Content-Type validation', () => {
   let receiver: OtlpReceiver;
 
   beforeEach(async () => {
@@ -575,10 +575,10 @@ describe('Content-Type validation (F-101)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-102: Incomplete body (400)
+// Incomplete body (400)
 // ---------------------------------------------------------------------------
 
-describe('incomplete body (F-102)', () => {
+describe('incomplete body', () => {
   it('returns 400 when received bytes are less than Content-Length', async () => {
     const receiver = makeReceiver();
     await receiver.start();
@@ -617,10 +617,10 @@ describe('incomplete body (F-102)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-103: Error message sanitization
+// Error message sanitization
 // ---------------------------------------------------------------------------
 
-describe('error message sanitization (F-103)', () => {
+describe('error message sanitization', () => {
   afterEach(() => {
     (globalThis as { fetch?: unknown }).fetch = undefined;
   });
@@ -662,10 +662,10 @@ describe('error message sanitization (F-103)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-104: Expect: 100-continue
+// Expect: 100-continue
 // ---------------------------------------------------------------------------
 
-describe('Expect: 100-continue (F-104)', () => {
+describe('Expect: 100-continue', () => {
   it('sends 100 Continue and completes the request successfully', async () => {
     const receiver = makeReceiver();
     await receiver.start();
@@ -705,12 +705,10 @@ describe('Expect: 100-continue (F-104)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-139: Remaining size-limit / encoding / Content-Type edge cases
-// (F-095–F-104 scenarios are covered in their individual describe blocks
-// above; this block adds the specific examples called out in F-139.)
+// Remaining size-limit / encoding / Content-Type edge cases
 // ---------------------------------------------------------------------------
 
-describe('F-139: Content-Type edge cases', () => {
+describe('Content-Type edge cases', () => {
   let receiver: OtlpReceiver;
 
   beforeEach(async () => {
@@ -759,10 +757,10 @@ describe('F-139: Content-Type edge cases', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-139: abort mid-stream
+// abort mid-stream
 // ---------------------------------------------------------------------------
 
-describe('F-139: abort mid-stream', () => {
+describe('abort mid-stream', () => {
   it('returns 400 when client half-closes with an incomplete body', async () => {
     const receiver = makeReceiver();
     await receiver.start();

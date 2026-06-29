@@ -238,11 +238,11 @@ describe('parseLocalAlertRules — bulk parsing', () => {
     expect(invalid).toHaveLength(0);
   });
 
-  // F-022: two rules sharing an `id` both pass schema validation, but the
+  // two rules sharing an `id` both pass schema validation, but the
   // LocalAlertEngine keys state by id, so the second silently shadowed
   // the first. Drop duplicates here, keeping the first occurrence and
   // surfacing the rest as `invalid`.
-  it('drops duplicate rule ids — keeps the first occurrence (F-022)', () => {
+  it('drops duplicate rule ids — keeps the first occurrence', () => {
     const { valid, invalid } = parseLocalAlertRules([
       {
         id: 'shared',
@@ -274,7 +274,7 @@ describe('parseLocalAlertRules — bulk parsing', () => {
     expect(invalid[0]!.error).toMatch(/duplicate rule id 'shared'/);
   });
 
-  it('logs a warning when a duplicate rule id is dropped (F-022)', () => {
+  it('logs a warning when a duplicate rule id is dropped', () => {
     const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     parseLocalAlertRules([
       {

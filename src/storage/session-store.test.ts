@@ -187,7 +187,7 @@ describe('SessionStore', () => {
     expect(all.map((s) => s.sessionId)).toEqual(['s1', 's3', 's2']);
   });
 
-  it('saveSession rejects sessionId containing path traversal and writes no file (N-01)', () => {
+  it('saveSession rejects sessionId containing path traversal and writes no file', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 
     store.saveSession(makeSummary({ sessionId: '../../etc/passwd' }));
@@ -195,7 +195,7 @@ describe('SessionStore', () => {
     expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
   });
 
-  it('saveSession rejects sessionId containing a forward slash (N-01)', () => {
+  it('saveSession rejects sessionId containing a forward slash', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 
     store.saveSession(makeSummary({ sessionId: 'a/b' }));
@@ -203,7 +203,7 @@ describe('SessionStore', () => {
     expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
   });
 
-  it('saveSession accepts a valid UUID-style sessionId (N-01)', () => {
+  it('saveSession accepts a valid UUID-style sessionId', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 
     store.saveSession(makeSummary({ sessionId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }));
@@ -525,10 +525,10 @@ describe('buildSessionSummary', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Corruption-recovery (F-132)
+// Corruption-recovery
 // ---------------------------------------------------------------------------
 
-describe('SessionStore corruption-recovery (F-132)', () => {
+describe('SessionStore corruption-recovery', () => {
   it('loadSession returns null and logs warning for malformed JSON', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const sessionsDir = join(tmpDir, 'sessions');
@@ -789,8 +789,8 @@ describe('buildSessionSummary timeline', () => {
   });
 });
 
-// N-06: deserializeSession — explicit field extraction
-describe('SessionStore deserialization (N-06)', () => {
+// deserializeSession — explicit field extraction
+describe('SessionStore deserialization', () => {
   it('loads a session with prototype-shadowing toolBreakdown keys safely', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const sessionsDir = join(tmpDir, 'sessions');

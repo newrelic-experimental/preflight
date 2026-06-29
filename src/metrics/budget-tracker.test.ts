@@ -120,7 +120,7 @@ describe('BudgetTracker', () => {
     expect(status.pctUsed).toBeCloseTo(35);
   });
 
-  it('re-arms daily thresholds after midnight (F-020)', () => {
+  it('re-arms daily thresholds after midnight', () => {
     jest.useFakeTimers();
     const events: unknown[] = [];
     const t = new BudgetTracker({
@@ -154,7 +154,7 @@ describe('BudgetTracker', () => {
     jest.useRealTimers();
   });
 
-  it('re-arms weekly thresholds after week rollover (F-020)', () => {
+  it('re-arms weekly thresholds after week rollover', () => {
     jest.useFakeTimers();
     const events: unknown[] = [];
     const t = new BudgetTracker({

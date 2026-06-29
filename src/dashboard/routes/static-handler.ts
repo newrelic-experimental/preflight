@@ -85,7 +85,7 @@ export function createStaticHandler(
     try {
       const st = await stat(target);
       if (!st.isFile()) {
-        // F-033: An on-disk path that exists but is not a regular file
+        // An on-disk path that exists but is not a regular file
         // (typically a directory like /assets/) is not a valid SPA route —
         // returning index.html here masks misconfigured asset paths in
         // dev. The SPA fallback is reserved for genuinely missing paths
@@ -96,7 +96,7 @@ export function createStaticHandler(
       }
       const type = MIME[ext] ?? 'application/octet-stream';
       const data = await readFile(target);
-      // F-034: Vite-built assets live under /assets/ with content-hash
+      // Vite-built assets live under /assets/ with content-hash
       // filenames (main-abc123.js), so they can be cached forever. The
       // shell index.html must revalidate every time so a fresh build's
       // new asset hashes are picked up. Other static files (the rare

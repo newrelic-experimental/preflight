@@ -64,7 +64,7 @@ describe('static-handler', () => {
     expect(status()).toBe(404);
   });
 
-  it('serves /assets/ files with immutable, max-age=31536000 cache (F-034)', async () => {
+  it('serves /assets/ files with immutable, max-age=31536000 cache', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'static-'));
     mkdirSync(join(dir, 'assets'));
     writeFileSync(join(dir, 'assets', 'main-abc123.js'), 'console.log(1)');
@@ -75,7 +75,7 @@ describe('static-handler', () => {
     expect(headers()['cache-control']).toBe('public, max-age=31536000, immutable');
   });
 
-  it('serves index.html on / with no-cache (F-034)', async () => {
+  it('serves index.html on / with no-cache', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'static-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html>');
     const handler = createStaticHandler(dir);
@@ -85,7 +85,7 @@ describe('static-handler', () => {
     expect(headers()['cache-control']).toBe('no-cache');
   });
 
-  it('serves SPA-fallback index.html with no-cache for unknown extensionless routes (F-034)', async () => {
+  it('serves SPA-fallback index.html with no-cache for unknown extensionless routes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'static-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html>');
     const handler = createStaticHandler(dir);
@@ -95,7 +95,7 @@ describe('static-handler', () => {
     expect(headers()['cache-control']).toBe('no-cache');
   });
 
-  it('serves non-asset top-level files with a short max-age (F-034)', async () => {
+  it('serves non-asset top-level files with a short max-age', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'static-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html>');
     writeFileSync(join(dir, 'favicon.ico'), '');
@@ -106,7 +106,7 @@ describe('static-handler', () => {
     expect(headers()['cache-control']).toBe('public, max-age=300');
   });
 
-  it('returns 404 for an existing directory request (F-033)', async () => {
+  it('returns 404 for an existing directory request', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'static-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html>');
     mkdirSync(join(dir, 'assets'));
@@ -146,12 +146,12 @@ describe('static-handler', () => {
     expect(status()).toBe(403);
   });
 
-  // Regression for F-002: vite.config.ts must use base:'/' so the built
+  // Regression for : vite.config.ts must use base:'/' so the built
   // index.html references assets via absolute paths. With base:'./', a
   // direct refresh on /sessions resolves relative './assets/x.js' against
   // /sessions/ and returns 404. This test reads vite.config.ts source
   // directly so a revert is caught even if no build artifact is present.
-  it('vite.config.ts has base:"/" (F-002 revert guard)', () => {
+  it('vite.config.ts has base:"/" (revert guard)', () => {
     const viteConfigPath = resolve(__dirname, '..', '..', '..', 'vite.config.ts');
     const src = readFileSync(viteConfigPath, 'utf-8');
     // Strip line comments first so the regex doesn't match commentary like
@@ -164,12 +164,12 @@ describe('static-handler', () => {
     // Match the actual assignment: optional whitespace, base: '/' or "/" with
     // optional trailing comma. Anchored to a line so 'base: "/foo/"' (which
     // a future contributor might add for a sub-path deployment) also passes
-    // — but 'base: "./"' (the F-002 bug) is rejected.
+    // — but 'base: "./"' (the bug) is rejected.
     expect(codeOnly).toMatch(/^\s*base:\s*['"]\/['"],?\s*$/m);
     expect(codeOnly).not.toMatch(/^\s*base:\s*['"]\.\//m);
   });
 
-  // Regression for F-002: when the SPA fallback serves index.html for an
+  // Regression for : when the SPA fallback serves index.html for an
   // extensionless route like /sessions, the served HTML must reference
   // assets via absolute paths (/assets/...) so the browser doesn't
   // resolve them against /sessions/ and produce 404s. This guards
