@@ -14,7 +14,11 @@
     "type": "git",
     "url": "https://github.com/newrelic-experimental/preflight"
   },
-  "description": "New Relic MCP server for observing AI coding assistants (Claude Code)",
+  "homepage": "https://github.com/newrelic-experimental/preflight",
+  "bugs": {
+    "url": "https://github.com/newrelic-experimental/preflight/issues"
+  },
+  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Windsurf, Copilot, and more)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

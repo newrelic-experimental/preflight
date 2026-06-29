@@ -1,6 +1,6 @@
 # Security Guidelines — NR AI Coding Observability: Preflight
 
-This document captures the security practices and invariants baked into this codebase. It was distilled from a full security audit (April 2026) in which all findings were resolved. Use it as a reference when writing new code and as a checklist during code review.
+This document captures the security practices and invariants baked into this codebase. Use it as a reference when writing new code and as a checklist during code review.
 
 ---
 
@@ -65,7 +65,7 @@ function safeInt(value: unknown): number {
 
 Use `safeInt` anywhere you extract a numeric count from an untrusted API response.
 
-### Tool names — companion SDK agent wrappers
+### Tool names
 
 Tool names come from caller-supplied arrays and are stored in NR events. They must be sanitized:
 
@@ -102,7 +102,6 @@ A set of compiled regular expressions that cover:
 
 - `collector-script.ts` — redacts tool input/output before writing to the hook buffer
 - `src/config.ts` — `redactSensitive()` for config-level redaction
-- companion SDK agent — error messages from the upstream API are run through `redact()` before being stored in NR events
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through these patterns first. Use `redact(text, config.redactionPatterns)` (agent) or `redactSensitive(text)` (MCP server).
 
@@ -258,7 +257,7 @@ Classification patterns are configurable via constructor options. The log is que
 
 The `pending` map (pre-events awaiting their post-event pair) is capped at 2,000 entries. When the cap is reached, the oldest entry is evicted before inserting the new one. This prevents an unbounded heap growth if the buffer file is flooded with unpaired pre-events.
 
-### Stream listener cleanup — companion SDK agent
+### Stream listener cleanup
 
 `wrapStream` uses `once` (not `on`) for the `finalMessage` and `error` events, and calls `removeAllListeners()` after emitting the record. This releases the closure references held by all three event listeners so the stream object can be garbage collected promptly after completion.
 

@@ -1061,7 +1061,7 @@ export function createApiHandler(
       res.end(JSON.stringify({ error: 'not_found' }));
       return;
     }
-    // Fixed limit (50) for v1.1 — matches the dashboard panel cap.
+    // Fixed limit (50) — matches the dashboard panel cap.
     try {
       const entries = await deps.alertLog.readRecent(50);
       jsonOk(res, entries);
