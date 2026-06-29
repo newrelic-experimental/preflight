@@ -1,6 +1,6 @@
 # Security Guidelines — NR AI Coding Observability: Preflight
 
-This document captures the security practices and invariants baked into this codebase. It was distilled from a full security audit (April 2026) in which all findings were resolved. Use it as a reference when writing new code and as a checklist during code review.
+This document captures the security practices and invariants baked into this codebase. Use it as a reference when writing new code and as a checklist during code review.
 
 ---
 
