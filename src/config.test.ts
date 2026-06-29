@@ -1622,8 +1622,8 @@ describe('normalizeDeveloperName', () => {
   });
 
   it('handles $USER-style values consistently across machines', () => {
-    expect(normalizeDeveloperName('cdehaan')).toBe('cdehaan');
-    expect(normalizeDeveloperName('CDEHAAN')).toBe('cdehaan');
+    expect(normalizeDeveloperName('jdoe')).toBe('jdoe');
+    expect(normalizeDeveloperName('JDOE')).toBe('jdoe');
   });
 });
 
