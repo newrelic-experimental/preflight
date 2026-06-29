@@ -146,7 +146,7 @@ describe('static-handler', () => {
     expect(status()).toBe(403);
   });
 
-  // Regression for : vite.config.ts must use base:'/' so the built
+  // Regression guard: vite.config.ts must use base:'/' so the built
   // index.html references assets via absolute paths. With base:'./', a
   // direct refresh on /sessions resolves relative './assets/x.js' against
   // /sessions/ and returns 404. This test reads vite.config.ts source
@@ -169,7 +169,7 @@ describe('static-handler', () => {
     expect(codeOnly).not.toMatch(/^\s*base:\s*['"]\.\//m);
   });
 
-  // Regression for : when the SPA fallback serves index.html for an
+  // Regression guard: when the SPA fallback serves index.html for an
   // extensionless route like /sessions, the served HTML must reference
   // assets via absolute paths (/assets/...) so the browser doesn't
   // resolve them against /sessions/ and produce 404s. This guards

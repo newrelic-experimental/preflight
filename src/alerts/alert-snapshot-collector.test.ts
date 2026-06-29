@@ -229,7 +229,7 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     ]);
   });
 
-  // Regression for : when the tracker has only p50 (no p95/p99 because
+  // Regression guard: when the tracker has only p50 (no p95/p99 because
   // sample count is too low), the snapshot must still emit the tool with the
   // p50 value populated and p95/p99 as 0. Previously the entry was dropped
   // entirely because the gate required `typeof p95 === 'number'`.
@@ -248,7 +248,7 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     expect(snap.latency).toEqual([{ tool: 'Read', p50Ms: 100, p95Ms: 0, p99Ms: 0 }]);
   });
 
-  // Regression for : a `latency.percentile` rule asking for p99 must
+  // Regression guard: a `latency.percentile` rule asking for p99 must
   // see the p99 value even when p95 is missing.
   it('emits a latency entry when only p99 is available', () => {
     const deps: AlertSnapshotCollectorDeps = {
