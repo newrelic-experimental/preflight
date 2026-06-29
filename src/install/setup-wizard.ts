@@ -271,8 +271,7 @@ export async function runSetupWizard(): Promise<void> {
       print('Environment:');
       print('  1) US      — api.newrelic.com');
       print('  2) EU      — api.eu.newrelic.com');
-      print('  3) Staging — staging-api.newrelic.com');
-      print('  4) FedRAMP — api.newrelic.com (FedRAMP/GovCloud)');
+      print('  3) FedRAMP — api.newrelic.com (FedRAMP/GovCloud)');
       const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
         .trim()
         .toLowerCase();
@@ -283,11 +282,9 @@ export async function runSetupWizard(): Promise<void> {
             ? 'us'
             : envRaw === '2' || envRaw === 'eu'
               ? 'eu'
-              : envRaw === '3' || envRaw === 'staging'
-                ? 'staging'
-                : envRaw === '4' || envRaw === 'fedramp' || envRaw === 'gov'
-                  ? 'gov'
-                  : defaultEnv;
+              : envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov'
+                ? 'gov'
+                : defaultEnv;
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
       // Warn if license key prefix contradicts selected environment.
@@ -665,8 +662,7 @@ export async function runSetupWizard(): Promise<void> {
 
     // Step 8: Dashboard deploy — show manual command (deploy-dashboard.ts is not a library)
     if (mode !== 'local') {
-      const regionFlag =
-        collectorHost === 'eu' ? ' --eu' : collectorHost === 'staging' ? ' --staging' : '';
+      const regionFlag = collectorHost === 'eu' ? ' --eu' : '';
       // Mask the API key in printed commands — users copy these snippets to
       // terminals, docs, and chat messages, and the raw key could be captured.
       const apiKeyVar = nrApiKey

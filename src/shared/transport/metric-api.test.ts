@@ -106,19 +106,6 @@ describe('sendMetrics', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Staging region routes to staging metric endpoint
-  // ---------------------------------------------------------------------------
-  it('routes to staging endpoint when collectorHost contains staging', async () => {
-    await sendMetrics(testMetrics, 'us01xxUSKEY', {
-      ...baseOptions,
-      collectorHost: 'staging',
-    });
-
-    const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://staging-metric-api.newrelic.com/metric/v1');
-  });
-
-  // ---------------------------------------------------------------------------
   // 3. Empty array — no fetch
   // ---------------------------------------------------------------------------
   it('returns success without calling fetch for empty metrics', async () => {

@@ -8,7 +8,7 @@
 [![Local First](https://img.shields.io/badge/Local%20First-Offline%20by%20default-brightgreen)](#quick-start)
 [![Dashboards Included](https://img.shields.io/badge/Dashboards-7%20Included-blue)](#dashboards)
 
-[**Docs**](docs/ADVANCED.md) • [**Examples**](examples/) • [**Community**](https://support.newrelic.com/s/) • [**Contributing**](CONTRIBUTING.md) • [**Internal**](docs/INTERNAL_USAGE.md)
+[**Docs**](docs/ADVANCED.md) • [**Examples**](examples/) • [**Community**](https://support.newrelic.com/s/) • [**Contributing**](CONTRIBUTING.md)
 
 </div>
 

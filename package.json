@@ -55,7 +55,6 @@
     "deploy:dashboard:update": "node dist/index.js deploy-dashboards --all --update",
     "deploy:dashboard:teardown": "node dist/index.js deploy-dashboards --all --teardown",
     "backfill:sessions": "npx tsx scripts/backfill-sessions.ts",
-    "sync:shared": "npx tsx scripts/sync-shared.ts",
     "check:bundle-size": "npx tsx scripts/check-bundle-size.ts",
     "dev": "node dist/index.js --local",
     "dev:all": "npm run build && npm run dev",

@@ -138,7 +138,6 @@ export interface AlertsDeployOptions {
   readonly dryRun: boolean;
   readonly teardown: boolean;
   readonly update: boolean;
-  readonly staging: boolean;
   readonly eu: boolean;
   readonly developer: string | null;
   /**
@@ -388,7 +387,6 @@ async function syncConditions(
 
 function pickNerdgraphUrl(opts: AlertsDeployOptions): string {
   if (opts.nerdgraphUrlOverride) return opts.nerdgraphUrlOverride;
-  if (opts.staging) return 'https://staging-api.newrelic.com/graphql';
   if (opts.eu) return 'https://api.eu.newrelic.com/graphql';
   return 'https://api.newrelic.com/graphql';
 }
@@ -401,19 +399,12 @@ export async function runDeployAlerts(opts: AlertsDeployOptions): Promise<number
   const out: OutputStream = opts.stdout ?? process.stdout;
   const fetchImpl: typeof fetch = opts.fetchImpl ?? fetch;
 
-  if (opts.staging && opts.eu) {
-    out.write('Error: --staging and --eu are mutually exclusive.\n');
-    return 1;
-  }
-
   if ([opts.dryRun, opts.teardown, opts.update].filter(Boolean).length > 1) {
     out.write('Error: --dry-run, --teardown, and --update are mutually exclusive.\n');
     return 1;
   }
 
-  if (opts.staging) {
-    out.write('Targeting staging API: https://staging-api.newrelic.com/graphql\n');
-  } else if (opts.eu) {
+  if (opts.eu) {
     out.write('Targeting EU API: https://api.eu.newrelic.com/graphql\n');
   }
 

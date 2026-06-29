@@ -28,7 +28,6 @@ import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 import { PersonalCoach } from '../metrics/personal-coach.js';
 
 function getNerdgraphUrl(collectorHost: string | null): string {
-  if (collectorHost === 'staging') return 'https://staging-api.newrelic.com/graphql';
   if (collectorHost === 'eu') return 'https://api.eu.newrelic.com/graphql';
   return 'https://api.newrelic.com/graphql';
 }

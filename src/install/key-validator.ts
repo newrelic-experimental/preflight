@@ -4,14 +4,12 @@ const logger = createLogger('key-validator');
 
 const EVENTS_API_HOSTS: Record<string, string> = {
   eu: 'insights-collector.eu01.nr-data.net',
-  staging: 'staging-insights-collector.newrelic.com',
   gov: 'gov-insights-collector.newrelic.com',
   us: 'insights-collector.newrelic.com',
 };
 
 const NERDGRAPH_URLS: Record<string, string> = {
   eu: 'https://api.eu.newrelic.com/graphql',
-  staging: 'https://staging-api.newrelic.com/graphql',
   gov: 'https://api.newrelic.com/graphql',
   us: 'https://api.newrelic.com/graphql',
 };

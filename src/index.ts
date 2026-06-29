@@ -347,7 +347,6 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--update', 'update existing dashboards in-place (matched by name)')
       .option('--teardown', 'delete deployed dashboards (matched by name)')
       .option('--print', 'print dashboard JSON with accountIds filled in (no API key required)')
-      .option('--staging', 'target the New Relic staging API')
       .option('--eu', 'target the New Relic EU API')
       .option(
         '--developer <name>',
@@ -364,7 +363,6 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           update: opts.update === true,
           teardown: opts.teardown === true,
           print: opts.print === true,
-          staging: opts.staging === true,
           eu: opts.eu === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
           file: file ?? null,
@@ -378,7 +376,6 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--dry-run', 'print the policy + conditions that would be created and exit')
       .option('--teardown', 'delete the alert policy and all its conditions')
       .option('--update', 'sync conditions on an existing policy in place (matched by name)')
-      .option('--staging', 'target the New Relic staging API')
       .option('--eu', 'target the New Relic EU API')
       .option('--developer <name>', 'deploy a personal alert policy scoped to <name>')
       .action(async (opts: Record<string, unknown>) => {
@@ -387,7 +384,6 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           dryRun: opts.dryRun === true,
           teardown: opts.teardown === true,
           update: opts.update === true,
-          staging: opts.staging === true,
           eu: opts.eu === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
         });

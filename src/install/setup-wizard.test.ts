@@ -907,11 +907,6 @@ describe('buildConfig nrApiKey and collectorHost', () => {
     const result = buildConfig({}, { ...base, collectorHost: 'eu' });
     expect(result.collectorHost).toBe('eu');
   });
-
-  it('writes collectorHost staging when provided', () => {
-    const result = buildConfig({}, { ...base, collectorHost: 'staging' });
-    expect(result.collectorHost).toBe('staging');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1001,16 +996,6 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('eu');
   });
 
-  it('writes collectorHost staging when staging selected', async () => {
-    answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
-
-    await runSetupWizard();
-
-    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
-    const written = JSON.parse(writtenJson) as Record<string, unknown>;
-    expect(written.collectorHost).toBe('staging');
-  });
-
   it('writes collectorHost gov when FedRAMP selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'gov', '', 'tester', '', '', '', 'n');
 
@@ -1030,27 +1015,17 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(output).toContain('--eu');
   });
 
-  it('includes --staging in deploy commands when staging is selected', async () => {
-    answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
-
-    await runSetupWizard();
-
-    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(output).toContain('--staging');
-  });
-
-  it('does not include --eu or --staging in deploy commands when US is selected', async () => {
+  it('does not include --eu in deploy commands when US is selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'us', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).not.toContain('--eu');
-    expect(output).not.toContain('--staging');
   });
 
-  it('falls back to default env on unrecognized input rather than silently picking staging', async () => {
-    // Typo or garbage input should not silently route to staging
+  it('falls back to default env on unrecognized input', async () => {
+    // Typo or garbage input should fall back to the default env
     answers('cloud', '12345', 'NRLIC-test', 'nope', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
@@ -1126,7 +1101,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
   });
 
   it('does not warn for legacy keys with no region prefix', async () => {
-    answers('cloud', '12345', 'NRLIC-legacykey', 'staging', '', 'tester', '', '', '', 'n');
+    answers('cloud', '12345', 'NRLIC-legacykey', 'us', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 

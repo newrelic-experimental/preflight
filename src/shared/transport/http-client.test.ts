@@ -82,18 +82,16 @@ describe('resolveRegion', () => {
   });
 
   it('does not throw when collectorHost is provided to override detection', () => {
-    // collectorHost FQDN short-circuits to license-key prefix detection.
     // Bare keyword form short-circuits the license-key check entirely.
-    expect(resolveRegion('apac01xxSOMEKEY', 'staging')).toBe('staging');
+    expect(resolveRegion('apac01xxSOMEKEY', 'eu')).toBe('eu');
   });
 
   // ---------------------------------------------------------------------------
   // 2. resolveRegion — collectorHost override (keyword-only form)
   // ---------------------------------------------------------------------------
-  it('bare keyword collectorHost values are recognized (eu, gov, staging, us)', () => {
+  it('bare keyword collectorHost values are recognized (eu, gov, us)', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'eu')).toBe('eu');
     expect(resolveRegion('us01xxSOMEKEY', 'gov')).toBe('gov');
-    expect(resolveRegion('us01xxSOMEKEY', 'staging')).toBe('staging');
     expect(resolveRegion('eu01xxSOMEKEY', 'us')).toBe('us');
   });
 
@@ -111,11 +109,6 @@ describe('resolveRegion', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'eucalyptus.test')).toBe('us');
   });
 
-  it('returns staging when collectorHost is the bare keyword', () => {
-    expect(resolveRegion('us01xxSOMEKEY', 'staging')).toBe('staging');
-    expect(resolveRegion('eu01xxSOMEKEY', 'staging')).toBe('staging');
-  });
-
   // gov collectorHost override (bare keyword only)
   it('returns gov when collectorHost is the bare keyword gov', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'gov')).toBe('gov');
@@ -125,15 +118,9 @@ describe('resolveRegion', () => {
 });
 
 // ---------------------------------------------------------------------------
-// URL builders — staging endpoints
+// URL builders
 // ---------------------------------------------------------------------------
 describe('getEventsApiUrl', () => {
-  it('returns staging endpoint for staging region', () => {
-    expect(getEventsApiUrl('908482', 'staging')).toBe(
-      'https://staging-insights-collector.newrelic.com/v1/accounts/908482/events',
-    );
-  });
-
   it('returns US endpoint for us region', () => {
     expect(getEventsApiUrl('12345', 'us')).toBe(
       'https://insights-collector.newrelic.com/v1/accounts/12345/events',
@@ -165,13 +152,6 @@ describe('getEventsApiUrl', () => {
     );
   });
 
-  it('ignores collectorHost without dot or colon and falls through to region', () => {
-    // 'staging' keyword has no dot — region resolution must determine the URL.
-    expect(getEventsApiUrl('12345', 'staging', 'staging')).toBe(
-      'https://staging-insights-collector.newrelic.com/v1/accounts/12345/events',
-    );
-  });
-
   // Defensive guard against an empty / null / undefined
   // accountId that bypassed loadConfig's fail-fast (JS callers, non-null
   // assertion casts, custom config paths). Without the guard, the URL becomes
@@ -194,10 +174,6 @@ describe('getEventsApiUrl', () => {
 });
 
 describe('getMetricApiUrl', () => {
-  it('returns staging endpoint for staging region', () => {
-    expect(getMetricApiUrl('staging')).toBe('https://staging-metric-api.newrelic.com/metric/v1');
-  });
-
   it('returns FedRAMP endpoint for gov region', () => {
     expect(getMetricApiUrl('gov')).toBe('https://gov-metric-api.newrelic.com/metric/v1');
   });
@@ -207,19 +183,9 @@ describe('getMetricApiUrl', () => {
       'https://collector.example.com/metric/v1',
     );
   });
-
-  it('ignores bare staging keyword and falls through to region', () => {
-    expect(getMetricApiUrl('staging', 'staging')).toBe(
-      'https://staging-metric-api.newrelic.com/metric/v1',
-    );
-  });
 });
 
 describe('getLogsApiUrl', () => {
-  it('returns staging endpoint for staging region', () => {
-    expect(getLogsApiUrl('staging')).toBe('https://staging-log-api.newrelic.com/log/v1');
-  });
-
   it('returns FedRAMP endpoint for gov region', () => {
     expect(getLogsApiUrl('gov')).toBe('https://gov-log-api.newrelic.com/log/v1');
   });
@@ -228,10 +194,6 @@ describe('getLogsApiUrl', () => {
     expect(getLogsApiUrl('us', 'collector.example.com')).toBe(
       'https://collector.example.com/log/v1',
     );
-  });
-
-  it('ignores bare staging keyword and falls through to region', () => {
-    expect(getLogsApiUrl('staging', 'staging')).toBe('https://staging-log-api.newrelic.com/log/v1');
   });
 });
 
