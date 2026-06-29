@@ -149,7 +149,7 @@ describe('sse-handler', () => {
     }
   });
 
-  // Regression for this. The SSE frame `id` field must use the bus's global
+  // Regression guard. The SSE frame `id` field must use the bus's global
   // sequence number, not a per-connection counter — otherwise reconnecting
   // clients send back the wrong Last-Event-ID and either miss real events
   // or replay pre-connection history.
@@ -195,7 +195,7 @@ describe('sse-handler', () => {
     }
   });
 
-  // Regression for this. After reconnect with Last-Event-ID set to a real
+  // Regression guard. After reconnect with Last-Event-ID set to a real
   // bus seq, the server must replay only events newer than that seq. With
   // the per-connection counter bug, this test would have replayed older
   // (pre-connection) events.
@@ -254,7 +254,7 @@ describe('sse-handler', () => {
     }
   });
 
-  // Regression for this. A client sending Last-Event-ID: -1 (or any negative
+  // Regression guard. A client sending Last-Event-ID: -1 (or any negative
   // number) must NOT trigger a replay. With the original bug, replaySeq would
   // be -1 (no replay) but nextLocalSeq became 0; the next reconnect with
   // Last-Event-ID: 0 then replayed the entire bus buffer.
@@ -348,7 +348,7 @@ describe('sse-handler', () => {
   // seq namespace. The browser sends them back as Last-Event-ID on reconnect;
   // parseInt("hb-...") → NaN → no replay. This guards against a heartbeat id
   // contaminating the seq numbering and triggering an unintended replay.
-  // Regression for this. Both `req.on('close')` and `res.on('close')` register
+  // Regression guard. Both `req.on('close')` and `res.on('close')` register
   // the same cleanup function — on a normal disconnect both fire. The
   // `cleaned` guard makes the second invocation a no-op so a future change
   // (e.g. wrapping cleanup in something that side-effects) can't introduce
