@@ -13,7 +13,6 @@ import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
 import { isSyntheticSessionId } from '../../hooks/session-resolver.js';
-
 // ---------------------------------------------------------------------------
 // Aggregate quality-proxy metrics from today's persisted sessions so the
 // panel isn't empty on page refresh (when the live tracker has no signals).
@@ -1286,6 +1285,17 @@ export function createApiHandler(
       }
     }
     jsonOk(res, { repos: [...repoSet].sort(), currentRepo });
+  });
+
+  // ── Diagnostics endpoint ────────────────────────────────────────────────
+
+  routes.set('GET /api/diagnostics', async (_req, res) => {
+    const { runDiagnostics } = await import('../../install/diagnostics.js');
+    const checks = await runDiagnostics({
+      configPath: deps.configFilePath ?? undefined,
+      storagePath: deps.config?.storagePath,
+    });
+    jsonOk(res, checks);
   });
 
   // ── Settings endpoints ──────────────────────────────────────────────────
