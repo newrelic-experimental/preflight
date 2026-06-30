@@ -2,6 +2,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as fsMod from 'node:fs';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import type { DiagnosticCheck } from './diagnostics.js';
+import * as diagnostics from './diagnostics.js';
 
 jest.mock('node:fs', () => ({
   readFileSync: jest.fn(() => '{}'),
@@ -16,6 +18,9 @@ jest.mock('node:fs', () => ({
 jest.mock('node:child_process', () => ({
   execSync: jest.fn(),
   execFileSync: jest.fn(),
+}));
+jest.mock('./diagnostics.js', () => ({
+  runDiagnostics: jest.fn(async () => []),
 }));
 jest.mock('./schedule.js', () => ({
   installSchedule: jest.fn(),
@@ -44,6 +49,10 @@ import * as scheduleMod from './schedule.js';
 import * as platformMod from './platform.js';
 import { runInstallCli } from './cli.js';
 import * as installHelperMod from './install-helper.js';
+
+const mockedRunDiagnostics = diagnostics.runDiagnostics as jest.MockedFunction<
+  typeof diagnostics.runDiagnostics
+>;
 
 const mockedSchedule = scheduleMod as unknown as {
   installSchedule: jest.Mock;
@@ -983,5 +992,87 @@ describe('platform transition matrix', () => {
     expect(stderr).toContain('Cannot read existing NR config');
     expect(stderr).toContain('invalid JSON');
     stderrSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflight doctor
+// ---------------------------------------------------------------------------
+
+describe('preflight doctor', () => {
+  let output: string[];
+  beforeEach(() => {
+    output = [];
+    jest.spyOn(process.stdout, 'write').mockImplementation((s) => {
+      output.push(String(s));
+      return true;
+    });
+    jest.clearAllMocks();
+    // Re-arm the mock after clearAllMocks resets implementations.
+    mockedRunDiagnostics.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    jest.restoreAllMocks();
+  });
+
+  function makeCheck(overrides: Partial<DiagnosticCheck>): DiagnosticCheck {
+    return {
+      check: 'Config valid',
+      status: 'ok',
+      detail: 'Config loaded',
+      ...overrides,
+    };
+  }
+
+  it('prints "All checks passed" and exits 0 when all checks pass', async () => {
+    mockedRunDiagnostics.mockResolvedValue([makeCheck({ status: 'ok' })]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor']);
+    expect(output.join('')).toContain('All checks passed');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('sets exit code 1 when a check fails', async () => {
+    mockedRunDiagnostics.mockResolvedValue([
+      makeCheck({ status: 'fail', detail: 'bad', fix: 'preflight install' }),
+    ]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('sets exit code 2 when only warnings', async () => {
+    mockedRunDiagnostics.mockResolvedValue([makeCheck({ status: 'warn', detail: 'mild' })]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor']);
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('prints fix instructions for failing checks', async () => {
+    mockedRunDiagnostics.mockResolvedValue([
+      makeCheck({
+        check: 'Hooks wired',
+        status: 'fail',
+        detail: 'missing',
+        fix: 'preflight install',
+      }),
+    ]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor']);
+    expect(output.join('')).toContain('preflight install');
+  });
+
+  it('prints skip checks with a dash', async () => {
+    mockedRunDiagnostics.mockResolvedValue([makeCheck({ status: 'skip', detail: 'macOS only' })]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor']);
+    expect(output.join('')).toContain('-');
   });
 });

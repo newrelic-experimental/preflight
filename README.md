@@ -153,6 +153,7 @@ You'll need a **license key** (telemetry ingest) and your **account ID**, plus a
 ## Other Commands
 
 ```bash
+preflight doctor      # Run 6 diagnostic checks and print actionable fix commands
 preflight validate    # Check config for syntax errors and unknown keys
 preflight update      # Pull latest version and rebuild
 preflight uninstall   # Remove hooks and MCP config from your AI tool

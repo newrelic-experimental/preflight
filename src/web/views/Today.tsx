@@ -505,7 +505,7 @@ function ToolSelectionPanel(): JSX.Element {
         <EmptyState
           icon="radar"
           title="Waiting for tool calls"
-          subtitle="Tool selection scoring begins after tool calls arrive."
+          subtitle="Start a Claude Code session to begin scoring. Resets when the process restarts."
         />
       ) : (
         <>
@@ -654,7 +654,7 @@ function ModelUsagePanel(): JSX.Element {
         <EmptyState
           icon="radar"
           title="No model data yet"
-          subtitle="Model cost breakdown appears after tool calls with token data."
+          subtitle="Start a Claude Code session to see model cost breakdown. Resets when the process restarts."
         />
       ) : (
         <div className="space-y-1.5">

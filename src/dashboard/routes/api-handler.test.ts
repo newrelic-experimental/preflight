@@ -2,6 +2,12 @@ import { jest } from '@jest/globals';
 import { createApiHandler } from './api-handler.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 
+jest.mock('../../install/diagnostics.js', () => ({
+  runDiagnostics: jest.fn(async () => [
+    { check: 'Config valid', status: 'ok', detail: 'ok', fix: undefined },
+  ]),
+}));
+
 function fakeRes(): {
   res: ServerResponse;
   status: () => number;
@@ -1556,5 +1562,28 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // history branch must NOT include the new bucket fields
     expect(result.buckets).toBeUndefined();
     expect(result.bucketSizeMs).toBeUndefined();
+  });
+});
+
+import * as diagnosticsModule from '../../install/diagnostics.js';
+
+const mockedRunDiagnostics = diagnosticsModule.runDiagnostics as jest.MockedFunction<
+  typeof diagnosticsModule.runDiagnostics
+>;
+
+describe('GET /api/diagnostics', () => {
+  it('returns the DiagnosticCheck array from runDiagnostics', async () => {
+    const expected = [
+      { check: 'Config valid', status: 'ok' as const, detail: 'loaded', fix: undefined },
+    ];
+    mockedRunDiagnostics.mockResolvedValue(expected);
+
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/diagnostics' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(expected);
   });
 });
