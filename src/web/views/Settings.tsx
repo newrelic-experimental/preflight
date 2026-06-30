@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { fetchSettings, patchSettings, qk } from '../api/client';
+import { fetchSettings, patchSettings, fetchDiagnostics, qk } from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { Button, Card, SectionHeader } from '../components/ui';
@@ -61,6 +61,93 @@ function NullableNumberInput({
         className="text-xs bg-surface-3 border border-border-subtle rounded-md px-2 py-1 w-32 focus:outline-none focus:border-accent-green text-ink-base placeholder:text-ink-muted"
       />
     </div>
+  );
+}
+
+interface DiagnosticCheck {
+  readonly check: string;
+  readonly status: 'ok' | 'warn' | 'fail' | 'skip';
+  readonly detail: string;
+  readonly fix?: string;
+}
+
+const STATUS_ICON: Record<string, string> = {
+  ok: '●',
+  warn: '▲',
+  fail: '✗',
+  skip: '–',
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  ok: 'text-accent-green',
+  warn: 'text-accent-amber',
+  fail: 'text-accent-red',
+  skip: 'text-ink-muted',
+};
+
+function DiagnosticsPanel(): JSX.Element {
+  const { data, isLoading, isError, refetch } = useQuery<DiagnosticCheck[]>({
+    queryKey: qk.diagnostics,
+    queryFn: () => fetchDiagnostics() as Promise<DiagnosticCheck[]>,
+    refetchInterval: 60_000,
+    staleTime: 55_000,
+  });
+
+  const checks = data ?? [];
+  const hasIssues = checks.some((c) => c.status === 'fail' || c.status === 'warn');
+
+  return (
+    <Card padding="md" className="mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <SectionHeader title="System Health" />
+        <button
+          onClick={() => void refetch()}
+          className="text-[10px] text-ink-muted hover:text-ink-base transition-colors"
+        >
+          Re-check
+        </button>
+      </div>
+
+      {isLoading && <EmptyState icon="clock" variant="loading" title="Checking system…" />}
+
+      {isError && <div className="text-xs text-accent-red">Failed to load diagnostics.</div>}
+
+      {!isLoading && !isError && !hasIssues && (
+        <div className="flex items-center gap-2 text-xs text-accent-green">
+          <span>●</span>
+          <span>System healthy</span>
+        </div>
+      )}
+
+      {!isLoading && !isError && hasIssues && (
+        <div className="space-y-1.5">
+          {checks.map((c) => (
+            <div key={c.check}>
+              <div className="flex items-baseline gap-2 text-xs">
+                <span className={`shrink-0 ${STATUS_COLOR[c.status] ?? 'text-ink-muted'}`}>
+                  {STATUS_ICON[c.status] ?? '?'}
+                </span>
+                <span className="text-ink-muted w-36 shrink-0">{c.check}</span>
+                <span className="text-ink-subtle">{c.detail}</span>
+              </div>
+              {c.fix && (c.status === 'fail' || c.status === 'warn') && (
+                <div className="ml-[1.25rem] mt-0.5 flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-ink-subtle bg-surface-3 px-1.5 py-0.5 rounded">
+                    {c.fix}
+                  </span>
+                  <button
+                    className="text-[10px] text-ink-muted hover:text-ink-base transition-colors"
+                    onClick={() => void navigator.clipboard.writeText(c.fix ?? '')}
+                  >
+                    copy
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -138,6 +225,7 @@ export function Settings(): JSX.Element {
 
   return (
     <section>
+      <DiagnosticsPanel />
       <header className="mb-6">
         <h1 className="text-xl font-semibold gradient-text">Settings</h1>
         <p className="text-xs text-ink-muted mt-1">

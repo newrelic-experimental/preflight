@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-06-30
+
+### Added
+
+- `preflight doctor` — a new CLI subcommand that runs six diagnostic checks and prints a summary with actionable fix commands. Checks: config file valid, dashboard daemon installed (macOS), daemon node path in plist PATH, PreToolUse/PostToolUse hooks wired, storage directory writable, New Relic endpoint reachable. Exit code 0 = all clear, 1 = at least one failure, 2 = warnings only. WSL installs check both the Linux-side and Windows-side settings paths.
+- Configuration load errors at startup now append `Run 'preflight doctor' to diagnose.` to guide users to the new subcommand.
+- **Settings → System Health panel** — a new card at the top of the Settings page that runs the same six diagnostic checks via `GET /api/diagnostics` and surfaces any failures or warnings with copy-able fix commands. Auto-refreshes every 60 seconds. Collapses to a green "System healthy" indicator when everything is passing.
+
+### Changed
+
+- Empty-state copy for the Tool Selection and Model Usage panels now reads "Start a Claude Code session to begin scoring / to see model cost breakdown. Resets when the process restarts." — clearer than the previous generic "after tool calls arrive" wording.
+
+---
+
 ## [1.0.5] - 2026-06-29
 
 ### Added

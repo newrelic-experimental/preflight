@@ -8,6 +8,7 @@ import { createLogger } from './shared/index.js';
 import { VERSION } from './version.js';
 import { createServer } from './server.js';
 import { loadMcpConfig, DEFAULT_STORAGE_PATH } from './config.js';
+import type { McpServerConfig } from './config.js';
 import { ProxyManager } from './proxy/index.js';
 import { LocalStore } from './storage/index.js';
 import { SessionStore, buildSessionSummary } from './storage/session-store.js';
@@ -113,6 +114,20 @@ const logger = createLogger('mcp-cli');
 export function maskCredential(key: string): string {
   if (key.length <= 8) return '***';
   return key.slice(0, 4) + '...' + key.slice(-4);
+}
+
+/**
+ * Wraps loadMcpConfig to append a diagnostic pointer on error.
+ * Helps users troubleshoot configuration issues without requiring
+ * manual diagnosis steps.
+ */
+function loadConfigOrDie(options: Partial<CliOptions>): Readonly<McpServerConfig> {
+  try {
+    return loadMcpConfig(options);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`);
+  }
 }
 
 /**
@@ -307,8 +322,16 @@ const SUBCOMMAND_NAMES = [
   'validate',
   'update',
   'schedule',
+  'doctor',
 ] as const;
 type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
+
+// Install-CLI subcommands — a subset of SUBCOMMAND_NAMES routed to runInstallCli.
+// Derived from SUBCOMMAND_NAMES to ensure a single source of truth: deploy-*
+// commands are excluded and handled by the commander path in dispatchSubcommand.
+const INSTALL_CLI_SUBCOMMANDS = SUBCOMMAND_NAMES.filter(
+  (s) => s !== 'deploy-dashboards' && s !== 'deploy-alerts',
+) as readonly string[];
 
 function isSubcommand(value: string | undefined): value is SubcommandName {
   return typeof value === 'string' && (SUBCOMMAND_NAMES as readonly string[]).includes(value);
@@ -323,7 +346,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
   if (!isSubcommand(sub)) return null;
 
   // CLI subcommands (install/setup/etc.) delegate entirely to the install CLI.
-  if (['install', 'uninstall', 'setup', 'validate', 'update', 'schedule'].includes(sub)) {
+  if (INSTALL_CLI_SUBCOMMANDS.includes(sub)) {
     const { runInstallCli } = await import('./install/cli.js');
     try {
       await runInstallCli(argv.slice(2));
@@ -600,7 +623,7 @@ async function main(): Promise<void> {
         void shutdown();
       });
 
-      config = loadMcpConfig(options);
+      config = loadConfigOrDie(options);
 
       if (!config.enabled) {
         logger.info('Server disabled via config — exiting');
@@ -641,7 +664,7 @@ async function main(): Promise<void> {
     } else {
       // --local: force local mode so config validation skips cloud credentials.
       process.env.NR_AI_MODE = 'local';
-      config = loadMcpConfig(options);
+      config = loadConfigOrDie(options);
 
       if (!config.enabled) {
         logger.info('Server disabled via config — exiting');
@@ -1689,7 +1712,7 @@ async function main(): Promise<void> {
     }
   } else {
     // Proxy mode: start HTTP proxy server that forwards to upstream MCP servers
-    const config = loadMcpConfig(options);
+    const config = loadConfigOrDie(options);
 
     if (!config.enabled) {
       logger.info('Server disabled via config — exiting');

@@ -22,7 +22,7 @@ const COLLECTOR_COMMAND = 'preflight-collector';
 //   preflight-collector pre-tool
 //   /abs/path/preflight-collector pre-tool
 //   "/quoted/path/preflight-collector" pre-tool
-const NR_HOOK_RE = /preflight-collector"?\s+(?:pre|post)-tool/;
+export const NR_HOOK_RE = /preflight-collector"?\s+(?:pre|post)-tool/;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,7 +136,7 @@ export function detectMcpConfigPath(
 // Merge helpers
 // ---------------------------------------------------------------------------
 
-function entryContainsNrObserve(entry: unknown): boolean {
+export function entryContainsNrObserve(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return false;
   const obj = entry as Record<string, unknown>;
 

@@ -92,6 +92,7 @@ export interface SettingsPatch {
 export const fetchModelUsage = (): Promise<unknown> => getJson<unknown>('/api/model-usage');
 
 export const fetchSettings = (): Promise<unknown> => getJson<unknown>('/api/settings');
+export const fetchDiagnostics = (): Promise<unknown> => getJson<unknown>('/api/diagnostics');
 
 export const patchSettings = (body: SettingsPatch): Promise<unknown> =>
   fetch('/api/settings', {
@@ -137,4 +138,5 @@ export const qk = {
   // Query keys for live session and today aggregate endpoints
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,
+  diagnostics: ['diagnostics'] as const,
 };

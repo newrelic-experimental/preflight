@@ -32,7 +32,7 @@ import {
   getDashboardDaemonStatus,
   resolveBinaryPath,
 } from './schedule.js';
-import { readJsonFileStrict, writeJsonFile } from './json-utils.js';
+import { readJsonFile, readJsonFileStrict, writeJsonFile } from './json-utils.js';
 
 const NR_CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
 
@@ -656,6 +656,48 @@ function handleValidate(options: { config?: string }): void {
 }
 
 // ---------------------------------------------------------------------------
+// Doctor handler
+// ---------------------------------------------------------------------------
+
+async function handleDoctor(options: { config?: string }): Promise<void> {
+  const { runDiagnostics } = await import('./diagnostics.js');
+  const configPath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
+
+  const raw = readJsonFile(configPath);
+  const storagePath = typeof raw.storagePath === 'string' ? raw.storagePath : undefined;
+
+  print('Running diagnostics...');
+  const checks = await runDiagnostics({ configPath, storagePath });
+
+  const ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '-' };
+  const COL = 22;
+
+  for (const c of checks) {
+    const icon = ICON[c.status] ?? '?';
+    print(`${icon} ${c.check.padEnd(COL)} ${c.detail}`);
+    if (c.fix && (c.status === 'fail' || c.status === 'warn')) {
+      print(`  ${' '.repeat(COL)}Fix: ${c.fix}`);
+    }
+  }
+
+  const fails = checks.filter((c) => c.status === 'fail').length;
+  const warns = checks.filter((c) => c.status === 'warn').length;
+
+  print('');
+  if (fails === 0 && warns === 0) {
+    print('✓ All checks passed.');
+    return;
+  }
+
+  const parts: string[] = [];
+  if (fails > 0) parts.push(`${fails} failure${fails > 1 ? 's' : ''}`);
+  if (warns > 0) parts.push(`${warns} warning${warns > 1 ? 's' : ''}`);
+  print(`${parts.join(', ')} found. Run the fix commands above, then restart.`);
+
+  process.exitCode = fails > 0 ? 1 : 2;
+}
+
+// ---------------------------------------------------------------------------
 // CLI program
 // ---------------------------------------------------------------------------
 
@@ -701,6 +743,12 @@ export function createInstallProgram(): Command {
     .description('Check the config file for unknown fields, type errors, and typos')
     .option('--config <path>', 'Path to config file (default: ~/.newrelic-preflight/config.json)')
     .action(handleValidate);
+
+  program
+    .command('doctor')
+    .description('Check configuration, hooks, daemon, and connectivity for common setup problems')
+    .option('--config <path>', 'Path to config file (default: ~/.newrelic-preflight/config.json)')
+    .action(handleDoctor);
 
   program
     .command('update')
