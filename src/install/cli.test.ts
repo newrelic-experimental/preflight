@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as fsMod from 'node:fs';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
 import type { DiagnosticCheck } from './diagnostics.js';
 import * as diagnostics from './diagnostics.js';
 
@@ -24,11 +25,11 @@ jest.mock('./diagnostics.js', () => ({
 }));
 jest.mock('./schedule.js', () => ({
   installSchedule: jest.fn(),
-  removeSchedule: jest.fn(),
-  getScheduleStatus: jest.fn(() => ({ installed: false })),
+  removeSchedule: jest.fn(() => false),
+  getScheduleStatus: jest.fn(() => ({ installed: false, readable: false })),
   installDashboardDaemon: jest.fn(),
-  removeDashboardDaemon: jest.fn(),
-  getDashboardDaemonStatus: jest.fn(() => ({ installed: false })),
+  removeDashboardDaemon: jest.fn(() => false),
+  getDashboardDaemonStatus: jest.fn(() => ({ installed: false, readable: false })),
   resolveBinaryPath: jest.fn(() => '/usr/local/bin/preflight'),
 }));
 jest.mock('./install-helper.js', () => ({
@@ -43,6 +44,12 @@ jest.mock('./install-helper.js', () => ({
 jest.mock('./platform.js', () => ({
   isWsl: jest.fn(() => false),
   resolveWindowsHome: jest.fn(() => null),
+}));
+jest.mock('node:readline/promises', () => ({
+  createInterface: jest.fn(() => ({
+    question: jest.fn(async () => 'y'),
+    close: jest.fn(),
+  })),
 }));
 
 import * as scheduleMod from './schedule.js';
@@ -94,7 +101,7 @@ describe('schedule subcommand', () => {
   });
 
   it('prints status when no flags given and no schedule installed', async () => {
-    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: false });
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: false, readable: false });
     await runInstallCli(['schedule']);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('No auto-update schedule installed');
@@ -103,6 +110,7 @@ describe('schedule subcommand', () => {
   it('prints schedule time when already installed', async () => {
     mockedSchedule.getScheduleStatus.mockReturnValue({
       installed: true,
+      readable: true,
       hour: 9,
       minute: 30,
       binaryPath: '/usr/local/bin/preflight',
@@ -110,6 +118,14 @@ describe('schedule subcommand', () => {
     await runInstallCli(['schedule']);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('09:30');
+  });
+
+  it('prints unreadable-plist message when schedule installed but plist unreadable', async () => {
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true, readable: false });
+    await runInstallCli(['schedule']);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('plist unreadable');
+    expect(output).toContain('reinstall');
   });
 
   it('installs schedule with --time 08:00', async () => {
@@ -150,7 +166,7 @@ describe('schedule subcommand', () => {
   });
 
   it('prints confirmation when --disable and schedule was installed', async () => {
-    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true });
+    mockedSchedule.removeSchedule.mockReturnValue(true);
     await runInstallCli(['schedule', '--disable']);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('Auto-update schedule removed');
@@ -166,26 +182,171 @@ describe('schedule subcommand', () => {
 
 describe('uninstall calls removeSchedule', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let exitSpy: ReturnType<typeof jest.spyOn>;
 
   beforeEach(() => {
     jest.clearAllMocks();
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: string | number | null | undefined) => {
+        throw new Error(`process.exit(${String(code)})`);
+      });
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
   });
 
   afterEach(() => {
     stdoutSpy.mockRestore();
+    exitSpy.mockRestore();
+    Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true });
+    process.exitCode = undefined;
   });
 
   it('calls removeSchedule during uninstall', async () => {
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true, readable: true });
+    mockedSchedule.removeSchedule.mockReturnValue(true);
     await runInstallCli(['uninstall']);
     expect(mockedSchedule.removeSchedule).toHaveBeenCalled();
   });
 
   it('prints removal confirmation when plist existed', async () => {
-    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true });
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true, readable: true });
+    mockedSchedule.removeSchedule.mockReturnValue(true);
     await runInstallCli(['uninstall']);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('Auto-update schedule removed');
+  });
+
+  it('--yes skips the readline confirmation prompt', async () => {
+    // Must have something to remove so the confirmation block is reached.
+    mockedSchedule.getScheduleStatus.mockReturnValue({
+      installed: true,
+      readable: true,
+      hour: 8,
+      minute: 0,
+    });
+    mockedSchedule.removeSchedule.mockReturnValue(true);
+    const rlMod = await import('node:readline/promises');
+    const createInterfaceMock = rlMod.createInterface as jest.Mock;
+    createInterfaceMock.mockClear();
+    await runInstallCli(['uninstall', '--yes']);
+    expect(createInterfaceMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels without readline when stdin is not a TTY', async () => {
+    const rlMod = await import('node:readline/promises');
+    const createInterfaceMock = rlMod.createInterface as jest.Mock;
+    createInterfaceMock.mockClear();
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await runInstallCli(['uninstall']);
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+    expect(createInterfaceMock).not.toHaveBeenCalled();
+    expect(stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('')).toContain(
+      'non-interactive stdin',
+    );
+  });
+
+  it('cancels without readline when isTTY is undefined (indeterminate state)', async () => {
+    const rlMod = await import('node:readline/promises');
+    const createInterfaceMock = rlMod.createInterface as jest.Mock;
+    createInterfaceMock.mockClear();
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true });
+    try {
+      await runInstallCli(['uninstall']);
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    }
+    expect(createInterfaceMock).not.toHaveBeenCalled();
+    expect(stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('')).toContain(
+      'non-interactive stdin',
+    );
+  });
+
+  it('user answers n at confirmation prompt → prints Uninstall cancelled with exitCode 1', async () => {
+    // Need something installed so changeSummary is non-empty and the prompt is reached.
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: true, readable: true });
+    const rlMod = await import('node:readline/promises');
+    const createInterfaceMock = rlMod.createInterface as jest.Mock;
+    // Use mockImplementationOnce so this override doesn't bleed into later describe blocks.
+    createInterfaceMock.mockImplementationOnce(() => ({
+      question: jest.fn(async () => 'n'),
+      close: jest.fn(),
+    }));
+
+    await runInstallCli(['uninstall']);
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Uninstall cancelled.');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('uninstall --daemon removes daemon plist and prints completion message', async () => {
+    const mockedRemoveDaemon = (scheduleMod as unknown as { removeDashboardDaemon: jest.Mock })
+      .removeDashboardDaemon;
+    mockedRemoveDaemon.mockReturnValue(true);
+    const mockedGetDaemonStatus = (
+      scheduleMod as unknown as { getDashboardDaemonStatus: jest.Mock }
+    ).getDashboardDaemonStatus;
+    mockedGetDaemonStatus.mockReturnValue({ installed: true, readable: true });
+    // Default readline mock returns 'y' — confirmation proceeds automatically.
+
+    await runInstallCli(['uninstall', '--daemon']);
+
+    expect(mockedRemoveDaemon).toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Background dashboard daemon removed');
+    expect(output).toContain('dashboard is now only available while Claude Code is running');
+  });
+
+  it('uninstall --daemon --yes skips confirmation prompt', async () => {
+    const mockedRemoveDaemon = (scheduleMod as unknown as { removeDashboardDaemon: jest.Mock })
+      .removeDashboardDaemon;
+    mockedRemoveDaemon.mockReturnValue(true);
+    const mockedGetDaemonStatus = (
+      scheduleMod as unknown as { getDashboardDaemonStatus: jest.Mock }
+    ).getDashboardDaemonStatus;
+    mockedGetDaemonStatus.mockReturnValue({ installed: true, readable: true });
+    const rlMod = await import('node:readline/promises');
+    const createInterfaceMock = rlMod.createInterface as jest.Mock;
+    createInterfaceMock.mockClear();
+
+    await runInstallCli(['uninstall', '--daemon', '--yes']);
+
+    expect(createInterfaceMock).not.toHaveBeenCalled();
+    expect(mockedRemoveDaemon).toHaveBeenCalled();
+  });
+
+  it('uninstall --daemon when plist absent during removal prints already-absent message and exits 1', async () => {
+    // TOCTOU: daemon installed at status-check time, plist vanishes before removal call.
+    const mockedGetDaemonStatus = (
+      scheduleMod as unknown as { getDashboardDaemonStatus: jest.Mock }
+    ).getDashboardDaemonStatus;
+    mockedGetDaemonStatus.mockReturnValue({ installed: true, readable: true });
+    const mockedRemoveDaemon = (scheduleMod as unknown as { removeDashboardDaemon: jest.Mock })
+      .removeDashboardDaemon;
+    mockedRemoveDaemon.mockReturnValue(false);
+
+    await runInstallCli(['uninstall', '--daemon']);
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Background dashboard daemon already absent');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('uninstall --daemon combined with --project exits 1 with flag conflict message', async () => {
+    await expect(runInstallCli(['uninstall', '--daemon', '--project'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--daemon cannot be combined');
   });
 });
 
@@ -298,6 +459,7 @@ describe('platform resolution via uninstall', () => {
   afterEach(() => {
     stdoutSpy.mockRestore();
     exitSpy.mockRestore();
+    process.exitCode = undefined;
   });
 
   it('--windows-cc outside WSL exits 1', async () => {
@@ -361,15 +523,29 @@ describe('platform transition matrix', () => {
         throw new Error(`process.exit(${String(code)})`);
       });
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: false, readable: false });
+    mockedSchedule.removeSchedule.mockReturnValue(false);
+    // Re-arm daemon mocks — clearAllMocks() clears call records but not mockReturnValue
+    // overrides, so tests that set installed:true would bleed into later tests and trigger
+    // the TOCTOU throw path in handleUninstall, causing anyFailed=true.
+    (
+      scheduleMod as unknown as { getDashboardDaemonStatus: jest.Mock }
+    ).getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    (
+      scheduleMod as unknown as { removeDashboardDaemon: jest.Mock }
+    ).removeDashboardDaemon.mockReturnValue(false);
     mockedHelper.detectSettingsPath.mockReturnValue(`${homedir()}/.claude/settings.json`);
     mockedHelper.detectMcpConfigPath.mockReturnValue(`${homedir()}/.mcp.json`);
     mockedPlatform.isWsl.mockReturnValue(true);
     mockedPlatform.resolveWindowsHome.mockReturnValue(WINDOWS_HOME);
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
   });
 
   afterEach(() => {
     stdoutSpy.mockRestore();
     exitSpy.mockRestore();
+    Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true });
+    process.exitCode = undefined;
   });
 
   // After bare uninstall of a wsl-linux-cc user, the Windows settings.json still exists
@@ -417,9 +593,11 @@ describe('platform transition matrix', () => {
       wh ? `${String(wh)}/.mcp.json` : `${homedir()}/.mcp.json`,
     );
     mFs.readFileSync.mockReturnValue(JSON.stringify({ platformTarget: 'wsl-windows-cc' }));
-    // Simulate that config.json exists (written by the prior --windows-cc install).
+    // Simulate that config.json and the Windows-side settings file exist.
     mFs.existsSync.mockImplementation(
-      (p: unknown) => String(p) === join(homedir(), '.newrelic-preflight', 'config.json'),
+      (p: unknown) =>
+        String(p) === join(homedir(), '.newrelic-preflight', 'config.json') ||
+        String(p) === join(WINDOWS_HOME, '.claude', 'settings.json'),
     );
 
     await runInstallCli(['uninstall', '--windows-cc']);
@@ -443,7 +621,9 @@ describe('platform transition matrix', () => {
     );
     mFs.readFileSync.mockReturnValue(JSON.stringify({ platformTarget: 'wsl-windows-cc' }));
     mFs.existsSync.mockImplementation(
-      (p: unknown) => String(p) === join(homedir(), '.newrelic-preflight', 'config.json'),
+      (p: unknown) =>
+        String(p) === join(homedir(), '.newrelic-preflight', 'config.json') ||
+        String(p) === join(WINDOWS_HOME, '.claude', 'settings.json'),
     );
 
     await runInstallCli(['uninstall']);
@@ -531,7 +711,9 @@ describe('platform transition matrix', () => {
     mockedPlatform.resolveWindowsHome.mockReturnValue(null);
     mFs.readFileSync.mockReturnValue(JSON.stringify({ platformTarget: 'native' }));
     mFs.existsSync.mockImplementation(
-      (p: unknown) => String(p) === join(homedir(), '.newrelic-preflight', 'config.json'),
+      (p: unknown) =>
+        String(p) === join(homedir(), '.newrelic-preflight', 'config.json') ||
+        String(p) === `${homedir()}/.claude/settings.json`,
     );
 
     await runInstallCli(['uninstall']);
@@ -642,7 +824,9 @@ describe('platform transition matrix', () => {
   it('bare uninstall with savedPlatform wsl-linux-cc clears platformTarget and targets Windows paths', async () => {
     mFs.readFileSync.mockReturnValue(JSON.stringify({ platformTarget: 'wsl-linux-cc' }));
     mFs.existsSync.mockImplementation(
-      (p: unknown) => String(p) === join(homedir(), '.newrelic-preflight', 'config.json'),
+      (p: unknown) =>
+        String(p) === join(homedir(), '.newrelic-preflight', 'config.json') ||
+        String(p) === `${homedir()}/.claude/settings.json`,
     );
     mockedHelper.detectSettingsPath.mockImplementation((_scope: unknown, wh: unknown) =>
       wh ? `${String(wh)}/.claude/settings.json` : `${homedir()}/.claude/settings.json`,
@@ -674,7 +858,9 @@ describe('platform transition matrix', () => {
       }),
     );
     mFs.existsSync.mockImplementation(
-      (p: unknown) => String(p) === join(homedir(), '.newrelic-preflight', 'config.json'),
+      (p: unknown) =>
+        String(p) === join(homedir(), '.newrelic-preflight', 'config.json') ||
+        String(p) === `${homedir()}/.claude/settings.json`,
     );
 
     await runInstallCli(['uninstall']);
@@ -690,7 +876,9 @@ describe('platform transition matrix', () => {
   it('bare uninstall with no savedPlatform (pre-1.0.4) clears config and cleans both paths', async () => {
     mFs.readFileSync.mockReturnValue('{}'); // no platformTarget
     mFs.existsSync.mockImplementation(
-      (p: unknown) => String(p) === join(homedir(), '.newrelic-preflight', 'config.json'),
+      (p: unknown) =>
+        String(p) === join(homedir(), '.newrelic-preflight', 'config.json') ||
+        String(p) === join(WINDOWS_HOME, '.claude', 'settings.json'),
     );
     mockedHelper.detectSettingsPath.mockImplementation((_scope: unknown, wh: unknown) =>
       wh ? `${String(wh)}/.claude/settings.json` : `${homedir()}/.claude/settings.json`,
@@ -790,6 +978,22 @@ describe('platform transition matrix', () => {
       fsMod as unknown as { writeFileSync: jest.Mock }
     ).writeFileSync.mock.calls.filter((c: unknown[]) => String(c[0]).endsWith('config.json.tmp'));
     expect(configWrites).toHaveLength(0);
+  });
+
+  it('bare uninstall on a clean machine prints "Nothing installed" and returns early', async () => {
+    // Default mock: existsSync returns false for everything — no files on disk.
+    mFs.readFileSync.mockReturnValue('{}');
+    // Explicitly reset schedule/daemon mocks — clearAllMocks() doesn't reset mockReturnValue,
+    // so a leaked installed:true from a prior describe would make changeSummary non-empty.
+    mockedSchedule.getScheduleStatus.mockReturnValue({ installed: false, readable: false });
+    (
+      scheduleMod as unknown as { getDashboardDaemonStatus: jest.Mock }
+    ).getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+
+    await runInstallCli(['uninstall']);
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Nothing installed — no changes to make.');
   });
 
   // When the platformTarget write fails and no credentials were provided (the common
@@ -1074,5 +1278,20 @@ describe('preflight doctor', () => {
     const prog = createInstallProgram();
     await prog.parseAsync(['node', 'preflight', 'doctor']);
     expect(output.join('')).toContain('-');
+  });
+
+  it('sets exit code 2 (not 1) when daemon is not installed', async () => {
+    mockedRunDiagnostics.mockResolvedValue([
+      makeCheck({
+        check: 'Daemon installed',
+        status: 'warn',
+        detail: 'com.preflight.dashboard.plist not found',
+        fix: 'preflight setup',
+      }),
+    ]);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'doctor']);
+    expect(process.exitCode).toBe(2);
   });
 });

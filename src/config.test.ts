@@ -1711,4 +1711,63 @@ describe('validateConfigFile()', () => {
     writeFileSync(resolve(tmpDir, 'empty.json'), '');
     expect(() => validateConfigFile(resolve(tmpDir, 'empty.json'))).not.toThrow();
   });
+
+  it('returns malformed:false and no mode for a missing file', () => {
+    const result = validateConfigFile(resolve(tmpDir, 'missing.json'));
+    expect(result.malformed).toBe(false);
+    expect(result.mode).toBeUndefined();
+  });
+
+  it('returns malformed:true for a file with invalid JSON', () => {
+    writeFileSync(resolve(tmpDir, 'badjson.json'), 'not json');
+    const result = validateConfigFile(resolve(tmpDir, 'badjson.json'));
+    expect(result.malformed).toBe(true);
+    expect(result.mode).toBeUndefined();
+  });
+
+  it('returns malformed:true for a non-object JSON value', () => {
+    writeFileSync(resolve(tmpDir, 'array.json'), '[1,2]');
+    const result = validateConfigFile(resolve(tmpDir, 'array.json'));
+    expect(result.malformed).toBe(true);
+  });
+
+  it('returns malformed:false and mode from a parseable config', () => {
+    writeFileSync(resolve(tmpDir, 'withmode.json'), JSON.stringify({ mode: 'local' }));
+    const result = validateConfigFile(resolve(tmpDir, 'withmode.json'));
+    expect(result.malformed).toBe(false);
+    expect(result.mode).toBe('local');
+  });
+
+  it('returns malformed:false and mode:undefined when mode key is absent', () => {
+    writeFileSync(resolve(tmpDir, 'nomode.json'), JSON.stringify({ licenseKey: 'abc' }));
+    const result = validateConfigFile(resolve(tmpDir, 'nomode.json'));
+    expect(result.malformed).toBe(false);
+    expect(result.mode).toBeUndefined();
+  });
+
+  it('returns malformed:false and mode even when Zod reports errors', () => {
+    writeFileSync(
+      resolve(tmpDir, 'badfield.json'),
+      JSON.stringify({ mode: 'cloud', enabled: 'yes' }),
+    );
+    const result = validateConfigFile(resolve(tmpDir, 'badfield.json'));
+    expect(result.malformed).toBe(false);
+    expect(result.mode).toBe('cloud');
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('returns storagePath from the parsed config when present', () => {
+    writeFileSync(
+      resolve(tmpDir, 'withstorage.json'),
+      JSON.stringify({ storagePath: '/custom/storage' }),
+    );
+    const result = validateConfigFile(resolve(tmpDir, 'withstorage.json'));
+    expect(result.storagePath).toBe('/custom/storage');
+  });
+
+  it('returns storagePath:undefined when storagePath is absent', () => {
+    writeFileSync(resolve(tmpDir, 'nostorage.json'), JSON.stringify({ mode: 'local' }));
+    const result = validateConfigFile(resolve(tmpDir, 'nostorage.json'));
+    expect(result.storagePath).toBeUndefined();
+  });
 });

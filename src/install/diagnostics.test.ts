@@ -1,7 +1,7 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 // Suppress logger output.
 jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -14,6 +14,7 @@ jest.mock('node:fs', () => {
     existsSync: jest.fn(),
     readFileSync: jest.fn(),
     accessSync: jest.fn(),
+    statSync: jest.fn(),
     constants: real.constants,
   };
 });
@@ -26,12 +27,19 @@ jest.mock('node:os', () => {
 
 // Stub schedule module.
 jest.mock('./schedule.js', () => ({
-  getDashboardDaemonStatus: jest.fn(() => ({ installed: false })),
+  getDashboardDaemonStatus: jest.fn(() => ({ installed: false, readable: false })),
+  resolveNodeDir: jest.fn(() => dirname(process.execPath)),
+  findExecutableNodeDir: jest.fn(() => ({ dir: null, hasNonExecutable: false })),
 }));
 
 // Stub config module.
 jest.mock('../config.js', () => ({
-  validateConfigFile: jest.fn(() => ({ fileExists: false, errors: [], warnings: [] })),
+  validateConfigFile: jest.fn(() => ({
+    fileExists: false,
+    malformed: false,
+    errors: [],
+    warnings: [],
+  })),
   DEFAULT_STORAGE_PATH: '/test-home/.newrelic-preflight',
 }));
 
@@ -73,8 +81,10 @@ import * as platform from './platform.js';
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
 const mockedAccessSync = nodeFs.accessSync as jest.Mock;
+const mockedStatSync = nodeFs.statSync as jest.Mock;
 const mockedPlatform = nodeOs.platform as jest.Mock;
 const mockedGetDaemonStatus = schedule.getDashboardDaemonStatus as jest.Mock;
+const mockedFindExecutableNodeDir = schedule.findExecutableNodeDir as jest.Mock;
 const mockedValidateConfig = config.validateConfigFile as jest.Mock;
 const mockedDetectSettingsPath = installHelper.detectSettingsPath as jest.Mock;
 const mockedIsWsl = platform.isWsl as jest.Mock;
@@ -98,11 +108,20 @@ describe('runDiagnostics', () => {
     mockedExistSync.mockReturnValue(false);
     mockedReadFileSync.mockReturnValue('{}');
     mockedAccessSync.mockImplementation(() => undefined);
-    mockedGetDaemonStatus.mockReturnValue({ installed: false });
-    mockedValidateConfig.mockReturnValue({ fileExists: false, errors: [], warnings: [] });
+    mockedGetDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    mockedValidateConfig.mockReturnValue({
+      fileExists: false,
+      malformed: false,
+      errors: [],
+      warnings: [],
+    });
     mockedDetectSettingsPath.mockReturnValue('/test-home/.claude/settings.json');
     mockedIsWsl.mockReturnValue(false);
     mockFetch.mockResolvedValue({ ok: true } as Response);
+    mockedStatSync.mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+    mockedFindExecutableNodeDir.mockReturnValue({ dir: null, hasNonExecutable: false });
 
     const mod = await import('./diagnostics.js');
     runDiagnostics = mod.runDiagnostics;
@@ -110,7 +129,12 @@ describe('runDiagnostics', () => {
 
   describe('Check 1: Config valid', () => {
     it('returns warn when config file does not exist', async () => {
-      mockedValidateConfig.mockReturnValue({ fileExists: false, errors: [], warnings: [] });
+      mockedValidateConfig.mockReturnValue({
+        fileExists: false,
+        malformed: false,
+        errors: [],
+        warnings: [],
+      });
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Config valid')!;
       expect(c.status).toBe('warn');
@@ -120,6 +144,7 @@ describe('runDiagnostics', () => {
     it('returns fail when config has errors', async () => {
       mockedValidateConfig.mockReturnValue({
         fileExists: true,
+        malformed: false,
         errors: ['mode: bad value'],
         warnings: [],
       });
@@ -132,6 +157,7 @@ describe('runDiagnostics', () => {
     it('returns warn when config has warnings only', async () => {
       mockedValidateConfig.mockReturnValue({
         fileExists: true,
+        malformed: false,
         errors: [],
         warnings: ['Unknown key "foo"'],
       });
@@ -141,7 +167,12 @@ describe('runDiagnostics', () => {
     });
 
     it('returns ok when config is valid', async () => {
-      mockedValidateConfig.mockReturnValue({ fileExists: true, errors: [], warnings: [] });
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        errors: [],
+        warnings: [],
+      });
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Config valid')!;
       expect(c.status).toBe('ok');
@@ -155,18 +186,19 @@ describe('runDiagnostics', () => {
       expect(checks.find((x) => x.check === 'Daemon installed')?.status).toBe('skip');
     });
 
-    it('returns fail when daemon not installed', async () => {
-      mockedGetDaemonStatus.mockReturnValue({ installed: false });
+    it('returns warn when daemon not installed', async () => {
+      mockedGetDaemonStatus.mockReturnValue({ installed: false, readable: false });
       const checks = await runDiagnostics(makeOpts());
-      expect(checks.find((x) => x.check === 'Daemon installed')?.status).toBe('fail');
+      expect(checks.find((x) => x.check === 'Daemon installed')?.status).toBe('warn');
     });
 
     it('returns ok when daemon is installed', async () => {
-      mockedGetDaemonStatus.mockReturnValue({ installed: true });
+      mockedGetDaemonStatus.mockReturnValue({
+        installed: true,
+        readable: true,
+        envPath: '/opt/homebrew/bin:/usr/bin',
+      });
       mockedExistSync.mockReturnValue(true);
-      mockedReadFileSync.mockReturnValue(
-        '<key>PATH</key><string>/opt/homebrew/bin:/usr/bin</string>',
-      );
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Daemon installed')?.status).toBe('ok');
     });
@@ -174,35 +206,75 @@ describe('runDiagnostics', () => {
 
   describe('Check 3: Daemon node path', () => {
     it('returns skip when daemon not installed', async () => {
-      mockedGetDaemonStatus.mockReturnValue({ installed: false });
+      mockedGetDaemonStatus.mockReturnValue({ installed: false, readable: false });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Daemon node path')?.status).toBe('skip');
     });
 
-    it('returns ok when node dir is in plist PATH', async () => {
+    it('returns warn for Daemon installed and skip for Daemon node path when plist is unreadable', async () => {
+      mockedGetDaemonStatus.mockReturnValue({ installed: true, readable: false });
+      const checks = await runDiagnostics(makeOpts());
+      const installed = checks.find((x) => x.check === 'Daemon installed')!;
+      expect(installed.status).toBe('warn');
+      expect(installed.detail).toContain('could not be read');
+      const nodePath = checks.find((x) => x.check === 'Daemon node path')!;
+      expect(nodePath.status).toBe('skip');
+    });
+
+    it('returns warn (not fail) when plist has no PATH key (older install without node-path injection)', async () => {
+      mockedGetDaemonStatus.mockReturnValue({ installed: true, readable: true });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Daemon node path')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('predates node-path injection');
+    });
+
+    it('returns ok when a node binary exists in plist PATH', async () => {
       const nodeDir = resolve(process.execPath, '..');
-      mockedGetDaemonStatus.mockReturnValue({ installed: true });
-      mockedExistSync.mockReturnValue(true);
-      mockedReadFileSync.mockReturnValue(`<key>PATH</key><string>${nodeDir}:/usr/bin</string>`);
+      mockedGetDaemonStatus.mockReturnValue({
+        installed: true,
+        readable: true,
+        envPath: `${nodeDir}:/usr/bin`,
+      });
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: nodeDir, hasNonExecutable: false });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Daemon node path')?.status).toBe('ok');
     });
 
     it('returns fail when node dir is missing from plist PATH', async () => {
-      mockedGetDaemonStatus.mockReturnValue({ installed: true });
-      mockedExistSync.mockReturnValue(true);
-      mockedReadFileSync.mockReturnValue(
-        '<key>PATH</key><string>/some/other/bin:/usr/bin</string>',
-      );
+      mockedGetDaemonStatus.mockReturnValue({
+        installed: true,
+        readable: true,
+        envPath: '/some/other/bin:/usr/bin',
+      });
       const checks = await runDiagnostics(makeOpts());
-      expect(checks.find((x) => x.check === 'Daemon node path')?.status).toBe('fail');
+      const c = checks.find((x) => x.check === 'Daemon node path')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('No executable');
     });
 
-    it('returns ok when node dir has trailing slash in plist PATH', async () => {
+    it('returns fail with permissions message when node binary exists but is not executable', async () => {
       const nodeDir = resolve(process.execPath, '..');
-      mockedGetDaemonStatus.mockReturnValue({ installed: true });
-      mockedExistSync.mockReturnValue(true);
-      mockedReadFileSync.mockReturnValue(`<key>PATH</key><string>${nodeDir}/:/usr/bin</string>`);
+      mockedGetDaemonStatus.mockReturnValue({
+        installed: true,
+        readable: true,
+        envPath: `${nodeDir}:/usr/bin`,
+      });
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: null, hasNonExecutable: true });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Daemon node path')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('not executable');
+    });
+
+    it('returns ok when plist PATH dir has a trailing slash', async () => {
+      const nodeDir = resolve(process.execPath, '..');
+      mockedGetDaemonStatus.mockReturnValue({
+        installed: true,
+        readable: true,
+        envPath: `${nodeDir}/:/usr/bin`,
+      });
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: nodeDir, hasNonExecutable: false });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Daemon node path')?.status).toBe('ok');
     });
@@ -244,6 +316,44 @@ describe('runDiagnostics', () => {
       });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Hooks wired')?.status).toBe('ok');
+    });
+
+    it('includes malformed-file note when one path parses and another fails JSON.parse', async () => {
+      mockedIsWsl.mockReturnValue(true);
+      const winHome = '/mnt/c/Users/testuser';
+      (platform.resolveWindowsHome as jest.Mock).mockReturnValue(winHome);
+      const linuxPath = '/test-home/.claude/settings.json';
+      const winPath = `${winHome}/.claude/settings.json`;
+      mockedDetectSettingsPath.mockReturnValueOnce(linuxPath).mockReturnValueOnce(winPath);
+      mockedExistSync.mockImplementation((p) => p === linuxPath || p === winPath);
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === linuxPath) throw new SyntaxError('Unexpected token');
+        return JSON.stringify({ hooks: {} }); // winPath parses but has no hooks
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain(linuxPath);
+      expect(c.detail).toContain('could not be parsed');
+    });
+
+    it('uses plural "files" and lists both paths when both settings files fail JSON.parse', async () => {
+      mockedIsWsl.mockReturnValue(true);
+      const winHome = '/mnt/c/Users/testuser';
+      (platform.resolveWindowsHome as jest.Mock).mockReturnValue(winHome);
+      const linuxPath = '/test-home/.claude/settings.json';
+      const winPath = `${winHome}/.claude/settings.json`;
+      mockedDetectSettingsPath.mockReturnValueOnce(linuxPath).mockReturnValueOnce(winPath);
+      mockedExistSync.mockImplementation((p) => p === linuxPath || p === winPath);
+      mockedReadFileSync.mockImplementation(() => {
+        throw new SyntaxError('Unexpected token');
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('files');
+      expect(c.detail).toContain(linuxPath);
+      expect(c.detail).toContain(winPath);
     });
 
     it('returns ok when hooks are on the Windows-side path (WSL)', async () => {
@@ -300,11 +410,67 @@ describe('runDiagnostics', () => {
   });
 
   describe('Check 6: NR reachable', () => {
+    beforeEach(() => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        mode: 'cloud',
+        hasLicenseKey: true,
+        errors: [],
+        warnings: [],
+      });
+    });
+
+    it('skips NR check when licenseKey is absent from config and env (prevents misleading ok when events would 403)', async () => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        mode: 'cloud',
+        errors: [],
+        warnings: [],
+      });
+      const origEnv = process.env.NEW_RELIC_LICENSE_KEY;
+      delete process.env.NEW_RELIC_LICENSE_KEY;
+      const checks = await runDiagnostics(makeOpts());
+      process.env.NEW_RELIC_LICENSE_KEY = origEnv;
+      const c = checks.find((x) => x.check === 'NR reachable')!;
+      expect(c.status).toBe('skip');
+      expect(c.detail).toContain('licenseKey not configured');
+    });
+
+    it('skips NR check when config file is absent (prevents misleading double-failure on first-time setup)', async () => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: false,
+        malformed: false,
+        errors: [],
+        warnings: [],
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'NR reachable')!;
+      expect(c.status).toBe('skip');
+      expect(c.detail).toContain('no config file');
+    });
+
+    it('skips NR check when config.json has invalid JSON (prevents misleading fail alongside real config error)', async () => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: true,
+        errors: ['invalid JSON'],
+        warnings: [],
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'NR reachable')!;
+      expect(c.status).toBe('skip');
+      expect(c.detail).toContain('could not be parsed');
+    });
+
     it('returns skip when mode is local', async () => {
-      mockedValidateConfig.mockReturnValue({ fileExists: true, errors: [], warnings: [] });
-      mockedReadFileSync.mockImplementation((p) => {
-        if (String(p).endsWith('config.json')) return JSON.stringify({ mode: 'local' });
-        return '{}';
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        mode: 'local',
+        errors: [],
+        warnings: [],
       });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'NR reachable')?.status).toBe('skip');

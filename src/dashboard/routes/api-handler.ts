@@ -1293,6 +1293,9 @@ export function createApiHandler(
     const { runDiagnostics } = await import('../../install/diagnostics.js');
     const checks = await runDiagnostics({
       configPath: deps.configFilePath ?? undefined,
+      // Pass the runtime-resolved storagePath so env-var overrides are
+      // captured. diagnostics.ts prioritises this value over the file-validated
+      // storagePath, so the same path the MCP server writes to is always checked.
       storagePath: deps.config?.storagePath,
     });
     jsonOk(res, checks);

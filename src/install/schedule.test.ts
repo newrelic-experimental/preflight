@@ -1,7 +1,20 @@
-import { jest, describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
-import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  symlinkSync,
+} from 'node:fs';
 import * as nodeOs from 'node:os';
 import { join, dirname } from 'node:path';
+
+import { jest, describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
+
+// Suppress logger and fallback warning output.
+jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
 // Prevent real launchctl calls.
 jest.mock('node:child_process', () => ({ execFileSync: jest.fn(), execSync: jest.fn() }));
@@ -22,6 +35,8 @@ import {
   installDashboardDaemon,
   removeDashboardDaemon,
   getDashboardDaemonStatus,
+  unescapeXml,
+  findExecutableNodeDir,
 } from './schedule.js';
 
 const mockedExecFileSync = childProcess.execFileSync as jest.Mock;
@@ -78,7 +93,7 @@ describe('installSchedule', () => {
     const content = readFileSync(PLIST_PATH, 'utf-8');
     expect(content).toContain('<key>EnvironmentVariables</key>');
     expect(content).toContain('<key>PATH</key>');
-    expect(content).toContain(dirname(process.execPath));
+    expect(content).toContain(resolveNodeDir());
     expect(content).toContain('/usr/bin:/bin');
   });
 
@@ -144,14 +159,15 @@ const FIXTURE_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>`;
 
 describe('getScheduleStatus', () => {
-  it('returns installed:false when plist is absent', () => {
-    expect(getScheduleStatus()).toEqual({ installed: false });
+  it('returns installed:false readable:false when plist is absent', () => {
+    expect(getScheduleStatus()).toEqual({ installed: false, readable: false });
   });
 
-  it('returns installed:true with hour, minute, binaryPath after install', () => {
+  it('returns installed:true readable:true with hour, minute, binaryPath after install', () => {
     installSchedule('/usr/local/bin/preflight', 9, 15);
     const status = getScheduleStatus();
     expect(status.installed).toBe(true);
+    expect(status.readable).toBe(true);
     expect(status.hour).toBe(9);
     expect(status.minute).toBe(15);
     expect(status.binaryPath).toBe('/usr/local/bin/preflight');
@@ -161,9 +177,22 @@ describe('getScheduleStatus', () => {
     writeFileSync(PLIST_PATH, FIXTURE_PLIST);
     const status = getScheduleStatus();
     expect(status.installed).toBe(true);
+    expect(status.readable).toBe(true);
     expect(status.hour).toBe(22);
     expect(status.minute).toBe(45);
     expect(status.binaryPath).toBe('/opt/homebrew/bin/preflight');
+  });
+
+  it('returns installed:true readable:false when plist exists but is unreadable', () => {
+    writeFileSync(PLIST_PATH, '<plist/>', { mode: 0o600 });
+    chmodSync(PLIST_PATH, 0o000);
+    try {
+      const status = getScheduleStatus();
+      expect(status.installed).toBe(true);
+      expect(status.readable).toBe(false);
+    } finally {
+      chmodSync(PLIST_PATH, 0o600);
+    }
   });
 });
 
@@ -200,12 +229,33 @@ describe('resolveBinaryPath', () => {
 });
 
 describe('resolveNodeDir', () => {
-  it('returns the directory containing the current node binary', () => {
-    expect(resolveNodeDir()).toBe(dirname(process.execPath));
+  const originalPath = process.env.PATH;
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
   });
 
   it('returns a non-empty string', () => {
     expect(resolveNodeDir().length).toBeGreaterThan(0);
+  });
+
+  it('returns the unresolved PATH dir containing node, not the resolved execPath dir', () => {
+    // Create a temp dir with a symlink "node" → process.execPath to simulate
+    // the Homebrew layout (stable /opt/homebrew/bin symlink → versioned Cellar binary).
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'nr-nodedir-test-'));
+    try {
+      symlinkSync(process.execPath, join(tmpDir, 'node'));
+      process.env.PATH = `${tmpDir}:${originalPath}`;
+      // resolveNodeDir() must return the symlink dir, not dirname(process.execPath).
+      expect(resolveNodeDir()).toBe(tmpDir);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to dirname(process.execPath) when node is not on PATH', () => {
+    process.env.PATH = '/nonexistent/dir1:/nonexistent/dir2';
+    expect(resolveNodeDir()).toBe(dirname(process.execPath));
   });
 });
 
@@ -236,7 +286,7 @@ describe('installDashboardDaemon', () => {
     const content = readFileSync(DASHBOARD_PLIST_PATH, 'utf-8');
     expect(content).toContain('<key>EnvironmentVariables</key>');
     expect(content).toContain('<key>PATH</key>');
-    expect(content).toContain(dirname(process.execPath));
+    expect(content).toContain(resolveNodeDir());
     expect(content).toContain('/usr/bin:/bin');
   });
 
@@ -275,14 +325,88 @@ describe('removeDashboardDaemon', () => {
 });
 
 describe('getDashboardDaemonStatus', () => {
-  it('returns installed:false when plist is absent', () => {
-    expect(getDashboardDaemonStatus()).toEqual({ installed: false });
+  it('returns installed:false readable:false when plist is absent', () => {
+    expect(getDashboardDaemonStatus()).toEqual({ installed: false, readable: false });
   });
 
-  it('returns installed:true with binaryPath after install', () => {
+  it('returns installed:true readable:true with binaryPath and envPath after install', () => {
     installDashboardDaemon('/usr/local/bin/preflight');
     const status = getDashboardDaemonStatus();
     expect(status.installed).toBe(true);
+    expect(status.readable).toBe(true);
     expect(status.binaryPath).toBe('/usr/local/bin/preflight');
+    expect(status.envPath).toContain(resolveNodeDir());
+    expect(status.envPath).toContain('/usr/bin');
+  });
+
+  it('returns installed:true readable:false when plist exists but is unreadable', () => {
+    writeFileSync(DASHBOARD_PLIST_PATH, '<plist/>', { mode: 0o600 });
+    chmodSync(DASHBOARD_PLIST_PATH, 0o000);
+    try {
+      const status = getDashboardDaemonStatus();
+      expect(status.installed).toBe(true);
+      expect(status.readable).toBe(false);
+      expect(status.envPath).toBeUndefined();
+    } finally {
+      chmodSync(DASHBOARD_PLIST_PATH, 0o600);
+    }
+  });
+
+  it('returns envPath:undefined for an older plist without PATH injection', () => {
+    const legacyPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.preflight.dashboard</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/preflight</string><string>--local</string></array>
+</dict></plist>`;
+    writeFileSync(DASHBOARD_PLIST_PATH, legacyPlist);
+    const status = getDashboardDaemonStatus();
+    expect(status.installed).toBe(true);
+    expect(status.readable).toBe(true);
+    expect(status.envPath).toBeUndefined();
+  });
+});
+
+describe('unescapeXml', () => {
+  it('round-trips basic entities', () => {
+    expect(unescapeXml('&lt;&gt;&amp;&quot;&apos;')).toBe('<>&"\'');
+  });
+
+  it('decodes &amp; last so &amp;lt; becomes &lt; not <', () => {
+    expect(unescapeXml('&amp;lt;')).toBe('&lt;');
+  });
+
+  it('does not double-decode a path that escapeXml would produce for a path containing &lt;', () => {
+    // A path containing the literal text '&lt;' (five chars):
+    // escapeXml encodes '&' → '&amp;', so the full encoding is '&amp;lt;'.
+    // unescapeXml must decode back to '&lt;', not '<'.
+    const original = '/some/path/&lt;version&gt;/node';
+    const escaped = original.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    expect(unescapeXml(escaped)).toBe(original);
+  });
+});
+
+describe('findExecutableNodeDir', () => {
+  it('returns hasNonExecutable:false for a broken symlink named node (treated as not found; fix is reinstall, not chmod)', () => {
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'nr-findnode-test-'));
+    try {
+      const target = join(tmpDir, 'nonexistent-target');
+      symlinkSync(target, join(tmpDir, 'node'));
+      const result = findExecutableNodeDir([tmpDir]);
+      expect(result.dir).toBeNull();
+      expect(result.hasNonExecutable).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns hasNonExecutable:false for a dir with no node entry at all', () => {
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'nr-findnode-test-'));
+    try {
+      const result = findExecutableNodeDir([tmpDir]);
+      expect(result.dir).toBeNull();
+      expect(result.hasNonExecutable).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
