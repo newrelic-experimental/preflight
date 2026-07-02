@@ -15,12 +15,13 @@ import type { ModelPricing } from './pricing.js';
 // ---------------------------------------------------------------------------
 export const MODEL_ALIASES: Record<string, string> = {
   // Anthropic Claude families
-  'claude-opus-4': 'claude-opus-4-7',
+  'claude-opus-4': 'claude-opus-4-8',
   'claude-sonnet-4': 'claude-sonnet-4-6',
   'claude-haiku-4': 'claude-haiku-4-5',
   'claude-haiku-3-5': 'claude-haiku-3-5-20241022',
 
   // Google Gemini current-gen shortcuts
+  'gemini-3.5': 'gemini-3.5-flash',
   'gemini-3.1-pro': 'gemini-3.1-pro-preview',
   'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
   'gemini-3-flash': 'gemini-3-flash-preview',
@@ -38,7 +39,7 @@ export const MODEL_ALIASES: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Built-in pricing table — USD per million tokens
 //
-// Rates last verified against vendor public pricing pages on 2026-05-20:
+// Rates last verified against vendor public pricing pages on 2026-07-01:
 //   - Anthropic   https://www.anthropic.com/pricing
 //   - Google      https://cloud.google.com/vertex-ai/generative-ai/pricing
 //   - OpenAI      https://openai.com/api/pricing/
@@ -54,12 +55,29 @@ export const MODEL_ALIASES: Record<string, string> = {
 
 export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // ---- Anthropic (current generation) ----
-  'claude-opus-4-7': {
+  'claude-fable-5': {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    thinkingPerMTok: 50,
+    cacheReadPerMTok: 1,
+    cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  'claude-opus-4-8': {
     inputPerMTok: 5,
     outputPerMTok: 25,
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
+    contextWindow: 1_000_000,
+  },
+  // Introductory pricing of $2/$10 through August 31, 2026; standard $3/$15 thereafter.
+  'claude-sonnet-5': {
+    inputPerMTok: 2,
+    outputPerMTok: 10,
+    thinkingPerMTok: 10,
+    cacheReadPerMTok: 0.2,
+    cacheCreationPerMTok: 2.5,
     contextWindow: 1_000_000,
   },
   'claude-sonnet-4-6': {
@@ -92,13 +110,17 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Anthropic (legacy Claude 4 generation) ----
-  // These legacy entries share input/output/cache rates
-  // with their current-generation counterparts, but `contextWindow` differs
-  // (200K legacy vs 1M current). They are NOT alias candidates: the cost
-  // calculations downstream don't use contextWindow, but downstream tooling
-  // (e.g. context-fit checks, dashboard filters by window size) does. Keep
-  // the entries explicit. Family-name routing (e.g. `claude-opus-4` →
-  // current generation) is handled by MODEL_ALIASES above.
+  // These legacy entries are retained for historical-cost backfill. Context
+  // windows differ from current-gen (200K vs 1M). Family-name routing
+  // (e.g. `claude-opus-4` → current generation) is handled by MODEL_ALIASES.
+  'claude-opus-4-7': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    thinkingPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
+    contextWindow: 1_000_000,
+  },
   'claude-opus-4-6': {
     inputPerMTok: 5,
     outputPerMTok: 25,
@@ -163,6 +185,12 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Google Gemini (current generation) ----
+  'gemini-3.5-flash': {
+    inputPerMTok: 1.5,
+    outputPerMTok: 9,
+    thinkingPerMTok: 9,
+    contextWindow: 1_000_000,
+  },
   'gemini-3.1-pro-preview': {
     inputPerMTok: 2,
     outputPerMTok: 12,
@@ -351,9 +379,19 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
 
   // ---- AWS Bedrock (Converse API pricing for on-demand) ----
   // Current Claude generation via Bedrock
-  // NOTE: cache pricing for claude-opus-4-7 and claude-sonnet-4-6 on
-  // Bedrock has not been publicly documented as of 2026-06-03. Rates below are
-  // omitted until verified against the AWS Bedrock pricing page.
+  // NOTE: cache pricing for these models on Bedrock has not been publicly
+  // documented. Rates below are omitted until verified.
+  // Sonnet 5 introductory pricing through August 31, 2026; standard $3/$15 thereafter.
+  'anthropic.claude-sonnet-5': {
+    inputPerMTok: 2,
+    outputPerMTok: 10,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-opus-4-8': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    contextWindow: 1_000_000,
+  },
   'anthropic.claude-opus-4-7': {
     inputPerMTok: 5,
     outputPerMTok: 25,
@@ -428,14 +466,19 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Mistral ----
+  'mistral-medium-latest': {
+    inputPerMTok: 1.5,
+    outputPerMTok: 7.5,
+    contextWindow: 131_072,
+  },
   'mistral-large-latest': {
-    inputPerMTok: 2,
-    outputPerMTok: 6,
+    inputPerMTok: 0.5,
+    outputPerMTok: 1.5,
     contextWindow: 131_072,
   },
   'mistral-small-latest': {
-    inputPerMTok: 0.1,
-    outputPerMTok: 0.3,
+    inputPerMTok: 0.15,
+    outputPerMTok: 0.6,
     contextWindow: 131_072,
   },
   'mistral-nemo': {
@@ -455,8 +498,8 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 32_000,
   },
   'codestral-latest': {
-    inputPerMTok: 0.2,
-    outputPerMTok: 0.6,
+    inputPerMTok: 0.3,
+    outputPerMTok: 0.9,
     contextWindow: 256_000,
   },
 
