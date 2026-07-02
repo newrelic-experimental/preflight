@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-07-02
+
+### Fixed
+
+- **`preflight update` with package manager installs** — when preflight is installed via a package manager (global `npm install -g`, `pnpm add -g`, or a local `npm install` into `node_modules`), running `preflight update` now prints a clear reinstall command instead of failing with a cryptic `not a git repository` error from git
+- **`preflight update` divergent branches** — when `git pull` fails (e.g. local commits ahead of remote), the error output now includes a `git fetch origin && git reset --hard origin/<branch>` command (replace `<branch>` with your default branch name) rather than a generic "check the output above" message
+
+### Changed
+
+- New **Improving Your Tool Selection Score** section in `docs/ADVANCED.md` — explains what triggers each of the three tool selection penalties (redundant reads, repeated failures, unused large outputs) and gives concrete prompt-writing tips to avoid them. Cross-referenced from the `nr_observe_get_tool_selection_score` entry in `docs/COMMANDS_TABLE.md`.
+
+---
+
 ## [1.0.7] - 2026-07-01
 
 ### Added

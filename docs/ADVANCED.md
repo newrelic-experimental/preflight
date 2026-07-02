@@ -227,3 +227,44 @@ terraform apply
 ```bash
 TF_VAR_account_id=... TF_VAR_api_key=... terraform destroy
 ```
+
+---
+
+## Improving Your Tool Selection Score
+
+`nr_observe_get_tool_selection_score` reports a 0–1 score based on three penalty categories. Here's what each one means and how to write prompts that avoid triggering them.
+
+### Redundant reads
+
+**Triggered when:** the same file is read 3 or more times in a session without an intervening edit or write to that file.
+
+The first two reads of any file are always free. The penalty only applies from the third read onward when no edit or write to that file occurred between the previous read and the current one.
+
+**How to avoid:** Front-load context in your prompt. Name the specific file and describe the change you want in a single request rather than asking exploratory questions first.
+
+- Instead of: _"What's in cost-tracker.ts? ... What does getMetrics return? ... Now update it."_
+- Use: _"In `src/metrics/cost-tracker.ts`, update the `getMetrics()` return type to include..."_
+
+### Repeated failures
+
+**Triggered when:** the same tool fails on consecutive calls (back-to-back failures of the same tool name).
+
+A single failure followed by a success does not count. The streak resets only on a successful call to the same tool — calling a different tool between failures does not reset it.
+
+**How to avoid:** When a tool call fails, provide corrective context in your next prompt rather than letting the AI retry identically.
+
+- Instead of: _(letting the AI retry the same failing command)_
+- Use: _"That failed because X isn't installed — use Y instead."_
+
+### Unused large outputs
+
+**Triggered when:** a tool returns 4,000 bytes or more and the output is never acted on. This applies to all tool calls except file-modifying operations (edits, writes, commands). For `Read` calls, the penalty is waived if the same file is subsequently edited or written in the session.
+
+**How to avoid:** Prefer targeted reads over broad ones when you only need to understand something, not change it. Use `grep`/`Bash` for lookups rather than reading entire files.
+
+- Instead of: _"Read `src/metrics/` for background."_
+- Use: _"Search for all callers of `getMetrics()` in `src/metrics/`."_
+
+### Score floor
+
+Even with many penalties the score won't drop below 0.3, so the metric is intended to track trends over time, not penalize individual sessions heavily.

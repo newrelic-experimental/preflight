@@ -1435,7 +1435,7 @@ Tool selection quality score with penalty breakdown for redundant reads, repeate
 
 **Data source:** `ToolSelectionScorer`
 
-**How it works:** Scores the full session tool call sequence. Penalizes: redundant reads (same file read again without intervening modification), repeated failures (same Bash command failed twice), and unused large outputs (tool returned a large response that was never referenced). Score 0–1 where 1 is perfect selection. `worstOffenders` lists the highest-penalty calls.
+**How it works:** Scores the full session tool call sequence. Penalizes: redundant reads (same file read again without intervening modification), repeated failures (same Bash command failed twice), and unused large outputs (tool returned a large response that was never referenced). Score 0–1 where 1 is perfect selection. `worstOffenders` lists the highest-penalty calls. See [Improving Your Tool Selection Score](ADVANCED.md#improving-your-tool-selection-score) for prompt-writing tips to reduce penalties.
 
 **Requires:** `ToolSelectionScorer`
 
