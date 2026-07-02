@@ -6,7 +6,11 @@ import { createLogger } from '../shared/index.js';
 
 import { validateConfigFile, DEFAULT_STORAGE_PATH } from '../config.js';
 import { getDashboardDaemonStatus, findExecutableNodeDir } from './schedule.js';
-import { detectSettingsPath, entryContainsNrObserve } from './install-helper.js';
+import {
+  detectSettingsPath,
+  entryContainsNrObserve,
+  entryHasAnyCommandHook,
+} from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 
 const logger = createLogger('diagnostics');
@@ -188,6 +192,8 @@ function checkHooksWired(settingsPaths: string[]): DiagnosticCheck {
   const anyPathExists = settingsPaths.some(existsSync);
   let hooksPre = false;
   let hooksPost = false;
+  let hooksPreAny = false;
+  let hooksPostAny = false;
   const parseErrorPaths: string[] = [];
   let anyParsed = false;
 
@@ -197,10 +203,14 @@ function checkHooksWired(settingsPaths: string[]): DiagnosticCheck {
       const settings = JSON.parse(readFileSync(sp, 'utf-8')) as Record<string, unknown>;
       anyParsed = true;
       const hooks = settings.hooks as Record<string, unknown[]> | undefined;
-      if (Array.isArray(hooks?.PreToolUse))
+      if (Array.isArray(hooks?.PreToolUse)) {
         hooksPre ||= hooks.PreToolUse.some(entryContainsNrObserve);
-      if (Array.isArray(hooks?.PostToolUse))
+        hooksPreAny ||= hooks.PreToolUse.some(entryHasAnyCommandHook);
+      }
+      if (Array.isArray(hooks?.PostToolUse)) {
         hooksPost ||= hooks.PostToolUse.some(entryContainsNrObserve);
+        hooksPostAny ||= hooks.PostToolUse.some(entryHasAnyCommandHook);
+      }
     } catch (err) {
       logger.debug('settings file could not be parsed — treating as not wired', { err, path: sp });
       parseErrorPaths.push(sp);
@@ -239,16 +249,41 @@ function checkHooksWired(settingsPaths: string[]): DiagnosticCheck {
     };
   }
 
-  const missing = [!hooksPre && 'PreToolUse', !hooksPost && 'PostToolUse']
-    .filter(Boolean)
-    .join(' and ');
+  // Determine which event types are missing the official NR collector hook.
+  const missingNrEvents = (
+    [!hooksPre && 'PreToolUse', !hooksPost && 'PostToolUse'] as (string | false)[]
+  ).filter((x): x is string => x !== false);
+
+  const customEvents = missingNrEvents.filter((ev) =>
+    ev === 'PreToolUse' ? hooksPreAny : hooksPostAny,
+  );
+  const trulyMissingEvents = missingNrEvents.filter((ev) =>
+    ev === 'PreToolUse' ? !hooksPreAny : !hooksPostAny,
+  );
+
   const searched = settingsPaths.filter(existsSync).join(' or ');
   const malformedNote =
     parseErrorPaths.length > 0 ? `; ${parseErrorPaths.join(' and ')} could not be parsed` : '';
+
+  // All missing NR hooks have some other hook command — likely a custom wrapper.
+  if (trulyMissingEvents.length === 0) {
+    return {
+      check: 'Hooks wired',
+      status: 'warn',
+      detail: `${customEvents.join(' and ')} has a custom hook command in ${searched} — verify it calls preflight-collector${malformedNote}`,
+      fix: 'Run preflight install to use the official hook, or confirm your script calls preflight-collector <event>-tool',
+    };
+  }
+
+  // At least one event type has no hook command at all — this is a real misconfiguration.
+  const customNote =
+    customEvents.length > 0
+      ? `; ${customEvents.join(' and ')} has a custom hook (verify it calls preflight-collector)`
+      : '';
   return {
     check: 'Hooks wired',
     status: 'fail',
-    detail: `${missing} not found in ${searched}${malformedNote}`,
+    detail: `${trulyMissingEvents.join(' and ')} not found in ${searched}${customNote}${malformedNote}`,
     fix: 'preflight install',
   };
 }
