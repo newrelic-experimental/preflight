@@ -964,6 +964,14 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 export interface ConfigValidationResult {
   readonly filePath: string;
   readonly fileExists: boolean;
+  /** True when the file existed but could not be read or parsed as a JSON object. */
+  readonly malformed: boolean;
+  /** The `mode` field from the parsed config, if the file was parseable. */
+  readonly mode?: string;
+  /** The `storagePath` field from the parsed config, if present and a string. */
+  readonly storagePath?: string;
+  /** True when a non-blank licenseKey is present in the parsed config. Raw value is intentionally not exposed. */
+  readonly hasLicenseKey: boolean;
   /** Fatal problems that will prevent the MCP server from starting. */
   readonly errors: readonly string[];
   /** Non-fatal problems that may cause settings to be silently ignored. */
@@ -980,7 +988,14 @@ export function validateConfigFile(filePath: string): ConfigValidationResult {
   const warnings: string[] = [];
 
   if (!existsSync(filePath)) {
-    return { filePath, fileExists: false, errors, warnings };
+    return {
+      filePath,
+      fileExists: false,
+      malformed: false,
+      hasLicenseKey: false,
+      errors,
+      warnings,
+    };
   }
 
   // Read and parse the file
@@ -989,19 +1004,19 @@ export function validateConfigFile(filePath: string): ConfigValidationResult {
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     errors.push(`Could not read file: ${err instanceof Error ? err.message : String(err)}`);
-    return { filePath, fileExists: true, errors, warnings };
+    return { filePath, fileExists: true, malformed: true, hasLicenseKey: false, errors, warnings };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
     errors.push(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
-    return { filePath, fileExists: true, errors, warnings };
+    return { filePath, fileExists: true, malformed: true, hasLicenseKey: false, errors, warnings };
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     errors.push('Config must be a JSON object, not an array or primitive value');
-    return { filePath, fileExists: true, errors, warnings };
+    return { filePath, fileExists: true, malformed: true, hasLicenseKey: false, errors, warnings };
   }
 
   // Zod type/value errors
@@ -1078,7 +1093,16 @@ export function validateConfigFile(filePath: string): ConfigValidationResult {
     }
   }
 
-  return { filePath, fileExists: true, errors, warnings };
+  return {
+    filePath,
+    fileExists: true,
+    malformed: false,
+    mode: typeof file.mode === 'string' ? file.mode : undefined,
+    storagePath: typeof file.storagePath === 'string' ? file.storagePath : undefined,
+    hasLicenseKey: typeof file.licenseKey === 'string' && file.licenseKey.trim().length > 0,
+    errors,
+    warnings,
+  };
 }
 
 /** Return a suggestion from known keys if the unknown key is a case-insensitive

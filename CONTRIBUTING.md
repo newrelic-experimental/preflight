@@ -490,7 +490,7 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
 To remove all hooks and start fresh:
 
 ```bash
-preflight uninstall
+preflight uninstall --yes   # --yes skips the confirmation prompt
 rm -rf ~/.newrelic-preflight
 
 # Cloud: remove dashboards and alerts from NR
@@ -508,6 +508,7 @@ Then restart Claude Code.
 
 | Symptom                                    | Likely cause                                      | Fix                                                               |
 | ------------------------------------------ | ------------------------------------------------- | ----------------------------------------------------------------- |
+| Anything unexpected                        | Config, hooks, connectivity, or daemon issue      | Run `preflight doctor` — prints six checks with actionable fixes  |
 | `preflight: command not found`             | `npm link` not run                                | Run `npm link` in the repo root                                   |
 | `nr_observe_health` returns tool-not-found | MCP server not started                            | Restart Claude Code; check MCP output panel                       |
 | No data in NR after 5 minutes              | Wrong license key or account ID                   | Re-run `preflight setup` with correct credentials                 |
