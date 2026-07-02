@@ -1,6 +1,8 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as fsMod from 'node:fs';
+import * as childMod from 'node:child_process';
+
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
 import type { DiagnosticCheck } from './diagnostics.js';
@@ -1196,6 +1198,184 @@ describe('platform transition matrix', () => {
     expect(stderr).toContain('Cannot read existing NR config');
     expect(stderr).toContain('invalid JSON');
     stderrSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflight update
+// ---------------------------------------------------------------------------
+
+describe('preflight update', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let exitSpy: ReturnType<typeof jest.spyOn>;
+  let mFs: { existsSync: jest.Mock; realpathSync: jest.Mock };
+  let mExec: { execFileSync: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mFs = fsMod as unknown as { existsSync: jest.Mock; realpathSync: jest.Mock };
+    mExec = childMod as unknown as { execFileSync: jest.Mock };
+    // Reset implementations (clearAllMocks only clears call records, not implementations).
+    mExec.execFileSync.mockReset();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: string | number | null | undefined) => {
+        throw new Error(`process.exit(${String(code)})`);
+      });
+    mFs.existsSync.mockImplementation(() => false);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    exitSpy.mockRestore();
+    process.exitCode = undefined;
+  });
+
+  function getOutput(): string {
+    return stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  it('exits 1 with package-manager hint when not a git repository (npm global install)', async () => {
+    mFs.realpathSync.mockReturnValue(
+      '/usr/local/lib/node_modules/@newrelic/preflight/dist/index.js',
+    );
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/usr/local/lib/node_modules/@newrelic/preflight/package.json',
+    );
+    mExec.execFileSync.mockImplementation((cmd: unknown) => {
+      if (cmd === 'git') throw new Error('not a git repository');
+    });
+    await expect(runInstallCli(['update'])).rejects.toThrow('process.exit(1)');
+    const output = getOutput();
+    expect(output).toContain('package manager');
+    expect(output).toContain('npm install -g @newrelic/preflight@latest');
+  });
+
+  it('exits 1 with package-manager hint when installed into node_modules (local npm install)', async () => {
+    mFs.realpathSync.mockReturnValue(
+      '/home/user/myproject/node_modules/@newrelic/preflight/dist/index.js',
+    );
+    mFs.existsSync.mockImplementation(
+      (p: unknown) =>
+        String(p) === '/home/user/myproject/node_modules/@newrelic/preflight/package.json',
+    );
+    // git root is the project root; repoRoot sits below node_modules in the tree
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      if (cmd === 'git' && (args as string[]).includes('--show-toplevel'))
+        return '/home/user/myproject';
+    });
+    await expect(runInstallCli(['update'])).rejects.toThrow('process.exit(1)');
+    const output = getOutput();
+    expect(output).toContain('package manager');
+    expect(output).toContain('npm install -g @newrelic/preflight@latest');
+  });
+
+  it('exits 1 with git-not-installed hint when git binary is absent', async () => {
+    mFs.realpathSync.mockReturnValue('/home/user/projects/preflight/dist/index.js');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/home/user/projects/preflight/package.json',
+    );
+    mExec.execFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
+    });
+    await expect(runInstallCli(['update'])).rejects.toThrow('process.exit(1)');
+    const output = getOutput();
+    expect(output).toContain('git is not installed');
+    expect(output).toContain('https://git-scm.com');
+    expect(output).not.toContain('package manager');
+  });
+
+  it('proceeds with update when source clone is inside a path with a node_modules ancestor', async () => {
+    mFs.realpathSync.mockReturnValue('/home/user/node_modules/preflight/dist/index.js');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/home/user/node_modules/preflight/package.json',
+    );
+    // git root IS repoRoot — no node_modules in the relative path, so it is a source clone
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      if (cmd === 'git' && (args as string[]).includes('--show-toplevel'))
+        return '/home/user/node_modules/preflight';
+      return undefined;
+    });
+    await runInstallCli(['update']);
+    const output = getOutput();
+    expect(output).toContain('Update complete');
+    expect(output).not.toContain('package manager');
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['pull'],
+      expect.objectContaining({ cwd: '/home/user/node_modules/preflight' }),
+    );
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      'npm',
+      ['run', 'build'],
+      expect.objectContaining({ cwd: '/home/user/node_modules/preflight' }),
+    );
+  });
+
+  it('exits 1 with diverged-branch hint when git pull fails', async () => {
+    mFs.realpathSync.mockReturnValue('/home/user/projects/preflight/dist/index.js');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/home/user/projects/preflight/package.json',
+    );
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      const a = args as string[];
+      if (cmd === 'git' && a.includes('--show-toplevel')) return '/home/user/projects/preflight';
+      if (cmd === 'git' && a[0] === 'pull') throw new Error('fatal: divergent branches');
+    });
+    await expect(runInstallCli(['update'])).rejects.toThrow('process.exit(1)');
+    const output = getOutput();
+    expect(output).toContain('git pull failed');
+    expect(output).toContain('diverged');
+    expect(output).toContain('fetch origin');
+    expect(output).toContain('reset --hard');
+  });
+
+  it('exits 1 with plain build error and no divergence hint when npm build fails', async () => {
+    mFs.realpathSync.mockReturnValue('/home/user/projects/preflight/dist/index.js');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/home/user/projects/preflight/package.json',
+    );
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      const a = args as string[];
+      if (cmd === 'git' && a.includes('--show-toplevel')) return '/home/user/projects/preflight';
+      if (cmd === 'npm') throw new Error('Build failed');
+    });
+    await expect(runInstallCli(['update'])).rejects.toThrow('process.exit(1)');
+    const output = getOutput();
+    expect(output).toContain('Build failed');
+    expect(output).not.toContain('diverged');
+    expect(output).not.toContain('fetch origin');
+    expect(
+      (mExec.execFileSync.mock.calls as unknown[][]).filter(
+        (c) => c[0] === 'git' && (c[1] as string[])[0] === 'pull',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('proceeds with update when package is a subdirectory of the git root (monorepo layout)', async () => {
+    mFs.realpathSync.mockReturnValue('/repo/packages/preflight/dist/index.js');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/repo/packages/preflight/package.json',
+    );
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      if (cmd === 'git' && (args as string[]).includes('--show-toplevel')) return '/repo';
+      return undefined;
+    });
+    await runInstallCli(['update']);
+    const output = getOutput();
+    expect(output).toContain('Update complete');
+    expect(output).not.toContain('package manager');
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['pull'],
+      expect.objectContaining({ cwd: '/repo/packages/preflight' }),
+    );
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      'npm',
+      ['run', 'build'],
+      expect.objectContaining({ cwd: '/repo/packages/preflight' }),
+    );
   });
 });
 
