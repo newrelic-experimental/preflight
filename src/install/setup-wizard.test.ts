@@ -41,7 +41,7 @@ jest.mock('./key-validator.js', () => ({
 jest.mock('./schedule.js', () => ({
   installSchedule: jest.fn(),
   removeSchedule: jest.fn(),
-  getScheduleStatus: jest.fn(() => ({ installed: false })),
+  getScheduleStatus: jest.fn(() => ({ installed: false, readable: false })),
   resolveBinaryPath: jest.fn(() => null),
 }));
 

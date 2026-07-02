@@ -5,12 +5,14 @@
  * so commander and other heavy deps are never loaded on the hot hook path.
  */
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, copyFileSync, realpathSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { Command } from 'commander';
 
+import { createLogger } from '../shared/index.js';
 import {
   mergeSettings,
   removeSettings,
@@ -32,7 +34,9 @@ import {
   getDashboardDaemonStatus,
   resolveBinaryPath,
 } from './schedule.js';
-import { readJsonFile, readJsonFileStrict, writeJsonFile } from './json-utils.js';
+import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
+
+const logger = createLogger('cli');
 
 const NR_CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
 
@@ -51,9 +55,7 @@ function clearSavedPlatform(): void {
     const { platformTarget: _pt, ...rest } = readJsonFileStrict(NR_CONFIG_PATH);
     writeJsonFile(NR_CONFIG_PATH, rest, DEFAULT_STORAGE_PATH);
   } catch (err) {
-    eprint(
-      `\n⚠ Could not clear saved platform target: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    eprint(`\n⚠ Could not clear saved platform target: ${errMsg(err)}`);
     eprint(
       '  The next install may use the stale platform target. Fix the issue and re-run uninstall.',
     );
@@ -156,12 +158,7 @@ function eprint(msg = ''): void {
 // ---------------------------------------------------------------------------
 
 export function verifyBinaryOnPath(): boolean {
-  try {
-    execSync('which preflight', { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
+  return resolveBinaryPath() !== null;
 }
 
 function printPathWarning(): void {
@@ -231,9 +228,13 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
   }
 
   if (options.disable) {
-    const wasInstalled = getScheduleStatus().installed;
-    removeSchedule();
-    print(wasInstalled ? '✓ Auto-update schedule removed.' : 'No schedule was installed.');
+    try {
+      const removed = removeSchedule();
+      print(removed ? '✓ Auto-update schedule removed.' : 'No schedule was installed.');
+    } catch (err) {
+      eprint(`⚠ Could not remove schedule: ${errMsg(err)}`);
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -265,10 +266,16 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
   // No flags — show status.
   const status = getScheduleStatus();
   if (status.installed) {
-    const hh = String(status.hour ?? 0).padStart(2, '0');
-    const mm = String(status.minute ?? 0).padStart(2, '0');
-    print(`Auto-update schedule: ${hh}:${mm} daily`);
-    print(`  Binary: ${status.binaryPath ?? 'unknown'}`);
+    if (status.readable === false) {
+      print(
+        'Auto-update schedule: installed (plist unreadable — reinstall with: preflight schedule --time HH:MM)',
+      );
+    } else {
+      const hh = String(status.hour ?? 0).padStart(2, '0');
+      const mm = String(status.minute ?? 0).padStart(2, '0');
+      print(`Auto-update schedule: ${hh}:${mm} daily`);
+      print(`  Binary: ${status.binaryPath ?? 'unknown'}`);
+    }
     print('  To change: preflight schedule --time HH:MM');
     print('  To remove: preflight schedule --disable');
   } else {
@@ -310,9 +317,7 @@ function handleInstall(options: {
   } catch (err) {
     const isSyntaxError = err instanceof SyntaxError;
     if (isSyntaxError || (inWsl && !explicitPlatform) || credentialsProvided) {
-      eprint(
-        `\n✗ Cannot read existing NR config to determine install target: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      eprint(`\n✗ Cannot read existing NR config to determine install target: ${errMsg(err)}`);
       eprint(
         isSyntaxError
           ? '  config.json contains invalid JSON — fix or delete it, then re-run install.'
@@ -320,9 +325,7 @@ function handleInstall(options: {
       );
       throw err;
     }
-    eprint(
-      `\n⚠ Could not read existing NR config to persist platform target: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    eprint(`\n⚠ Could not read existing NR config to persist platform target: ${errMsg(err)}`);
     eprint('  Platform target not persisted — hook installation will continue. Re-run to save it.');
     skipNrConfigWrite = true;
   }
@@ -337,24 +340,20 @@ function handleInstall(options: {
     mergedSettings = mergeSettings(readJsonFileStrict(settingsPath), binPath, { platform });
     mergedMcp = mergeMcpConfig(readJsonFileStrict(mcpPath), binPath, { platform });
   } catch (err) {
-    eprint(`\n✗ Failed to prepare config: ${err instanceof Error ? err.message : String(err)}`);
+    eprint(`\n✗ Failed to prepare config: ${errMsg(err)}`);
     throw err;
   }
 
   try {
     writeJsonFile(settingsPath, mergedSettings, allowedBase);
   } catch (err) {
-    eprint(
-      `\n✗ Failed to write hooks config (${settingsPath}): ${err instanceof Error ? err.message : String(err)}`,
-    );
+    eprint(`\n✗ Failed to write hooks config (${settingsPath}): ${errMsg(err)}`);
     throw err;
   }
   try {
     writeJsonFile(mcpPath, mergedMcp, allowedBase);
   } catch (err) {
-    eprint(
-      `\n✗ Failed to write MCP config (${mcpPath}): ${err instanceof Error ? err.message : String(err)}`,
-    );
+    eprint(`\n✗ Failed to write MCP config (${mcpPath}): ${errMsg(err)}`);
     throw err;
   }
 
@@ -373,14 +372,10 @@ function handleInstall(options: {
       nrConfigWritten = credentialsProvided;
     } catch (err) {
       if (credentialsProvided) {
-        eprint(
-          `\n✗ Failed to save New Relic config: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        eprint(`\n✗ Failed to save New Relic config: ${errMsg(err)}`);
         throw err;
       }
-      eprint(
-        `\n⚠ Could not persist platform target: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      eprint(`\n⚠ Could not persist platform target: ${errMsg(err)}`);
       eprint('  The next install will re-detect the target platform from scratch.');
     }
   }
@@ -426,14 +421,20 @@ function handleInstall(options: {
 }
 
 // ---------------------------------------------------------------------------
-// Uninstall handler
+// Uninstall helpers
 // ---------------------------------------------------------------------------
 
-function handleUninstall(options: {
+// Resolves which settings and MCP config paths to clean based on platform
+// flags and the saved install target. Calls process.exit(1) on invalid
+// flag combinations or unresolvable state.
+function resolveUninstallPaths(options: {
   project?: boolean;
   windowsCc?: boolean;
   linuxCc?: boolean;
-}): void {
+}): {
+  settingsPathsToClean: Map<string, string | undefined>;
+  mcpPathsToClean: Map<string, string | undefined>;
+} {
   const scope = options.project ? 'project' : 'user';
 
   if (options.windowsCc && options.linuxCc) {
@@ -537,76 +538,303 @@ function handleUninstall(options: {
     mcpPathsToClean.set(detectMcpConfigPath(scope, null), undefined);
   }
 
-  print('');
+  return { settingsPathsToClean, mcpPathsToClean };
+}
 
-  let settingsFound = false;
+// One removal operation's outcome. Every uninstall step produces exactly one of
+// these; the messaging block at the end reasons over the collection rather than
+// a set of ad-hoc boolean flags.
+type RemovalResult = {
+  readonly label: string;
+  readonly removed: boolean;
+  readonly error: Error | null;
+  // True when Claude Code must restart to pick up the change (hooks / MCP config).
+  // False for schedule / daemon — launchd applies those immediately.
+  readonly requiresRestart: boolean;
+};
+
+// Backs up a config file then writes the transformed result. Returns whether
+// the write succeeded and any error encountered — never throws.
+function backupAndWrite(
+  path: string,
+  allowedBase: string | undefined,
+  transform: (data: Record<string, unknown>) => Record<string, unknown>,
+  errorLabel: string,
+): { written: boolean; error: Error | null } {
+  const backup = `${path}.backup-${Date.now()}`;
+  try {
+    const data = readJsonFileStrict(path);
+    copyFileSync(path, backup);
+    print(`  Backup saved: ${backup}`);
+    writeJsonFile(path, transform(data), allowedBase);
+    return { written: true, error: null };
+  } catch (err) {
+    // If copyFileSync and writeJsonFile both succeeded the backup is no longer
+    // needed (the write path handles it). If copyFileSync succeeded but
+    // writeJsonFile failed, the backup is the user's only recovery copy —
+    // preserve it. If readJsonFileStrict failed, no backup was created and the
+    // original is untouched, so there is nothing to recover.
+    const error = err instanceof Error ? err : new Error(String(err));
+    eprint(`\n✗ Failed to clean ${errorLabel} (${path}): ${errMsg(err)}`);
+    process.exitCode = 1;
+    return { written: false, error };
+  }
+}
+
+// Removes preflight hooks and MCP config entries from the given paths.
+// Returns a RemovalResult — never throws. Partial completion is possible:
+// removed=true even when error is non-null if at least one file succeeded.
+function removeClaudeCodeConfig(
+  settingsPathsToClean: Map<string, string | undefined>,
+  mcpPathsToClean: Map<string, string | undefined>,
+): RemovalResult {
+  let removed = false;
+  let firstError: Error | null = null;
+
+  let hadSettingsFile = false;
   for (const [settingsPath, allowedBase] of settingsPathsToClean) {
-    if (existsSync(settingsPath)) {
-      const backup = `${settingsPath}.backup-${Date.now()}`;
-      copyFileSync(settingsPath, backup);
-      print(`  Backup saved: ${backup}`);
-      try {
-        writeJsonFile(settingsPath, removeSettings(readJsonFileStrict(settingsPath)), allowedBase);
-      } catch (err) {
-        eprint(
-          `\n✗ Failed to clean hooks config (${settingsPath}): ${err instanceof Error ? err.message : String(err)}`,
-        );
-        throw err;
-      }
-      settingsFound = true;
+    if (!existsSync(settingsPath)) continue;
+    hadSettingsFile = true;
+    const { written, error } = backupAndWrite(
+      settingsPath,
+      allowedBase,
+      removeSettings,
+      'hooks config',
+    );
+    if (written) {
+      removed = true;
       print(`✓ Hooks removed: ${settingsPath}`);
+    } else {
+      firstError ??= error;
     }
   }
-  if (!settingsFound) {
+  if (!hadSettingsFile) {
     print(
       `No settings file found at ${[...settingsPathsToClean.keys()].join(', ')}. Skipping hooks.`,
     );
   }
 
-  let mcpFound = false;
+  let hadMcpFile = false;
   for (const [mcpPath, allowedBase] of mcpPathsToClean) {
-    if (existsSync(mcpPath)) {
-      const backup = `${mcpPath}.backup-${Date.now()}`;
-      copyFileSync(mcpPath, backup);
-      print(`  Backup saved: ${backup}`);
-      try {
-        writeJsonFile(mcpPath, removeMcpConfig(readJsonFileStrict(mcpPath)), allowedBase);
-      } catch (err) {
-        eprint(
-          `\n✗ Failed to clean MCP config (${mcpPath}): ${err instanceof Error ? err.message : String(err)}`,
-        );
-        throw err;
-      }
-      mcpFound = true;
+    if (!existsSync(mcpPath)) continue;
+    hadMcpFile = true;
+    const { written, error } = backupAndWrite(mcpPath, allowedBase, removeMcpConfig, 'MCP config');
+    if (written) {
+      removed = true;
       print(`✓ MCP server removed: ${mcpPath}`);
+    } else {
+      firstError ??= error;
     }
   }
-  if (!mcpFound) {
+  if (!hadMcpFile) {
     print(`No MCP config found at ${[...mcpPathsToClean.keys()].join(', ')}. Skipping MCP server.`);
   }
 
-  // Update persisted platform after cleanup.
-  // --windows-cc or bare: clear savedPlatform so the next install re-detects from scratch.
-  //   After --windows-cc uninstall, the user must pass --windows-cc again to reinstall
-  //   Windows CC mode — re-detection has no heuristic for Windows CC intent.
-  // --linux-cc: leave savedPlatform untouched — this only cleans Linux-side paths and must
-  //   not destroy a wsl-windows-cc record that the user still intends to use.
+  return { label: 'Claude Code config', removed, error: firstError, requiresRestart: true };
+}
+
+// Runs a single uninstall step. Returns a RemovalResult — never throws.
+// process.exitCode is set to 1 and a warning is printed on error.
+function runStep(label: string, requiresRestart: boolean, fn: () => boolean): RemovalResult {
+  try {
+    const removed = fn();
+    return { label, removed, error: null, requiresRestart };
+  } catch (err) {
+    process.exitCode = 1;
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.warn('uninstall step failed', { label, error });
+    eprint(`⚠ Could not remove ${label}: ${error.message}`);
+    return { label, removed: false, error, requiresRestart };
+  }
+}
+
+// Prompts the user for uninstall confirmation. Returns one of four outcomes.
+async function promptConfirm(
+  yes: boolean,
+): Promise<'confirmed' | 'declined' | 'non-interactive' | 'stdin-closed'> {
+  if (yes) return 'confirmed';
+  if (process.stdin.isTTY !== true) return 'non-interactive';
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question('Continue? [y/N]: ')).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes' ? 'confirmed' : 'declined';
+  } catch {
+    return 'stdin-closed';
+  } finally {
+    rl.close();
+  }
+}
+
+// Handles a promptConfirm result: prints cancellation message and sets
+// exitCode=1 on any non-confirmed outcome. Returns true only when confirmed.
+function handleConfirm(
+  result: 'confirmed' | 'declined' | 'non-interactive' | 'stdin-closed',
+): boolean {
+  if (result === 'confirmed') return true;
+  const message =
+    result === 'non-interactive'
+      ? 'Uninstall cancelled (non-interactive stdin — rerun with --yes to confirm).'
+      : result === 'stdin-closed'
+        ? 'Uninstall cancelled (stdin closed).'
+        : 'Uninstall cancelled.';
+  print(message);
+  process.exitCode = 1;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall handler
+// ---------------------------------------------------------------------------
+
+async function handleUninstall(options: {
+  project?: boolean;
+  windowsCc?: boolean;
+  linuxCc?: boolean;
+  daemon?: boolean;
+  yes?: boolean;
+}): Promise<void> {
+  // --daemon: targeted removal of just the background dashboard daemon plist.
+  // Does not touch hooks, MCP config, schedules, or session history.
+  if (options.daemon) {
+    if (options.project || options.windowsCc || options.linuxCc) {
+      print('  ⚠ --daemon cannot be combined with --project, --windows-cc, or --linux-cc.');
+      print('  Use bare `preflight uninstall` to remove hooks and the daemon together.');
+      process.exit(1);
+    }
+    const daemonStatus = getDashboardDaemonStatus();
+    if (!daemonStatus.installed) {
+      print('No background dashboard daemon installed — nothing to remove.');
+      return;
+    }
+    print('preflight uninstall --daemon will remove the background dashboard daemon.\n');
+    if (!handleConfirm(await promptConfirm(options.yes ?? false))) return;
+
+    const step = runStep('background dashboard daemon', false, () => removeDashboardDaemon());
+    if (step.error !== null) {
+      print('\nUninstall incomplete — see errors above.\n');
+      return;
+    }
+    if (!step.removed) {
+      process.exitCode = 1;
+      print('Background dashboard daemon already absent — nothing to remove.');
+      return;
+    }
+    print('✓ Background dashboard daemon removed.');
+    print('  The dashboard is now only available while Claude Code is running.');
+    print('  To reinstall, run: preflight setup');
+    return;
+  }
+
+  const { settingsPathsToClean, mcpPathsToClean } = resolveUninstallPaths(options);
+
+  // Build a human-readable summary of what will change, then ask for
+  // confirmation before touching anything.
+  const changeSummary: string[] = [];
+  let hadConfigFiles = false;
+  for (const settingsPath of settingsPathsToClean.keys()) {
+    if (existsSync(settingsPath)) {
+      changeSummary.push(`  • Remove hooks from ${settingsPath}`);
+      hadConfigFiles = true;
+    }
+  }
+  for (const mcpPath of mcpPathsToClean.keys()) {
+    if (existsSync(mcpPath)) {
+      changeSummary.push(`  • Remove MCP server from ${mcpPath}`);
+      hadConfigFiles = true;
+    }
+  }
+  const scheduleStatus = getScheduleStatus();
+  const daemonStatus = getDashboardDaemonStatus();
+  if (scheduleStatus.installed) {
+    const action = scheduleStatus.readable
+      ? 'Unload and delete'
+      : 'Remove (plist unreadable — label removal)';
+    changeSummary.push(`  • ${action} auto-update schedule`);
+  }
+  if (daemonStatus.installed) {
+    const action = daemonStatus.readable
+      ? 'Unload and delete'
+      : 'Remove (plist unreadable — label removal)';
+    changeSummary.push(`  • ${action} background dashboard daemon`);
+  }
+
+  if (changeSummary.length === 0) {
+    print('Nothing installed — no changes to make.');
+    return;
+  }
+
+  print('preflight uninstall will make the following changes:\n');
+  for (const line of changeSummary) print(line);
+  print('');
+  print(`  Your session history and config at ${DEFAULT_STORAGE_PATH} will NOT be deleted.`);
+  print('');
+
+  if (!handleConfirm(await promptConfirm(options.yes ?? false))) return;
+
+  print('');
+
+  const configStep = removeClaudeCodeConfig(settingsPathsToClean, mcpPathsToClean);
   if (options.windowsCc) {
     print('  To reinstall Windows Claude Code mode, re-run: preflight install --windows-cc');
   }
-  if (!options.linuxCc) {
+
+  const scheduleStep = runStep('auto-update schedule', false, () => {
+    const removed = removeSchedule();
+    if (removed) print('✓ Auto-update schedule removed');
+    else if (scheduleStatus.installed) {
+      // Plist vanished between status-check and removal (TOCTOU). Throw so
+      // runStep captures this as an error and anyFailed reflects it.
+      throw new Error(
+        'Auto-update schedule already absent — may have been removed by another process',
+      );
+    }
+    return removed;
+  });
+
+  const daemonStep = runStep('background dashboard daemon', false, () => {
+    const removed = removeDashboardDaemon();
+    if (removed) print('✓ Background dashboard daemon removed');
+    else if (daemonStatus.installed) {
+      // Plist vanished between status-check and removal (TOCTOU). Throw so
+      // runStep captures this as an error and anyFailed reflects it — without
+      // this, process.exitCode=1 and the success message are contradictory.
+      throw new Error(
+        'Background dashboard daemon already absent — may have been removed by another process',
+      );
+    }
+    return removed;
+  });
+
+  const steps = [configStep, scheduleStep, daemonStep];
+  const anyRemoved = steps.some((s) => s.removed);
+  const anyFailed = steps.some((s) => s.error !== null);
+  const requiresRestart = steps.some((s) => s.removed && s.requiresRestart);
+
+  // Clear the saved platform record when hooks/MCP config was removed (even if
+  // schedule/daemon cleanup also failed — those are independent). Also clear on
+  // schedule/daemon-only removal when config files existed on disk at status-check
+  // time: absent config files mean hooks were never written (or already manually
+  // deleted) and the platform record should be preserved for a re-install attempt.
+  // Skip on --linux-cc (sibling wsl-windows-cc record may still be in use).
+  const shouldClearPlatform = configStep.removed || (anyRemoved && !anyFailed && hadConfigFiles);
+  if (!options.linuxCc && shouldClearPlatform) {
     clearSavedPlatform();
   }
 
-  print('\nRestart Claude Code for changes to take effect.\n');
-
-  const scheduleWasInstalled = getScheduleStatus().installed;
-  removeSchedule();
-  if (scheduleWasInstalled) print('✓ Auto-update schedule removed');
-
-  const daemonWasInstalled = getDashboardDaemonStatus().installed;
-  removeDashboardDaemon();
-  if (daemonWasInstalled) print('✓ Background dashboard daemon removed');
+  if (requiresRestart) {
+    if (anyFailed) {
+      print(
+        '\nRestart Claude Code to apply hook changes. Uninstall incomplete — see errors above.\n',
+      );
+    } else {
+      print('\nRestart Claude Code for changes to take effect.\n');
+    }
+  } else if (anyRemoved) {
+    // Schedule/daemon only — launchd unloaded immediately; no restart needed.
+    print(anyFailed ? '\nUninstall incomplete — see errors above.\n' : '\nUninstall complete.\n');
+  } else if (anyFailed) {
+    print('\nUninstall incomplete — see errors above.\n');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -663,9 +891,7 @@ async function handleDoctor(options: { config?: string }): Promise<void> {
   const { runDiagnostics } = await import('./diagnostics.js');
   const configPath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
 
-  const raw = readJsonFile(configPath);
-  const storagePath = typeof raw.storagePath === 'string' ? raw.storagePath : undefined;
-
+  const storagePath = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? undefined;
   print('Running diagnostics...');
   const checks = await runDiagnostics({ configPath, storagePath });
 
@@ -721,6 +947,11 @@ export function createInstallProgram(): Command {
     .option('--project', 'Remove from project-level .claude/settings.json instead of user-level')
     .option('--windows-cc', 'Remove Windows Claude Code hooks only (WSL only)')
     .option('--linux-cc', 'Remove Linux Claude Code hooks only (WSL only)')
+    .option(
+      '--daemon',
+      'Remove only the background dashboard daemon (preserves hooks, MCP config, and session history)',
+    )
+    .option('--yes', 'Skip the confirmation prompt (useful for scripts and CI)')
     .action(handleUninstall);
 
   program
@@ -733,7 +964,7 @@ export function createInstallProgram(): Command {
         const { runSetupWizard } = await import('./setup-wizard.js');
         await runSetupWizard();
       } catch (err) {
-        print(`\n✗ Setup failed: ${err instanceof Error ? err.message : String(err)}`);
+        print(`\n✗ Setup failed: ${errMsg(err)}`);
         process.exitCode = 1;
       }
     });

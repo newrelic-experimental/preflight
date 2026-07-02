@@ -582,12 +582,14 @@ export async function runSetupWizard(): Promise<void> {
       const binaryPath = resolveBinaryPath();
       const daemonAnswer = (
         await rl.question(
-          '\nInstall always-on background dashboard? Keeps the local dashboard running even when Claude Code is closed [Y/n]: ',
+          '\nInstall always-on background dashboard? Keeps the local dashboard running even when Claude Code is closed [y/N]: ',
         )
       )
         .trim()
         .toLowerCase();
-      if (daemonAnswer !== 'n' && daemonAnswer !== 'no') {
+      // Daemon install is explicitly opt-in ([y/N]) — unlike every other wizard prompt —
+      // because it installs a persistent launchd service that survives Claude Code restarts.
+      if (daemonAnswer === 'y' || daemonAnswer === 'yes') {
         if (binaryPath) {
           try {
             // installDashboardDaemon calls launchctl unload before load, so

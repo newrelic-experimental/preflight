@@ -10,6 +10,10 @@ import {
 import { basename, dirname, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 
+export function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function readJsonFile(path: string): Record<string, unknown> {
   try {
     return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
