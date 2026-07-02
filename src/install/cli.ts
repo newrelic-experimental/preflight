@@ -8,7 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, copyFileSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { Command } from 'commander';
 
@@ -201,18 +201,61 @@ function handleUpdate(): void {
     process.exit(1);
   }
 
+  let gitRoot!: string;
+  try {
+    gitRoot = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--show-toplevel'], {
+      stdio: 'pipe',
+      env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+    })
+      .toString()
+      .trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      print('✗ git is not installed or not found on PATH.');
+      print('  Install git (https://git-scm.com) then retry: preflight update');
+    } else {
+      print('✗ preflight was installed via a package manager, not cloned from source.');
+      print('  (If your .git directory is missing or corrupt, re-clone the repo instead.)');
+      print('  To update, reinstall using your package manager, e.g.:');
+      print('    npm install -g @newrelic/preflight@latest');
+      print('    pnpm add -g @newrelic/preflight@latest');
+    }
+    process.exit(1);
+  }
+  // If repoRoot sits below a node_modules directory within the git tree,
+  // preflight is installed as a dependency — not a source clone.
+  // path.relative() normalises separators on all platforms (robust on Windows).
+  if (relative(gitRoot, repoRoot).split(sep).includes('node_modules')) {
+    print('✗ preflight was installed via a package manager, not cloned from source.');
+    print('  To update, reinstall using your package manager, e.g.:');
+    print('    npm install -g @newrelic/preflight@latest');
+    print('    pnpm add -g @newrelic/preflight@latest');
+    process.exit(1);
+  }
+
   print(`Updating Preflight from ${repoRoot}...\n`);
 
   try {
     print('→ git pull');
     execFileSync('git', ['pull'], { cwd: repoRoot, stdio: 'inherit' });
+  } catch {
+    print('\n✗ git pull failed. Check the output above for details.');
+    print('  If the output shows diverged branches and you have no local commits to keep,');
+    print('  you can reset to the remote HEAD (replace <branch> with your default branch):');
+    print(`    git -C "${repoRoot}" fetch origin`);
+    print(`    git -C "${repoRoot}" reset --hard origin/<branch>`);
+    print('  WARNING: reset --hard permanently discards any local commits not yet on origin.');
+    process.exit(1);
+  }
+
+  try {
     print('\n→ npm run build');
     execFileSync('npm', ['run', 'build'], { cwd: repoRoot, stdio: 'inherit' });
     print('\n✓ Update complete.');
     print('  Restart Claude Code to pick up the new version.');
     print('  Run `preflight install` to update the MCP server key in ~/.mcp.json.');
   } catch {
-    print('\n✗ Update failed. Check the output above for details.');
+    print('\n✗ Build failed. Check the output above for details.');
     process.exit(1);
   }
 }
