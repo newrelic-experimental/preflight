@@ -344,32 +344,89 @@ function collectTranscriptTokens(data: {
 // stat() and one read — well under the <5ms budget.
 // ---------------------------------------------------------------------------
 
+/**
+ * Seam for unit tests: replace `readFile` to inject fake `/proc/<pid>/stat`
+ * content without touching the real filesystem. Production code never sets this.
+ * @internal
+ */
+export const _procFs = {
+  readFile: (path: string): string => readFileSync(path, 'utf-8'),
+};
+
+/**
+ * Returns an array starting with `startPpid` and appended with each successive
+ * parent PID read from `/proc/<pid>/stat`, up to `maxDepth` levels deep.
+ *
+ * On non-Linux systems `/proc` is absent; the first read throws, the loop
+ * breaks immediately, and the return value is `[startPpid]` — identical to
+ * the pre-walk behaviour. On Linux with a direct parent relationship it also
+ * returns `[startPpid]` because the parent's ppid will be ≤ 1 (or absent).
+ *
+ * The walk is needed on WSL2 with fish/bash hook-runners that interpose an
+ * intermediate `sh` process: the MCP server's `process.ppid` is Claude's PID,
+ * but the collector's `process.ppid` is the interposed shell. Writing the
+ * breadcrumb at every ancestor ensures the server finds it at its own ppid.
+ */
+export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] {
+  const pids: number[] = [startPpid];
+  let pid = startPpid;
+  for (let depth = 0; depth < maxDepth && pid > 1; depth++) {
+    try {
+      const stat = _procFs.readFile(`/proc/${pid}/stat`);
+      // Format: "pid (comm) state ppid pgrp ..."
+      // The comm field can contain spaces and parentheses; use lastIndexOf to
+      // find the field-separator ')' reliably.
+      const lastParen = stat.lastIndexOf(')');
+      if (lastParen === -1) break;
+      // After the last ')': " state ppid ..." — split on space, index [1] is ppid.
+      const parentPid = parseInt(stat.slice(lastParen + 2).split(' ')[1] ?? '0', 10);
+      if (!Number.isFinite(parentPid) || parentPid <= 1) break;
+      if (pids.includes(parentPid)) break; // cycle guard
+      pids.push(parentPid);
+      pid = parentPid;
+    } catch {
+      break;
+    }
+  }
+  return pids;
+}
+
 let _breadcrumbWriteFailed = false;
 
 function writePpidBreadcrumb(sessionId: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
-  // process.ppid is undefined on a few exotic platforms; bail without writing.
   const ppid = process.ppid;
   if (typeof ppid !== 'number' || ppid <= 0) return;
 
   try {
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     const breadcrumbDir = resolve(storageDir, 'session-by-ppid');
-    const breadcrumbPath = resolve(breadcrumbDir, `${ppid}.txt`);
+    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
 
-    // Steady-state short-circuit: most hook fires after the first one are
-    // no-ops because the breadcrumb already contains the right session_id.
-    if (existsSync(breadcrumbPath)) {
-      try {
-        if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) return;
-      } catch {
-        // Fall through and rewrite if the read failed for any reason
+    // Walk ancestor PIDs. On Linux this includes any intermediate shell
+    // processes interposed by the hook runner. On macOS/Windows the array
+    // has exactly one element (process.ppid) — identical to before.
+    const pids = getLinuxAncestorPids(ppid);
+
+    let wroteAny = false;
+    for (const pid of pids) {
+      const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
+      // Short-circuit: no write needed if content already matches.
+      if (existsSync(breadcrumbPath)) {
+        try {
+          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+            wroteAny = true;
+            continue;
+          }
+        } catch {
+          // Fall through to rewrite if the read failed.
+        }
       }
+      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
+      wroteAny = true;
     }
 
-    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-    writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
-    _breadcrumbWriteFailed = false;
+    if (wroteAny) _breadcrumbWriteFailed = false;
   } catch (err) {
     if (!_breadcrumbWriteFailed) {
       process.stderr.write(
