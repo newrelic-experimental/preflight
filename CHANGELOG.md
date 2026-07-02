@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.9] - 2026-07-02
+
+### Changed
+
+- **Pricing tables updated to 2026-07-01** — cost calculations now reflect current vendor rates:
+  - **New models added:** `claude-fable-5`, `claude-sonnet-5` (introductory pricing of $2/$10 through August 31, 2026), `claude-opus-4-8`, `gemini-3.5-flash`, `mistral-medium-latest`
+  - **Model alias updated:** the family alias `claude-opus-4` now resolves to `claude-opus-4-8` (previously `claude-opus-4-7`); the older generation entry is retained as a legacy entry for historical cost backfill
+  - **Mistral rate corrections:** Mistral Small and Large rates revised to match current public pricing
+  - **AWS Bedrock:** added `anthropic.claude-sonnet-5` and `anthropic.claude-opus-4-8` entries
+
+---
+
 ## [1.0.8] - 2026-07-02
 
 ### Fixed
