@@ -217,7 +217,7 @@ Preflight is strategically different because it is the first solution purpose-bu
 
 **Multi-Platform, Multi-Provider Coverage Out of the Box**
 
-The product ships with adapters for eight AI coding clients (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, generic MCP). Customers do not have to choose a single AI tool to be observable — the data model normalises across all of them and produces a single cross-tool view. No competitor offers this breadth.
+The product ships with adapters for nine AI coding clients (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro, generic MCP). Customers do not have to choose a single AI tool to be observable — the data model normalises across all of them and produces a single cross-tool view. No competitor offers this breadth.
 
 **Workflow-Aware, Not Just Request-Aware**
 
@@ -473,7 +473,7 @@ Preflight follows the New Relic Labs publication workflow rather than the standa
 
 ### Initial Labs Publication (June 9, 2026)
 
-**In-Scope:** Asset is published to the `newrelic` or `newrelic-experimental` GitHub organisation in its determined Labs category (see [§11 milestone #4](#11--milestones--dependencies)). Open self-install for any New Relic customer via the GitHub README and the Labs catalog. Full dashboard library, full alert library, full audit-trail surface, full anti-pattern detector set, Slack digest delivery, and the eight launch-set AI client adapters all available. Support via GitHub issues, Labs Work Items, and `#help-labs-dev` Slack.
+**In-Scope:** Asset is published to the `newrelic` or `newrelic-experimental` GitHub organisation in its determined Labs category (see [§11 milestone #4](#11--milestones--dependencies)). Open self-install for any New Relic customer via the GitHub README and the Labs catalog. Full dashboard library, full alert library, full audit-trail surface, full anti-pattern detector set, Slack digest delivery, and the nine launch-set AI client adapters all available. Support via GitHub issues, Labs Work Items, and `#help-labs-dev` Slack.
 
 **Out-of-Scope:** Standard New Relic GTS support (only available to Community+ assets after promotion); IDE-embedded surfaces ([roadmap](./ROADMAP.md#ide-embedded-surfaces)).
 

@@ -162,7 +162,7 @@ The product respects existing New Relic RBAC and supports a high-security mode t
 
 ## Platform Adapter Set Expansion
 
-Launch coverage targets eight AI coding clients (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, generic MCP). The AI coding tooling space is fragmenting rapidly, so adapter coverage is an ongoing investment.
+Launch coverage targets nine AI coding clients (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro, generic MCP). The AI coding tooling space is fragmenting rapidly, so adapter coverage is an ongoing investment.
 
 **Planned work:**
 

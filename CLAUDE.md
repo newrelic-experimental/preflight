@@ -77,7 +77,7 @@ preflight/
       task-completion-tracker.ts    # Task lifecycle tracking (completed/abandoned)
       model-usage-tracker.ts        # Cost-efficiency per AI model
       personal-coach.ts             # Narrative coaching report comparing weekly metrics to personal baseline
-    platforms/                      # 8 platform adapters
+    platforms/                      # 9 platform adapters
       claude-code-adapter.ts        # Claude Code (default)
       cursor-adapter.ts             # Cursor IDE
       windsurf-adapter.ts           # Windsurf IDE
@@ -85,6 +85,7 @@ preflight/
       zed-adapter.ts                # Zed IDE
       continue-adapter.ts           # Continue.dev
       amazon-q-adapter.ts           # Amazon Q Developer
+      kiro-adapter.ts               # Amazon Kiro (agentic IDE, MCP-native)
       generic-mcp-adapter.ts        # Generic fallback adapter for any MCP-speaking client
       platform-registry.ts          # Registry + factory
     proxy/                          # HTTP proxy layer
