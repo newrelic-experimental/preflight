@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-03
+
+### Added
+
+- **Amazon Kiro platform adapter** — Preflight now detects and normalizes tool calls from [Amazon Kiro](https://kiro.dev), AWS's agentic, MCP-native IDE. Kiro sessions are automatically detected via environment variables (`KIRO_SESSION_ID`, `KIRO_IDE`, `MCP_CLIENT=kiro`, or `NEW_RELIC_AI_PLATFORM=kiro`) and all standard Kiro tool names are mapped to the normalized Preflight vocabulary. Install instructions are included in `preflight install` output. **Note:** tool-name mappings are best-effort pending validation against a live Kiro install — unmapped tools record as `Unknown` with the original tool name preserved in telemetry.
+
+---
+
 ## [1.0.10] - 2026-07-03
 
 ### Fixed
