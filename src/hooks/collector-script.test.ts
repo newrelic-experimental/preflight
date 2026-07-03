@@ -15,6 +15,8 @@ import {
   getTranscriptPath,
   getBufferPath,
   writePpidBreadcrumb,
+  getLinuxAncestorPids,
+  _procFs,
 } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -895,6 +897,134 @@ describe('collector-script', () => {
       processHook(makePreToolUse({ session_id: 'sess-bc' }));
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
+    });
+
+    it('writes breadcrumb at each ancestor PID (end-to-end WSL+fish path)', () => {
+      // Inject a fake /proc chain: process.ppid → fakeGrandpid → (ENOENT, stop).
+      // Both the direct-ppid slot and the ancestor slot must be written.
+      const ppid = process.ppid;
+      const fakeGrandpid = 99_997;
+      const origReadFile = _procFs.readFile;
+      _procFs.readFile = (path: string): string => {
+        if (path === `/proc/${ppid}/stat`)
+          return `${ppid} (sh) S ${fakeGrandpid} ${ppid} ${ppid} 0 -1 0`;
+        throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      };
+      try {
+        writePpidBreadcrumb('sess-ancestor');
+      } finally {
+        _procFs.readFile = origReadFile;
+      }
+
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+
+      const directCrumb = resolve(breadcrumbDir, `${ppid}.txt`);
+      expect(existsSync(directCrumb)).toBe(true);
+      expect(readFileSync(directCrumb, 'utf-8')).toBe('sess-ancestor');
+
+      const ancestorCrumb = resolve(breadcrumbDir, `${fakeGrandpid}.txt`);
+      expect(existsSync(ancestorCrumb)).toBe(true);
+      expect(readFileSync(ancestorCrumb, 'utf-8')).toBe('sess-ancestor');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getLinuxAncestorPids
+  // ---------------------------------------------------------------------------
+  describe('getLinuxAncestorPids()', () => {
+    let originalReadFile: typeof _procFs.readFile;
+
+    beforeEach(() => {
+      originalReadFile = _procFs.readFile;
+    });
+
+    afterEach(() => {
+      _procFs.readFile = originalReadFile;
+    });
+
+    function mockProc(statMap: Record<string, string>): void {
+      _procFs.readFile = (path: string): string => {
+        if (path in statMap) return statMap[path]!;
+        if (/^\/proc\/\d+\/stat$/.test(path)) {
+          throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+        }
+        // Real call for non-/proc/ paths (other tests in this file use real fs)
+        throw Object.assign(new Error(`unexpected readFile: ${path}`), { code: 'ENOENT' });
+      };
+    }
+
+    it('returns [startPpid] when /proc/<pid>/stat is not readable', () => {
+      mockProc({}); // all /proc/ reads throw ENOENT
+      expect(getLinuxAncestorPids(1001)).toEqual([1001]);
+    });
+
+    it('walks one intermediate shell process (the WSL+fish case)', () => {
+      // claude=1000, sh=1001, collector ppid=1001
+      mockProc({
+        '/proc/1001/stat': '1001 (sh) S 1000 1001 1000 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0',
+        // /proc/1000/stat not present → stops there
+      });
+      expect(getLinuxAncestorPids(1001)).toEqual([1001, 1000]);
+    });
+
+    it('handles process names that contain parentheses', () => {
+      // lastIndexOf(')') must find the field-separator paren, not one inside the name
+      mockProc({
+        '/proc/2000/stat': '2000 (my(app)name) S 1999 2000 2000 0 -1 0 0 0 0 0',
+      });
+      expect(getLinuxAncestorPids(2000)).toEqual([2000, 1999]);
+    });
+
+    it('does not include PID 1 (init/systemd)', () => {
+      mockProc({
+        '/proc/100/stat': '100 (daemon) S 1 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0',
+      });
+      // ppid of 100 is 1 → stop condition: parentPid <= 1
+      expect(getLinuxAncestorPids(100)).toEqual([100]);
+    });
+
+    it('does not include PID 0', () => {
+      mockProc({
+        '/proc/50/stat': '50 (kthread) S 0 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0',
+      });
+      expect(getLinuxAncestorPids(50)).toEqual([50]);
+    });
+
+    it('stops at maxDepth and returns startPpid + that many ancestors', () => {
+      // Chain: 100 → 99 → 98 → 97 → 96 → 95 (unlimited)
+      const statMap: Record<string, string> = {};
+      for (let pid = 100; pid > 90; pid--) {
+        statMap[`/proc/${pid}/stat`] = `${pid} (proc) S ${pid - 1} ${pid} ${pid} 0 -1 0`;
+      }
+      mockProc(statMap);
+      // default maxDepth=5: starts with [100], walks 5 times → [100,99,98,97,96,95]
+      const result = getLinuxAncestorPids(100);
+      expect(result).toHaveLength(6);
+      expect(result[0]).toBe(100);
+      expect(result[5]).toBe(95);
+
+      // explicit maxDepth=2: [100, 99, 98]
+      expect(getLinuxAncestorPids(100, 2)).toEqual([100, 99, 98]);
+    });
+
+    it('breaks on a cycle and does not loop infinitely', () => {
+      // 100 → 99 → 100 (cycle)
+      mockProc({
+        '/proc/100/stat': '100 (proc) S 99 100 100 0 -1 0',
+        '/proc/99/stat': '99 (proc) S 100 99 99 0 -1 0', // cycle back to 100
+      });
+      const result = getLinuxAncestorPids(100);
+      expect(result).toEqual([100, 99]); // stops before re-adding 100
+    });
+
+    it('returns [startPpid] when stat has no closing parenthesis', () => {
+      mockProc({ '/proc/300/stat': '300 malformed-no-parens' });
+      expect(getLinuxAncestorPids(300)).toEqual([300]);
+    });
+
+    it('returns [startPpid] when parsed ppid is NaN', () => {
+      mockProc({ '/proc/400/stat': '400 (proc) S notanumber ...' });
+      expect(getLinuxAncestorPids(400)).toEqual([400]);
     });
   });
 });
