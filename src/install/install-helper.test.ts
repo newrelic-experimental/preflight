@@ -12,6 +12,7 @@ import {
   removeMcpConfig,
   detectSettingsPath,
   detectMcpConfigPath,
+  entryHasAnyCommandHook,
 } from './install-helper.js';
 
 // ---------------------------------------------------------------------------
@@ -698,5 +699,54 @@ describe('integration: install/uninstall cycle', () => {
     const readBack = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
     expect(readBack.licenseKey).toBe('NRAK-test123');
     expect(readBack.accountId).toBe('99999');
+  });
+});
+
+describe('entryHasAnyCommandHook()', () => {
+  it('returns false for null / non-object entries', () => {
+    expect(entryHasAnyCommandHook(null)).toBe(false);
+    expect(entryHasAnyCommandHook(undefined)).toBe(false);
+    expect(entryHasAnyCommandHook('string')).toBe(false);
+    expect(entryHasAnyCommandHook(42)).toBe(false);
+  });
+
+  it('returns false when hooks array contains no command entries', () => {
+    expect(entryHasAnyCommandHook({ matcher: '', hooks: [] })).toBe(false);
+    expect(entryHasAnyCommandHook({ matcher: '', hooks: [{ type: 'something-else' }] })).toBe(
+      false,
+    );
+  });
+
+  it('returns false for an empty command string', () => {
+    expect(entryHasAnyCommandHook({ matcher: '', hooks: [{ type: 'command', command: '' }] })).toBe(
+      false,
+    );
+    expect(entryHasAnyCommandHook({ command: '' })).toBe(false); // legacy format
+  });
+
+  it('returns true for the official NR collector command (new format)', () => {
+    expect(
+      entryHasAnyCommandHook({
+        matcher: '',
+        hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }],
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true for a custom wrapper command (new format)', () => {
+    expect(
+      entryHasAnyCommandHook({
+        matcher: '',
+        hooks: [{ type: 'command', command: '/home/user/wrapper.sh pre-tool' }],
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true for the official NR collector command (legacy flat format)', () => {
+    expect(entryHasAnyCommandHook({ command: 'preflight-collector pre-tool' })).toBe(true);
+  });
+
+  it('returns true for a custom command (legacy flat format)', () => {
+    expect(entryHasAnyCommandHook({ command: '/usr/local/bin/my-wrapper post-tool' })).toBe(true);
   });
 });

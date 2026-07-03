@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2026-07-03
+
+### Fixed
+
+- **WSL2 + fish shell session tracking** — the hook collector now walks `/proc/<pid>/stat` to find ancestor PIDs (up to 5 levels deep), so the MCP server can match a hook event to its session even when intermediate shell processes (e.g. a fish shell started by WSL2) sit between Claude Code and the collector. On macOS and Windows the behaviour is unchanged.
+- **Version reporting when installed as a symlink** — `preflight --version` now resolves symlinks before locating `package.json`, fixing cases where the binary is installed via `npm link` or a package manager that places a symlink in a `bin/` directory separate from the package root.
+- **`preflight doctor` false alarm for custom hook wrappers** — when a hook event type (e.g. `PostToolUse`) has a hook command that is not the official preflight collector, the doctor check now reports a **warning** rather than a failure, since the user may be wrapping `preflight-collector` in a custom script. A hook event type with no command at all still reports as a failure.
+
+---
+
 ## [1.0.9] - 2026-07-02
 
 ### Changed
