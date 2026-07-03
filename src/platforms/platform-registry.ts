@@ -7,6 +7,7 @@ import { CopilotAdapter } from './copilot-adapter.js';
 import { ZedAdapter } from './zed-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
+import { KiroAdapter } from './kiro-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
 
 const logger = createLogger('platform-registry');
@@ -59,6 +60,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new ZedAdapter());
   registry.register(new ContinueAdapter());
   registry.register(new AmazonQAdapter());
+  registry.register(new KiroAdapter());
   registry.register(new GenericMcpAdapter()); // always last
   return registry;
 }

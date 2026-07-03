@@ -96,7 +96,7 @@ preflight/
     security/      # Audit trail + SSRF helpers
     tracing/       # OTel span lifecycle
     transport/     # NR ingest manager + log ingest
-    platforms/     # 8 platform adapters — 7 named (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q) + 1 generic MCP fallback
+    platforms/     # 9 platform adapters — 8 named (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro) + 1 generic MCP fallback
     digest/        # Slack digest formatter and sender
     install/       # preflight install / setup CLI
     alerts/        # Alert TS types (JSON files live in alerts/ at repo root)
@@ -305,6 +305,7 @@ The MCP server automatically detects and supports multiple AI coding platforms:
 | **Zed**            | Env var: `NEW_RELIC_AI_PLATFORM=zed`      | Auto-detected from Zed config directory                |
 | **Continue.dev**   | Env var: `NEW_RELIC_AI_PLATFORM=continue` | Auto-detected from Continue config                     |
 | **Amazon Q**       | Env var: `NEW_RELIC_AI_PLATFORM=amazonq`  | Requires AWS IDE plugin setup                          |
+| **Amazon Kiro**    | Env var: `NEW_RELIC_AI_PLATFORM=kiro`     | MCP-native; add server to `.kiro/settings/mcp.json`    |
 
 ---
 

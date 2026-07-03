@@ -13,6 +13,7 @@ export { parseCopilotUsageResponse } from './copilot-adapter.js';
 export { ZedAdapter } from './zed-adapter.js';
 export { ContinueAdapter } from './continue-adapter.js';
 export { AmazonQAdapter } from './amazon-q-adapter.js';
+export { KiroAdapter } from './kiro-adapter.js';
 export { GenericMcpAdapter, validateReportToolCallInput } from './generic-mcp-adapter.js';
 export type {
   ReportToolCallInput,

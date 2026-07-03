@@ -100,7 +100,7 @@ Restart your AI tool — hooks and the MCP server load at session start. Every t
 
 ## Works With
 
-**Claude Code** • **Cursor** • **Windsurf** • **GitHub Copilot** • **Zed** • **Continue.dev** • **Amazon Q Developer**
+**Claude Code** • **Cursor** • **Windsurf** • **GitHub Copilot** • **Zed** • **Continue.dev** • **Amazon Q Developer** • **Amazon Kiro**
 
 ---
 

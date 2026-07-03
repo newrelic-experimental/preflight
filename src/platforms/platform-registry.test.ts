@@ -8,6 +8,7 @@ import { GenericMcpAdapter } from './generic-mcp-adapter.js';
 import { ZedAdapter } from './zed-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
+import { KiroAdapter } from './kiro-adapter.js';
 import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -33,6 +34,9 @@ const ENV_KEYS = [
   'Q_DEVELOPER_SESSION',
   'AWS_CODEWHISPERER_SESSION',
   'AMAZON_Q_VERSION',
+  'KIRO_SESSION_ID',
+  'KIRO_IDE',
+  'KIRO_VERSION',
 ];
 
 beforeEach(() => {
@@ -236,6 +240,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('amazon-q');
     });
 
+    it('selects Kiro adapter when Kiro env vars are present', () => {
+      process.env.KIRO_SESSION_ID = 'kiro-abc';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('kiro');
+    });
+
     it('falls back to generic-mcp when no specific platform detected', () => {
       const registry = createDefaultRegistry();
 
@@ -294,7 +307,7 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(8);
+    expect(registered).toHaveLength(9);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
@@ -302,15 +315,17 @@ describe('createDefaultRegistry', () => {
     expect(registered[4]).toBeInstanceOf(ZedAdapter);
     expect(registered[5]).toBeInstanceOf(ContinueAdapter);
     expect(registered[6]).toBeInstanceOf(AmazonQAdapter);
-    expect(registered[7]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[7]).toBeInstanceOf(KiroAdapter);
+    expect(registered[8]).toBeInstanceOf(GenericMcpAdapter);
   });
 
-  it('includes zed, continue, and amazon-q adapters', () => {
+  it('includes zed, continue, amazon-q, and kiro adapters', () => {
     const registry = createDefaultRegistry();
     const names = registry.getRegistered().map((a) => a.platformName);
     expect(names).toContain('zed');
     expect(names).toContain('continue');
     expect(names).toContain('amazon-q');
+    expect(names).toContain('kiro');
   });
 
   it('ends with generic-mcp as fallback', () => {
@@ -329,6 +344,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new ZedAdapter(),
     new ContinueAdapter(),
     new AmazonQAdapter(),
+    new KiroAdapter(),
     new GenericMcpAdapter(),
   ];
 
