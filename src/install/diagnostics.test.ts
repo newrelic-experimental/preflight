@@ -60,6 +60,17 @@ jest.mock('./install-helper.js', () => ({
     if (typeof obj.command === 'string') return re.test(obj.command);
     return false;
   }),
+  entryHasAnyCommandHook: jest.fn((entry: unknown) => {
+    if (typeof entry !== 'object' || entry === null) return false;
+    const obj = entry as Record<string, unknown>;
+    if (Array.isArray(obj.hooks)) {
+      return (obj.hooks as Array<Record<string, unknown>>).some(
+        (h) => typeof h.command === 'string' && h.command !== '',
+      );
+    }
+    if (typeof obj.command === 'string') return obj.command !== '';
+    return false;
+  }),
 }));
 
 // Stub platform module.
@@ -379,6 +390,72 @@ describe('runDiagnostics', () => {
       });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Hooks wired')?.status).toBe('ok');
+    });
+
+    it('returns warn when both PreToolUse and PostToolUse have custom (non-NR) commands', async () => {
+      const preEntry = {
+        matcher: '',
+        hooks: [{ type: 'command', command: '/home/user/wrapper.sh pre-tool' }],
+      };
+      const postEntry = {
+        matcher: '',
+        hooks: [{ type: 'command', command: '/home/user/wrapper.sh post-tool' }],
+      };
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === '/test-home/.claude/settings.json')
+          return JSON.stringify({ hooks: { PreToolUse: [preEntry], PostToolUse: [postEntry] } });
+        return '{}';
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('custom hook command');
+      expect(c.detail).toContain('preflight-collector');
+      expect(c.fix).toBeDefined();
+    });
+
+    it('returns warn when one event has the NR hook and the other has a custom command', async () => {
+      const preNrEntry = {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }],
+      };
+      const postCustomEntry = {
+        matcher: '',
+        hooks: [{ type: 'command', command: '/home/user/wrapper.sh post-tool' }],
+      };
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === '/test-home/.claude/settings.json')
+          return JSON.stringify({
+            hooks: { PreToolUse: [preNrEntry], PostToolUse: [postCustomEntry] },
+          });
+        return '{}';
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('PostToolUse');
+      expect(c.detail).toContain('custom hook command');
+    });
+
+    it('returns fail when one event has the NR hook and the other has no hook at all', async () => {
+      // PostToolUse is completely absent — this is a misconfiguration, not a wrapper.
+      const preNrEntry = {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }],
+      };
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === '/test-home/.claude/settings.json')
+          return JSON.stringify({ hooks: { PreToolUse: [preNrEntry] } }); // PostToolUse absent
+        return '{}';
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('PostToolUse');
+      expect(c.detail).not.toContain('warn');
     });
   });
 

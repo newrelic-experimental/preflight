@@ -160,6 +160,37 @@ export function entryContainsNrObserve(entry: unknown): boolean {
   return false;
 }
 
+/**
+ * Returns true when a hook entry contains any non-empty command hook,
+ * regardless of whether the command matches NR_HOOK_RE.
+ *
+ * Used by the doctor check to distinguish "custom hook that might work"
+ * (worth a warn) from "no hook at all" (definitely broken, needs a fail).
+ */
+export function entryHasAnyCommandHook(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const obj = entry as Record<string, unknown>;
+
+  // New format: { matcher, hooks: [{ type, command }] }
+  if (Array.isArray(obj.hooks)) {
+    return obj.hooks.some(
+      (h: unknown) =>
+        typeof h === 'object' &&
+        h !== null &&
+        'command' in (h as Record<string, unknown>) &&
+        typeof (h as Record<string, unknown>).command === 'string' &&
+        (h as Record<string, unknown>).command !== '',
+    );
+  }
+
+  // Legacy flat format: { matcher, command }
+  if ('command' in obj && typeof obj.command === 'string' && obj.command !== '') {
+    return true;
+  }
+
+  return false;
+}
+
 function filterNrObserveEntries(entries: unknown[]): unknown[] {
   return entries.filter((e) => !entryContainsNrObserve(e));
 }
