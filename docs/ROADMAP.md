@@ -10,35 +10,56 @@ Ratings are on a 1–5 scale: **Difficulty** (1 = straightforward, 5 = significa
 
 ## Table of Contents
 
-[Ecosystem Integrations](#ecosystem-integrations)
+[Completed](#completed)
 
-[Developer Session Intelligence](#developer-session-intelligence)
+[In Progress](#in-progress)
 
-[AI Model Intelligence](#ai-model-intelligence)
+[Not Started](#not-started)
 
-[Cold-Start UX for Net-New Users](#cold-start-ux-for-net-new-users)
-
-[Recommendation Engine Maturation](#recommendation-engine-maturation)
-
-[Team Intelligence](#team-intelligence)
-
-[Pre-Deployment Consumption Estimation](#pre-deployment-consumption-estimation)
-
-[IDE-Embedded Surfaces](#ide-embedded-surfaces)
-
-[Enterprise Controls](#enterprise-controls)
-
-[Platform Adapter Set Expansion](#platform-adapter-set-expansion)
-
-[Audit and Compliance Surface Extension](#audit-and-compliance-surface-extension)
-
-[Environmental Impact](#environmental-impact)
-
-[OpenTelemetry GenAI Convention Compliance](#opentelemetry-genai-convention-compliance)
+- [Ecosystem Integrations](#ecosystem-integrations)
+- [Developer Session Intelligence](#developer-session-intelligence)
+- [AI Model Intelligence](#ai-model-intelligence)
+- [Cold-Start UX for Net-New Users](#cold-start-ux-for-net-new-users)
+- [Recommendation Engine Maturation](#recommendation-engine-maturation)
+- [Team Intelligence](#team-intelligence)
+- [Pre-Deployment Consumption Estimation](#pre-deployment-consumption-estimation)
+- [IDE-Embedded Surfaces](#ide-embedded-surfaces)
+- [Enterprise Controls](#enterprise-controls)
+- [Platform Adapter Set Expansion](#platform-adapter-set-expansion)
+- [Audit and Compliance Surface Extension](#audit-and-compliance-surface-extension)
+- [Environmental Impact](#environmental-impact)
+- [OpenTelemetry GenAI Convention Compliance](#opentelemetry-genai-convention-compliance)
 
 ---
 
-## Ecosystem Integrations
+## Completed
+
+Items shipped and no longer on the active roadmap.
+
+- **Session replay** — A scrub-able visual timeline of any session: every file touched, every command run, every edit made. Delivered via `GET /api/sessions/:id/replay`, `replay-analyzer.ts`, and the `SessionTrace` component surfaced in both the Today live tail and the Sessions history view.
+- **Deeper personal coaching** — Narrative coaching report comparing weekly metrics to a developer's personal baseline, with concrete actionable guidance. Delivered via `personal-coach.ts`, `GET /api/personal-coach`, and `nr_observe_get_personal_insights`.
+- **Per-AI-tool model usage and cost-efficiency breakdown** — Surfaces cost and request counts per model with a most-efficient-model callout. Delivered via `model-usage-tracker.ts`, `GET /api/model-usage`, and the Model Usage panel on the Today view.
+- **Platform adapter expansion** — Nine AI coding client adapters shipped at launch: Claude Code, Cursor, Windsurf, GitHub Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro, and a generic MCP fallback. Exceeds the "at least two additional" target set at roadmap authoring time.
+
+---
+
+## In Progress
+
+Items with meaningful implementation already shipped but with remaining work before the roadmap intent is fully met.
+
+- **Context window pressure timeline** — The roadmap item called for extending context composition from a point-in-time snapshot into a time-series stacked chart showing how the four token categories grow across a session. The snapshot half is done: `context-composition-tracker.ts`, `ContextBar`, and `GET /api/context` are all live. The time-series / stacked-chart extension and the 20%-remaining warning zone are still outstanding. _(Difficulty: 2/5 · Customer Impact: 3/5)_
+
+- **Prompt cache health** — `cache_read_tokens` are tracked per token event and included in cost breakdowns surfaced by `nr_observe_report_tokens`. What's missing is the dedicated "cache hit rate" aggregation, the session-level and week-over-week trend, and the concrete recommendation ("your cache hit rate is 12%; restructuring your system prompt could bring this above 60%"). _(Difficulty: 2/5 · Customer Impact: 4/5)_
+
+- **Compute waste metric** — `retry-detector.ts` already emits an `ai.retry.tokens_wasted` metric capturing tokens consumed on retried tool calls. What's missing is surfacing this as an explicit "compute waste" figure in the dashboard and MCP tools, and broadening it to cover anti-pattern tokens (stuck loops, redundant reads) beyond just retries. _(Difficulty: 1/5 · Customer Impact: 3/5)_
+
+---
+
+## Not Started
+
+---
+
+### Ecosystem Integrations
 
 The Observatory currently surfaces data through MCP tools, dashboards, and a local web UI. Future work pushes that data into the workflows developers and managers already live in.
 
@@ -51,7 +72,7 @@ The Observatory currently surfaces data through MCP tools, dashboards, and a loc
 
 ---
 
-## Developer Session Intelligence
+### Developer Session Intelligence
 
 The Observatory captures every action an AI coding assistant takes but currently surfaces the analysis after the fact. Future work brings intelligence into the session itself — helping developers make better decisions in real time.
 
@@ -59,25 +80,22 @@ The Observatory captures every action an AI coding assistant takes but currently
 
 - **CLAUDE.md auto-suggestions** — analyze per-developer patterns (most-re-read files, recurring anti-patterns, task types that consistently cause thrashing) and generate specific, evidence-based CLAUDE.md additions. Closes the loop from observation to corrective action without requiring the developer to interpret the data themselves. _(Difficulty: 3/5 · Customer Impact: 5/5)_
 - **Overload and diminishing returns detection** — detect when a developer's efficiency score is declining over the course of a long session and surface a signal prompting them to take a break or change approach. AI coding tools encourage staying in the loop; this feature gives the AI a reason to push back. _(Difficulty: 2/5 · Customer Impact: 4/5)_
-- **Session replay** — a scrub-able visual timeline of any past session: every file touched, every command run, every edit made, with per-turn cost shown as a heat map. Transforms raw telemetry into a narrative that makes patterns visible and retrospectives concrete. _(Difficulty: 3/5 · Customer Impact: 4/5)_
 - **Task complexity pre-estimation** — before a task starts, predict token consumption based on similar completed tasks in the developer's history, with a cost range and confidence interval. Sets expectations before they're broken. _(Difficulty: 3/5 · Customer Impact: 3/5)_
 
 ---
 
-## AI Model Intelligence
+### AI Model Intelligence
 
 The Observatory tracks which models are used and what they cost, but has limited ability to advise on model selection strategy. Future work closes that gap.
 
 **Planned work:**
 
 - **Structured model A/B testing** — let a developer or team declare an experiment ("for the next two weeks, half my sessions use Sonnet, half use Haiku") and have the Observatory randomize, track outcomes by arm, and report cost-efficiency deltas with statistical significance. Turns "I wonder if Haiku is good enough for this" into a real answer. _(Difficulty: 3/5 · Customer Impact: 5/5)_
-- **Prompt cache health** — track cache hit rate per session and surface concrete recommendations when it is low. "Your cache hit rate this week is 12%. Restructuring your system prompt could bring this above 60% and cut your costs roughly in half." Token reports already include `cache_read_tokens`; this closes the loop from signal to recommendation. _(Difficulty: 2/5 · Customer Impact: 4/5)_
-- **Context window pressure timeline** — extend `nr_observe_get_context_composition` from a point-in-time snapshot into a time-series view: a stacked chart showing how the four token categories (system prompt, conversation history, tool results, injected files) grow as the session progresses, with a threshold line and a warning zone in the final 20%. _(Difficulty: 2/5 · Customer Impact: 3/5)_
 - **Prompt injection detection** — scan tool outputs (file contents, command results, web responses) for adversarial content patterns that could redirect the AI model. Flag findings in the audit trail and surface them as a security alert category alongside the existing destructive command and sensitive file detection. As AI coding tools operate on larger codebases with third-party dependencies, this becomes a real attack surface. _(Difficulty: 3/5 · Customer Impact: 3/5)_
 
 ---
 
-## Cold-Start UX for Net-New Users
+### Cold-Start UX for Net-New Users
 
 After [auditing the backfill script](./PRODUCT_BRIEF.md#resolved-backfill-is-state-recovery-not-new-user-onboarding-was-oq4), it is clear that the script's purpose is state recovery for existing telemetry, not seeding new users with synthetic data. Net-new customers accumulate session data over roughly two weeks before personal coaching reports become useful — this is correct behaviour, not a bug. The roadmap work here is around making the warm-up period a great experience rather than a confusing dead zone.
 
@@ -91,22 +109,20 @@ After [auditing the backfill script](./PRODUCT_BRIEF.md#resolved-backfill-is-sta
 
 ---
 
-## Recommendation Engine Maturation
+### Recommendation Engine Maturation
 
 The launch-set product surfaces anti-pattern detection and a basic personal coaching report. Future iterations will deepen this into a true recommendation engine.
 
 **Planned work:**
 
-- Deeper personal coaching that generates concrete, actionable optimisation guidance per developer (e.g. "your sessions in this codebase consistently re-read these files; consider adding them to a CLAUDE.md") _(Difficulty: 2/5 · Customer Impact: 4/5)_
 - Team-level recommendations that surface high-performing usage patterns and propagate them to other team members _(Difficulty: 3/5 · Customer Impact: 4/5)_
 - Machine-learning-based pattern detection to surface anti-patterns and optimisation opportunities that aren't expressible in rule-based detectors _(Difficulty: 5/5 · Customer Impact: 3/5)_
-- Per-AI-tool model recommendations (e.g. "you are using Claude Sonnet for short exploratory sessions where Claude Haiku would cost 25× less") _(Difficulty: 2/5 · Customer Impact: 4/5)_
 
 **Brief references:** [§3 — Competitive Landscape](./PRODUCT_BRIEF.md#3--competitive-landscape) (closing note), [§7 — Mindset Shift & Risks](./PRODUCT_BRIEF.md#7--mindset-shift--risks) (mindset shift caveat), [§10 — Rollout Plan](./PRODUCT_BRIEF.md#10--rollout-plan) (GA out-of-scope)
 
 ---
 
-## Team Intelligence
+### Team Intelligence
 
 Individual-level observability is the foundation; team-level pattern recognition is the multiplier. Future work surfaces shared patterns and enables teams to learn from their own best practices.
 
@@ -118,7 +134,7 @@ Individual-level observability is the foundation; team-level pattern recognition
 
 ---
 
-## Pre-Deployment Consumption Estimation
+### Pre-Deployment Consumption Estimation
 
 The brief asserts in [§6 — Clear Consumption Communication](./PRODUCT_BRIEF.md#6--user-must-haves) and [§7 — Consumption Surprises](./PRODUCT_BRIEF.md#7--mindset-shift--risks) that the setup wizard _should_ help a customer estimate the ingest volume — and the resulting New Relic bill — that their chosen instrumentation will produce, before they deploy it. That capability does not exist today. Without it, customers face a real risk of unexpected NR consumption costs after rolling out broadly.
 
@@ -133,7 +149,7 @@ The brief asserts in [§6 — Clear Consumption Communication](./PRODUCT_BRIEF.m
 
 ---
 
-## IDE-Embedded Surfaces
+### IDE-Embedded Surfaces
 
 Launch coverage surfaces telemetry through MCP tools, dashboards, alerts, and (eventually) the New Relic UI. A natural next step is in-IDE visibility so developers see their own coaching insights without leaving their editor.
 
@@ -146,7 +162,7 @@ Launch coverage surfaces telemetry through MCP tools, dashboards, alerts, and (e
 
 ---
 
-## Enterprise Controls
+### Enterprise Controls
 
 The product respects existing New Relic RBAC and supports a high-security mode that disables content capture entirely. Full enterprise-tier readiness still requires additional integration work.
 
@@ -160,13 +176,12 @@ The product respects existing New Relic RBAC and supports a high-security mode t
 
 ---
 
-## Platform Adapter Set Expansion
+### Platform Adapter Set Expansion
 
-Launch coverage targets nine AI coding clients (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro, generic MCP). The AI coding tooling space is fragmenting rapidly, so adapter coverage is an ongoing investment.
+Launch coverage targets nine AI coding clients. The AI coding tooling space is fragmenting rapidly, so adapter coverage is an ongoing investment.
 
 **Planned work:**
 
-- At least two additional AI client adapters delivered between Public Preview and GA, prioritised by customer demand signal _(Difficulty: 2/5 · Customer Impact: 3/5)_
 - Ongoing adapter cadence after GA to keep coverage gap below ~6 months for popular new AI tools _(Difficulty: 2/5 · Customer Impact: 2/5)_
 - Adapter contribution model so customers and the open-source community can submit adapters for tools we haven't covered _(Difficulty: 3/5 · Customer Impact: 2/5)_
 
@@ -174,7 +189,7 @@ Launch coverage targets nine AI coding clients (Claude Code, Cursor, Windsurf, C
 
 ---
 
-## Audit and Compliance Surface Extension
+### Audit and Compliance Surface Extension
 
 Launch coverage captures sensitive file access, destructive command execution, and external network requests. Future work extends this surface to track an expanding regulatory landscape (EU AI Act, analogous regulations elsewhere).
 
@@ -189,18 +204,17 @@ Launch coverage captures sensitive file access, destructive command execution, a
 
 ---
 
-## Environmental Impact
+### Environmental Impact
 
 AI model inference has a measurable energy footprint. Future work surfaces this in the Observatory without making unverifiable emissions claims.
 
 **Planned work:**
 
-- **Compute waste metric** — surface tokens consumed on anti-patterns, stuck loops, and failed attempts as an explicit "compute waste" figure. Wasted tokens are wasted compute; framing this as an efficiency metric rather than an emissions estimate makes it accurate today without requiring provider CO2 data. Pairs naturally with the existing anti-pattern and efficiency surfaces. _(Difficulty: 1/5 · Customer Impact: 3/5)_
 - **Carbon intensity view** _(pending provider data)_ — once a major provider publishes an official per-token carbon intensity figure, add a session-level carbon impact view that translates token usage into CO2e with a clear citation of the underlying data. Intentionally deferred until the numbers are defensible; publishing estimates derived from unofficial figures risks undermining trust in the cost data the Observatory already surfaces. _(Difficulty: 2/5 · Customer Impact: 2/5)_
 
 ---
 
-## OpenTelemetry GenAI Convention Compliance
+### OpenTelemetry GenAI Convention Compliance
 
 Span attributes already follow OpenTelemetry GenAI semantic conventions for portability. Future work formalises that compliance.
 
