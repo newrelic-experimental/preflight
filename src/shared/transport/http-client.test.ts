@@ -9,6 +9,7 @@ import {
   sendWithRetry,
 } from './http-client.js';
 import type { HttpSendOptions } from './types.js';
+import { getLogOutput } from '../__test-utils__/log-output.js';
 
 const gunzipAsync = promisify(gunzip);
 
@@ -62,28 +63,42 @@ describe('resolveRegion', () => {
     expect(resolveRegion('abcdefNRAL', null)).toBe('us');
   });
 
-  // throw on unrecognized region-shaped prefixes rather than silently
-  // misrouting data. This catches typos and future regions we don't yet support.
-  it('throws on unrecognized region-shaped license-key prefix', () => {
-    expect(() => resolveRegion('apac01xxSOMEKEY', null)).toThrow(/Unrecognized.*region prefix/);
-    expect(() => resolveRegion('xx99xxSOMEKEY', null)).toThrow(/xx99/);
+  // Keys with a region-prefix shape but an unrecognized prefix (e.g. ca06, apac01)
+  // should warn and fall back to 'us' rather than throwing. A silent telemetry
+  // outage is a worse failure mode than an occasional region misroute — and for
+  // these keys we have no evidence they are non-US.
+  it('returns us and warns for unrecognized region-shaped prefix', () => {
+    // ca06 matches the shape but is a real-world US key with an unrecognized prefix
+    expect(resolveRegion('ca06xxNRALUSERKEY', null)).toBe('us');
+    expect(resolveRegion('apac01xxSOMEKEY', null)).toBe('us');
+    expect(resolveRegion('xx99xxSOMEKEY', null)).toBe('us');
   });
 
-  it('throw message names the supported prefixes', () => {
-    try {
-      resolveRegion('apac01xxSOMEKEY', null);
-      fail('expected throw');
-    } catch (err) {
-      const msg = (err as Error).message;
-      expect(msg).toContain('us01');
-      expect(msg).toContain('eu01');
-      expect(msg).toContain('gov01');
-    }
+  it('warns with unrecognized prefix and names supported prefixes on fallback', () => {
+    resolveRegion('ca06xxNRALUSERKEY', null);
+    const msg = getLogOutput(stderrSpy);
+    expect(msg).toContain('ca06');
+    expect(msg).toContain('us01');
+    expect(msg).toContain('eu01');
+    expect(msg).toContain('gov01');
   });
 
-  it('does not throw when collectorHost is provided to override detection', () => {
-    // Bare keyword form short-circuits the license-key check entirely.
-    expect(resolveRegion('apac01xxSOMEKEY', 'eu')).toBe('eu');
+  it('warn fires for every unrecognized region-shaped prefix (apac01, xx99)', () => {
+    resolveRegion('apac01xxSOMEKEY', null);
+    expect(getLogOutput(stderrSpy)).toContain('apac01');
+    stderrSpy.mockClear();
+    resolveRegion('xx99xxSOMEKEY', null);
+    expect(getLogOutput(stderrSpy)).toContain('xx99');
+  });
+
+  it('warn message states data may be misrouted to the wrong region', () => {
+    resolveRegion('ca06xxNRALUSERKEY', null);
+    expect(getLogOutput(stderrSpy)).toContain('misrouted');
+  });
+
+  it('FQDN collectorHost suppresses unrecognized-prefix warn', () => {
+    resolveRegion('ca06xxNRALUSERKEY', 'my.proxy.newrelic.com');
+    expect(getLogOutput(stderrSpy)).not.toContain('Unrecognized');
   });
 
   // ---------------------------------------------------------------------------
@@ -95,11 +110,13 @@ describe('resolveRegion', () => {
     expect(resolveRegion('eu01xxSOMEKEY', 'us')).toBe('us');
   });
 
-  it('FQDN collectorHost falls through to license-key prefix detection', () => {
-    // Previously, FQDNs were substring-matched ('eu' in 'collector.eu01.nr-data.net').
-    // Now only bare keywords are matched; FQDNs fall through to the license key.
-    expect(resolveRegion('us01xxSOMEKEY', 'collector.eu01.nr-data.net')).toBe('us'); // license key is us
-    expect(resolveRegion('eu01xxSOMEKEY', 'collector.eu01.nr-data.net')).toBe('eu'); // license key is eu
+  it('FQDN collectorHost returns us (region is irrelevant — URL builders use the FQDN directly)', () => {
+    // URL builders call isLiteralHostname() and bypass the region entirely when
+    // a dot/colon is present, so the region resolveRegion returns is unused.
+    // Returning 'us' early also prevents spurious unrecognized-prefix warns for
+    // keys like ca06...NRAL whose prefix happens to match the shape regex.
+    expect(resolveRegion('us01xxSOMEKEY', 'collector.eu01.nr-data.net')).toBe('us');
+    expect(resolveRegion('eu01xxSOMEKEY', 'collector.eu01.nr-data.net')).toBe('us');
     expect(resolveRegion('us01xxSOMEKEY', 'collector.newrelic.com')).toBe('us');
   });
 
@@ -112,8 +129,8 @@ describe('resolveRegion', () => {
   // gov collectorHost override (bare keyword only)
   it('returns gov when collectorHost is the bare keyword gov', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'gov')).toBe('gov');
-    // FQDN form no longer matches — license key prefix wins instead
-    expect(resolveRegion('gov01xxSOMEKEY', 'gov-insights-collector.newrelic.com')).toBe('gov'); // license key
+    // FQDN form returns 'us' (region unused — URL builder uses the FQDN directly)
+    expect(resolveRegion('gov01xxSOMEKEY', 'gov-insights-collector.newrelic.com')).toBe('us');
   });
 });
 
