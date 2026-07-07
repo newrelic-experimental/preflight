@@ -24,11 +24,12 @@ function newRequestId(): string {
  * - `us` — default/global region (insights-collector.newrelic.com)
  * - `eu` — EU data center (insights-collector.eu01.nr-data.net)
  * - `gov` — FedRAMP / US gov cloud (gov-* hostnames)
+ * - `staging` — New Relic staging environment (staging-api.newrelic.com)
  *
  * License-key prefix mapping: `us01` → us, `eu01` → eu, `gov01` → gov.
  * Legacy keys (no recognizable region prefix) default to `us`.
  */
-export type Region = 'us' | 'eu' | 'gov';
+export type Region = 'us' | 'eu' | 'gov' | 'staging';
 
 // Exact license-key prefixes we recognize, plus the region they map to.
 // Prefixes are matched case-insensitively.
@@ -40,9 +41,11 @@ const LICENSE_KEY_REGION_PREFIXES = {
 
 // Pattern for *any* string that looks like a region prefix (2-4 letters then
 // 2 digits at the start of the key). If a key matches this pattern but the
-// specific prefix is not in LICENSE_KEY_REGION_PREFIXES, we throw — silently
-// defaulting to US would misroute data to the wrong data center.
+// specific prefix is not in LICENSE_KEY_REGION_PREFIXES, we warn and fall back.
 const REGION_PREFIX_SHAPE_RE = /^[a-z]{2,4}\d{2}/;
+
+// Pre-built once — used only in the rare unrecognized-prefix warn path.
+const SUPPORTED_PREFIXES = Object.keys(LICENSE_KEY_REGION_PREFIXES).join(', ');
 
 export function resolveRegion(licenseKey: string, collectorHost: string | null): Region {
   // collectorHost overrides take priority — they are an explicit user choice.
@@ -50,13 +53,16 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
   // Substring matching against FQDNs produced false positives: a host like
   // 'bureau-collector.local' matches 'eu', 'eucalyptus.test' likewise.
   if (collectorHost) {
+    // FQDN or host:port — URL builders use collectorHost directly so region
+    // is irrelevant. Return early to avoid a misleading unrecognized-prefix
+    // warn for keys like ca06...NRAL whose prefix happens to match the shape.
+    if (isLiteralHostname(collectorHost)) return 'us';
+
     const host = collectorHost.toLowerCase().trim();
-    if (!host.includes('.') && !host.includes(':')) {
-      if (host === 'gov') return 'gov';
-      if (host === 'eu') return 'eu';
-      if (host === 'us') return 'us';
-    }
-    // FQDN form: licence-key prefix detection below handles region routing.
+    if (host === 'staging') return 'staging';
+    if (host === 'gov') return 'gov';
+    if (host === 'eu') return 'eu';
+    if (host === 'us') return 'us';
   }
 
   const lowerKey = licenseKey.toLowerCase();
@@ -66,21 +72,20 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
     if (lowerKey.startsWith(prefix)) return region;
   }
 
-  // Key has the *shape* of a region prefix but not one we recognize. This
-  // most likely means New Relic launched a new region we don't yet support,
-  // OR the key is corrupted. Either way, defaulting to US silently misroutes
-  // data — fail loudly instead.
-  if (REGION_PREFIX_SHAPE_RE.test(lowerKey)) {
-    const observedPrefix = lowerKey.match(REGION_PREFIX_SHAPE_RE)![0];
-    const supported = Object.keys(LICENSE_KEY_REGION_PREFIXES).join(', ');
-    throw new Error(
-      `Unrecognized New Relic license-key region prefix "${observedPrefix}". ` +
-        `Supported prefixes: ${supported}. ` +
+  // Key has the *shape* of a region prefix but not one we recognize.
+  // Rather than throwing (which silently kills all telemetry), warn and fall
+  // back to US. A misroute for a rare new region is recoverable; a total
+  // outage is not. Users can always override with collectorHost.
+  const prefixMatch = lowerKey.match(REGION_PREFIX_SHAPE_RE);
+  if (prefixMatch) {
+    logger.warn(
+      `Unrecognized New Relic license-key region prefix "${prefixMatch[0]}" — data may be misrouted ` +
+        `to the wrong region. Supported prefixes: ${SUPPORTED_PREFIXES}. ` +
         `Set 'collectorHost' explicitly to override region detection.`,
     );
   }
 
-  // No region prefix shape — assume legacy US key (40-char hex, no prefix).
+  // No recognized region prefix — assume legacy US key (40-char hex, no prefix).
   return 'us';
 }
 
@@ -91,9 +96,13 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
  * remains per-API since the user's proxy must route by path.
  *
  * Without a dot or colon, `collectorHost` is treated as an exact region keyword
- * (one of 'us', 'eu', 'gov') — `resolveRegion` maps it to the
+ * (one of 'us', 'eu', 'gov', 'staging') — `resolveRegion` maps it to the
  * appropriate NR hostnames for all three APIs (no substring matching).
  *
+ * Note: setting collectorHost to a full NR hostname like
+ * `staging-insights-collector.newrelic.com` will use that host literally for
+ * all three APIs — which only works for events. Use the `'staging'` keyword
+ * form to route all three APIs to NR's per-service staging hostnames.
  */
 function isLiteralHostname(collectorHost: string | null | undefined): boolean {
   if (!collectorHost) return false;
@@ -139,6 +148,11 @@ const NR_INGEST_HOSTS: Readonly<
     events: 'gov-insights-collector.newrelic.com',
     metric: 'gov-metric-api.newrelic.com',
     log: 'gov-log-api.newrelic.com',
+  },
+  staging: {
+    events: 'staging-insights-collector.newrelic.com',
+    metric: 'staging-metric-api.newrelic.com',
+    log: 'staging-log-api.newrelic.com',
   },
 });
 
