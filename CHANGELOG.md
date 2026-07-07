@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-07
+
+### Fixed
+
+- **License key region routing for unrecognized prefixes** — Preflight no longer throws an error when a New Relic license key has a region prefix that isn't in its built-in lookup table (e.g. `ca06...NRAL`). Instead, it logs a warning and falls back to the US region. This prevents a startup crash for users whose account was provisioned in a newly launched or unsupported region. Users who need explicit region routing can set `collectorHost` in their config to override the default.
+
+---
+
 ## [1.1.0] - 2026-07-03
 
 ### Added
