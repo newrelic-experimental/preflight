@@ -23,6 +23,20 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+/**
+ * True if `target` resolves to a path inside `root`. Checks the literal '/'
+ * separator first — kept so static analysis tools (CodeQL js/path-injection)
+ * recognise this as the standard path-containment sanitizer pattern, since
+ * CodeQL cannot statically prove that node:path's `sep` is '/'. The
+ * `platformSep` check is required as a fallback because on Windows
+ * resolve()/join() produce backslash-joined paths, which never match a
+ * hardcoded '/'. Defaults to the real platform separator; overridable so
+ * tests can exercise the Windows branch deterministically on any OS.
+ */
+export function isWithinRoot(root: string, target: string, platformSep: string = sep): boolean {
+  return target.startsWith(root + '/') || target.startsWith(root + platformSep);
+}
+
 async function serveIndexFallback(root: string, res: ServerResponse): Promise<void> {
   try {
     const indexPath = join(root, 'index.html');
@@ -61,11 +75,7 @@ export function createStaticHandler(
     }
 
     const target = resolve(join(root, filename));
-    // Use a literal '/' so static analysis tools (CodeQL js/path-injection)
-    // can recognise this as the standard path-containment sanitizer pattern.
-    // The runtime sep from node:path would be equivalent on POSIX, but CodeQL
-    // cannot statically prove that sep === '/' and therefore misses the guard.
-    if (!target.startsWith(root + '/')) {
+    if (!isWithinRoot(root, target)) {
       res.writeHead(403);
       res.end();
       return;

@@ -745,6 +745,7 @@ export {
   getTranscriptPath,
   getBufferPath,
   writePpidBreadcrumb,
+  readStdinSync,
 };
 
 // ---------------------------------------------------------------------------
@@ -763,9 +764,38 @@ const _resolvedScript = (() => {
 const _isDirectExecution =
   _resolvedScript != null && /collector-script\.[jt]s$/.test(_resolvedScript);
 
+/**
+ * Seam for unit tests: replace the underlying synchronous read so tests can
+ * exercise both platform branches without reading the real fd 0, which can
+ * hang inside a test runner. Production code never sets this.
+ * @internal
+ */
+export const _stdinFs = {
+  readFileSync: (pathOrFd: string | number): string => readFileSync(pathOrFd, 'utf-8'),
+};
+
+/**
+ * Windows has no `/dev/stdin` device file, so reading stdin synchronously
+ * there requires going through its file descriptor (0) directly instead.
+ * POSIX keeps using the `/dev/stdin` path rather than switching to the fd
+ * everywhere, since reading a pipe fd directly can throw EAGAIN there.
+ *
+ * The win32 branch relies on a libuv fix (v1.44, Feb 2022) that stopped
+ * treating a closed pipe as an EOF *error* on Windows — before that, reading
+ * fd 0 while stdin was piped (exactly how Claude Code invokes this script)
+ * threw instead of returning cleanly. package.json's `engines.node` floor
+ * (>=22) is well past every Node release carrying that fix; don't lower it
+ * without re-checking this. See nodejs/node#35997 and libuv/libuv#3043.
+ */
+function readStdinSync(): string {
+  return process.platform === 'win32'
+    ? _stdinFs.readFileSync(process.stdin.fd)
+    : _stdinFs.readFileSync('/dev/stdin');
+}
+
 if (_isDirectExecution) {
   try {
-    const stdin = readFileSync('/dev/stdin', 'utf-8');
+    const stdin = readStdinSync();
     if (stdin.trim()) {
       processHook(stdin);
     }
