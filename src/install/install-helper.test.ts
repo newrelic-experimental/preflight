@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import {
   generateHookEntries,
@@ -13,7 +14,10 @@ import {
   detectSettingsPath,
   detectMcpConfigPath,
   entryHasAnyCommandHook,
+  areHooksInstalled,
+  readAndCheckHooks,
 } from './install-helper.js';
+import { writeJsonFile } from './json-utils.js';
 
 // ---------------------------------------------------------------------------
 // Temp directory setup (mirrors collector-script.test.ts)
@@ -748,5 +752,99 @@ describe('entryHasAnyCommandHook()', () => {
 
   it('returns true for a custom command (legacy flat format)', () => {
     expect(entryHasAnyCommandHook({ command: '/usr/local/bin/my-wrapper post-tool' })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// areHooksInstalled
+// ---------------------------------------------------------------------------
+
+describe('areHooksInstalled()', () => {
+  it('returns false when hooks field is missing', () => {
+    expect(areHooksInstalled({})).toBe(false);
+  });
+
+  it('returns false when hooks exists but PreToolUse is empty', () => {
+    expect(areHooksInstalled({ hooks: { PreToolUse: [], PostToolUse: [] } })).toBe(false);
+  });
+
+  it('returns false when only PreToolUse has NR hook (PostToolUse missing)', () => {
+    const pre = [
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }] },
+    ];
+    expect(areHooksInstalled({ hooks: { PreToolUse: pre, PostToolUse: [] } })).toBe(false);
+  });
+
+  it('returns false when hooks exist but belong to another tool', () => {
+    const other = [{ matcher: '', hooks: [{ type: 'command', command: 'my-tool pre-tool' }] }];
+    expect(areHooksInstalled({ hooks: { PreToolUse: other, PostToolUse: other } })).toBe(false);
+  });
+
+  it('returns true when both PreToolUse and PostToolUse contain NR hooks', () => {
+    const pre = [
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }] },
+    ];
+    const post = [
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector post-tool' }] },
+    ];
+    expect(areHooksInstalled({ hooks: { PreToolUse: pre, PostToolUse: post } })).toBe(true);
+  });
+
+  it('returns true when absolute path form is used', () => {
+    const pre = [
+      {
+        matcher: '',
+        hooks: [
+          { type: 'command', command: '/home/alice/.local/bin/preflight-collector pre-tool' },
+        ],
+      },
+    ];
+    const post = [
+      {
+        matcher: '',
+        hooks: [
+          { type: 'command', command: '/home/alice/.local/bin/preflight-collector post-tool' },
+        ],
+      },
+    ];
+    expect(areHooksInstalled({ hooks: { PreToolUse: pre, PostToolUse: post } })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readAndCheckHooks
+// ---------------------------------------------------------------------------
+
+describe('readAndCheckHooks()', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'hooks-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns false when settings file does not exist', () => {
+    expect(readAndCheckHooks(join(tmpDir, 'nonexistent.json'))).toBe(false);
+  });
+
+  it('returns false when settings file has no hooks', () => {
+    const path = join(tmpDir, 'settings.json');
+    writeJsonFile(path, { permissions: {} }, tmpDir);
+    expect(readAndCheckHooks(path)).toBe(false);
+  });
+
+  it('returns true when settings file has NR hooks', () => {
+    const path = join(tmpDir, 'settings.json');
+    const pre = [
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }] },
+    ];
+    const post = [
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector post-tool' }] },
+    ];
+    writeJsonFile(path, { hooks: { PreToolUse: pre, PostToolUse: post } }, tmpDir);
+    expect(readAndCheckHooks(path)).toBe(true);
   });
 });

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-08
+
+### Added
+
+- **Smithery MCP registry support** — added `smithery.yaml` at the repo root so Preflight can be discovered and installed via the [Smithery](https://smithery.ai) registry. Configures `npx -y @newrelic/preflight@latest --stdio` with a UI for `licenseKey`, `accountId`, `developer`, and `mode` (`cloud`/`local`).
+- **`nr_observe_install_hooks` MCP tool** — since Smithery only wires up the MCP server and doesn't touch `~/.claude/settings.json`, this tool lets users finish setup from within a Claude Code chat session by writing the `PreToolUse`/`PostToolUse` monitoring hooks headlessly (no TTY required). A Claude Code restart is still needed to activate monitoring.
+- **`nr_observe_health` reports hook status** — the health check now includes `hooks_installed` and `setup_required` booleans, so an AI tool can detect an incomplete setup (e.g. after a Smithery install) and prompt the user to call `nr_observe_install_hooks`.
+
+---
+
 ## [1.1.1] - 2026-07-07
 
 ### Fixed

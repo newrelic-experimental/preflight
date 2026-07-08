@@ -23,15 +23,43 @@ Check server health and connection status.
   "developer": "alice",
   "session_id": "uuid-string",
   "connected_at": "2026-06-03T10:00:00.000Z",
-  "uptime_seconds": 3600
+  "uptime_seconds": 3600,
+  "hooks_installed": true,
+  "setup_required": false
 }
 ```
 
 **Data source:** Server startup metadata
 
-**How it works:** Returns the current server version, the resolved developer name, how long the server has been running (`uptime_seconds`), the current session ID, and the ISO timestamp of when the MCP connection was established. Use this to confirm the MCP server is responsive and to verify the expected developer identity is being used.
+**How it works:** Returns the current server version, the resolved developer name, how long the server has been running (`uptime_seconds`), the current session ID, and the ISO timestamp of when the MCP connection was established. Use this to confirm the MCP server is responsive and to verify the expected developer identity is being used. When a hook-detection function is available (e.g. in a Claude Code environment), also reports `hooks_installed` and `setup_required` so the caller can detect an incomplete setup — for example, right after a Smithery-driven install that only wired up the MCP server — and prompt to call `nr_observe_install_hooks`. Both fields are omitted when hook detection isn't wired up for the current server mode.
 
 **Requires:** Always available
+
+Source: `src/tools/session-stats.ts`
+
+---
+
+### `nr_observe_install_hooks`
+
+Install `PreToolUse` and `PostToolUse` monitoring hooks into `~/.claude/settings.json`, headlessly (no TTY required).
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "status": "installed",
+  "message": "Monitoring hooks installed at /Users/alice/.claude/settings.json. Restart Claude Code to activate tool monitoring.",
+  "settings_path": "/Users/alice/.claude/settings.json"
+}
+```
+
+**Data source:** Reads and writes `~/.claude/settings.json` directly
+
+**How it works:** Call this when `nr_observe_health` reports `setup_required: true` — most commonly after installing Preflight via the Smithery MCP registry, which wires up the MCP server but has no mechanism to write Claude Code hooks. Returns `status: "already_installed"` if hooks are already present (no changes made), or `status: "error"` with a `message` if the settings file couldn't be written. Only touches hook configuration in `~/.claude/settings.json` — never modifies `~/.mcp.json`. A Claude Code restart is required after installation for monitoring to activate.
+
+**Requires:** A headless installer wired into `ToolRegistrationOptions.headlessInstaller` (available in the standard MCP server startup path)
 
 Source: `src/tools/session-stats.ts`
 
