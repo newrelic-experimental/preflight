@@ -1,11 +1,11 @@
 import { isWithinRoot } from './static-handler.js';
 
 // static-handler.ts resolves paths with node:path's `resolve`/`join`, which on
-// Windows produce backslash-joined paths — the '/'-only containment check
-// (issue #24) never matched them. `platformSep` is passed explicitly here so
-// the Windows branch is exercised deterministically regardless of the OS
-// actually running this test.
-describe('isWithinRoot — Windows separator (#24)', () => {
+// Windows produce backslash-joined paths — a '/'-only containment check
+// never matches them. `platformSep` is passed explicitly here so the Windows
+// branch is exercised deterministically regardless of the OS actually
+// running this test.
+describe('isWithinRoot — Windows separator', () => {
   it('accepts a child path joined with backslashes', () => {
     expect(isWithinRoot('C:\\Users\\dev\\dist', 'C:\\Users\\dev\\dist\\index.html', '\\')).toBe(
       true,
