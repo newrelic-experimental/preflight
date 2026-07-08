@@ -17,6 +17,8 @@ import {
   writePpidBreadcrumb,
   getLinuxAncestorPids,
   _procFs,
+  readStdinSync,
+  _stdinFs,
 } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -1025,6 +1027,45 @@ describe('collector-script', () => {
     it('returns [startPpid] when parsed ppid is NaN', () => {
       mockProc({ '/proc/400/stat': '400 (proc) S notanumber ...' });
       expect(getLinuxAncestorPids(400)).toEqual([400]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // readStdinSync (/dev/stdin has no Windows equivalent)
+  // ---------------------------------------------------------------------------
+  describe('readStdinSync()', () => {
+    const originalPlatform = process.platform;
+    let originalReadFileSync: typeof _stdinFs.readFileSync;
+
+    beforeEach(() => {
+      originalReadFileSync = _stdinFs.readFileSync;
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      _stdinFs.readFileSync = originalReadFileSync;
+    });
+
+    it('reads /dev/stdin on POSIX platforms', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      const calls: Array<string | number> = [];
+      _stdinFs.readFileSync = (pathOrFd) => {
+        calls.push(pathOrFd);
+        return '{"hook_event_name":"PreToolUse"}';
+      };
+      expect(readStdinSync()).toBe('{"hook_event_name":"PreToolUse"}');
+      expect(calls).toEqual(['/dev/stdin']);
+    });
+
+    it('reads via the stdin fd on Windows, not /dev/stdin', () => {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      const calls: Array<string | number> = [];
+      _stdinFs.readFileSync = (pathOrFd) => {
+        calls.push(pathOrFd);
+        return '{}';
+      };
+      readStdinSync();
+      expect(calls).toEqual([process.stdin.fd]);
     });
   });
 });
