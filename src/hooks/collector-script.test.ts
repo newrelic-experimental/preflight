@@ -1031,7 +1031,7 @@ describe('collector-script', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // readStdinSync (#24 — /dev/stdin has no Windows equivalent)
+  // readStdinSync (/dev/stdin has no Windows equivalent)
   // ---------------------------------------------------------------------------
   describe('readStdinSync()', () => {
     const originalPlatform = process.platform;
