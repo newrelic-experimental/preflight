@@ -295,3 +295,45 @@ Files that look internal but **stay in the public repo:**
 - `docs/TEST_PATTERNS.md` — needed for contributors
 - `docs/COMMANDS_TABLE.md` — reference for users
 - `docs/METRICS_TABLE.md` — reference for users
+
+---
+
+## Incremental Version Syncs
+
+After the initial migration above, most releases are much lighter-weight: a
+GHE squash commit lands on private `main`, and that single commit gets
+cherry-picked into a separate, already-migrated public clone.
+
+**This is a different workflow from the one-time migration above — it does
+not use `migrate-to-public.sh` or `remove-staging.ts`.** Those two scripts
+mutate/validate a from-scratch cleanup branch; an incremental sync starts
+from a clean public `main` that's already free of internal content, so
+none of their checks apply. `migrate-to-public.sh` is still needed
+separately for occasional full re-derivations of the public branch (e.g. if
+the two repos drift enough that a clean re-baseline is safer than patching)
+— it is not superseded by this workflow.
+
+```bash
+# 1. Go to the public clone and pull it up to date first
+cd ~/Documents/development/personal/preflight-public
+git pull --ff-only origin main
+
+# 2. Create a branch and apply the change surgically —
+#    NEVER `cp` whole files from the private repo. Read the GHE diff and
+#    apply only the changed lines by hand, stripping any internal-only
+#    content as you go.
+git checkout -b chore/vX.X.X-sync
+
+# 3. Run the leak check before pushing — this must pass
+../nr-ai-observatory/scripts/verify-public-diff.sh
+
+# 4. Push and open the PR
+git push origin chore/vX.X.X-sync
+GH_HOST=github.com gh pr create --base main --head chore/vX.X.X-sync ...
+```
+
+`scripts/verify-public-diff.sh` (private repo) is a regression guard, not a
+full leak audit — see its header comment and
+`scripts/public-leak-patterns.txt`'s caveats. A couple of past leaks were
+one-off prose too brittle to encode as a pattern; `SECURITY.md` and
+`PRIVACY.md` still deserve a manual skim on release syncs.

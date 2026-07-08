@@ -1,0 +1,43 @@
+# public-leak-patterns.txt — extended-regex patterns (one per line) that must
+# never appear in a diff pushed to the public preflight repo. Loaded by
+# scripts/verify-public-diff.sh. Blank lines and lines starting with # are
+# ignored.
+#
+# This list is a floor, not a ceiling — see verify-public-diff.sh's header
+# comment. SECURITY.md and PRIVACY.md still deserve a manual skim on release
+# syncs; some past leaks were one-off prose too brittle to encode here.
+
+# NR internal infrastructure
+staging-one\.newrelic\.com
+staging-api\.newrelic\.com
+staging-insights-collector
+staging-metric-api
+staging-log-api
+source\.datanerd\.us
+\bdatanerd\b
+
+# Internal-only docs/labels
+INTERNAL_USAGE
+PRODUCT_BRIEF
+PUBLIC_RELEASE_PLAN
+IMPLEMENTATION\.md
+NR-internal
+NR internal
+companion SDK agent
+
+# Internal repo/script references
+nr-ai-typescript-shared
+nr-ai-typescript-agent
+nr-ai-github-tools
+sync-shared
+sync:shared
+
+# Personal/internal identifiers
+\bcdehaan\b
+@newrelic\.com
+
+# Stale paths
+~/\.nr-ai-observe
+
+# Tracking labels
+\bF-[0-9]+\b

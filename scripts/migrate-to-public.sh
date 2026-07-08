@@ -212,7 +212,7 @@ echo ""
 echo "Creating GitHub Actions release workflow in public repo..."
 echo ""
 
-PUBLIC_CLONE_DIR="/Users/cdehaan/Documents/development/newrelic-experimental/preflight"
+PUBLIC_CLONE_DIR="/Users/cdehaan/Documents/development/personal/preflight-public"
 PRIVATE_REPO_DIR="$(pwd)"
 
 if [[ -d "$PUBLIC_CLONE_DIR/.git" ]]; then
@@ -305,7 +305,7 @@ echo ""
 echo "Post-migration steps:"
 echo ""
 echo "  Verify:"
-echo "    cd /Users/cdehaan/Documents/development/newrelic-experimental/preflight && git pull"
+echo "    cd $PUBLIC_CLONE_DIR && git pull"
 echo "    ls docs/   # excluded files must be absent"
 echo "    open https://github.com/newrelic-experimental/preflight"
 echo ""
