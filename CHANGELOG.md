@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-08
+
+### Added
+
+- **Prompt cache health** — `CostTracker` now aggregates a `cacheHitRate` ratio and `totalCacheSavingsUsd` from `cache_read_tokens`/`cache_creation_tokens` on every token report, and emits `ai.cost.tokens_cache_creation` and `ai.cost.cache_savings_usd` metrics. The new `nr_observe_get_prompt_cache_health` MCP tool returns a status tier (`excellent`/`can_improve`/`needs_attention`/`no_cache_activity`), hit rate percentage, total savings, and a concrete recommendation naming the actual percentage.
+- **Weekly cache hit rate trend** — `TrendAnalyzer` computes `weeklyCacheHitRateTrend` across sessions (omitting the current, still-in-progress week and any week with no cache activity), surfaced via the `TRENDS` tool.
+- **`CacheHealthPanel` on the Today dashboard view** — shows the current session's cache hit rate with a status pill, total savings, a week-over-week delta chip (↑/↓ _N_ pts vs. last week), and the same concrete recommendation text as the MCP tool. Backed by a new `GET /api/cache-health` route.
+- `tokensCacheRead`, `tokensCacheCreation`, and `cacheSavingsUsd` are now persisted in `FullSessionSummary` (old session files without these fields default to `0`).
+
 ## [1.2.0] - 2026-07-08
 
 ### Added

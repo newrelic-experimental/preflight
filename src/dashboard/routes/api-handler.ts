@@ -183,7 +183,14 @@ export interface ApiHandlerDeps {
     }) => readonly SessionLikeForCostOutcome[];
   };
   readonly costTracker?: {
-    getMetrics: () => { sessionTotalCostUsd?: number | null; model?: string | null };
+    getMetrics: () => {
+      sessionTotalCostUsd?: number | null;
+      model?: string | null;
+      cacheHitRate?: number | null;
+      totalCacheReadTokens?: number;
+      totalCacheCreationTokens?: number;
+      totalCacheSavingsUsd?: number;
+    };
     // Optional: per-day cost attribution. Fixes the cross-midnight bug where
     // a session that started yesterday counted its full cost as today's. When
     // present, the aggregate route uses it instead of session-total.
@@ -199,6 +206,11 @@ export interface ApiHandlerDeps {
   readonly budgetTracker?: { getStatus: () => unknown };
   readonly latencyTracker?: { getMetrics: () => unknown };
   readonly personalCoach?: { generate: () => unknown };
+  readonly trendAnalyzer?: {
+    computeTrends: () => {
+      weeklyCacheHitRateTrend: ReadonlyArray<{ readonly week: string; readonly value: number }>;
+    };
+  };
   readonly alertLog?: { readRecent: (limit: number) => Promise<readonly unknown[]> };
   readonly taskDetector?: {
     getCompletedTasks: () => readonly { toolCalls: readonly ToolCallRecord[] }[];
@@ -1029,6 +1041,44 @@ export function createApiHandler(
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
     jsonOk(res, deps.modelUsageTracker.getMetrics());
+  });
+
+  routes.set('GET /api/cache-health', (_req, res) => {
+    if (!deps.costTracker) return unavailable(res, 'costTracker');
+    const { cacheHitRate, totalCacheReadTokens, totalCacheCreationTokens, totalCacheSavingsUsd } =
+      deps.costTracker.getMetrics();
+
+    type CacheStatus = 'no_cache_activity' | 'needs_attention' | 'can_improve' | 'excellent';
+    let status: CacheStatus;
+    let cacheHitRatePct: number | null = null;
+
+    if (cacheHitRate === null || cacheHitRate === undefined) {
+      status = 'no_cache_activity';
+    } else {
+      cacheHitRatePct = Math.round(cacheHitRate * 100);
+      if (cacheHitRatePct >= 60) status = 'excellent';
+      else if (cacheHitRatePct >= 30) status = 'can_improve';
+      else status = 'needs_attention';
+    }
+
+    const currentWeek = getIsoWeekId(new Date());
+    const trendData = (deps.trendAnalyzer?.computeTrends().weeklyCacheHitRateTrend ?? []).filter(
+      (e) => e.week !== currentWeek,
+    );
+    const lastWeekEntry = trendData.length > 0 ? trendData[trendData.length - 1] : null;
+    const weekOverWeekDeltaPts =
+      cacheHitRatePct !== null && lastWeekEntry !== null
+        ? Math.round(cacheHitRatePct - lastWeekEntry.value * 100)
+        : null;
+
+    jsonOk(res, {
+      status,
+      cache_hit_rate_pct: cacheHitRatePct,
+      total_cache_read_tokens: totalCacheReadTokens ?? 0,
+      total_cache_creation_tokens: totalCacheCreationTokens ?? 0,
+      total_savings_usd: totalCacheSavingsUsd ?? 0,
+      week_over_week_delta_pts: weekOverWeekDeltaPts,
+    });
   });
 
   routes.set('GET /api/cost-per-outcome', (req, res) => {

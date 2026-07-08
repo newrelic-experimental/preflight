@@ -90,6 +90,7 @@ export interface SettingsPatch {
 }
 
 export const fetchModelUsage = (): Promise<unknown> => getJson<unknown>('/api/model-usage');
+export const fetchCacheHealth = (): Promise<unknown> => getJson<unknown>('/api/cache-health');
 
 export const fetchSettings = (): Promise<unknown> => getJson<unknown>('/api/settings');
 export const fetchDiagnostics = (): Promise<unknown> => getJson<unknown>('/api/diagnostics');
@@ -134,6 +135,7 @@ export const qk = {
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
+  cacheHealth: ['cache-health'] as const,
   settings: ['settings'] as const,
   // Query keys for live session and today aggregate endpoints
   sessionsLive: ['sessions', 'live'] as const,

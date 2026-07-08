@@ -449,6 +449,136 @@ describe('Today view — selector default + Session ended badge', () => {
   });
 });
 
+describe('Today view — Cache Health panel', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [
+        { id: 'a', tool: 'Read', durationMs: 120, costUsd: 0.001, ts: 1 },
+        { id: 'b', tool: 'Edit', durationMs: 85, costUsd: 0.002, ts: 2 },
+      ],
+      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: 18.4 },
+      antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the Cache Health eyebrow', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Cache Health')).toBeInTheDocument();
+  });
+
+  it('shows week-over-week improvement chip when delta is positive', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/cache-health')) {
+        return new Response(
+          JSON.stringify({
+            status: 'can_improve',
+            cache_hit_rate_pct: 48,
+            total_cache_read_tokens: 10000,
+            total_cache_creation_tokens: 2000,
+            total_savings_usd: 0.0012,
+            week_over_week_delta_pts: 5,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/↑5pts vs last week/i)).toBeInTheDocument();
+  });
+
+  it('shows week-over-week decline chip when delta is negative', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/cache-health')) {
+        return new Response(
+          JSON.stringify({
+            status: 'needs_attention',
+            cache_hit_rate_pct: 18,
+            total_cache_read_tokens: 5000,
+            total_cache_creation_tokens: 1000,
+            total_savings_usd: 0,
+            week_over_week_delta_pts: -3,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/↓3pts vs last week/i)).toBeInTheDocument();
+  });
+
+  it('includes actual hit rate pct in recommendation text', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/cache-health')) {
+        return new Response(
+          JSON.stringify({
+            status: 'needs_attention',
+            cache_hit_rate_pct: 12,
+            total_cache_read_tokens: 3000,
+            total_cache_creation_tokens: 500,
+            total_savings_usd: 0,
+            week_over_week_delta_pts: null,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/Cache hit rate is 12%/)).toBeInTheDocument();
+    expect(await screen.findByText(/above 60%/)).toBeInTheDocument();
+  });
+});
+
 describe('Today view — Recent alerts panel', () => {
   beforeEach(() => {
     resetStore();
