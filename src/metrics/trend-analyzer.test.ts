@@ -57,6 +57,9 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     tokensInput: 5000,
     tokensOutput: 2000,
     tokensThinking: 1000,
+    tokensCacheRead: 0,
+    tokensCacheCreation: 0,
+    cacheSavingsUsd: 0,
     efficiencyScore: 0.75,
     antiPatterns: [],
     taskCount: 1,
@@ -405,6 +408,74 @@ describe('TrendAnalyzer', () => {
     const developers = recorded.map((r) => r.attrs?.developer);
     expect(developers).toContain('alice');
     expect(developers).toContain('bob');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// weeklyCacheHitRateTrend
+// ---------------------------------------------------------------------------
+
+// Alias for the test suite pattern used in the brief
+function makeSession(overrides?: Partial<FullSessionSummary>): FullSessionSummary {
+  return makeSummary(overrides);
+}
+
+function makeSessionStore(sessions: FullSessionSummary[]): SessionStore {
+  const tmpPath = resolve(
+    tmpdir(),
+    `nr-trend-cache-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  mkdirSync(resolve(tmpPath, 'sessions'), { recursive: true });
+  const s = new SessionStore({ storagePath: tmpPath });
+  for (const session of sessions) {
+    s.saveSession(session);
+  }
+  return s;
+}
+
+describe('weeklyCacheHitRateTrend', () => {
+  it('computes weekly cache hit rate from sessions with cache data', () => {
+    // Use getWeekDateRange to get timezone-portable timestamps (same pattern as other tests)
+    const { start } = getWeekDateRange('2026-W27');
+    const sessions: FullSessionSummary[] = [
+      makeSession({
+        startTime: start.getTime() + 43_200_000, // noon Monday
+        tokensCacheRead: 6_000,
+        tokensCacheCreation: 1_000,
+        tokensInput: 3_000,
+      }),
+      makeSession({
+        startTime: start.getTime() + 43_200_000 + 86_400_000, // noon Tuesday
+        tokensCacheRead: 3_000,
+        tokensCacheCreation: 1_000,
+        tokensInput: 6_000,
+      }),
+    ];
+    // Both sessions fall in the same ISO week (2026-W27). Aggregated:
+    //   totalCacheRead = 9000, totalCacheCreation = 2000, totalInput = 9000
+    //   denominator = 9000 + 9000 + 2000 = 20000
+    //   hitRate = 9000 / 20000 = 0.45
+    const storeForTest = makeSessionStore(sessions);
+    const analyzer = new TrendAnalyzer({ sessionStore: storeForTest });
+    const trends = analyzer.computeTrends();
+    expect(trends.weeklyCacheHitRateTrend).toHaveLength(1);
+    expect(trends.weeklyCacheHitRateTrend[0]!.value).toBeCloseTo(0.45, 5);
+  });
+
+  it('omits weeks where no cache activity occurred', () => {
+    const { start } = getWeekDateRange('2026-W27');
+    const sessions: FullSessionSummary[] = [
+      makeSession({
+        startTime: start.getTime() + 43_200_000,
+        tokensCacheRead: 0,
+        tokensCacheCreation: 0,
+        tokensInput: 5_000,
+      }),
+    ];
+    const storeForTest = makeSessionStore(sessions);
+    const analyzer = new TrendAnalyzer({ sessionStore: storeForTest });
+    const trends = analyzer.computeTrends();
+    expect(trends.weeklyCacheHitRateTrend).toHaveLength(0);
   });
 });
 

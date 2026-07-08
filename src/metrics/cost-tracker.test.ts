@@ -495,6 +495,71 @@ describe('CostTracker', () => {
     });
   });
 
+  describe('cache health fields', () => {
+    it('cacheHitRate is null when no token data', () => {
+      const tracker = new CostTracker();
+      expect(tracker.getMetrics().cacheHitRate).toBeNull();
+      expect(tracker.getMetrics().totalCacheSavingsUsd).toBe(0);
+    });
+
+    it('cacheHitRate is null when only input/output tokens (no cache activity)', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4-6',
+      );
+      expect(tracker.getMetrics().cacheHitRate).toBeNull();
+    });
+
+    it('computes cacheHitRate correctly with cache reads', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({
+          inputTokens: 3_000,
+          outputTokens: 1_000,
+          cacheReadTokens: 6_000,
+          cacheCreationTokens: 1_000,
+          totalTokens: 4_000,
+        }),
+        'claude-sonnet-4-6',
+      );
+      const metrics = tracker.getMetrics();
+      // cacheHitRate = 6000 / (3000 + 6000 + 1000) = 0.6
+      expect(metrics.cacheHitRate).toBeCloseTo(0.6, 5);
+    });
+
+    it('accumulates totalCacheSavingsUsd across multiple reports', () => {
+      const tracker = new CostTracker();
+      // Two identical reports with cache reads
+      const usage = makeUsage({
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cacheReadTokens: 5_000,
+        cacheCreationTokens: 0,
+        totalTokens: 1_500,
+      });
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4-6');
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4-6');
+      // savingsFromCacheUsd should be > 0 and double that of a single report
+      const after1 = new CostTracker();
+      after1.recordTokenUsage(usage, 'claude-sonnet-4-6');
+      const single = after1.getMetrics().totalCacheSavingsUsd;
+      expect(tracker.getMetrics().totalCacheSavingsUsd).toBeCloseTo(single * 2, 8);
+      expect(tracker.getMetrics().totalCacheSavingsUsd).toBeGreaterThan(0);
+    });
+
+    it('reset() clears cache savings and hit rate', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1_000, cacheReadTokens: 2_000, totalTokens: 1_000 }),
+        'claude-sonnet-4-6',
+      );
+      tracker.reset();
+      expect(tracker.getMetrics().cacheHitRate).toBeNull();
+      expect(tracker.getMetrics().totalCacheSavingsUsd).toBe(0);
+    });
+  });
+
   describe('per-day cost attribution', () => {
     // Each token event is bucketed by the *local* day at the moment it was
     // recorded. Without this bucket the dashboard's "Today Spend" credits

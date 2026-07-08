@@ -228,3 +228,79 @@ export function handleGetCostForecast(
   });
   return { content: [{ type: 'text', text: JSON.stringify(forecast, null, 2) }] };
 }
+
+// ---------------------------------------------------------------------------
+// Prompt Cache Health tool
+// ---------------------------------------------------------------------------
+
+export const PROMPT_CACHE_HEALTH_TOOL = {
+  name: 'nr_observe_get_prompt_cache_health',
+  description:
+    'Get prompt cache health: hit rate, savings, and a concrete recommendation for improving cache efficiency. ' +
+    'A high hit rate means more context is being served cheaply from cache rather than priced as fresh input.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+  annotations: { readOnlyHint: true },
+};
+
+type CacheStatus = 'no_cache_activity' | 'needs_attention' | 'can_improve' | 'excellent';
+
+function cacheRecommendation(status: CacheStatus, hitRatePct: number | null): string {
+  if (status === 'no_cache_activity') {
+    return 'No cache activity detected. This model or session may not support prompt caching, or cache_read_tokens have not been reported yet.';
+  }
+  if (status === 'excellent') {
+    return `Cache health is excellent (${hitRatePct}%). Your prompt structure is well-optimised for caching. No changes needed.`;
+  }
+  if (status === 'can_improve') {
+    return (
+      `Cache hit rate is ${hitRatePct}%. To improve: place stable content (CLAUDE.md rules, recurring file reads) ` +
+      'before variable content (user messages, dynamic tool results) in your prompts.'
+    );
+  }
+  return (
+    `Cache hit rate is ${hitRatePct}%. Significant improvement possible: restructure your system prompt so stable ` +
+    'context appears at the very top, before any variable content. Each cache miss at full input price that could ' +
+    'have been a cheap cache read represents avoidable spend.'
+  );
+}
+
+export function handleGetPromptCacheHealth(costTracker: CostTracker): {
+  content: Array<{ type: 'text'; text: string }>;
+} {
+  const metrics = costTracker.getMetrics();
+  const { cacheHitRate, totalCacheReadTokens, totalCacheCreationTokens, totalCacheSavingsUsd } =
+    metrics;
+
+  let status: CacheStatus;
+  let hitRatePct: number | null = null;
+
+  if (cacheHitRate === null) {
+    status = 'no_cache_activity';
+  } else {
+    hitRatePct = Math.round(cacheHitRate * 100);
+    if (hitRatePct >= 60) {
+      status = 'excellent';
+    } else if (hitRatePct >= 30) {
+      status = 'can_improve';
+    } else {
+      status = 'needs_attention';
+    }
+  }
+
+  const result = {
+    status,
+    cache_hit_rate_pct: hitRatePct,
+    total_cache_read_tokens: totalCacheReadTokens,
+    total_cache_creation_tokens: totalCacheCreationTokens,
+    total_savings_usd: totalCacheSavingsUsd,
+    recommendation: cacheRecommendation(status, hitRatePct),
+    data_quality: metrics.reportCount > 0 ? 'self_reported' : 'estimated',
+  };
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+  };
+}

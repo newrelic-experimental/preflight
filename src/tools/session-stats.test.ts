@@ -556,12 +556,14 @@ describe('MCP protocol integration — cost tools', () => {
     const names = result.tools.map((t) => t.name);
 
     expect(names).toContain('nr_observe_health');
+    expect(names).toContain('nr_observe_install_hooks');
     expect(names).toContain('nr_observe_get_session_stats');
     expect(names).toContain('nr_observe_get_session_timeline');
     expect(names).toContain('nr_observe_report_tokens');
     expect(names).toContain('nr_observe_get_cost_breakdown');
+    expect(names).toContain('nr_observe_get_prompt_cache_health');
     expect(names).toContain('nr_observe_get_cost_forecast');
-    expect(result.tools).toHaveLength(7);
+    expect(result.tools).toHaveLength(8);
 
     await bothClient.close();
     await bothServer.close();

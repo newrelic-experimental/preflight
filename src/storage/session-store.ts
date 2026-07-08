@@ -47,6 +47,9 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
+  readonly tokensCacheRead: number;
+  readonly tokensCacheCreation: number;
+  readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
   readonly antiPatterns: Array<{ type: string; count: number }>;
   readonly taskCount: number;
@@ -362,6 +365,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     tokensInput: costMetrics?.totalInputTokens ?? 0,
     tokensOutput: costMetrics?.totalOutputTokens ?? 0,
     tokensThinking: costMetrics?.totalThinkingTokens ?? 0,
+    tokensCacheRead: costMetrics?.totalCacheReadTokens ?? 0,
+    tokensCacheCreation: costMetrics?.totalCacheCreationTokens ?? 0,
+    cacheSavingsUsd: costMetrics?.totalCacheSavingsUsd ?? 0,
     efficiencyScore: efficiencyAvg?.score ?? null,
     antiPatterns,
     taskCount: (taskMetrics?.totalTasksCompleted ?? 0) + (taskMetrics?.currentTaskActive ? 1 : 0),
@@ -386,20 +392,11 @@ function formatDate(date: Date): string {
 }
 
 /**
- * Explicitly extract known fields from a raw session JSON string rather
- * than blindly casting JSON.parse output. Prevents untrusted keys from disk
- * being misinterpreted as typed properties.
+ * Explicitly extract known fields from a raw session object (already parsed
+ * from JSON) rather than blindly casting. Prevents untrusted keys from disk
+ * being misinterpreted as typed properties. Exported for testing.
  */
-function deserializeSession(raw: string): FullSessionSummary | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== 'object' || parsed === null) return null;
-  const obj = parsed as Record<string, unknown>;
-
+export function deserializeFullSessionSummary(obj: Record<string, unknown>): FullSessionSummary {
   const toolBreakdown = Object.create(null) as Record<string, number>;
   if (typeof obj.toolBreakdown === 'object' && obj.toolBreakdown !== null) {
     for (const [k, v] of Object.entries(obj.toolBreakdown as Record<string, unknown>)) {
@@ -420,8 +417,6 @@ function deserializeSession(raw: string): FullSessionSummary | null {
   }
 
   return {
-    // Use 'unknown' sentinel instead of '' so callers can distinguish "no ID"
-    // from a real session ID (empty string passes !==null checks silently).
     sessionId:
       typeof obj.sessionId === 'string' && obj.sessionId.length > 0 ? obj.sessionId : 'unknown',
     sessionName: typeof obj.sessionName === 'string' ? obj.sessionName : null,
@@ -450,6 +445,9 @@ function deserializeSession(raw: string): FullSessionSummary | null {
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,
+    tokensCacheRead: typeof obj.tokensCacheRead === 'number' ? obj.tokensCacheRead : 0,
+    tokensCacheCreation: typeof obj.tokensCacheCreation === 'number' ? obj.tokensCacheCreation : 0,
+    cacheSavingsUsd: typeof obj.cacheSavingsUsd === 'number' ? obj.cacheSavingsUsd : 0,
     efficiencyScore: typeof obj.efficiencyScore === 'number' ? obj.efficiencyScore : null,
     antiPatterns,
     taskCount: typeof obj.taskCount === 'number' ? obj.taskCount : 0,
@@ -476,7 +474,6 @@ function deserializeSession(raw: string): FullSessionSummary | null {
             toolName: e.toolName as string,
             durationMs: typeof e.durationMs === 'number' ? e.durationMs : null,
             success: typeof e.success === 'boolean' ? e.success : true,
-            // Sanitize string fields to prevent injection from hand-edited session files
             filePath: typeof e.filePath === 'string' ? e.filePath : undefined,
             command: typeof e.command === 'string' ? e.command : undefined,
             isTestCommand: typeof e.isTestCommand === 'boolean' ? e.isTestCommand : undefined,
@@ -486,6 +483,21 @@ function deserializeSession(raw: string): FullSessionSummary | null {
           }))
       : undefined,
   };
+}
+
+/**
+ * Parse a raw session JSON string and extract known fields. Delegates field
+ * extraction to `deserializeFullSessionSummary` to avoid duplication.
+ */
+function deserializeSession(raw: string): FullSessionSummary | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  return deserializeFullSessionSummary(parsed as Record<string, unknown>);
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {

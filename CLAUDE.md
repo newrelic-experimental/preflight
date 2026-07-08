@@ -255,6 +255,7 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 
 - `nr_observe_report_tokens` — self-reported token usage with per-model cost calculation
 - `nr_observe_get_cost_breakdown` — cost by tool type and model
+- `nr_observe_get_prompt_cache_health` — cache hit rate, savings, and a concrete recommendation for improving cache efficiency
 - `nr_observe_get_cost_forecast` — project future spend
 - `nr_observe_get_budget_status` — current spend vs. budget caps
 

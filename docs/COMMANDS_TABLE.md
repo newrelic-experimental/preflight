@@ -924,6 +924,43 @@ Source: `src/tools/cost-tools.ts`
 
 ---
 
+### `nr_observe_get_prompt_cache_health`
+
+Cache hit rate, savings, and a concrete recommendation for improving cache efficiency. A high hit rate means more context is served cheaply from cache rather than priced as fresh input.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "status": "can_improve",
+  "cache_hit_rate_pct": 42,
+  "total_cache_read_tokens": 145000,
+  "total_cache_creation_tokens": 12000,
+  "total_savings_usd": 1.83,
+  "recommendation": "Cache hit rate is 42%. To improve: place stable content (CLAUDE.md rules, recurring file reads) before variable content (user messages, dynamic tool results) in your prompts.",
+  "data_quality": "self_reported"
+}
+```
+
+**Data source:** `CostTracker`
+
+**How each field is determined:**
+
+- `status` — `no_cache_activity` when no cache tokens have been reported yet; otherwise `excellent` (hit rate ≥ 60%), `can_improve` (≥ 30%), or `needs_attention` (< 30%)
+- `cache_hit_rate_pct` — `round(cacheReadTokens / (inputTokens + cacheReadTokens + cacheCreationTokens) * 100)`; `null` when no cache tokens have been seen
+- `total_cache_read_tokens` / `total_cache_creation_tokens` — running totals accumulated from every token report
+- `total_savings_usd` — sum of `savingsFromCacheUsd` (cache-read discount vs. full input price) across all reports
+- `recommendation` — status-specific guidance string that includes the actual hit-rate percentage
+- `data_quality` — `self_reported` when at least one `reportTokens` call has been made this session, otherwise `estimated`
+
+**Requires:** `CostTracker`
+
+Source: `src/tools/cost-tools.ts`
+
+---
+
 ### `nr_observe_get_cost_forecast`
 
 Projects future spend based on current session burn rate.
