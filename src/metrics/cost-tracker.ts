@@ -29,6 +29,8 @@ export interface CostMetrics {
   totalThinkingTokens: number;
   totalCacheReadTokens: number;
   totalCacheCreationTokens: number;
+  cacheHitRate: number | null;
+  totalCacheSavingsUsd: number;
   reportCount: number;
   estimationCount: number;
   latestCostBreakdown: CostBreakdown | null;
@@ -47,6 +49,7 @@ export class CostTracker {
   private totalThinkingTokens = 0;
   private totalCacheReadTokens = 0;
   private totalCacheCreationTokens = 0;
+  private totalCacheSavingsUsd = 0;
   private currentModel: string | null = null;
   private reportCount = 0;
   private estimationCount = 0;
@@ -105,6 +108,7 @@ export class CostTracker {
     this.currentModel = model;
     this.latestCostBreakdown = breakdown;
     this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + breakdown.totalUsd);
+    this.totalCacheSavingsUsd += breakdown.savingsFromCacheUsd;
 
     const nowMs = Date.now();
     const dayKey = localDateKey(nowMs);
@@ -114,6 +118,14 @@ export class CostTracker {
     }
 
     return breakdown;
+  }
+
+  private computeCacheHitRate(): number | null {
+    const denominator =
+      this.totalInputTokens + this.totalCacheReadTokens + this.totalCacheCreationTokens;
+    if (denominator === 0) return null;
+    if (this.totalCacheReadTokens === 0 && this.totalCacheCreationTokens === 0) return null;
+    return this.totalCacheReadTokens / denominator;
   }
 
   /**
@@ -165,6 +177,8 @@ export class CostTracker {
       totalThinkingTokens: this.totalThinkingTokens,
       totalCacheReadTokens: this.totalCacheReadTokens,
       totalCacheCreationTokens: this.totalCacheCreationTokens,
+      cacheHitRate: this.computeCacheHitRate(),
+      totalCacheSavingsUsd: this.totalCacheSavingsUsd,
       reportCount: this.reportCount,
       estimationCount: this.estimationCount,
       latestCostBreakdown: this.latestCostBreakdown,
@@ -182,6 +196,8 @@ export class CostTracker {
     aggregator.record('ai.cost.tokens_output', this.totalOutputTokens, attrs);
     aggregator.record('ai.cost.tokens_thinking', this.totalThinkingTokens, attrs);
     aggregator.record('ai.cost.tokens_cache_read', this.totalCacheReadTokens, attrs);
+    aggregator.record('ai.cost.tokens_cache_creation', this.totalCacheCreationTokens, attrs);
+    aggregator.record('ai.cost.cache_savings_usd', this.totalCacheSavingsUsd, attrs);
 
     if (this.totalLinesChanged > 0) {
       aggregator.record(
@@ -213,6 +229,7 @@ export class CostTracker {
     this.totalThinkingTokens = 0;
     this.totalCacheReadTokens = 0;
     this.totalCacheCreationTokens = 0;
+    this.totalCacheSavingsUsd = 0;
     this.currentModel = null;
     this.reportCount = 0;
     this.estimationCount = 0;

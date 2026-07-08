@@ -41,6 +41,8 @@ import {
   COST_FORECAST_TOOL,
   handleGetBudgetStatus,
   handleGetCostForecast,
+  PROMPT_CACHE_HEALTH_TOOL,
+  handleGetPromptCacheHealth,
 } from './cost-tools.js';
 import {
   WORKFLOW_TRACE_TOOL,
@@ -594,7 +596,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
     tools.push(SESSION_STATS_TOOL, SESSION_TIMELINE_TOOL);
   }
   if (costTracker) {
-    tools.push(REPORT_TOKENS_TOOL, COST_BREAKDOWN_TOOL);
+    tools.push(REPORT_TOKENS_TOOL, COST_BREAKDOWN_TOOL, PROMPT_CACHE_HEALTH_TOOL);
   }
   if (budgetTracker) {
     tools.push(BUDGET_STATUS_TOOL);
@@ -831,6 +833,21 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
             };
           }
           return handleGetCostBreakdown(costTracker, taskDetector);
+        }
+
+        case 'nr_observe_get_prompt_cache_health': {
+          if (!costTracker) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({ error: 'CostTracker not available' }),
+                },
+              ],
+              isError: true,
+            };
+          }
+          return handleGetPromptCacheHealth(costTracker);
         }
 
         case 'nr_observe_get_budget_status': {

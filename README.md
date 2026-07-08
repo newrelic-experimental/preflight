@@ -43,7 +43,7 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
 ### Cost Control
 
 - **USD spend tracking** — per session, day, and week
-- **Per-model breakdown** — know which models cost most
+- **Per-model and cache breakdown** — know which models cost most and how efficiently context is reused
 - **Budget alerts** — get notified before you overspend
 - **Forecasting** — project monthly burn rate
 

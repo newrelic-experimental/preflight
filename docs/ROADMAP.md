@@ -40,6 +40,13 @@ Items shipped and no longer on the active roadmap.
 - **Deeper personal coaching** — Narrative coaching report comparing weekly metrics to a developer's personal baseline, with concrete actionable guidance. Delivered via `personal-coach.ts`, `GET /api/personal-coach`, and `nr_observe_get_personal_insights`.
 - **Per-AI-tool model usage and cost-efficiency breakdown** — Surfaces cost and request counts per model with a most-efficient-model callout. Delivered via `model-usage-tracker.ts`, `GET /api/model-usage`, and the Model Usage panel on the Today view.
 - **Platform adapter expansion** — Nine AI coding client adapters shipped at launch: Claude Code, Cursor, Windsurf, GitHub Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro, and a generic MCP fallback. Exceeds the "at least two additional" target set at roadmap authoring time.
+- **Prompt cache health** — `cache_read_tokens` are tracked per token event; `CostTracker`
+  aggregates a `cacheHitRate` ratio and `totalCacheSavingsUsd`; `TrendAnalyzer` computes
+  `weeklyCacheHitRateTrend` across sessions. The Today dashboard `CacheHealthPanel` shows the
+  current session's hit rate with a status pill (excellent / can improve / needs attention),
+  total savings, a week-over-week delta chip (↑/↓ Npts vs last week), and concrete
+  recommendation text that includes the actual percentage. The `nr_observe_get_prompt_cache_health`
+  MCP tool exposes all cache metrics programmatically.
 
 ---
 
@@ -49,9 +56,9 @@ Items with meaningful implementation already shipped but with remaining work bef
 
 - **Context window pressure timeline** — The roadmap item called for extending context composition from a point-in-time snapshot into a time-series stacked chart showing how the four token categories grow across a session. The snapshot half is done: `context-composition-tracker.ts`, `ContextBar`, and `GET /api/context` are all live. The time-series / stacked-chart extension and the 20%-remaining warning zone are still outstanding. _(Difficulty: 2/5 · Customer Impact: 3/5)_ — [#30](https://github.com/newrelic-experimental/preflight/issues/30)
 
-- **Prompt cache health** — `cache_read_tokens` are tracked per token event and included in cost breakdowns surfaced by `nr_observe_report_tokens`. What's missing is the dedicated "cache hit rate" aggregation, the session-level and week-over-week trend, and the concrete recommendation ("your cache hit rate is 12%; restructuring your system prompt could bring this above 60%"). _(Difficulty: 2/5 · Customer Impact: 4/5)_ — [#36](https://github.com/newrelic-experimental/preflight/issues/36)
-
 - **Compute waste metric** — `retry-detector.ts` already emits an `ai.retry.tokens_wasted` metric capturing tokens consumed on retried tool calls. What's missing is surfacing this as an explicit "compute waste" figure in the dashboard and MCP tools, and broadening it to cover anti-pattern tokens (stuck loops, redundant reads) beyond just retries. _(Difficulty: 1/5 · Customer Impact: 3/5)_ — [#31](https://github.com/newrelic-experimental/preflight/issues/31)
+
+- **Prompt cache health — NR-hosted dashboard parity** — shipped as a local-dashboard feature (`CacheHealthPanel` on the Today view) plus the `nr_observe_get_prompt_cache_health` MCP tool, backed by real metrics (`ai.cost.tokens_cache_read`, `ai.cost.tokens_cache_creation`, `ai.cost.cache_savings_usd`). None of the 7 pre-built NR-hosted dashboards surface it yet, so New Relic-mode users only see this insight if they also run the local dashboard. _(Difficulty: 1/5 · Customer Impact: 2/5)_ — [#77](https://github.com/newrelic-experimental/preflight/issues/77)
 
 ---
 

@@ -412,7 +412,16 @@ export function handleGetTrends(
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify({ metric, weeks, data_points: data }, null, 2),
+        text: JSON.stringify(
+          {
+            metric,
+            weeks,
+            data_points: data,
+            weekly_cache_hit_rate_trend: trends.weeklyCacheHitRateTrend,
+          },
+          null,
+          2,
+        ),
       },
     ],
   };

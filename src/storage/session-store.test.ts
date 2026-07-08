@@ -2,10 +2,15 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { chmodSync, existsSync, mkdirSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionStore, buildSessionSummary } from './session-store.js';
+import {
+  SessionStore,
+  buildSessionSummary,
+  deserializeFullSessionSummary,
+} from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
-import type { CostTracker } from '../metrics/cost-tracker.js';
+import { CostTracker } from '../metrics/cost-tracker.js';
+import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 
@@ -54,6 +59,9 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     tokensInput: 5000,
     tokensOutput: 2000,
     tokensThinking: 1000,
+    tokensCacheRead: 0,
+    tokensCacheCreation: 0,
+    cacheSavingsUsd: 0,
     efficiencyScore: 0.75,
     antiPatterns: [],
     taskCount: 1,
@@ -67,6 +75,30 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     outcome: 'completed',
     ...overrides,
   };
+}
+
+function makeSessionTracker(): SessionTracker {
+  return {
+    getMetrics: () => ({
+      sessionId: 'test-session',
+      sessionName: null,
+      sessionStartTime: 1_700_000_000_000,
+      sessionDurationMs: 0,
+      toolCallCount: 0,
+      toolCallCountByTool: {},
+      toolDurationMsByTool: {},
+      toolSuccessRate: 1,
+      toolSuccessRateByTool: {},
+      toolErrorCount: 0,
+      toolErrorsByType: {},
+      uniqueFilesRead: 0,
+      uniqueFilesWritten: 0,
+      bashCommandsRun: 0,
+      bashExitCodes: {},
+      searchQueries: 0,
+      toolCallTimeline: [],
+    }),
+  } as unknown as SessionTracker;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +511,99 @@ describe('buildSessionSummary', () => {
     expect(summary.buildPassCount).toBe(1);
     expect(summary.agentSpawns).toBe(1);
     expect(summary.taskCount).toBe(1);
+  });
+
+  it('includes cache token fields from CostTracker', () => {
+    const sessionTracker = makeSessionTracker();
+    const costTracker = new CostTracker();
+    // recordTokenUsage with real cache tokens so fields are non-zero
+    jest.spyOn(costTracker, 'getMetrics').mockReturnValue({
+      sessionTotalCostUsd: 0.05,
+      costByTask: null,
+      costByModel: {},
+      costPerLineOfCode: null,
+      costPerFileModified: null,
+      model: 'claude-sonnet-4-6',
+      totalInputTokens: 3_000,
+      totalOutputTokens: 1_000,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 5_000,
+      totalCacheCreationTokens: 1_500,
+      cacheHitRate: 0.526,
+      totalCacheSavingsUsd: 0.018,
+      reportCount: 2,
+      estimationCount: 0,
+      latestCostBreakdown: null,
+    } satisfies CostMetrics);
+    const summary = buildSessionSummary({
+      sessionTracker,
+      costTracker,
+      developer: 'dev',
+    });
+    expect(summary.tokensCacheRead).toBe(5_000);
+    expect(summary.tokensCacheCreation).toBe(1_500);
+    expect(summary.cacheSavingsUsd).toBe(0.018);
+  });
+
+  it('deserializeFullSessionSummary round-trips cache fields', () => {
+    const raw = {
+      sessionId: 'sess-abc',
+      sessionName: null,
+      repoName: null,
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 10,
+      developer: 'dev',
+      model: null,
+      toolBreakdown: {},
+      filesRead: [],
+      filesModified: [],
+      linesAdded: 0,
+      linesRemoved: 0,
+      bashCommandCount: 0,
+      testRunCount: 0,
+      testPassCount: 0,
+      buildRunCount: 0,
+      buildPassCount: 0,
+      estimatedCostUsd: null,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+      tokensCacheRead: 4_000,
+      tokensCacheCreation: 800,
+      cacheSavingsUsd: 0.009,
+      efficiencyScore: null,
+      antiPatterns: [],
+      taskCount: 0,
+      taskSuccessRate: null,
+      toolSuccessRate: null,
+      contextCompressions: 0,
+      agentSpawns: 0,
+      userMessages: 0,
+      assistantMessages: 0,
+      userCorrections: 0,
+      outcome: 'unknown',
+    };
+    const result = deserializeFullSessionSummary(raw);
+    expect(result.tokensCacheRead).toBe(4_000);
+    expect(result.tokensCacheCreation).toBe(800);
+    expect(result.cacheSavingsUsd).toBe(0.009);
+  });
+
+  it('deserializeFullSessionSummary defaults cache fields to 0 when missing', () => {
+    const raw = {
+      sessionId: 'sess-old',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.tokensCacheRead).toBe(0);
+    expect(result.tokensCacheCreation).toBe(0);
+    expect(result.cacheSavingsUsd).toBe(0);
   });
 
   it('handles missing optional trackers gracefully', () => {

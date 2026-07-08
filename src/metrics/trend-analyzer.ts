@@ -35,6 +35,7 @@ export interface TrendData {
   readonly weeklyTaskSuccessTrend: WeeklyDataPoint[];
   readonly weeklyToolCallTrend: WeeklyDataPoint[];
   readonly weeklyAntiPatternTrend: AntiPatternWeeklyPoint[];
+  readonly weeklyCacheHitRateTrend: WeeklyDataPoint[];
 }
 
 export interface WeekComparison {
@@ -179,6 +180,20 @@ function aggregateWeek(sessions: FullSessionSummary[]): WeekAggregates {
   };
 }
 
+function aggregateWeekCacheHitRate(sessions: FullSessionSummary[]): number | null {
+  let totalCacheRead = 0;
+  let totalCacheCreation = 0;
+  let totalInput = 0;
+  for (const s of sessions) {
+    totalCacheRead += s.tokensCacheRead ?? 0;
+    totalCacheCreation += s.tokensCacheCreation ?? 0;
+    totalInput += s.tokensInput ?? 0;
+  }
+  const denominator = totalInput + totalCacheRead + totalCacheCreation;
+  if (denominator === 0 || totalCacheRead === 0) return null;
+  return totalCacheRead / denominator;
+}
+
 function groupByWeek(sessions: FullSessionSummary[]): Map<string, FullSessionSummary[]> {
   const groups = new Map<string, FullSessionSummary[]>();
   for (const s of sessions) {
@@ -215,6 +230,7 @@ export class TrendAnalyzer {
     const weeklyTaskSuccessTrend: WeeklyDataPoint[] = [];
     const weeklyToolCallTrend: WeeklyDataPoint[] = [];
     const weeklyAntiPatternTrend: AntiPatternWeeklyPoint[] = [];
+    const weeklyCacheHitRateTrend: WeeklyDataPoint[] = [];
 
     for (const week of sortedWeeks) {
       const agg = aggregateWeek(weekGroups.get(week)!);
@@ -226,6 +242,11 @@ export class TrendAnalyzer {
       weeklyTaskSuccessTrend.push({ week, value: agg.taskSuccess });
       weeklyToolCallTrend.push({ week, value: agg.toolCallsPerTask });
       weeklyAntiPatternTrend.push({ week, counts: agg.antiPatterns });
+
+      const cacheHitRate = aggregateWeekCacheHitRate(weekGroups.get(week)!);
+      if (cacheHitRate !== null) {
+        weeklyCacheHitRateTrend.push({ week, value: round(cacheHitRate, 4) });
+      }
     }
 
     return {
@@ -234,6 +255,7 @@ export class TrendAnalyzer {
       weeklyTaskSuccessTrend,
       weeklyToolCallTrend,
       weeklyAntiPatternTrend,
+      weeklyCacheHitRateTrend,
     };
   }
 

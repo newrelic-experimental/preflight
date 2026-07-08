@@ -1029,6 +1029,7 @@ async function main(): Promise<void> {
           budgetTracker,
           latencyTracker,
           personalCoach,
+          trendAnalyzer,
           alertLog,
           taskDetector,
           efficiencyScorer,

@@ -1,7 +1,12 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { handleReportTokens, REPORT_TOKENS_TOOL } from './cost-tools.js';
+import {
+  handleReportTokens,
+  REPORT_TOKENS_TOOL,
+  handleGetPromptCacheHealth,
+} from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import type { TokenReport } from './cost-tools.js';
+import type { CostMetrics } from '../metrics/cost-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -185,5 +190,105 @@ describe('handleReportTokens()', () => {
       const body = JSON.parse(result.content[0].text);
       expect(body.model.length).toBe(256);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleGetPromptCacheHealth
+// ---------------------------------------------------------------------------
+
+describe('handleGetPromptCacheHealth()', () => {
+  function makeTracker(overrides?: Partial<CostMetrics>): CostTracker {
+    const tracker = new CostTracker();
+    // Inject via recordTokenUsage to set real state — but for handler tests
+    // we need precise control, so spy on getMetrics instead.
+    jest.spyOn(tracker, 'getMetrics').mockReturnValue({
+      sessionTotalCostUsd: null,
+      costByTask: null,
+      costByModel: {},
+      costPerLineOfCode: null,
+      costPerFileModified: null,
+      model: null,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      cacheHitRate: null,
+      totalCacheSavingsUsd: 0,
+      reportCount: 0,
+      estimationCount: 0,
+      latestCostBreakdown: null,
+      ...overrides,
+    } satisfies CostMetrics);
+    return tracker;
+  }
+
+  it('returns no_cache_activity status when cacheHitRate is null and no cache tokens', () => {
+    const tracker = makeTracker({ reportCount: 3 });
+    const result = handleGetPromptCacheHealth(tracker);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.status).toBe('no_cache_activity');
+    expect(body.recommendation).toMatch(/No cache activity detected/);
+  });
+
+  it('returns excellent status for hit rate >= 0.6', () => {
+    const tracker = makeTracker({
+      totalInputTokens: 2_000,
+      totalCacheReadTokens: 6_000,
+      totalCacheCreationTokens: 2_000,
+      cacheHitRate: 0.6,
+      totalCacheSavingsUsd: 0.12,
+      reportCount: 5,
+    });
+    const result = handleGetPromptCacheHealth(tracker);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.status).toBe('excellent');
+    expect(body.cache_hit_rate_pct).toBe(60);
+  });
+
+  it('returns needs_attention status for hit rate < 0.3', () => {
+    const tracker = makeTracker({
+      totalInputTokens: 9_000,
+      totalCacheReadTokens: 500,
+      totalCacheCreationTokens: 500,
+      cacheHitRate: 0.05,
+      totalCacheSavingsUsd: 0.001,
+      reportCount: 5,
+    });
+    const result = handleGetPromptCacheHealth(tracker);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.status).toBe('needs_attention');
+    expect(body.recommendation).toMatch(/restructure/i);
+  });
+
+  it('returns can_improve status for hit rate 0.3–0.59', () => {
+    const tracker = makeTracker({
+      totalInputTokens: 5_000,
+      totalCacheReadTokens: 3_000,
+      totalCacheCreationTokens: 2_000,
+      cacheHitRate: 0.3,
+      totalCacheSavingsUsd: 0.05,
+      reportCount: 5,
+    });
+    const result = handleGetPromptCacheHealth(tracker);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.status).toBe('can_improve');
+  });
+
+  it('includes total_savings_usd and token counts', () => {
+    const tracker = makeTracker({
+      totalInputTokens: 3_000,
+      totalCacheReadTokens: 6_000,
+      totalCacheCreationTokens: 1_000,
+      cacheHitRate: 0.6,
+      totalCacheSavingsUsd: 0.25,
+      reportCount: 3,
+    });
+    const result = handleGetPromptCacheHealth(tracker);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.total_savings_usd).toBe(0.25);
+    expect(body.total_cache_read_tokens).toBe(6_000);
+    expect(body.total_cache_creation_tokens).toBe(1_000);
   });
 });

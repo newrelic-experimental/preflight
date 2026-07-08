@@ -14,6 +14,7 @@ import { ContextBar } from '../components/ContextBar';
 import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
 import {
   fetchRecentAlerts,
+  fetchCacheHealth,
   fetchCost,
   fetchSessionCurrent,
   fetchSessionsList,
@@ -404,11 +405,12 @@ export function Today(): JSX.Element {
               </AnimatedCard>
             )}
 
-          <AnimatedCard index={3} className="grid grid-cols-2 gap-3 mb-3">
+          <AnimatedCard index={3} className="grid grid-cols-3 gap-3 mb-3">
             <QualityProxyPanel />
             <ToolSelectionPanel />
             <LatencyPanel />
             <ModelUsagePanel />
+            <CacheHealthPanel />
           </AnimatedCard>
 
           <AnimatedCard index={4}>
@@ -631,6 +633,15 @@ interface ModelUsageMetrics {
   readonly mostEfficientModel: string | null;
 }
 
+interface CacheHealthApiResponse {
+  readonly status: 'no_cache_activity' | 'needs_attention' | 'can_improve' | 'excellent';
+  readonly cache_hit_rate_pct: number | null;
+  readonly total_cache_read_tokens: number;
+  readonly total_cache_creation_tokens: number;
+  readonly total_savings_usd: number;
+  readonly week_over_week_delta_pts: number | null;
+}
+
 function ModelUsagePanel(): JSX.Element {
   const { data } = useQuery<ModelUsageMetrics>({
     queryKey: qk.modelUsage,
@@ -673,6 +684,85 @@ function ModelUsagePanel(): JSX.Element {
             </div>
           )}
         </div>
+      )}
+    </Card>
+  );
+}
+
+function cacheRecommendationText(
+  status: CacheHealthApiResponse['status'],
+  hitRatePct: number | null,
+): string {
+  const pct = hitRatePct !== null ? `${hitRatePct}%` : null;
+  if (status === 'excellent')
+    return pct
+      ? `Cache hit rate is ${pct}. Cache is well-structured.`
+      : 'Cache is well-structured. No changes needed.';
+  if (status === 'can_improve')
+    return pct
+      ? `Cache hit rate is ${pct}. Placing stable content before variable content in prompts could improve this.`
+      : 'Place stable content before variable content in prompts to improve.';
+  return pct
+    ? `Cache hit rate is ${pct}. Restructuring your system prompt so stable context appears at the top could bring this above 60%.`
+    : 'Restructure your system prompt so stable context appears at the top.';
+}
+
+function CacheHealthPanel(): JSX.Element {
+  const { data } = useQuery<CacheHealthApiResponse>({
+    queryKey: qk.cacheHealth,
+    queryFn: () => fetchCacheHealth() as Promise<CacheHealthApiResponse>,
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
+
+  const noActivity =
+    !data || data.status === 'no_cache_activity' || data.cache_hit_rate_pct == null;
+
+  return (
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Cache Health</Eyebrow>
+      {noActivity ? (
+        <EmptyState
+          icon="radar"
+          title="No cache data yet"
+          subtitle="Appears once token usage with cache reads is reported."
+        />
+      ) : (
+        <>
+          <div className="flex items-baseline gap-2 mb-1">
+            <span
+              className={`text-2xl font-semibold tabular-nums ${
+                data.status === 'excellent'
+                  ? 'text-accent-green'
+                  : data.status === 'needs_attention'
+                    ? 'text-accent-amber'
+                    : 'text-ink-base'
+              }`}
+            >
+              {data.cache_hit_rate_pct}%
+            </span>
+            <Pill tone={data.status === 'needs_attention' ? 'warning' : 'neutral'} size="sm">
+              {data.status === 'excellent' ? 'excellent' : data.status.replace('_', ' ')}
+            </Pill>
+          </div>
+          {data.total_savings_usd > 0 && (
+            <div className="text-xs text-accent-green mb-1">
+              ${data.total_savings_usd.toFixed(4)} saved
+            </div>
+          )}
+          {data.week_over_week_delta_pts !== null && data.week_over_week_delta_pts !== 0 && (
+            <div
+              className={`text-[10px] font-medium mb-1 ${
+                data.week_over_week_delta_pts > 0 ? 'text-accent-green' : 'text-accent-amber'
+              }`}
+            >
+              {data.week_over_week_delta_pts > 0 ? '↑' : '↓'}
+              {Math.abs(data.week_over_week_delta_pts)}pts vs last week
+            </div>
+          )}
+          <div className="text-[10px] text-ink-subtle/70 leading-snug">
+            {cacheRecommendationText(data.status, data.cache_hit_rate_pct)}
+          </div>
+        </>
       )}
     </Card>
   );
