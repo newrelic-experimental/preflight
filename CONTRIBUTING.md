@@ -139,6 +139,8 @@ The foundation layer is vendored in `src/shared/`. Provides:
 
 ## Key Concepts
 
+See [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) for a full data-flow diagram and component reference. The concepts below cover the most important building blocks.
+
 ### ToolCallRecord
 
 The central data type. Every tool call captured by the hooks becomes a `ToolCallRecord` with fields like `toolName`, `durationMs`, `success`, `filePath`, `command`, `exitCode`, etc. This record flows through all metric trackers.
