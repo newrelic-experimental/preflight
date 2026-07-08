@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-07-08
+
+### Fixed
+
+- **Dashboard 403 on Windows** — the static file handler's root-containment check only recognized `/` as a path separator, so every static asset request (including `index.html`) was rejected on Windows, where `resolve()`/`join()` produce backslash-joined paths. Added a platform-separator fallback alongside the existing literal `/` check.
+- **Hook collector silently dropped all session data on Windows** — the hook collector read stdin via the POSIX-only `/dev/stdin` device path, which doesn't exist on Windows, so every `PreToolUse`/`PostToolUse` hook failed silently and the Sessions tab stayed empty with no indication of failure. Windows now reads stdin via its file descriptor directly instead.
+
+---
+
 ## [1.3.0] - 2026-07-08
 
 ### Added
