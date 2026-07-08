@@ -54,10 +54,12 @@ describe('MCP protocol via InMemoryTransport', () => {
     await server.close();
   });
 
-  it('responds to tools/list with only the health tool when no trackers configured', async () => {
+  it('responds to tools/list with health and install_hooks tools when no trackers configured', async () => {
     const result = await client.listTools();
-    expect(result.tools).toHaveLength(1);
-    expect(result.tools[0]!.name).toBe('nr_observe_health');
+    expect(result.tools).toHaveLength(2);
+    const toolNames = result.tools.map((t) => t.name);
+    expect(toolNames).toContain('nr_observe_health');
+    expect(toolNames).toContain('nr_observe_install_hooks');
   });
 
   it('responds to resources/list with an empty resource list', async () => {

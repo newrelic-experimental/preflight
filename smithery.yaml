@@ -1,0 +1,53 @@
+name: newrelic-preflight
+description: >-
+  AI coding observability for Claude Code. Tracks tool calls, cost,
+  anti-patterns, and efficiency metrics — and ships them to New Relic.
+  Works across Claude Code, Cursor, Windsurf, and 6 other platforms.
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      licenseKey:
+        type: string
+        title: License Key
+        description: >-
+          New Relic license key (NRII-... or eu01xx...).
+          Required when mode is "cloud". Leave blank to use local-dashboard-only mode.
+      accountId:
+        type: string
+        title: Account ID
+        description: >-
+          New Relic account ID (numeric, e.g. 1234567).
+          Required when mode is "cloud".
+      developer:
+        type: string
+        title: Developer Name
+        description: >-
+          Your identifier on NR events (e.g. "alice" or "alice_smith").
+          Defaults to $USER when blank.
+      mode:
+        type: string
+        enum:
+          - cloud
+          - local
+        default: cloud
+        title: Mode
+        description: >-
+          "cloud": send metrics to New Relic (requires licenseKey + accountId).
+          "local": local dashboard only, no data egress.
+    required: []
+  commandFunction: |-
+    (config) => {
+      const env = {};
+      if (config.licenseKey) env.NEW_RELIC_LICENSE_KEY = config.licenseKey;
+      if (config.accountId)  env.NEW_RELIC_AI_ACCOUNT_ID = config.accountId;
+      if (config.developer)  env.NEW_RELIC_AI_MCP_DEVELOPER = config.developer;
+      if (config.mode)       env.NR_AI_MODE = config.mode;
+      return {
+        command: "npx",
+        args: ["-y", "@newrelic/preflight@latest", "--stdio"],
+        env,
+      };
+    }

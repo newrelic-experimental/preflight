@@ -10,6 +10,8 @@ import { createLogger } from './shared/index.js';
 import { VERSION } from './version.js';
 import type { ServerOptions } from './types.js';
 import { registerTools } from './tools/session-stats.js';
+import { readAndCheckHooks } from './install/install-helper.js';
+import { installHooksHeadless } from './install/headless-install.js';
 
 const logger = createLogger('mcp-server');
 
@@ -61,6 +63,8 @@ export class NrMcpServer {
       teamId: options.teamId,
       projectId: options.projectId,
       sessionStartMs: serverStartMs,
+      hooksInstalledFn: () => readAndCheckHooks(),
+      headlessInstaller: installHooksHeadless,
     });
 
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {

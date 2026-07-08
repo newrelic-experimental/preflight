@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import type { PlatformTarget } from '../config.js';
+import { readJsonFileStrict } from './json-utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -193,6 +194,35 @@ export function entryHasAnyCommandHook(entry: unknown): boolean {
 
 function filterNrObserveEntries(entries: unknown[]): unknown[] {
   return entries.filter((e) => !entryContainsNrObserve(e));
+}
+
+/**
+ * Returns true when settingsContent contains both a PreToolUse and PostToolUse
+ * entry that match the NR hook pattern (NR_HOOK_RE).
+ * Pure — no file I/O.
+ */
+export function areHooksInstalled(settingsContent: Record<string, unknown>): boolean {
+  const hooks = settingsContent.hooks;
+  if (typeof hooks !== 'object' || hooks === null) return false;
+  const h = hooks as Record<string, unknown>;
+
+  const preArr = Array.isArray(h.PreToolUse) ? (h.PreToolUse as unknown[]) : [];
+  const postArr = Array.isArray(h.PostToolUse) ? (h.PostToolUse as unknown[]) : [];
+
+  return preArr.some(entryContainsNrObserve) && postArr.some(entryContainsNrObserve);
+}
+
+/**
+ * Reads settingsPath (defaults to ~/.claude/settings.json) and returns
+ * whether NR hooks are installed. Returns false on any I/O error.
+ */
+export function readAndCheckHooks(settingsPath?: string): boolean {
+  const path = settingsPath ?? detectSettingsPath('user', null);
+  try {
+    return areHooksInstalled(readJsonFileStrict(path));
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

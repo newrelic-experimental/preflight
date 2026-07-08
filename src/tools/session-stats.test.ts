@@ -10,8 +10,10 @@ import {
   handleGetSessionTimeline,
   handleHealth,
   handleGetConfig,
+  handleInstallHooks,
 } from './session-stats.js';
 import type { ConfigSummary } from './session-stats.js';
+import type { HeadlessInstallResult } from '../install/headless-install.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
@@ -235,6 +237,27 @@ describe('handleHealth()', () => {
     expect(data.developer).toBe('alice');
     expect(data.session_id).toBe('health-session-id');
   });
+
+  it('omits hooks_installed when hooksInstalledFn is not provided', () => {
+    const result = handleHealth({});
+    const data = JSON.parse(result.content[0].text);
+    expect('hooks_installed' in data).toBe(false);
+    expect('setup_required' in data).toBe(false);
+  });
+
+  it('includes hooks_installed: true and setup_required: false when hooks are installed', () => {
+    const result = handleHealth({ hooksInstalledFn: () => true });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.hooks_installed).toBe(true);
+    expect(data.setup_required).toBe(false);
+  });
+
+  it('includes hooks_installed: false and setup_required: true when hooks are missing', () => {
+    const result = handleHealth({ hooksInstalledFn: () => false });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.hooks_installed).toBe(false);
+    expect(data.setup_required).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -297,6 +320,57 @@ describe('handleGetConfig()', () => {
   });
 });
 
+describe('handleInstallHooks()', () => {
+  it('returns installed response with restart instruction', () => {
+    const installer = (): HeadlessInstallResult => ({
+      status: 'installed',
+      settingsPath: '/home/alice/.claude/settings.json',
+    });
+    const result = handleInstallHooks(installer);
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.status).toBe('installed');
+    expect(data.settings_path).toBe('/home/alice/.claude/settings.json');
+    expect(typeof data.message).toBe('string');
+    expect(data.message).toContain('Restart');
+    expect(result.isError).toBeUndefined();
+  });
+
+  it('returns already_installed response', () => {
+    const installer = (): HeadlessInstallResult => ({
+      status: 'already_installed',
+      settingsPath: '/home/alice/.claude/settings.json',
+    });
+    const result = handleInstallHooks(installer);
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.status).toBe('already_installed');
+    expect(typeof data.message).toBe('string');
+    expect(result.isError).toBeUndefined();
+  });
+
+  it('returns error response with isError: true when install fails', () => {
+    const installer = (): HeadlessInstallResult => ({
+      status: 'error',
+      message: "EACCES: permission denied, open '/root/.claude/settings.json'",
+    });
+    const result = handleInstallHooks(installer);
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.status).toBe('error');
+    expect(data.message).toContain('EACCES');
+    expect(result.isError).toBe(true);
+  });
+
+  it('returns error response with isError: true when installer is undefined', () => {
+    const result = handleInstallHooks(undefined);
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.error).toBeTruthy();
+    expect(result.isError).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // MCP protocol integration (via InMemoryTransport)
 // ---------------------------------------------------------------------------
@@ -340,10 +414,11 @@ describe('MCP protocol integration', () => {
   it('tools/list includes health and session tools', async () => {
     const result = await client.listTools();
 
-    expect(result.tools).toHaveLength(3);
+    expect(result.tools).toHaveLength(4);
 
     const names = result.tools.map((t) => t.name);
     expect(names).toContain('nr_observe_health');
+    expect(names).toContain('nr_observe_install_hooks');
     expect(names).toContain('nr_observe_get_session_stats');
     expect(names).toContain('nr_observe_get_session_timeline');
 
@@ -358,7 +433,11 @@ describe('MCP protocol integration', () => {
     const result = await client.listTools();
 
     for (const tool of result.tools) {
-      expect(tool.annotations?.readOnlyHint).toBe(true);
+      if (tool.name === 'nr_observe_install_hooks') {
+        expect(tool.annotations?.readOnlyHint).toBe(false);
+      } else {
+        expect(tool.annotations?.readOnlyHint).toBe(true);
+      }
     }
   });
 
@@ -482,7 +561,7 @@ describe('MCP protocol integration — cost tools', () => {
     expect(names).toContain('nr_observe_report_tokens');
     expect(names).toContain('nr_observe_get_cost_breakdown');
     expect(names).toContain('nr_observe_get_cost_forecast');
-    expect(result.tools).toHaveLength(6);
+    expect(result.tools).toHaveLength(7);
 
     await bothClient.close();
     await bothServer.close();
@@ -582,8 +661,10 @@ describe('Server without any trackers', () => {
 
   it('returns only health tool when no trackers provided', async () => {
     const result = await client.listTools();
-    expect(result.tools).toHaveLength(1);
-    expect(result.tools[0]!.name).toBe('nr_observe_health');
+    expect(result.tools).toHaveLength(2);
+    const names = result.tools.map((t) => t.name);
+    expect(names).toContain('nr_observe_health');
+    expect(names).toContain('nr_observe_install_hooks');
   });
 });
 
@@ -719,9 +800,12 @@ describe('registerPendingTools()', () => {
     registerPendingTools(server.server, { sessionStartMs: Date.now(), developer: 'tester' });
     await Promise.all([server.server.connect(st), client.connect(ct)]);
 
-    // List should expose only the health tool while pending
+    // List should expose health and install_hooks tools while pending
     const tools = await client.listTools();
-    expect(tools.tools.map((t) => t.name)).toEqual(['nr_observe_health']);
+    expect(tools.tools.map((t) => t.name)).toEqual([
+      'nr_observe_health',
+      'nr_observe_install_hooks',
+    ]);
 
     // Health still works
     const health = await client.callTool({ name: 'nr_observe_health', arguments: {} });
