@@ -47,11 +47,11 @@ Items shipped and no longer on the active roadmap.
 
 Items with meaningful implementation already shipped but with remaining work before the roadmap intent is fully met.
 
-- **Context window pressure timeline** — The roadmap item called for extending context composition from a point-in-time snapshot into a time-series stacked chart showing how the four token categories grow across a session. The snapshot half is done: `context-composition-tracker.ts`, `ContextBar`, and `GET /api/context` are all live. The time-series / stacked-chart extension and the 20%-remaining warning zone are still outstanding. _(Difficulty: 2/5 · Customer Impact: 3/5)_
+- **Context window pressure timeline** — The roadmap item called for extending context composition from a point-in-time snapshot into a time-series stacked chart showing how the four token categories grow across a session. The snapshot half is done: `context-composition-tracker.ts`, `ContextBar`, and `GET /api/context` are all live. The time-series / stacked-chart extension and the 20%-remaining warning zone are still outstanding. _(Difficulty: 2/5 · Customer Impact: 3/5)_ — [#30](https://github.com/newrelic-experimental/preflight/issues/30)
 
-- **Prompt cache health** — `cache_read_tokens` are tracked per token event and included in cost breakdowns surfaced by `nr_observe_report_tokens`. What's missing is the dedicated "cache hit rate" aggregation, the session-level and week-over-week trend, and the concrete recommendation ("your cache hit rate is 12%; restructuring your system prompt could bring this above 60%"). _(Difficulty: 2/5 · Customer Impact: 4/5)_
+- **Prompt cache health** — `cache_read_tokens` are tracked per token event and included in cost breakdowns surfaced by `nr_observe_report_tokens`. What's missing is the dedicated "cache hit rate" aggregation, the session-level and week-over-week trend, and the concrete recommendation ("your cache hit rate is 12%; restructuring your system prompt could bring this above 60%"). _(Difficulty: 2/5 · Customer Impact: 4/5)_ — [#36](https://github.com/newrelic-experimental/preflight/issues/36)
 
-- **Compute waste metric** — `retry-detector.ts` already emits an `ai.retry.tokens_wasted` metric capturing tokens consumed on retried tool calls. What's missing is surfacing this as an explicit "compute waste" figure in the dashboard and MCP tools, and broadening it to cover anti-pattern tokens (stuck loops, redundant reads) beyond just retries. _(Difficulty: 1/5 · Customer Impact: 3/5)_
+- **Compute waste metric** — `retry-detector.ts` already emits an `ai.retry.tokens_wasted` metric capturing tokens consumed on retried tool calls. What's missing is surfacing this as an explicit "compute waste" figure in the dashboard and MCP tools, and broadening it to cover anti-pattern tokens (stuck loops, redundant reads) beyond just retries. _(Difficulty: 1/5 · Customer Impact: 3/5)_ — [#31](https://github.com/newrelic-experimental/preflight/issues/31)
 
 ---
 
@@ -65,10 +65,11 @@ The Observatory currently surfaces data through MCP tools, dashboards, and a loc
 
 **Planned work:**
 
-- **PR / CI comment with AI footprint** — post a summary to the GitHub PR on merge: AI cost, efficiency score, anti-patterns triggered, and models used. Makes AI cost visible to the whole team without a dashboard visit and creates a natural point for engineering culture conversations about AI usage. _(Difficulty: 2/5 · Customer Impact: 4/5)_
-- **Cost attribution to work items** — link AI sessions to GitHub Issues, Jira tickets, or Linear tasks via branch name and commit message parsing. Produce cost-per-story, cost-per-sprint, and cost-per-epic views. This is the bridge from AI observability to engineering economics — the question every engineering manager will eventually ask. _(Difficulty: 3/5 · Customer Impact: 5/5)_
-- **Billing API reconciliation** — pull actual charges from the Anthropic or OpenAI billing API and reconcile against the Observatory's cost estimates. Surface accuracy deltas and trend them over time. Builds trust in the cost numbers, which is the most common adoption blocker for teams evaluating the tool. _(Difficulty: 3/5 · Customer Impact: 4/5)_
-- **IDE status bar widget** — surface live session cost and efficiency score in the VS Code / JetBrains status bar, reading directly from the local buffer file. Zero-friction visibility: every glance at the bottom of the editor shows the running tab. _(Difficulty: 3/5 · Customer Impact: 3/5)_
+- **PR / CI comment with AI footprint** — post a summary to the GitHub PR on merge: AI cost, efficiency score, anti-patterns triggered, and models used. Makes AI cost visible to the whole team without a dashboard visit and creates a natural point for engineering culture conversations about AI usage. _(Difficulty: 2/5 · Customer Impact: 4/5)_ — [#39](https://github.com/newrelic-experimental/preflight/issues/39)
+- **Cost attribution to work items** — link AI sessions to GitHub Issues, Jira tickets, or Linear tasks via branch name and commit message parsing. Produce cost-per-story, cost-per-sprint, and cost-per-epic views. This is the bridge from AI observability to engineering economics — the question every engineering manager will eventually ask. _(Difficulty: 3/5 · Customer Impact: 5/5)_ — [#40](https://github.com/newrelic-experimental/preflight/issues/40)
+- **Billing API reconciliation** — pull actual charges from the Anthropic or OpenAI billing API and reconcile against the Observatory's cost estimates. Surface accuracy deltas and trend them over time. Builds trust in the cost numbers, which is the most common adoption blocker for teams evaluating the tool. _(Difficulty: 3/5 · Customer Impact: 4/5)_ — [#59](https://github.com/newrelic-experimental/preflight/issues/59)
+- **Preflight SDK** — a typed npm package (`@newrelic-experimental/preflight-sdk`) giving adapter authors a stable public interface for emitting Preflight-compatible events without reading the internals. Lowers the barrier to new platform integrations and community adapter contributions. _(Difficulty: 3/5 · Customer Impact: 3/5)_ — [#73](https://github.com/newrelic-experimental/preflight/issues/73)
+- **IDE status bar widget** — surface live session cost and efficiency score in the VS Code / JetBrains status bar, reading directly from the local buffer file. Zero-friction visibility: every glance at the bottom of the editor shows the running tab. _(Difficulty: 3/5 · Customer Impact: 3/5)_ — [#58](https://github.com/newrelic-experimental/preflight/issues/58)
 
 ---
 
@@ -78,9 +79,9 @@ The Observatory captures every action an AI coding assistant takes but currently
 
 **Planned work:**
 
-- **CLAUDE.md auto-suggestions** — analyze per-developer patterns (most-re-read files, recurring anti-patterns, task types that consistently cause thrashing) and generate specific, evidence-based CLAUDE.md additions. Closes the loop from observation to corrective action without requiring the developer to interpret the data themselves. _(Difficulty: 3/5 · Customer Impact: 5/5)_
-- **Overload and diminishing returns detection** — detect when a developer's efficiency score is declining over the course of a long session and surface a signal prompting them to take a break or change approach. AI coding tools encourage staying in the loop; this feature gives the AI a reason to push back. _(Difficulty: 2/5 · Customer Impact: 4/5)_
-- **Task complexity pre-estimation** — before a task starts, predict token consumption based on similar completed tasks in the developer's history, with a cost range and confidence interval. Sets expectations before they're broken. _(Difficulty: 3/5 · Customer Impact: 3/5)_
+- **CLAUDE.md auto-suggestions** — analyze per-developer patterns (most-re-read files, recurring anti-patterns, task types that consistently cause thrashing) and generate specific, evidence-based CLAUDE.md additions. Closes the loop from observation to corrective action without requiring the developer to interpret the data themselves. _(Difficulty: 3/5 · Customer Impact: 5/5)_ — [#41](https://github.com/newrelic-experimental/preflight/issues/41)
+- **Overload and diminishing returns detection** — detect when a developer's efficiency score is declining over the course of a long session and surface a signal prompting them to take a break or change approach. AI coding tools encourage staying in the loop; this feature gives the AI a reason to push back. _(Difficulty: 2/5 · Customer Impact: 4/5)_ — [#42](https://github.com/newrelic-experimental/preflight/issues/42)
+- **Task complexity pre-estimation** — before a task starts, predict token consumption based on similar completed tasks in the developer's history, with a cost range and confidence interval. Sets expectations before they're broken. _(Difficulty: 3/5 · Customer Impact: 3/5)_ — [#43](https://github.com/newrelic-experimental/preflight/issues/43)
 
 ---
 
@@ -90,8 +91,8 @@ The Observatory tracks which models are used and what they cost, but has limited
 
 **Planned work:**
 
-- **Structured model A/B testing** — let a developer or team declare an experiment ("for the next two weeks, half my sessions use Sonnet, half use Haiku") and have the Observatory randomize, track outcomes by arm, and report cost-efficiency deltas with statistical significance. Turns "I wonder if Haiku is good enough for this" into a real answer. _(Difficulty: 3/5 · Customer Impact: 5/5)_
-- **Prompt injection detection** — scan tool outputs (file contents, command results, web responses) for adversarial content patterns that could redirect the AI model. Flag findings in the audit trail and surface them as a security alert category alongside the existing destructive command and sensitive file detection. As AI coding tools operate on larger codebases with third-party dependencies, this becomes a real attack surface. _(Difficulty: 3/5 · Customer Impact: 3/5)_
+- **Structured model A/B testing** — let a developer or team declare an experiment ("for the next two weeks, half my sessions use Sonnet, half use Haiku") and have the Observatory randomize, track outcomes by arm, and report cost-efficiency deltas with statistical significance. Turns "I wonder if Haiku is good enough for this" into a real answer. _(Difficulty: 3/5 · Customer Impact: 5/5)_ — [#44](https://github.com/newrelic-experimental/preflight/issues/44)
+- **Prompt injection detection** — scan tool outputs (file contents, command results, web responses) for adversarial content patterns that could redirect the AI model. Flag findings in the audit trail and surface them as a security alert category alongside the existing destructive command and sensitive file detection. As AI coding tools operate on larger codebases with third-party dependencies, this becomes a real attack surface. _(Difficulty: 3/5 · Customer Impact: 3/5)_ — [#57](https://github.com/newrelic-experimental/preflight/issues/57)
 
 ---
 
@@ -101,9 +102,9 @@ After [auditing the backfill script](./PRODUCT_BRIEF.md#resolved-backfill-is-sta
 
 **Planned work:**
 
-- Surface the warm-up window prominently in the setup wizard and onboarding documentation, with concrete guidance on what to expect during the first two weeks _(Difficulty: 1/5 · Customer Impact: 3/5)_
-- Show partial / progressive coaching reports during warm-up — for example, "you have 3 days of data so far; here's what we can already say, and what we'll be able to say in N more days" _(Difficulty: 3/5 · Customer Impact: 4/5)_
-- Add an MCP tool surface (e.g. `nr_observe_get_warmup_status`) that lets clients check warm-up progress at a glance _(Difficulty: 2/5 · Customer Impact: 3/5)_
+- Surface the warm-up window prominently in the setup wizard and onboarding documentation, with concrete guidance on what to expect during the first two weeks _(Difficulty: 1/5 · Customer Impact: 3/5)_ — [#54](https://github.com/newrelic-experimental/preflight/issues/54)
+- Show partial / progressive coaching reports during warm-up — for example, "you have 3 days of data so far; here's what we can already say, and what we'll be able to say in N more days" _(Difficulty: 3/5 · Customer Impact: 4/5)_ — [#55](https://github.com/newrelic-experimental/preflight/issues/55)
+- Add an MCP tool surface (e.g. `nr_observe_get_warmup_status`) that lets clients check warm-up progress at a glance _(Difficulty: 2/5 · Customer Impact: 3/5)_ — [#56](https://github.com/newrelic-experimental/preflight/issues/56)
 
 **Brief references:** [§6 — User Must-Haves](./PRODUCT_BRIEF.md#6--user-must-haves), [§8 — Discovery & Access](./PRODUCT_BRIEF.md#8--discovery--access)
 
@@ -115,8 +116,8 @@ The launch-set product surfaces anti-pattern detection and a basic personal coac
 
 **Planned work:**
 
-- Team-level recommendations that surface high-performing usage patterns and propagate them to other team members _(Difficulty: 3/5 · Customer Impact: 4/5)_
-- Machine-learning-based pattern detection to surface anti-patterns and optimisation opportunities that aren't expressible in rule-based detectors _(Difficulty: 5/5 · Customer Impact: 3/5)_
+- Team-level recommendations that surface high-performing usage patterns and propagate them to other team members _(Difficulty: 3/5 · Customer Impact: 4/5)_ — [#45](https://github.com/newrelic-experimental/preflight/issues/45)
+- Machine-learning-based pattern detection to surface anti-patterns and optimisation opportunities that aren't expressible in rule-based detectors _(Difficulty: 5/5 · Customer Impact: 3/5)_ — [#46](https://github.com/newrelic-experimental/preflight/issues/46)
 
 **Brief references:** [§3 — Competitive Landscape](./PRODUCT_BRIEF.md#3--competitive-landscape) (closing note), [§7 — Mindset Shift & Risks](./PRODUCT_BRIEF.md#7--mindset-shift--risks) (mindset shift caveat), [§10 — Rollout Plan](./PRODUCT_BRIEF.md#10--rollout-plan) (GA out-of-scope)
 
@@ -128,9 +129,9 @@ Individual-level observability is the foundation; team-level pattern recognition
 
 **Planned work:**
 
-- **Team-level CLAUDE.md recommendations** — when multiple developers on the same team share the same anti-patterns or re-read the same files in a shared codebase, generate recommendations that target the shared CLAUDE.md rather than individual configs. Team-level signal → team-level fix. _(Difficulty: 3/5 · Customer Impact: 4/5)_
-- **Developer onboarding telemetry** — detect when someone is new to a codebase (high exploration ratio, Read-without-Edit, low efficiency score) versus operating in familiar territory. Track and compare ramp-up speed across developers and against historical baselines, to measure onboarding effectiveness and identify where better documentation or pairing would help. _(Difficulty: 2/5 · Customer Impact: 3/5)_
-- **Cross-developer pattern propagation** — identify developers who are consistently efficient at specific task types and surface their patterns (CLAUDE.md structure, tool use sequences, prompting style) as recommendations to teammates who struggle with the same task types. Codifies the "ask your most efficient colleague" instinct at scale. _(Difficulty: 4/5 · Customer Impact: 4/5)_
+- **Team-level CLAUDE.md recommendations** — when multiple developers on the same team share the same anti-patterns or re-read the same files in a shared codebase, generate recommendations that target the shared CLAUDE.md rather than individual configs. Team-level signal → team-level fix. _(Difficulty: 3/5 · Customer Impact: 4/5)_ — [#51](https://github.com/newrelic-experimental/preflight/issues/51)
+- **Developer onboarding telemetry** — detect when someone is new to a codebase (high exploration ratio, Read-without-Edit, low efficiency score) versus operating in familiar territory. Track and compare ramp-up speed across developers and against historical baselines, to measure onboarding effectiveness and identify where better documentation or pairing would help. _(Difficulty: 2/5 · Customer Impact: 3/5)_ — [#52](https://github.com/newrelic-experimental/preflight/issues/52)
+- **Cross-developer pattern propagation** — identify developers who are consistently efficient at specific task types and surface their patterns (CLAUDE.md structure, tool use sequences, prompting style) as recommendations to teammates who struggle with the same task types. Codifies the "ask your most efficient colleague" instinct at scale. _(Difficulty: 4/5 · Customer Impact: 4/5)_ — [#53](https://github.com/newrelic-experimental/preflight/issues/53)
 
 ---
 
@@ -140,10 +141,10 @@ The brief asserts in [§6 — Clear Consumption Communication](./PRODUCT_BRIEF.m
 
 **Planned work:**
 
-- Build a pre-deployment estimator into the setup wizard / CLI that takes the customer's intended instrumentation scope (which AI clients, how many developers, expected sessions per developer per day) and produces a projected daily / monthly ingest volume _(Difficulty: 4/5 · Customer Impact: 4/5)_
-- Translate that ingest projection into an estimated New Relic platform cost using the customer's plan (or a per-account-tier default) _(Difficulty: 3/5 · Customer Impact: 4/5)_
-- Surface the estimate at every opt-in step, so a customer toggling on "instrument the entire platform team" sees the bill impact before committing _(Difficulty: 2/5 · Customer Impact: 3/5)_
-- Provide a post-deployment reconciliation: the wizard's first-week summary should compare actual ingest to the projection so the model can be improved _(Difficulty: 3/5 · Customer Impact: 3/5)_
+- Build a pre-deployment estimator into the setup wizard / CLI that takes the customer's intended instrumentation scope (which AI clients, how many developers, expected sessions per developer per day) and produces a projected daily / monthly ingest volume _(Difficulty: 4/5 · Customer Impact: 4/5)_ — [#60](https://github.com/newrelic-experimental/preflight/issues/60)
+- Translate that ingest projection into an estimated New Relic platform cost using the customer's plan (or a per-account-tier default) _(Difficulty: 3/5 · Customer Impact: 4/5)_ — [#61](https://github.com/newrelic-experimental/preflight/issues/61)
+- Surface the estimate at every opt-in step, so a customer toggling on "instrument the entire platform team" sees the bill impact before committing _(Difficulty: 2/5 · Customer Impact: 3/5)_ — [#62](https://github.com/newrelic-experimental/preflight/issues/62)
+- Provide a post-deployment reconciliation: the wizard's first-week summary should compare actual ingest to the projection so the model can be improved _(Difficulty: 3/5 · Customer Impact: 3/5)_ — [#63](https://github.com/newrelic-experimental/preflight/issues/63)
 
 **Brief references:** [§6 — User Must-Haves](./PRODUCT_BRIEF.md#6--user-must-haves) (Clear Consumption Communication), [§7 — Mindset Shift & Risks](./PRODUCT_BRIEF.md#7--mindset-shift--risks) (Consumption Surprises)
 
@@ -155,8 +156,8 @@ Launch coverage surfaces telemetry through MCP tools, dashboards, alerts, and (e
 
 **Planned work:**
 
-- IDE extension integration (VS Code, JetBrains) to surface personal coaching, anti-pattern history, and recent session metrics directly inside the editor without leaving the IDE _(Difficulty: 4/5 · Customer Impact: 4/5)_
-- Inline cost estimation as a developer works (predict the cost of the current session based on recent activity) _(Difficulty: 3/5 · Customer Impact: 3/5)_
+- IDE extension integration (VS Code, JetBrains) to surface personal coaching, anti-pattern history, and recent session metrics directly inside the editor without leaving the IDE _(Difficulty: 4/5 · Customer Impact: 4/5)_ — [#49](https://github.com/newrelic-experimental/preflight/issues/49)
+- Inline cost estimation as a developer works (predict the cost of the current session based on recent activity) _(Difficulty: 3/5 · Customer Impact: 3/5)_ — [#50](https://github.com/newrelic-experimental/preflight/issues/50)
 
 **Brief references:** [§8 — Discovery & Access](./PRODUCT_BRIEF.md#8--discovery--access) (in-platform surfaces), [§10 — Rollout Plan](./PRODUCT_BRIEF.md#10--rollout-plan) (GA out-of-scope)
 
@@ -168,9 +169,9 @@ The product respects existing New Relic RBAC and supports a high-security mode t
 
 **Planned work:**
 
-- RBAC integration for fine-grained access control over AI Observatory data (per-team data isolation, per-developer view restrictions) _(Difficulty: 5/5 · Customer Impact: 4/5)_
-- Per-team data isolation guarantees for multi-tenant customer accounts _(Difficulty: 4/5 · Customer Impact: 4/5)_
-- Configurable redaction policies beyond the current `DEFAULT_REDACTION_PATTERNS` set _(Difficulty: 2/5 · Customer Impact: 3/5)_
+- RBAC integration for fine-grained access control over AI Observatory data (per-team data isolation, per-developer view restrictions) _(Difficulty: 5/5 · Customer Impact: 4/5)_ — [#64](https://github.com/newrelic-experimental/preflight/issues/64)
+- Per-team data isolation guarantees for multi-tenant customer accounts _(Difficulty: 4/5 · Customer Impact: 4/5)_ — [#64](https://github.com/newrelic-experimental/preflight/issues/64)
+- Configurable redaction policies beyond the current `DEFAULT_REDACTION_PATTERNS` set _(Difficulty: 2/5 · Customer Impact: 3/5)_ — [#65](https://github.com/newrelic-experimental/preflight/issues/65)
 
 **Brief references:** [§6 — User Must-Haves](./PRODUCT_BRIEF.md#6--user-must-haves) (Standard Enterprise Controls), [§11 — Milestones & Dependencies](./PRODUCT_BRIEF.md#11--milestones--dependencies) (milestone #8)
 
@@ -182,8 +183,8 @@ Launch coverage targets nine AI coding clients. The AI coding tooling space is f
 
 **Planned work:**
 
-- Ongoing adapter cadence after GA to keep coverage gap below ~6 months for popular new AI tools _(Difficulty: 2/5 · Customer Impact: 2/5)_
-- Adapter contribution model so customers and the open-source community can submit adapters for tools we haven't covered _(Difficulty: 3/5 · Customer Impact: 2/5)_
+- Ongoing adapter cadence after GA to keep coverage gap below ~6 months for popular new AI tools _(Difficulty: 2/5 · Customer Impact: 2/5)_ — [#66](https://github.com/newrelic-experimental/preflight/issues/66)
+- Adapter contribution model so customers and the open-source community can submit adapters for tools we haven't covered _(Difficulty: 3/5 · Customer Impact: 2/5)_ — [#67](https://github.com/newrelic-experimental/preflight/issues/67)
 
 **Brief references:** [§3 — Competitive Landscape](./PRODUCT_BRIEF.md#3--competitive-landscape), [§10 — Rollout Plan](./PRODUCT_BRIEF.md#10--rollout-plan) (GA out-of-scope), [§11 — Milestones & Dependencies](./PRODUCT_BRIEF.md#11--milestones--dependencies) (milestone #9), [§13 — Additional Flags](./PRODUCT_BRIEF.md#13--additional-flags) (AI tooling velocity risk)
 
@@ -195,10 +196,10 @@ Launch coverage captures sensitive file access, destructive command execution, a
 
 **Planned work:**
 
-- Expand the audit event schema to cover additional regulated activities as compliance frameworks specify them _(Difficulty: 2/5 · Customer Impact: 2/5)_
-- Provide compliance-report templates (NRQL queries and dashboards) for common audit asks _(Difficulty: 1/5 · Customer Impact: 3/5)_
-- Inherit and document applicable platform compliance certifications (SOC 2 Type II, ISO 27001) as they apply to the underlying New Relic platform _(Difficulty: 1/5 · Customer Impact: 3/5)_
-- Configurable retention policies aligned with customer compliance requirements (the `retainSessionsDays` config field supports arbitrary values; expand to preset compliance-friendly defaults as needed) _(Difficulty: 1/5 · Customer Impact: 2/5)_
+- Expand the audit event schema to cover additional regulated activities as compliance frameworks specify them _(Difficulty: 2/5 · Customer Impact: 2/5)_ — [#68](https://github.com/newrelic-experimental/preflight/issues/68)
+- Provide compliance-report templates (NRQL queries and dashboards) for common audit asks _(Difficulty: 1/5 · Customer Impact: 3/5)_ — [#69](https://github.com/newrelic-experimental/preflight/issues/69)
+- Inherit and document applicable platform compliance certifications (SOC 2 Type II, ISO 27001) as they apply to the underlying New Relic platform _(Difficulty: 1/5 · Customer Impact: 3/5)_ — [#70](https://github.com/newrelic-experimental/preflight/issues/70)
+- Configurable retention policies aligned with customer compliance requirements (the `retainSessionsDays` config field supports arbitrary values; expand to preset compliance-friendly defaults as needed) _(Difficulty: 1/5 · Customer Impact: 2/5)_ — [#71](https://github.com/newrelic-experimental/preflight/issues/71)
 
 **Brief references:** [§3 — Competitive Landscape](./PRODUCT_BRIEF.md#3--competitive-landscape) (closing note), [§11 — Milestones & Dependencies](./PRODUCT_BRIEF.md#11--milestones--dependencies) (milestone #7)
 
@@ -210,7 +211,7 @@ AI model inference has a measurable energy footprint. Future work surfaces this 
 
 **Planned work:**
 
-- **Carbon intensity view** _(pending provider data)_ — once a major provider publishes an official per-token carbon intensity figure, add a session-level carbon impact view that translates token usage into CO2e with a clear citation of the underlying data. Intentionally deferred until the numbers are defensible; publishing estimates derived from unofficial figures risks undermining trust in the cost data the Observatory already surfaces. _(Difficulty: 2/5 · Customer Impact: 2/5)_
+- **Carbon intensity view** _(pending provider data)_ — once a major provider publishes an official per-token carbon intensity figure, add a session-level carbon impact view that translates token usage into CO2e with a clear citation of the underlying data. Intentionally deferred until the numbers are defensible; publishing estimates derived from unofficial figures risks undermining trust in the cost data the Observatory already surfaces. _(Difficulty: 2/5 · Customer Impact: 2/5)_ — [#72](https://github.com/newrelic-experimental/preflight/issues/72)
 
 ---
 
@@ -220,8 +221,8 @@ Span attributes already follow OpenTelemetry GenAI semantic conventions for port
 
 **Planned work:**
 
-- Formal certification of span attributes against OpenTelemetry GenAI semantic conventions _(Difficulty: 2/5 · Customer Impact: 2/5)_
-- Stay current with OTel GenAI convention revisions as the spec evolves _(Difficulty: 1/5 · Customer Impact: 2/5)_
+- Formal certification of span attributes against OpenTelemetry GenAI semantic conventions _(Difficulty: 2/5 · Customer Impact: 2/5)_ — [#47](https://github.com/newrelic-experimental/preflight/issues/47)
+- Stay current with OTel GenAI convention revisions as the spec evolves _(Difficulty: 1/5 · Customer Impact: 2/5)_ — [#48](https://github.com/newrelic-experimental/preflight/issues/48)
 
 **Brief references:** [§11 — Milestones & Dependencies](./PRODUCT_BRIEF.md#11--milestones--dependencies) (milestone #6), [Appendix A](./PRODUCT_BRIEF.md#appendix-a--high-level-public-facing-apis)
 
