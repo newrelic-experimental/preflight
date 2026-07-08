@@ -173,6 +173,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 ## Documentation
 
 - [**ADVANCED.md**](docs/ADVANCED.md) — Configuration, dashboards, alerts, Terraform
+- [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) — Data flow, component reference, and operating modes
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
 - [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
 - [**PRIVACY.md**](./PRIVACY.md) — Data collection inventory and pre-cloud checklist
