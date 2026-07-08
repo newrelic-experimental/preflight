@@ -119,6 +119,7 @@ preflight/
       cli.ts                        # preflight install/uninstall commands
       setup-wizard.ts               # preflight setup interactive wizard
       migrate.ts                    # migrateStoragePath() — one-time rename ~/.nr-ai-observe → ~/.newrelic-preflight
+      headless-install.ts           # installHooksHeadless() — no-TTY hook install for the Smithery self-install MCP flow
     alerts/                         # Alert TypeScript types + validation tests
       types.ts                      # AlertConditionDefinition, AlertPolicyDefinition interfaces
       alerts.test.ts                # JSON structure validation (reads from ../alerts/)
@@ -247,7 +248,8 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 - `nr_observe_get_session_stats` — current session metrics
 - `nr_observe_get_session_timeline` — recent tool calls with timestamps
 - `nr_observe_get_efficiency_score` — composite efficiency scoring
-- `nr_observe_health` — server health check: version, uptime, session ID
+- `nr_observe_health` — server health check: version, uptime, session ID, hook install status
+- `nr_observe_install_hooks` — headlessly install PreToolUse/PostToolUse hooks into `~/.claude/settings.json` (Smithery self-install flow)
 
 **Cost and Budget Tools:**
 

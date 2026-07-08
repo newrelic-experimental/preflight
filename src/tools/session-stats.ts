@@ -203,6 +203,16 @@ const TURN_ANALYSIS_TOOL = {
   annotations: { readOnlyHint: true },
 };
 
+const INSTALL_HOOKS_TOOL = {
+  name: 'nr_observe_install_hooks',
+  description:
+    'Install PreToolUse and PostToolUse monitoring hooks into ~/.claude/settings.json. ' +
+    'Call when nr_observe_health reports hooks_installed: false. ' +
+    'Requires a Claude Code restart to activate monitoring.',
+  inputSchema: { type: 'object' as const, properties: {} },
+  annotations: { readOnlyHint: false },
+};
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -264,27 +274,86 @@ export function handleHealth(options: {
   sessionStartMs?: number;
   developer?: string;
   sessionId?: string;
+  hooksInstalledFn?: () => boolean;
 }): { content: [{ type: 'text'; text: string }] } {
   const nowMs = Date.now();
   const startMs = options.sessionStartMs ?? nowMs;
+
+  const hooksInstalled =
+    options.hooksInstalledFn !== undefined ? options.hooksInstalledFn() : undefined;
+
+  const payload: Record<string, unknown> = {
+    status: 'ok',
+    version: VERSION,
+    developer: options.developer ?? 'unknown',
+    session_id: options.sessionId ?? null,
+    connected_at: new Date(startMs).toISOString(),
+    uptime_seconds: Math.round((nowMs - startMs) / 1000),
+  };
+
+  if (hooksInstalled !== undefined) {
+    payload.hooks_installed = hooksInstalled;
+    payload.setup_required = !hooksInstalled;
+  }
+
   return {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify(
-          {
-            status: 'ok',
-            version: VERSION,
-            developer: options.developer ?? 'unknown',
-            session_id: options.sessionId ?? null,
-            connected_at: new Date(startMs).toISOString(),
-            uptime_seconds: Math.round((nowMs - startMs) / 1000),
-          },
-          null,
-          2,
-        ),
+        text: JSON.stringify(payload, null, 2),
       },
     ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// handleInstallHooks
+// ---------------------------------------------------------------------------
+
+export function handleInstallHooks(
+  installer: (() => import('../install/headless-install.js').HeadlessInstallResult) | undefined,
+): { content: [{ type: 'text'; text: string }]; isError?: true } {
+  if (!installer) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ error: 'Hook installer not available in this server mode' }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const installResult = installer();
+  let output: Record<string, unknown>;
+
+  if (installResult.status === 'installed') {
+    output = {
+      status: 'installed',
+      message: `Monitoring hooks installed at ${installResult.settingsPath}. Restart Claude Code to activate tool monitoring.`,
+      settings_path: installResult.settingsPath,
+    };
+  } else if (installResult.status === 'already_installed') {
+    output = {
+      status: 'already_installed',
+      message: 'Hooks are already installed. No changes made.',
+      settings_path: installResult.settingsPath,
+    };
+  } else {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ status: 'error', message: installResult.message }, null, 2),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(output, null, 2) }],
   };
 }
 
@@ -391,6 +460,8 @@ export interface ToolRegistrationOptions {
   collectorHost?: string | null;
   configFilePath?: string;
   configSummary?: ConfigSummary;
+  hooksInstalledFn?: () => boolean;
+  headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,9 +506,14 @@ export function registerPendingTools(
     sessionStartMs?: number;
     developer?: string;
     configSummary?: ConfigSummary;
+    hooksInstalledFn?: () => boolean;
+    headlessInstaller?: () => import('../install/headless-install.js').HeadlessInstallResult;
   },
 ): void {
-  const tools: (typeof HEALTH_TOOL)[] = [HEALTH_TOOL];
+  const tools: Array<typeof HEALTH_TOOL | typeof INSTALL_HOOKS_TOOL> = [
+    HEALTH_TOOL,
+    INSTALL_HOOKS_TOOL,
+  ];
   if (options.configSummary) tools.push(CONFIG_TOOL);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -448,10 +524,14 @@ export function registerPendingTools(
         sessionStartMs: options.sessionStartMs,
         developer: options.developer,
         sessionId: undefined,
+        hooksInstalledFn: options.hooksInstalledFn,
       });
     }
     if (name === 'nr_observe_get_config' && options.configSummary) {
       return handleGetConfig(options.configSummary);
+    }
+    if (name === 'nr_observe_install_hooks') {
+      return handleInstallHooks(options.headlessInstaller);
     }
     return {
       content: [
@@ -506,6 +586,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
 
   // Build combined tool list
   const tools: (typeof SESSION_STATS_TOOL)[] = [HEALTH_TOOL];
+  tools.push(INSTALL_HOOKS_TOOL);
   if (options.configSummary) {
     tools.push(CONFIG_TOOL);
   }
@@ -630,7 +711,12 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
             sessionStartMs,
             developer: options.developer,
             sessionId: sessionTracker?.getMetrics().sessionId,
+            hooksInstalledFn: options.hooksInstalledFn,
           });
+        }
+
+        case 'nr_observe_install_hooks': {
+          return handleInstallHooks(options.headlessInstaller);
         }
 
         case 'nr_observe_get_config': {
