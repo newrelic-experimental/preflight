@@ -440,6 +440,169 @@ describe('collector-script', () => {
     });
   });
 
+  function makeCursorBeforeShellExecution(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'beforeShellExecution',
+      conversation_id: '668320d2-2fd8-4888-b33c-2a466fec86e7',
+      generation_id: '490b90b7-a2ce-4c2c-bb76-cb77b125df2f',
+      command: 'git status',
+      cwd: '/Users/schacon/projects/cc-hooks-example',
+      workspace_roots: ['/Users/schacon/projects/cc-hooks-example'],
+      ...overrides,
+    });
+  }
+
+  function makeCursorAfterShellExecution(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'afterShellExecution',
+      conversation_id: '668320d2-2fd8-4888-b33c-2a466fec86e7',
+      generation_id: '490b90b7-a2ce-4c2c-bb76-cb77b125df2f',
+      workspace_roots: ['/Users/schacon/projects/cc-hooks-example'],
+      ...overrides,
+    });
+  }
+
+  function makeCursorBeforeMCPExecution(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'beforeMCPExecution',
+      conversation_id: 'cdefee2d-2727-4b73-bf77-d9d830f31d2a',
+      generation_id: '63feaa30-ae88-4e47-b6c7-70ee4c39980c',
+      tool_name: 'gitbutler_update_branches',
+      tool_input: '{"changesSummary": "Added a README to the project"}',
+      command: 'but',
+      workspace_roots: ['/Users/schacon/projects/cc-hooks-example'],
+      ...overrides,
+    });
+  }
+
+  function makeCursorAfterMCPExecution(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'afterMCPExecution',
+      conversation_id: 'cdefee2d-2727-4b73-bf77-d9d830f31d2a',
+      generation_id: '63feaa30-ae88-4e47-b6c7-70ee4c39980c',
+      tool_name: 'gitbutler_update_branches',
+      workspace_roots: ['/Users/schacon/projects/cc-hooks-example'],
+      ...overrides,
+    });
+  }
+
+  function makeCursorBeforeReadFile(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'beforeReadFile',
+      conversation_id: '668320d2-2fd8-4888-b33c-2a466fec86e7',
+      generation_id: '490b90b7-a2ce-4c2c-bb76-cb77b125df2f',
+      content: "#!/bin/bash\n\necho 'my_github_access_token'\n",
+      file_path: 'leaks/github_tokens.sh',
+      workspace_roots: ['/Users/schacon/projects/cc-hooks-example'],
+      ...overrides,
+    });
+  }
+
+  function makeCursorAfterFileEdit(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'afterFileEdit',
+      conversation_id: 'cdefee2d-2727-4b73-bf77-d9d830f31d2a',
+      generation_id: '23681cf0-a483-49ab-9748-36044efcef52',
+      file_path: 'README.md',
+      edits: [{ old_string: '# OLD README', new_string: '# NEW README' }],
+      workspace_roots: ['/Users/schacon/projects/cc-hooks-example'],
+      ...overrides,
+    });
+  }
+
+  describe('collector-script — Cursor hook event names (https://cursor.com/docs/agent/hooks)', () => {
+    it('beforeShellExecution writes a pre/Bash event with the command redacted', () => {
+      processHook(
+        makeCursorBeforeShellExecution({ command: 'curl https://x.com?token=SECRET_ABC123XYZ' }),
+      );
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('pre');
+      expect(event.tool).toBe('Bash');
+      const toolInput = event.toolInput as { command?: string };
+      expect(toolInput.command).not.toContain('SECRET_ABC123XYZ');
+    });
+
+    it('afterShellExecution writes a post/Bash success event', () => {
+      processHook(makeCursorBeforeShellExecution());
+      processHook(makeCursorAfterShellExecution());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(2);
+      const post = events[1]!;
+      expect(post.mode).toBe('post');
+      expect(post.tool).toBe('Bash');
+      expect(post.success).toBe(true);
+    });
+
+    it('beforeMCPExecution writes a pre event using the raw MCP tool_name (no mapping applied)', () => {
+      processHook(makeCursorBeforeMCPExecution());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.mode).toBe('pre');
+      expect(event.tool).toBe('gitbutler_update_branches');
+    });
+
+    it('afterMCPExecution writes a post success event using the raw MCP tool_name', () => {
+      processHook(makeCursorBeforeMCPExecution());
+      processHook(makeCursorAfterMCPExecution());
+
+      const post = readBufferEvents()[1]!;
+      expect(post.mode).toBe('post');
+      expect(post.tool).toBe('gitbutler_update_branches');
+      expect(post.success).toBe(true);
+    });
+
+    it('beforeReadFile writes a completed post/Read event (no matching after-event exists)', () => {
+      processHook(makeCursorBeforeReadFile());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('post');
+      expect(event.tool).toBe('Read');
+      expect(event.success).toBe(true);
+    });
+
+    it('beforeReadFile never writes raw file content to the buffer by default', () => {
+      processHook(makeCursorBeforeReadFile({ content: 'super-secret-file-contents' }));
+
+      const raw = readFileSync(bufferPath, 'utf-8');
+      expect(raw).not.toContain('super-secret-file-contents');
+    });
+
+    it('afterFileEdit writes a completed post/Edit event (no matching before-event exists)', () => {
+      processHook(makeCursorAfterFileEdit());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('post');
+      expect(event.tool).toBe('Edit');
+      expect(event.success).toBe(true);
+    });
+
+    it('uses conversation_id as the session identifier when session_id is absent', () => {
+      processHook(makeCursorBeforeShellExecution({ conversation_id: 'conv-abc-123' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.sessionId).toBe('conv-abc-123');
+    });
+
+    it('routes events with different conversation_id values to different buffer files', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+
+      processHook(makeCursorBeforeShellExecution({ conversation_id: 'conv-aaa' }));
+      processHook(makeCursorBeforeShellExecution({ conversation_id: 'conv-bbb' }));
+
+      expect(existsSync(resolve(tmpDir, 'buffer-conv-aaa.jsonl'))).toBe(true);
+      expect(existsSync(resolve(tmpDir, 'buffer-conv-bbb.jsonl'))).toBe(true);
+    });
+  });
+
   describe('helper functions', () => {
     it('redact() replaces API keys', () => {
       expect(redact('API_KEY = my-secret-key')).toContain('[REDACTED]');

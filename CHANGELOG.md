@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.4] - 2026-07-09
+
+### Fixed
+
+- **Cursor hook events were silently dropped** — `preflight-collector` only recognized Claude Code's/Kiro's generic `PreToolUse`/`PostToolUse` hook names. Cursor's real hooks system (`.cursor/hooks.json`) sends a completely different, per-action-type event vocabulary (`beforeShellExecution`/`afterShellExecution`, `beforeMCPExecution`/`afterMCPExecution`, `beforeReadFile`, `afterFileEdit`), so every Cursor hook event fell through to a silent no-op. The collector now recognizes and correctly parses all six events.
+- **`CursorAdapter`'s setup instructions and tool-name map described a nonexistent integration** — `getHookInstallInstructions()` and `initialize()`'s comment claimed built-in tool calls (file edits, terminal) were captured via "a file watcher or Cursor extension"; no such mechanism exists anywhere in this codebase. Instructions now document the real `.cursor/hooks.json` setup, and `CURSOR_TOOL_MAP` now covers Cursor's confirmed generic `preToolUse`/`postToolUse` tool-name vocabulary (`Shell`, `Task`, `Read`, `Write`) alongside its existing built-in-action-name entries.
+
 ## [1.4.3] - 2026-07-09
 
 ### Fixed
