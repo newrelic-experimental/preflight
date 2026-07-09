@@ -200,6 +200,8 @@ export interface DashboardPostBindDeps {
   readonly localStore: LocalStore;
   readonly liveSessionRegistry: LiveSessionRegistry | undefined;
   readonly openOnStart: boolean;
+  /** True for `--local` mode — writes the local-dashboard PID file so `preflight update` can find and restart this process. Never true for `--stdio`. */
+  readonly isLocalMode: boolean;
 }
 
 export function setupDashboardPostBind(
@@ -208,6 +210,10 @@ export function setupDashboardPostBind(
 ): NodeJS.Timeout {
   const log = createLogger('mcp-cli');
   log.info(`Dashboard ready at http://${addr.address}:${addr.port}`);
+
+  if (deps.isLocalMode) {
+    deps.localStore.writeLocalDashboardPid(process.argv.slice(1), process.cwd());
+  }
 
   // Only the dashboard owner runs orphan-buffer/breadcrumb GC — running it
   // from every MCP would race with itself and re-archive files repeatedly.
@@ -563,6 +569,12 @@ async function main(): Promise<void> {
       // Remove this MCP's heartbeat so the next dashboard-owner GC pass
       // doesn't have to mtime-archive our buffer file.
       localStoreForShutdown?.removeHeartbeat();
+      // If this was a --local process that won the dashboard port, remove
+      // its PID file so `preflight update` doesn't try to restart a process
+      // that's already exiting cleanly. No-op for --stdio and for --local
+      // instances that never won the port (removeLocalDashboardPid() itself
+      // also guards on pid ownership as a second layer of safety).
+      if (options.local) localStoreForShutdown?.removeLocalDashboardPid();
       if (alertRulesWatchTimer) clearTimeout(alertRulesWatchTimer);
       if (alertRulesWatcher) {
         try {
@@ -1086,6 +1098,7 @@ async function main(): Promise<void> {
         localStore,
         liveSessionRegistry,
         openOnStart: config.dashboard.openOnStart,
+        isLocalMode: options.local,
       };
       const runPostBind = (boundAddr: { address: string; port: number }): NodeJS.Timeout =>
         setupDashboardPostBind(boundAddr, postBindDeps);

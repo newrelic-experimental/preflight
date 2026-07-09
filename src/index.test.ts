@@ -333,23 +333,32 @@ describe('setupDashboardPostBind()', () => {
     gcStaleBreadcrumbs: ReturnType<typeof jest.fn>;
     gcOrphanBuffers: ReturnType<typeof jest.fn>;
     getActiveSessionIdsFromHeartbeats: ReturnType<typeof jest.fn>;
+    writeLocalDashboardPid: ReturnType<typeof jest.fn>;
   } {
     const gcStaleBreadcrumbs = jest.fn();
     const gcOrphanBuffers = jest.fn();
     const getActiveSessionIdsFromHeartbeats = jest.fn(() => new Set<string>());
+    const writeLocalDashboardPid = jest.fn();
     const store = {
       gcStaleBreadcrumbs,
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
+      writeLocalDashboardPid,
     } as unknown as LocalStore;
-    return { store, gcStaleBreadcrumbs, gcOrphanBuffers, getActiveSessionIdsFromHeartbeats };
+    return {
+      store,
+      gcStaleBreadcrumbs,
+      gcOrphanBuffers,
+      getActiveSessionIdsFromHeartbeats,
+      writeLocalDashboardPid,
+    };
   }
 
   it('runs a GC pass immediately on bind and returns an unref-able interval', () => {
     const { store, gcStaleBreadcrumbs, gcOrphanBuffers } = makeLocalStore();
     const handle = setupDashboardPostBind(
       { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false },
+      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
     );
     expect(gcStaleBreadcrumbs).toHaveBeenCalledTimes(1);
     expect(gcOrphanBuffers).toHaveBeenCalledTimes(1);
@@ -361,7 +370,7 @@ describe('setupDashboardPostBind()', () => {
     const { store, gcStaleBreadcrumbs } = makeLocalStore();
     const handle = setupDashboardPostBind(
       { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false },
+      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
     );
     expect(gcStaleBreadcrumbs).toHaveBeenCalledTimes(1);
     jest.advanceTimersByTime(5 * 60 * 1000);
@@ -379,11 +388,31 @@ describe('setupDashboardPostBind()', () => {
     } as unknown as Parameters<typeof setupDashboardPostBind>[1]['liveSessionRegistry'];
     const handle = setupDashboardPostBind(
       { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry, openOnStart: false },
+      { localStore: store, liveSessionRegistry, openOnStart: false, isLocalMode: false },
     );
     const liveArg = gcOrphanBuffers.mock.calls[0]?.[0] as Set<string>;
     expect(liveArg.has('heartbeat-only')).toBe(true);
     expect(liveArg.has('registry-only')).toBe(true);
+    clearInterval(handle);
+  });
+
+  it('writes the local-dashboard pid file when isLocalMode is true', () => {
+    const { store, writeLocalDashboardPid } = makeLocalStore();
+    const handle = setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: true },
+    );
+    expect(writeLocalDashboardPid).toHaveBeenCalledWith(process.argv.slice(1), process.cwd());
+    clearInterval(handle);
+  });
+
+  it('does not write the local-dashboard pid file when isLocalMode is false (--stdio)', () => {
+    const { store, writeLocalDashboardPid } = makeLocalStore();
+    const handle = setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
+    );
+    expect(writeLocalDashboardPid).not.toHaveBeenCalled();
     clearInterval(handle);
   });
 });

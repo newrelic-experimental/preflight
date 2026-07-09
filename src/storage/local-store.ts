@@ -282,6 +282,78 @@ export class LocalStore {
   }
 
   /**
+   * Write the PID/argv/cwd of the current `--local` process to
+   * `local-dashboard.pid`. Called only after this process has actually won
+   * the dashboard port bind (see `setupDashboardPostBind()` in index.ts) —
+   * not at CLI-arg-parse time — so the file always names whichever process
+   * currently owns the dashboard, even when multiple `--local` instances are
+   * competing for the port (EADDRINUSE re-poll takeover).
+   */
+  writeLocalDashboardPid(argv: readonly string[], cwd: string, pid: number = process.pid): void {
+    const path = resolve(this.storagePath, 'local-dashboard.pid');
+    try {
+      if (!existsSync(this.storagePath)) {
+        mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
+      }
+      writeFileSync(path, JSON.stringify({ pid, argv: Array.from(argv), cwd }), {
+        mode: 0o600,
+      });
+    } catch (err) {
+      logger.warn('Failed to write local dashboard pid file', { error: String(err) });
+    }
+  }
+
+  /**
+   * Read `local-dashboard.pid` and return its contents only if the named
+   * process is still alive. Returns null if the file is missing, malformed,
+   * or names a dead process — callers should treat all of these as "nothing
+   * to restart" rather than distinguishing them.
+   */
+  getLiveLocalDashboardProcess(): { pid: number; argv: string[]; cwd: string } | null {
+    const path = resolve(this.storagePath, 'local-dashboard.pid');
+    if (!existsSync(path)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
+        pid?: unknown;
+        argv?: unknown;
+        cwd?: unknown;
+      };
+      const pid = parsed.pid;
+      const argv = parsed.argv;
+      const cwd = parsed.cwd;
+      if (
+        typeof pid !== 'number' ||
+        !Array.isArray(argv) ||
+        !argv.every((a) => typeof a === 'string') ||
+        typeof cwd !== 'string'
+      ) {
+        return null;
+      }
+      if (!isPidAlive(pid)) return null;
+      return { pid, argv: argv as string[], cwd };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remove `local-dashboard.pid`, but only if it still names this process —
+   * protects against a headless (non-owning) `--local` instance deleting the
+   * actual owner's file out from under it on its own shutdown.
+   */
+  removeLocalDashboardPid(): void {
+    const path = resolve(this.storagePath, 'local-dashboard.pid');
+    try {
+      if (!existsSync(path)) return;
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { pid?: unknown };
+      if (parsed.pid !== process.pid) return;
+      unlinkSync(path);
+    } catch (err) {
+      logger.debug('Failed to remove local dashboard pid file', { error: String(err) });
+    }
+  }
+
+  /**
    * Garbage-collect orphan per-session buffer files. A buffer is orphan when
    * no live process is currently draining it; we determine that with two
    * signals:
