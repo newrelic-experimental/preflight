@@ -6,7 +6,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, copyFileSync, realpathSync } from 'node:fs';
+import { existsSync, copyFileSync, realpathSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
@@ -23,7 +23,12 @@ import {
   generateNrConfig,
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
-import { validateConfigFile, DEFAULT_STORAGE_PATH, ConfigFileSchema } from '../config.js';
+import {
+  validateConfigFile,
+  DEFAULT_STORAGE_PATH,
+  ConfigFileSchema,
+  loadMcpConfig,
+} from '../config.js';
 import type { PlatformTarget } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import {
@@ -241,6 +246,100 @@ async function killAndRespawnLocalDashboard(proc: {
 }
 
 /**
+ * Reads the `version` field from `<repoRoot>/package.json` fresh off disk —
+ * i.e. the version that was JUST built by the `npm run build` above, not the
+ * one baked into this already-running process (this process's own `VERSION`
+ * constant was captured at startup, before `git pull` ran, so it can't be
+ * used here). Returns null on any read/parse failure, or if the field isn't
+ * a string.
+ */
+function readLocalPackageVersion(repoRoot: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf-8')) as {
+      version?: unknown;
+    };
+    return typeof parsed.version === 'string' ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the dashboard's configured host/port, or null if the config
+ * can't be loaded (e.g. a cloud-mode config missing credentials). Callers
+ * treat null as "skip verification" rather than a hard failure — restart
+ * verification is a best-effort enhancement, never a new way for `update`
+ * to fail.
+ */
+function getDashboardAddress(): { host: string; port: number } | null {
+  try {
+    const config = loadMcpConfig();
+    return { host: config.dashboard.host, port: config.dashboard.port };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Polls `GET /api/health` until it reports a healthy, current-version
+ * response or `timeoutMs` elapses. Connection errors (server not listening
+ * yet) and malformed responses are treated as "not yet" and retried, not as
+ * failures. When `expectedVersion` is null, the version check is skipped —
+ * any healthy response counts.
+ */
+async function waitForHealthyDashboard(
+  host: string,
+  port: number,
+  expectedVersion: string | null,
+  timeoutMs = 5000,
+  intervalMs = 300,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const res = await fetch(`http://${host}:${port}/api/health`);
+      if (res.ok) {
+        const body = (await res.json()) as { ok?: unknown; version?: unknown };
+        if (body.ok === true && (expectedVersion === null || body.version === expectedVersion)) {
+          return true;
+        }
+      }
+    } catch {
+      // Not listening yet, or a malformed response — keep polling.
+    }
+    if (Date.now() >= deadline) return false;
+    await sleep(intervalMs);
+  }
+}
+
+/**
+ * Shared verification glue for both restart paths. If the dashboard's
+ * address can't be determined, verification is skipped silently and
+ * `successMsg` is printed as before (today's behavior, preserved as a
+ * fallback). Otherwise polls for a healthy, current-version response and
+ * prints `successMsg`/`failMsg` accordingly.
+ *
+ * @returns true if the caller should stop here (verified, or skipped);
+ *   false if verification explicitly failed and the caller should fall
+ *   through to another restart path.
+ */
+async function verifyRestart(
+  repoRoot: string,
+  successMsg: string,
+  failMsg: string,
+): Promise<boolean> {
+  const address = getDashboardAddress();
+  if (!address) {
+    print(successMsg);
+    return true;
+  }
+  const expectedVersion = readLocalPackageVersion(repoRoot);
+  const healthy = await waitForHealthyDashboard(address.host, address.port, expectedVersion);
+  print(healthy ? successMsg : failMsg);
+  return healthy;
+}
+
+/**
  * Called at the end of a successful `preflight update` build. Handles the
  * two restart-able cases (daemon and ad-hoc `--local`); `--stdio` (Claude
  * Code MCP sessions) is intentionally never touched here — killing one
@@ -248,13 +347,18 @@ async function killAndRespawnLocalDashboard(proc: {
  * static "Restart Claude Code" message printed unconditionally by the
  * caller.
  */
-async function offerRestarts(): Promise<void> {
+async function offerRestarts(repoRoot: string): Promise<void> {
   const daemonStatus = getDashboardDaemonStatus();
+  let daemonHandled = false;
   if (daemonStatus.installed) {
     if (daemonStatus.readable && daemonStatus.binaryPath) {
       try {
         installDashboardDaemon(daemonStatus.binaryPath);
-        print('\n✓ Restarted the dashboard daemon (launchctl unload/load).');
+        daemonHandled = await verifyRestart(
+          repoRoot,
+          '\n✓ Restarted the dashboard daemon (launchctl unload/load).',
+          '\n⚠ Dashboard daemon restarted but could not be verified as healthy — it may still be starting up, or may have failed silently. Check `launchctl list | grep com.preflight.dashboard` and `~/.newrelic-preflight/dashboard.log`.',
+        );
       } catch (err) {
         print(`\n⚠ Could not restart the dashboard daemon: ${errMsg(err)}`);
         print(
@@ -264,7 +368,8 @@ async function offerRestarts(): Promise<void> {
     } else {
       print('\n⚠ Dashboard daemon plist found but unreadable; restart it manually if needed.');
     }
-    return;
+    if (daemonHandled) return;
+    print('\n  Checking for another running dashboard process instead...');
   }
 
   const localStore = new LocalStore(DEFAULT_STORAGE_PATH);
@@ -284,7 +389,11 @@ async function offerRestarts(): Promise<void> {
 
   try {
     await killAndRespawnLocalDashboard(proc);
-    print('✓ Dashboard restarted.');
+    await verifyRestart(
+      repoRoot,
+      '✓ Dashboard restarted.',
+      '⚠ Dashboard process respawned but could not be verified as healthy — check manually.',
+    );
   } catch (err) {
     print(`⚠ Could not restart the dashboard automatically: ${errMsg(err)}`);
     print('  Run `preflight --local` to restart it manually.');
@@ -360,7 +469,7 @@ async function handleUpdate(): Promise<void> {
   }
 
   try {
-    await offerRestarts();
+    await offerRestarts(repoRoot);
   } catch (err) {
     print(`\n⚠ Restart offer failed unexpectedly: ${errMsg(err)}`);
   }

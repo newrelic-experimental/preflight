@@ -59,12 +59,17 @@ jest.mock('../storage/index.js', () => ({
     getLiveLocalDashboardProcess: jest.fn(() => null),
   })),
 }));
+jest.mock('../config.js', () => ({
+  ...(jest.requireActual('../config.js') as object),
+  loadMcpConfig: jest.fn(),
+}));
 
 import { LocalStore } from '../storage/index.js';
 import * as scheduleMod from './schedule.js';
 import * as platformMod from './platform.js';
 import { runInstallCli } from './cli.js';
 import * as installHelperMod from './install-helper.js';
+import * as configMod from '../config.js';
 
 const mockedRunDiagnostics = diagnostics.runDiagnostics as jest.MockedFunction<
   typeof diagnostics.runDiagnostics
@@ -88,6 +93,7 @@ const mockedHelper = installHelperMod as unknown as {
   detectSettingsPath: jest.Mock;
   detectMcpConfigPath: jest.Mock;
 };
+const mockedConfig = configMod as unknown as { loadMcpConfig: jest.Mock };
 
 describe('schedule subcommand', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -1217,15 +1223,21 @@ describe('platform transition matrix', () => {
 describe('preflight update', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
   let exitSpy: ReturnType<typeof jest.spyOn>;
-  let mFs: { existsSync: jest.Mock; realpathSync: jest.Mock };
+  let fetchSpy: ReturnType<typeof jest.spyOn>;
+  let mFs: { existsSync: jest.Mock; realpathSync: jest.Mock; readFileSync: jest.Mock };
   let mExec: { execFileSync: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    mFs = fsMod as unknown as { existsSync: jest.Mock; realpathSync: jest.Mock };
+    mFs = fsMod as unknown as {
+      existsSync: jest.Mock;
+      realpathSync: jest.Mock;
+      readFileSync: jest.Mock;
+    };
     mExec = childMod as unknown as { execFileSync: jest.Mock };
     // Reset implementations (clearAllMocks only clears call records, not implementations).
     mExec.execFileSync.mockReset();
+    mFs.readFileSync.mockReturnValue('{}');
     stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     exitSpy = jest
       .spyOn(process, 'exit')
@@ -1246,12 +1258,21 @@ describe('preflight update', () => {
     (childModForSpawn.spawn as unknown as jest.Mock).mockImplementation(() => ({
       unref: jest.fn(),
     }));
+    // Default: config can't be loaded, so verification is skipped silently and
+    // the pre-existing unconditional-success messages are preserved. Tests that
+    // want to exercise real verification override this explicitly.
+    mockedConfig.loadMcpConfig.mockImplementation(() => {
+      throw new Error('no config file');
+    });
+    fetchSpy = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('fetch not mocked'));
   });
 
   afterEach(() => {
     stdoutSpy.mockRestore();
     exitSpy.mockRestore();
+    fetchSpy.mockRestore();
     process.exitCode = undefined;
+    jest.useRealTimers();
   });
 
   function getOutput(): string {
@@ -1412,17 +1433,40 @@ describe('preflight update', () => {
     });
   }
 
-  it('auto-restarts the dashboard daemon with no prompt when installed', async () => {
+  it('auto-restarts the dashboard daemon with no prompt when installed, verifying it comes back healthy', async () => {
     mockSuccessfulBuild();
     mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
       installed: true,
       readable: true,
       binaryPath: '/usr/local/bin/preflight',
     });
+    mFs.readFileSync.mockReturnValue('{"version":"1.4.0"}');
+    mockedConfig.loadMcpConfig.mockReturnValue({
+      dashboard: { host: '127.0.0.1', port: 7777 },
+    });
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, version: '1.4.0' }),
+    } as unknown as Response);
     await runInstallCli(['update']);
     expect(mockedSchedule.installDashboardDaemon).toHaveBeenCalledWith('/usr/local/bin/preflight');
     const output = getOutput();
     expect(output).toContain('Restarted the dashboard daemon');
+    expect(output).not.toContain('could not be verified');
+  });
+
+  it('skips verification silently and keeps the success message when config cannot be loaded', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
+      installed: true,
+      readable: true,
+      binaryPath: '/usr/local/bin/preflight',
+    });
+    // loadMcpConfig throws by default in this suite's beforeEach — no override needed.
+    await runInstallCli(['update']);
+    const output = getOutput();
+    expect(output).toContain('Restarted the dashboard daemon');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('warns without restarting when the daemon plist exists but is unreadable', async () => {
@@ -1513,6 +1557,110 @@ describe('preflight update', () => {
     expect(output).toContain('Update complete');
     expect(output).not.toContain('Build failed');
     expect(output).toContain('Restart offer failed unexpectedly');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the ad-hoc check when the daemon restart cannot be verified as healthy', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
+      installed: true,
+      readable: true,
+      binaryPath: '/usr/local/bin/preflight',
+    });
+    mockedConfig.loadMcpConfig.mockReturnValue({
+      dashboard: { host: '127.0.0.1', port: 7777 },
+    });
+    fetchSpy.mockRejectedValue(new Error('connection refused'));
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({
+        pid: 4242,
+        argv: ['/repo/dist/index.js', '--local'],
+        cwd: '/repo',
+      })),
+    }));
+    const childMod2 = await import('node:child_process');
+    const spawnMock = childMod2.spawn as unknown as jest.Mock;
+    const readlineMod = await import('node:readline/promises');
+    const questionMock = jest.fn(async (_prompt: string) => 'y');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: questionMock,
+      close: jest.fn(),
+    });
+
+    jest.useFakeTimers();
+    const updatePromise = runInstallCli(['update']);
+    // Two verification passes (daemon, then ad-hoc), 5s timeout each — advance
+    // past both in one jump.
+    await jest.advanceTimersByTimeAsync(11_000);
+    await updatePromise;
+    jest.useRealTimers();
+
+    const output = getOutput();
+    expect(output).toContain('could not be verified as healthy');
+    expect(output).toContain('Checking for another running dashboard process instead');
+    // The ad-hoc prompt text is passed to the (mocked) readline `question()`
+    // call rather than written to stdout directly, so assert on the call
+    // args to confirm the fallthrough actually reached the ad-hoc path.
+    expect(questionMock).toHaveBeenCalledWith(
+      expect.stringContaining('Restart the running dashboard (PID 4242)'),
+    );
+    expect(spawnMock).toHaveBeenCalled();
+    expect(output).not.toContain('✓ Restarted the dashboard daemon');
+  });
+
+  it('prints a warning instead of a false success when the ad-hoc respawn cannot be verified as healthy', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    mockedConfig.loadMcpConfig.mockReturnValue({
+      dashboard: { host: '127.0.0.1', port: 7777 },
+    });
+    fetchSpy.mockRejectedValue(new Error('connection refused'));
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({
+        pid: 4242,
+        argv: ['/repo/dist/index.js', '--local'],
+        cwd: '/repo',
+      })),
+    }));
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+
+    jest.useFakeTimers();
+    const updatePromise = runInstallCli(['update']);
+    await jest.advanceTimersByTimeAsync(6_000);
+    await updatePromise;
+    jest.useRealTimers();
+
+    const output = getOutput();
+    expect(output).toContain('could not be verified as healthy');
+    expect(output).not.toContain('✓ Dashboard restarted.');
+    killSpy.mockRestore();
+  });
+
+  it('prints both warnings and does not crash when the daemon is unverified and no ad-hoc process exists', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
+      installed: true,
+      readable: true,
+      binaryPath: '/usr/local/bin/preflight',
+    });
+    mockedConfig.loadMcpConfig.mockReturnValue({
+      dashboard: { host: '127.0.0.1', port: 7777 },
+    });
+    fetchSpy.mockRejectedValue(new Error('connection refused'));
+    // LocalStore default (from beforeEach) already returns null — no live ad-hoc process.
+
+    jest.useFakeTimers();
+    const updatePromise = runInstallCli(['update']);
+    await jest.advanceTimersByTimeAsync(6_000);
+    await updatePromise;
+    jest.useRealTimers();
+
+    const output = getOutput();
+    expect(output).toContain('could not be verified as healthy');
+    expect(output).toContain('Checking for another running dashboard process instead');
+    expect(output).not.toContain('Restart the running dashboard');
     expect(exitSpy).not.toHaveBeenCalled();
   });
 });
