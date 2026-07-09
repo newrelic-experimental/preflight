@@ -5,7 +5,7 @@
  * so commander and other heavy deps are never loaded on the hot hook path.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, copyFileSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -30,11 +30,13 @@ import {
   installSchedule,
   removeSchedule,
   getScheduleStatus,
+  installDashboardDaemon,
   removeDashboardDaemon,
   getDashboardDaemonStatus,
   resolveBinaryPath,
 } from './schedule.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
+import { LocalStore } from '../storage/index.js';
 
 const logger = createLogger('cli');
 
@@ -191,7 +193,105 @@ export function findRepoRoot(): string | null {
 // Update handler
 // ---------------------------------------------------------------------------
 
-function handleUpdate(): void {
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+/**
+ * Liveness probe via signal 0 — mirrors `isPidAlive()` in
+ * `src/storage/local-store.ts`. Duplicated rather than shared: it's ten
+ * lines and the two files don't otherwise depend on each other.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Kill the given PID (SIGTERM, escalating to SIGKILL after a 2s grace period
+ * if it hasn't exited — Windows terminates immediately on any signal, so the
+ * grace period is a no-op there), then respawn it detached with its original
+ * argv/cwd so it comes back up exactly as it was invoked.
+ */
+async function killAndRespawnLocalDashboard(proc: {
+  pid: number;
+  argv: string[];
+  cwd: string;
+}): Promise<void> {
+  try {
+    process.kill(proc.pid, 'SIGTERM');
+  } catch (err) {
+    // ESRCH: the process already exited between the liveness check and here
+    // — nothing left to signal, proceed straight to respawn. Any other
+    // error (e.g. EPERM) is a real failure and should propagate.
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+  }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && isProcessAlive(proc.pid)) {
+    await sleep(100);
+  }
+  if (isProcessAlive(proc.pid)) {
+    process.kill(proc.pid, 'SIGKILL');
+  }
+  spawn(process.execPath, proc.argv, { cwd: proc.cwd, detached: true, stdio: 'ignore' }).unref();
+}
+
+/**
+ * Called at the end of a successful `preflight update` build. Handles the
+ * two restart-able cases (daemon and ad-hoc `--local`); `--stdio` (Claude
+ * Code MCP sessions) is intentionally never touched here — killing one
+ * mid-session would break in-flight tool calls, so it keeps the existing
+ * static "Restart Claude Code" message printed unconditionally by the
+ * caller.
+ */
+async function offerRestarts(): Promise<void> {
+  const daemonStatus = getDashboardDaemonStatus();
+  if (daemonStatus.installed) {
+    if (daemonStatus.readable && daemonStatus.binaryPath) {
+      try {
+        installDashboardDaemon(daemonStatus.binaryPath);
+        print('\n✓ Restarted the dashboard daemon (launchctl unload/load).');
+      } catch (err) {
+        print(`\n⚠ Could not restart the dashboard daemon: ${errMsg(err)}`);
+        print(
+          '  Run `launchctl unload`/`load` on it manually, or `preflight setup` to reinstall it.',
+        );
+      }
+    } else {
+      print('\n⚠ Dashboard daemon plist found but unreadable; restart it manually if needed.');
+    }
+    return;
+  }
+
+  const localStore = new LocalStore(DEFAULT_STORAGE_PATH);
+  const proc = localStore.getLiveLocalDashboardProcess();
+  if (!proc) return;
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = (await rl.question(`\nRestart the running dashboard (PID ${proc.pid})? [Y/n]: `))
+      .trim()
+      .toLowerCase();
+  } finally {
+    rl.close();
+  }
+  if (answer === 'n' || answer === 'no') return;
+
+  try {
+    await killAndRespawnLocalDashboard(proc);
+    print('✓ Dashboard restarted.');
+  } catch (err) {
+    print(`⚠ Could not restart the dashboard automatically: ${errMsg(err)}`);
+    print('  Run `preflight --local` to restart it manually.');
+  }
+}
+
+async function handleUpdate(): Promise<void> {
   migrateStoragePath();
   const repoRoot = findRepoRoot();
   if (!repoRoot) {
@@ -257,6 +357,12 @@ function handleUpdate(): void {
   } catch {
     print('\n✗ Build failed. Check the output above for details.');
     process.exit(1);
+  }
+
+  try {
+    await offerRestarts();
+  } catch (err) {
+    print(`\n⚠ Restart offer failed unexpectedly: ${errMsg(err)}`);
   }
 }
 
