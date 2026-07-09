@@ -187,6 +187,13 @@ describe('CursorAdapter', () => {
       expect(instructions.length).toBeGreaterThan(0);
       expect(instructions).toContain('Cursor');
     });
+
+    it('documents the real .cursor/hooks.json setup, not a file watcher', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('.cursor/hooks.json');
+      expect(instructions).toContain('preflight-collector');
+      expect(instructions).not.toContain('file watcher');
+    });
   });
 
   describe('initialize', () => {
@@ -202,6 +209,22 @@ describe('CursorAdapter', () => {
 
     it('returns "Unknown" for an unrecognized tool name', () => {
       expect(adapter.mapToolName('totally_made_up_tool')).toBe('Unknown');
+    });
+
+    it('maps the generic preToolUse/postToolUse "Shell" category to "Bash"', () => {
+      expect(adapter.mapToolName('Shell')).toBe('Bash');
+    });
+
+    it('maps the generic preToolUse/postToolUse "Task" category to "Agent"', () => {
+      expect(adapter.mapToolName('Task')).toBe('Agent');
+    });
+
+    it('maps the generic preToolUse/postToolUse "Read" category to "Read"', () => {
+      expect(adapter.mapToolName('Read')).toBe('Read');
+    });
+
+    it('maps the generic preToolUse/postToolUse "Write" category to "Write"', () => {
+      expect(adapter.mapToolName('Write')).toBe('Write');
     });
   });
 });

@@ -455,6 +455,17 @@ interface HookInput {
   transcript_path?: string;
   error?: string;
   is_interrupt?: boolean;
+  // Cursor (https://cursor.com/docs/agent/hooks) sends a different field
+  // vocabulary per hook type instead of the uniform tool_name/tool_input
+  // Claude Code and Kiro use. conversation_id is Cursor's closest analog to
+  // session_id — Cursor never sends session_id. command/file_path/content/
+  // edits are confirmed via a real JSON example from Cursor's own team:
+  // https://blog.gitbutler.com/cursor-hooks-deep-dive
+  conversation_id?: string;
+  command?: string;
+  file_path?: string;
+  content?: string;
+  edits?: { old_string?: string; new_string?: string }[];
   [key: string]: unknown;
 }
 
@@ -619,10 +630,20 @@ function processHook(raw: string): void {
     return; // Malformed JSON — skip silently
   }
 
+  // Cursor (https://cursor.com/docs/agent/hooks) never sends session_id —
+  // conversation_id is its closest analog (one per chat, like a Claude Code
+  // session). Claude Code and Kiro always send session_id, so this only
+  // takes effect for Cursor events.
+  const sessionId = data.session_id ?? data.conversation_id;
+
   // Drop a PPID breadcrumb at the very top so the MCP server can resolve its
   // Claude Code session_id without an env-var or initialize-payload extension.
   // The function itself is a no-op when sessionId is missing or invalid, and
-  // short-circuits if the breadcrumb is already current.
+  // short-circuits if the breadcrumb is already current. Cursor's
+  // conversation_id is deliberately excluded here — there is no confirmed
+  // evidence that Cursor's own MCP-server child process shares Claude Code's
+  // ancestry-based session-resolution model, so extending this to
+  // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     writePpidBreadcrumb(data.session_id);
   }
@@ -691,6 +712,85 @@ function processHook(raw: string): void {
       error: redact(data.error ?? 'unknown error'),
       isInterrupt: data.is_interrupt ?? false,
     };
+  } else if (eventName === 'beforeshellexecution') {
+    // Cursor's shell hooks carry no tool_name field — the event name itself
+    // identifies the tool. Confirmed payload shape:
+    // https://blog.gitbutler.com/cursor-hooks-deep-dive
+    const command = data.command ?? '';
+    event = {
+      mode: 'pre' as const,
+      tool: 'Bash',
+      timestamp,
+      inputSize: sizeOf(command),
+      inputHash: hashInput(command),
+      toolInput: { command: redact(command) },
+    };
+  } else if (eventName === 'aftershellexecution') {
+    // Cursor doesn't document a distinct failure event for shell (unlike
+    // Claude Code's PostToolUseFailure) and no source confirms afterShellExecution's
+    // exact payload fields — treat as success absent any failure signal, same
+    // convention as Claude Code's PostToolUse-without-PostToolUseFailure.
+    event = {
+      mode: 'post' as const,
+      tool: 'Bash',
+      timestamp,
+      success: true,
+    };
+  } else if (eventName === 'beforemcpexecution') {
+    // tool_name here is an arbitrary third-party MCP tool name, not one of
+    // Preflight's canonical built-in tool names — passed through as-is
+    // (identity), matching how src/platforms/generic-mcp-adapter.ts already
+    // treats third-party MCP tool names.
+    const mcpTool = data.tool_name ?? 'unknown';
+    event = {
+      mode: 'pre' as const,
+      tool: mcpTool,
+      timestamp,
+      inputSize: sizeOf(data.tool_input),
+      inputHash: hashInput(data.tool_input),
+    };
+  } else if (eventName === 'aftermcpexecution') {
+    // Same identity tool-name treatment and success-by-default convention as
+    // aftershellexecution above — no source confirms this event's exact
+    // success/output fields.
+    const mcpTool = data.tool_name ?? 'unknown';
+    event = {
+      mode: 'post' as const,
+      tool: mcpTool,
+      timestamp,
+      success: true,
+    };
+  } else if (eventName === 'beforereadfile') {
+    // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
+    // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
+    // documents 6 original hooks, none pair with beforeReadFile). Emitted directly
+    // as a completed post event — the same code path event-processor.ts already
+    // uses for an orphaned PostToolUse with no matching pre-event — rather than
+    // inventing new pairing semantics for a "pre-only" tool call.
+    event = {
+      mode: 'post' as const,
+      tool: 'Read',
+      timestamp,
+      success: true,
+      ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
+    };
+    // data.content carries the actual file contents — never write it to the
+    // buffer unless recordContent is enabled, same as Claude Code's existing
+    // tool_response/tool_input content handling.
+    if (recordContent && data.content !== undefined) {
+      event.outputContent = redact(truncate(data.content, maxContentLen));
+    }
+  } else if (eventName === 'afterfileedit') {
+    // Cursor has no "beforeFileEdit" event — afterFileEdit is post-only,
+    // mirror image of beforeReadFile above: emitted directly as a completed
+    // post event via the same orphaned-post code path.
+    event = {
+      mode: 'post' as const,
+      tool: 'Edit',
+      timestamp,
+      success: true,
+      ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
+    };
   } else {
     // Unknown hook event — ignore silently
     return;
@@ -699,12 +799,12 @@ function processHook(raw: string): void {
   // Attach session metadata
   if (data.cwd) event.cwd = data.cwd;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
-  if (data.session_id) event.sessionId = data.session_id;
+  if (sessionId) event.sessionId = sessionId;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
 
   // Write to buffer — wrapped in try/catch for resilience.
   try {
-    const bufferPath = getBufferPath(data.session_id);
+    const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
     if (!existsSync(bufferDir)) {
       mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
