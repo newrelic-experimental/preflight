@@ -45,14 +45,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag v$(node -p "require('./package.json').version")
-          git push --tags
+          TAG="v$(node -p "require('./package.json').version")"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists on origin, skipping"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
 
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create v$(node -p "require('./package.json').version") --generate-notes
+          TAG="v$(node -p "require('./package.json').version")"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping"
+          else
+            gh release create "$TAG" --generate-notes
+          fi
 
       - name: Publish to npm
-        run: npm publish
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
+            echo "@newrelic/preflight@$VERSION already published, skipping"
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            if npm publish; then
+              exit 0
+            fi
+            echo "npm publish attempt $attempt failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+          done
+          exit 1
