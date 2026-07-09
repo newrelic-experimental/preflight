@@ -250,6 +250,16 @@ describe('CopilotAdapter', () => {
       await expect(adapter.initialize({})).resolves.toBeUndefined();
     });
   });
+
+  describe('mapToolName', () => {
+    it('maps a known event type', () => {
+      expect(adapter.mapToolName('file_edit')).toBe('Edit');
+    });
+
+    it('returns "Unknown" for an unrecognized event type', () => {
+      expect(adapter.mapToolName('totally_made_up_type')).toBe('Unknown');
+    });
+  });
 });
 
 describe('parseCopilotUsageResponse', () => {

@@ -148,6 +148,10 @@ export class GenericMcpAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return platformToolName;
+  }
+
   handleSessionStart(input: ReportSessionStartInput): void {
     this.sessionMetadata = {
       platform: input.platform || 'generic-mcp',

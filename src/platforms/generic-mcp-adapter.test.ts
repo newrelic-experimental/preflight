@@ -192,6 +192,12 @@ describe('GenericMcpAdapter', () => {
     });
   });
 
+  describe('mapToolName', () => {
+    it('passes the tool name through unchanged', () => {
+      expect(adapter.mapToolName('Read')).toBe('Read');
+    });
+  });
+
   describe('integration: report_tool_call pipeline', () => {
     it('processes 10 tool calls through normalizeToolCall', () => {
       const results = [];

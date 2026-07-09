@@ -32,6 +32,13 @@ export interface PlatformAdapter {
   readonly platformName: string;
   initialize(config: PlatformConfig): Promise<void>;
   normalizeToolCall(raw: unknown): NormalizedToolCall;
+  /**
+   * Maps a platform's raw tool name (e.g. Kiro's `fs_read`) to Preflight's
+   * canonical vocabulary (`Read`). Returns `'Unknown'` for names the adapter
+   * doesn't recognize, preserving the platform's original name in telemetry
+   * via the caller (never throws).
+   */
+  mapToolName(platformToolName: string): string;
   getSessionMetadata(): PlatformSessionMetadata;
   getHookInstallInstructions(): string;
   isSupported(): boolean;

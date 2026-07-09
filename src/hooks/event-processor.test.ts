@@ -692,4 +692,132 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(0);
     });
   });
+
+  describe('platform tool-name mapping', () => {
+    it('maps a non-canonical tool name using the injected platform adapter', () => {
+      const fakeAdapter = {
+        platformName: 'fake',
+        initialize: async () => {},
+        normalizeToolCall: () => {
+          throw new Error('not used by this test');
+        },
+        mapToolName: (name: string) => (name === 'fs_read' ? 'Read' : 'Unknown'),
+        getSessionMetadata: () => ({ platform: 'fake' }),
+        getHookInstallInstructions: () => '',
+        isSupported: () => true,
+      };
+
+      const processor = new HookEventProcessor({ store, onRecord, platformAdapter: fakeAdapter });
+      processor.processEvents([
+        makePreEvent({ tool: 'fs_read', toolUseId: 'toolu_map' }),
+        makePostEvent({ tool: 'fs_read', toolUseId: 'toolu_map' }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('Read');
+    });
+
+    it('defaults to the process-detected platform adapter when none is injected', () => {
+      // No platformAdapter option passed — falls back to createDefaultRegistry().getActive(),
+      // which resolves to GenericMcpAdapter (identity mapping) when no platform env vars are set.
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({ tool: 'Read', toolUseId: 'toolu_default' }),
+        makePostEvent({ tool: 'Read', toolUseId: 'toolu_default' }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('Read');
+    });
+
+    it('maps tool names correctly when pairing falls back to findOldestPendingKey (no toolUseId)', () => {
+      const fakeAdapter = {
+        platformName: 'fake',
+        initialize: async () => {},
+        normalizeToolCall: () => {
+          throw new Error('not used by this test');
+        },
+        mapToolName: (name: string) => (name === 'fs_read' ? 'Read' : 'Unknown'),
+        getSessionMetadata: () => ({ platform: 'fake' }),
+        getHookInstallInstructions: () => '',
+        isSupported: () => true,
+      };
+
+      const processor = new HookEventProcessor({ store, onRecord, platformAdapter: fakeAdapter });
+      // No toolUseId on either event — forces pairing through findOldestPendingKey(),
+      // which compares mapped tool names case-insensitively.
+      processor.processEvents([
+        makePreEvent({ tool: 'fs_read', toolUseId: undefined, timestamp: 1000 }),
+        makePostEvent({ tool: 'fs_read', toolUseId: undefined, timestamp: 1050 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('Read');
+      // Assert real pairing occurred via findOldestPendingKey, not an orphaned post:
+      // a genuine pair reports the pre-event's timestamp and a non-null duration;
+      // an orphaned post (durationMs: null) would report the post-event's own
+      // timestamp (1050) instead, so this discriminates between the two outcomes.
+      expect(records[0]!.durationMs).toBe(50);
+      expect(records[0]!.timestamp).toBe(1000);
+    });
+
+    it('preserves the original tool name when the platform adapter cannot map it', () => {
+      const fakeAdapter = {
+        platformName: 'fake',
+        initialize: async () => {},
+        normalizeToolCall: () => {
+          throw new Error('not used by this test');
+        },
+        mapToolName: () => 'Unknown', // simulates an adapter with no entry for this tool
+        getSessionMetadata: () => ({ platform: 'fake' }),
+        getHookInstallInstructions: () => '',
+        isSupported: () => true,
+      };
+
+      const processor = new HookEventProcessor({ store, onRecord, platformAdapter: fakeAdapter });
+      processor.processEvents([
+        makePreEvent({ tool: 'some_unmapped_mcp_tool', toolUseId: 'toolu_unmapped' }),
+        makePostEvent({ tool: 'some_unmapped_mcp_tool', toolUseId: 'toolu_unmapped' }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('some_unmapped_mcp_tool');
+    });
+
+    it('does not cross-pair two different unmapped tools that share no toolUseId', () => {
+      const fakeAdapter = {
+        platformName: 'fake',
+        initialize: async () => {},
+        normalizeToolCall: () => {
+          throw new Error('not used by this test');
+        },
+        mapToolName: () => 'Unknown', // every raw name maps to 'Unknown'
+        getSessionMetadata: () => ({ platform: 'fake' }),
+        getHookInstallInstructions: () => '',
+        isSupported: () => true,
+      };
+
+      const processor = new HookEventProcessor({ store, onRecord, platformAdapter: fakeAdapter });
+      // Two distinct unmapped tools, no toolUseId, fired concurrently at the same
+      // timestamp. Before the fix, both pre-events collapsed to the same pairing
+      // key ('Unknown:1000:...') by coincidence of mapping, and pairing relied on
+      // raw-name distinctness to avoid cross-matching foo's post to bar's pre.
+      processor.processEvents([
+        makePreEvent({ tool: 'foo_tool', toolUseId: undefined, timestamp: 1000 }),
+        makePreEvent({ tool: 'bar_tool', toolUseId: undefined, timestamp: 1000 }),
+        makePostEvent({ tool: 'bar_tool', toolUseId: undefined, timestamp: 1050 }),
+        makePostEvent({ tool: 'foo_tool', toolUseId: undefined, timestamp: 1060 }),
+      ]);
+
+      expect(records).toHaveLength(2);
+      const fooRecord = records.find((r) => r.toolName === 'foo_tool');
+      const barRecord = records.find((r) => r.toolName === 'bar_tool');
+      expect(fooRecord).toBeDefined();
+      expect(barRecord).toBeDefined();
+      // Each post paired with its own tool's pre-event (both started at 1000),
+      // not cross-matched to the other tool.
+      expect(fooRecord!.durationMs).toBe(60);
+      expect(barRecord!.durationMs).toBe(50);
+    });
+  });
 });

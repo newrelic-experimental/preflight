@@ -1230,13 +1230,13 @@ function handleValidate(options: { config?: string }): void {
 // Doctor handler
 // ---------------------------------------------------------------------------
 
-async function handleDoctor(options: { config?: string }): Promise<void> {
+async function handleDoctor(options: { config?: string; platform?: string }): Promise<void> {
   const { runDiagnostics } = await import('./diagnostics.js');
   const configPath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
 
   const storagePath = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? undefined;
   print('Running diagnostics...');
-  const checks = await runDiagnostics({ configPath, storagePath });
+  const checks = await runDiagnostics({ configPath, storagePath, platform: options.platform });
 
   const ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '-' };
   const COL = 22;
@@ -1322,6 +1322,10 @@ export function createInstallProgram(): Command {
     .command('doctor')
     .description('Check configuration, hooks, daemon, and connectivity for common setup problems')
     .option('--config <path>', 'Path to config file (default: ~/.newrelic-preflight/config.json)')
+    .option(
+      '--platform <name>',
+      'Platform to check hooks for (e.g. kiro, cursor) — Claude Code checked by default',
+    )
     .action(handleDoctor);
 
   program

@@ -61,6 +61,10 @@ export class CursorAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return CURSOR_TOOL_MAP[platformToolName] ?? 'Unknown';
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return {
       platform: this.platformName,

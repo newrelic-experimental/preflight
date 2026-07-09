@@ -63,6 +63,10 @@ export class ZedAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return ZED_TOOL_MAP[platformToolName] ?? 'Unknown';
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return {
       platform: this.platformName,
