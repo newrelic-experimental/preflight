@@ -68,6 +68,10 @@ export class ContinueAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return CONTINUE_TOOL_MAP[platformToolName] ?? 'Unknown';
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return {
       platform: this.platformName,

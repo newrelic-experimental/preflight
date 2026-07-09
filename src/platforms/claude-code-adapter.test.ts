@@ -153,4 +153,10 @@ describe('ClaudeCodeAdapter', () => {
       await expect(adapter.initialize({})).resolves.toBeUndefined();
     });
   });
+
+  describe('mapToolName', () => {
+    it('passes the tool name through unchanged', () => {
+      expect(adapter.mapToolName('Read')).toBe('Read');
+    });
+  });
 });

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-07-09
+
+### Fixed
+
+- **Kiro hook events were silently dropped** — `preflight-collector` matched Claude Code's exact PascalCase hook event names (`PreToolUse`); Kiro sends lower-camelCase (`preToolUse`) per its own docs, so every Kiro hook event fell through to a silent no-op — nothing was written to the buffer, but the collector still exited 0. The event-name check is now case-insensitive. (#84)
+- **Hook-sourced tool names were never normalized for any platform** — `PlatformAdapter.normalizeToolCall()` and `PlatformRegistry` were fully implemented and tested but never actually called from the running hook pipeline; every platform's tool names passed through to trackers and the dashboard unmapped. Added `PlatformAdapter.mapToolName()` and wired it into `HookEventProcessor`, and corrected Kiro's tool-name map with its documented aliases (`read`/`write`/`shell`/`aws`).
+
+### Added
+
+- **`preflight doctor --platform <name>`** — the "Hooks wired" check previously only validated Claude Code's `settings.json` and stayed green regardless of whether a non-Claude-Code platform's hooks actually worked. Passing `--platform kiro` (or any other registered platform name) now skips the Claude-Code-specific check in favor of an explicit reminder to verify that platform's own hook/MCP config and to confirm events land in `~/.newrelic-preflight/buffer-*.jsonl`.
+
 ## [1.4.2] - 2026-07-09
 
 ### Added

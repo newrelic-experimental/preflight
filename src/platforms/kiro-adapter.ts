@@ -6,17 +6,23 @@ import type {
 } from './types.js';
 
 /**
- * Maps Amazon Kiro agent tool names to the normalized Claude Code tool
- * vocabulary. Kiro exposes both camelCase tool names (e.g. `fsRead`) and
- * snake_case aliases depending on configuration, so both are covered.
+ * Maps Amazon Kiro tool names to the normalized Claude Code tool vocabulary.
+ * Kiro's hook events (https://kiro.dev/docs/cli/hooks) send `tool_name` as
+ * either a tool's canonical name (`fs_read`) or a documented alias (`read`) —
+ * both forms are covered. Entries without a confirmed source in Kiro's docs
+ * (e.g. `fsRead`, `fsCreate`) are kept as best-effort coverage for IDE-surface
+ * tool names not yet documented publicly; don't remove them without positive
+ * evidence they're wrong.
  */
 const KIRO_TOOL_MAP: Record<string, string> = {
   fsRead: 'Read',
   fs_read: 'Read',
+  read: 'Read',
   readFile: 'Read',
   readMultipleFiles: 'Read',
   fsWrite: 'Write',
   fs_write: 'Write',
+  write: 'Write',
   writeFile: 'Write',
   fsCreate: 'Write',
   fsAppend: 'Edit',
@@ -37,8 +43,11 @@ const KIRO_TOOL_MAP: Record<string, string> = {
   search_code: 'Grep',
   executeBash: 'Bash',
   execute_bash: 'Bash',
+  shell: 'Bash',
   executePwsh: 'Bash',
   run_command: 'Bash',
+  use_aws: 'Bash',
+  aws: 'Bash',
 };
 
 interface KiroToolCallEvent {
@@ -84,6 +93,10 @@ export class KiroAdapter implements PlatformAdapter {
       ...(event.command !== undefined && { command: event.command }),
       ...(event.sessionId !== undefined && { sessionId: event.sessionId }),
     };
+  }
+
+  mapToolName(platformToolName: string): string {
+    return KIRO_TOOL_MAP[platformToolName] ?? 'Unknown';
   }
 
   getSessionMetadata(): PlatformSessionMetadata {

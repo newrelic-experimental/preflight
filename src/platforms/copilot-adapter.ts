@@ -86,6 +86,10 @@ export class CopilotAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return COPILOT_EVENT_TYPE_MAP[platformToolName] ?? 'Unknown';
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return {
       platform: this.platformName,

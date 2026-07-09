@@ -13,6 +13,7 @@ import {
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore } from '../storage/index.js';
+import { createDefaultRegistry } from '../platforms/index.js';
 
 const logger = createLogger('diagnostics');
 
@@ -189,7 +190,25 @@ function checkDaemon(): DiagnosticCheck[] {
   return [installedCheck, nodePathCheck];
 }
 
-function checkHooksWired(settingsPaths: string[]): DiagnosticCheck {
+function checkHooksWired(settingsPaths: string[], platform: string | undefined): DiagnosticCheck {
+  if (platform !== undefined && platform !== 'claude-code') {
+    const registry = createDefaultRegistry();
+    const known = registry.getRegistered().map((a) => a.platformName);
+    if (!known.includes(platform)) {
+      return {
+        check: 'Hooks wired',
+        status: 'fail',
+        detail: `Unknown platform "${platform}". Supported: ${known.join(', ')}`,
+      };
+    }
+    return {
+      check: 'Hooks wired',
+      status: 'warn',
+      detail: `This check only validates Claude Code's settings.json — not applicable to "${platform}"`,
+      fix: `Verify manually: confirm ${platform}'s own hook or MCP config invokes preflight-collector (or reports via MCP), then tail ~/.newrelic-preflight/buffer-*.jsonl while using ${platform} to confirm events actually arrive.`,
+    };
+  }
+
   const anyPathExists = settingsPaths.some(existsSync);
   let hooksPre = false;
   let hooksPost = false;
@@ -394,6 +413,7 @@ function checkLocalInstances(storagePath: string): DiagnosticCheck {
 export async function runDiagnostics(opts?: {
   configPath?: string;
   storagePath?: string;
+  platform?: string;
 }): Promise<DiagnosticCheck[]> {
   const configPath = opts?.configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
@@ -407,7 +427,7 @@ export async function runDiagnostics(opts?: {
   return [
     configCheck,
     ...checkDaemon(),
-    checkHooksWired(settingsPaths),
+    checkHooksWired(settingsPaths, opts?.platform),
     checkStorageWritable(context.storagePath),
     checkLocalInstances(context.storagePath),
     await checkNrReachable(context.nrSkipReason),

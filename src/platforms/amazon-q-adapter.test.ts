@@ -258,4 +258,14 @@ describe('AmazonQAdapter', () => {
       await expect(adapter.initialize({})).resolves.toBeUndefined();
     });
   });
+
+  describe('mapToolName', () => {
+    it('maps a known tool name', () => {
+      expect(adapter.mapToolName('fs_read')).toBe('Read');
+    });
+
+    it('returns "Unknown" for an unrecognized tool name', () => {
+      expect(adapter.mapToolName('totally_made_up_tool')).toBe('Unknown');
+    });
+  });
 });
