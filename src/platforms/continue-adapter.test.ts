@@ -251,4 +251,14 @@ describe('ContinueAdapter', () => {
       await expect(adapter.initialize({})).resolves.toBeUndefined();
     });
   });
+
+  describe('mapToolName', () => {
+    it('maps a known tool name', () => {
+      expect(adapter.mapToolName('readFile')).toBe('Read');
+    });
+
+    it('returns "Unknown" for an unrecognized tool name', () => {
+      expect(adapter.mapToolName('totallyMadeUpTool')).toBe('Unknown');
+    });
+  });
 });

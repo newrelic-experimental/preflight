@@ -395,6 +395,51 @@ describe('collector-script', () => {
     });
   });
 
+  function makeKiroPreToolUse(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'preToolUse',
+      tool_name: 'read',
+      tool_input: { operations: [{ mode: 'Line', path: '/tmp/test.ts' }] },
+      session_id: 'kiro-sess-001',
+      cwd: '/projects/test',
+      ...overrides,
+    });
+  }
+
+  function makeKiroPostToolUse(overrides?: Record<string, unknown>): string {
+    return JSON.stringify({
+      hook_event_name: 'postToolUse',
+      tool_name: 'read',
+      tool_response: { success: true },
+      session_id: 'kiro-sess-001',
+      cwd: '/projects/test',
+      ...overrides,
+    });
+  }
+
+  describe('collector-script — Kiro hook event names (lower-camelCase)', () => {
+    it('writes a pre event when hook_event_name is "preToolUse" (not "PreToolUse")', () => {
+      processHook(makeKiroPreToolUse());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('pre');
+      expect(events[0].tool).toBe('read');
+    });
+
+    it('writes a post event when hook_event_name is "postToolUse" (not "PostToolUse")', () => {
+      processHook(makeKiroPostToolUse());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('post');
+      expect(events[0].success).toBe(true);
+    });
+
+    it('still ignores a genuinely unknown hook_event_name', () => {
+      processHook(makeKiroPreToolUse({ hook_event_name: 'agentSpawn' }));
+      expect(readBufferEvents()).toHaveLength(0);
+    });
+  });
+
   describe('helper functions', () => {
     it('redact() replaces API keys', () => {
       expect(redact('API_KEY = my-secret-key')).toContain('[REDACTED]');

@@ -627,7 +627,12 @@ function processHook(raw: string): void {
     writePpidBreadcrumb(data.session_id);
   }
 
-  const eventName = data.hook_event_name;
+  // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends
+  // lower-camelCase ('preToolUse') per https://kiro.dev/docs/cli/hooks.
+  // Normalize case so both are recognized without hard-coding per-platform
+  // spellings here (this file intentionally has no platform-adapter import —
+  // see the file's own "no heavy imports" design constraint).
+  const eventName = data.hook_event_name?.toLowerCase();
   const toolName = data.tool_name ?? 'unknown';
   const timestamp = Date.now();
   const recordContent = getRecordContent();
@@ -635,7 +640,7 @@ function processHook(raw: string): void {
 
   let event: Record<string, unknown>;
 
-  if (eventName === 'PreToolUse') {
+  if (eventName === 'pretooluse') {
     event = {
       mode: 'pre' as const,
       tool: toolName,
@@ -653,7 +658,7 @@ function processHook(raw: string): void {
         typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
       event.inputContent = redact(truncate(content, maxContentLen));
     }
-  } else if (eventName === 'PostToolUse') {
+  } else if (eventName === 'posttooluse') {
     event = {
       mode: 'post' as const,
       tool: toolName,
@@ -677,7 +682,7 @@ function processHook(raw: string): void {
           : JSON.stringify(data.tool_response);
       event.outputContent = redact(truncate(content, maxContentLen));
     }
-  } else if (eventName === 'PostToolUseFailure') {
+  } else if (eventName === 'posttoolusefailure') {
     event = {
       mode: 'post' as const,
       tool: toolName,
@@ -723,7 +728,7 @@ function processHook(raw: string): void {
 
   // After writing the tool event, collect token usage from the transcript.
   // Only on PostToolUse — each assistant turn produces exactly one usage object.
-  if (eventName === 'PostToolUse') {
+  if (eventName === 'posttooluse') {
     try {
       collectTranscriptTokens(data);
     } catch {

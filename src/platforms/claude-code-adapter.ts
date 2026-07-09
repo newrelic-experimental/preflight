@@ -35,6 +35,10 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return platformToolName;
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return {
       platform: this.platformName,

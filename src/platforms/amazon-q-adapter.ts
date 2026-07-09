@@ -68,6 +68,10 @@ export class AmazonQAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(platformToolName: string): string {
+    return AMAZON_Q_TOOL_MAP[platformToolName] ?? 'Unknown';
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return {
       platform: this.platformName,

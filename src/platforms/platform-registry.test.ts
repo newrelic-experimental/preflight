@@ -77,6 +77,10 @@ class FakeAdapter implements PlatformAdapter {
     };
   }
 
+  mapToolName(): string {
+    return 'Test';
+  }
+
   getSessionMetadata(): PlatformSessionMetadata {
     return { platform: this.platformName };
   }
@@ -141,6 +145,9 @@ describe('PlatformRegistry', () => {
             durationMs: null,
             success: true,
           };
+        },
+        mapToolName() {
+          return 'T';
         },
         getSessionMetadata() {
           return { platform: 'mutable' };

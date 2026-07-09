@@ -120,6 +120,7 @@ describe('runDiagnostics', () => {
   let runDiagnostics: (opts?: {
     configPath?: string;
     storagePath?: string;
+    platform?: string;
   }) => Promise<DiagnosticCheck[]>;
 
   beforeEach(async () => {
@@ -465,6 +466,31 @@ describe('runDiagnostics', () => {
       expect(c.status).toBe('fail');
       expect(c.detail).toContain('PostToolUse');
       expect(c.detail).not.toContain('warn');
+    });
+
+    it('skips the Claude Code check and gives manual-verification guidance for a non-Claude platform', async () => {
+      mockedExistSync.mockReturnValue(false);
+      const checks = await runDiagnostics({ ...makeOpts(), platform: 'kiro' });
+      const hooksCheck = checks.find((c: DiagnosticCheck) => c.check === 'Hooks wired');
+      expect(hooksCheck?.status).toBe('warn');
+      expect(hooksCheck?.detail).toContain('kiro');
+      expect(hooksCheck?.fix).toContain('buffer-*.jsonl');
+    });
+
+    it('fails with the list of known platforms when given an unrecognized platform name', async () => {
+      const checks = await runDiagnostics({ ...makeOpts(), platform: 'not-a-real-platform' });
+      const hooksCheck = checks.find((c: DiagnosticCheck) => c.check === 'Hooks wired');
+      expect(hooksCheck?.status).toBe('fail');
+      expect(hooksCheck?.detail).toContain('Unknown platform');
+      expect(hooksCheck?.detail).toContain('kiro');
+    });
+
+    it('runs the existing Claude Code check unchanged when --platform is omitted', async () => {
+      mockedExistSync.mockReturnValue(false);
+      const checks = await runDiagnostics(makeOpts());
+      const hooksCheck = checks.find((c: DiagnosticCheck) => c.check === 'Hooks wired');
+      expect(hooksCheck?.status).toBe('fail');
+      expect(hooksCheck?.detail).toContain('Settings file not found');
     });
   });
 

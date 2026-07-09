@@ -110,6 +110,31 @@ describe('KiroAdapter', () => {
       expect(normalized.toolName).toBe('Read');
     });
 
+    it('maps "read" (alias) to "Read"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'read', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Read');
+    });
+
+    it('maps "write" (alias) to "Write"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'write', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Write');
+    });
+
+    it('maps "shell" (alias) to "Bash"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'shell', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Bash');
+    });
+
+    it('maps "use_aws" to "Bash"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'use_aws', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Bash');
+    });
+
+    it('maps "aws" (alias) to "Bash"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'aws', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Bash');
+    });
+
     it('accepts "toolName" field as an alternative to "tool"', () => {
       const normalized = adapter.normalizeToolCall({ toolName: 'fsRead', timestamp: 2000 });
       expect(normalized.toolName).toBe('Read');
@@ -245,6 +270,16 @@ describe('KiroAdapter', () => {
   describe('initialize', () => {
     it('completes without error', async () => {
       await expect(adapter.initialize({})).resolves.toBeUndefined();
+    });
+  });
+
+  describe('mapToolName', () => {
+    it('maps a known tool name', () => {
+      expect(adapter.mapToolName('fsRead')).toBe('Read');
+    });
+
+    it('returns "Unknown" for an unrecognized tool name', () => {
+      expect(adapter.mapToolName('totally_made_up_tool')).toBe('Unknown');
     });
   });
 });

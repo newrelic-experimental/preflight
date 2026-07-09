@@ -12,11 +12,25 @@
 
 import { randomUUID } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
+import { createDefaultRegistry } from '../platforms/index.js';
+import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
 import type { HookEvent, ToolCallRecord, TokenEvent } from '../storage/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
+
+/**
+ * Maps a raw platform tool name via the adapter, falling back to the raw
+ * name when the adapter can't recognize it (i.e. returns the literal string
+ * `'Unknown'`). Without this fallback, every unmapped tool would collapse
+ * into the same `'Unknown'` bucket — losing the original name in telemetry
+ * and letting distinct unmapped tools collide on the same pairing key.
+ */
+function mapToolNameOrOriginal(adapter: PlatformAdapter, rawToolName: string): string {
+  const mapped = adapter.mapToolName(rawToolName);
+  return mapped === 'Unknown' ? rawToolName : mapped;
+}
 
 export interface HookEventProcessorOptions {
   store: LocalStore;
@@ -34,6 +48,14 @@ export interface HookEventProcessorOptions {
   drainAllSessions?: boolean;
   onRecord: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
+  /**
+   * Adapter used to map each platform's raw tool names (e.g. Kiro's `fs_read`)
+   * to Preflight's canonical vocabulary (`Read`) before pairing/emitting.
+   * Defaults to the process's auto-detected platform (env-var based via
+   * `createDefaultRegistry().getActive()`), which resolves to `GenericMcpAdapter`
+   * (identity mapping) when no platform-specific env vars are present.
+   */
+  platformAdapter?: PlatformAdapter;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -47,6 +69,7 @@ export class HookEventProcessor {
   private drainAllSessions: boolean;
   private readonly onRecord: (record: ToolCallRecord) => void;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
+  private readonly platformAdapter: PlatformAdapter;
 
   private readonly pending: Map<string, HookEvent> = new Map();
   private readonly maxPendingEvents: number;
@@ -64,6 +87,7 @@ export class HookEventProcessor {
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
     this.onRecord = options.onRecord;
     this.onTokenEvent = options.onTokenEvent ?? null;
+    this.platformAdapter = options.platformAdapter ?? createDefaultRegistry().getActive();
 
     this.boundBeforeExit = () => {
       this.stop();
@@ -144,7 +168,11 @@ export class HookEventProcessor {
    * Exported for direct testing — in production, called by poll().
    */
   processEvents(events: HookEvent[]): void {
-    for (const event of events) {
+    for (const rawEvent of events) {
+      const event: HookEvent =
+        rawEvent.mode === 'pre' || rawEvent.mode === 'post'
+          ? { ...rawEvent, tool: mapToolNameOrOriginal(this.platformAdapter, rawEvent.tool) }
+          : rawEvent;
       try {
         if (event.mode === 'token') {
           this.handleTokenEvent(event);
