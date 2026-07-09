@@ -354,6 +354,147 @@ export class LocalStore {
   }
 
   /**
+   * Register the current `--local` process in the instance registry
+   * (`local-instances/<pid>.json`: pid/argv/cwd/startedAt) — called
+   * unconditionally at `--local` startup, regardless of whether this
+   * process wins the dashboard port bind. This is what lets `preflight
+   * local` and `preflight doctor` see EVERY `--local` process preflight
+   * launched, not just whichever one currently owns the dashboard (that's
+   * `local-dashboard.pid`, a separate single-slot mechanism — see
+   * `writeLocalDashboardPid()`).
+   */
+  registerLocalInstance(argv: readonly string[], cwd: string, pid: number = process.pid): void {
+    const dir = resolve(this.storagePath, 'local-instances');
+    const path = resolve(dir, `${pid}.json`);
+    try {
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+      writeFileSync(
+        path,
+        JSON.stringify({ pid, argv: Array.from(argv), cwd, startedAt: Date.now() }),
+        { mode: 0o600 },
+      );
+    } catch (err) {
+      logger.warn('Failed to register local instance', { error: String(err) });
+    }
+  }
+
+  /**
+   * Remove this process's own instance-registry entry. Safe to call
+   * unconditionally on shutdown — a missing file is a no-op. Unlike
+   * `removeLocalDashboardPid()`, no ownership check is needed: the filename
+   * itself (`<pid>.json`) already scopes the entry to a specific PID.
+   */
+  unregisterLocalInstance(pid: number = process.pid): void {
+    const path = resolve(this.storagePath, 'local-instances', `${pid}.json`);
+    try {
+      if (existsSync(path)) unlinkSync(path);
+    } catch (err) {
+      logger.debug('Failed to remove local instance registry entry', { error: String(err) });
+    }
+  }
+
+  /**
+   * List every `--local` process preflight has registered that hasn't been
+   * unregistered yet — including ones whose PID is no longer alive (tagged
+   * `alive: false`). Callers that only want live entries should filter;
+   * `gcDeadLocalInstances()` is what actually cleans up the dead ones.
+   * Malformed entries are skipped silently.
+   */
+  listLocalInstances(): Array<{
+    pid: number;
+    argv: string[];
+    cwd: string;
+    startedAt: number;
+    alive: boolean;
+  }> {
+    const dir = resolve(this.storagePath, 'local-instances');
+    if (!existsSync(dir)) return [];
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch (err) {
+      logger.warn('Failed to enumerate local-instances dir', { error: String(err) });
+      return [];
+    }
+    const result: Array<{
+      pid: number;
+      argv: string[];
+      cwd: string;
+      startedAt: number;
+      alive: boolean;
+    }> = [];
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      try {
+        const parsed = JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as {
+          pid?: unknown;
+          argv?: unknown;
+          cwd?: unknown;
+          startedAt?: unknown;
+        };
+        const { pid, argv, cwd, startedAt } = parsed;
+        if (
+          typeof pid !== 'number' ||
+          !Array.isArray(argv) ||
+          !argv.every((a) => typeof a === 'string') ||
+          typeof cwd !== 'string' ||
+          typeof startedAt !== 'number'
+        ) {
+          continue;
+        }
+        result.push({ pid, argv: argv as string[], cwd, startedAt, alive: isPidAlive(pid) });
+      } catch {
+        continue;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Garbage-collect instance-registry entries whose PID is no longer alive —
+   * mirrors `gcStaleBreadcrumbs()`. Called opportunistically from the
+   * dashboard owner's periodic GC pass (see `setupDashboardPostBind()` in
+   * index.ts), so entries left behind by a process that didn't shut down
+   * cleanly don't accumulate indefinitely.
+   *
+   * @returns the number of entries deleted
+   */
+  gcDeadLocalInstances(): number {
+    const dir = resolve(this.storagePath, 'local-instances');
+    if (!existsSync(dir)) return 0;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch (err) {
+      logger.warn('Failed to enumerate local-instances dir for gcDeadLocalInstances', {
+        error: String(err),
+      });
+      return 0;
+    }
+    let deleted = 0;
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const pidStr = name.slice(0, -'.json'.length);
+      const pid = Number.parseInt(pidStr, 10);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      if (isPidAlive(pid)) continue;
+      const path = resolve(dir, name);
+      try {
+        unlinkSync(path);
+        deleted++;
+      } catch (err) {
+        logger.debug('Failed to delete dead local instance entry', { pid, error: String(err) });
+      }
+    }
+    if (deleted > 0) {
+      logger.info('Cleaned up dead local instance entries', { deleted });
+    }
+    return deleted;
+  }
+
+  /**
    * Garbage-collect orphan per-session buffer files. A buffer is orphan when
    * no live process is currently draining it; we determine that with two
    * signals:

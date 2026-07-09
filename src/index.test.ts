@@ -334,16 +334,19 @@ describe('setupDashboardPostBind()', () => {
     gcOrphanBuffers: ReturnType<typeof jest.fn>;
     getActiveSessionIdsFromHeartbeats: ReturnType<typeof jest.fn>;
     writeLocalDashboardPid: ReturnType<typeof jest.fn>;
+    gcDeadLocalInstances: ReturnType<typeof jest.fn>;
   } {
     const gcStaleBreadcrumbs = jest.fn();
     const gcOrphanBuffers = jest.fn();
     const getActiveSessionIdsFromHeartbeats = jest.fn(() => new Set<string>());
     const writeLocalDashboardPid = jest.fn();
+    const gcDeadLocalInstances = jest.fn(() => 0);
     const store = {
       gcStaleBreadcrumbs,
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
       writeLocalDashboardPid,
+      gcDeadLocalInstances,
     } as unknown as LocalStore;
     return {
       store,
@@ -351,6 +354,7 @@ describe('setupDashboardPostBind()', () => {
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
       writeLocalDashboardPid,
+      gcDeadLocalInstances,
     };
   }
 
@@ -413,6 +417,18 @@ describe('setupDashboardPostBind()', () => {
       { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
     );
     expect(writeLocalDashboardPid).not.toHaveBeenCalled();
+    clearInterval(handle);
+  });
+
+  it('runs gcDeadLocalInstances as part of the GC pass', () => {
+    const { store, gcDeadLocalInstances } = makeLocalStore();
+    const handle = setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
+    );
+    expect(gcDeadLocalInstances).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(5 * 60 * 1000);
+    expect(gcDeadLocalInstances).toHaveBeenCalledTimes(2);
     clearInterval(handle);
   });
 });

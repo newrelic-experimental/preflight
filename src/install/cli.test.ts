@@ -57,6 +57,9 @@ jest.mock('node:readline/promises', () => ({
 jest.mock('../storage/index.js', () => ({
   LocalStore: jest.fn().mockImplementation(() => ({
     getLiveLocalDashboardProcess: jest.fn(() => null),
+    listLocalInstances: jest.fn(() => []),
+    gcDeadLocalInstances: jest.fn(() => 0),
+    unregisterLocalInstance: jest.fn(),
   })),
 }));
 jest.mock('../config.js', () => ({
@@ -1662,6 +1665,164 @@ describe('preflight update', () => {
     expect(output).toContain('Checking for another running dashboard process instead');
     expect(output).not.toContain('Restart the running dashboard');
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflight local
+// ---------------------------------------------------------------------------
+
+describe('preflight local', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => []),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => 'y'),
+      close: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+  });
+
+  function getOutput(): string {
+    return stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  it('prints "No --local processes running" when the registry is empty', async () => {
+    await runInstallCli(['local']);
+    expect(getOutput()).toContain('No --local processes running');
+  });
+
+  it('cleans up dead entries silently before listing', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => []),
+      gcDeadLocalInstances: jest.fn(() => 2),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    await runInstallCli(['local']);
+    expect(getOutput()).toContain('Cleaned up 2 stale registry entries');
+  });
+
+  it('lists live instances and marks the dashboard owner', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({ pid: 100, argv: [], cwd: '/owner' })),
+      listLocalInstances: jest.fn(() => [
+        { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now() - 1000, alive: true },
+        { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now() - 2000, alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    await runInstallCli(['local']);
+    const output = getOutput();
+    expect(output).toContain('2 --local process(es) running');
+    expect(output).toContain('PID 100');
+    expect(output).toContain('dashboard owner');
+    expect(output).toContain('PID 200');
+    expect(output).toContain('idle');
+  });
+
+  it('does not prompt or kill when --clean is omitted, even with orphans present', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => [
+        { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    const killSpy = jest.spyOn(process, 'kill');
+    await runInstallCli(['local']);
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
+  it('--clean prompts default-yes and kills+unregisters every orphan on accept', async () => {
+    const unregisterLocalInstance = jest.fn();
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({ pid: 100, argv: [], cwd: '/owner' })),
+      listLocalInstances: jest.fn(() => [
+        { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now(), alive: true },
+        { pid: 200, argv: [], cwd: '/orphan-a', startedAt: Date.now(), alive: true },
+        { pid: 201, argv: [], cwd: '/orphan-b', startedAt: Date.now(), alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance,
+    }));
+    const readlineMod = await import('node:readline/promises');
+    const questionMock = jest.fn(async (_prompt: string) => 'y');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: questionMock,
+      close: jest.fn(),
+    });
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+    await runInstallCli(['local', '--clean']);
+    expect(killSpy).toHaveBeenCalledWith(200, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(201, 'SIGTERM');
+    expect(unregisterLocalInstance).toHaveBeenCalledWith(200);
+    expect(unregisterLocalInstance).toHaveBeenCalledWith(201);
+    // The confirmation prompt text is passed as the argument to the (mocked)
+    // readline `question()` call rather than written to stdout directly —
+    // real readline writes it to the output stream itself, which this bare
+    // mock doesn't replicate. Same pattern used by the `preflight update`
+    // ad-hoc-restart prompt tests above.
+    expect(questionMock).toHaveBeenCalledWith(
+      expect.stringContaining('Kill 2 orphaned processes?'),
+    );
+    const output = getOutput();
+    expect(output).toContain('Killed PID 200');
+    expect(output).toContain('Killed PID 201');
+    killSpy.mockRestore();
+  });
+
+  it('--clean does not kill anything when the user declines', async () => {
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => 'n'),
+      close: jest.fn(),
+    });
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => [
+        { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    const killSpy = jest.spyOn(process, 'kill');
+    await runInstallCli(['local', '--clean']);
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
+  it('--clean prints "No orphaned processes" when every live instance is the owner', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({ pid: 100, argv: [], cwd: '/owner' })),
+      listLocalInstances: jest.fn(() => [
+        { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now(), alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    const killSpy = jest.spyOn(process, 'kill');
+    await runInstallCli(['local', '--clean']);
+    expect(getOutput()).toContain('No orphaned processes to clean up');
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
   });
 });
 
