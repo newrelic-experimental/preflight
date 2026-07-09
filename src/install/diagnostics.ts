@@ -12,6 +12,7 @@ import {
   entryHasAnyCommandHook,
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
+import { LocalStore } from '../storage/index.js';
 
 const logger = createLogger('diagnostics');
 
@@ -355,6 +356,41 @@ async function checkNrReachable(skipReason: string | null): Promise<DiagnosticCh
   }
 }
 
+function checkLocalInstances(storagePath: string): DiagnosticCheck {
+  try {
+    const store = new LocalStore(storagePath);
+    const owner = store.getLiveLocalDashboardProcess();
+    const instances = store.listLocalInstances().filter((i) => i.alive);
+    const orphans = instances.filter((i) => i.pid !== owner?.pid);
+
+    if (orphans.length === 0) {
+      return {
+        check: 'Local instances',
+        status: 'ok',
+        detail:
+          instances.length === 0
+            ? 'No --local processes running'
+            : `${instances.length} --local process(es) running, all accounted for`,
+      };
+    }
+    return {
+      check: 'Local instances',
+      status: 'warn',
+      detail: `${orphans.length} idle --local process(es) running (PID${
+        orphans.length > 1 ? 's' : ''
+      }: ${orphans.map((o) => o.pid).join(', ')})`,
+      fix: 'preflight local --clean',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      check: 'Local instances',
+      status: 'warn',
+      detail: `Could not check local instances: ${message}`,
+    };
+  }
+}
+
 export async function runDiagnostics(opts?: {
   configPath?: string;
   storagePath?: string;
@@ -373,6 +409,7 @@ export async function runDiagnostics(opts?: {
     ...checkDaemon(),
     checkHooksWired(settingsPaths),
     checkStorageWritable(context.storagePath),
+    checkLocalInstances(context.storagePath),
     await checkNrReachable(context.nrSkipReason),
   ];
 }

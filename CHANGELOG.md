@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-07-09
+
+### Added
+
+- **`preflight local` command** — lists every `--local` dashboard process preflight has launched (not just whichever one currently owns the dashboard port), and `preflight local --clean` offers to kill the ones that lost the port race and have been running headless ever since. Every `--local` process now registers itself in a small per-PID registry at startup regardless of port outcome; dead entries (from a process that didn't shut down cleanly) are garbage-collected automatically every 5 minutes by whichever process owns the dashboard. `preflight doctor` gained a matching "Local instances" check that reports idle processes and points at `preflight local --clean`.
+
 ## [1.4.1] - 2026-07-08
 
 ### Fixed

@@ -223,6 +223,7 @@ export function setupDashboardPostBind(
   const runGc = (): void => {
     try {
       localStore.gcStaleBreadcrumbs();
+      localStore.gcDeadLocalInstances();
       const live = localStore.getActiveSessionIdsFromHeartbeats();
       if (liveSessionRegistry) {
         for (const id of liveSessionRegistry.getLiveSessions()) live.add(id);
@@ -579,6 +580,7 @@ async function main(): Promise<void> {
       // instances that never won the port (removeLocalDashboardPid() itself
       // also guards on pid ownership as a second layer of safety).
       if (options.local) localStoreForShutdown?.removeLocalDashboardPid();
+      if (options.local) localStoreForShutdown?.unregisterLocalInstance();
       if (alertRulesWatchTimer) clearTimeout(alertRulesWatchTimer);
       if (alertRulesWatcher) {
         try {
@@ -703,6 +705,14 @@ async function main(): Promise<void> {
         ? new LocalStore(config.storagePath, sessionTraceId)
         : new LocalStore(config.storagePath);
     localStore.initialize();
+
+    // Register every --local process in the instance registry, regardless
+    // of whether it goes on to win the dashboard port bind — this is what
+    // lets `preflight local`/`preflight doctor` see processes that lose the
+    // EADDRINUSE race and would otherwise run headless with no visibility.
+    if (options.local) {
+      localStore.registerLocalInstance(process.argv.slice(1), process.cwd());
+    }
 
     // Every MCP writes its heartbeat once it has bound a session_id so the
     // dashboard owner's GC pass can tell which buffer files still have a live

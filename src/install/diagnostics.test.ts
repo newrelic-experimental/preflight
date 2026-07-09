@@ -79,6 +79,14 @@ jest.mock('./platform.js', () => ({
   resolveWindowsHome: jest.fn(() => null),
 }));
 
+// Stub storage module.
+jest.mock('../storage/index.js', () => ({
+  LocalStore: jest.fn().mockImplementation(() => ({
+    getLiveLocalDashboardProcess: jest.fn(() => null),
+    listLocalInstances: jest.fn(() => []),
+  })),
+}));
+
 // Stub global fetch.
 const mockFetch = jest.fn<typeof fetch>();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -88,6 +96,7 @@ import * as schedule from './schedule.js';
 import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
+import { LocalStore } from '../storage/index.js';
 
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
@@ -578,8 +587,75 @@ describe('runDiagnostics', () => {
     });
   });
 
-  it('returns exactly 6 checks on macOS', async () => {
+  describe('Check 7: Local instances', () => {
+    it('reports ok with no --local processes running', async () => {
+      (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+        getLiveLocalDashboardProcess: jest.fn(() => null),
+        listLocalInstances: jest.fn(() => []),
+      }));
+      const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
+      const check = checks.find((c) => c.check === 'Local instances');
+      expect(check?.status).toBe('ok');
+      expect(check?.detail).toContain('No --local processes running');
+    });
+
+    it('reports ok when every live instance is the dashboard owner', async () => {
+      (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+        getLiveLocalDashboardProcess: jest.fn(() => ({ pid: 100, argv: [], cwd: '/owner' })),
+        listLocalInstances: jest.fn(() => [
+          { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now(), alive: true },
+        ]),
+      }));
+      const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
+      const check = checks.find((c) => c.check === 'Local instances');
+      expect(check?.status).toBe('ok');
+      expect(check?.fix).toBeUndefined();
+    });
+
+    it('reports warn with orphan PIDs and a fix command when idle instances exist', async () => {
+      (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+        getLiveLocalDashboardProcess: jest.fn(() => ({ pid: 100, argv: [], cwd: '/owner' })),
+        listLocalInstances: jest.fn(() => [
+          { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now(), alive: true },
+          { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
+        ]),
+      }));
+      const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
+      const check = checks.find((c) => c.check === 'Local instances');
+      expect(check?.status).toBe('warn');
+      expect(check?.detail).toContain('200');
+      expect(check?.fix).toBe('preflight local --clean');
+    });
+
+    it('ignores dead entries when counting orphans', async () => {
+      (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+        getLiveLocalDashboardProcess: jest.fn(() => null),
+        listLocalInstances: jest.fn(() => [
+          { pid: 200, argv: [], cwd: '/dead', startedAt: Date.now(), alive: false },
+        ]),
+      }));
+      const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
+      const check = checks.find((c) => c.check === 'Local instances');
+      expect(check?.status).toBe('ok');
+    });
+
+    it('degrades to a warn check instead of crashing runDiagnostics when LocalStore throws', async () => {
+      (LocalStore as unknown as jest.Mock).mockImplementation(() => {
+        throw new Error('registry file is corrupt');
+      });
+      const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
+      // All 7 checks must still be present — one throwing dependency must not
+      // take down the rest of the diagnostic run.
+      expect(checks).toHaveLength(7);
+      const check = checks.find((c) => c.check === 'Local instances');
+      expect(check?.status).toBe('warn');
+      expect(check?.detail).toContain('registry file is corrupt');
+      expect(check?.fix).toBeUndefined();
+    });
+  });
+
+  it('returns exactly 7 checks on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(6);
+    expect(checks).toHaveLength(7);
   });
 });

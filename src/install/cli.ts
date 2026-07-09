@@ -217,9 +217,28 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Kill the given PID (SIGTERM, escalating to SIGKILL after a 2s grace period
- * if it hasn't exited — Windows terminates immediately on any signal, so the
- * grace period is a no-op there), then respawn it detached with its original
+ * Kill the given PID: SIGTERM, escalating to SIGKILL after a 2s grace period
+ * if it hasn't exited (Windows terminates immediately on any signal, so the
+ * grace period is a no-op there). Tolerates the process having already
+ * exited between the caller's liveness check and this call (ESRCH).
+ */
+async function killProcessGracefully(pid: number): Promise<void> {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+  }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && isProcessAlive(pid)) {
+    await sleep(100);
+  }
+  if (isProcessAlive(pid)) {
+    process.kill(pid, 'SIGKILL');
+  }
+}
+
+/**
+ * Kill the given process, then respawn it detached with its original
  * argv/cwd so it comes back up exactly as it was invoked.
  */
 async function killAndRespawnLocalDashboard(proc: {
@@ -227,21 +246,7 @@ async function killAndRespawnLocalDashboard(proc: {
   argv: string[];
   cwd: string;
 }): Promise<void> {
-  try {
-    process.kill(proc.pid, 'SIGTERM');
-  } catch (err) {
-    // ESRCH: the process already exited between the liveness check and here
-    // — nothing left to signal, proceed straight to respawn. Any other
-    // error (e.g. EPERM) is a real failure and should propagate.
-    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
-  }
-  const deadline = Date.now() + 2000;
-  while (Date.now() < deadline && isProcessAlive(proc.pid)) {
-    await sleep(100);
-  }
-  if (isProcessAlive(proc.pid)) {
-    process.kill(proc.pid, 'SIGKILL');
-  }
+  await killProcessGracefully(proc.pid);
   spawn(process.execPath, proc.argv, { cwd: proc.cwd, detached: true, stdio: 'ignore' }).unref();
 }
 
@@ -397,6 +402,86 @@ async function offerRestarts(repoRoot: string): Promise<void> {
   } catch (err) {
     print(`⚠ Could not restart the dashboard automatically: ${errMsg(err)}`);
     print('  Run `preflight --local` to restart it manually.');
+  }
+}
+
+function formatAge(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h`;
+  const totalDays = Math.floor(totalHours / 24);
+  return `${totalDays}d`;
+}
+
+/**
+ * `preflight local` — lists every `--local` process preflight has
+ * registered (see `LocalStore.registerLocalInstance()`), marking whichever
+ * one currently owns the dashboard port. `--clean` additionally offers to
+ * kill every live, non-owning entry (a single combined prompt, default
+ * yes) — these are processes that lost the dashboard port race and have
+ * been running headless ever since, with no other way to detect them
+ * short of scanning the OS process table, which this feature deliberately
+ * avoids.
+ */
+async function handleLocal(options: { clean?: boolean }): Promise<void> {
+  const localStore = new LocalStore(DEFAULT_STORAGE_PATH);
+  const deleted = localStore.gcDeadLocalInstances();
+  if (deleted > 0) {
+    print(`Cleaned up ${deleted} stale registry entr${deleted > 1 ? 'ies' : 'y'}.`);
+    print();
+  }
+
+  const owner = localStore.getLiveLocalDashboardProcess();
+  const instances = localStore.listLocalInstances().filter((i) => i.alive);
+
+  if (instances.length === 0) {
+    print('No --local processes running.');
+    return;
+  }
+
+  print(`${instances.length} --local process(es) running:`);
+  print();
+  for (const inst of instances) {
+    const status = inst.pid === owner?.pid ? 'dashboard owner' : 'idle';
+    print(
+      `  PID ${inst.pid}  (${status}, started ${formatAge(Date.now() - inst.startedAt)} ago)  ${inst.cwd}`,
+    );
+  }
+
+  if (!options.clean) return;
+
+  const orphans = instances.filter((i) => i.pid !== owner?.pid);
+  if (orphans.length === 0) {
+    print('\nNo orphaned processes to clean up.');
+    return;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = (
+      await rl.question(
+        `\nKill ${orphans.length} orphaned process${orphans.length > 1 ? 'es' : ''}? [Y/n]: `,
+      )
+    )
+      .trim()
+      .toLowerCase();
+  } finally {
+    rl.close();
+  }
+  if (answer === 'n' || answer === 'no') return;
+
+  for (const orphan of orphans) {
+    try {
+      await killProcessGracefully(orphan.pid);
+      localStore.unregisterLocalInstance(orphan.pid);
+      print(`✓ Killed PID ${orphan.pid}.`);
+    } catch (err) {
+      print(`⚠ Could not kill PID ${orphan.pid}: ${errMsg(err)}`);
+    }
   }
 }
 
@@ -1250,6 +1335,15 @@ export function createInstallProgram(): Command {
     .option('--time <HH:MM>', 'Set the daily update time (24-hour format, e.g. 08:00)')
     .option('--disable', 'Remove the auto-update schedule')
     .action(handleSchedule);
+
+  program
+    .command('local')
+    .description('List running --local dashboard processes and clean up orphaned ones')
+    .option(
+      '--clean',
+      'Kill orphaned --local processes after listing them (prompts for confirmation)',
+    )
+    .action(handleLocal);
 
   return program;
 }
