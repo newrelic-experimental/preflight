@@ -1061,4 +1061,61 @@ describe('LocalStore', () => {
       expect(existsSync(resolve(breadcrumbDir, 'not-a-pid.txt'))).toBe(true);
     });
   });
+
+  describe('local dashboard PID file', () => {
+    it('writes pid/argv/cwd as JSON and reads it back', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      store.writeLocalDashboardPid(['dist/index.js', '--local'], '/repo', 12345);
+      // Fake the write PID as alive by using our own process's PID for the liveness check.
+      store.writeLocalDashboardPid(['dist/index.js', '--local'], '/repo', process.pid);
+      const proc = store.getLiveLocalDashboardProcess();
+      expect(proc).toEqual({ pid: process.pid, argv: ['dist/index.js', '--local'], cwd: '/repo' });
+    });
+
+    it('returns null when no pid file exists', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      expect(store.getLiveLocalDashboardProcess()).toBeNull();
+    });
+
+    it('returns null when the recorded pid is dead', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      // PID 1 is init/launchd — always alive and never our own; use an
+      // obviously-dead high PID instead (unlikely to collide with a live process
+      // in the test sandbox, and isPidAlive() treats ESRCH as dead).
+      writeFileSync(
+        resolve(tmpDir, 'local-dashboard.pid'),
+        JSON.stringify({ pid: 999999, argv: ['dist/index.js', '--local'], cwd: '/repo' }),
+      );
+      expect(store.getLiveLocalDashboardProcess()).toBeNull();
+    });
+
+    it('returns null when the pid file is malformed JSON', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      writeFileSync(resolve(tmpDir, 'local-dashboard.pid'), 'not json');
+      expect(store.getLiveLocalDashboardProcess()).toBeNull();
+    });
+
+    it('removeLocalDashboardPid deletes the file when it matches our own pid', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      store.writeLocalDashboardPid(['dist/index.js', '--local'], '/repo', process.pid);
+      store.removeLocalDashboardPid();
+      expect(existsSync(resolve(tmpDir, 'local-dashboard.pid'))).toBe(false);
+    });
+
+    it('removeLocalDashboardPid does NOT delete the file when it belongs to a different pid', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      writeFileSync(
+        resolve(tmpDir, 'local-dashboard.pid'),
+        JSON.stringify({ pid: process.pid + 1, argv: ['dist/index.js', '--local'], cwd: '/repo' }),
+      );
+      store.removeLocalDashboardPid();
+      expect(existsSync(resolve(tmpDir, 'local-dashboard.pid'))).toBe(true);
+    });
+  });
 });

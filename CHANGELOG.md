@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-08
+
+### Added
+
+- **`preflight update` offers to restart stale dashboard/daemon processes** — after a successful `git pull` + rebuild, `--local` now writes a small PID file (`local-dashboard.pid`: pid/argv/cwd) the moment it wins the dashboard port bind, giving `update` a reliable way to find its own dashboard process instead of a running instance silently continuing to serve the old cached version. If the macOS launchd dashboard daemon is installed, it's restarted automatically (no prompt). Otherwise, if a live ad-hoc `--local` process is found, `update` prompts (default yes) to restart it — killing it gracefully and respawning it detached with its original arguments. `--stdio` (Claude Code) sessions are never touched; they keep the existing "restart Claude Code" guidance.
+
 ## [1.3.1] - 2026-07-08
 
 ### Fixed

@@ -21,6 +21,7 @@ jest.mock('node:fs', () => ({
 jest.mock('node:child_process', () => ({
   execSync: jest.fn(),
   execFileSync: jest.fn(),
+  spawn: jest.fn(() => ({ unref: jest.fn() })),
 }));
 jest.mock('./diagnostics.js', () => ({
   runDiagnostics: jest.fn(async () => []),
@@ -53,7 +54,13 @@ jest.mock('node:readline/promises', () => ({
     close: jest.fn(),
   })),
 }));
+jest.mock('../storage/index.js', () => ({
+  LocalStore: jest.fn().mockImplementation(() => ({
+    getLiveLocalDashboardProcess: jest.fn(() => null),
+  })),
+}));
 
+import { LocalStore } from '../storage/index.js';
 import * as scheduleMod from './schedule.js';
 import * as platformMod from './platform.js';
 import { runInstallCli } from './cli.js';
@@ -67,6 +74,8 @@ const mockedSchedule = scheduleMod as unknown as {
   installSchedule: jest.Mock;
   removeSchedule: jest.Mock;
   getScheduleStatus: jest.Mock;
+  installDashboardDaemon: jest.Mock;
+  getDashboardDaemonStatus: jest.Mock;
   resolveBinaryPath: jest.Mock;
 };
 const mockedPlatform = platformMod as unknown as {
@@ -1211,7 +1220,7 @@ describe('preflight update', () => {
   let mFs: { existsSync: jest.Mock; realpathSync: jest.Mock };
   let mExec: { execFileSync: jest.Mock };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
     mFs = fsMod as unknown as { existsSync: jest.Mock; realpathSync: jest.Mock };
     mExec = childMod as unknown as { execFileSync: jest.Mock };
@@ -1224,6 +1233,19 @@ describe('preflight update', () => {
         throw new Error(`process.exit(${String(code)})`);
       });
     mFs.existsSync.mockImplementation(() => false);
+    // Reset implementations set per-test (clearAllMocks only clears call records).
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+    }));
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => 'y'),
+      close: jest.fn(),
+    });
+    const childModForSpawn = await import('node:child_process');
+    (childModForSpawn.spawn as unknown as jest.Mock).mockImplementation(() => ({
+      unref: jest.fn(),
+    }));
   });
 
   afterEach(() => {
@@ -1376,6 +1398,122 @@ describe('preflight update', () => {
       ['run', 'build'],
       expect.objectContaining({ cwd: '/repo/packages/preflight' }),
     );
+  });
+
+  function mockSuccessfulBuild(): void {
+    mFs.realpathSync.mockReturnValue('/home/user/projects/preflight/dist/index.js');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/home/user/projects/preflight/package.json',
+    );
+    mExec.execFileSync.mockImplementation((cmd: unknown, args: unknown) => {
+      if (cmd === 'git' && (args as string[]).includes('--show-toplevel'))
+        return '/home/user/projects/preflight';
+      return undefined;
+    });
+  }
+
+  it('auto-restarts the dashboard daemon with no prompt when installed', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
+      installed: true,
+      readable: true,
+      binaryPath: '/usr/local/bin/preflight',
+    });
+    await runInstallCli(['update']);
+    expect(mockedSchedule.installDashboardDaemon).toHaveBeenCalledWith('/usr/local/bin/preflight');
+    const output = getOutput();
+    expect(output).toContain('Restarted the dashboard daemon');
+  });
+
+  it('warns without restarting when the daemon plist exists but is unreadable', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({ installed: true, readable: false });
+    await runInstallCli(['update']);
+    expect(mockedSchedule.installDashboardDaemon).not.toHaveBeenCalled();
+    const output = getOutput();
+    expect(output).toContain('unreadable');
+  });
+
+  it('does nothing further when no daemon and no live ad-hoc process are found', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    await runInstallCli(['update']);
+    const output = getOutput();
+    expect(output).not.toContain('Restart the running dashboard');
+  });
+
+  it('prompts default-yes and kills+respawns the ad-hoc process on accept', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({
+        pid: 4242,
+        argv: ['/repo/dist/index.js', '--local'],
+        cwd: '/repo',
+      })),
+    }));
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+    const childMod2 = await import('node:child_process');
+    const spawnMock = childMod2.spawn as unknown as jest.Mock;
+    await runInstallCli(['update']);
+    expect(killSpy).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(spawnMock).toHaveBeenCalledWith(
+      process.execPath,
+      ['/repo/dist/index.js', '--local'],
+      expect.objectContaining({ cwd: '/repo', detached: true }),
+    );
+    const output = getOutput();
+    expect(output).toContain('Dashboard restarted');
+    killSpy.mockRestore();
+  });
+
+  it('does not kill the ad-hoc process when the user declines the prompt', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({
+        pid: 4242,
+        argv: ['/repo/dist/index.js', '--local'],
+        cwd: '/repo',
+      })),
+    }));
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => 'n'),
+      close: jest.fn(),
+    });
+    const killSpy = jest.spyOn(process, 'kill');
+    await runInstallCli(['update']);
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
+  it('does not report "Build failed" or exit(1) when the restart-offer prompt rejects', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({ installed: false, readable: false });
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => ({
+        pid: 4242,
+        argv: ['/repo/dist/index.js', '--local'],
+        cwd: '/repo',
+      })),
+    }));
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => {
+        throw new Error('stdin stream error');
+      }),
+      close: jest.fn(),
+    });
+    // Build succeeded and completed normally; only the restart-offer prompt failed.
+    await runInstallCli(['update']);
+    const output = getOutput();
+    expect(output).toContain('Update complete');
+    expect(output).not.toContain('Build failed');
+    expect(output).toContain('Restart offer failed unexpectedly');
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 });
 
