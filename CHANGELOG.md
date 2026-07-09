@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-07-08
+
+### Fixed
+
+- **`preflight update` could report a restart succeeded when it hadn't** — both restart paths (the macOS launchd daemon and an ad-hoc `--local` process) declared success as soon as the restart _action_ didn't throw (`launchctl load` returning success, or the respawned process not throwing synchronously), without checking that the dashboard actually came back up. A daemon that crashed immediately after a "successful" `launchctl load` — for example due to a macOS Full Disk Access restriction — would print a false "restarted" message while a stale process kept serving the old version. `update` now polls the dashboard's health endpoint for a healthy response reporting the freshly-built version before declaring success, and falls back to checking for an ad-hoc process if the daemon restart can't be verified.
+
 ## [1.4.0] - 2026-07-08
 
 ### Added
