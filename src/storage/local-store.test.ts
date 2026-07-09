@@ -1118,4 +1118,80 @@ describe('LocalStore', () => {
       expect(existsSync(resolve(tmpDir, 'local-dashboard.pid'))).toBe(true);
     });
   });
+
+  describe('local instance registry', () => {
+    it('registers and lists a live instance', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      store.registerLocalInstance(['dist/index.js', '--local'], '/repo', process.pid);
+      const instances = store.listLocalInstances();
+      expect(instances).toHaveLength(1);
+      expect(instances[0]).toMatchObject({
+        pid: process.pid,
+        argv: ['dist/index.js', '--local'],
+        cwd: '/repo',
+        alive: true,
+      });
+      expect(typeof instances[0]!.startedAt).toBe('number');
+    });
+
+    it('lists multiple registered instances, tagging dead ones as not alive', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      store.registerLocalInstance(['dist/index.js', '--local'], '/repo-a', process.pid);
+      store.registerLocalInstance(['dist/index.js', '--local'], '/repo-b', 999999);
+      const instances = store.listLocalInstances();
+      expect(instances).toHaveLength(2);
+      const live = instances.find((i) => i.pid === process.pid);
+      const dead = instances.find((i) => i.pid === 999999);
+      expect(live?.alive).toBe(true);
+      expect(dead?.alive).toBe(false);
+    });
+
+    it('returns an empty array when the registry directory does not exist', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      expect(store.listLocalInstances()).toEqual([]);
+    });
+
+    it('skips malformed registry entries silently', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      mkdirSync(resolve(tmpDir, 'local-instances'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'local-instances', '123.json'), 'not json');
+      expect(store.listLocalInstances()).toEqual([]);
+    });
+
+    it('unregisterLocalInstance removes its own entry', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      store.registerLocalInstance(['dist/index.js', '--local'], '/repo', process.pid);
+      store.unregisterLocalInstance(process.pid);
+      expect(store.listLocalInstances()).toEqual([]);
+    });
+
+    it('unregisterLocalInstance is a no-op when the entry does not exist', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      expect(() => store.unregisterLocalInstance(process.pid)).not.toThrow();
+    });
+
+    it('gcDeadLocalInstances deletes only dead entries and returns the count', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      store.registerLocalInstance(['dist/index.js', '--local'], '/repo-live', process.pid);
+      store.registerLocalInstance(['dist/index.js', '--local'], '/repo-dead', 999999);
+      const deleted = store.gcDeadLocalInstances();
+      expect(deleted).toBe(1);
+      const remaining = store.listLocalInstances();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.pid).toBe(process.pid);
+    });
+
+    it('gcDeadLocalInstances returns 0 when the registry directory does not exist', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+      expect(store.gcDeadLocalInstances()).toBe(0);
+    });
+  });
 });
