@@ -1605,5 +1605,39 @@ describe('collector-script', () => {
       readStdinSync();
       expect(calls).toEqual([process.stdin.fd]);
     });
+
+    it('falls back to the inherited stdin fd when /dev/stdin re-open is denied (EACCES)', () => {
+      // Reproduces the WSL boundary case: a Windows-host Claude Code process
+      // spawns this script inside WSL via wsl.exe. The piped stdin's
+      // underlying inode is root-owned, so re-opening /dev/stdin
+      // (-> /proc/self/fd/0) fails permission checks even though the
+      // already-inherited fd 0 is readable.
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      const calls: Array<string | number> = [];
+      _stdinFs.readFileSync = (pathOrFd) => {
+        calls.push(pathOrFd);
+        if (pathOrFd === '/dev/stdin') {
+          const err = new Error("EACCES: permission denied, open '/dev/stdin'");
+          (err as NodeJS.ErrnoException).code = 'EACCES';
+          throw err;
+        }
+        return '{"hook_event_name":"PreToolUse"}';
+      };
+      expect(readStdinSync()).toBe('{"hook_event_name":"PreToolUse"}');
+      expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
+    });
+
+    it('re-throws non-EACCES /dev/stdin errors without falling back to the fd', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      const calls: Array<string | number> = [];
+      _stdinFs.readFileSync = (pathOrFd) => {
+        calls.push(pathOrFd);
+        const err = new Error("ENOENT: no such file or directory, open '/dev/stdin'");
+        (err as NodeJS.ErrnoException).code = 'ENOENT';
+        throw err;
+      };
+      expect(() => readStdinSync()).toThrow('ENOENT');
+      expect(calls).toEqual(['/dev/stdin']);
+    });
   });
 });
