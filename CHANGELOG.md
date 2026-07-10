@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.14] - 2026-07-10
+
+### Fixed
+
+- **v1.4.13's path-containment fix did not actually clear the CodeQL `js/path-injection` findings it targeted** — that release replaced a runtime-derived separator check with two hardcoded literal checks combined with `||`, but that combination is never recognized by CodeQL as a sanitizer, regardless of whether the literals are hardcoded or the check is inlined. Confirmed by pushing several candidate shapes directly to a disposable test repository and inspecting the actual scan result rather than relying on pull-request-level checks (which don't reliably reflect whether a pre-existing finding was resolved). `isWithinRoot()`'s containment check is now `path.relative()`-based, inlined directly at the point of use, which is the shape confirmed to satisfy CodeQL's sanitizer recognition. Windows correctness is now handled by Node's own platform-aware `path.relative()`/`path.isAbsolute()` rather than hand-rolled separator matching.
+
 ## [1.4.13] - 2026-07-10
 
 ### Fixed

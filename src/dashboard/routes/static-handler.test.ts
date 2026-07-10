@@ -146,6 +146,15 @@ describe('static-handler', () => {
     expect(status()).toBe(403);
   });
 
+  it('rejects an empty/double-slash path with 403', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'static-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html>');
+    const handler = createStaticHandler(dir);
+    const { req, res, status } = makeReqRes('//');
+    await handler(req, res);
+    expect(status()).toBe(403);
+  });
+
   // Regression guard: vite.config.ts must use base:'/' so the built
   // index.html references assets via absolute paths. With base:'./', a
   // direct refresh on /sessions resolves relative './assets/x.js' against
