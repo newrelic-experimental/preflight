@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.10] - 2026-07-10
+
+### Fixed
+
+- `CLAUDE.md`'s MCP Tools list and `docs/COMMANDS_TABLE.md` were missing 5 fully-implemented, registered MCP tools: `nr_observe_get_config`, `nr_observe_get_cost_per_tool`, `nr_observe_get_turn_analysis`, and `nr_observe_get_git_efficiency` (all present in `COMMANDS_TABLE.md` but absent from `CLAUDE.md`'s summary list), and `nr_observe_get_context_tracking` (missing from both docs, and even from `analytics-tools.ts`'s own header comment). All 5 are now documented in both files. Found during an audit of every registered MCP tool's documented contract vs. its actual implementation.
+
 ## [1.4.9] - 2026-07-10
 
 ### Added
