@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.8] - 2026-07-09
+
+### Fixed
+
+- Amazon Q Developer CLI adapter: replaced an invented 15-entry tool-name map (only 3 entries were real) with the confirmed 9-tool built-in vocabulary, mapping the 4 with genuine Claude Code equivalents (`fs_read`, `fs_write`, `execute_bash`, `todo_list`) and leaving the rest (`introspect`, `report_issue`, `knowledge`, `thinking`, `use_aws`) unmapped rather than forced.
+- `collector-script.ts`: `postToolUse` events no longer hardcode `success: true` — they now read `tool_response.success` when present, fixing a cross-platform bug where failed Kiro and Amazon Q tool calls were silently recorded as successful.
+- Amazon Q Developer CLI adapter: `getHookInstallInstructions()` now documents the platform's real, genuine hook mechanism (`preToolUse`/`postToolUse` via the agent config `hooks` field) instead of only covering MCP server registration.
+
 ## [1.4.7] - 2026-07-09
 
 ### Fixed
