@@ -22,6 +22,7 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 
 const logger = createLogger('session-store');
 
@@ -62,6 +63,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly userCorrections: number;
   readonly outcome: string;
   readonly platform?: string;
+  readonly instructionPromptHash?: string | null;
   readonly timeline?: ReplayTimelineEntry[];
 }
 
@@ -253,6 +255,7 @@ export interface BuildSessionSummarySources {
   developer: string;
   repoName?: string | null;
   platform?: string;
+  instructionPromptHash?: string | null;
 }
 
 export function buildSessionSummary(sources: BuildSessionSummarySources): FullSessionSummary {
@@ -381,7 +384,35 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     userCorrections: 0,
     outcome: 'completed',
     platform: sources.platform,
+    instructionPromptHash: sources.instructionPromptHash ?? null,
     timeline: timeline.length > 0 ? timeline : undefined,
+  };
+}
+
+/**
+ * Maps a persisted session summary into the shape InstructionDriftTracker
+ * consumes, for both startup hydration (loadRecords) and shutdown recording
+ * (recordSessionOutcome, which only uses the outcome fields and ignores
+ * promptHash/timestamp). Returns null when the session never had a prompt
+ * hash captured (no CLAUDE.md read that session, or the session predates
+ * this field's introduction).
+ */
+export function sessionSummaryToDriftRecord(
+  summary: FullSessionSummary,
+): SessionOutcomeRecord | null {
+  if (summary.instructionPromptHash === null || summary.instructionPromptHash === undefined) {
+    return null;
+  }
+
+  return {
+    sessionId: summary.sessionId,
+    promptHash: summary.instructionPromptHash,
+    timestamp: summary.endTime,
+    successRate: summary.taskSuccessRate,
+    totalTokens: summary.tokensInput + summary.tokensOutput,
+    thrashingIncidents: summary.antiPatterns.find((p) => p.type === 'thrashing')?.count ?? 0,
+    taskCount: summary.taskCount,
+    avgEfficiency: summary.efficiencyScore,
   };
 }
 
@@ -462,6 +493,8 @@ export function deserializeFullSessionSummary(obj: Record<string, unknown>): Ful
     userCorrections: typeof obj.userCorrections === 'number' ? obj.userCorrections : 0,
     outcome: typeof obj.outcome === 'string' ? obj.outcome : 'unknown',
     platform: typeof obj.platform === 'string' ? obj.platform : undefined,
+    instructionPromptHash:
+      typeof obj.instructionPromptHash === 'string' ? obj.instructionPromptHash : null,
     timeline: Array.isArray(obj.timeline)
       ? (obj.timeline as unknown[])
           .filter(

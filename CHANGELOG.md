@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.16] - 2026-07-10
+
+### Fixed
+
+- `nr_observe_get_instruction_drift` always reported an empty dataset — `InstructionDriftTracker.recordSessionOutcome()` and `.loadRecords()` had zero call sites in production. Fixing this required cross-session persistence, not just in-process wiring: each MCP server process is scoped to one Claude Code session, so recording an outcome right before shutdown alone would be lost immediately and never enable the cross-session correlation the tool exists to provide. The session's prompt hash is now persisted on the saved session summary, the last 7 days of prior sessions are reloaded into the tracker at startup, and the current session's own outcome is recorded at shutdown. Note: correlation is currently keyed on the hash of the `Read` tool's arguments (file path/offset/limit), not the file's content, so this detects read/path drift rather than CLAUDE.md content changes — hashing actual content remains a separate, larger fix.
+
 ## [1.4.15] - 2026-07-10
 
 ### Fixed
