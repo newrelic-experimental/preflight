@@ -13,6 +13,7 @@ import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
+import { FeedbackCollector } from '../tools/workflow-tools.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -427,6 +428,24 @@ describe('NrIngestManager', () => {
       expect(metricNames).toContain('ai.session.duration_ms');
       expect(metricNames).toContain('ai.session.unique_files_read');
       expect(metricNames).toContain('ai.session.unique_files_written');
+    });
+
+    it('emits ai.feedback.count on stop when a feedbackCollector is provided', async () => {
+      const sessionTracker = new SessionTracker('feedback-session');
+      const feedbackCollector = new FeedbackCollector();
+      feedbackCollector.record({ quality: 'good' });
+
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTracker, feedbackCollector }));
+
+      manager.start();
+      await manager.stop();
+
+      expect(mockSendMetrics).toHaveBeenCalled();
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const feedbackMetrics = sentMetrics.filter((m) => m.name === 'ai.feedback.count');
+      expect(feedbackMetrics).toHaveLength(1);
     });
 
     it('emitSessionGauges is a no-op after stop()', async () => {

@@ -634,6 +634,40 @@ describe('FeedbackCollector.emitMetrics()', () => {
     });
     expect(recorded[1]).toEqual({ name: 'ai.feedback.count', value: 1, attrs: { quality: 'bad' } });
   });
+
+  it('does not re-emit records already emitted on a previous call', () => {
+    const collector = new FeedbackCollector();
+    collector.record({ quality: 'good' });
+
+    const agg1 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    collector.emitMetrics(agg1);
+    expect(agg1.record).toHaveBeenCalledTimes(1);
+
+    const agg2 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    collector.emitMetrics(agg2);
+    expect(agg2.record).not.toHaveBeenCalled();
+  });
+
+  it('emits only the new record when called again after another record() call', () => {
+    const collector = new FeedbackCollector();
+    collector.record({ quality: 'good' });
+
+    const agg1 = { record: jest.fn() } as unknown as import('../shared/index.js').MetricAggregator;
+    collector.emitMetrics(agg1);
+
+    collector.record({ quality: 'bad' });
+
+    const recorded2: Array<{ attrs: Record<string, string | number> }> = [];
+    const agg2 = {
+      record(_name: string, _value: number, attrs: Record<string, string | number> = {}) {
+        recorded2.push({ attrs });
+      },
+    } as unknown as import('../shared/index.js').MetricAggregator;
+    collector.emitMetrics(agg2);
+
+    expect(recorded2).toHaveLength(1);
+    expect(recorded2[0]!.attrs).toEqual({ quality: 'bad' });
+  });
 });
 
 // ---------------------------------------------------------------------------
