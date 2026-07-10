@@ -256,6 +256,8 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 - `nr_observe_get_efficiency_score` — composite efficiency scoring
 - `nr_observe_health` — server health check: version, uptime, session ID, hook install status
 - `nr_observe_install_hooks` — headlessly install PreToolUse/PostToolUse hooks into `~/.claude/settings.json` (Smithery self-install flow)
+- `nr_observe_get_config` — current server configuration with sensitive fields masked
+- `nr_observe_get_git_efficiency` — merge conflicts, aborted operations, force pushes, stale branch detection, actionable suggestions
 
 **Cost and Budget Tools:**
 
@@ -264,6 +266,7 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 - `nr_observe_get_prompt_cache_health` — cache hit rate, savings, and a concrete recommendation for improving cache efficiency
 - `nr_observe_get_cost_forecast` — project future spend
 - `nr_observe_get_budget_status` — current spend vs. budget caps
+- `nr_observe_get_cost_per_tool` — cost attribution per tool type (approximate, turn-level token correlation)
 
 **Workflow and Anti-Pattern Tools:**
 

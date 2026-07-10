@@ -1167,6 +1167,51 @@ Source: `src/tools/analytics-tools.ts`, `src/metrics/model-usage-tracker.ts`
 
 ---
 
+### `nr_observe_get_context_tracking`
+
+Per-turn context window tracking: token growth, category breakdown (system/tools/user/assistant), fill percentage, and per-tool output contribution.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "turnCount": 6,
+  "growth": {
+    "startTokens": 4200,
+    "currentTokens": 18500,
+    "deltaTokens": 14300
+  },
+  "currentBreakdown": {
+    "system": 3800,
+    "tools": 11200,
+    "user": 900,
+    "assistant": 2600
+  },
+  "fillPercent": 9.25,
+  "contextWindow": 200000,
+  "toolContributions": [
+    { "tool": "Read", "totalBytes": 48200, "estimatedTokens": 12050, "percentOfToolOutput": 61.4 }
+  ]
+}
+```
+
+**Data source:** `ContextTrackerRegistry`
+
+**How it works:**
+
+- Tracks token growth per turn (`recordTurn`) and per-tool output bytes (`recordToolCall`)
+- Splits current context usage into system/tools/user/assistant categories via a byte/token-based estimate, not hardcoded proportions
+- `fillPercent` is `currentInputTokens / contextWindow`, where `contextWindow` is resolved per-model
+- With no `sessionId` argument, falls back to the most recently active tracker (single-active-session stdio server)
+
+**Requires:** `ContextTrackerRegistry`
+
+Source: `src/tools/analytics-tools.ts`, `src/metrics/context-tracker.ts`
+
+---
+
 ### `nr_observe_get_cost_per_tool`
 
 Cost attribution per tool type — approximate, based on turn-level token correlation.
