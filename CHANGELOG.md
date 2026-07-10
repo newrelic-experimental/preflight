@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.9] - 2026-07-10
+
+### Added
+
+- **`docs/ADAPTERS.md`** — canonical per-platform reference covering integration mechanism, detection env vars, tool-name mapping, known gaps, and setup steps for all 8 named platform adapters and the generic MCP fallback. Closes out the adapter-correctness series (v1.4.3–v1.4.8): the real behavior was already fixed in code, but was previously undocumented outside source comments and unit tests.
+
+### Fixed
+
+- **`CONTRIBUTING.md`'s "Platform Support" table was itself incorrect** — it claimed a shared `NEW_RELIC_AI_PLATFORM` env var drove auto-detection for Cursor, Windsurf, Zed, Continue.dev, and Amazon Q; in reality only the Kiro and Copilot adapters read that variable, and the other five each use distinct, undocumented env vars in `isSupported()`. Replaced with an accurate summary that points to `docs/ADAPTERS.md`.
+
+### Changed
+
+- `CLAUDE.md` — added a **Platform Adapter Pattern** section (mirroring the existing Metric Tracker Pattern / MCP Tool Registration sections) describing `PlatformAdapter`/`PlatformRegistry` and cross-referencing `docs/ADAPTERS.md`.
+- `docs/ARCHITECTURE.md` — added `PlatformRegistry` to the Component Reference table; it was missing despite normalizing every hook-sourced tool name since v1.4.3.
+- `README.md` — added `docs/ADAPTERS.md` to the Documentation list and noted under "Works With" that platform coverage isn't uniform (some platforms only observe calls made to Preflight's own MCP tools, not their built-in tools).
+
 ## [1.4.8] - 2026-07-09
 
 ### Fixed
