@@ -252,6 +252,7 @@ export interface BuildSessionSummarySources {
   efficiencyScorer?: EfficiencyScorer;
   developer: string;
   repoName?: string | null;
+  platform?: string;
 }
 
 export function buildSessionSummary(sources: BuildSessionSummarySources): FullSessionSummary {
@@ -379,6 +380,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     assistantMessages: 0,
     userCorrections: 0,
     outcome: 'completed',
+    platform: sources.platform,
     timeline: timeline.length > 0 ? timeline : undefined,
   };
 }

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.12] - 2026-07-10
+
+### Fixed
+
+- `nr_observe_get_platform_comparison` could never differentiate platforms — `buildSessionSummary()` never set the `platform` field on persisted session summaries, so every session fell into the `'claude-code'` fallback bucket regardless of which of the 9 real platform adapters generated it. The active platform (already detected once per process by `PlatformRegistry`) is now threaded through `HookEventProcessor.activePlatform` into every persisted session summary. Found during the MCP tools audit. Does not address the related `nr_observe_get_collaboration_profile` bug (missing `userMessages`/`assistantMessages`/`userCorrections` data) — that's a separate, larger fix.
+
 ## [1.4.11] - 2026-07-10
 
 ### Fixed

@@ -97,6 +97,15 @@ export class HookEventProcessor {
     };
   }
 
+  /**
+   * The platform name resolved for this process — either the explicitly
+   * injected `platformAdapter`, or the auto-detected default. Resolved
+   * once at construction time; this getter never re-detects.
+   */
+  get activePlatform(): string {
+    return this.platformAdapter.platformName;
+  }
+
   start(): void {
     if (this.running) {
       logger.warn('HookEventProcessor already running');

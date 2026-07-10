@@ -730,6 +730,33 @@ describe('HookEventProcessor', () => {
       expect(records[0]!.toolName).toBe('Read');
     });
 
+    it('activePlatform getter reflects the injected platform adapter', () => {
+      const fakeAdapter = {
+        platformName: 'fake',
+        initialize: async () => {},
+        normalizeToolCall: () => {
+          throw new Error('not used by this test');
+        },
+        mapToolName: (name: string) => name,
+        getSessionMetadata: () => ({ platform: 'fake' }),
+        getHookInstallInstructions: () => '',
+        isSupported: () => true,
+      };
+
+      const processor = new HookEventProcessor({ store, onRecord, platformAdapter: fakeAdapter });
+
+      expect(processor.activePlatform).toBe('fake');
+    });
+
+    it('activePlatform getter falls back to the process-detected platform when none is injected', () => {
+      // No platformAdapter option passed — falls back to createDefaultRegistry().getActive(),
+      // which resolves to GenericMcpAdapter (platformName 'generic-mcp') when no platform
+      // env vars are set, same default the tool-name-mapping test above relies on.
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      expect(processor.activePlatform).toBe('generic-mcp');
+    });
+
     it('maps tool names correctly when pairing falls back to findOldestPendingKey (no toolUseId)', () => {
       const fakeAdapter = {
         platformName: 'fake',
