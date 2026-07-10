@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.6] - 2026-07-10
+
+### Fixed
+
+- **`ZedAdapter`'s tool-name map used invented tool names that don't match Zed's real built-in agent vocabulary** — `open_file`, `create_file`, `execute_command`, `search_files`, `find_in_files`, `search_in_file`, `run_command`, and `list_files` are not real Zed tool names (confirmed via https://zed.dev/docs/ai/tools.html). `ZED_TOOL_MAP` now covers Zed's confirmed real built-in tools (`read_file`, `find_path`, `grep`, `list_directory`, `fetch`, `search_web`, `edit_file`, `write_file`, `delete_path`, `terminal`, `spawn_agent`, `skill`).
+- **`ZedAdapter`'s setup instructions and `initialize()` comment described a nonexistent capture mechanism** — both claimed built-in tool calls "arrive via stdio" automatically; no such mechanism exists. Unlike the Kiro/Cursor/Windsurf fixes, Zed's native agent genuinely has no hook/callback system to document instead (confirmed: no "Hooks" page exists anywhere in Zed's documentation). Instructions now accurately state that Preflight can only observe calls made to its own MCP tools in Zed, and that full tool-call observability requires running an already-supported platform (e.g. Claude Code) as a Zed External Agent instead.
+
 ## [1.4.5] - 2026-07-09
 
 ### Fixed
