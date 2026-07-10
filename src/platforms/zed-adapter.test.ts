@@ -28,30 +28,40 @@ describe('ZedAdapter', () => {
   });
 
   describe('normalizeToolCall', () => {
-    it('maps "open_file" to "Read"', () => {
+    it('maps "read_file" to "Read"', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'open_file',
+        tool: 'read_file',
         timestamp: 2000,
         success: true,
       });
       expect(normalized.toolName).toBe('Read');
-      expect(normalized.platformToolName).toBe('open_file');
+      expect(normalized.platformToolName).toBe('read_file');
       expect(normalized.platform).toBe('zed');
     });
 
-    it('maps "read_file" to "Read"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'read_file', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Read');
+    it('maps "find_path" to "Glob"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'find_path', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Glob');
     });
 
-    it('maps "create_file" to "Write"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'create_file', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Write');
+    it('maps "grep" to "Grep"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'grep', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Grep');
     });
 
-    it('maps "write_file" to "Write"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'write_file', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Write');
+    it('maps "list_directory" to "Glob"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'list_directory', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Glob');
+    });
+
+    it('maps "fetch" to "WebFetch"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'fetch', timestamp: 2000 });
+      expect(normalized.toolName).toBe('WebFetch');
+    });
+
+    it('maps "search_web" to "WebSearch"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'search_web', timestamp: 2000 });
+      expect(normalized.toolName).toBe('WebSearch');
     });
 
     it('maps "edit_file" to "Edit"', () => {
@@ -64,29 +74,19 @@ describe('ZedAdapter', () => {
       expect(normalized.filePath).toBe('/src/app.ts');
     });
 
-    it('maps "delete_file" to "Delete"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'delete_file', timestamp: 2000 });
+    it('maps "write_file" to "Write"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'write_file', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Write');
+    });
+
+    it('maps "delete_path" to "Delete"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'delete_path', timestamp: 2000 });
       expect(normalized.toolName).toBe('Delete');
     });
 
-    it('maps "search_files" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'search_files', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
-    });
-
-    it('maps "find_in_files" to "Grep"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'find_in_files', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Grep');
-    });
-
-    it('maps "search_in_file" to "Grep"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'search_in_file', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Grep');
-    });
-
-    it('maps "execute_command" to "Bash"', () => {
+    it('maps "terminal" to "Bash"', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'execute_command',
+        tool: 'terminal',
         timestamp: 2000,
         command: 'npm test',
       });
@@ -94,19 +94,38 @@ describe('ZedAdapter', () => {
       expect(normalized.command).toBe('npm test');
     });
 
-    it('maps "run_command" to "Bash"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'run_command', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Bash');
+    it('maps "spawn_agent" to "Agent"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'spawn_agent', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Agent');
     });
 
-    it('maps "list_files" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'list_files', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
+    it('maps "skill" to "Skill"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'skill', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Skill');
     });
 
-    it('maps "list_directory" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'list_directory', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
+    it('leaves "diagnostics" unmapped (falls through to "Unknown")', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'diagnostics', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('diagnostics');
+    });
+
+    it('leaves "copy_path" unmapped (falls through to "Unknown")', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'copy_path', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('copy_path');
+    });
+
+    it('leaves "move_path" unmapped (falls through to "Unknown")', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'move_path', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('move_path');
+    });
+
+    it('leaves "create_directory" unmapped (falls through to "Unknown")', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'create_directory', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('create_directory');
     });
 
     it('maps unknown tool to "Unknown" with platformToolName preserved', () => {
@@ -224,6 +243,15 @@ describe('ZedAdapter', () => {
     it('mentions NEW_RELIC_ACCOUNT_ID', () => {
       expect(adapter.getHookInstallInstructions()).toContain('NEW_RELIC_ACCOUNT_ID');
     });
+
+    it('states Zed has no hook mechanism instead of claiming automatic capture', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('no hook mechanism');
+    });
+
+    it('documents the real context_servers settings key', () => {
+      expect(adapter.getHookInstallInstructions()).toContain('context_servers');
+    });
   });
 
   describe('initialize', () => {
@@ -235,6 +263,14 @@ describe('ZedAdapter', () => {
   describe('mapToolName', () => {
     it('maps a known tool name', () => {
       expect(adapter.mapToolName('read_file')).toBe('Read');
+    });
+
+    it('maps "terminal" to "Bash"', () => {
+      expect(adapter.mapToolName('terminal')).toBe('Bash');
+    });
+
+    it('returns "Unknown" for a real Zed tool with no canonical equivalent', () => {
+      expect(adapter.mapToolName('diagnostics')).toBe('Unknown');
     });
 
     it('returns "Unknown" for an unrecognized tool name', () => {

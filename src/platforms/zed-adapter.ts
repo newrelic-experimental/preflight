@@ -5,20 +5,28 @@ import type {
   NormalizedToolCall,
 } from './types.js';
 
+// Maps Zed's real built-in agent tool names (confirmed via
+// https://zed.dev/docs/ai/tools.html) to the normalized Claude Code tool
+// vocabulary. Zed's native agent has no hook/callback mechanism (see
+// initialize()'s comment below), so these entries are currently unreachable
+// from the real hook pipeline — this map exists for correctness and for any
+// future Zed hook capability, not because any Zed event reaches it today.
+// `diagnostics`, `copy_path`, `move_path`, and `create_directory` are real
+// Zed tools with no named Claude Code equivalent and are deliberately left
+// unmapped (they fall through to 'Unknown' with platformToolName preserved).
 const ZED_TOOL_MAP: Record<string, string> = {
-  open_file: 'Read',
   read_file: 'Read',
-  create_file: 'Write',
-  write_file: 'Write',
-  edit_file: 'Edit',
-  delete_file: 'Delete',
-  search_files: 'Glob',
-  find_in_files: 'Grep',
-  search_in_file: 'Grep',
-  execute_command: 'Bash',
-  run_command: 'Bash',
-  list_files: 'Glob',
+  find_path: 'Glob',
+  grep: 'Grep',
   list_directory: 'Glob',
+  fetch: 'WebFetch',
+  search_web: 'WebSearch',
+  edit_file: 'Edit',
+  write_file: 'Write',
+  delete_path: 'Delete',
+  terminal: 'Bash',
+  spawn_agent: 'Agent',
+  skill: 'Skill',
 };
 
 interface ZedToolCallEvent {
@@ -39,7 +47,16 @@ export class ZedAdapter implements PlatformAdapter {
   readonly platformName = 'zed';
 
   async initialize(_config: PlatformConfig): Promise<void> {
-    // Zed spawns MCP servers as child processes. Tool calls arrive via stdio.
+    // Zed's native agent has no hook/callback mechanism for tool-call
+    // interception (confirmed: https://zed.dev/docs/ai/mcp.html — Zed
+    // supports only MCP's Tools and Prompts features, with no notification
+    // for host-side tool calls). As a Zed MCP "context server", Preflight
+    // can only receive calls Zed's agent makes to Preflight's own exposed
+    // tools — it cannot observe Zed's built-in read_file/edit_file/terminal
+    // calls. When Zed runs another coding agent (Claude Code, Cursor, etc.)
+    // as an External Agent via the Agent Client Protocol
+    // (https://zed.dev/docs/ai/external-agents.html), that agent's own
+    // native hooks already capture its tool calls independently of Zed.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -79,18 +96,27 @@ export class ZedAdapter implements PlatformAdapter {
   getHookInstallInstructions(): string {
     return [
       'Zed Editor Setup:',
-      '1. Open Zed Settings (Cmd+,) and go to the "assistant" section',
-      '2. Add an MCP server entry:',
+      "1. Zed's native agent has no hook mechanism for tool-call capture —",
+      '   Preflight configured as a Zed MCP server only sees calls made to',
+      "   its own tools, not Zed's built-in read_file/edit_file/terminal calls.",
+      '2. To use Preflight as an MCP context server in Zed (for its own',
+      '   observability tools), open Settings -> AI -> MCP Servers, click',
+      '   "Add Server", and add:',
       '   {',
-      '     "name": "preflight",',
-      '     "command": "npx",',
-      '     "args": ["preflight", "--stdio"],',
-      '     "env": {',
-      '       "NEW_RELIC_LICENSE_KEY": "<your-key>",',
-      '       "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"',
+      '     "context_servers": {',
+      '       "preflight": {',
+      '         "command": "npx",',
+      '         "args": ["preflight", "--stdio"],',
+      '         "env": {',
+      '           "NEW_RELIC_LICENSE_KEY": "<your-key>",',
+      '           "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"',
+      '         }',
+      '       }',
       '     }',
       '   }',
-      '3. Restart Zed to activate.',
+      '3. For full tool-call observability, run Claude Code (or another',
+      '   already-supported platform) as a Zed External Agent instead —',
+      '   its own native hooks capture tool calls independently of Zed.',
     ].join('\n');
   }
 
