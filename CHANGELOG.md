@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] - 2026-07-09
+
+### Fixed
+
+- **Windsurf hook events were silently dropped** — `preflight-collector` only recognized `hook_event_name` (Claude Code/Kiro/Cursor's event-name field). Windsurf's real Cascade Hooks system (`.windsurf/hooks.json`, confirmed via https://docs.windsurf.com/windsurf/cascade/hooks) sends the event name as `agent_action_name` instead, with all event data nested under a `tool_info` object rather than flat fields — so every Windsurf hook event fell through to a silent no-op. The collector now recognizes and correctly parses `pre_read_code`/`post_read_code`, `pre_write_code`/`post_write_code`, `pre_run_command`/`post_run_command`, and `pre_mcp_tool_use`/`post_mcp_tool_use`.
+- **`WindsurfAdapter`'s setup instructions and `initialize()` comment described a nonexistent integration** — both claimed built-in tool calls (file edits, terminal) were captured via "extension API or file watcher events"; no such mechanism exists anywhere in this codebase. Instructions now document the real `.windsurf/hooks.json` Cascade Hooks setup.
+
 ## [1.4.4] - 2026-07-09
 
 ### Fixed

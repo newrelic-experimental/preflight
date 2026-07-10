@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
@@ -89,6 +89,22 @@ function makePostToolUseFailure(overrides?: Record<string, unknown>): string {
 function readBufferEvents(): Record<string, unknown>[] {
   if (!existsSync(bufferPath)) return [];
   const raw = readFileSync(bufferPath, 'utf-8').trim();
+  if (!raw) return [];
+  return raw.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/**
+ * Helper to read buffer events from a session-specific buffer file.
+ * When sessionId is provided, reads from buffer-{sessionId}.jsonl instead of the default.
+ * Used for testing platforms like Cursor and Windsurf that route by conversation_id/trajectory_id.
+ */
+function readBufferLines(sessionId?: string): Record<string, unknown>[] {
+  let path = bufferPath;
+  if (sessionId) {
+    path = resolve(dirname(bufferPath), `buffer-${sessionId}.jsonl`);
+  }
+  if (!existsSync(path)) return [];
+  const raw = readFileSync(path, 'utf-8').trim();
   if (!raw) return [];
   return raw.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
 }
@@ -600,6 +616,218 @@ describe('collector-script', () => {
 
       expect(existsSync(resolve(tmpDir, 'buffer-conv-aaa.jsonl'))).toBe(true);
       expect(existsSync(resolve(tmpDir, 'buffer-conv-bbb.jsonl'))).toBe(true);
+    });
+  });
+
+  describe('Windsurf hook events', () => {
+    function makeWindsurfPreReadCode(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'pre_read_code',
+        trajectory_id: 'traj-abc123',
+        execution_id: 'exec-1',
+        timestamp: '2026-07-09T12:00:00Z',
+        model_name: 'Claude Sonnet 4',
+        tool_info: { file_path: '/Users/dev/project/file.py' },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPostReadCode(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'post_read_code',
+        trajectory_id: 'traj-abc123',
+        tool_info: { file_path: '/Users/dev/project/file.py' },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPreWriteCode(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'pre_write_code',
+        trajectory_id: 'traj-abc123',
+        tool_info: {
+          file_path: '/Users/dev/project/file.py',
+          edits: [
+            { old_string: 'def old():\n    pass', new_string: 'def new():\n    return True' },
+          ],
+        },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPostWriteCode(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'post_write_code',
+        trajectory_id: 'traj-abc123',
+        tool_info: {
+          file_path: '/Users/dev/project/file.py',
+          edits: [{ old_string: 'import os', new_string: 'import os\nimport sys' }],
+        },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPreRunCommand(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'pre_run_command',
+        trajectory_id: 'traj-abc123',
+        tool_info: { command_line: 'npm install left-pad', cwd: '/Users/dev/project' },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPostRunCommand(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'post_run_command',
+        trajectory_id: 'traj-abc123',
+        tool_info: { command_line: 'npm install left-pad', cwd: '/Users/dev/project' },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPreMcpToolUse(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'pre_mcp_tool_use',
+        trajectory_id: 'traj-abc123',
+        tool_info: {
+          mcp_server_name: 'github',
+          mcp_tool_name: 'create_issue',
+          mcp_tool_arguments: { owner: 'code-owner', repo: 'my-repo', title: 'Bug report' },
+        },
+        ...overrides,
+      });
+    }
+
+    function makeWindsurfPostMcpToolUse(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        agent_action_name: 'post_mcp_tool_use',
+        trajectory_id: 'traj-abc123',
+        tool_info: {
+          mcp_server_name: 'github',
+          mcp_tool_name: 'create_issue',
+          mcp_tool_arguments: { owner: 'code-owner', repo: 'my-repo', title: 'Bug report' },
+          mcp_result: 'issue #42 created',
+        },
+        ...overrides,
+      });
+    }
+
+    it('writes a pre event for pre_read_code with tool Read', () => {
+      processHook(makeWindsurfPreReadCode());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        mode: 'pre',
+        tool: 'Read',
+        toolInput: { file_path: '/Users/dev/project/file.py' },
+      });
+    });
+
+    it('writes a post event for post_read_code with success true', () => {
+      processHook(makeWindsurfPostReadCode());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        mode: 'post',
+        tool: 'Read',
+        success: true,
+        toolInput: { file_path: '/Users/dev/project/file.py' },
+      });
+    });
+
+    it('writes a pre event for pre_write_code with tool Edit', () => {
+      processHook(makeWindsurfPreWriteCode());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        mode: 'pre',
+        tool: 'Edit',
+        toolInput: { file_path: '/Users/dev/project/file.py' },
+      });
+    });
+
+    it('writes a post event for post_write_code with success true', () => {
+      processHook(makeWindsurfPostWriteCode());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        mode: 'post',
+        tool: 'Edit',
+        success: true,
+      });
+    });
+
+    it('writes a pre event for pre_run_command with tool Bash and redacts the command', () => {
+      processHook(
+        makeWindsurfPreRunCommand({
+          tool_info: {
+            command_line: 'API_KEY=sk-abcdefghijklmnopqrstuvwxyz012345 deploy',
+            cwd: '/x',
+          },
+        }),
+      );
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0].mode).toBe('pre');
+      expect(lines[0].tool).toBe('Bash');
+      expect((lines[0].toolInput as { command: string }).command).toContain('[REDACTED]');
+      expect((lines[0].toolInput as { command: string }).command).not.toContain(
+        'sk-abcdefghijklmnopqrstuvwxyz012345',
+      );
+    });
+
+    it('writes a post event for post_run_command with success true', () => {
+      processHook(makeWindsurfPostRunCommand());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ mode: 'post', tool: 'Bash', success: true });
+    });
+
+    it('writes a pre event for pre_mcp_tool_use with the raw MCP tool name', () => {
+      processHook(makeWindsurfPreMcpToolUse());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0].mode).toBe('pre');
+      expect(lines[0].tool).toBe('create_issue');
+    });
+
+    it('writes a post event for post_mcp_tool_use with success true', () => {
+      processHook(makeWindsurfPostMcpToolUse());
+      const lines = readBufferLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ mode: 'post', tool: 'create_issue', success: true });
+    });
+
+    it('routes by trajectory_id when session_id is absent', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+
+      processHook(makeWindsurfPreReadCode({ trajectory_id: 'traj-route-test' }));
+      const lines = readBufferLines('traj-route-test');
+      expect(lines).toHaveLength(1);
+      expect(lines[0].sessionId).toBe('traj-route-test');
+    });
+
+    it('silently ignores pre_user_prompt (not a tool-call event)', () => {
+      processHook(
+        JSON.stringify({
+          agent_action_name: 'pre_user_prompt',
+          trajectory_id: 'traj-abc123',
+          tool_info: { user_prompt: 'can you run echo hello' },
+        }),
+      );
+      expect(readBufferLines('traj-abc123')).toHaveLength(0);
+    });
+
+    it('silently ignores post_cascade_response (not a tool-call event)', () => {
+      processHook(
+        JSON.stringify({
+          agent_action_name: 'post_cascade_response',
+          trajectory_id: 'traj-abc123',
+          tool_info: { response: 'Done.' },
+        }),
+      );
+      expect(readBufferLines('traj-abc123')).toHaveLength(0);
     });
   });
 
