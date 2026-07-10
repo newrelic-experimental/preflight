@@ -11,7 +11,11 @@ import { loadMcpConfig, DEFAULT_STORAGE_PATH } from './config.js';
 import type { McpServerConfig } from './config.js';
 import { ProxyManager } from './proxy/index.js';
 import { LocalStore } from './storage/index.js';
-import { SessionStore, buildSessionSummary } from './storage/session-store.js';
+import {
+  SessionStore,
+  buildSessionSummary,
+  sessionSummaryToDriftRecord,
+} from './storage/session-store.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import { HookEventProcessor } from './hooks/index.js';
 import { SessionTracker } from './metrics/session-tracker.js';
@@ -38,6 +42,7 @@ import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
+import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
 import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
@@ -781,6 +786,21 @@ async function main(): Promise<void> {
       }
     }
 
+    // Hydrate instruction-drift tracker with the last 7 days of prior
+    // sessions so cross-session prompt-variant correlation has real data
+    // from the moment this session starts (mirrors computeHistoricalCosts'
+    // weekAgo window below). Sessions persisted before this field existed
+    // have instructionPromptHash === null and are naturally excluded.
+    const weekAgoForDrift = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const historicalDriftSessions = sessionStore.loadAllSessions({ since: weekAgoForDrift });
+    const driftRecords: SessionOutcomeRecord[] = [];
+    for (const session of historicalDriftSessions) {
+      if (session.sessionId === currentSessionId) continue;
+      const record = sessionSummaryToDriftRecord(session);
+      if (record) driftRecords.push(record);
+    }
+    instructionDriftTracker.loadRecords(driftRecords);
+
     // Also hydrate from git log — commit commands often aren't captured by
     // tool hooks (Claude Code commits internally), so we read the actual
     // repo history to get an accurate commit count for today.
@@ -1473,7 +1493,12 @@ async function main(): Promise<void> {
           developer: config.developer ?? 'unknown',
           repoName: currentRepoName,
           platform: eventProcessor?.activePlatform,
+          instructionPromptHash: instructionDriftTracker.promptHash,
         });
+        const driftRecord = sessionSummaryToDriftRecord(summary);
+        if (driftRecord) {
+          instructionDriftTracker.recordSessionOutcome(driftRecord);
+        }
         // Skip persisting the synthetic session JSON written by --local /
         // proxy modes. These IDs (local-<ts>, proxy-<ts>) are MCP-internal
         // bookkeeping; they don't correspond to a real Claude Code session

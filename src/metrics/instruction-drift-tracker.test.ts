@@ -245,4 +245,15 @@ describe('InstructionDriftTracker', () => {
     expect(metrics.currentPromptHash).toBeNull();
     expect(metrics.uniquePromptVariants).toBe(0);
   });
+
+  it('promptHash getter reflects the current prompt hash', () => {
+    const tracker = new InstructionDriftTracker();
+    expect(tracker.promptHash).toBeNull();
+
+    tracker.setPromptHash('abc123');
+    expect(tracker.promptHash).toBe('abc123');
+
+    tracker.setPromptHash('def456');
+    expect(tracker.promptHash).toBe('def456');
+  });
 });

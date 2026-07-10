@@ -6,6 +6,7 @@ import {
   SessionStore,
   buildSessionSummary,
   deserializeFullSessionSummary,
+  sessionSummaryToDriftRecord,
 } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
@@ -13,6 +14,7 @@ import { CostTracker } from '../metrics/cost-tracker.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -76,6 +78,107 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     ...overrides,
   };
 }
+
+describe('instructionPromptHash field', () => {
+  it('buildSessionSummary sets instructionPromptHash from sources', () => {
+    const sessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'sess-1',
+        sessionName: null,
+        sessionStartTime: Date.now(),
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        bashCommandsRun: 0,
+        toolSuccessRate: null,
+      }),
+    } as unknown as SessionTracker;
+
+    const summary = buildSessionSummary({
+      sessionTracker,
+      developer: 'dev1',
+      instructionPromptHash: 'hash-abc',
+    });
+
+    expect(summary.instructionPromptHash).toBe('hash-abc');
+  });
+
+  it('buildSessionSummary defaults instructionPromptHash to null when not provided', () => {
+    const sessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'sess-2',
+        sessionName: null,
+        sessionStartTime: Date.now(),
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        bashCommandsRun: 0,
+        toolSuccessRate: null,
+      }),
+    } as unknown as SessionTracker;
+
+    const summary = buildSessionSummary({ sessionTracker, developer: 'dev1' });
+
+    expect(summary.instructionPromptHash).toBeNull();
+  });
+
+  it('deserializeFullSessionSummary round-trips instructionPromptHash', () => {
+    const summary = makeSummary({ instructionPromptHash: 'hash-xyz' });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(summary)) as Record<string, unknown>,
+    );
+    expect(roundTripped.instructionPromptHash).toBe('hash-xyz');
+  });
+
+  it('deserializeFullSessionSummary defaults instructionPromptHash to null when field is missing (pre-fix session files)', () => {
+    const summary = makeSummary();
+    const raw = JSON.parse(JSON.stringify(summary)) as Record<string, unknown>;
+    delete raw.instructionPromptHash;
+    const roundTripped = deserializeFullSessionSummary(raw);
+    expect(roundTripped.instructionPromptHash).toBeNull();
+  });
+});
+
+describe('sessionSummaryToDriftRecord', () => {
+  it('returns null when instructionPromptHash is null', () => {
+    const summary = makeSummary({ instructionPromptHash: null });
+    expect(sessionSummaryToDriftRecord(summary)).toBeNull();
+  });
+
+  it('maps a summary with a prompt hash into a SessionOutcomeRecord', () => {
+    const summary = makeSummary({
+      sessionId: 'sess-3',
+      instructionPromptHash: 'hash-123',
+      endTime: 1_700_000_000_000,
+      taskSuccessRate: 0.8,
+      tokensInput: 1000,
+      tokensOutput: 500,
+      taskCount: 4,
+      efficiencyScore: 0.9,
+      antiPatterns: [{ type: 'thrashing', count: 3 }],
+    });
+
+    const record = sessionSummaryToDriftRecord(summary) as SessionOutcomeRecord;
+
+    expect(record).not.toBeNull();
+    expect(record.sessionId).toBe('sess-3');
+    expect(record.promptHash).toBe('hash-123');
+    expect(record.timestamp).toBe(1_700_000_000_000);
+    expect(record.successRate).toBe(0.8);
+    expect(record.totalTokens).toBe(1500);
+    expect(record.thrashingIncidents).toBe(3);
+    expect(record.taskCount).toBe(4);
+    expect(record.avgEfficiency).toBe(0.9);
+  });
+
+  it('defaults thrashingIncidents to 0 when no thrashing anti-pattern is present', () => {
+    const summary = makeSummary({
+      instructionPromptHash: 'hash-456',
+      antiPatterns: [{ type: 're_reading', count: 2 }],
+    });
+
+    const record = sessionSummaryToDriftRecord(summary) as SessionOutcomeRecord;
+    expect(record.thrashingIncidents).toBe(0);
+  });
+});
 
 function makeSessionTracker(): SessionTracker {
   return {

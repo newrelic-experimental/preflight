@@ -77,6 +77,10 @@ export class InstructionDriftTracker {
     this.minSessionsForComparison = options?.minSessionsForComparison ?? DEFAULT_MIN_SESSIONS;
   }
 
+  get promptHash(): string | null {
+    return this.currentPromptHash;
+  }
+
   recordToolCall(record: ToolCallRecord): void {
     if (record.toolName !== 'Read') return;
 
