@@ -466,6 +466,17 @@ interface HookInput {
   file_path?: string;
   content?: string;
   edits?: { old_string?: string; new_string?: string }[];
+  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) sends a
+  // completely different envelope from every other platform: the event name
+  // itself is `agent_action_name`, not `hook_event_name`, and all
+  // event-specific data lives nested under `tool_info` rather than flat
+  // fields. `trajectory_id` is Windsurf's closest analog to session_id
+  // ("Unique identifier for the overall Cascade conversation" per the docs
+  // above) — Windsurf never sends session_id, the same situation as Cursor's
+  // conversation_id.
+  agent_action_name?: string;
+  trajectory_id?: string;
+  tool_info?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -622,6 +633,16 @@ function extractOutputMeta(toolName: string, output: unknown): Record<string, un
   return undefined;
 }
 
+/**
+ * Windsurf nests all event-specific data under `tool_info` instead of flat
+ * top-level fields (https://docs.windsurf.com/windsurf/cascade/hooks).
+ * Returns an empty object when tool_info is missing or malformed so callers
+ * can destructure without null checks.
+ */
+function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
+  return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
+}
+
 function processHook(raw: string): void {
   let data: HookInput;
   try {
@@ -634,7 +655,10 @@ function processHook(raw: string): void {
   // conversation_id is its closest analog (one per chat, like a Claude Code
   // session). Claude Code and Kiro always send session_id, so this only
   // takes effect for Cursor events.
-  const sessionId = data.session_id ?? data.conversation_id;
+  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) never sends
+  // session_id either — trajectory_id is its closest analog, the same role
+  // conversation_id plays for Cursor.
+  const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id;
 
   // Drop a PPID breadcrumb at the very top so the MCP server can resolve its
   // Claude Code session_id without an env-var or initialize-payload extension.
@@ -653,7 +677,11 @@ function processHook(raw: string): void {
   // Normalize case so both are recognized without hard-coding per-platform
   // spellings here (this file intentionally has no platform-adapter import —
   // see the file's own "no heavy imports" design constraint).
-  const eventName = data.hook_event_name?.toLowerCase();
+  // Windsurf sends the event name as agent_action_name, not hook_event_name
+  // (https://docs.windsurf.com/windsurf/cascade/hooks) — already lowercase
+  // with underscores (e.g. "pre_read_code"), but .toLowerCase() is harmless
+  // and keeps this line uniform with every other platform's derivation.
+  const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
   const toolName = data.tool_name ?? 'unknown';
   const timestamp = Date.now();
   const recordContent = getRecordContent();
@@ -790,6 +818,93 @@ function processHook(raw: string): void {
       timestamp,
       success: true,
       ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
+    };
+  } else if (eventName === 'pre_read_code') {
+    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_read_code
+    const filePath = getWindsurfToolInfo(data).file_path;
+    event = {
+      mode: 'pre' as const,
+      tool: 'Read',
+      timestamp,
+      inputSize: sizeOf(filePath),
+      inputHash: hashInput(filePath),
+      ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
+    };
+  } else if (eventName === 'post_read_code') {
+    // No source documents a failure signal for this event — success: true
+    // unconditionally, same convention as Cursor's afterShellExecution.
+    const filePath = getWindsurfToolInfo(data).file_path;
+    event = {
+      mode: 'post' as const,
+      tool: 'Read',
+      timestamp,
+      success: true,
+      ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
+    };
+  } else if (eventName === 'pre_write_code') {
+    // Maps to 'Edit' not 'Write' — tool_info carries an edits[] array of
+    // {old_string, new_string}, the same shape as Claude Code's Edit tool,
+    // not a full-file Write. Mirrors Cursor's afterFileEdit -> 'Edit'.
+    const filePath = getWindsurfToolInfo(data).file_path;
+    event = {
+      mode: 'pre' as const,
+      tool: 'Edit',
+      timestamp,
+      inputSize: sizeOf(filePath),
+      inputHash: hashInput(filePath),
+      ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
+    };
+  } else if (eventName === 'post_write_code') {
+    const filePath = getWindsurfToolInfo(data).file_path;
+    event = {
+      mode: 'post' as const,
+      tool: 'Edit',
+      timestamp,
+      success: true,
+      ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
+    };
+  } else if (eventName === 'pre_run_command') {
+    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_run_command
+    const commandLineRaw = getWindsurfToolInfo(data).command_line;
+    const commandLine = typeof commandLineRaw === 'string' ? commandLineRaw : '';
+    event = {
+      mode: 'pre' as const,
+      tool: 'Bash',
+      timestamp,
+      inputSize: sizeOf(commandLine),
+      inputHash: hashInput(commandLine),
+      toolInput: { command: redact(commandLine) },
+    };
+  } else if (eventName === 'post_run_command') {
+    // No source documents an exit-code/output field for this event —
+    // success: true unconditionally, same gap as Cursor's afterShellExecution.
+    event = {
+      mode: 'post' as const,
+      tool: 'Bash',
+      timestamp,
+      success: true,
+    };
+  } else if (eventName === 'pre_mcp_tool_use') {
+    // mcp_tool_name is an arbitrary third-party MCP tool name, passed through
+    // as-is (identity) — same treatment as Cursor's beforeMCPExecution and
+    // src/platforms/generic-mcp-adapter.ts.
+    const toolInfo = getWindsurfToolInfo(data);
+    const mcpTool = typeof toolInfo.mcp_tool_name === 'string' ? toolInfo.mcp_tool_name : 'unknown';
+    event = {
+      mode: 'pre' as const,
+      tool: mcpTool,
+      timestamp,
+      inputSize: sizeOf(toolInfo.mcp_tool_arguments),
+      inputHash: hashInput(toolInfo.mcp_tool_arguments),
+    };
+  } else if (eventName === 'post_mcp_tool_use') {
+    const toolInfo = getWindsurfToolInfo(data);
+    const mcpTool = typeof toolInfo.mcp_tool_name === 'string' ? toolInfo.mcp_tool_name : 'unknown';
+    event = {
+      mode: 'post' as const,
+      tool: mcpTool,
+      timestamp,
+      success: true,
     };
   } else {
     // Unknown hook event — ignore silently
