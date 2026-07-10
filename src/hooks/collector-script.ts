@@ -1028,11 +1028,30 @@ export const _stdinFs = {
  * threw instead of returning cleanly. package.json's `engines.node` floor
  * (>=22) is well past every Node release carrying that fix; don't lower it
  * without re-checking this. See nodejs/node#35997 and libuv/libuv#3043.
+ *
+ * `/dev/stdin` is a symlink to `/proc/self/fd/0`, so opening it is a fresh
+ * `open()` subject to a permission check against the pipe's current owner —
+ * unlike reading the already-inherited fd 0, which needs no such check. That
+ * distinction is invisible on a normal POSIX host, but surfaces when Claude
+ * Code runs on a Windows host and spawns this script inside WSL via
+ * `wsl.exe`: the piped stdin crossing that boundary is created by WSL's
+ * root-owned init/relay (root:root, mode 0600), so re-opening `/dev/stdin`
+ * fails with EACCES for the non-root user even though fd 0 is readable. Fall
+ * back to the fd only on that specific error so the common case keeps
+ * avoiding the EAGAIN risk above.
  */
 function readStdinSync(): string {
-  return process.platform === 'win32'
-    ? _stdinFs.readFileSync(process.stdin.fd)
-    : _stdinFs.readFileSync('/dev/stdin');
+  if (process.platform === 'win32') {
+    return _stdinFs.readFileSync(process.stdin.fd);
+  }
+  try {
+    return _stdinFs.readFileSync('/dev/stdin');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      return _stdinFs.readFileSync(process.stdin.fd);
+    }
+    throw err;
+  }
 }
 
 if (_isDirectExecution) {
