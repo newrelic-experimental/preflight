@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.11] - 2026-07-10
+
+### Fixed
+
+- **`EACCES` reading stdin when Claude Code runs on a Windows host and spawns Preflight inside WSL via `wsl.exe`** — the hook collector read stdin by opening `/dev/stdin`, a symlink to `/proc/self/fd/0`. On Linux that path is a fresh `open()` subject to a permission check, and the stdin pipe crossing the Windows/WSL boundary is created by WSL's root-owned init/relay (`root:root`, mode `0600`), so the re-open failed for a non-root user even though the already-inherited file descriptor was readable. Hook events were silently dropped for every Windows-host/WSL-guest Claude Code setup. The collector now falls back to reading the inherited stdin file descriptor directly when `/dev/stdin` specifically fails with `EACCES`, leaving the existing POSIX and Windows read paths unchanged otherwise. (#99)
+
 ## [1.4.10] - 2026-07-10
 
 ### Fixed
