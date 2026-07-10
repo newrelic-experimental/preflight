@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.13] - 2026-07-10
+
+### Fixed
+
+- **Static-asset path-containment check flagged by GitHub CodeQL as a potential path-injection sanitizer gap** — `isWithinRoot()` in the dashboard's static file handler checked one hardcoded `'/'` plus a runtime `path.sep`-derived fallback (needed so Windows' backslash-joined paths still pass the containment check). CodeQL cannot statically verify that a runtime value equals `'/'`, so it stopped recognizing the fallback branch as a valid sanitizer and flagged the file reads that follow. Both branches are now hardcoded literal checks (`'/'` and `'\\'`), which CodeQL recognizes as the standard path-containment pattern, with no change in behavior on either platform.
+
 ## [1.4.12] - 2026-07-10
 
 ### Fixed
