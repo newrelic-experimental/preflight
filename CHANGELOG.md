@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.15] - 2026-07-10
+
+### Fixed
+
+- `nr_observe_report_feedback` recorded user quality feedback but never emitted it — `FeedbackCollector.emitMetrics()` was never called from the harvest flush, so `ai.feedback.count` never reached New Relic. Fixed by wiring `emitMetrics()` into the harvest flush alongside the existing `costTracker`/`efficiencyScorer` metrics. Also fixed a latent double-counting bug found while wiring this in: `emitMetrics()` had no cursor, so calling it on every harvest flush (as this fix now does) would have re-emitted every historical feedback record on every subsequent flush; it now tracks a `lastEmittedIndex` cursor, mirroring `EfficiencyScorer`'s existing pattern. Found during the MCP tools audit. Does not implement an actual correlation between feedback and efficiency scores — that remains a separate, larger fix.
+
 ## [1.4.14] - 2026-07-10
 
 ### Fixed

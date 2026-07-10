@@ -1167,6 +1167,7 @@ async function main(): Promise<void> {
         metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
         costTracker,
         efficiencyScorer,
+        feedbackCollector,
         turnCostAttributor,
         sessionTraceId,
       });
@@ -1589,6 +1590,7 @@ async function main(): Promise<void> {
                 metricHarvestIntervalMs: config!.harvestIntervalMs.metrics,
                 costTracker,
                 efficiencyScorer,
+                feedbackCollector,
                 turnCostAttributor,
                 sessionTraceId: realId,
               });

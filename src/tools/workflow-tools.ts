@@ -30,6 +30,7 @@ export interface FeedbackRecord {
 
 export class FeedbackCollector {
   private records: FeedbackRecord[] = [];
+  private lastEmittedIndex = 0;
 
   record(feedback: Omit<FeedbackRecord, 'timestamp'>): FeedbackRecord {
     const entry: FeedbackRecord = { ...feedback, timestamp: Date.now() };
@@ -42,13 +43,16 @@ export class FeedbackCollector {
   }
 
   emitMetrics(aggregator: MetricAggregator): void {
-    for (const record of this.records) {
+    for (let i = this.lastEmittedIndex; i < this.records.length; i++) {
+      const record = this.records[i]!;
       aggregator.record('ai.feedback.count', 1, { quality: record.quality });
     }
+    this.lastEmittedIndex = this.records.length;
   }
 
   reset(): void {
     this.records = [];
+    this.lastEmittedIndex = 0;
   }
 }
 
