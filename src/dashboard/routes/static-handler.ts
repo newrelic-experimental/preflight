@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, resolve, sep } from 'node:path';
+import { extname, join, relative, isAbsolute, resolve, sep } from 'node:path';
 import { IncomingMessage, ServerResponse } from 'node:http';
 
 const MIME: Record<string, string> = {
@@ -22,24 +22,6 @@ const MIME: Record<string, string> = {
   '.avif': 'image/avif',
   '.txt': 'text/plain; charset=utf-8',
 };
-
-/**
- * True if `target` resolves to a path inside `root`. Both branches are
- * literal string checks ('/' and '\\') and must stay that way — never
- * replace either with a `path.sep`-derived value.
- *
- * Dropping the backslash branch breaks static asset serving on Windows,
- * where resolve()/join() produce backslash-joined paths that a '/'-only
- * check never matches. Making either branch non-literal (e.g. concatenating
- * a runtime `sep` variable instead of a quoted character) breaks static
- * analysis: CodeQL cannot statically prove that a runtime separator value
- * equals '/', so it stops recognising this as the standard
- * path-containment sanitizer pattern and flags the file reads below as
- * path injection.
- */
-export function isWithinRoot(root: string, target: string): boolean {
-  return target.startsWith(root + '/') || target.startsWith(root + '\\');
-}
 
 async function serveIndexFallback(root: string, res: ServerResponse): Promise<void> {
   try {
@@ -69,17 +51,31 @@ export function createStaticHandler(
     const reqPath = url.split('?')[0] ?? '/';
     const filename = reqPath === '/' ? 'index.html' : reqPath.replace(/^\/+/, '');
 
-    // Reject null bytes and explicit traversal components before path resolution.
-    // resolve() would eliminate these too, but the explicit check here makes the
-    // sanitization visible to static analysis (CodeQL js/path-injection).
-    if (filename.includes('\0') || filename.split('/').some((c) => c === '..')) {
+    // Reject an empty filename, null bytes, and explicit traversal
+    // components before path resolution. resolve() would eliminate '..'
+    // segments too, but the explicit check here makes the sanitization
+    // visible to static analysis (CodeQL js/path-injection), and rejecting
+    // an empty filename here — rather than letting it fall through to a
+    // directory stat() — keeps a malformed URL like `//` returning 403,
+    // not 404.
+    if (filename === '' || filename.includes('\0') || filename.split('/').some((c) => c === '..')) {
       res.writeHead(403);
       res.end();
       return;
     }
 
     const target = resolve(join(root, filename));
-    if (!isWithinRoot(root, target)) {
+    // path.relative() plus this escape check is the containment pattern
+    // CodeQL recognises as a path-injection sanitizer for the reads below.
+    // An `||` of two startsWith() checks (the previous approach, needed to
+    // handle both '/' and '\\') is never recognised — inlined or not — and
+    // a single-branch check can't cover Windows. This must stay inlined
+    // here, not delegated to a helper function: routing the identical
+    // check through a separate function also breaks CodeQL's recognition
+    // of it. Both of these were confirmed by pushing each shape to a real
+    // CodeQL-scanned branch and checking the analysis result directly.
+    const rel = relative(root, target);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
       res.writeHead(403);
       res.end();
       return;
