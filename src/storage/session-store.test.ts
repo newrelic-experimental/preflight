@@ -545,6 +545,23 @@ describe('buildSessionSummary', () => {
     expect(summary.cacheSavingsUsd).toBe(0.018);
   });
 
+  it('threads the platform field through when provided', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      developer: 'dev',
+      platform: 'cursor',
+    });
+    expect(summary.platform).toBe('cursor');
+  });
+
+  it('leaves platform undefined when not provided', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      developer: 'dev',
+    });
+    expect(summary.platform).toBeUndefined();
+  });
+
   it('deserializeFullSessionSummary round-trips cache fields', () => {
     const raw = {
       sessionId: 'sess-abc',

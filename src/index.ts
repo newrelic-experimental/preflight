@@ -1475,6 +1475,7 @@ async function main(): Promise<void> {
           efficiencyScorer,
           developer: config.developer ?? 'unknown',
           repoName: currentRepoName,
+          platform: eventProcessor?.activePlatform,
         });
         // Skip persisting the synthetic session JSON written by --local /
         // proxy modes. These IDs (local-<ts>, proxy-<ts>) are MCP-internal
