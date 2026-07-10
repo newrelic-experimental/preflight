@@ -93,17 +93,18 @@ Proxy mode is a **separate, mutually exclusive** code path. It does not use hook
 
 ## Component Reference
 
-| Component              | File                           | Purpose                                                                                                              |
-| ---------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `collector-script.ts`  | `src/hooks/`                   | Spawned by Claude Code hooks; reads hook JSON from stdin, appends to buffer file. Must complete in < 5 ms.           |
-| `buffer-SESSION.jsonl` | `~/.newrelic-preflight/`       | Ring buffer of raw hook events. Written by collector, drained by `HookEventProcessor`.                               |
-| `HookEventProcessor`   | `src/hooks/event-processor.ts` | Polls buffer every 100 ms. Pairs `PreToolUse` and `PostToolUse` events into `ToolCallRecord` objects.                |
-| Metric trackers (~15)  | `src/metrics/`                 | Each tracker receives every `ToolCallRecord` and maintains a typed metrics snapshot.                                 |
-| `NrIngestManager`      | `src/transport/nr-ingest.ts`   | Wraps `HarvestScheduler`; flushes events (5 s), metrics (60 s), and logs (5 s) to New Relic.                         |
-| MCP tools              | `src/tools/`                   | Registered via `registerTools()`; read tracker state and return it as MCP tool responses. Active in `--stdio` mode.  |
-| Dashboard server       | `src/index.ts`                 | HTTP server on port 7777 serving the local web UI. Active in `--local` mode.                                         |
-| `ProxyManager`         | `src/proxy/proxy-manager.ts`   | HTTP proxy that forwards MCP traffic to upstream servers and intercepts it for telemetry. Active in proxy mode only. |
-| `OtlpReceiver`         | `src/proxy/`                   | Receives enriched OTLP payloads from `ProxyManager` and forwards to New Relic OTLP endpoint.                         |
+| Component              | File                           | Purpose                                                                                                                          |
+| ---------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `collector-script.ts`  | `src/hooks/`                   | Spawned by Claude Code hooks; reads hook JSON from stdin, appends to buffer file. Must complete in < 5 ms.                       |
+| `buffer-SESSION.jsonl` | `~/.newrelic-preflight/`       | Ring buffer of raw hook events. Written by collector, drained by `HookEventProcessor`.                                           |
+| `HookEventProcessor`   | `src/hooks/event-processor.ts` | Polls buffer every 100 ms. Pairs `PreToolUse` and `PostToolUse` events into `ToolCallRecord` objects.                            |
+| `PlatformRegistry`     | `src/platforms/`               | Detects the active AI coding platform and normalizes its tool names to Preflight's vocabulary. See [ADAPTERS.md](./ADAPTERS.md). |
+| Metric trackers (~15)  | `src/metrics/`                 | Each tracker receives every `ToolCallRecord` and maintains a typed metrics snapshot.                                             |
+| `NrIngestManager`      | `src/transport/nr-ingest.ts`   | Wraps `HarvestScheduler`; flushes events (5 s), metrics (60 s), and logs (5 s) to New Relic.                                     |
+| MCP tools              | `src/tools/`                   | Registered via `registerTools()`; read tracker state and return it as MCP tool responses. Active in `--stdio` mode.              |
+| Dashboard server       | `src/index.ts`                 | HTTP server on port 7777 serving the local web UI. Active in `--local` mode.                                                     |
+| `ProxyManager`         | `src/proxy/proxy-manager.ts`   | HTTP proxy that forwards MCP traffic to upstream servers and intercepts it for telemetry. Active in proxy mode only.             |
+| `OtlpReceiver`         | `src/proxy/`                   | Receives enriched OTLP payloads from `ProxyManager` and forwards to New Relic OTLP endpoint.                                     |
 
 ---
 

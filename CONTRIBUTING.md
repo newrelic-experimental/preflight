@@ -296,18 +296,11 @@ See [SECURITY.md](./SECURITY.md) for the full guidelines and code review checkli
 
 ## Platform Support
 
-The MCP server automatically detects and supports multiple AI coding platforms:
+The MCP server registers an adapter per AI coding platform and auto-detects the active one at startup — each adapter's `isSupported()` checks its own platform-specific env vars (most do **not** use a shared `NEW_RELIC_AI_PLATFORM` variable; only the Kiro and Copilot adapters read it).
 
-| Platform           | Setup                                     | Notes                                                  |
-| ------------------ | ----------------------------------------- | ------------------------------------------------------ |
-| **Claude Code**    | Built-in                                  | Default platform; install hook via `preflight install` |
-| **Cursor**         | Env var: `NEW_RELIC_AI_PLATFORM=cursor`   | Auto-detected if Cursor config present                 |
-| **Windsurf**       | Env var: `NEW_RELIC_AI_PLATFORM=windsurf` | Auto-detected if Windsurf config present               |
-| **GitHub Copilot** | Env var: `NEW_RELIC_AI_PLATFORM=copilot`  | Requires manual hook setup                             |
-| **Zed**            | Env var: `NEW_RELIC_AI_PLATFORM=zed`      | Auto-detected from Zed config directory                |
-| **Continue.dev**   | Env var: `NEW_RELIC_AI_PLATFORM=continue` | Auto-detected from Continue config                     |
-| **Amazon Q**       | Env var: `NEW_RELIC_AI_PLATFORM=amazonq`  | Requires AWS IDE plugin setup                          |
-| **Amazon Kiro**    | Env var: `NEW_RELIC_AI_PLATFORM=kiro`     | MCP-native; add server to `.kiro/settings/mcp.json`    |
+Platform capabilities vary: some platforms expose a real hook mechanism that captures every built-in tool call, others only support MCP as a client (so Preflight can only see calls routed to its own MCP tools, not the platform's built-in file/shell tools).
+
+See **[docs/ADAPTERS.md](./docs/ADAPTERS.md)** for the full per-platform reference — integration mechanism, detection env vars, tool-name mapping, known gaps, and setup steps.
 
 ---
 

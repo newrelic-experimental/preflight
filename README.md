@@ -104,6 +104,8 @@ Restart your AI tool — hooks and the MCP server load at session start. Every t
 
 **Claude Code** • **Cursor** • **Windsurf** • **GitHub Copilot** • **Zed** • **Continue.dev** • **Amazon Q Developer** • **Amazon Kiro**
 
+Coverage isn't uniform — some platforms capture every built-in tool call, others (Zed, Continue.dev) only see calls routed to Preflight's own MCP tools. See [ADAPTERS.md](docs/ADAPTERS.md) for what each platform can and can't observe, and per-platform setup steps.
+
 ---
 
 ## Connect New Relic (optional)
@@ -178,6 +180,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 
 - [**ADVANCED.md**](docs/ADVANCED.md) — Configuration, dashboards, alerts, Terraform
 - [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) — Data flow, component reference, and operating modes
+- [**ADAPTERS.md**](docs/ADAPTERS.md) — Per-platform integration mechanism, setup steps, and known gaps
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
 - [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
 - [**PRIVACY.md**](./PRIVACY.md) — Data collection inventory and pre-cloud checklist

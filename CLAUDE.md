@@ -231,6 +231,12 @@ Each tracker:
 - Exposes a `getMetrics()` method returning a typed snapshot
 - Has a corresponding `*.test.ts` file with factory helpers
 
+## Platform Adapter Pattern
+
+Each adapter in `src/platforms/` implements `PlatformAdapter` (`types.ts`): `normalizeToolCall()`, `mapToolName()`, `getSessionMetadata()`, `getHookInstallInstructions()`, `isSupported()`. `PlatformRegistry.detect()` (`platform-registry.ts`) returns the first registered adapter whose `isSupported()` is `true` — registration order matters, and the generic MCP fallback is always registered last with `isSupported()` hardcoded `true`.
+
+Platform capabilities are not uniform: some platforms (Claude Code, Kiro, Amazon Q) expose real hook events that `src/hooks/collector-script.ts` parses into every built-in tool call; others (Zed, Continue.dev) only support MCP as a client, so Preflight can observe calls made to its own MCP tools but never the platform's built-in file/shell tools. Never invent a tool-name map or setup instructions — every entry must trace to the platform's own documentation or source, cited in a comment. See [ADAPTERS.md](./docs/ADAPTERS.md) for the full per-platform reference (mechanism, detection env vars, tool-map sourcing, known gaps, setup steps).
+
 ## MCP Tool Registration
 
 Tools are registered in `src/tools/session-stats.ts` via `registerTools()`, which receives all tracker instances and calls `server.tool()` for each MCP tool. Each tool handler:
