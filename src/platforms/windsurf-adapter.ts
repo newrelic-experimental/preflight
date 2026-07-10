@@ -39,8 +39,11 @@ export class WindsurfAdapter implements PlatformAdapter {
   readonly platformName = 'windsurf';
 
   async initialize(_config: PlatformConfig): Promise<void> {
-    // Windsurf supports MCP natively — proxy captures MCP tool calls automatically.
-    // Built-in Cascade tool calls arrive via extension API or file watcher events.
+    // Windsurf supports MCP natively via its own mcp_config.json. Built-in
+    // Cascade tool calls (file reads/writes, terminal commands, MCP calls)
+    // arrive through Windsurf's real Cascade Hooks system (.windsurf/hooks.json),
+    // handled by src/hooks/collector-script.ts — not through a file watcher
+    // or extension API. See https://docs.windsurf.com/windsurf/cascade/hooks.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -81,8 +84,13 @@ export class WindsurfAdapter implements PlatformAdapter {
       '1. Open Windsurf Settings > MCP Servers',
       '2. Add a new MCP server with command: npx preflight --stdio',
       '3. Set the environment variables: NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID',
-      '4. MCP tool calls via Cascade are captured automatically through the proxy',
-      '5. Built-in tool calls (file edits, terminal) require the file watcher or Windsurf extension',
+      '4. MCP tool calls via Cascade are captured automatically through the MCP connection',
+      '5. Built-in tool calls (file reads/writes, terminal commands) require Cascade Hooks:',
+      '   a. Create .windsurf/hooks.json in your workspace root (or use the user/system-level path)',
+      '   b. Register pre_read_code, post_read_code, pre_write_code, post_write_code,',
+      '      pre_run_command, and post_run_command hooks, each running:',
+      '      preflight-collector',
+      '   c. See https://docs.windsurf.com/windsurf/cascade/hooks for the full hooks.json schema',
     ].join('\n');
   }
 

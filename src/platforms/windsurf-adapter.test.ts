@@ -207,6 +207,13 @@ describe('WindsurfAdapter', () => {
       expect(instructions).toContain('Windsurf');
       expect(instructions).toContain('MCP');
     });
+
+    it('documents the real .windsurf/hooks.json Cascade Hooks system for built-in tool calls', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('hooks.json');
+      expect(instructions).not.toContain('file watcher');
+      expect(instructions).not.toContain('extension');
+    });
   });
 
   describe('initialize', () => {
