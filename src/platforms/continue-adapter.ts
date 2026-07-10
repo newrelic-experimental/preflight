@@ -6,19 +6,22 @@ import type {
 } from './types.js';
 
 const CONTINUE_TOOL_MAP: Record<string, string> = {
-  readFile: 'Read',
-  writeFile: 'Write',
-  editFile: 'Edit',
-  createFile: 'Write',
-  deleteFile: 'Delete',
-  searchFiles: 'Glob',
-  grep: 'Grep',
-  grepSearch: 'Grep',
-  fileSearch: 'Glob',
-  runTerminalCommand: 'Bash',
-  terminal: 'Bash',
-  viewSubdirectory: 'Glob',
-  viewRepoMap: 'Glob',
+  read_file: 'Read',
+  read_file_range: 'Read',
+  read_currently_open_file: 'Read',
+  edit_existing_file: 'Edit',
+  single_find_and_replace: 'Edit',
+  multi_edit: 'MultiEdit',
+  create_new_file: 'Write',
+  run_terminal_command: 'Bash',
+  grep_search: 'Grep',
+  file_glob_search: 'Glob',
+  ls: 'Glob',
+  view_subdirectory: 'Glob',
+  view_repo_map: 'Glob',
+  search_web: 'WebSearch',
+  fetch_url_content: 'WebFetch',
+  read_skill: 'Skill',
 };
 
 interface ContinueToolCallEvent {
@@ -41,7 +44,13 @@ export class ContinueAdapter implements PlatformAdapter {
   readonly platformName = 'continue';
 
   async initialize(_config: PlatformConfig): Promise<void> {
-    // Continue.dev communicates via MCP stdio or local HTTP server.
+    // Continue's native agent (VS Code/JetBrains extension and CLI) has no
+    // PreToolUse/PostToolUse-style hook mechanism for its built-in tools
+    // (read_file, edit_existing_file, run_terminal_command, etc.). Continue
+    // supports MCP only as a client: it can call out to an MCP server like
+    // Preflight, but that only surfaces calls Continue's agent chooses to make
+    // to Preflight's own tools, never a callback for Continue's built-in tool
+    // calls. See getHookInstallInstructions() for the real integration path.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -81,19 +90,30 @@ export class ContinueAdapter implements PlatformAdapter {
 
   getHookInstallInstructions(): string {
     return [
-      'Continue.dev Setup:',
-      '1. Open Continue config file (~/.continue/config.json)',
-      '2. Add to "mcpServers":',
-      '   {',
-      '     "name": "preflight",',
-      '     "command": "npx",',
-      '     "args": ["preflight", "--stdio"],',
-      '     "env": {',
-      '       "NEW_RELIC_LICENSE_KEY": "<your-key>",',
-      '       "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"',
-      '     }',
-      '   }',
-      '3. Reload the Continue extension.',
+      'Continue Setup:',
+      '',
+      "Continue's native agent has no hook mechanism — Preflight cannot",
+      'observe calls to built-in tools (read_file, edit_existing_file,',
+      'run_terminal_command, etc.) the way it does for Claude Code.',
+      '',
+      'What Preflight CAN see: calls Continue routes to its own MCP tools.',
+      '1. Create a folder .continue/mcpServers in your workspace root.',
+      '2. Add a file preflight.yaml with:',
+      '   name: Preflight mcpServer',
+      '   version: 0.0.1',
+      '   schema: v1',
+      '   mcpServers:',
+      '     - name: preflight',
+      '       command: npx',
+      '       args: ["preflight", "--stdio"]',
+      '       env:',
+      '         NEW_RELIC_LICENSE_KEY: <your-key>',
+      '         NEW_RELIC_ACCOUNT_ID: <your-account-id>',
+      '3. Reload Continue.',
+      '',
+      'Note: the continuedev/continue repository is no longer actively maintained',
+      'and is read-only for all users as of its final 2.0.0',
+      'release, so this integration path is unlikely to gain deeper hooks.',
     ].join('\n');
   }
 

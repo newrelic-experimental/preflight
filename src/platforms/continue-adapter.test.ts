@@ -34,25 +34,33 @@ describe('ContinueAdapter', () => {
   });
 
   describe('normalizeToolCall', () => {
-    it('maps "readFile" to "Read"', () => {
+    it('maps "read_file" to "Read"', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'readFile',
+        tool: 'read_file',
         timestamp: 2000,
         success: true,
       });
       expect(normalized.toolName).toBe('Read');
-      expect(normalized.platformToolName).toBe('readFile');
+      expect(normalized.platformToolName).toBe('read_file');
       expect(normalized.platform).toBe('continue');
     });
 
-    it('maps "writeFile" to "Write"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'writeFile', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Write');
+    it('maps "read_file_range" to "Read"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'read_file_range', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Read');
     });
 
-    it('maps "editFile" to "Edit"', () => {
+    it('maps "read_currently_open_file" to "Read"', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'editFile',
+        tool: 'read_currently_open_file',
+        timestamp: 2000,
+      });
+      expect(normalized.toolName).toBe('Read');
+    });
+
+    it('maps "edit_existing_file" to "Edit"', () => {
+      const normalized = adapter.normalizeToolCall({
+        tool: 'edit_existing_file',
         timestamp: 2000,
         filePath: '/src/app.ts',
       });
@@ -60,39 +68,27 @@ describe('ContinueAdapter', () => {
       expect(normalized.filePath).toBe('/src/app.ts');
     });
 
-    it('maps "createFile" to "Write"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'createFile', timestamp: 2000 });
+    it('maps "single_find_and_replace" to "Edit"', () => {
+      const normalized = adapter.normalizeToolCall({
+        tool: 'single_find_and_replace',
+        timestamp: 2000,
+      });
+      expect(normalized.toolName).toBe('Edit');
+    });
+
+    it('maps "multi_edit" to "MultiEdit"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'multi_edit', timestamp: 2000 });
+      expect(normalized.toolName).toBe('MultiEdit');
+    });
+
+    it('maps "create_new_file" to "Write"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'create_new_file', timestamp: 2000 });
       expect(normalized.toolName).toBe('Write');
     });
 
-    it('maps "deleteFile" to "Delete"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'deleteFile', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Delete');
-    });
-
-    it('maps "searchFiles" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'searchFiles', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
-    });
-
-    it('maps "grep" to "Grep"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'grep', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Grep');
-    });
-
-    it('maps "grepSearch" to "Grep"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'grepSearch', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Grep');
-    });
-
-    it('maps "fileSearch" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'fileSearch', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
-    });
-
-    it('maps "runTerminalCommand" to "Bash"', () => {
+    it('maps "run_terminal_command" to "Bash"', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'runTerminalCommand',
+        tool: 'run_terminal_command',
         timestamp: 2000,
         command: 'npm test',
       });
@@ -100,29 +96,78 @@ describe('ContinueAdapter', () => {
       expect(normalized.command).toBe('npm test');
     });
 
-    it('maps "terminal" to "Bash"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'terminal', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Bash');
+    it('maps "grep_search" to "Grep"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'grep_search', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Grep');
     });
 
-    it('maps "viewSubdirectory" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'viewSubdirectory', timestamp: 2000 });
+    it('maps "file_glob_search" to "Glob"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'file_glob_search', timestamp: 2000 });
       expect(normalized.toolName).toBe('Glob');
     });
 
-    it('maps "viewRepoMap" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'viewRepoMap', timestamp: 2000 });
+    it('maps "ls" to "Glob"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'ls', timestamp: 2000 });
       expect(normalized.toolName).toBe('Glob');
+    });
+
+    it('maps "view_subdirectory" to "Glob"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'view_subdirectory', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Glob');
+    });
+
+    it('maps "view_repo_map" to "Glob"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'view_repo_map', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Glob');
+    });
+
+    it('maps "search_web" to "WebSearch"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'search_web', timestamp: 2000 });
+      expect(normalized.toolName).toBe('WebSearch');
+    });
+
+    it('maps "fetch_url_content" to "WebFetch"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'fetch_url_content', timestamp: 2000 });
+      expect(normalized.toolName).toBe('WebFetch');
+    });
+
+    it('maps "read_skill" to "Skill"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'read_skill', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Skill');
+    });
+
+    it('maps unmapped real tool "view_diff" to "Unknown" with platformToolName preserved', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'view_diff', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('view_diff');
+    });
+
+    it('maps unmapped real tool "create_rule_block" to "Unknown" with platformToolName preserved', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'create_rule_block', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('create_rule_block');
+    });
+
+    it('maps unmapped real tool "request_rule" to "Unknown" with platformToolName preserved', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'request_rule', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('request_rule');
+    });
+
+    it('maps unmapped real tool "codebase" to "Unknown" with platformToolName preserved', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'codebase', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('codebase');
     });
 
     it('accepts "toolName" field as an alternative to "tool"', () => {
-      const normalized = adapter.normalizeToolCall({ toolName: 'readFile', timestamp: 2000 });
+      const normalized = adapter.normalizeToolCall({ toolName: 'read_file', timestamp: 2000 });
       expect(normalized.toolName).toBe('Read');
-      expect(normalized.platformToolName).toBe('readFile');
+      expect(normalized.platformToolName).toBe('read_file');
     });
 
     it('normalizes filepath (lowercase p) to filePath', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'readFile', filepath: '/src/app.ts' });
+      const normalized = adapter.normalizeToolCall({ tool: 'read_file', filepath: '/src/app.ts' });
       expect(normalized.filePath).toBe('/src/app.ts');
     });
 
@@ -142,13 +187,13 @@ describe('ContinueAdapter', () => {
     });
 
     it('defaults success to true when not provided', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'readFile', timestamp: 2000 });
+      const normalized = adapter.normalizeToolCall({ tool: 'read_file', timestamp: 2000 });
       expect(normalized.success).toBe(true);
     });
 
     it('preserves error field', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'editFile',
+        tool: 'edit_existing_file',
         timestamp: 2000,
         success: false,
         error: 'permission denied',
@@ -159,7 +204,7 @@ describe('ContinueAdapter', () => {
 
     it('uses current time when timestamp is missing', () => {
       const before = Date.now();
-      const normalized = adapter.normalizeToolCall({ tool: 'readFile' });
+      const normalized = adapter.normalizeToolCall({ tool: 'read_file' });
       const after = Date.now();
       expect(normalized.timestamp).toBeGreaterThanOrEqual(before);
       expect(normalized.timestamp).toBeLessThanOrEqual(after);
@@ -167,7 +212,7 @@ describe('ContinueAdapter', () => {
 
     it('includes inputSizeBytes and outputSizeBytes when present', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'readFile',
+        tool: 'read_file',
         timestamp: 2000,
         inputSizeBytes: 50,
         outputSizeBytes: 1000,
@@ -178,7 +223,7 @@ describe('ContinueAdapter', () => {
 
     it('includes sessionId when present', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'readFile',
+        tool: 'read_file',
         timestamp: 2000,
         sessionId: 'cont-sess-001',
       });
@@ -237,12 +282,16 @@ describe('ContinueAdapter', () => {
       expect(instructions).toContain('Continue');
     });
 
-    it('mentions NEW_RELIC_LICENSE_KEY', () => {
-      expect(adapter.getHookInstallInstructions()).toContain('NEW_RELIC_LICENSE_KEY');
+    it('states that Continue has no hook mechanism', () => {
+      expect(adapter.getHookInstallInstructions()).toContain('no hook mechanism');
     });
 
-    it('mentions NEW_RELIC_ACCOUNT_ID', () => {
-      expect(adapter.getHookInstallInstructions()).toContain('NEW_RELIC_ACCOUNT_ID');
+    it('describes the real MCP server config location', () => {
+      expect(adapter.getHookInstallInstructions()).toContain('.continue/mcpServers');
+    });
+
+    it('mentions that Continue is no longer actively maintained', () => {
+      expect(adapter.getHookInstallInstructions()).toContain('no longer actively maintained');
     });
   });
 
@@ -254,11 +303,15 @@ describe('ContinueAdapter', () => {
 
   describe('mapToolName', () => {
     it('maps a known tool name', () => {
-      expect(adapter.mapToolName('readFile')).toBe('Read');
+      expect(adapter.mapToolName('read_file')).toBe('Read');
     });
 
     it('returns "Unknown" for an unrecognized tool name', () => {
       expect(adapter.mapToolName('totallyMadeUpTool')).toBe('Unknown');
+    });
+
+    it('returns "Unknown" for a real but deliberately unmapped tool name', () => {
+      expect(adapter.mapToolName('view_diff')).toBe('Unknown');
     });
   });
 });
