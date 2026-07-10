@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.7] - 2026-07-09
+
+### Fixed
+
+- Continue adapter: replaced the entirely invented `CONTINUE_TOOL_MAP` (camelCase names that never matched Continue's real tool vocabulary) with Continue's actual snake_case built-in tool names, confirmed directly from Continue's own source (`core/tools/builtIn.ts`). Removed the incorrect `deleteFile: 'Delete'` mapping — Continue has no delete/remove built-in tool at all.
+- Continue adapter: corrected `getHookInstallInstructions()` to honestly state that Continue's native agent has no PreToolUse/PostToolUse-style hook mechanism, describe the real (non-deprecated) `.continue/mcpServers/*.yaml` MCP config format, and note that the upstream `continuedev/continue` repository is no longer actively maintained.
+
 ## [1.4.6] - 2026-07-10
 
 ### Fixed
