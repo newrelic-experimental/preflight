@@ -50,46 +50,6 @@ describe('AmazonQAdapter', () => {
       expect(normalized.toolName).toBe('Write');
     });
 
-    it('maps "fs_edit" to "Edit"', () => {
-      const normalized = adapter.normalizeToolCall({
-        tool: 'fs_edit',
-        timestamp: 2000,
-        filePath: '/src/app.ts',
-      });
-      expect(normalized.toolName).toBe('Edit');
-      expect(normalized.filePath).toBe('/src/app.ts');
-    });
-
-    it('maps "fs_create" to "Write"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'fs_create', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Write');
-    });
-
-    it('maps "fs_delete" to "Delete"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'fs_delete', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Delete');
-    });
-
-    it('maps "fs_list" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'fs_list', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
-    });
-
-    it('maps "fs_find" to "Glob"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'fs_find', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Glob');
-    });
-
-    it('maps "grep" to "Grep"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'grep', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Grep');
-    });
-
-    it('maps "search_code" to "Grep"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'search_code', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Grep');
-    });
-
     it('maps "execute_bash" to "Bash"', () => {
       const normalized = adapter.normalizeToolCall({
         tool: 'execute_bash',
@@ -100,29 +60,35 @@ describe('AmazonQAdapter', () => {
       expect(normalized.command).toBe('npm test');
     });
 
-    it('maps "run_shell" to "Bash"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'run_shell', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Bash');
+    it('maps "todo_list" to "TaskCreate"', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'todo_list', timestamp: 2000 });
+      expect(normalized.toolName).toBe('TaskCreate');
     });
 
-    it('maps "execute_command" to "Bash"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'execute_command', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Bash');
+    it('maps "introspect" to "Unknown" with platformToolName preserved (no real equivalent)', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'introspect', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('introspect');
     });
 
-    it('maps "explain_code" to "Read"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'explain_code', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Read');
+    it('maps "report_issue" to "Unknown" (no real equivalent)', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'report_issue', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
     });
 
-    it('maps "review_code" to "Read"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'review_code', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Read');
+    it('maps "knowledge" to "Unknown" (no real equivalent)', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'knowledge', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
     });
 
-    it('maps "transform_code" to "Edit"', () => {
-      const normalized = adapter.normalizeToolCall({ tool: 'transform_code', timestamp: 2000 });
-      expect(normalized.toolName).toBe('Edit');
+    it('maps "thinking" to "Unknown" (no real equivalent)', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'thinking', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
+    });
+
+    it('maps "use_aws" to "Unknown" (no real equivalent)', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'use_aws', timestamp: 2000 });
+      expect(normalized.toolName).toBe('Unknown');
     });
 
     it('accepts "toolName" field as an alternative to "tool"', () => {
@@ -155,7 +121,7 @@ describe('AmazonQAdapter', () => {
 
     it('preserves error field', () => {
       const normalized = adapter.normalizeToolCall({
-        tool: 'fs_edit',
+        tool: 'fs_write',
         timestamp: 2000,
         success: false,
         error: 'permission denied',
@@ -251,6 +217,22 @@ describe('AmazonQAdapter', () => {
     it('mentions NEW_RELIC_ACCOUNT_ID', () => {
       expect(adapter.getHookInstallInstructions()).toContain('NEW_RELIC_ACCOUNT_ID');
     });
+
+    it('documents the real preToolUse/postToolUse hooks field', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('preToolUse');
+      expect(instructions).toContain('postToolUse');
+      expect(instructions).toContain('preflight-collector');
+    });
+
+    it('documents the real agent config file location', () => {
+      expect(adapter.getHookInstallInstructions()).toContain('cli-agents');
+    });
+
+    it('discloses the missing session identifier limitation', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('no session identifier');
+    });
   });
 
   describe('initialize', () => {
@@ -262,6 +244,14 @@ describe('AmazonQAdapter', () => {
   describe('mapToolName', () => {
     it('maps a known tool name', () => {
       expect(adapter.mapToolName('fs_read')).toBe('Read');
+    });
+
+    it('maps "todo_list" to "TaskCreate"', () => {
+      expect(adapter.mapToolName('todo_list')).toBe('TaskCreate');
+    });
+
+    it('returns "Unknown" for a real Amazon Q tool with no equivalent', () => {
+      expect(adapter.mapToolName('use_aws')).toBe('Unknown');
     });
 
     it('returns "Unknown" for an unrecognized tool name', () => {
