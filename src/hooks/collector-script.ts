@@ -708,12 +708,34 @@ function processHook(raw: string): void {
       event.inputContent = redact(truncate(content, maxContentLen));
     }
   } else if (eventName === 'posttooluse') {
+    // Claude Code generally signals tool failure via a separate
+    // PostToolUseFailure event, so hardcoding true here was historically
+    // almost always safe — with one known exception: Claude Code's own Edit
+    // tool sets tool_response.success: false (see extractOutputMeta's Edit
+    // case below, which has always read this into toolOutput.editSuccess)
+    // when a find-and-replace doesn't match. Kiro and Amazon Q Developer CLI
+    // both use this single postToolUse event for both outcomes and set
+    // tool_response.success: false on failure (confirmed identical shape:
+    // https://kiro.dev/docs/cli/hooks and
+    // https://github.com/aws/amazon-q-developer-cli/blob/main/docs/hooks.md).
+    // Reading tool_response.success here (defaulting to true when absent)
+    // both fixes Kiro/Amazon Q and intentionally unifies the top-level
+    // success/ToolCallRecord.success signal with the existing
+    // toolOutput.editSuccess signal for Claude Code's own no-match Edit case
+    // — a no-match edit is a genuine failure worth surfacing to
+    // anti-pattern/task-completion metrics, not a behavior to special-case
+    // away.
+    const toolResponse = data.tool_response;
+    const responseSuccess =
+      toolResponse !== null && typeof toolResponse === 'object' && !Array.isArray(toolResponse)
+        ? (toolResponse as Record<string, unknown>).success
+        : undefined;
     event = {
       mode: 'post' as const,
       tool: toolName,
       timestamp,
       outputSize: sizeOf(data.tool_response),
-      success: true,
+      success: typeof responseSuccess === 'boolean' ? responseSuccess : true,
     };
 
     // Store input metadata as fallback for orphaned-post pairing (pre-event may be missing)

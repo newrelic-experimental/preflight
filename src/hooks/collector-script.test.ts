@@ -456,6 +456,108 @@ describe('collector-script', () => {
     });
   });
 
+  describe('collector-script — postToolUse tool_response.success (Kiro / Amazon Q)', () => {
+    it('marks the event unsuccessful when tool_response.success is false', () => {
+      processHook(
+        makeKiroPostToolUse({ tool_response: { success: false, result: ['permission denied'] } }),
+      );
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].success).toBe(false);
+    });
+
+    it('marks the event successful when tool_response.success is true', () => {
+      processHook(makeKiroPostToolUse({ tool_response: { success: true, result: ['ok'] } }));
+      const events = readBufferEvents();
+      expect(events[0].success).toBe(true);
+    });
+
+    it('defaults to successful when tool_response has no success field (Claude Code shape)', () => {
+      processHook(makePostToolUse({ tool_response: { exitCode: 0 } }));
+      const events = readBufferEvents();
+      expect(events[0].success).toBe(true);
+    });
+
+    it('defaults to successful when tool_response is a non-object', () => {
+      processHook(makePostToolUse({ tool_response: 'plain string output' }));
+      const events = readBufferEvents();
+      expect(events[0].success).toBe(true);
+    });
+
+    it("unifies top-level success with Edit's own tool_response.success (intentional — Claude Code's Edit tool is not exempt)", () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Edit',
+          tool_response: { success: false, error: 'no match found' },
+        }),
+      );
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].success).toBe(false);
+    });
+  });
+
+  describe('collector-script — Amazon Q Developer CLI hook payloads (https://github.com/aws/amazon-q-developer-cli/blob/main/docs/hooks.md)', () => {
+    function makeAmazonQPreToolUse(overrides?: Record<string, unknown>): string {
+      return JSON.stringify({
+        hook_event_name: 'preToolUse',
+        cwd: '/current/working/directory',
+        tool_name: 'fs_read',
+        tool_input: {
+          operations: [{ mode: 'Line', path: '/current/working/directory/docs/hooks.md' }],
+        },
+        ...overrides,
+      });
+    }
+
+    function makeAmazonQPostToolUse(overrides?: Record<string, unknown>): string {
+      return JSON.stringify({
+        hook_event_name: 'postToolUse',
+        cwd: '/current/working/directory',
+        tool_name: 'fs_read',
+        tool_input: {
+          operations: [{ mode: 'Line', path: '/current/working/directory/docs/hooks.md' }],
+        },
+        tool_response: { success: true, result: ['# Hooks\n\nHooks allow you to execute...'] },
+        ...overrides,
+      });
+    }
+
+    it('writes a pre event for a real Amazon Q preToolUse payload', () => {
+      processHook(makeAmazonQPreToolUse());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('pre');
+      expect(events[0].tool).toBe('fs_read');
+    });
+
+    it('writes a successful post event for a real Amazon Q postToolUse payload', () => {
+      processHook(makeAmazonQPostToolUse());
+      const events = readBufferEvents();
+      expect(events[0].mode).toBe('post');
+      expect(events[0].success).toBe(true);
+    });
+
+    it('writes a failed post event when tool_response.success is false', () => {
+      processHook(
+        makeAmazonQPostToolUse({ tool_response: { success: false, result: ['Access denied'] } }),
+      );
+      const events = readBufferEvents();
+      expect(events[0].success).toBe(false);
+    });
+
+    it('has no session identifier field, unlike every other supported platform', () => {
+      processHook(makeAmazonQPreToolUse());
+      const events = readBufferEvents();
+      // Amazon Q hook events carry no session_id/conversation_id/trajectory_id —
+      // confirmed absent from the real payload shape in hooks.md. sessionId
+      // falls through to undefined, and getBufferPath() buckets it under
+      // buffer-unknown.jsonl (the same fallback bucket the storage layer
+      // already provides for any session-less platform).
+      expect(events[0].sessionId).toBeUndefined();
+    });
+  });
+
   function makeCursorBeforeShellExecution(overrides?: Record<string, unknown>): string {
     return JSON.stringify({
       hook_event_name: 'beforeShellExecution',
