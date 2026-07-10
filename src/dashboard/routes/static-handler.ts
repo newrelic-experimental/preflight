@@ -79,7 +79,7 @@ export function createStaticHandler(
     }
 
     const target = resolve(join(root, filename));
-    if (!isWithinRoot(root, target)) {
+    if (!(target.startsWith(root + '/') || target.startsWith(root + '\\'))) {
       res.writeHead(403);
       res.end();
       return;
