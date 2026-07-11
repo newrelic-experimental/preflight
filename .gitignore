@@ -6,6 +6,7 @@ coverage/
 .env*
 !.env.example
 .superpowers/
+docs/superpowers/
 .claude/
 test-results/
 playwright-report/

@@ -1421,28 +1421,11 @@ Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/context-compositio
 
 Time split between LLM API calls, tool execution, and overhead — with p50/p95 percentiles for each component.
 
+**Status: not currently functional.** Neither Claude Code hook events nor proxy mode observe the model-API-level timing this tool needs. It is not registered in `tools/list`; calling it directly by name returns an explanatory error.
+
 **Parameters:** None
 
-**Returns:**
-
-```json
-{
-  "turnCount": 8,
-  "llmApi": { "p50": 1200, "p95": 3500 },
-  "toolExecution": { "p50": 45, "p95": 280 },
-  "overhead": { "p50": 12, "p95": 60 },
-  "avgComposition": { "llmApi": 0.7, "toolExecution": 0.25, "overhead": 0.05 },
-  "recentTurns": []
-}
-```
-
-**Data source:** `LatencyDecompositionTracker`
-
-**How it works:** Receives per-turn timing reports with `llmApiMs`, `toolExecutionMs`, and computes overhead as the remainder. Aggregates into p50/p95 percentiles per component and a fractional composition showing how each component contributes to overall turn latency.
-
-**Requires:** `LatencyDecompositionTracker`
-
-Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/latency-decomposition.ts`
+**Data source:** `LatencyDecompositionTracker` (implemented, correctly, but never fed — see `src/index.ts` for why)
 
 ---
 

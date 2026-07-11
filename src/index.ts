@@ -752,9 +752,13 @@ async function main(): Promise<void> {
     const retryDetector = new RetryDetector();
     const contextCompositionTracker = new ContextCompositionTracker();
     const contextTracker = new ContextTrackerRegistry();
-    // LatencyDecompositionTracker requires turn-level LLM vs tool timing that is
-    // only available in proxy mode (where we see upstream response latency). In
-    // stdio mode the data cannot be auto-populated so we skip instantiation.
+    // LatencyDecompositionTracker requires a true LLM-API-vs-tool-execution split.
+    // Neither mode observes this: stdio hooks only see Claude Code's own tool
+    // calls, and proxy mode's visible "upstream" latency is MCP-server latency
+    // (see ApiFailureTracker's comment below), not model-API latency. There is
+    // no turn-boundary hook (UserPromptSubmit/Stop) wired either, so even a
+    // coarse tool-execution-vs-everything-else split isn't currently derivable.
+    // Kept dormant; would need new hook wiring or an LLM-facing proxy to fix for real.
     const latencyDecompositionTracker: LatencyDecompositionTracker | undefined = undefined;
     const decisionTracker = new DecisionTracker();
     const instructionDriftTracker = new InstructionDriftTracker();

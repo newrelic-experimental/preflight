@@ -484,6 +484,21 @@ describe('MCP protocol integration', () => {
     expect(JSON.parse(content[0]!.text)).toMatchObject({ error: 'tracker exploded' });
   });
 
+  it('calling nr_observe_get_latency_decomposition returns an explanatory error', async () => {
+    const result = await client.callTool({
+      name: 'nr_observe_get_latency_decomposition',
+      arguments: {},
+    });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content).toHaveLength(1);
+    const data = JSON.parse(content[0]!.text);
+    expect(data.error).toBe('nr_observe_get_latency_decomposition is not currently functional');
+    expect(data.note).toBe(
+      "Preflight cannot observe a true LLM-API-vs-tool-execution split in either stdio or proxy mode -- see the comment above the tracker's instantiation in index.ts for the full explanation. This tool is intentionally not registered in tools/list.",
+    );
+  });
+
   it('MCP initialize response includes transparency disclosure', () => {
     const info = client.getServerVersion();
     expect(info?.name).toBe('test-mcp');

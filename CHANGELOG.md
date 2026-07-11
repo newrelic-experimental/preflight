@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.18] - 2026-07-10
+
+### Fixed
+
+- `nr_observe_get_latency_decomposition`'s code comment and documentation both falsely claimed the tool "only" needs proxy-mode instrumentation to work. Verified false: Preflight's proxy mode forwards requests to MCP servers, not to the model API, so its visible latency is MCP-server latency, not model-API latency — the same architectural gap found in the `nr_observe_get_api_failures` fix above. Unlike that tool, this one's runtime behavior was already safe (it's never listed in `tools/list`, and a direct call already returns an explicit error rather than misleading data), so this fix corrects the false claims in the code comment, the direct-call error message, and the docs table — no runtime behavior, registration, or data shape change beyond adding an explanatory `note` field to the existing error response.
+
 ## [1.4.17] - 2026-07-10
 
 ### Fixed
