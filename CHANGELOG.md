@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.19] - 2026-07-10
+
+### Fixed
+
+- `nr_observe_get_context_composition`'s per-turn token breakdown claims 4 categories (system prompt, conversation history, tool results, injected files), but two of them — `system_prompt` and `injected_file_content` — are always 0: the model API's usage response only reports aggregate input/cache-read/cache-creation token counts, with no breakdown by content category, so Preflight has no way to separate those two categories from the rest. `fillPercent` and the dominance alerts are unaffected and reflect real totals. The tool's response now carries an explanatory `note` field on every call, and the registered description now discloses the limitation.
+- `nr_observe_get_decision_tree`'s `reasoning` field reads like extracted reasoning but is always one of 3 fixed rule-based labels (e.g. "recovery after X failure") — `DecisionTracker.recordToolCall()` has no parameter carrying actual model reasoning text. Branches are also only recorded on 3 narrow triggers, not on every turn, so `totalBranches` undercounts ordinary turns relative to a literal "per turn" reading. The tool's response (including the `post_mortem: true` path) now carries an explanatory `note` field, and the registered description no longer claims "reasoning...extraction."
+
 ## [1.4.18] - 2026-07-10
 
 ### Fixed

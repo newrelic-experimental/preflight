@@ -17,6 +17,7 @@ import type { RetryDetector } from '../metrics/retry-detector.js';
 import type { ContextCompositionTracker } from '../metrics/context-composition-tracker.js';
 import type { LatencyDecompositionTracker } from '../metrics/latency-decomposition.js';
 import type { DecisionTracker } from '../metrics/decision-tracker.js';
+import { DECISION_TREE_REASONING_NOTE } from '../metrics/decision-tracker.js';
 import type { InstructionDriftTracker } from '../metrics/instruction-drift-tracker.js';
 import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
@@ -37,7 +38,7 @@ export const RETRY_ALERTS_TOOL = {
 export const CONTEXT_COMPOSITION_TOOL = {
   name: 'nr_observe_get_context_composition',
   description:
-    'Get per-turn token breakdown by category (system prompt, conversation history, tool results, injected files). Shows context window fill percentage and dominance alerts.',
+    "Get per-turn token breakdown by category (system prompt, conversation history, tool results, injected files). Shows context window fill percentage and dominance alerts. LIMITATION: system_prompt and injected_file_content are always 0 -- the model API's aggregate usage counts have no breakdown by content category (see the note field in the response).",
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };
@@ -53,7 +54,7 @@ export const LATENCY_DECOMPOSITION_TOOL = {
 export const DECISION_TREE_TOOL = {
   name: 'nr_observe_get_decision_tree',
   description:
-    'Get decision branch analysis: reasoning and action extraction per turn with outcome tagging. Includes post-mortem of failure chains and longest failure streak.',
+    'Get decision branch analysis: rule-based decision labeling and action tagging for triggered branches (recovery, retry, delegation), with outcome tagging. Includes post-mortem of failure chains and longest failure streak. LIMITATION: the reasoning field is a fixed rule-based label, not extracted model chain-of-thought, and branches are only recorded on 3 narrow triggers rather than every turn (see the note field in the response).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -133,7 +134,16 @@ export function handleGetDecisionTree(
   if (postMortem) {
     const branches = tracker.getPostMortem();
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ postMortem: branches }, null, 2) }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(
+            { postMortem: branches, note: DECISION_TREE_REASONING_NOTE },
+            null,
+            2,
+          ),
+        },
+      ],
     };
   }
   return {

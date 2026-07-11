@@ -32,6 +32,20 @@ describe('ContextCompositionTracker', () => {
     expect(metrics.currentFillPercent).toBe(7);
   });
 
+  it('always reports an explanatory note about the two dead categories', () => {
+    const tracker = new ContextCompositionTracker();
+    const metrics = tracker.getMetrics();
+    expect(metrics.note).toBe(
+      "system_prompt and injected_file_content are always 0 in currentBreakdown/history -- the model API's usage response only reports aggregate input/cache-read/cache-creation token counts, with no breakdown by content category, so these two categories can't be separated from conversation_history/tool_results. fillPercent and dominanceAlerts are unaffected and reflect real totals.",
+    );
+
+    // Recording a real turn must not change the note -- the limitation is
+    // architectural, not a function of whether any turn was ever recorded.
+    tracker.recordTurn(makeReport());
+    const metricsAfter = tracker.getMetrics();
+    expect(metricsAfter.note).toBe(metrics.note);
+  });
+
   it('fires threshold alert at 50%', () => {
     const alerts: ContextThresholdAlert[] = [];
     const tracker = new ContextCompositionTracker({

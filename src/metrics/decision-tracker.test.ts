@@ -18,6 +18,25 @@ describe('DecisionTracker', () => {
     expect(metrics.successRate).toBeNull(); // no outcomes yet
   });
 
+  it('always reports an explanatory note about the templated reasoning field', () => {
+    const tracker = new DecisionTracker();
+    const metrics = tracker.getMetrics();
+    expect(metrics.note).toBe(
+      "reasoning fields above are rule-based labels (e.g. 'recovery after X failure', 'retrying Y on Z'), not extracted model chain-of-thought -- recordToolCall() has no access to actual reasoning text. Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.",
+    );
+
+    // Recording a real decision must not change the note -- the limitation
+    // is architectural, not a function of whether any branch was ever recorded.
+    tracker.recordDecision({
+      turnNumber: 1,
+      reasoning: 'test reasoning',
+      chosenAction: 'read file',
+      toolName: 'Read',
+    });
+    const metricsAfter = tracker.getMetrics();
+    expect(metricsAfter.note).toBe(metrics.note);
+  });
+
   it('tags branches with outcomes', () => {
     const tracker = new DecisionTracker();
     tracker.recordDecision({
