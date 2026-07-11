@@ -1316,7 +1316,10 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify({ error: 'LatencyDecompositionTracker not available' }),
+                  text: JSON.stringify({
+                    error: 'nr_observe_get_latency_decomposition is not currently functional',
+                    note: "Preflight cannot observe a true LLM-API-vs-tool-execution split in either stdio or proxy mode -- see the comment above the tracker's instantiation in index.ts for the full explanation. This tool is intentionally not registered in tools/list.",
+                  }),
                 },
               ],
               isError: true,
