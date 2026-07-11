@@ -62,6 +62,8 @@ export interface ApiFailureMetrics {
   readonly meanTimeToRecoveryMs: number | null;
   readonly throttleAlerts: readonly ThrottleAlert[];
   readonly recentFailures: readonly ApiFailureEvent[];
+  readonly dataAvailable: boolean;
+  readonly note: string;
 }
 
 export interface ApiFailureTrackerOptions {
@@ -80,6 +82,9 @@ const DEFAULT_THROTTLE_THRESHOLD = 3;
 const DEFAULT_THROTTLE_WINDOW_MINUTES = 10;
 const DEFAULT_MAX_EVENTS = 500;
 const DEFAULT_COST_PER_TOKEN_USD = 0.000003;
+
+const API_FAILURE_DATA_UNAVAILABLE_NOTE =
+  "Model-API-level failure data (rate limits, timeouts, auth errors from the LLM provider itself) is not observable in Preflight's current architecture. Neither Claude Code hook events nor proxy mode see raw model-API traffic — proxy mode forwards requests to MCP servers, not to the model API. All-zero fields below reflect this limitation, not an absence of real failures.";
 
 // ---------------------------------------------------------------------------
 // ApiFailureTracker
@@ -195,6 +200,8 @@ export class ApiFailureTracker {
       meanTimeToRecoveryMs: meanRecovery,
       throttleAlerts: this.throttleAlerts,
       recentFailures: this.events.slice(-20),
+      dataAvailable: false,
+      note: API_FAILURE_DATA_UNAVAILABLE_NOTE,
     };
   }
 

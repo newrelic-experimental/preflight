@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.17] - 2026-07-10
+
+### Fixed
+
+- `nr_observe_get_api_failures` always silently reported zero API failures — `ApiFailureTracker.recordRequest()`/`.recordFailure()` had zero call sites in production. Investigating this one further than the others: model-API-level failure data (rate limits, timeouts, auth errors from the LLM provider itself) is not observable anywhere in Preflight's current architecture, in either mode. Claude Code hook events only see Claude Code's own tool calls, not the underlying model-API traffic, and Preflight's proxy mode forwards requests to MCP servers, not to the model API itself — there is no LLM-facing proxy in this codebase today. Rather than fabricate a substitute signal, the tool's response now carries an explicit `dataAvailable: false` field and an explanatory `note` on every call, so a caller can no longer mistake the permanent all-zero output for "no failures occurred." Building a real LLM-facing proxy to make this data genuinely observable remains a separate, much larger effort.
+
 ## [1.4.16] - 2026-07-10
 
 ### Fixed
