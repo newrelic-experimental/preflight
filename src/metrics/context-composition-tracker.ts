@@ -43,6 +43,7 @@ export interface ContextCompositionMetrics {
   readonly thresholdAlerts: readonly ContextThresholdAlert[];
   readonly dominanceAlerts: readonly CategoryDominanceAlert[];
   readonly history: readonly TurnComposition[];
+  readonly note: string;
 }
 
 export interface ContextCompositionOptions {
@@ -71,6 +72,9 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_FILL_THRESHOLDS = [50, 75, 90] as const;
 const DEFAULT_DOMINANCE_THRESHOLD = 60;
 const DEFAULT_MAX_HISTORY = 500;
+
+const CONTEXT_COMPOSITION_NOTE =
+  "system_prompt and injected_file_content are always 0 in currentBreakdown/history -- the model API's usage response only reports aggregate input/cache-read/cache-creation token counts, with no breakdown by content category, so these two categories can't be separated from conversation_history/tool_results. fillPercent and dominanceAlerts are unaffected and reflect real totals.";
 
 // ---------------------------------------------------------------------------
 // ContextCompositionTracker
@@ -179,6 +183,7 @@ export class ContextCompositionTracker {
       thresholdAlerts: this.thresholdAlerts,
       dominanceAlerts: this.dominanceAlerts,
       history: this.history,
+      note: CONTEXT_COMPOSITION_NOTE,
     };
   }
 

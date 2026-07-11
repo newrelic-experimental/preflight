@@ -23,6 +23,7 @@ export interface DecisionTreeMetrics {
   readonly failurePoints: readonly DecisionBranch[];
   readonly longestFailureStreak: number;
   readonly firstFailureIndex: number | null;
+  readonly note: string;
 }
 
 export interface DecisionTrackerOptions {
@@ -36,6 +37,9 @@ export interface DecisionTrackerOptions {
 
 const DEFAULT_MAX_BRANCHES = 500;
 const DEFAULT_REASONING_MAX_LENGTH = 500;
+
+export const DECISION_TREE_REASONING_NOTE =
+  "reasoning fields above are rule-based labels (e.g. 'recovery after X failure', 'retrying Y on Z'), not extracted model chain-of-thought -- recordToolCall() has no access to actual reasoning text. Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.";
 
 // ---------------------------------------------------------------------------
 // DecisionTracker
@@ -162,6 +166,7 @@ export class DecisionTracker {
       failurePoints,
       longestFailureStreak: this.computeLongestFailureStreak(),
       firstFailureIndex: this.findFirstFailureIndex(),
+      note: DECISION_TREE_REASONING_NOTE,
     };
   }
 
