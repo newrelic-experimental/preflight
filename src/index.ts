@@ -760,6 +760,11 @@ async function main(): Promise<void> {
     const instructionDriftTracker = new InstructionDriftTracker();
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
+    // ApiFailureTracker is instantiated but never fed: recordRequest()/recordFailure()
+    // require visibility into model-API-level traffic (LLM provider rate limits,
+    // timeouts, auth errors), which is not observable in either stdio mode (hooks
+    // only see Claude Code's own tool calls) or proxy mode (which forwards to MCP
+    // servers, not the model API). Kept dormant for a future LLM-facing proxy.
     const apiFailureTracker = new ApiFailureTracker();
     liveSessionRegistry = new LiveSessionRegistry();
     liveSessionRegistry.startSampling();

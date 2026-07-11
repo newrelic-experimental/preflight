@@ -254,4 +254,25 @@ describe('ApiFailureTracker', () => {
     expect(metrics.totalFailures).toBe(0);
     expect(metrics.totalTokensLost).toBe(0);
   });
+
+  it('always reports dataAvailable false with an explanatory note', () => {
+    const tracker = new ApiFailureTracker();
+    const metrics = tracker.getMetrics();
+    expect(metrics.dataAvailable).toBe(false);
+    expect(metrics.note).toBe(
+      "Model-API-level failure data (rate limits, timeouts, auth errors from the LLM provider itself) is not observable in Preflight's current architecture. Neither Claude Code hook events nor proxy mode see raw model-API traffic — proxy mode forwards requests to MCP servers, not to the model API. All-zero fields below reflect this limitation, not an absence of real failures.",
+    );
+
+    // Recording real events must not change either field — the limitation is
+    // architectural, not a function of whether any failure was ever recorded.
+    tracker.recordFailure({
+      errorType: 'rate_limit',
+      model: 'claude-opus-4',
+      turnNumber: 1,
+      tokensInFlight: 100,
+    });
+    const metricsAfter = tracker.getMetrics();
+    expect(metricsAfter.dataAvailable).toBe(false);
+    expect(metricsAfter.note).toBe(metrics.note);
+  });
 });

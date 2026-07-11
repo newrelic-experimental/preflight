@@ -93,7 +93,7 @@ export const QUALITY_PROXY_TOOL = {
 export const API_FAILURES_TOOL = {
   name: 'nr_observe_get_api_failures',
   description:
-    'Get API failure tracking: per-model reliability scorecards, tokens lost, cost impact, throttle alerts, and mean time to recovery.',
+    "Get API failure tracking: per-model reliability scorecards, tokens lost, cost impact, throttle alerts, and mean time to recovery. LIMITATION: model-API-level failure data is not observable in Preflight's current architecture (see the note field in the response) — this tool currently always returns empty/zero metrics.",
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };

@@ -1586,7 +1586,7 @@ Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/quality-proxy-trac
 
 ### `nr_observe_get_api_failures`
 
-API failure tracking: per-model reliability scorecards, tokens lost, throttle alerts, and mean time to recovery.
+API failure tracking: per-model reliability scorecards, tokens lost, throttle alerts, and mean time to recovery. **Limitation:** model-API-level failure data is not observable in Preflight's current architecture (neither Claude Code hook events nor proxy mode see raw model-API traffic) — this tool currently always returns empty/zero metrics, with `dataAvailable: false` and a `note` field explaining why.
 
 **Parameters:** None
 
