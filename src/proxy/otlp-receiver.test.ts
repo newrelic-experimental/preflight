@@ -624,6 +624,30 @@ describe('API key authentication', () => {
     });
     expect(statusCode).toBe(401);
   });
+
+  it('rejects a token that starts with the correct value plus extra characters (regression: no truncation)', async () => {
+    const port = getBoundPort(receiver);
+    const { statusCode } = await httpRequest(port, 'POST', '/v1/traces', '{}', {
+      authorization: 'Bearer test-secretXXXX',
+    });
+    expect(statusCode).toBe(401);
+  });
+
+  it('rejects a strict prefix of the correct token (shorter than expected)', async () => {
+    const port = getBoundPort(receiver);
+    const { statusCode } = await httpRequest(port, 'POST', '/v1/traces', '{}', {
+      authorization: 'Bearer test-secre',
+    });
+    expect(statusCode).toBe(401);
+  });
+
+  it('rejects an empty Authorization header value', async () => {
+    const port = getBoundPort(receiver);
+    const { statusCode } = await httpRequest(port, 'POST', '/v1/traces', '{}', {
+      authorization: '',
+    });
+    expect(statusCode).toBe(401);
+  });
 });
 
 // ---------------------------------------------------------------------------

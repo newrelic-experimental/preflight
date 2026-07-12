@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
-import { timingSafeEqual, createHmac, randomBytes } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { Agent } from 'undici';
 import { createLogger } from '../shared/index.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
@@ -43,11 +43,6 @@ export class OtlpReceiver {
   // validates the address actually connected to — see createSsrfSafeLookup()'s doc
   // comment. undefined when forwarding is disabled (nothing to protect).
   private readonly forwardDispatcher: Agent | undefined;
-  // Used only to give checkAuthentication()'s two HMAC calls a shared key for
-  // that comparison — see the comment there for why. Generated once per
-  // instance rather than per request; it never needs to be stable across
-  // requests, so this is purely to avoid a CSPRNG read on every auth check.
-  private readonly authComparisonKey = randomBytes(32);
 
   constructor(options: OtlpReceiverOptions) {
     if (options.forwardEndpoint !== null) {
@@ -267,28 +262,34 @@ export class OtlpReceiver {
       return;
     }
 
-    const authHeader = req.headers.authorization as string | undefined;
+    const authHeader = req.headers.authorization ?? '';
     const expectedAuth = `Bearer ${this.options.apiKey}`;
 
+    const actual = Buffer.from(authHeader, 'utf8');
+    const expected = Buffer.from(expectedAuth, 'utf8');
+
     // A prior version compared authHeader.length === expectedAuth.length as a
-    // short-circuit before the timing-safe comparison, leaking the correct
-    // credential's length via response timing. Hashing both sides to a
-    // fixed-length digest first closes that gap — but a bare createHash() of
-    // a credential is nothing being stored, so there's no offline
-    // brute-forcing surface a slow KDF would defend against; static analysis
-    // still flags it because the *shape* matches password-at-rest hashing.
-    // Using HMAC instead doesn't add real cryptographic strength here (the
-    // safety property is "nothing persisted," true either way) — it exists
-    // to give the digest a shape that isn't password hashing, which is what
-    // static analysis is actually checking for. authComparisonKey doesn't
-    // need to be stable across requests for correctness (both sides of any
-    // one comparison always use the same key), only within this call.
-    const actualMac = createHmac('sha256', this.authComparisonKey)
-      .update(authHeader ?? '')
-      .digest();
-    const expectedMac = createHmac('sha256', this.authComparisonKey).update(expectedAuth).digest();
-    const match = timingSafeEqual(actualMac, expectedMac);
-    if (!match) {
+    // short-circuit before timingSafeEqual, leaking the correct credential's
+    // length via response timing. A later version closed that by hashing
+    // both sides first — but any digest of a credential-shaped value (hash
+    // or HMAC) reads to static analysis as password-at-rest hashing, which
+    // needs a slow KDF; that requirement doesn't apply here (nothing is
+    // stored, so there's no offline brute-forcing surface), yet there's no
+    // way to convey that distinction to the scanner. The actual fix is to
+    // never compute a digest at all: run timingSafeEqual unconditionally
+    // over two same-length buffers every time. lengthsMatch is a plain
+    // integer comparison (O(1), not data-dependent) and decides only which
+    // value gets copied — expected on the match path, actual on the
+    // mismatch path — so BOTH paths always do exactly one Buffer.from() copy
+    // plus one timingSafeEqual call, of a buffer sized to whatever length
+    // the caller's own guess happened to be. There's no branch that skips
+    // the copy on the match path, so cost as a function of the guess's
+    // length has no discontinuity at the point where it happens to equal
+    // the secret's length — which is what actually needs to not leak.
+    const lengthsMatch = actual.length === expected.length;
+    const comparisonTarget = lengthsMatch ? Buffer.from(expected) : Buffer.from(actual);
+    const contentMatches = timingSafeEqual(actual, comparisonTarget);
+    if (!lengthsMatch || !contentMatches) {
       throw new AuthenticationError('Invalid or missing authentication');
     }
   }
