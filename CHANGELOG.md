@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.21] - 2026-07-11
+
+### Fixed
+
+- Standalone HTTP-proxy mode sent zero telemetry to New Relic — `ProxyManager`'s `onToolCall`/`onRequest` callbacks were wired to `logger.debug()` only, and `NrIngestManager` was never constructed on that code path, so `AiMcpToolCall`/`AiProxyRequest` events, the `ai.mcp.*` proxy gauges, and audit-trail security recording for proxied tool calls never fired. Proxy mode now constructs and starts an `NrIngestManager` (gated on `mode !== 'local'`, matching the existing `--stdio`/`--local` behavior) and feeds it from the proxy callbacks.
+- If the local OTLP/HTTP receiver failed to start (e.g. port already in use), proxy mode continued reporting itself healthy with the receiver silently absent, with no signal beyond a log line. `ProxyManager` now tracks OTLP receiver status (`disabled` / `running` / `failed`) and surfaces it in the `GET /health` response whenever the receiver is enabled, and the failure is now logged at `error` level.
+
 ## [1.4.20] - 2026-07-11
 
 ### Fixed

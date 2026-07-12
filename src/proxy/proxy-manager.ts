@@ -41,6 +41,8 @@ export interface ProxyManagerOptions {
   readonly otlpEnrichmentAttributes?: Record<string, string>;
 }
 
+export type OtlpReceiverStatus = 'disabled' | 'running' | 'failed';
+
 const DEFAULT_BODY_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -80,6 +82,7 @@ export class ProxyManager {
   private readonly upstreams = new Map<string, ProxyUpstream>();
   private httpServer: Server | null = null;
   private otlpReceiver: OtlpReceiver | null = null;
+  private otlpReceiverStatus: OtlpReceiverStatus = 'disabled';
   private readonly options: ProxyManagerOptions;
   private readonly port: number;
   private readonly onToolCall: ((record: ProxyToolCallRecord) => void) | undefined;
@@ -111,6 +114,15 @@ export class ProxyManager {
   /** Get a registered upstream by name (for testing). */
   getUpstream(name: string): ProxyUpstream | undefined {
     return this.upstreams.get(name);
+  }
+
+  /**
+   * Current state of the local OTLP/HTTP receiver. Only meaningful when
+   * otlpReceiverEnabled was set on the constructor options — otherwise always
+   * 'disabled'. Also surfaced in the GET /health response.
+   */
+  getOtlpReceiverStatus(): OtlpReceiverStatus {
+    return this.otlpReceiverStatus;
   }
 
   /** Connect all upstreams and start the HTTP proxy server. */
@@ -186,8 +198,12 @@ export class ProxyManager {
         });
         await receiver.start();
         this.otlpReceiver = receiver;
+        this.otlpReceiverStatus = 'running';
       } catch (err) {
-        logger.warn('OTLP receiver failed to start — disabled', { error: String(err) });
+        this.otlpReceiverStatus = 'failed';
+        logger.error('OTLP receiver failed to start — proxy continuing without it', {
+          error: String(err),
+        });
       }
     }
   }
@@ -210,6 +226,7 @@ export class ProxyManager {
     if (this.otlpReceiver) {
       await this.otlpReceiver.stop();
       this.otlpReceiver = null;
+      this.otlpReceiverStatus = 'disabled';
     }
 
     // Disconnect all upstreams
@@ -230,6 +247,9 @@ export class ProxyManager {
       const body = JSON.stringify({
         status: 'ok',
         upstreams: this.getUpstreamNames(),
+        ...(this.options.otlpReceiverEnabled
+          ? { otlpReceiverStatus: this.otlpReceiverStatus }
+          : {}),
       });
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(body);

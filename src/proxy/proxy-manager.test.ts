@@ -236,6 +236,86 @@ describe('ProxyManager HTTP server', () => {
     expect(body.upstreams).toEqual(['server-a', 'server-b']);
   });
 
+  it('reports otlpReceiverStatus as disabled in /health when otlpReceiverEnabled is not set', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer());
+    const mockPort = proxyPort;
+
+    manager = new ProxyManager({ port: 0 });
+    manager.registerUpstream({
+      name: 'test-server',
+      url: `http://127.0.0.1:${mockPort}`,
+      transportType: 'http',
+      allowPrivateHosts: true,
+    });
+    await manager.start();
+    const addr = (
+      manager as unknown as { httpServer: { address: () => { port: number } } }
+    ).httpServer?.address();
+    proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
+
+    const response = await httpRequest(`http://127.0.0.1:${proxyPort}/health`, { method: 'GET' });
+    const body = JSON.parse(response.body) as { otlpReceiverStatus?: string };
+    expect(body.otlpReceiverStatus).toBeUndefined();
+    expect(manager.getOtlpReceiverStatus()).toBe('disabled');
+  });
+
+  it('reports otlpReceiverStatus as running in /health when the OTLP receiver starts successfully', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer());
+    const mockPort = proxyPort;
+
+    manager = new ProxyManager({ port: 0, otlpReceiverEnabled: true, otlpReceiverPort: 0 });
+    manager.registerUpstream({
+      name: 'test-server',
+      url: `http://127.0.0.1:${mockPort}`,
+      transportType: 'http',
+      allowPrivateHosts: true,
+    });
+    await manager.start();
+    const addr = (
+      manager as unknown as { httpServer: { address: () => { port: number } } }
+    ).httpServer?.address();
+    proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
+
+    const response = await httpRequest(`http://127.0.0.1:${proxyPort}/health`, { method: 'GET' });
+    const body = JSON.parse(response.body) as { otlpReceiverStatus?: string };
+    expect(body.otlpReceiverStatus).toBe('running');
+    expect(manager.getOtlpReceiverStatus()).toBe('running');
+  });
+
+  it('reports otlpReceiverStatus as failed in /health when the OTLP receiver port is already in use', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer());
+    const mockPort = proxyPort;
+
+    // Bind a blocker server to a free port first, then reuse that exact port
+    // as the OTLP receiver's port so its own listen() call hits EADDRINUSE.
+    const blocker = createHttpServer((_req, res) => res.end());
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const blockerAddr = blocker.address();
+    const otlpPort = typeof blockerAddr === 'object' && blockerAddr ? blockerAddr.port : 0;
+
+    manager = new ProxyManager({ port: 0, otlpReceiverEnabled: true, otlpReceiverPort: otlpPort });
+    manager.registerUpstream({
+      name: 'test-server',
+      url: `http://127.0.0.1:${mockPort}`,
+      transportType: 'http',
+      allowPrivateHosts: true,
+    });
+    await manager.start();
+    const addr = (
+      manager as unknown as { httpServer: { address: () => { port: number } } }
+    ).httpServer?.address();
+    proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
+
+    try {
+      const response = await httpRequest(`http://127.0.0.1:${proxyPort}/health`, { method: 'GET' });
+      const body = JSON.parse(response.body) as { otlpReceiverStatus?: string };
+      expect(body.otlpReceiverStatus).toBe('failed');
+      expect(manager.getOtlpReceiverStatus()).toBe('failed');
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+
   it('returns 404 for unknown upstream', async () => {
     ({ server: mockServer, port: proxyPort } = await createMockMcpServer());
     await setupProxy(proxyPort);
