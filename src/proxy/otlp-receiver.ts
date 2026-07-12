@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { Agent } from 'undici';
 import { createLogger } from '../shared/index.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
@@ -265,11 +265,18 @@ export class OtlpReceiver {
     const authHeader = req.headers.authorization as string | undefined;
     const expectedAuth = `Bearer ${this.options.apiKey}`;
 
-    // Use timing-safe comparison to prevent timing-oracle attacks on the API key
-    const match =
-      authHeader !== undefined &&
-      authHeader.length === expectedAuth.length &&
-      timingSafeEqual(Buffer.from(authHeader), Buffer.from(expectedAuth));
+    // Hash both sides to a fixed-length (32-byte) digest before comparing with
+    // timingSafeEqual. A prior version compared authHeader.length ===
+    // expectedAuth.length as a short-circuit before the timing-safe comparison,
+    // which itself leaked the correct credential's length via response timing
+    // (wrong-length inputs returned faster than right-length-wrong-content ones).
+    // Hashing removes the length dependency entirely — every digest is 32 bytes
+    // regardless of input length, so there's no secret-dependent branch left.
+    const actualDigest = createHash('sha256')
+      .update(authHeader ?? '')
+      .digest();
+    const expectedDigest = createHash('sha256').update(expectedAuth).digest();
+    const match = timingSafeEqual(actualDigest, expectedDigest);
     if (!match) {
       throw new AuthenticationError('Invalid or missing authentication');
     }
@@ -280,27 +287,33 @@ export class OtlpReceiver {
     const remoteAddr = req.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
 
-    // Get or create request history for this IP
-    let timestamps = this.rateLimiter.get(remoteAddr);
-    if (!timestamps) {
-      timestamps = [];
-      this.rateLimiter.set(remoteAddr, timestamps);
-    }
+    // Get request history for this IP, if any.
+    const timestamps = this.rateLimiter.get(remoteAddr) ?? [];
 
     // Prune timestamps older than the rate limit window.
     while (timestamps.length > 0 && timestamps[0]! < now - RATE_LIMIT_WINDOW_MS) {
       timestamps.shift();
     }
 
-    // Check if rate limit exceeded
+    // Check if rate limit exceeded. Every distinct source IP that ever makes
+    // one request would otherwise leave a permanent (if empty) entry in
+    // this.rateLimiter for the process lifetime — delete rather than
+    // re-insert an empty array before throwing, so a rejected/aged-out IP
+    // doesn't occupy a Map slot forever.
     if (timestamps.length >= rateLimitPerMinute) {
+      if (timestamps.length === 0) {
+        this.rateLimiter.delete(remoteAddr);
+      } else {
+        this.rateLimiter.set(remoteAddr, timestamps);
+      }
       throw new RateLimitExceededError(
         `Rate limit exceeded: ${rateLimitPerMinute} requests per minute`,
       );
     }
 
-    // Record this request
+    // Record this request and store the (now non-empty) array.
     timestamps.push(now);
+    this.rateLimiter.set(remoteAddr, timestamps);
   }
 
   private checkContentType(req: IncomingMessage): void {

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.25] - 2026-07-12
+
+### Fixed
+
+- `docs/ADVANCED.md` claimed the inbound OTLP receiver enriches "any OTel-instrumented app" pointing at it with session context, without noting this only applies to JSON-encoded OTLP payloads — most production OTel SDKs default to protobuf, which the receiver has always forwarded unmodified. The headline claim now states the JSON-only scope directly.
+- The OTLP receiver's Bearer-token check compared header length before running its timing-safe content comparison, leaking the correct API key's length via response-time differences. Both sides are now hashed to a fixed-length digest before comparison, removing the length-dependent branch entirely.
+- The OTLP receiver's per-IP rate limiter pruned expired request timestamps down to an empty array but never removed that array from its internal map, so every distinct source IP that ever made one request left a small permanent entry for the life of the process. Empty entries are now deleted instead of retained.
+- Documented the previously-unlisted `otlpReceiverBindAddress` config field (env `NR_AI_OTLP_RECEIVER_BIND_ADDRESS`) in `docs/ADVANCED.md` and `CLAUDE.md`, including a note that widening it beyond the `127.0.0.1` default increases exposure to the two fixes above.
+
 ## [1.4.24] - 2026-07-12
 
 ### Fixed

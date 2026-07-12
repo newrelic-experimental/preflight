@@ -541,6 +541,30 @@ describe('rate limiting', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rate limiter memory cleanup
+// ---------------------------------------------------------------------------
+
+describe('rate limiter memory cleanup', () => {
+  it('deletes the Map entry once an IP has no remaining unexpired timestamps', () => {
+    // rateLimitPerMinute: 0 means every request is rejected — the prune step
+    // still runs (dropping the aged timestamp), but the "record this request"
+    // push never happens, so the array is left genuinely and observably empty.
+    const receiver = makeReceiver({ rateLimitPerMinute: 0 });
+    const internals = receiver as unknown as {
+      rateLimiter: Map<string, number[]>;
+      checkRateLimit: (req: { socket: { remoteAddress?: string } }) => void;
+    };
+    internals.rateLimiter.set('10.0.0.7', [Date.now() - 61_000]); // already outside the 60s window
+
+    expect(() => internals.checkRateLimit({ socket: { remoteAddress: '10.0.0.7' } })).toThrow();
+
+    // Before the fix: the pruned-to-empty array stays in the Map forever.
+    // After the fix: the empty entry is deleted.
+    expect(internals.rateLimiter.has('10.0.0.7')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // API key authentication (401)
 // ---------------------------------------------------------------------------
 
@@ -588,6 +612,17 @@ describe('API key authentication', () => {
     } finally {
       await openReceiver.stop();
     }
+  });
+
+  it('rejects a same-length wrong Bearer token (regression: no length short-circuit)', async () => {
+    const port = getBoundPort(receiver);
+    // Same length as 'Bearer test-secret' (18 chars), wrong content.
+    const wrongSameLength = 'Bearer wrong-secre';
+    expect(wrongSameLength.length).toBe('Bearer test-secret'.length);
+    const { statusCode } = await httpRequest(port, 'POST', '/v1/traces', '{}', {
+      authorization: wrongSameLength,
+    });
+    expect(statusCode).toBe(401);
   });
 });
 
