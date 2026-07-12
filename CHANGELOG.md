@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.22] - 2026-07-11
+
+### Fixed
+
+- `setup-wizard.ts`'s background-dashboard-daemon install step reported success right after `launchctl load` returned without throwing, which only confirms the plist loaded, not that the daemon process actually came up healthy — a plist can load successfully while the spawned process immediately crashes. It now polls the dashboard's `/api/health` endpoint via the same `getDashboardAddress()`/`waitForHealthyDashboard()` helpers `cli.ts`'s `update` command already uses, and downgrades the success message to a warning (with `launchctl list` / log-file pointers) when the health check fails.
+- `checkStorageWritable()` used `accessSync(W_OK)` alone, which succeeds identically for a writable file and a writable directory — a corrupted install with a plain file sitting at the storage path would falsely report "ok" while `LocalStore`'s downstream `mkdirSync()` calls would fail with `ENOTDIR`. It now also calls `statSync().isDirectory()` and reports a distinct "exists but is not a directory" failure (with a `rm && mkdir` fix suggestion) when the path exists but isn't a directory.
+
 ## [1.4.21] - 2026-07-11
 
 ### Fixed

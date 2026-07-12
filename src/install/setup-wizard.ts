@@ -15,6 +15,7 @@ import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
+import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 
 const CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
 const ALERT_RULES_DEST = resolve(DEFAULT_STORAGE_PATH, 'alerts', 'rules.json');
@@ -594,9 +595,22 @@ export async function runSetupWizard(): Promise<void> {
             // Removing before installing would leave the user with no daemon if
             // the install step fails.
             installDashboardDaemon(binaryPath);
-            print(
-              `✓ Background dashboard daemon installed — dashboard will be available at http://127.0.0.1:${dashboardPort ?? 7777} after login.`,
-            );
+            // Verify the daemon actually came up healthy rather than just that
+            // `launchctl load` didn't throw — a plist can load successfully while
+            // the spawned process immediately crashes. Matches the verification
+            // cli.ts's `update` command already does for this same call.
+            const address = getDashboardAddress();
+            const healthy =
+              address === null || (await waitForHealthyDashboard(address.host, address.port, null));
+            if (healthy) {
+              print(
+                `✓ Background dashboard daemon installed — dashboard will be available at http://127.0.0.1:${dashboardPort ?? 7777} after login.`,
+              );
+            } else {
+              print(
+                '⚠ Background dashboard daemon installed but could not be verified as healthy — it may still be starting up, or may have failed silently. Check `launchctl list | grep com.preflight.dashboard` and `~/.newrelic-preflight/dashboard.log`.',
+              );
+            }
             print(
               '  To stop: preflight uninstall  (or: launchctl unload ~/Library/LaunchAgents/com.preflight.dashboard.plist)',
             );

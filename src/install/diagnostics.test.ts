@@ -497,24 +497,36 @@ describe('runDiagnostics', () => {
   describe('Check 5: Storage writable', () => {
     it('returns fail when directory does not exist', async () => {
       mockedExistSync.mockImplementation((p) => p !== '/test-home/.newrelic-preflight');
-      mockedAccessSync.mockImplementation(() => {
-        throw new Error('ENOENT');
-      });
       const checks = await runDiagnostics(makeOpts());
-      expect(checks.find((x) => x.check === 'Storage writable')?.status).toBe('fail');
+      const check = checks.find((x) => x.check === 'Storage writable');
+      expect(check?.status).toBe('fail');
+      expect(check?.detail).toContain('Directory not found');
+    });
+
+    it('returns fail with a distinct message when the path exists but is a file, not a directory', async () => {
+      mockedExistSync.mockReturnValue(true);
+      mockedStatSync.mockImplementation(() => ({ isDirectory: () => false }));
+      const checks = await runDiagnostics(makeOpts());
+      const check = checks.find((x) => x.check === 'Storage writable');
+      expect(check?.status).toBe('fail');
+      expect(check?.detail).toContain('exists but is not a directory');
     });
 
     it('returns fail when directory is not writable', async () => {
       mockedExistSync.mockReturnValue(true);
+      mockedStatSync.mockImplementation(() => ({ isDirectory: () => true }));
       mockedAccessSync.mockImplementation(() => {
         throw new Error('EACCES');
       });
       const checks = await runDiagnostics(makeOpts());
-      expect(checks.find((x) => x.check === 'Storage writable')?.status).toBe('fail');
+      const check = checks.find((x) => x.check === 'Storage writable');
+      expect(check?.status).toBe('fail');
+      expect(check?.detail).toContain('is not writable');
     });
 
     it('returns ok when directory is writable', async () => {
       mockedExistSync.mockReturnValue(true);
+      mockedStatSync.mockImplementation(() => ({ isDirectory: () => true }));
       mockedAccessSync.mockImplementation(() => undefined);
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Storage writable')?.status).toBe('ok');
