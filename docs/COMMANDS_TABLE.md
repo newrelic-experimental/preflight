@@ -1673,7 +1673,7 @@ Register a Slack webhook URL to receive weekly AI coding cost and efficiency sum
 ```json
 {
   "ok": true,
-  "message": "Webhook registered. Digest will be sent on the configured schedule."
+  "message": "Webhook registered. Delivery is manual — call nr_observe_send_digest to send this week's digest."
 }
 ```
 
@@ -1689,6 +1689,8 @@ Register a Slack webhook URL to receive weekly AI coding cost and efficiency sum
 
 - `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` — Slack incoming webhook endpoint
 - `NEW_RELIC_AI_DIGEST_SCHEDULE` — cron expression for digest delivery (default: `"0 9 * * 1"`)
+
+**Note:** Digest delivery is manual-only today. `digestSchedule`/`NEW_RELIC_AI_DIGEST_SCHEDULE` is stored for future use but nothing currently reads it to trigger a send — call `nr_observe_send_digest` on-demand (e.g. from an external cron job or CI schedule) to actually deliver a digest.
 
 **Requires:** `configFilePath`
 

@@ -883,7 +883,8 @@ export function handleSubscribeDigest(
           type: 'text',
           text: JSON.stringify({
             ok: true,
-            message: 'Webhook registered. Digest will be sent on the configured schedule.',
+            message:
+              "Webhook registered. Delivery is manual — call nr_observe_send_digest to send this week's digest.",
           }),
         },
       ],
