@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import { timingSafeEqual } from 'node:crypto';
+import { Agent } from 'undici';
 import { createLogger } from '../shared/index.js';
-import { validateSsrfUrl } from '../security/ssrf.js';
+import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
 
 const logger = createLogger('otlp-receiver');
 
@@ -38,10 +39,17 @@ export class OtlpReceiver {
   private readonly options: OtlpReceiverOptions;
   private server: ReturnType<typeof createServer> | null = null;
   private readonly rateLimiter = new Map<string, number[]>();
+  // Built once and reused for every forward() call. Its connect.lookup resolves and
+  // validates the address actually connected to — see createSsrfSafeLookup()'s doc
+  // comment. undefined when forwarding is disabled (nothing to protect).
+  private readonly forwardDispatcher: Agent | undefined;
 
   constructor(options: OtlpReceiverOptions) {
     if (options.forwardEndpoint !== null) {
       validateSsrfUrl('OtlpReceiver forwardEndpoint', new URL(options.forwardEndpoint));
+      this.forwardDispatcher = new Agent({
+        connect: { lookup: createSsrfSafeLookup('OtlpReceiver forward endpoint (resolved)') },
+      });
     }
     this.options = Object.freeze(options);
   }
@@ -348,19 +356,26 @@ export class OtlpReceiver {
     if (this.options.forwardEndpoint === null) {
       throw new Error('forward() called with no forwardEndpoint configured');
     }
-    validateSsrfUrl('OtlpReceiver forward endpoint', new URL(this.options.forwardEndpoint));
     const url = `${this.options.forwardEndpoint}${path}`;
     // SECURITY: client request headers are deliberately NOT propagated to upstream — only forwardHeaders + Content-Type.
     // This prevents header injection attacks where a malicious client could inject headers into the upstream NR API call.
     // Do not change without security review.
-    const response = await globalThis.fetch(url, {
+    //
+    // The dispatcher's connect.lookup (set in the constructor) is what actually
+    // enforces SSRF protection here — resolving and validating the address this
+    // fetch connects to, not just the hostname string. Do not add back a
+    // validateSsrfUrl(...) call on the string here; re-checking the same
+    // unvalidated string provides no real protection against DNS rebinding.
+    const init: RequestInit & { dispatcher?: Agent } = {
       method: 'POST',
       headers: {
         'Content-Type': contentType,
         ...this.options.forwardHeaders,
       },
       body: body as unknown as BodyInit,
-    });
+      dispatcher: this.forwardDispatcher,
+    };
+    const response = await globalThis.fetch(url, init);
     const responseBody = await response.text();
     return { statusCode: response.status, body: responseBody };
   }

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.24] - 2026-07-12
+
+### Fixed
+
+- Standalone proxy mode's SSRF protection validated the literal hostname string of a configured upstream/forward URL, but re-checked the exact same unchanged string a second time immediately before every network call — providing no real protection against DNS rebinding (a hostname resolving to a safe address when first validated, then to `127.0.0.1` or a cloud metadata address before the connection is actually made). Both `HttpUpstream` (proxy forwarding) and `OtlpReceiver` (OTLP forward endpoint) now resolve the hostname exactly once at connection time via a custom DNS lookup, validate every resolved address against the same blocklist rules, and pin the actual connection to that validated address.
+- Two proxy upstream transports returned raw error detail to HTTP clients on failure: `HttpUpstream` included the literal connection-error text (which can contain the upstream's host:port) in its JSON error body, and `StdioUpstream` forwarded a failed child process's raw error message (which can include file paths or tool-echoed arguments) straight through as the JSON-RPC error message. Both now return only a generic error code/message to the client; the full detail is still logged server-side.
+
 ## [1.4.23] - 2026-07-12
 
 ### Fixed

@@ -1,4 +1,17 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
+// `jest.spyOn(dns, 'lookup')` cannot redefine `node:dns`'s export under this
+// ESM/ts-jest setup (the module namespace object is non-configurable), so — as in
+// src/security/ssrf.test.ts — the module must be replaced wholesale via jest.mock()
+// before anything else imports it. The default implementation delegates to the real
+// dns.lookup so every pre-existing test is unaffected (the `describe('forward', ...)`
+// tests mock globalThis.fetch directly, so undici's Agent — and its connect.lookup —
+// is never reached there); only the DNS-rebinding test below overrides it per-call.
+jest.mock('node:dns', () => {
+  const actual = jest.requireActual<typeof import('node:dns')>('node:dns');
+  return { lookup: jest.fn(actual.lookup) };
+});
+
 import { request as nodeRequest } from 'node:http';
 import type { Server } from 'node:http';
 import { createConnection, type AddressInfo } from 'node:net';
@@ -245,6 +258,63 @@ describe('forward', () => {
       // Verify only forwardHeaders and Content-Type are present
       expect(headers).toHaveProperty('api-key', 'test-key');
       expect(headers).toHaveProperty('Content-Type', 'application/json');
+    } finally {
+      await receiver.stop();
+    }
+  });
+});
+
+describe('forward — DNS rebinding protection', () => {
+  // This describe block is a sibling of describe('forward', ...), not nested inside it,
+  // so that block's own beforeEach (which sets globalThis.fetch = mockFetch) never runs
+  // here. However, describe('forward', ...)'s afterEach (and the unrelated 'error
+  // message sanitization' describe block, further below) resets globalThis.fetch to
+  // `undefined` rather than restoring the original native implementation — so by the
+  // time this block's test runs, globalThis.fetch is left undefined by that earlier
+  // block's cleanup, regardless of nesting. Save the real fetch once at module load
+  // (before any test has run) and restore it around this block's own test so the
+  // Agent's connect.lookup gets a genuine, unmocked fetch to actually run through.
+  const realFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('rejects the forward when the forwardEndpoint hostname resolves to a private address', async () => {
+    const dnsMod = await import('node:dns');
+    const mockedLookup = dnsMod.lookup as unknown as jest.Mock<(...args: unknown[]) => void>;
+    mockedLookup.mockImplementationOnce((..._args: unknown[]) => {
+      const cb = _args[_args.length - 1] as (
+        err: NodeJS.ErrnoException | null,
+        addresses: { address: string; family: number }[],
+      ) => void;
+      cb(null, [{ address: '169.254.169.254', family: 4 }]);
+    });
+
+    const receiver = makeReceiver({
+      forwardEndpoint: 'https://looks-public-but-rebinds.example',
+    });
+    await receiver.start();
+    try {
+      const port = getBoundPort(receiver);
+      const res = await httpRequest(
+        port,
+        'POST',
+        '/v1/traces',
+        JSON.stringify({ resourceSpans: [] }),
+      );
+      // Without a dispatcher wired in, fetch never consults the mocked dns.lookup at
+      // all — it fails via its own resolver (real ENOTFOUND for this nonexistent
+      // domain), which the generic error handler also maps to 500. That coincidence
+      // would let this test pass even with no SSRF protection wired up. Asserting the
+      // mock was actually invoked proves the rejection came from the resolved-address
+      // check, not from an unrelated real DNS failure.
+      expect(mockedLookup).toHaveBeenCalled();
+      expect(res.statusCode).toBe(500);
     } finally {
       await receiver.stop();
     }
