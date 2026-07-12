@@ -542,6 +542,13 @@ function buildReplayResponse(sessionId: string, deps: ApiHandlerDeps): unknown |
         filePath: e.filePath ? redactSensitive(String(e.filePath)) : undefined,
         command: e.command ? redactSensitive(String(e.command)) : undefined,
       }));
+      // Persisted timelines are built append-only (session-store.ts iterates
+      // tasks and tool calls in array order, not sorted order) — nothing
+      // upstream guarantees chronological order. The two fallback branches
+      // below already sort before analysis; this main path (every
+      // completed/historical session) didn't, so every anti-pattern/segment
+      // detector inside analyzeReplayTimeline() silently trusted input order.
+      timeline.sort((a, b) => a.timestamp - b.timestamp);
       const analysis = analyzeReplayTimeline(timeline);
       return {
         sessionId,

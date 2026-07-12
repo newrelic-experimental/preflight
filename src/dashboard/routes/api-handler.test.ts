@@ -312,6 +312,30 @@ describe('api-handler GET /api/sessions/:id', () => {
   });
 });
 
+describe('api-handler GET /api/sessions/:id/replay', () => {
+  it('sorts an out-of-order persisted timeline chronologically before returning it', async () => {
+    const outOfOrderTimeline = [
+      { timestamp: 300, toolName: 'Read', durationMs: 10, success: true },
+      { timestamp: 100, toolName: 'Edit', durationMs: 20, success: true },
+      { timestamp: 200, toolName: 'Bash', durationMs: 30, success: true },
+    ];
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) =>
+          id === 'sess-replay' ? { sessionId: 'sess-replay', timeline: outOfOrderTimeline } : null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-replay/replay' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { timeline: Array<{ timestamp: number }> };
+    expect(parsed.timeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+});
+
 describe('api-handler GET /api/cost', () => {
   it('returns cost and forecast as JSON', async () => {
     const fakeCost = { sessionTotalCostUsd: 0.25, costByModel: { 'claude-sonnet': 0.25 } };

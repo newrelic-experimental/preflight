@@ -119,10 +119,11 @@ export class LiveEventBus {
 
   constructor(opts: LiveEventBusOptions = {}) {
     this.bufferSize = opts.replayBufferSize ?? DEFAULT_BUFFER_SIZE;
-    // Each SSE connection adds 4 listeners (tool-call, cost-update,
-    // anti-pattern, alert). 200 ÷ 4 = 50 concurrent connections before
-    // Node emits MaxListenersExceededWarning, which is comfortable
-    // headroom for parallel test runs and bursty client reconnects.
+    // Each SSE connection adds 5 listeners (tool-call, cost-update,
+    // anti-pattern, context-update, alert), each registered under its own
+    // event name. setMaxListeners() caps the count per event name, not in
+    // aggregate, so the real headroom is 200 concurrent connections —
+    // comfortable margin for parallel test runs and bursty client reconnects.
     this.emitter.setMaxListeners(200);
   }
 
