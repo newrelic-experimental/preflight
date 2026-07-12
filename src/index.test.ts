@@ -5,6 +5,7 @@ import { resolve, join } from 'node:path';
 import {
   parseArgs,
   maskCredential,
+  buildProxyTelemetryCallbacks,
   classifyDashboardStartError,
   startDashboardRepoll,
   setupDashboardPostBind,
@@ -13,6 +14,8 @@ import {
 } from './index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import type { LocalStore } from './storage/index.js';
+import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
+import type { NrIngestManager } from './transport/nr-ingest.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -213,6 +216,74 @@ describe('classifyDashboardStartError()', () => {
   });
 });
 
+// buildProxyTelemetryCallbacks() — proxy-mode telemetry wiring
+// ---------------------------------------------------------------------------
+
+describe('buildProxyTelemetryCallbacks()', () => {
+  function makeToolCallRecord(): ProxyToolCallRecord {
+    return {
+      id: 'call-1',
+      sessionId: null,
+      toolName: 'search',
+      toolUseId: 'use-1',
+      timestamp: Date.now(),
+      durationMs: 12,
+      success: true,
+      serverName: 'github',
+      upstreamLatencyMs: 8,
+    };
+  }
+
+  function makeRequestRecord(): ProxyRequestRecord {
+    return {
+      id: 'req-1',
+      serverName: 'github',
+      method: 'tools/list',
+      timestamp: Date.now(),
+      durationMs: 5,
+      upstreamLatencyMs: 3,
+      success: true,
+    };
+  }
+
+  it('forwards tool-call records to nrIngest.ingestToolCall when nrIngest is provided', () => {
+    const ingestToolCall = jest.fn();
+    const ingestProxyRequest = jest.fn();
+    const { onToolCall } = buildProxyTelemetryCallbacks({
+      ingestToolCall,
+      ingestProxyRequest,
+    } as unknown as NrIngestManager);
+
+    const record = makeToolCallRecord();
+    onToolCall(record);
+
+    expect(ingestToolCall).toHaveBeenCalledTimes(1);
+    expect(ingestToolCall).toHaveBeenCalledWith(record);
+  });
+
+  it('forwards request records to nrIngest.ingestProxyRequest when nrIngest is provided', () => {
+    const ingestToolCall = jest.fn();
+    const ingestProxyRequest = jest.fn();
+    const { onRequest } = buildProxyTelemetryCallbacks({
+      ingestToolCall,
+      ingestProxyRequest,
+    } as unknown as NrIngestManager);
+
+    const record = makeRequestRecord();
+    onRequest(record);
+
+    expect(ingestProxyRequest).toHaveBeenCalledTimes(1);
+    expect(ingestProxyRequest).toHaveBeenCalledWith(record);
+  });
+
+  it('does not throw when nrIngest is undefined (local-mode proxy)', () => {
+    const { onToolCall, onRequest } = buildProxyTelemetryCallbacks(undefined);
+
+    expect(() => onToolCall(makeToolCallRecord())).not.toThrow();
+    expect(() => onRequest(makeRequestRecord())).not.toThrow();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // CLI argument edge cases
 // ---------------------------------------------------------------------------
@@ -284,7 +355,7 @@ describe('CLI argument edge cases', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task #13: dashboard ownership re-poll — startDashboardRepoll() +
+// Dashboard ownership re-poll — startDashboardRepoll() +
 // setupDashboardPostBind() + getDashboardRepollIntervalMs()
 // ---------------------------------------------------------------------------
 

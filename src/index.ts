@@ -10,6 +10,7 @@ import { createServer } from './server.js';
 import { loadMcpConfig, DEFAULT_STORAGE_PATH } from './config.js';
 import type { McpServerConfig } from './config.js';
 import { ProxyManager } from './proxy/index.js';
+import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import { LocalStore } from './storage/index.js';
 import {
   SessionStore,
@@ -133,6 +134,44 @@ function loadConfigOrDie(options: Partial<CliOptions>): Readonly<McpServerConfig
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`${msg}\n\nRun 'preflight doctor' to diagnose.`);
   }
+}
+
+/**
+ * Structural subset of NrIngestManager consumed by the proxy-mode telemetry
+ * callbacks. Declared separately (rather than importing the class type
+ * directly into the callback signature) so tests can pass a plain object of
+ * jest.fn()s without constructing a real NrIngestManager.
+ */
+type ProxyTelemetrySink = Pick<NrIngestManager, 'ingestToolCall' | 'ingestProxyRequest'>;
+
+/**
+ * Builds the ProxyManager onToolCall/onRequest callbacks for standalone proxy
+ * mode. When nrIngest is undefined (proxy running with mode: 'local', i.e. no
+ * cloud egress configured), the callbacks still log locally but do not
+ * attempt telemetry ingestion.
+ */
+export function buildProxyTelemetryCallbacks(nrIngest: ProxyTelemetrySink | undefined): {
+  onToolCall: (record: ProxyToolCallRecord) => void;
+  onRequest: (record: ProxyRequestRecord) => void;
+} {
+  return {
+    onToolCall: (record) => {
+      logger.debug('Proxy tool call', {
+        server: record.serverName,
+        tool: record.toolName,
+        durationMs: record.durationMs,
+      });
+      nrIngest?.ingestToolCall(record);
+    },
+    onRequest: (record) => {
+      logger.debug('Proxy request', {
+        server: record.serverName,
+        method: record.method,
+        durationMs: record.durationMs,
+      });
+      nrIngest?.ingestProxyRequest(record);
+    },
+  };
 }
 
 /**
@@ -1793,22 +1832,45 @@ async function main(): Promise<void> {
     // looks like a real session id.
     const sessionTraceId = `proxy-${Date.now()}`;
 
+    // Mirror the --stdio/--local gate above: mode: 'local' means no cloud
+    // egress by design, so no NrIngestManager is constructed and the proxy
+    // callbacks stay local-log-only. For 'cloud'/'both', loadConfigOrDie()
+    // has already guaranteed licenseKey/accountId are set (config.ts's
+    // load-time validation), so this mirrors that guard rather than
+    // re-deriving it.
+    if (config.mode !== 'local') {
+      if (!config.licenseKey || !config.accountId) {
+        throw new Error(
+          'licenseKey and accountId must be defined. ' +
+            'This should have been caught by config validation. ' +
+            'Check that mode is not "local" or that cloud credentials are configured.',
+        );
+      }
+      nrIngest = new NrIngestManager({
+        licenseKey: config.licenseKey,
+        transportOptions: {
+          accountId: config.accountId,
+          collectorHost: config.collectorHost,
+        },
+        developer: config.developer,
+        appName: config.appName,
+        teamId: config.teamId,
+        projectId: config.projectId,
+        orgId: config.orgId,
+        sessionTracker: new SessionTracker(sessionTraceId),
+        eventHarvestIntervalMs: config.harvestIntervalMs.events,
+        metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
+        sessionTraceId,
+      });
+      nrIngest.start();
+    }
+
+    const { onToolCall, onRequest } = buildProxyTelemetryCallbacks(nrIngest);
+
     proxyManager = new ProxyManager({
       port: config.port,
-      onToolCall: (record) => {
-        logger.debug('Proxy tool call', {
-          server: record.serverName,
-          tool: record.toolName,
-          durationMs: record.durationMs,
-        });
-      },
-      onRequest: (record) => {
-        logger.debug('Proxy request', {
-          server: record.serverName,
-          method: record.method,
-          durationMs: record.durationMs,
-        });
-      },
+      onToolCall,
+      onRequest,
       otlpReceiverEnabled: config.otlpReceiverEnabled,
       otlpReceiverPort: config.otlpReceiverPort,
       otlpReceiverBindAddress: config.otlpReceiverBindAddress,
