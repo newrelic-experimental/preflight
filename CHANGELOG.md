@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.27] - 2026-07-12
+
+### Fixed
+
+- `LocalStore.saveSession()` and `loadRecentSessions()` were a parallel, unused session-persistence implementation with zero non-test call sites — every real session-persistence path goes through the separate `SessionStore` class instead. Removed both methods and their tests.
+- `buildSessionSummary()` redacted `timeline[].filePath` via `redactSensitive()` but persisted `filesRead`/`filesModified`/`sessionName`/`repoName` unredacted, even though they're sourced from the same underlying task data. All four now go through the same redaction call for consistency.
+- `SessionStore.saveSession()` now logs a warning when it's about to overwrite an existing session file for the same `sessionId`+date — the scenario a resumed/forked session running two MCP processes against one real session ID would produce. The overwrite behavior (last-write-wins) is unchanged; this only makes a previously-silent collision visible.
+
 ## [1.4.26] - 2026-07-12
 
 ### Fixed

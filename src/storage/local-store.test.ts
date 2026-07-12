@@ -13,7 +13,7 @@ import {
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from './local-store.js';
-import type { HookEvent, SessionSummary, AuditEntry } from './types.js';
+import type { HookEvent, AuditEntry } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -41,19 +41,6 @@ function makeEvent(overrides?: Partial<HookEvent>): HookEvent {
     inputSize: 42,
     outputSize: 100,
     success: true,
-    ...overrides,
-  };
-}
-
-function makeSession(overrides?: Partial<SessionSummary>): SessionSummary {
-  const now = Date.now();
-  return {
-    sessionId: `sess-${now}`,
-    startTime: now - 60_000,
-    endTime: now,
-    durationMs: 60_000,
-    toolCallCount: 5,
-    developer: 'test-user',
     ...overrides,
   };
 }
@@ -230,95 +217,6 @@ describe('LocalStore', () => {
       const drained = store.drainBuffer();
       expect(drained).toHaveLength(1);
       expect(drained[0]!.tool).toBe('Valid');
-    });
-  });
-
-  describe('saveSession() + loadRecentSessions()', () => {
-    it('saves a session and loads it back', () => {
-      const store = new LocalStore(tmpDir);
-      store.initialize();
-
-      const session = makeSession();
-      store.saveSession(session);
-
-      const loaded = store.loadRecentSessions(7);
-      expect(loaded).toHaveLength(1);
-      expect(loaded[0]).toEqual(session);
-    });
-
-    it('filters out sessions older than the cutoff', () => {
-      const store = new LocalStore(tmpDir);
-      store.initialize();
-
-      const now = Date.now();
-      const recent = makeSession({ sessionId: 'recent', startTime: now - 1000, endTime: now });
-      const old = makeSession({
-        sessionId: 'old',
-        startTime: now - 30 * 86_400_000,
-        endTime: now - 30 * 86_400_000 + 1000,
-      });
-
-      store.saveSession(recent);
-      store.saveSession(old);
-
-      // Touch the old file to make its mtime old
-      const oldPath = resolve(tmpDir, 'sessions', 'old.json');
-      const pastDate = new Date(now - 30 * 86_400_000);
-      utimesSync(oldPath, pastDate, pastDate);
-
-      const loaded = store.loadRecentSessions(7);
-      expect(loaded).toHaveLength(1);
-      expect(loaded[0]!.sessionId).toBe('recent');
-    });
-
-    it('returns empty array when sessions directory does not exist', () => {
-      const store = new LocalStore(tmpDir);
-      // Do NOT call initialize()
-      expect(store.loadRecentSessions(7)).toEqual([]);
-    });
-
-    it('rejects sessionId containing path traversal and writes no file', () => {
-      const store = new LocalStore(tmpDir);
-      store.initialize();
-
-      store.saveSession(makeSession({ sessionId: '../../etc/passwd' }));
-
-      expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
-    });
-
-    it('rejects sessionId containing a forward slash', () => {
-      const store = new LocalStore(tmpDir);
-      store.initialize();
-
-      store.saveSession(makeSession({ sessionId: 'a/b' }));
-
-      expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(0);
-    });
-
-    it('accepts a valid UUID-style sessionId', () => {
-      const store = new LocalStore(tmpDir);
-      store.initialize();
-
-      store.saveSession(makeSession({ sessionId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }));
-
-      expect(readdirSync(resolve(tmpDir, 'sessions'))).toHaveLength(1);
-    });
-
-    it('sorts sessions by startTime', () => {
-      const store = new LocalStore(tmpDir);
-      store.initialize();
-
-      const now = Date.now();
-      const s1 = makeSession({ sessionId: 's1', startTime: now - 3000 });
-      const s2 = makeSession({ sessionId: 's2', startTime: now - 1000 });
-      const s3 = makeSession({ sessionId: 's3', startTime: now - 2000 });
-
-      store.saveSession(s2);
-      store.saveSession(s3);
-      store.saveSession(s1);
-
-      const loaded = store.loadRecentSessions(7);
-      expect(loaded.map((s) => s.sessionId)).toEqual(['s1', 's3', 's2']);
     });
   });
 
