@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from './session-store.js';
@@ -92,6 +92,26 @@ describe('aggregateSessions prototype-pollution resistance', () => {
     expect(summary.toolBreakdown['Read']).toBe(5);
     // Object.prototype must be unmodified — no pollution of enumerable properties
     expect(Object.keys(Object.prototype)).toEqual([]);
+  });
+});
+
+describe('getWeekDateRange() nonexistent-week validation', () => {
+  it('throws for "2025-W53" (2025 has no 53rd ISO week)', () => {
+    expect(() => getWeekDateRange('2025-W53')).toThrow(/no such ISO week/);
+  });
+
+  it('throws for "2024-W53" and "2027-W53" (also no 53rd week)', () => {
+    expect(() => getWeekDateRange('2024-W53')).toThrow(/no such ISO week/);
+    expect(() => getWeekDateRange('2027-W53')).toThrow(/no such ISO week/);
+  });
+
+  it('does not throw for "2026-W53" (a genuine 53rd ISO week)', () => {
+    expect(() => getWeekDateRange('2026-W53')).not.toThrow();
+  });
+
+  it('does not throw for ordinary weeks', () => {
+    expect(() => getWeekDateRange('2026-W01')).not.toThrow();
+    expect(() => getWeekDateRange('2026-W52')).not.toThrow();
   });
 });
 
@@ -216,6 +236,37 @@ describe('WeeklySummaryGenerator', () => {
     expect(() => generator.generate('2026-W16')).not.toThrow();
   });
 
+  it('generate() leaves no stray .tmp file behind after a successful write', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(makeSummary({ sessionId: 'n04-sess', startTime: start.getTime() + 1000 }));
+
+    generator.generate('2026-W16');
+
+    const summariesDir = join(tmpDir, 'weekly_summaries');
+    const leftovers = readdirSync(summariesDir).filter((f) => f.includes('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('generate() called twice for the same week fully replaces the file (no corruption)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const { start } = getWeekDateRange('2026-W16');
+
+    store.saveSession(makeSummary({ sessionId: 'n05-a', startTime: start.getTime() + 1000 }));
+    const first = generator.generate('2026-W16');
+    expect(first.sessionCount).toBe(1);
+
+    store.saveSession(makeSummary({ sessionId: 'n05-b', startTime: start.getTime() + 2000 }));
+    const second = generator.generate('2026-W16');
+    expect(second.sessionCount).toBe(2);
+
+    const filepath = join(tmpDir, 'weekly_summaries', '2026-W16.json');
+    const onDisk = JSON.parse(readFileSync(filepath, 'utf-8')) as { sessionCount: number };
+    expect(onDisk.sessionCount).toBe(2);
+  });
+
   it('auto-generation: generates last week summary if missing', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
@@ -275,5 +326,31 @@ describe('WeeklySummaryGenerator', () => {
     const latest = generator.getLatest();
     expect(latest).not.toBeNull();
     expect(latest!.week).toBe('2026-W16');
+  });
+
+  it('getLatest() falls back to the next-most-recent valid summary when the latest file is corrupt', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+    const { start } = getWeekDateRange('2026-W15');
+    store.saveSession(makeSummary({ sessionId: 'valid-w15', startTime: start.getTime() + 1000 }));
+    generator.generate('2026-W15');
+
+    // W16 is lexicographically later but corrupt — simulates a crash-truncated write.
+    const corruptPath = join(tmpDir, 'weekly_summaries', '2026-W16.json');
+    writeFileSync(corruptPath, '{"week": "2026-W16", "sessionCount":');
+
+    const latest = generator.getLatest();
+    expect(latest).not.toBeNull();
+    expect(latest!.week).toBe('2026-W15');
+  });
+
+  it('getLatest() returns null when every summary file is corrupt', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+    writeFileSync(join(tmpDir, 'weekly_summaries', '2026-W16.json'), 'NOT VALID JSON');
+
+    expect(generator.getLatest()).toBeNull();
   });
 });
