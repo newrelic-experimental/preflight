@@ -139,7 +139,7 @@ Claude Code
   │
   ├─ PreToolUse / PostToolUse hooks
   │    └─> preflight (collector-script.ts)
-  │         └─> writes to buffer.jsonl (LocalStore)
+  │         └─> writes to buffer.jsonl directly (raw fd append)
   │
   └─ MCP stdio connection
        └─> NrMcpServer (server.ts)
@@ -372,7 +372,7 @@ All local persistence lives under `~/.newrelic-preflight/` by default:
 | `sessions/`         | JSON files | Session summaries (`YYYY-MM-DD_sessionId.json`)                |
 | `weekly_summaries/` | JSON files | Cross-session weekly aggregations                              |
 
-`LocalStore` handles atomic buffer operations (append, drain with rename-then-read pattern).
+`collector-script.ts` appends hook events to `buffer.jsonl` directly (raw `openSync`/`writeFileSync`/`closeSync` with `O_APPEND`). `LocalStore` handles the drain side (rename-then-read pattern) and session/weekly-summary persistence.
 
 ## Harvest and Ingestion
 

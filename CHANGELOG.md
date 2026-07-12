@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.28] - 2026-07-12
+
+### Fixed
+
+- CLAUDE.md attributed hook-event buffer appends to `LocalStore`; the real writer is `collector-script.ts`'s own raw file-append logic. `LocalStore` genuinely owns the drain side (rename-then-read) — only the append-side attribution was wrong. Docs corrected.
+- Multiple places claimed weekly Slack digest delivery happens automatically on a configured schedule: `docs/COMMANDS_TABLE.md`'s example response, the product documentation's feature description, and the `nr_observe_subscribe_digest` tool's own runtime response message. No scheduler exists — delivery is manual-only via `nr_observe_send_digest`. All three now say so; `digestSchedule` is documented as stored for future use only.
+
 ## [1.4.27] - 2026-07-12
 
 ### Fixed
