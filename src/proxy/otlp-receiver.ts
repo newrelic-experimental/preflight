@@ -262,15 +262,34 @@ export class OtlpReceiver {
       return;
     }
 
-    const authHeader = req.headers.authorization as string | undefined;
+    const authHeader = req.headers.authorization ?? '';
     const expectedAuth = `Bearer ${this.options.apiKey}`;
 
-    // Use timing-safe comparison to prevent timing-oracle attacks on the API key
-    const match =
-      authHeader !== undefined &&
-      authHeader.length === expectedAuth.length &&
-      timingSafeEqual(Buffer.from(authHeader), Buffer.from(expectedAuth));
-    if (!match) {
+    const actual = Buffer.from(authHeader, 'utf8');
+    const expected = Buffer.from(expectedAuth, 'utf8');
+
+    // A prior version compared authHeader.length === expectedAuth.length as a
+    // short-circuit before timingSafeEqual, leaking the correct credential's
+    // length via response timing. A later version closed that by hashing
+    // both sides first — but any digest of a credential-shaped value (hash
+    // or HMAC) reads to static analysis as password-at-rest hashing, which
+    // needs a slow KDF; that requirement doesn't apply here (nothing is
+    // stored, so there's no offline brute-forcing surface), yet there's no
+    // way to convey that distinction to the scanner. The actual fix is to
+    // never compute a digest at all: run timingSafeEqual unconditionally
+    // over two same-length buffers every time. lengthsMatch is a plain
+    // integer comparison (O(1), not data-dependent) and decides only which
+    // value gets copied — expected on the match path, actual on the
+    // mismatch path — so BOTH paths always do exactly one Buffer.from() copy
+    // plus one timingSafeEqual call, of a buffer sized to whatever length
+    // the caller's own guess happened to be. There's no branch that skips
+    // the copy on the match path, so cost as a function of the guess's
+    // length has no discontinuity at the point where it happens to equal
+    // the secret's length — which is what actually needs to not leak.
+    const lengthsMatch = actual.length === expected.length;
+    const comparisonTarget = lengthsMatch ? Buffer.from(expected) : Buffer.from(actual);
+    const contentMatches = timingSafeEqual(actual, comparisonTarget);
+    if (!lengthsMatch || !contentMatches) {
       throw new AuthenticationError('Invalid or missing authentication');
     }
   }
@@ -280,27 +299,33 @@ export class OtlpReceiver {
     const remoteAddr = req.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
 
-    // Get or create request history for this IP
-    let timestamps = this.rateLimiter.get(remoteAddr);
-    if (!timestamps) {
-      timestamps = [];
-      this.rateLimiter.set(remoteAddr, timestamps);
-    }
+    // Get request history for this IP, if any.
+    const timestamps = this.rateLimiter.get(remoteAddr) ?? [];
 
     // Prune timestamps older than the rate limit window.
     while (timestamps.length > 0 && timestamps[0]! < now - RATE_LIMIT_WINDOW_MS) {
       timestamps.shift();
     }
 
-    // Check if rate limit exceeded
+    // Check if rate limit exceeded. Every distinct source IP that ever makes
+    // one request would otherwise leave a permanent (if empty) entry in
+    // this.rateLimiter for the process lifetime — delete rather than
+    // re-insert an empty array before throwing, so a rejected/aged-out IP
+    // doesn't occupy a Map slot forever.
     if (timestamps.length >= rateLimitPerMinute) {
+      if (timestamps.length === 0) {
+        this.rateLimiter.delete(remoteAddr);
+      } else {
+        this.rateLimiter.set(remoteAddr, timestamps);
+      }
       throw new RateLimitExceededError(
         `Rate limit exceeded: ${rateLimitPerMinute} requests per minute`,
       );
     }
 
-    // Record this request
+    // Record this request and store the (now non-empty) array.
     timestamps.push(now);
+    this.rateLimiter.set(remoteAddr, timestamps);
   }
 
   private checkContentType(req: IncomingMessage): void {

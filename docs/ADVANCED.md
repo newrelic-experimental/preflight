@@ -42,7 +42,7 @@ export NEW_RELIC_AI_TRANSPORT=both
 
 ## Inbound OTLP Receiver (Proxy Mode)
 
-When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`) and forwarded to NR, linking application traces to the AI session that produced them.
+When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`) and forwarded to NR, linking application traces to the AI session that produced them. **This enrichment only applies to JSON-encoded OTLP payloads** — most production OTel SDKs (Node, Python, Java) default to protobuf, which is forwarded unmodified without enrichment; see the note below.
 
 Add to `~/.newrelic-preflight/config.json`:
 
@@ -64,12 +64,13 @@ export NR_AI_OTLP_FORWARD_ENDPOINT=https://otlp.nr-data.net
 export NR_AI_OTLP_FORWARD_HEADERS="api-key=your-license-key"
 ```
 
-| Setting               | What it does                                                                     | Default                                               |
-| --------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `otlpReceiverEnabled` | Enable the local OTLP/HTTP receiver                                              | `false`                                               |
-| `otlpReceiverPort`    | Port the receiver listens on                                                     | `4318`                                                |
-| `otlpForwardEndpoint` | Where enriched payloads are forwarded. Set to `null` to receive and enrich only. | `https://otlp.nr-data.net` (when `licenseKey` is set) |
-| `otlpForwardHeaders`  | HTTP headers added to every forwarded request                                    | `{ "api-key": <licenseKey> }`                         |
+| Setting                   | What it does                                                                                                                                                                                                                                                                                                                              | Default                                               |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `otlpReceiverEnabled`     | Enable the local OTLP/HTTP receiver                                                                                                                                                                                                                                                                                                       | `false`                                               |
+| `otlpReceiverPort`        | Port the receiver listens on                                                                                                                                                                                                                                                                                                              | `4318`                                                |
+| `otlpReceiverBindAddress` | Bind address for the receiver. **Changing this from the loopback default widens the attack surface for the receiver's auth-timing and rate-limiter behavior to any host that can reach the new address, not just local processes** — leave it at `127.0.0.1` unless you specifically need non-local access and understand that trade-off. | `127.0.0.1`                                           |
+| `otlpForwardEndpoint`     | Where enriched payloads are forwarded. Set to `null` to receive and enrich only.                                                                                                                                                                                                                                                          | `https://otlp.nr-data.net` (when `licenseKey` is set) |
+| `otlpForwardHeaders`      | HTTP headers added to every forwarded request                                                                                                                                                                                                                                                                                             | `{ "api-key": <licenseKey> }`                         |
 
 Point your application's OTel SDK at `http://localhost:4318`. JSON OTLP payloads are enriched; protobuf payloads are forwarded as-is.
 
