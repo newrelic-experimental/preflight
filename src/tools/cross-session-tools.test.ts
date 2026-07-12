@@ -189,6 +189,14 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.week).toBe('2026-W16');
   });
 
+  it('handleGetWeeklySummary returns a clean error for a nonexistent ISO week 53', () => {
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const result = handleGetWeeklySummary(generator, { week: '2025-W53' });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.error).toMatch(/no such ISO week/);
+  });
+
   // -------------------------------------------------------------------------
   // 3. get_trends for "efficiency"
   // -------------------------------------------------------------------------

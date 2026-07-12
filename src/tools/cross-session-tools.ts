@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import type { SessionStore } from '../storage/session-store.js';
 import { formatSlackDigest } from '../digest/digest-formatter.js';
 import { sendSlackDigest } from '../digest/digest-sender.js';
-import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
+import type { WeeklySummaryGenerator, WeeklySummary } from '../storage/weekly-summary.js';
 import { getIsoWeekId } from '../storage/weekly-summary.js';
 import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
 import type { CollaborationProfiler } from '../metrics/collaboration-profile.js';
@@ -365,7 +365,22 @@ export function handleGetWeeklySummary(
     };
   }
 
-  const summary = weeklySummaryGenerator.generate(args.week);
+  let summary: WeeklySummary;
+  try {
+    summary = weeklySummaryGenerator.generate(args.week);
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            error: err instanceof Error ? err.message : 'Invalid week',
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
   return {
     content: [
       {

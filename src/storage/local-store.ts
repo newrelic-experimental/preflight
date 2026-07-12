@@ -25,6 +25,22 @@ const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
  */
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
+function parseHookEvents(raw: string): HookEvent[] {
+  if (!raw.trim()) {
+    return [];
+  }
+  const events: HookEvent[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line) as HookEvent);
+    } catch {
+      logger.warn('Skipping malformed buffer line', { line: line.slice(0, 100) });
+    }
+  }
+  return events;
+}
+
 /**
  * Liveness probe via signal 0 — POSIX sends no signal but performs the
  * permission/existence checks. Returns true iff the PID names a live process
@@ -819,57 +835,38 @@ export class LocalStore {
     const tmpPath = bufferPath + '.drain';
 
     // Recover from a previous failed drain — the .drain file has events that
-    // were never processed.
+    // were never processed. Extracted in memory (never merged back into
+    // bufferPath) so a concurrent preflight-collector append can never be
+    // silently clobbered: any append that lands after the claim-rename below
+    // creates a fresh bufferPath, which the next poll drains normally.
+    let recoveredEvents: HookEvent[] = [];
     if (existsSync(tmpPath)) {
       try {
-        if (existsSync(bufferPath)) {
-          const drainData = readFileSync(tmpPath, 'utf-8');
-          const bufferData = readFileSync(bufferPath, 'utf-8');
-          writeFileSync(
-            bufferPath,
-            drainData + (drainData.endsWith('\n') ? '' : '\n') + bufferData,
-            { mode: 0o600 },
-          );
-          unlinkSync(tmpPath);
-        } else {
-          renameSync(tmpPath, bufferPath);
-        }
+        const drainData = readFileSync(tmpPath, 'utf-8');
+        recoveredEvents = parseHookEvents(drainData);
+        unlinkSync(tmpPath);
       } catch {
         logger.warn('Failed to recover .drain file — will retry next poll');
       }
     }
 
     if (!existsSync(bufferPath)) {
-      return [];
+      return recoveredEvents;
     }
 
     try {
       renameSync(bufferPath, tmpPath);
     } catch {
-      return [];
+      return recoveredEvents;
     }
 
     try {
       const raw = readFileSync(tmpPath, 'utf-8');
       unlinkSync(tmpPath);
-
-      if (!raw.trim()) {
-        return [];
-      }
-
-      const events: HookEvent[] = [];
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          events.push(JSON.parse(line) as HookEvent);
-        } catch {
-          logger.warn('Skipping malformed buffer line', { line: line.slice(0, 100) });
-        }
-      }
-      return events;
+      return [...recoveredEvents, ...parseHookEvents(raw)];
     } catch (err) {
       logger.warn('Failed to drain buffer — will retry next poll', { error: String(err) });
-      return [];
+      return recoveredEvents;
     }
   }
 

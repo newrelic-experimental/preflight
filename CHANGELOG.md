@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.20] - 2026-07-11
+
+### Fixed
+
+- `LocalStore`'s crash-recovery drain merge could silently drop a hook event that `preflight-collector` wrote in the narrow window between the merge's read of the live buffer and its overwrite of that buffer with the merged content. Recovery now extracts the leftover `.drain` file's events in memory and lets the buffer's own already-atomic claim-and-drain path (rename, not read-then-overwrite) handle the live buffer, so a concurrent append can never be clobbered.
+- `WeeklySummaryGenerator.generate()`'s write was a single non-atomic `writeFileSync`; a crash mid-write (SIGKILL, OOM, host crash) left a truncated/invalid JSON file that still passed the shutdown handler's `existsSync()` check, permanently corrupting that week's backfill slot. The write now goes through a temp file plus atomic rename.
+- `getLatest()` returned `null` outright if the single lexicographically-latest weekly summary file was corrupt, blinding every caller (including `nr_observe_get_weekly_summary`'s no-arg/`"latest"` path) to all older, still-valid summaries. It now falls back to the next-most-recent valid file.
+- Requesting a nonexistent ISO week (e.g. `"2025-W53"` — 2025 only has 52 weeks) silently returned a real-looking but wrong date range that actually overlapped the following year's week 1. `getWeekDateRange()` now rejects such inputs, and `nr_observe_get_weekly_summary` returns a clean error instead of a misleading result.
+
 ## [1.4.19] - 2026-07-10
 
 ### Fixed

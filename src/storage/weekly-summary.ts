@@ -8,7 +8,15 @@
  * ISO week helpers use Monday as the first day of the week.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import type { SessionStore } from './session-store.js';
@@ -65,6 +73,20 @@ export function getIsoWeekId(date: Date): string {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
+// UTC-safe mirror of getIsoWeekId(), used only to validate dates already
+// computed via UTC arithmetic below. getIsoWeekId() itself intentionally
+// reads local calendar fields (correct for the caller-supplied wall-clock
+// dates it's used with elsewhere in this file) — reusing it here would make
+// this validation depend on the server's local timezone.
+function getUtcIsoWeekId(date: Date): string {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
 /**
  * Compute the date range for an ISO week.
  * Returns Monday 00:00:00 UTC to Sunday 23:59:59.999 UTC.
@@ -86,6 +108,13 @@ export function getWeekDateRange(weekId: string): { start: Date; end: Date } {
   // Monday of target week
   const targetMonday = new Date(week1Monday.getTime());
   targetMonday.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+
+  // Reject week IDs whose year has no such ISO week (e.g. "2025-W53" when
+  // 2025 only has 52) by round-tripping the computed Monday back through
+  // the ISO week calculation — a genuine week reproduces the ID it was given.
+  if (getUtcIsoWeekId(targetMonday) !== weekId) {
+    throw new Error(`Invalid week ID: ${weekId} (year ${year} has no such ISO week)`);
+  }
 
   // Exclusive upper bound: Monday 00:00:00.000 of the following week.
   // Use half-open interval [start, end) to avoid the 23:59:59.999 boundary edge case.
@@ -132,11 +161,18 @@ export class WeeklySummaryGenerator {
     }
 
     const filepath = join(this.summariesDir, `${weekId}.json`);
+    const tmpFilepath = `${filepath}.tmp-${process.pid}`;
     try {
-      writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
+      writeFileSync(tmpFilepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
+      renameSync(tmpFilepath, filepath);
       logger.debug('Weekly summary generated', { weekId, sessions: weekSessions.length });
     } catch (err) {
       logger.error('Failed to write weekly summary to disk', { weekId, error: String(err) });
+      try {
+        unlinkSync(tmpFilepath);
+      } catch {
+        // tmp file may not have been created yet — nothing to clean up
+      }
       // Return the in-memory summary even if the write fails so callers still get data
     }
 
@@ -152,16 +188,19 @@ export class WeeklySummaryGenerator {
       .filter((f) => /^\d{4}-W\d{2}\.json$/.test(f))
       .sort();
 
-    if (files.length === 0) return null;
-
-    const latestFile = files[files.length - 1]!;
-    try {
-      const raw = readFileSync(join(this.summariesDir, latestFile), 'utf-8');
-      return JSON.parse(raw) as WeeklySummary;
-    } catch {
-      logger.warn('Failed to read latest weekly summary', { file: latestFile });
-      return null;
+    // Try newest-first; a single corrupted "latest" file shouldn't blind
+    // callers to every older, still-valid summary.
+    for (let i = files.length - 1; i >= 0; i--) {
+      const file = files[i]!;
+      try {
+        const raw = readFileSync(join(this.summariesDir, file), 'utf-8');
+        return JSON.parse(raw) as WeeklySummary;
+      } catch {
+        logger.warn('Failed to read weekly summary; trying next-most-recent', { file });
+      }
     }
+
+    return null;
   }
 
   checkAndGenerateLastWeek(): WeeklySummary | null {
