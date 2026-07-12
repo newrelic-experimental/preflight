@@ -540,6 +540,140 @@ describe('buildSessionSummary', () => {
     expect(summary.outcome).toBe('completed');
   });
 
+  it('redacts secret-shaped substrings in filesRead and filesModified', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'redact-test',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 1,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const mockTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        totalTasksCompleted: 1,
+        currentTaskActive: false,
+        currentTaskToolCalls: 0,
+        averageTaskDurationMs: 0,
+        averageToolCallsPerTask: 0,
+        completedTasks: [
+          {
+            taskId: 't1',
+            startTime: 1700000000000,
+            endTime: 1700000060000,
+            durationMs: 60_000,
+            toolCallCount: 1,
+            toolCallsByType: {},
+            filesRead: ['/repo/config-API_KEY=abc123def456secretvalue.ts'],
+            filesModified: ['/repo/README.md'],
+            linesChanged: 0,
+            linesAdded: 0,
+            linesRemoved: 0,
+            bashCommandsRun: 0,
+            testsRun: 0,
+            testsPassed: 0,
+            buildRun: 0,
+            buildPassed: 0,
+            estimatedCostUsd: 0,
+            tokensUsed: 0,
+            askedUserQuestions: 0,
+            subAgentsSpawned: 0,
+            toolCalls: [],
+          },
+        ],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      developer: 'alice',
+    });
+
+    expect(summary.filesRead).toEqual(['/repo/config-[REDACTED]']);
+    expect(summary.filesRead[0]).not.toContain('abc123def456secretvalue');
+    expect(summary.filesModified).toEqual(['/repo/README.md']);
+  });
+
+  it('redacts secret-shaped substrings in sessionName and repoName', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'redact-test-2',
+        sessionName: 'API_KEY=abc123def456secretvalue',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+      repoName: 'API_KEY=abc123def456secretvalue',
+    });
+
+    expect(summary.sessionName).toBe('[REDACTED]');
+    expect(summary.repoName).toBe('[REDACTED]');
+  });
+
+  it('leaves sessionName and repoName as null when not provided', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'redact-test-3',
+        sessionName: null,
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.sessionName).toBeNull();
+    expect(summary.repoName).toBeNull();
+  });
+
   it('includes active task data in the summary', () => {
     const mockSessionTracker = {
       getMetrics: () => ({
@@ -831,7 +965,7 @@ describe('SessionStore corruption-recovery', () => {
     }
   });
 
-  it('two saveSession calls with the same sessionId result in last-write-wins', () => {
+  it('two saveSession calls with the same sessionId result in last-write-wins, and logs a warning on the second write', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-03-01T00:00:00Z').getTime();
 
@@ -844,6 +978,13 @@ describe('SessionStore corruption-recovery', () => {
     const loaded = store.loadSession('dup-id');
     expect(loaded).not.toBeNull();
     expect(loaded!.developer).toBe('bob');
+
+    const logged = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(
+      logged.some(
+        (l: string) => l.includes('"warn"') && l.includes('Overwriting existing session file'),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -114,6 +114,21 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
+    // A second process saving under the same sessionId+date (e.g. two MCP
+    // servers both resumed/forked against one real session ID) would
+    // otherwise silently overwrite the first save with no error. This
+    // warning makes that cross-process collision visible instead of a
+    // silent last-write-wins; the overwrite itself is unchanged.
+    if (existsSync(filepath)) {
+      logger.warn(
+        'Overwriting existing session file — possible cross-process sessionId collision',
+        {
+          sessionId: summary.sessionId,
+          filename,
+        },
+      );
+    }
+
     try {
       writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
       logger.debug('Session saved', { sessionId: summary.sessionId, filename });
@@ -345,8 +360,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
 
   return {
     sessionId: sessionMetrics.sessionId,
-    sessionName: sessionMetrics.sessionName,
-    repoName: sources.repoName ?? null,
+    sessionName: sessionMetrics.sessionName ? redactSensitive(sessionMetrics.sessionName) : null,
+    repoName: sources.repoName ? redactSensitive(sources.repoName) : null,
     startTime: sessionMetrics.sessionStartTime,
     endTime: now,
     // Recalculate durationMs from wall-clock times rather than trusting the
@@ -356,8 +371,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     developer,
     model: costMetrics?.model ?? null,
     toolBreakdown: { ...sessionMetrics.toolCallCountByTool },
-    filesRead: [...allFilesRead].sort(),
-    filesModified: [...allFilesModified].sort(),
+    filesRead: [...allFilesRead].sort().map((f) => redactSensitive(f)),
+    filesModified: [...allFilesModified].sort().map((f) => redactSensitive(f)),
     linesAdded: totalLinesAdded,
     linesRemoved: totalLinesRemoved,
     bashCommandCount: sessionMetrics.bashCommandsRun,

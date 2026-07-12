@@ -9,9 +9,9 @@ import {
   readdirSync,
   statSync,
 } from 'node:fs';
-import { resolve, join, sep } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
-import type { HookEvent, SessionSummary, AuditEntry } from './types.js';
+import type { HookEvent, AuditEntry } from './types.js';
 
 const logger = createLogger('local-store');
 
@@ -878,52 +878,6 @@ export class LocalStore {
   /** The sessionId this store was scoped to, if any (test helper). */
   getSessionId(): string | null {
     return this.sessionId;
-  }
-
-  saveSession(session: SessionSummary): void {
-    if (!SESSION_ID_RE.test(session.sessionId)) {
-      logger.warn('Rejecting invalid sessionId for file path', { sessionId: session.sessionId });
-      return;
-    }
-    const sessionsDir = resolve(this.storagePath, 'sessions');
-    const filepath = resolve(sessionsDir, `${session.sessionId}.json`);
-    if (!filepath.startsWith(sessionsDir + sep)) {
-      throw new Error(`Session path escaped storage directory: ${filepath}`);
-    }
-    writeFileSync(filepath, JSON.stringify(session, null, 2) + '\n', { mode: 0o600 });
-    logger.debug('Session saved', { sessionId: session.sessionId });
-  }
-
-  loadRecentSessions(days: number): SessionSummary[] {
-    const sessionsDir = resolve(this.storagePath, 'sessions');
-    if (!existsSync(sessionsDir)) {
-      return [];
-    }
-
-    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    const sessions: SessionSummary[] = [];
-
-    for (const file of readdirSync(sessionsDir)) {
-      if (!file.endsWith('.json')) continue;
-      const filepath = join(sessionsDir, file);
-
-      try {
-        const stat = statSync(filepath);
-        if (stat.mtimeMs < cutoff) continue;
-
-        const raw = readFileSync(filepath, 'utf-8');
-        const parsed = JSON.parse(raw) as unknown;
-        // Guard against corrupted files (null, numbers, arrays) that would crash
-        // the downstream sort on .startTime.
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          sessions.push(parsed as SessionSummary);
-        }
-      } catch {
-        logger.warn('Skipping unreadable session file', { file });
-      }
-    }
-
-    return sessions.sort((a, b) => a.startTime - b.startTime);
   }
 
   appendAuditLog(entry: AuditEntry): void {
