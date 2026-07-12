@@ -14,15 +14,7 @@ export function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function readJsonFile(path: string): Record<string, unknown> {
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-// Like readJsonFile but throws on IO errors (EBUSY, EPERM, etc.) and on
+// Reads and parses a JSON file, throwing on IO errors (EBUSY, EPERM, etc.) and on
 // malformed or non-object JSON rather than returning {}. Returns {} only for
 // ENOENT (file absent). Use when the file is known to exist and its contents
 // must be preserved.

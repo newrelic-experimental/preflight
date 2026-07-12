@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.26] - 2026-07-12
+
+### Fixed
+
+- `json-utils.ts` exported a lenient JSON reader, `readJsonFile()`, with zero production callers — the only historical caller was replaced after it caused a real credential-wipe bug (a permission error was silently swallowed into `{}`, which was then written back over `config.json`, erasing `licenseKey`/`accountId`). The dead function has been removed; `readJsonFileStrict()` remains the only JSON reader in `src/install/`.
+- `src/install/index.ts`, a barrel module re-exporting install-CLI symbols, had zero reachable consumers — every real call site already imports directly from `./cli.js` or `./install-helper.js`, and `package.json`'s `exports` field never exposed the compiled barrel to external consumers either. Removed.
+
 ## [1.4.25] - 2026-07-12
 
 ### Fixed

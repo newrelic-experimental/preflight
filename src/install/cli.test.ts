@@ -1152,10 +1152,11 @@ describe('platform transition matrix', () => {
     stderrSpy.mockRestore();
   });
 
-  // Bug fix: clearSavedPlatform used readJsonFile (lenient) which silently returns {}
-  // on EACCES/EPERM, causing writeJsonFile to overwrite config.json with {} and wipe
-  // licenseKey/accountId. Fix: use readJsonFileStrict — IO errors are non-fatal (caught
-  // by the outer try/catch) and produce no write rather than a credential-destroying write.
+  // Regression test: clearSavedPlatform previously used a lenient JSON reader that
+  // silently returned {} on EACCES/EPERM, causing writeJsonFile to overwrite
+  // config.json with {} and wipe licenseKey/accountId. Fix: use readJsonFileStrict —
+  // IO errors are non-fatal (caught by the outer try/catch) and produce no write
+  // rather than a credential-destroying write.
   it('uninstall with unreadable config.json does not write {} (no credential wipe)', async () => {
     const configPath = join(homedir(), '.newrelic-preflight', 'config.json');
     mFs.existsSync.mockImplementation((p: unknown) => String(p) === configPath);
