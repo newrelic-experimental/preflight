@@ -1,4 +1,17 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
+// `jest.spyOn(dns, 'lookup')` cannot redefine `node:dns`'s export under this
+// ESM/ts-jest setup (the module namespace object is non-configurable), so — as in
+// src/security/ssrf.test.ts — the module must be replaced wholesale via jest.mock()
+// before anything else imports it. The default implementation delegates to the real
+// dns.lookup so every pre-existing test (which never exercises a real hostname lookup —
+// they use literal IPs, which node:http/https resolve without calling `lookup` at all)
+// is unaffected; only the DNS-rebinding test below overrides it per-call.
+jest.mock('node:dns', () => {
+  const actual = jest.requireActual<typeof import('node:dns')>('node:dns');
+  return { lookup: jest.fn(actual.lookup) };
+});
+
 import {
   createServer,
   request as nodeRequest,
@@ -791,7 +804,9 @@ describe('HttpUpstream.forward()', () => {
 
     expect(result.statusCode).toBe(502);
     expect(result.isStreaming).toBe(false);
-    expect(Buffer.concat(fakeRes._body).toString()).toContain('timed out');
+    const body = JSON.parse(Buffer.concat(fakeRes._body).toString());
+    expect(body.error).toBe('upstream_unavailable');
+    expect(body.message).toBeUndefined();
   });
 
   it('returns upstream status and JSON error body when upstream errors before sending data', async () => {
@@ -819,6 +834,32 @@ describe('HttpUpstream.forward()', () => {
     expect(fakeRes._headers['content-type']).toBe('application/json');
     const body = JSON.parse(Buffer.concat(fakeRes._body).toString());
     expect(body.error).toBe('upstream_error');
+    expect(body.message).toBeUndefined();
+  });
+
+  it('does not leak raw connection-error detail (host:port) to the HTTP client', async () => {
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      res.end();
+    }));
+    await closeServer(mockServer);
+    mockServer = undefined as unknown as Server; // already closed; afterEach's guard checks truthiness
+
+    const upstream = new HttpUpstream(makeConfig(port));
+    const fakeReq = makeFakeRequest();
+    const fakeRes = makeFakeResponse();
+
+    const result = await upstream.forward(
+      fakeReq,
+      fakeRes as unknown as ServerResponse,
+      Buffer.from('{}'),
+    );
+
+    expect(result.statusCode).toBe(502);
+    expect(fakeRes._statusCode).toBe(502);
+    const body = JSON.parse(Buffer.concat(fakeRes._body).toString());
+    expect(body.error).toBe('upstream_unavailable');
+    expect(body.message).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain(String(port));
   });
 
   it('default timeout is 30 seconds', () => {
@@ -1004,6 +1045,42 @@ describe('HttpUpstream.forward()', () => {
       // Should return 502 (unreachable) not because of SSRF, but because DNS fails
       // or connection refused. The re-validation in forward() should complete
       // without throwing (since my-mcp-server.example.com is a public hostname).
+      expect(result.statusCode).toBe(502);
+    });
+
+    it('rejects the connection when the hostname resolves to a private address (real DNS-rebinding closure)', async () => {
+      const dnsMod = await import('node:dns');
+      const mockedLookup = dnsMod.lookup as unknown as jest.Mock<(...args: unknown[]) => void>;
+      mockedLookup.mockImplementationOnce((..._args: unknown[]) => {
+        const cb = _args[_args.length - 1] as (
+          err: NodeJS.ErrnoException | null,
+          addresses: { address: string; family: number }[],
+        ) => void;
+        cb(null, [{ address: '127.0.0.1', family: 4 }]);
+      });
+
+      const upstream = new HttpUpstream({
+        name: 'rebind-target',
+        url: 'https://looks-public-but-rebinds.example',
+        transportType: 'http',
+      });
+      const fakeReq = makeFakeRequest();
+      const fakeRes = makeFakeResponse();
+
+      const result = await upstream.forward(
+        fakeReq,
+        fakeRes as unknown as ServerResponse,
+        Buffer.from('{}'),
+      );
+
+      // Without a custom `lookup` option wired into the request, https.request never
+      // consults the mocked dns.lookup at all — it fails via its own internal resolver
+      // (real ENOTFOUND for this nonexistent domain), which also produces 502. That
+      // coincidence would let this test pass even with no SSRF protection wired up.
+      // Asserting the mock was actually invoked proves the rejection came from the
+      // resolved-address check, not from an unrelated real DNS failure.
+      expect(mockedLookup).toHaveBeenCalled();
+      // The connection must fail (502) — it must NOT actually reach 127.0.0.1.
       expect(result.statusCode).toBe(502);
     });
   });

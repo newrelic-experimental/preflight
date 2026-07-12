@@ -147,7 +147,9 @@ if (!ALLOWED_SCHEMES.has(this.url.protocol)) throw new Error('…scheme not allo
 if (BLOCKED_HOST_RE.test(this.url.hostname)) throw new Error('…private addresses not allowed');
 ```
 
-This is used by both `HttpUpstream` (MCP proxy forwarding) and `OtlpReceiver` (`otlpForwardEndpoint` config). Any new network client that takes a URL from config or user input should call `validateSsrfUrl()` at construction time.
+Checking the literal hostname string is not sufficient on its own — DNS can be repointed between the time a URL is validated and the time it's actually connected to (DNS rebinding). `createSsrfSafeLookup()` closes that gap: it resolves the hostname exactly once, validates every resolved address against the same rules above, and hands that validated address to the actual HTTP client as a custom `lookup` function, so the socket that gets opened is guaranteed to be an address that was just checked. `HttpUpstream.forward()` passes it as `http.request`'s/`https.request`'s `lookup` option; `OtlpReceiver` passes it via an `undici.Agent`'s `connect.lookup` option. A one-time `validateSsrfUrl()` call at construction is still worth keeping as a cheap fail-fast for an obviously-blocked literal host, but it is not itself the thing preventing rebinding — do not rely on a second same-string check immediately before a network call; it re-checks nothing new.
+
+This is used by both `HttpUpstream` (MCP proxy forwarding) and `OtlpReceiver` (`otlpForwardEndpoint` config). Any new network client that takes a URL from config or user input should call `validateSsrfUrl()` at construction time, and — if it makes its own outbound connections rather than delegating to `HttpUpstream`/`OtlpReceiver` — should also use `createSsrfSafeLookup()` as its connection-time resolver.
 
 ### Proxy body limits — `proxy-manager.ts`
 

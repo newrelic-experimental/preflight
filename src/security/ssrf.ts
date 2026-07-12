@@ -1,3 +1,6 @@
+import { lookup as dnsLookup } from 'node:dns';
+import type { LookupFunction } from 'node:net';
+
 const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
 
 // Cloud metadata service FQDNs that resolve to internal addresses within cloud accounts.
@@ -143,4 +146,55 @@ export function validateSsrfUrl(label: string, url: URL): void {
   if (embeddedIPv4 && BLOCKED_HOST_RE.test(embeddedIPv4)) {
     throw new Error(`${label}: host "${url.hostname}" contains a private or loopback IPv4 address`);
   }
+}
+
+/**
+ * Builds a drop-in replacement for the `lookup` option accepted by
+ * `http.request`/`https.request` (`node:net`'s `LookupFunction` type) and by
+ * `undici`'s `Agent`'s `connect.lookup` option. Resolves the hostname exactly
+ * once via `dns.lookup()`, validates every resolved address against the same
+ * rules `validateSsrfUrl` applies to literal hostnames, and only then hands
+ * the address(es) back to the caller — which then opens its TCP/TLS
+ * connection to exactly that address, with no further DNS resolution of its
+ * own. This is what actually closes the DNS-rebinding gap: checking a
+ * hostname string and later letting the OS resolve it again independently
+ * leaves a window for the DNS record to change between the two steps.
+ *
+ * Both known callers (node:http's internals and undici's connector) invoke
+ * a custom lookup with `options.all: true`, expecting an address array back
+ * — confirmed empirically. This still honors `options.all: false` for
+ * correctness against any other caller of the `LookupFunction` contract.
+ */
+export function createSsrfSafeLookup(label: string): LookupFunction {
+  return (hostname, options, callback) => {
+    dnsLookup(
+      hostname,
+      { family: options.family, hints: options.hints, all: true },
+      (err, addresses) => {
+        if (err) {
+          callback(err, '');
+          return;
+        }
+        if (addresses.length === 0) {
+          callback(new Error(`${label}: DNS lookup for "${hostname}" returned no addresses`), '');
+          return;
+        }
+        for (const { address, family } of addresses) {
+          const hostForCheck = family === 6 ? `[${address}]` : address;
+          try {
+            validateSsrfUrl(label, new URL(`http://${hostForCheck}`));
+          } catch (validationErr) {
+            callback(validationErr as Error, '');
+            return;
+          }
+        }
+        if (options.all) {
+          callback(null, addresses);
+        } else {
+          const chosen = addresses[0]!;
+          callback(null, chosen.address, chosen.family);
+        }
+      },
+    );
+  };
 }

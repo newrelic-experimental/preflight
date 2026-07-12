@@ -272,7 +272,10 @@ export class StdioUpstream implements ProxyUpstream {
         error: message,
       });
 
-      const size = writeJsonRpcError(res, rpc.id, -32603, message);
+      // -32603 is JSON-RPC's standard "Internal error" code — reuse its own name as the
+      // generic client-facing message. The real detail (child-process error text, which
+      // may contain file paths or tool-echoed arguments) stays in the logger call above.
+      const size = writeJsonRpcError(res, rpc.id, -32603, 'Internal error');
       return {
         statusCode: 500,
         isStreaming: false,

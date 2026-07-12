@@ -277,7 +277,8 @@ describe('StdioUpstream.forward() with mock client', () => {
     expect(getStatus()).toBe(500);
     const parsed = JSON.parse(getBody());
     expect(parsed.error.code).toBe(-32603);
-    expect(parsed.error.message).toBe('Process crashed');
+    expect(parsed.error.message).toBe('Internal error');
+    expect(parsed.error.message).not.toContain('Process crashed');
     expect(result.upstreamLatencyMs).toBeGreaterThanOrEqual(0);
   });
 

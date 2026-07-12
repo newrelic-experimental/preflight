@@ -13,7 +13,7 @@ import { performance } from 'node:perf_hooks';
 import { createLogger } from '../shared/index.js';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 import { shouldForwardHeader } from './types.js';
-import { validateSsrfUrl } from '../security/ssrf.js';
+import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
 
 const logger = createLogger('proxy-http');
 
@@ -77,11 +77,6 @@ export class HttpUpstream implements ProxyUpstream {
   async forward(req: IncomingMessage, res: ServerResponse, body: Buffer): Promise<ForwardResult> {
     const requestFn = this.url.protocol === 'https:' ? httpsRequest : httpRequest;
 
-    // Re-validate URL against SSRF rules immediately before fetch to prevent DNS rebinding
-    if (!this.allowPrivateHosts) {
-      validateSsrfUrl(`HttpUpstream "${this.name}" (pre-fetch)`, this.url);
-    }
-
     // Build forwarded headers
     const headers: Record<string, string> = {};
     if (req.headers) {
@@ -104,6 +99,12 @@ export class HttpUpstream implements ProxyUpstream {
           method: req.method ?? 'POST',
           headers,
           timeout: this.timeoutMs,
+          // Resolves and validates the address actually connected to — not just the
+          // hostname string — closing the gap a same-string re-check (removed above)
+          // could not close. See createSsrfSafeLookup()'s doc comment for why.
+          ...(this.allowPrivateHosts
+            ? {}
+            : { lookup: createSsrfSafeLookup(`HttpUpstream "${this.name}" (resolved)`) }),
         },
         (upstreamRes) => {
           const upstreamLatencyMs = performance.now() - start;
@@ -192,7 +193,7 @@ export class HttpUpstream implements ProxyUpstream {
                 // Write 502 rather than re-using the upstream's statusCode (which may
                 // be 200) — that would fool callers into treating an error body as success.
                 res.writeHead(502, { 'content-type': 'application/json' });
-                res.end(JSON.stringify({ error: 'upstream_error', message: String(err) }));
+                res.end(JSON.stringify({ error: 'upstream_error' }));
               }
               resolve({
                 statusCode,
@@ -218,7 +219,7 @@ export class HttpUpstream implements ProxyUpstream {
           res.writeHead(502, { 'content-type': 'application/json' });
         }
         if (!res.writableEnded) {
-          res.end(JSON.stringify({ error: 'upstream_unavailable', message: String(err) }));
+          res.end(JSON.stringify({ error: 'upstream_unavailable' }));
         }
         resolve({
           statusCode: 502,
