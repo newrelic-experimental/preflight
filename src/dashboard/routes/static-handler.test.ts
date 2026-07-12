@@ -155,6 +155,19 @@ describe('static-handler', () => {
     expect(status()).toBe(403);
   });
 
+  it('rejects a backslash-delimited traversal payload the forward-slash-only check would miss', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'static-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html>');
+    const handler = createStaticHandler(dir);
+    // The .js extension is load-bearing: without it, extname() would resolve to
+    // a bogus pseudo-extension (from the last '.' inside the '..' segments) that
+    // the MIME allow-list check rejects on its own, masking whether this test is
+    // actually exercising the traversal check being fixed here.
+    const { req, res, status } = makeReqRes('/assets\\..\\..\\secret.js');
+    await handler(req, res);
+    expect(status()).toBe(403);
+  });
+
   // Regression guard: vite.config.ts must use base:'/' so the built
   // index.html references assets via absolute paths. With base:'./', a
   // direct refresh on /sessions resolves relative './assets/x.js' against

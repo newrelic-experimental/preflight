@@ -58,7 +58,11 @@ export function createStaticHandler(
     // an empty filename here — rather than letting it fall through to a
     // directory stat() — keeps a malformed URL like `//` returning 403,
     // not 404.
-    if (filename === '' || filename.includes('\0') || filename.split('/').some((c) => c === '..')) {
+    if (
+      filename === '' ||
+      filename.includes('\0') ||
+      filename.split(/[/\\]/).some((c) => c === '..')
+    ) {
       res.writeHead(403);
       res.end();
       return;

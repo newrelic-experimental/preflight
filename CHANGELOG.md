@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.23] - 2026-07-12
+
+### Fixed
+
+- `buildReplayResponse()`'s main persisted-session path passed its timeline straight to `analyzeReplayTimeline()` with no sort, unlike its two fallback branches which both sort before analysis. Nothing upstream guarantees a persisted timeline is chronological (session persistence is append-only), so an out-of-order timeline could silently produce wrong anti-pattern segment boundaries and iteration counts with no error raised. The persisted-session path now sorts before analysis, matching the fallback branches.
+- `static-handler.ts`'s explicit path-traversal pre-check only split incoming paths on `/`, so a request built entirely from backslash-delimited `..` segments (no forward slashes at all) passed this specific check unchecked. The check now also splits on `\`, closing the gap in the primary sanitizer.
+- Removed `DashboardServer.registerRoute()`, a public method with no callers and no test coverage. Corrected a stale comment on `LiveEventBus`'s `setMaxListeners(200)` call that understated both the per-connection listener count (5, not 4) and the resulting connection headroom (200 concurrent connections, not 40 or 50 — `setMaxListeners` caps per event name, not in aggregate).
+
 ## [1.4.22] - 2026-07-11
 
 ### Fixed

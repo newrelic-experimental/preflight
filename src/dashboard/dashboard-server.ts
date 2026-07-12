@@ -127,10 +127,6 @@ export class DashboardServer {
     });
   }
 
-  registerRoute(method: 'GET' | 'POST', path: string, handler: RouteHandler): void {
-    this.routes.set(`${method} ${path}`, handler);
-  }
-
   /** Phase 1 hook for tests + Phase 3 API route wiring. */
   getAlertEngine(): LocalAlertEngine | undefined {
     return this.opts.alertEngine;
