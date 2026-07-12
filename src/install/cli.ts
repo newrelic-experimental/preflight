@@ -23,12 +23,7 @@ import {
   generateNrConfig,
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
-import {
-  validateConfigFile,
-  DEFAULT_STORAGE_PATH,
-  ConfigFileSchema,
-  loadMcpConfig,
-} from '../config.js';
+import { validateConfigFile, DEFAULT_STORAGE_PATH, ConfigFileSchema } from '../config.js';
 import type { PlatformTarget } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import {
@@ -42,6 +37,7 @@ import {
 } from './schedule.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { LocalStore } from '../storage/index.js';
+import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 
 const logger = createLogger('cli');
 
@@ -266,54 +262,6 @@ function readLocalPackageVersion(repoRoot: string): string | null {
     return typeof parsed.version === 'string' ? parsed.version : null;
   } catch {
     return null;
-  }
-}
-
-/**
- * Resolves the dashboard's configured host/port, or null if the config
- * can't be loaded (e.g. a cloud-mode config missing credentials). Callers
- * treat null as "skip verification" rather than a hard failure — restart
- * verification is a best-effort enhancement, never a new way for `update`
- * to fail.
- */
-function getDashboardAddress(): { host: string; port: number } | null {
-  try {
-    const config = loadMcpConfig();
-    return { host: config.dashboard.host, port: config.dashboard.port };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Polls `GET /api/health` until it reports a healthy, current-version
- * response or `timeoutMs` elapses. Connection errors (server not listening
- * yet) and malformed responses are treated as "not yet" and retried, not as
- * failures. When `expectedVersion` is null, the version check is skipped —
- * any healthy response counts.
- */
-async function waitForHealthyDashboard(
-  host: string,
-  port: number,
-  expectedVersion: string | null,
-  timeoutMs = 5000,
-  intervalMs = 300,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const res = await fetch(`http://${host}:${port}/api/health`);
-      if (res.ok) {
-        const body = (await res.json()) as { ok?: unknown; version?: unknown };
-        if (body.ok === true && (expectedVersion === null || body.version === expectedVersion)) {
-          return true;
-        }
-      }
-    } catch {
-      // Not listening yet, or a malformed response — keep polling.
-    }
-    if (Date.now() >= deadline) return false;
-    await sleep(intervalMs);
   }
 }
 

@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { platform } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -309,18 +309,38 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
 }
 
 function checkStorageWritable(storagePath: string): DiagnosticCheck {
+  if (!existsSync(storagePath)) {
+    return {
+      check: 'Storage writable',
+      status: 'fail',
+      detail: `Directory not found: ${storagePath}`,
+      fix: `mkdir -p ${storagePath} && chmod 700 ${storagePath}`,
+    };
+  }
+
+  // accessSync(W_OK) alone can't distinguish a writable file from a writable
+  // directory — it succeeds for both. A file here (e.g. from a corrupted
+  // install or a race during a prior partial install) would otherwise report
+  // 'ok' while LocalStore's mkdirSync() calls fail downstream with ENOTDIR.
+  let isDirectory: boolean;
+  try {
+    isDirectory = statSync(storagePath).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    return {
+      check: 'Storage writable',
+      status: 'fail',
+      detail: `Storage path exists but is not a directory: ${storagePath}`,
+      fix: `rm ${storagePath} && mkdir -p ${storagePath} && chmod 700 ${storagePath}`,
+    };
+  }
+
   try {
     accessSync(storagePath, constants.W_OK);
     return { check: 'Storage writable', status: 'ok', detail: `${storagePath} is writable` };
   } catch {
-    if (!existsSync(storagePath)) {
-      return {
-        check: 'Storage writable',
-        status: 'fail',
-        detail: `Directory not found: ${storagePath}`,
-        fix: `mkdir -p ${storagePath} && chmod 700 ${storagePath}`,
-      };
-    }
     return {
       check: 'Storage writable',
       status: 'fail',

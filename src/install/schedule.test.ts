@@ -113,6 +113,17 @@ describe('installSchedule', () => {
       .mockImplementation(() => Buffer.from('') as unknown as string);
     expect(() => installSchedule('/usr/local/bin/preflight', 8, 0)).not.toThrow();
   });
+
+  it('throws a wrapped error when launchctl load fails', () => {
+    mockedExecFileSync
+      .mockImplementationOnce(() => Buffer.from('') as unknown as string) // unload succeeds
+      .mockImplementationOnce(() => {
+        throw new Error('boom');
+      });
+    expect(() => installSchedule('/usr/local/bin/preflight', 8, 0)).toThrow(
+      'launchctl load failed: boom',
+    );
+  });
 });
 
 describe('removeSchedule', () => {
@@ -305,6 +316,17 @@ describe('installDashboardDaemon', () => {
       })
       .mockImplementation(() => Buffer.from('') as unknown as string);
     expect(() => installDashboardDaemon('/usr/local/bin/preflight')).not.toThrow();
+  });
+
+  it('throws a wrapped error when launchctl load fails', () => {
+    mockedExecFileSync
+      .mockImplementationOnce(() => Buffer.from('') as unknown as string) // unload succeeds
+      .mockImplementationOnce(() => {
+        throw new Error('boom');
+      });
+    expect(() => installDashboardDaemon('/usr/local/bin/preflight')).toThrow(
+      'launchctl load failed: boom',
+    );
   });
 });
 

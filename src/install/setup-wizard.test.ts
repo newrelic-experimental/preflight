@@ -7,6 +7,7 @@ import * as scheduleMod from './schedule.js';
 import * as keyValidator from './key-validator.js';
 import * as cliMod from './cli.js';
 import * as platformMod from './platform.js';
+import * as dashboardHealthMod from './dashboard-health.js';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted above imports by jest at runtime).
@@ -43,6 +44,11 @@ jest.mock('./schedule.js', () => ({
   removeSchedule: jest.fn(),
   getScheduleStatus: jest.fn(() => ({ installed: false, readable: false })),
   resolveBinaryPath: jest.fn(() => null),
+  installDashboardDaemon: jest.fn(),
+}));
+jest.mock('./dashboard-health.js', () => ({
+  getDashboardAddress: jest.fn(),
+  waitForHealthyDashboard: jest.fn(),
 }));
 
 // Typed handles to the mocked module functions.
@@ -66,6 +72,15 @@ const mockedRl = rlMod as unknown as { createInterface: jest.Mock };
 const mockedSchedule = scheduleMod as unknown as {
   installSchedule: jest.Mock;
   resolveBinaryPath: jest.Mock;
+  installDashboardDaemon: jest.Mock;
+};
+const mockedDashboardHealth = {
+  getDashboardAddress: dashboardHealthMod.getDashboardAddress as jest.MockedFunction<
+    typeof dashboardHealthMod.getDashboardAddress
+  >,
+  waitForHealthyDashboard: dashboardHealthMod.waitForHealthyDashboard as jest.MockedFunction<
+    typeof dashboardHealthMod.waitForHealthyDashboard
+  >,
 };
 const mockedCli = cliMod as unknown as {
   runInstallCli: jest.Mock;
@@ -872,6 +887,105 @@ describe('setupWizard auto-update step', () => {
     await runSetupWizard();
 
     expect(mockedSchedule.installSchedule).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 6b: Always-on background dashboard daemon (macOS only)
+// ---------------------------------------------------------------------------
+describe('setupWizard daemon install step', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+  const savedPlatform = process.platform;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockedDashboardHealth.getDashboardAddress.mockReturnValue({ host: '127.0.0.1', port: 7777 });
+    mockedDashboardHealth.waitForHealthyDashboard.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
+  });
+
+  // Local mode answer order up through Step 6b, then Step 7 (auto-update, darwin-only):
+  // mode, developer, teamId, projectId, sessionBudget, dashboardPort, copyStarterRules,
+  // installHooks, daemonAnswer, autoUpdate
+  function answers(...values: string[]): void {
+    let i = 0;
+    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+  }
+
+  it('reports success and calls waitForHealthyDashboard when the daemon health-checks OK', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedSchedule.installDashboardDaemon).toHaveBeenCalledWith('/usr/local/bin/preflight');
+    expect(mockedDashboardHealth.waitForHealthyDashboard).toHaveBeenCalledWith(
+      '127.0.0.1',
+      7777,
+      null,
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Background dashboard daemon installed');
+    expect(output).not.toContain('could not be verified');
+  });
+
+  it('downgrades to a warning when the daemon health-check fails', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedDashboardHealth.waitForHealthyDashboard.mockResolvedValue(false);
+    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('could not be verified as healthy');
+    expect(output).not.toContain('✓ Background dashboard daemon installed');
+  });
+
+  it('skips verification and keeps the success message when dashboard config cannot be loaded', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedDashboardHealth.getDashboardAddress.mockReturnValue(null);
+    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedDashboardHealth.waitForHealthyDashboard).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Background dashboard daemon installed');
+  });
+
+  it('does not install the daemon when the user declines', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    answers('local', 'tester', '', '', '', '', 'n', 'n', 'n', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedSchedule.installDashboardDaemon).not.toHaveBeenCalled();
+  });
+
+  it('warns without installing when preflight is not on PATH', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue(null);
+    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedSchedule.installDashboardDaemon).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Cannot install dashboard daemon');
   });
 });
 
