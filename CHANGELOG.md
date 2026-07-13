@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.32] - 2026-07-13
+
+### Fixed
+
+- The activity heatmap grid (History view's "Activity · Last 12 Weeks" panel) placed every day one row early for any user in a timezone west of UTC — the backend sends genuinely UTC-anchored day keys, but the frontend read them back with local-time accessors. Now reads them with UTC accessors to match.
+
+### Removed
+
+- `StatusIndicator` and `Sparkline` — two fully-built, fully-tested dashboard components with zero real consumers anywhere in the app. Removed along with their test suites.
+- An unreachable dead-code branch in `HourlyCostBlocks`' internal `describeChart()` helper, guaranteed unreachable by its only caller's own guards.
+
 ## [1.4.31] - 2026-07-13
 
 ### Fixed

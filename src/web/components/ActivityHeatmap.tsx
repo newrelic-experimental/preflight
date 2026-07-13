@@ -161,8 +161,12 @@ function GridHeatmap({ days, maxCount, ariaLabel }: GridProps): JSX.Element {
   const grid = useMemo(() => {
     if (days.length === 0) return { weeks: 0, cells: [] };
 
+    // `date` is a UTC-anchored YYYY-MM-DD key built server-side; `new Date(dateString)`
+    // parses a bare date-only string as UTC midnight per spec. Must read it back with
+    // getUTCDay() (not local getDay()) or the weekday shifts a day early for any user
+    // west of UTC — see the month-label computation below for the same constraint.
     const firstDate = new Date(days[0]!.date);
-    const firstDow = (firstDate.getDay() + 6) % 7; // Monday=0
+    const firstDow = (firstDate.getUTCDay() + 6) % 7; // Monday=0
     const cells: Array<{ date: string; count: number; row: number; col: number }> = [];
     for (let i = 0; i < days.length; i++) {
       const globalIdx = i + firstDow;
@@ -186,7 +190,12 @@ function GridHeatmap({ days, maxCount, ariaLabel }: GridProps): JSX.Element {
     let lastMonth = '';
     for (const cell of grid.cells) {
       if (cell.row !== 0) continue;
-      const month = new Date(cell.date).toLocaleString(undefined, { month: 'short' });
+      // Same UTC-anchored-key constraint as firstDow above: pin the formatter to
+      // UTC so the month label matches the same day the weekday row is computed for.
+      const month = new Date(cell.date).toLocaleString(undefined, {
+        month: 'short',
+        timeZone: 'UTC',
+      });
       if (month !== lastMonth) {
         labels.push({ text: month, col: cell.col });
         lastMonth = month;

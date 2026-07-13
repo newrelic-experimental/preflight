@@ -36,8 +36,7 @@ function formatHourLabel(hour: number): string {
 function describeChart(hours: ReadonlyArray<HourlyCostEntry>): string {
   const total = hours.reduce((s, h) => s + h.cost, 0);
   const max = hours.reduce((m, h) => Math.max(m, h.cost), 0);
-  const peak = hours.find((h) => h.cost === max);
-  if (peak === undefined || max === 0) return 'Hourly spend today: no activity yet.';
+  const peak = hours.find((h) => h.cost === max)!;
   return `Hourly spend today: $${total.toFixed(2)} total, peak $${max.toFixed(2)} at ${formatHourLabel(peak.hour)}`;
 }
 
