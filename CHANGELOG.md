@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.29] - 2026-07-12
+
+### Fixed
+
+- `SECURITY.md`'s audit-trail network-request pattern list said `curl`, `wget`, `fetch`; the real pattern list is `curl`, `wget`, `nc`, `ssh`. Docs corrected.
+- `REDACT_FIELD_KEYS` (the allowlist controlling which extra `AiToolCall` string fields get redacted before reaching New Relic) was missing five fields that `src/hooks/tool-parsers.ts` produces: `commandDescription`, `taskSubject`, `grepPath`, `globPath`, and `agentTeamName`. These now pass through `redactSensitive()` like every other tool-specific string field.
+
 ## [1.4.28] - 2026-07-12
 
 ### Fixed

@@ -245,7 +245,7 @@ Both `AgentConfig` and `McpServerConfig` are frozen with `Object.freeze()` immed
 
 - **Sensitive file access** — `.env`, `.pem`, `.key`, credential and password files — severity: `high`
 - **Destructive commands** — `rm -rf`, `DROP TABLE`, pipe-to-shell patterns — severity: `critical`
-- **External network requests** — `curl`, `wget`, `fetch` — severity: `medium`
+- **External network requests** — `curl`, `wget`, `nc`, `ssh` — severity: `medium`
 
 Records are persisted to disk in real time via `LocalStore.appendAuditLog()`, so the trail survives unclean shutdowns.
 

@@ -298,6 +298,24 @@ describe('toolCallToNrEvent()', () => {
       expect(event.detail as string).not.toContain(SECRET_TOKEN);
     });
 
+    it('redacts secrets in commandDescription / taskSubject / grepPath / globPath / agentTeamName', () => {
+      const record = makeRecord({
+        commandDescription: `Run curl with token ${SECRET_TOKEN}`,
+        taskSubject: `Rotate token ${SECRET_TOKEN}`,
+        grepPath: `/tmp/${SECRET_TOKEN}/src`,
+        globPath: `/tmp/${SECRET_TOKEN}/**/*.ts`,
+        agentTeamName: `team-${SECRET_TOKEN}`,
+      } as unknown as Partial<ToolCallRecord>);
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event.commandDescription as string).not.toContain(SECRET_TOKEN);
+      expect(event.taskSubject as string).not.toContain(SECRET_TOKEN);
+      expect(event.grepPath as string).not.toContain(SECRET_TOKEN);
+      expect(event.globPath as string).not.toContain(SECRET_TOKEN);
+      expect(event.agentTeamName as string).not.toContain(SECRET_TOKEN);
+    });
+
     it('does not redact non-sensitive string fields', () => {
       const record = makeRecord({
         toolName: 'Bash',
