@@ -150,6 +150,11 @@ const REDACT_FIELD_KEYS = new Set([
   'agent_description',
   'detail',
   'cwd',
+  'commandDescription',
+  'taskSubject',
+  'grepPath',
+  'globPath',
+  'agentTeamName',
 ]);
 
 /**
