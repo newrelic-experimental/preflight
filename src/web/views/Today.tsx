@@ -28,7 +28,11 @@ import {
   fetchModelUsage,
   fetchLiveSessions,
   fetchTodayAggregate,
+  TodayAggregateResponse,
+  ActivityHeatmapTodayResponse,
+  LiveSessionEntry,
   NotFoundError,
+  CacheHealthResponse,
   qk,
 } from '../api/client';
 import {
@@ -63,13 +67,6 @@ interface CostApiResponse {
   readonly sessionTodayUsd?: number | null;
 }
 
-interface HeatmapApiResponse {
-  readonly buckets: number[];
-  readonly bucketSizeMs: number;
-  readonly startTimestamp: number;
-  readonly maxCount: number;
-}
-
 // Minimal view of the /api/session/current payload. F-050 added efficiencyScore.
 interface SessionCurrentApiResponse {
   readonly efficiencyScore?: number | null;
@@ -101,31 +98,6 @@ interface SessionSummary {
   readonly antiPatterns?: SessionAntiPattern[];
   readonly model?: string | null;
   readonly toolSuccessRate?: number | null;
-}
-
-// Task #17 (D3): cross-session aggregate KPI shape returned by
-// /api/sessions/today/aggregate. The dashboard owner reads every per-session
-// buffer file plus persisted today sessions to produce one global view.
-interface TodayAggregateApiResponse {
-  readonly toolCallCount: number;
-  readonly totalCostUsd: number;
-  readonly antiPatternCount: number;
-  readonly avgDurationMs: number;
-  readonly sessionCount: number;
-  readonly sparkline: {
-    readonly startTimestamp: number;
-    readonly bucketSizeMs: number;
-    readonly points: readonly number[];
-  };
-}
-
-// Task #17 (D3): /api/sessions/live response — currently-live sessions sorted
-// most-recently-active first.
-interface LiveSessionApiEntry {
-  readonly sessionId: string;
-  readonly sessionName: string | null;
-  readonly startTime: number;
-  readonly lastActivity: number;
 }
 
 interface QualityProxyMetrics {
@@ -162,7 +134,7 @@ export function Today(): JSX.Element {
 
   const { data: costApi, isPending: costPending } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
-    queryFn: () => fetchCost() as Promise<CostApiResponse>,
+    queryFn: fetchCost,
   });
   // Task #17 (D3): the dashboard owner's session_current is arbitrary across
   // N concurrent sessions, so we keep the call only for the efficiencyScore
@@ -171,38 +143,38 @@ export function Today(): JSX.Element {
   // per-session buffer + persisted session.
   const { data: sessionCurrent } = useQuery<SessionCurrentApiResponse>({
     queryKey: qk.sessionCurrent,
-    queryFn: () => fetchSessionCurrent() as Promise<SessionCurrentApiResponse>,
+    queryFn: fetchSessionCurrent,
     refetchInterval: 10_000,
   });
-  const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateApiResponse>({
+  const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
-    queryFn: () => fetchTodayAggregate() as Promise<TodayAggregateApiResponse>,
+    queryFn: fetchTodayAggregate,
     refetchInterval: 10_000,
   });
   const { data: todaySessions, isPending: sessionsPending } = useQuery<SessionSummary[]>({
     queryKey: qk.sessionsList(200),
-    queryFn: () => fetchSessionsList(200) as Promise<SessionSummary[]>,
+    queryFn: () => fetchSessionsList(200),
     refetchInterval: 10_000,
   });
   const { data: apiAntiPatterns, isPending: antiPatternsPending } = useQuery<SessionAntiPattern[]>({
     queryKey: qk.antiPatterns,
-    queryFn: () => fetchAntiPatterns() as Promise<SessionAntiPattern[]>,
+    queryFn: fetchAntiPatterns,
   });
   const { data: concurrency } = useQuery<ConcurrencyData>({
     queryKey: qk.concurrency,
-    queryFn: () => fetchConcurrency() as Promise<ConcurrencyData>,
+    queryFn: fetchConcurrency,
     refetchInterval: 10_000,
   });
-  const { data: todayHeatmap } = useQuery<HeatmapApiResponse>({
+  const { data: todayHeatmap } = useQuery<ActivityHeatmapTodayResponse>({
     queryKey: qk.activityHeatmap('today'),
-    queryFn: () => fetchActivityHeatmap('today') as Promise<HeatmapApiResponse>,
+    queryFn: () => fetchActivityHeatmap('today'),
     refetchInterval: 30_000,
   });
   // Task #17 (D3): live-session list — drives the selector default and the
   // "Session ended" badge logic when the selected session goes stale.
-  const { data: liveSessions } = useQuery<LiveSessionApiEntry[]>({
+  const { data: liveSessions } = useQuery<LiveSessionEntry[]>({
     queryKey: qk.sessionsLive,
-    queryFn: () => fetchLiveSessions() as Promise<LiveSessionApiEntry[]>,
+    queryFn: fetchLiveSessions,
     refetchInterval: 10_000,
   });
 
@@ -449,7 +421,7 @@ export function Today(): JSX.Element {
 function QualityProxyPanel(): JSX.Element {
   const { data } = useQuery<QualityProxyMetrics>({
     queryKey: qk.qualityProxy,
-    queryFn: () => fetchQualityProxy() as Promise<QualityProxyMetrics>,
+    queryFn: fetchQualityProxy,
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -500,7 +472,7 @@ function QualityProxyPanel(): JSX.Element {
 function ToolSelectionPanel(): JSX.Element {
   const { data } = useQuery<ToolSelectionMetrics>({
     queryKey: qk.toolSelectionScore,
-    queryFn: () => fetchToolSelectionScore() as Promise<ToolSelectionMetrics>,
+    queryFn: fetchToolSelectionScore,
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -563,7 +535,7 @@ interface LatencyMetrics {
 function LatencyPanel(): JSX.Element {
   const { data } = useQuery<LatencyMetrics>({
     queryKey: qk.latency,
-    queryFn: () => fetchLatency() as Promise<LatencyMetrics>,
+    queryFn: fetchLatency,
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -637,19 +609,10 @@ interface ModelUsageMetrics {
   readonly mostEfficientModel: string | null;
 }
 
-interface CacheHealthApiResponse {
-  readonly status: 'no_cache_activity' | 'needs_attention' | 'can_improve' | 'excellent';
-  readonly cache_hit_rate_pct: number | null;
-  readonly total_cache_read_tokens: number;
-  readonly total_cache_creation_tokens: number;
-  readonly total_savings_usd: number;
-  readonly week_over_week_delta_pts: number | null;
-}
-
 function ModelUsagePanel(): JSX.Element {
   const { data } = useQuery<ModelUsageMetrics>({
     queryKey: qk.modelUsage,
-    queryFn: () => fetchModelUsage() as Promise<ModelUsageMetrics>,
+    queryFn: fetchModelUsage,
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -694,7 +657,7 @@ function ModelUsagePanel(): JSX.Element {
 }
 
 function cacheRecommendationText(
-  status: CacheHealthApiResponse['status'],
+  status: CacheHealthResponse['status'],
   hitRatePct: number | null,
 ): string {
   const pct = hitRatePct !== null ? `${hitRatePct}%` : null;
@@ -712,9 +675,9 @@ function cacheRecommendationText(
 }
 
 function CacheHealthPanel(): JSX.Element {
-  const { data } = useQuery<CacheHealthApiResponse>({
+  const { data } = useQuery<CacheHealthResponse>({
     queryKey: qk.cacheHealth,
-    queryFn: () => fetchCacheHealth() as Promise<CacheHealthApiResponse>,
+    queryFn: fetchCacheHealth,
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -814,7 +777,7 @@ function LiveSessionPane({
   liveSessions,
 }: {
   sessions: SessionSummary[];
-  liveSessions: LiveSessionApiEntry[];
+  liveSessions: LiveSessionEntry[];
 }): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'gantt' | 'list'>('list');
@@ -827,7 +790,7 @@ function LiveSessionPane({
   // populates immediately on first paint instead of waiting an interval.
   const { data: current } = useQuery<{ sessionId: string; liveSessions?: string[] }>({
     queryKey: qk.sessionCurrent,
-    queryFn: () => fetchSessionCurrent() as Promise<{ sessionId: string; liveSessions?: string[] }>,
+    queryFn: fetchSessionCurrent,
   });
 
   const liveSessionIds = useMemo(() => {
@@ -869,7 +832,7 @@ function LiveSessionPane({
 
   const { data: replay } = useQuery<ReplayData>({
     queryKey: activeId ? qk.sessionReplay(activeId) : ['replay', 'none'],
-    queryFn: () => fetchSessionReplay(activeId!) as Promise<ReplayData>,
+    queryFn: () => fetchSessionReplay(activeId!),
     enabled: activeId !== null,
     retry: false,
     refetchInterval: isLive ? LIVE_TAIL_REFETCH_MS : false,
@@ -900,7 +863,7 @@ function LiveSessionPane({
   const todaySessions = useMemo(() => {
     const RECENT_ACTIVITY_MS = 6 * 60 * 60 * 1000; // 6 hours
     const recentCutoff = Date.now() - RECENT_ACTIVITY_MS;
-    const liveById = new Map<string, LiveSessionApiEntry>();
+    const liveById = new Map<string, LiveSessionEntry>();
     for (const ls of liveSessions) liveById.set(ls.sessionId, ls);
 
     const byId = new Map<string, SessionSummary>();
@@ -1113,7 +1076,7 @@ function LiveSessionPane({
 // alerts. Falls back to the truncated session id when no friendly name is
 // known yet — sessionName is only set after the live registry has seen a
 // `cwd` from the first hook event.
-function sessionPillLabel(sessionId: string, liveSessions: LiveSessionApiEntry[]): string {
+function sessionPillLabel(sessionId: string, liveSessions: LiveSessionEntry[]): string {
   const match = liveSessions.find((ls) => ls.sessionId === sessionId);
   if (match?.sessionName) return match.sessionName;
   return sessionId.slice(0, 8);
@@ -1128,7 +1091,7 @@ function RecentAlertsPanel(): JSX.Element | null {
     queryKey: qk.alertsRecent,
     queryFn: async () => {
       try {
-        return (await fetchRecentAlerts()) as readonly AlertEvent[];
+        return await fetchRecentAlerts();
       } catch (err) {
         if (err instanceof NotFoundError) return null;
         throw err;
