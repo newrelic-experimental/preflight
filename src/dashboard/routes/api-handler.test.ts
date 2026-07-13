@@ -1814,3 +1814,27 @@ describe('GET /api/diagnostics', () => {
     expect(JSON.parse(body())).toEqual(expected);
   });
 });
+
+describe('GET /api/diagnostics platform forwarding', () => {
+  it("forwards getActivePlatform()'s return value as the platform option to runDiagnostics", async () => {
+    mockedRunDiagnostics.mockResolvedValue([]);
+    const handler = createApiHandler({ getActivePlatform: () => 'cursor' });
+    const req = { method: 'GET', url: '/api/diagnostics' } as IncomingMessage;
+    const { res } = fakeRes();
+    await handler(req, res);
+    expect(mockedRunDiagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({ platform: 'cursor' }),
+    );
+  });
+
+  it('passes platform: undefined when getActivePlatform is not provided (no change to existing Claude Code behavior)', async () => {
+    mockedRunDiagnostics.mockResolvedValue([]);
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/diagnostics' } as IncomingMessage;
+    const { res } = fakeRes();
+    await handler(req, res);
+    expect(mockedRunDiagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({ platform: undefined }),
+    );
+  });
+});

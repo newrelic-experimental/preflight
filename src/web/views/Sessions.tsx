@@ -409,6 +409,20 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         )}
       </div>
 
+      {(data.antiPatterns?.length ?? 0) > 0 && (
+        <div className="mb-4">
+          <Eyebrow className="mb-1">Anti-Patterns</Eyebrow>
+          <div className="flex flex-wrap gap-1.5">
+            {data.antiPatterns!.map(({ type, count }) => (
+              <Pill key={type} tone="warning" size="sm" bordered>
+                {SEGMENT_LABELS[type] ?? type}
+                <span className="opacity-70">× {count}</span>
+              </Pill>
+            ))}
+          </div>
+        </div>
+      )}
+
       {(data.qualityProxy || data.toolSelectionScore) && (
         <div className="grid grid-cols-2 gap-3 mb-4">
           {data.qualityProxy && (
@@ -475,6 +489,19 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
           isLive={isLive}
           sessionId={data.sessionId}
         />
+      )}
+
+      {(data.filesRead?.length ?? 0) > 0 && (
+        <div className="mb-4">
+          <Eyebrow className="mb-1">Files Read</Eyebrow>
+          <ul className="text-[11px] text-ink-subtle space-y-0.5">
+            {data.filesRead!.map((f) => (
+              <li key={f} className="font-mono truncate">
+                {f.split('/').slice(-2).join('/')}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {(data.filesModified?.length ?? 0) > 0 && (

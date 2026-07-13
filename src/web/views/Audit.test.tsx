@@ -115,6 +115,58 @@ describe('Audit view', () => {
     await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
     expect(screen.queryByText(/showing first/i)).toBeNull();
   });
+
+  it('exports only the filtered and capped rows, not the full unfiltered set', async () => {
+    const user = userEvent.setup();
+    const sensitiveRows = Array.from({ length: 250 }, (_, i) => ({
+      ts: 1_000_000 + i,
+      tool: 'Read',
+      target: `/sensitive/${i}`,
+      classification: 'sensitive_file',
+      sessionId: `s-${i}`,
+    }));
+    const destructiveRow = {
+      ts: 1,
+      tool: 'Bash',
+      target: 'rm -rf /tmp/x',
+      classification: 'destructive_command',
+      sessionId: 'x1',
+    };
+    renderAudit([destructiveRow, ...sensitiveRows]);
+    await waitFor(() => expect(screen.getByText('/sensitive/0')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /sensitive files/i }));
+    await waitFor(() => expect(screen.queryByText('rm -rf /tmp/x')).toBeNull());
+
+    let capturedBlob: Blob | null = null;
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      capturedBlob = blob;
+      return 'blob:test/export';
+    }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    try {
+      await user.click(screen.getByRole('button', { name: /export jsonl/i }));
+      expect(capturedBlob).not.toBeNull();
+      const text = await capturedBlob!.text();
+      const lines = text.split('\n').filter(Boolean);
+      // Capped at 200, not the full 250 matching rows.
+      expect(lines).toHaveLength(200);
+      // Filtered out — destructive_command doesn't match the active "Sensitive files" filter.
+      expect(text).not.toMatch(/rm -rf \/tmp\/x/);
+      expect(text).toMatch(/\/sensitive\/0"/);
+      expect(text).toMatch(/\/sensitive\/199"/);
+      // Beyond the 200-row cap.
+      expect(text).not.toMatch(/\/sensitive\/200"/);
+    } finally {
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+      clickSpy.mockRestore();
+    }
+  });
 });
 
 describe('Audit downloadJsonl', () => {

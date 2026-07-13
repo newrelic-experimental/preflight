@@ -242,6 +242,10 @@ export interface ApiHandlerDeps {
   readonly contextTracker?: { getMetrics: (sessionId?: string) => unknown };
   readonly config?: McpServerConfig;
   readonly configFilePath?: string;
+  // Resolved lazily (not captured as a plain value) because the platform
+  // adapter isn't assigned until after this deps object is constructed —
+  // see index.ts's eventProcessor initialization order.
+  readonly getActivePlatform?: () => string | undefined;
   // The dashboard owner reads every per-session buffer file in read-only
   // mode for the cross-session aggregate endpoint.
   // `peekAllBuffers()` does NOT drain — only the owning MCP's own
@@ -1356,6 +1360,7 @@ export function createApiHandler(
       // captured. diagnostics.ts prioritises this value over the file-validated
       // storagePath, so the same path the MCP server writes to is always checked.
       storagePath: deps.config?.storagePath,
+      platform: deps.getActivePlatform?.(),
     });
     jsonOk(res, checks);
   });

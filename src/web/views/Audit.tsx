@@ -71,7 +71,7 @@ export function Audit(): JSX.Element {
       <GeoBanner theme="audit" />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Audit</h1>
-        <Button variant="secondary" size="md" onClick={() => downloadJsonl(rows)}>
+        <Button variant="secondary" size="md" onClick={() => downloadJsonl(visibleSlice)}>
           Export JSONL
         </Button>
       </header>
