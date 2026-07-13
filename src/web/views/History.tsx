@@ -25,17 +25,13 @@ import {
   fetchActivityHeatmap,
   fetchConcurrencyHistory,
   qk,
+  type WeeklyRow,
+  type CostPerOutcomeResponse,
+  type PersonalCoachResult,
+  type ConcurrencyHistoryResponse,
+  type ActivityHeatmapHistoryResponse,
 } from '../api/client';
 import { shortToolName } from '../lib/format';
-
-interface WeeklyRow {
-  readonly weekStart?: string;
-  readonly week?: string;
-  readonly efficiencyScore?: number;
-  readonly avgEfficiencyScore?: number | null;
-  readonly totalCostUsd: number;
-  readonly antiPatternCounts?: Record<string, number>;
-}
 
 interface SessionRow {
   readonly sessionId: string;
@@ -47,43 +43,6 @@ interface SessionRow {
   readonly toolCallCount?: number;
   readonly toolBreakdown?: Record<string, number>;
 }
-
-interface HistoryHeatmapResponse {
-  readonly days: Array<{ date: string; count: number }>;
-  readonly maxCount: number;
-}
-
-interface ConcurrencyHistoryResponse {
-  readonly dailyPeaks: Array<{ date: string; peak: number }>;
-}
-
-interface OutcomeBucket {
-  readonly count: number;
-  readonly totalCost: number;
-  readonly avgCost: number;
-}
-
-interface CostPerOutcomeResponse {
-  readonly outcomeDistribution: Record<string, OutcomeBucket>;
-  readonly wasteRatio: number;
-  readonly totalCost: number;
-  readonly totalTasks: number;
-}
-
-interface PersonalCoachOk {
-  readonly status: 'ok';
-  readonly highlights: readonly string[];
-  readonly regressions: readonly string[];
-  readonly streaks: readonly string[];
-  readonly topRecommendation: string;
-}
-
-interface PersonalCoachInsufficient {
-  readonly status: 'insufficient_data';
-  readonly message: string;
-}
-
-type PersonalCoachResult = PersonalCoachOk | PersonalCoachInsufficient;
 
 const TICK_STYLE = { fill: 'var(--color-ink-muted)', fontSize: 10 };
 const GRID_STROKE = 'var(--color-border-subtle)';
@@ -130,40 +89,39 @@ function shortMonthDay(value: string): string {
 export function History(): JSX.Element {
   const weekly = useQuery<WeeklyRow[]>({
     queryKey: qk.weekly,
-    queryFn: () => fetchWeekly() as Promise<WeeklyRow[]>,
+    queryFn: fetchWeekly,
   });
 
   const sessions = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(200),
-    queryFn: () => fetchSessionsList(200) as Promise<SessionRow[]>,
+    queryFn: () => fetchSessionsList(200),
   });
 
   const costPerOutcome = useQuery<CostPerOutcomeResponse>({
     queryKey: qk.costPerOutcome(30),
-    queryFn: () => fetchCostPerOutcome(30) as Promise<CostPerOutcomeResponse>,
+    queryFn: () => fetchCostPerOutcome(30),
   });
 
   const coach = useQuery<PersonalCoachResult>({
     queryKey: qk.personalCoach,
-    queryFn: () => fetchPersonalCoach() as Promise<PersonalCoachResult>,
+    queryFn: fetchPersonalCoach,
   });
 
-  const activityGrid = useQuery<HistoryHeatmapResponse>({
+  const activityGrid = useQuery<ActivityHeatmapHistoryResponse>({
     queryKey: qk.activityHeatmap('history'),
-    queryFn: () => fetchActivityHeatmap('history', 12) as Promise<HistoryHeatmapResponse>,
+    queryFn: () => fetchActivityHeatmap('history', 12),
   });
 
   const concurrencyHistory = useQuery<ConcurrencyHistoryResponse>({
     queryKey: qk.concurrencyHistory(30),
-    queryFn: () => fetchConcurrencyHistory(30) as Promise<ConcurrencyHistoryResponse>,
+    queryFn: () => fetchConcurrencyHistory(30),
   });
 
   // API returns newest-first; reverse for chronological left-to-right chart rendering
   const weeklyChronological = [...(weekly.data ?? [])].reverse();
   const weeklyData = weeklyChronological.map((w) => {
-    const fullDate = w.weekStart ?? w.week ?? '';
-    const score = w.efficiencyScore ?? w.avgEfficiencyScore ?? null;
-    return { week: fullDate || '?', efficiency: score !== null ? Math.round(score * 100) : null };
+    const score = w.avgEfficiencyScore;
+    return { week: w.week || '?', efficiency: score !== null ? Math.round(score * 100) : null };
   });
 
   const dailyData = padDailyCostWindow(aggregateDailyCost(sessions.data ?? [], 30), 30);
@@ -578,7 +536,7 @@ export function buildAntiPatternSeries(weeks: WeeklyRow[]): Array<{ week: string
     const counts = w.antiPatternCounts ?? {};
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     if (total > 0) {
-      out.push({ week: (w.weekStart ?? w.week ?? '') || '?', count: total });
+      out.push({ week: w.week || '?', count: total });
     }
   }
   return out;
@@ -681,7 +639,7 @@ export function aggregateToolUsage(rows: SessionRow[]): Array<{ tool: string; co
 function ConcurrencyBlockChart({
   data,
 }: {
-  data: Array<{ date: string; peak: number }>;
+  data: ReadonlyArray<{ readonly date: string; readonly peak: number }>;
 }): JSX.Element | null {
   const items: DiscreteBlockChartItem[] = data.map((day) => ({
     count: day.peak,

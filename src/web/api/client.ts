@@ -220,8 +220,41 @@ export const fetchTodayAggregate = (): Promise<TodayAggregateResponse> =>
 // most-recently-active session).
 export const fetchLiveSessions = (): Promise<LiveSessionEntry[]> =>
   getJson<LiveSessionEntry[]>('/api/sessions/live');
-export const fetchSessionDetail = (id: string): Promise<unknown> =>
-  getJson<unknown>(`/api/sessions/${encodeURIComponent(id)}`);
+// /api/sessions/:id returns one of three shapes depending on session state:
+// a persisted session record, a live session owned by this dashboard's own
+// SessionTracker, or a live session tracked by LiveSessionRegistry but owned
+// by a different concurrent server (see api-handler.ts's dynamic route
+// matcher). All fields below are optional except sessionId, which is the
+// only field guaranteed present across all three shapes.
+export interface SessionDetail {
+  readonly sessionId: string;
+  readonly sessionName?: string | null;
+  readonly toolCallCount?: number;
+  readonly durationMs?: number;
+  readonly estimatedCostUsd?: number | null;
+  readonly model?: string | null;
+  readonly outcome?: string;
+  readonly toolBreakdown?: Record<string, number>;
+  readonly filesRead?: string[];
+  readonly filesModified?: string[];
+  readonly antiPatterns?: Array<{ type: string; count: number }>;
+  readonly timeline?: ReadonlyArray<ReplayTimelineEntry>;
+  readonly qualityProxy?: {
+    readonly diffApplyRate: number | null;
+    readonly testPassRate: number | null;
+    readonly backtrackCount: number;
+    readonly selfCorrectionCount: number;
+  };
+  readonly toolSelectionScore?: {
+    readonly score: number;
+    readonly redundantReadCount: number;
+    readonly repeatedFailureCount: number;
+    readonly unusedOutputCount: number;
+  };
+}
+
+export const fetchSessionDetail = (id: string): Promise<SessionDetail> =>
+  getJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`);
 export const fetchCost = (): Promise<CostResponse> => getJson<CostResponse>('/api/cost');
 export const fetchAntiPatterns = (): Promise<AntiPattern[]> =>
   getJson<AntiPattern[]>('/api/anti-patterns');
@@ -277,12 +310,56 @@ export interface ToolSelectionMetrics {
 }
 
 export const fetchAuditLog = (): Promise<unknown> => getJson<unknown>('/api/audit');
-export const fetchWeekly = (): Promise<unknown> => getJson<unknown>('/api/weekly');
+
+// Mirrors WeeklySummary in src/storage/weekly-summary.ts (not importable —
+// tsconfig.web.json excludes server source). Only the fields the History
+// view actually reads: the real field is `week`, not `weekStart`, and
+// `avgEfficiencyScore`, not `efficiencyScore` — neither phantom name exists
+// on the real backend response.
+export interface WeeklyRow {
+  readonly week: string;
+  readonly avgEfficiencyScore: number | null;
+  readonly totalCostUsd: number;
+  readonly antiPatternCounts: Record<string, number>;
+}
+
+export const fetchWeekly = (): Promise<WeeklyRow[]> => getJson<WeeklyRow[]>('/api/weekly');
 export const fetchBudget = (): Promise<unknown> => getJson<unknown>('/api/budget');
 export const fetchLatency = (): Promise<LatencyMetrics> => getJson<LatencyMetrics>('/api/latency');
-export const fetchCostPerOutcome = (days = 30): Promise<unknown> =>
-  getJson<unknown>(`/api/cost-per-outcome?days=${days}`);
-export const fetchPersonalCoach = (): Promise<unknown> => getJson<unknown>('/api/personal-coach');
+
+// Mirrors CostAttribution in src/metrics/cost-per-outcome.ts (not importable).
+export interface CostPerOutcomeResponse {
+  readonly outcomeDistribution: Record<
+    string,
+    { readonly count: number; readonly totalCost: number; readonly avgCost: number }
+  >;
+  readonly wasteRatio: number;
+  readonly totalCost: number;
+  readonly totalTasks: number;
+}
+
+export const fetchCostPerOutcome = (days = 30): Promise<CostPerOutcomeResponse> =>
+  getJson<CostPerOutcomeResponse>(`/api/cost-per-outcome?days=${days}`);
+
+// Mirrors the 'ok'/'insufficient_data' union returned by PersonalCoach.generate()
+// in src/metrics/personal-coach.ts (not importable).
+export interface PersonalCoachReport {
+  readonly status: 'ok';
+  readonly highlights: readonly string[];
+  readonly regressions: readonly string[];
+  readonly streaks: readonly string[];
+  readonly topRecommendation: string;
+}
+
+export interface PersonalCoachInsufficientData {
+  readonly status: 'insufficient_data';
+  readonly message: string;
+}
+
+export type PersonalCoachResult = PersonalCoachReport | PersonalCoachInsufficientData;
+
+export const fetchPersonalCoach = (): Promise<PersonalCoachResult> =>
+  getJson<PersonalCoachResult>('/api/personal-coach');
 export const fetchRecentAlerts = (): Promise<AlertEvent[]> =>
   getJson<AlertEvent[]>('/api/alerts/recent');
 export const fetchSessionReplay = (id: string): Promise<SessionReplayResponse> =>
@@ -291,9 +368,130 @@ export const fetchQualityProxy = (): Promise<QualityProxyMetrics> =>
   getJson<QualityProxyMetrics>('/api/quality-proxy');
 export const fetchToolSelectionScore = (): Promise<ToolSelectionMetrics> =>
   getJson<ToolSelectionMetrics>('/api/tool-selection-score');
-export const fetchGitEfficiency = (): Promise<unknown> => getJson<unknown>('/api/git-efficiency');
-export const fetchGitEfficiencyRepos = (): Promise<unknown> =>
-  getJson<unknown>('/api/git-efficiency/repos');
+export interface GitSuggestion {
+  readonly severity: 'info' | 'warning' | 'critical';
+  readonly category: string;
+  readonly message: string;
+  readonly evidence: string;
+}
+
+export interface MergeConflictRecord {
+  readonly timestamp: number;
+  readonly resolution: 'resolved' | 'aborted' | 'pending';
+  readonly resolutionTimeMs: number | null;
+  readonly command: string;
+}
+
+export interface GitEvent {
+  readonly timestamp: number;
+  readonly type: string;
+  readonly command?: string;
+  readonly success: boolean;
+  readonly durationMs: number | null;
+}
+
+export interface BestPractice {
+  readonly id: string;
+  readonly label: string;
+  readonly status: 'pass' | 'fail' | 'warn' | 'unknown';
+  readonly detail: string;
+}
+
+export interface RiskIndicators {
+  readonly syncedBeforeEditing: boolean | null;
+  readonly timeSinceLastSyncMs: number | null;
+  readonly commitsSinceLastSync: number;
+  readonly pushRejections: number;
+  readonly forceAfterReject: number;
+  readonly hotFiles: readonly string[];
+  readonly usesWorktrees: boolean;
+  readonly usesForceWithLease: boolean;
+  readonly avgCommitsBetweenSyncs: number | null;
+  readonly commitsAheadOfMain: number | null;
+  readonly commitsBehindMain: number | null;
+  readonly sessionDurationMs: number | null;
+  readonly quickConflictResolutions: number;
+}
+
+export interface RepoContext {
+  readonly repoName: string | null;
+  readonly branch: string | null;
+  readonly remoteName: string | null;
+  readonly defaultBranch: string | null;
+}
+
+export interface PrEvent {
+  readonly timestamp: number;
+  readonly action: 'create' | 'merge' | 'view' | 'edit' | 'ready' | 'checks';
+  readonly prNumber: string | null;
+}
+
+export interface PullRequestMetrics {
+  readonly created: number;
+  readonly merged: number;
+  readonly checksViewed: number;
+  readonly prsUpdated: number;
+  readonly prActivity: readonly PrEvent[];
+  readonly avgTimeToCreateMs: number | null;
+}
+
+export interface VelocityMetrics {
+  readonly avgTimeBetweenCommitsMs: number | null;
+  readonly commitBurstCount: number;
+  readonly longestGapMs: number | null;
+  readonly worktreeCount: number;
+  readonly buildBeforePush: boolean | null;
+  readonly testBeforePush: boolean | null;
+}
+
+export interface ConflictResolutionStrategy {
+  readonly oursCount: number;
+  readonly theirsCount: number;
+  readonly manualMergeCount: number;
+  readonly cherryPickCount: number;
+  readonly totalResolutions: number;
+}
+
+// Mirrors GitEfficiencyTracker.getMetrics()'s return shape in
+// src/metrics/git-efficiency-tracker.ts (not importable).
+export interface GitEfficiencyData {
+  readonly totalGitCommands: number;
+  readonly mergeConflicts: number;
+  readonly rebaseConflicts: number;
+  readonly abortedOperations: number;
+  readonly forcePushes: number;
+  readonly resetHards: number;
+  readonly discardedChanges: number;
+  readonly pullCount: number;
+  readonly pushCount: number;
+  readonly commitCount: number;
+  readonly branchOperations: number;
+  readonly conflictResolutionRate: number | null;
+  readonly avgConflictResolutionMs: number | null;
+  readonly staleBranchPulls: number;
+  readonly gitCommandTimeline: readonly GitEvent[];
+  readonly conflictHistory: readonly MergeConflictRecord[];
+  readonly suggestions: readonly GitSuggestion[];
+  readonly bestPractices: readonly BestPractice[];
+  readonly preventionScore: number | null;
+  readonly efficiencyScore: number | null;
+  readonly riskIndicators: RiskIndicators;
+  readonly velocityMetrics: VelocityMetrics;
+  readonly conflictResolutionStrategy: ConflictResolutionStrategy;
+  readonly prMetrics: PullRequestMetrics;
+  readonly repoContext: RepoContext;
+}
+
+export const fetchGitEfficiency = (): Promise<GitEfficiencyData> =>
+  getJson<GitEfficiencyData>('/api/git-efficiency');
+
+export interface GitEfficiencyReposResponse {
+  readonly repos: string[];
+  readonly currentRepo: string | null;
+}
+
+export const fetchGitEfficiencyRepos = (): Promise<GitEfficiencyReposResponse> =>
+  getJson<GitEfficiencyReposResponse>('/api/git-efficiency/repos');
 
 export interface ModelStats {
   readonly requestCount: number;
@@ -355,8 +553,12 @@ export interface ActivityHeatmapHistoryResponse {
 
 export const fetchConcurrency = (): Promise<ConcurrencyResponse> =>
   getJson<ConcurrencyResponse>('/api/concurrency');
-export const fetchConcurrencyHistory = (days = 30): Promise<unknown> =>
-  getJson<unknown>(`/api/concurrency?view=history&days=${days}`);
+export interface ConcurrencyHistoryResponse {
+  readonly dailyPeaks: ReadonlyArray<{ readonly date: string; readonly peak: number }>;
+}
+
+export const fetchConcurrencyHistory = (days = 30): Promise<ConcurrencyHistoryResponse> =>
+  getJson<ConcurrencyHistoryResponse>(`/api/concurrency?view=history&days=${days}`);
 export function fetchActivityHeatmap(view: 'today'): Promise<ActivityHeatmapTodayResponse>;
 export function fetchActivityHeatmap(
   view: 'history',

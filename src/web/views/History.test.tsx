@@ -13,26 +13,26 @@ import {
 
 const SAMPLE_WEEKLY = [
   {
-    weekStart: '2026-04-21',
-    efficiencyScore: 0.82,
+    week: '2026-04-21',
+    avgEfficiencyScore: 0.82,
     totalCostUsd: 14.12,
     antiPatternCounts: { thrashing: 3 },
   },
   {
-    weekStart: '2026-04-28',
-    efficiencyScore: 0.88,
+    week: '2026-04-28',
+    avgEfficiencyScore: 0.88,
     totalCostUsd: 18.4,
     antiPatternCounts: { thrashing: 1, blind_edit: 2 },
   },
   {
-    weekStart: '2026-05-05',
-    efficiencyScore: 0.91,
+    week: '2026-05-05',
+    avgEfficiencyScore: 0.91,
     totalCostUsd: 12.75,
     antiPatternCounts: {},
   },
   {
-    weekStart: '2026-05-12',
-    efficiencyScore: 0.94,
+    week: '2026-05-12',
+    avgEfficiencyScore: 0.94,
     totalCostUsd: 16.3,
     antiPatternCounts: { stuck_loop: 4 },
   },
@@ -292,8 +292,8 @@ describe('History view', () => {
           new Response(
             JSON.stringify([
               {
-                weekStart: '2026-05-05',
-                efficiencyScore: 0.91,
+                week: '2026-05-05',
+                avgEfficiencyScore: 0.91,
                 totalCostUsd: 12.75,
                 antiPatternCounts: {},
               },
@@ -549,21 +549,21 @@ describe('History data helpers', () => {
     it('sums anti-pattern counts per week and skips weeks with zero', () => {
       const out = buildAntiPatternSeries([
         {
-          weekStart: '2026-04-21',
-          efficiencyScore: 0.82,
+          week: '2026-04-21',
+          avgEfficiencyScore: 0.82,
           totalCostUsd: 14,
           antiPatternCounts: { thrashing: 3 },
         },
         {
-          weekStart: '2026-04-28',
-          efficiencyScore: 0.88,
+          week: '2026-04-28',
+          avgEfficiencyScore: 0.88,
           totalCostUsd: 18,
           antiPatternCounts: { thrashing: 1, blind_edit: 2 },
         },
-        { weekStart: '2026-05-05', efficiencyScore: 0.91, totalCostUsd: 12, antiPatternCounts: {} },
+        { week: '2026-05-05', avgEfficiencyScore: 0.91, totalCostUsd: 12, antiPatternCounts: {} },
         {
-          weekStart: '2026-05-12',
-          efficiencyScore: 0.94,
+          week: '2026-05-12',
+          avgEfficiencyScore: 0.94,
           totalCostUsd: 16,
           antiPatternCounts: { stuck_loop: 4 },
         },
@@ -579,7 +579,7 @@ describe('History data helpers', () => {
 
     it('treats missing antiPatternCounts as empty', () => {
       const out = buildAntiPatternSeries([
-        { weekStart: '2026-05-05', efficiencyScore: 0.9, totalCostUsd: 10 },
+        { week: '2026-05-05', avgEfficiencyScore: 0.9, totalCostUsd: 10, antiPatternCounts: {} },
       ]);
       expect(out).toEqual([]);
     });
@@ -663,11 +663,13 @@ describe('History helpers with real API data shapes', () => {
       const out = buildAntiPatternSeries([
         {
           week: '2026-W22',
+          avgEfficiencyScore: null,
           totalCostUsd: 0,
           antiPatternCounts: { thrashing: 2, blind_edit: 1 },
         },
         {
           week: '2026-W23',
+          avgEfficiencyScore: null,
           totalCostUsd: 5.0,
           antiPatternCounts: { stuck_loop: 3 },
         },
@@ -681,12 +683,12 @@ describe('History helpers with real API data shapes', () => {
       ]);
     });
 
-    it('handles weeks where weekStart is undefined (falls back to week field)', () => {
-      // weekStart is undefined, but week is present -- should use week
+    it('uses the week field from the real API response', () => {
+      // Real API returns week in format like '2026-W22'
       const out = buildAntiPatternSeries([
         {
-          weekStart: undefined,
           week: '2026-W22',
+          avgEfficiencyScore: 0.85,
           totalCostUsd: 0,
           antiPatternCounts: { thrashing: 5 },
         },

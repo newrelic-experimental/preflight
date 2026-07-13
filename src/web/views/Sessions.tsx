@@ -18,6 +18,7 @@ import {
   fetchSessionDetail,
   fetchSessionReplay,
   qk,
+  type SessionDetail,
 } from '../api/client';
 import { ContextBar, type ContextApiResponse } from '../components/ContextBar';
 import { Button, Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
@@ -61,33 +62,6 @@ interface TimelineEntry {
   readonly success: boolean;
   readonly filePath?: string;
   readonly command?: string;
-}
-
-interface SessionDetail {
-  readonly sessionId: string;
-  readonly sessionName?: string | null;
-  readonly toolCallCount?: number;
-  readonly durationMs?: number;
-  readonly estimatedCostUsd?: number | null;
-  readonly model?: string | null;
-  readonly outcome?: string;
-  readonly toolBreakdown?: Record<string, number>;
-  readonly filesRead?: string[];
-  readonly filesModified?: string[];
-  readonly antiPatterns?: Array<{ type: string; count: number }>;
-  readonly timeline?: ReadonlyArray<TimelineEntry>;
-  readonly qualityProxy?: {
-    readonly diffApplyRate: number | null;
-    readonly testPassRate: number | null;
-    readonly backtrackCount: number;
-    readonly selfCorrectionCount: number;
-  };
-  readonly toolSelectionScore?: {
-    readonly score: number;
-    readonly redundantReadCount: number;
-    readonly repeatedFailureCount: number;
-    readonly unusedOutputCount: number;
-  };
 }
 
 interface Segment {
@@ -163,13 +137,13 @@ export function Sessions(): JSX.Element {
 
   const list = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
-    queryFn: () => fetchSessionsList(SESSIONS_PAGE_SIZE) as Promise<SessionRow[]>,
+    queryFn: () => fetchSessionsList(SESSIONS_PAGE_SIZE),
     refetchInterval: 10_000,
   });
 
   const current = useQuery<CurrentSession>({
     queryKey: qk.sessionCurrent,
-    queryFn: () => fetchSessionCurrent() as Promise<CurrentSession>,
+    queryFn: fetchSessionCurrent,
     refetchInterval: 10_000,
   });
 
@@ -185,7 +159,7 @@ export function Sessions(): JSX.Element {
 
   const detail = useQuery<SessionDetail>({
     queryKey: selectedId ? qk.sessionDetail(selectedId) : ['session', 'none'],
-    queryFn: () => fetchSessionDetail(selectedId!) as Promise<SessionDetail>,
+    queryFn: () => fetchSessionDetail(selectedId!),
     enabled: selectedId !== null,
     // Poll while current session data is still loading (we don't know yet if
     // this session is live), then only continue polling if it turns out to be live.
@@ -730,7 +704,7 @@ function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolea
 
   const { data, isLoading, error } = useQuery<ReplayData>({
     queryKey: qk.sessionReplay(sessionId),
-    queryFn: () => fetchSessionReplay(sessionId) as Promise<ReplayData>,
+    queryFn: () => fetchSessionReplay(sessionId),
     retry: false,
     refetchInterval: isLive ? LIVE_REFETCH_MS : false,
   });
