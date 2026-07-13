@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.30] - 2026-07-12
+
+### Fixed
+
+- The "Alert Thresholds" card claimed these five values feed "the local alert engine" and require a server restart. Neither is true — the real (and only) consumer is the separate `deploy-alerts` CLI, which templates cloud alert conditions and reads config fresh on every invocation. Subtitle and save-confirmation copy corrected.
+- Clicking "Unsubscribe" on the Slack digest webhook left an unsaved, stale edit visible in the input box even though the adjacent status Pill correctly flipped to "Not configured." The input now resets to server truth immediately.
+- The session detail page's "Outcome" card always showed one of exactly two hardcoded values (`completed`/`in progress`) — no real outcome classification exists. Relabeled as "Status" to accurately reflect it as a running-state indicator, not a quality/outcome classification.
+- The session detail page's "Session Quality" and "Tool Selection" cards were fully built but never rendered: the backing tracker data was never attached to any of the three `/api/sessions/:id` response branches. Now attached to the branches where the data is actually available (the live session and, for quality, persisted sessions via their own stored timeline).
+- The Today view's anti-pattern banner rendered a literal `?` instead of a real count for `stuck_loop`, `blind_editing`, and `over_delegation` patterns when reached via its non-SSE API-fallback path — the fallback chain only checked 3 of the 6 possible count fields. Extended to check all of them.
+
 ## [1.4.29] - 2026-07-12
 
 ### Fixed
