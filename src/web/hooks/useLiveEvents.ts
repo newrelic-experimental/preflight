@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useLiveStore } from '../store/liveStore';
+import type { SessionCurrentResponse, AntiPattern } from '../api/client';
 
 // Liveness contract: the SSE handler emits an `event: heartbeat` frame
 // every 30s (sse-handler.ts: HEARTBEAT_MS) regardless of activity. That
@@ -14,17 +15,6 @@ import { useLiveStore } from '../store/liveStore';
 // jitter and one missed frame.
 const STALE_AFTER_MS = 75_000;
 const WATCHDOG_TICK_MS = 10_000;
-
-interface SessionCurrentResponse {
-  readonly sessionId?: string;
-  readonly toolCallCount?: number;
-  readonly toolCallTimeline?: ReadonlyArray<{
-    readonly timestamp: number;
-    readonly toolName: string;
-    readonly durationMs: number | null;
-    readonly success: boolean;
-  }>;
-}
 
 function hydrateFromApi(signal: AbortSignal): void {
   const store = useLiveStore.getState();
@@ -54,12 +44,12 @@ function hydrateFromApi(signal: AbortSignal): void {
   // window correctly.
 
   fetch('/api/anti-patterns', { signal })
-    .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
+    .then((r) => (r.ok ? (r.json() as Promise<AntiPattern[]>) : null))
     .then((data) => {
       if (!Array.isArray(data)) return;
       for (const ap of data) {
         if (ap && typeof ap === 'object' && 'type' in ap) {
-          store.pushAntiPattern(ap as { type: string; target: string; count: number });
+          store.pushAntiPattern(ap as unknown as { type: string; target: string; count: number });
         }
       }
     })

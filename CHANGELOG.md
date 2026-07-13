@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.34] - 2026-07-13
+
+### Fixed
+
+- The Today view's dashboard API client now returns fully typed response interfaces for 15 API functions (`fetchCost`, `fetchSessionCurrent`, `fetchSessionsList`, `fetchTodayAggregate`, `fetchAntiPatterns`, `fetchConcurrency`, `fetchActivityHeatmap`, `fetchLiveSessions`, `fetchQualityProxy`, `fetchToolSelectionScore`, `fetchLatency`, `fetchModelUsage`, `fetchCacheHealth`, `fetchSessionReplay`, and `fetchRecentAlerts`) instead of the previous `Promise<unknown>`, eliminating the matching type-cast assertions at their call sites. This enables compile-time type checking to catch backend/frontend field mismatches before deployment. Part of an ongoing effort to type the rest of the dashboard's API layer (#141).
+
 ## [1.4.33] - 2026-07-13
 
 ### Fixed
