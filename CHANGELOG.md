@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.33] - 2026-07-13
+
+### Fixed
+
+- Audit view's "Export JSONL" button exported every audit entry regardless of the active classification filter or the 200-row display cap. Now exports exactly what's shown on screen.
+- Sessions view never rendered the `filesRead` or `antiPatterns` data the backend already computes for each session. Now shows a "Files Read" list and "Anti-Patterns" pills (reusing the same taxonomy labels used elsewhere in the session replay view) when present.
+- Dashboard's System Health diagnostics panel always ran the Claude-Code-specific hooks-wired check, regardless of which coding platform was actually detected — non-Claude-Code users (Cursor, Windsurf, etc.) saw a false "Hooks wired: fail" result. Now forwards the detected platform, which the existing check already knew how to handle correctly.
+
 ## [1.4.32] - 2026-07-13
 
 ### Fixed

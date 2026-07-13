@@ -1129,6 +1129,10 @@ async function main(): Promise<void> {
           contextTracker,
           config,
           configFilePath: options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'),
+          // eventProcessor isn't assigned until after this object is built —
+          // resolve lazily so the diagnostics route sees the real platform
+          // once eventProcessor exists, not undefined forever.
+          getActivePlatform: () => eventProcessor?.activePlatform,
           // The dashboard owner reads every per-session buffer file in
           // read-only mode for the Today aggregate endpoint.
           // peekAllBuffers() returns HookEvent[] — widen at the boundary

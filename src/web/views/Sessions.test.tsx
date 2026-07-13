@@ -178,6 +178,55 @@ describe('Sessions view', () => {
     expect(screen.getByText('completed')).toBeInTheDocument();
   });
 
+  it('renders a Files Read list from data.filesRead, truncated to the last two path segments', async () => {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+      filesRead: ['src/deep/nested/path/foo.ts', 'src/bar.ts'],
+    };
+    renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(screen.getByText('Files Read')).toBeInTheDocument());
+    expect(screen.getByText('path/foo.ts')).toBeInTheDocument();
+    expect(screen.getByText('src/bar.ts')).toBeInTheDocument();
+  });
+
+  it('does not render the Files Read section when filesRead is absent or empty', async () => {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
+    expect(screen.queryByText('Files Read')).toBeNull();
+  });
+
+  it('renders antiPatterns pills reusing the SEGMENT_LABELS taxonomy, falling back to the raw type for unmapped values', async () => {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+      antiPatterns: [
+        { type: 'thrashing', count: 3 },
+        { type: 'over_delegation', count: 1 },
+      ],
+    };
+    const { container } = renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(container.textContent).toContain('Edit/Test Thrashing'));
+    expect(container.textContent).toContain('× 3');
+    // over_delegation has no SEGMENT_LABELS entry — falls back to the raw type string.
+    expect(container.textContent).toContain('over_delegation');
+    expect(container.textContent).toContain('× 1');
+  });
+
+  it('does not render the Anti-Patterns section when antiPatterns is absent or empty', async () => {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
+    expect(screen.queryByText('Anti-Patterns')).toBeNull();
+  });
+
   it('shows the timeline header with session ID and call count', async () => {
     const detail = {
       sessionId: 's1-abcdef',
