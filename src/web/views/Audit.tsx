@@ -10,6 +10,7 @@ interface AuditEntry {
   readonly tool: string;
   readonly target: string;
   readonly classification: string;
+  readonly severity?: string;
   readonly sessionId?: string;
 }
 
@@ -21,6 +22,12 @@ const FILTERS = [
 ] as const;
 
 type FilterKey = (typeof FILTERS)[number]['key'];
+
+const SEVERITY_TONE: Record<string, 'danger' | 'warning' | 'info'> = {
+  critical: 'danger',
+  high: 'warning',
+  medium: 'info',
+};
 
 export function downloadJsonl(rows: AuditEntry[]): void {
   const text = rows.map((r) => JSON.stringify(r)).join('\n');
@@ -124,7 +131,10 @@ export function Audit(): JSX.Element {
                   <td className="p-2">{r.tool}</td>
                   <td className="p-2 font-mono text-[11px]">{r.target}</td>
                   <td className="p-2">
-                    <Pill tone="neutral" size="sm">
+                    <Pill
+                      tone={r.severity ? (SEVERITY_TONE[r.severity] ?? 'neutral') : 'neutral'}
+                      size="sm"
+                    >
                       {r.classification}
                     </Pill>
                   </td>

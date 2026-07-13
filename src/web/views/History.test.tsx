@@ -157,6 +157,22 @@ function renderHistory(overrides: FetchOverrides = {}) {
         }),
       );
     }
+    if (url.startsWith('/api/activity-heatmap')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    if (url.startsWith('/api/concurrency')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
     return Promise.resolve(new Response('null', { status: 200 }));
   }) as typeof globalThis.fetch;
   return render(
@@ -199,6 +215,42 @@ describe('History view', () => {
   it('renders the top tools panel title', async () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText(/top tools/i)).toBeInTheDocument());
+  });
+
+  it('titles the weekly efficiency panel to match the real 12-week fetch default', async () => {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getByText('Weekly Efficiency · Last 12')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Weekly Efficiency · Last 8')).toBeNull();
+  });
+
+  it('labels the daily spend panel with the 200-session-cap clarification', async () => {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getByText('Daily Spend · Last 30 Days (most recent 200)')).toBeInTheDocument(),
+    );
+  });
+
+  it('titles the top tools panel to disclose the 200-session cap instead of claiming "All Sessions"', async () => {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getByText('Top Tools · Most Recent 200 Sessions')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Top Tools · All Sessions')).toBeNull();
+  });
+
+  it('uses the real 12-week window in the activity heatmap aria-label', async () => {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Daily activity heatmap for the last 12 weeks')).toBeTruthy(),
+    );
+  });
+
+  it('labels Peak Concurrent Sessions with the real 30-day fetch window, not "All-Time"', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/Peak Concurrent Sessions/)).toBeInTheDocument());
+    expect(screen.queryByText(/All-Time/)).toBeNull();
   });
 
   it('renders the personal coach panel and shows the top recommendation', async () => {

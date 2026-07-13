@@ -130,6 +130,7 @@ interface AuditEntryDto {
   readonly tool: string;
   readonly target: string;
   readonly classification: string;
+  readonly severity?: string;
 }
 
 function toAuditEntry(entry: unknown): AuditEntryDto {
@@ -146,6 +147,7 @@ function toAuditEntry(entry: unknown): AuditEntryDto {
     tool: r.tool,
     target,
     classification,
+    severity: r.securityAlert?.severity,
   };
 }
 

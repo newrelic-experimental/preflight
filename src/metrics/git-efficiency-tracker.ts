@@ -381,6 +381,8 @@ export class GitEfficiencyTracker {
         command: entry.command,
         filePath: entry.filePath,
         errorType: entry.errorType,
+        isTestCommand: entry.isTestCommand,
+        isBuildCommand: entry.isBuildCommand,
       };
       this.recordToolCall(syntheticRecord);
     }

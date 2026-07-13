@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.31] - 2026-07-13
+
+### Fixed
+
+- The Audit view's classification Pill rendered every entry with the same neutral gray tone, even for `destructive_command`/`sensitive_file` entries with a genuinely critical or high severity. The backend now forwards the computed severity, and the Pill is color-coded accordingly (red for critical, amber for high).
+- Four labels in the History view had drifted from the real fetch parameters they describe: "Weekly Efficiency · Last 8" (the real default is 12 weeks), the activity heatmap's screen-reader label claiming "last 4 weeks" (it's 12), "Peak Concurrent Sessions · All-Time" (the underlying fetch is always 30-day-bounded, never all-time), and "Daily Spend"/"Top Tools" panels that could silently understate their scope for very high-volume users due to an underlying 200-session fetch cap — both now carry a clarifying label.
+- The Git Efficiency view's "Today's activity across all sessions" silently excluded a session that started before local midnight and crossed into today — hydration now uses the overlap-aware session lookup already used elsewhere in the codebase for the same cross-midnight gap. Separately, the "Verified before push" indicator couldn't see a build/test that ran in an earlier session today when replaying that session's history, always showing "no build/test detected" in that case even when verification genuinely happened; the replay path now carries that signal through correctly.
+
 ## [1.4.30] - 2026-07-12
 
 ### Fixed

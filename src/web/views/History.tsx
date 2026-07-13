@@ -180,7 +180,7 @@ export function History(): JSX.Element {
       <h1 className="text-xl font-semibold gradient-text mb-4">History</h1>
 
       <div className="grid grid-cols-2 gap-3">
-        <Panel title="Weekly Efficiency · Last 8">
+        <Panel title="Weekly Efficiency · Last 12">
           <div className="h-44 min-w-0">
             <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
               <AreaChart data={weeklyData}>
@@ -212,7 +212,7 @@ export function History(): JSX.Element {
           </div>
         </Panel>
 
-        <Panel title="Daily Spend · Last 30 Days">
+        <Panel title="Daily Spend · Last 30 Days (most recent 200)">
           <div className="h-44 min-w-0">
             <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
               <BarChart data={dailyData}>
@@ -371,7 +371,7 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
-        <Panel title="Top Tools · All Sessions">
+        <Panel title="Top Tools · Most Recent 200 Sessions">
           {topTools.length === 0 ? (
             <EmptyState
               icon="code"
@@ -420,7 +420,7 @@ export function History(): JSX.Element {
               buckets={[]}
               maxCount={activityGrid.data.maxCount}
               days={activityGrid.data.days}
-              ariaLabel="Daily activity heatmap for the last 4 weeks"
+              ariaLabel="Daily activity heatmap for the last 12 weeks"
             />
           </Panel>
         )}
@@ -431,10 +431,8 @@ export function History(): JSX.Element {
             day's peak was 0, which read as a missing feature. */}
         <Card padding="md" className="flex flex-col">
           <Eyebrow className="mb-3">
-            Peak Concurrent Sessions ·{' '}
-            {hasConcurrencyData
-              ? `All-Time: ${Math.max(...concurrencyData.map((d) => d.peak))}`
-              : 'Last 30 Days'}
+            Peak Concurrent Sessions · Last 30 Days
+            {hasConcurrencyData && `: ${Math.max(...concurrencyData.map((d) => d.peak))}`}
           </Eyebrow>
           {hasConcurrencyData ? (
             <div className="flex-1 flex items-end justify-center">
