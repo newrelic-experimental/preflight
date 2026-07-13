@@ -236,7 +236,7 @@ export function Alerts(): JSX.Element {
       <Card padding="md" className="mb-4">
         <SectionHeader
           title="Alert Thresholds"
-          subtitle="Thresholds for the local alert engine. Require a server restart to take effect."
+          subtitle="Thresholds used by the `deploy-alerts` CLI (`npm run deploy:alerts`) when templating cloud alert conditions. Have no effect on this dashboard or any running session."
         />
 
         {settingsQ.isLoading && <EmptyState icon="clock" variant="loading" title="Loading..." />}
@@ -264,7 +264,7 @@ export function Alerts(): JSX.Element {
               </Button>
               {thresholdSaved && (
                 <span className="text-xs text-accent-amber">
-                  Saved. Restart server for changes to take effect.
+                  Saved. Run `npm run deploy:alerts` to apply these to your cloud alert conditions.
                 </span>
               )}
             </div>
@@ -331,7 +331,12 @@ export function Alerts(): JSX.Element {
                 <Button
                   variant="danger"
                   size="md"
-                  onClick={() => saveMutation.mutate({ digestWebhookUrl: null })}
+                  onClick={() =>
+                    saveMutation.mutate(
+                      { digestWebhookUrl: null },
+                      { onSuccess: () => setWebhookUrl(undefined) },
+                    )
+                  }
                   disabled={saveMutation.isPending}
                 >
                   Unsubscribe

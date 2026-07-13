@@ -310,6 +310,183 @@ describe('api-handler GET /api/sessions/:id', () => {
     await handler(req, res);
     expect(status()).toBe(404);
   });
+
+  it('attaches qualityProxy (derived from timeline) to a persisted session with real signals', async () => {
+    const fakeSession = {
+      sessionId: 'sess-quality-1',
+      testRunCount: 4,
+      testPassCount: 3,
+      timeline: [
+        { timestamp: 1, toolName: 'Edit', durationMs: 10, success: true, filePath: 'a.ts' },
+        { timestamp: 2, toolName: 'Edit', durationMs: 10, success: false, filePath: 'b.ts' },
+      ],
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-quality-1' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-quality-1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { qualityProxy?: { diffApplyRate: number | null } };
+    expect(parsed.qualityProxy).toBeDefined();
+    expect(parsed.qualityProxy?.diffApplyRate).toBeCloseTo(0.5);
+  });
+
+  it('does not attach qualityProxy to a persisted session with zero signals (regression guard)', async () => {
+    const fakeSession = {
+      sessionId: 'sess-abc-999',
+      startTime: Date.now() - 5000,
+      toolCallCount: 10,
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-abc-999' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-abc-999' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeSession);
+  });
+
+  it('attaches qualityProxy and session-filtered toolSelectionScore to the own-live-session branch', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({
+          sessionId: 'live1',
+          sessionName: null,
+          sessionStartTime: 1000,
+          sessionDurationMs: 500,
+          toolCallCount: 2,
+          toolCallCountByTool: { Read: 2 },
+          uniqueFilesRead: 1,
+          uniqueFilesWritten: 0,
+          toolCallTimeline: [],
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      qualityProxyTracker: {
+        getMetrics: () => ({
+          totalSignals: 3,
+          diffApplyRate: 1,
+          testPassRate: null,
+          backtrackCount: 0,
+          selfCorrectionCount: 0,
+        }),
+      },
+      toolSelectionScorer: {
+        scoreSession: (calls: readonly unknown[]) => ({
+          score: 0.9,
+          redundantReadCount: calls.length,
+          repeatedFailureCount: 0,
+          unusedOutputCount: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolSelectionScorer'],
+      toolCallBuffer: {
+        getRecords: () => [
+          {
+            id: '1',
+            sessionId: 'live1',
+            toolName: 'Read',
+            toolUseId: 'u1',
+            timestamp: 1,
+            durationMs: 1,
+            success: true,
+          },
+          {
+            id: '2',
+            sessionId: 'other',
+            toolName: 'Read',
+            toolUseId: 'u2',
+            timestamp: 2,
+            durationMs: 1,
+            success: true,
+          },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/live1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      qualityProxy?: { diffApplyRate: number | null };
+      toolSelectionScore?: { score: number; redundantReadCount: number };
+    };
+    expect(parsed.qualityProxy?.diffApplyRate).toBe(1);
+    // Only the 1 record belonging to 'live1' should have been scored, not the 'other' session's record.
+    expect(parsed.toolSelectionScore?.redundantReadCount).toBe(1);
+  });
+
+  it('attaches toolSelectionScore (but not qualityProxy) to the registry-synthesized branch', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({
+          sessionId: 'mine',
+          sessionName: null,
+          sessionStartTime: 0,
+          sessionDurationMs: 0,
+          toolCallCount: 0,
+          toolCallCountByTool: {},
+          uniqueFilesRead: 0,
+          uniqueFilesWritten: 0,
+          toolCallTimeline: [],
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      liveSessionRegistry: {
+        getLiveSessions: () => ['concurrent1'],
+        getSessionName: () => null,
+      },
+      toolSelectionScorer: {
+        scoreSession: (calls: readonly unknown[]) => ({
+          score: 0.5,
+          redundantReadCount: 0,
+          repeatedFailureCount: calls.length,
+          unusedOutputCount: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolSelectionScorer'],
+      toolCallBuffer: {
+        getRecords: () => [
+          {
+            id: '1',
+            sessionId: 'concurrent1',
+            toolName: 'Bash',
+            toolUseId: 'u1',
+            timestamp: 1,
+            durationMs: 1,
+            success: false,
+          },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/concurrent1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      qualityProxy?: unknown;
+      toolSelectionScore?: { repeatedFailureCount: number };
+    };
+    expect(parsed.qualityProxy).toBeUndefined();
+    expect(parsed.toolSelectionScore?.repeatedFailureCount).toBe(1);
+  });
 });
 
 describe('api-handler GET /api/sessions/:id/replay', () => {

@@ -1644,7 +1644,10 @@ export function createApiHandler(
         if (!deps.sessionStore) return unavailable(res, 'sessionStore');
         const session = deps.sessionStore.loadSession(sessionId);
         if (session != null) {
-          jsonOk(res, session);
+          const quality = aggregateQualityFromHistory([session]);
+          const responseBody: Record<string, unknown> = { ...(session as Record<string, unknown>) };
+          if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
+          jsonOk(res, responseBody);
           return;
         }
         // Not persisted — check if it's the current live session
@@ -1660,6 +1663,11 @@ export function createApiHandler(
                   count: number;
                 }>)
               : [];
+            const ownSessionRecords = (deps.toolCallBuffer?.getRecords() ?? []).filter(
+              (r) => r.sessionId === sessionId,
+            );
+            const quality = deps.qualityProxyTracker?.getMetrics() as
+              { totalSignals: number } | undefined;
             jsonOk(res, {
               sessionId: live.sessionId,
               sessionName: live.sessionName ?? null,
@@ -1671,6 +1679,11 @@ export function createApiHandler(
               outcome: 'in progress',
               toolBreakdown: live.toolCallCountByTool,
               antiPatterns,
+              qualityProxy: quality && quality.totalSignals > 0 ? quality : undefined,
+              toolSelectionScore:
+                ownSessionRecords.length > 0
+                  ? deps.toolSelectionScorer?.scoreSession(ownSessionRecords)
+                  : undefined,
               // Use the same `timeline` shape as persisted sessions so the
               // Sessions and Replay views can consume one type. See
               // src/storage/types.ts ReplayTimelineEntry.
@@ -1718,6 +1731,8 @@ export function createApiHandler(
             outcome: 'in progress',
             toolBreakdown: breakdown,
             antiPatterns: [],
+            toolSelectionScore:
+              records.length > 0 ? deps.toolSelectionScorer?.scoreSession(records) : undefined,
             timeline,
           });
           return;

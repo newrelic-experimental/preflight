@@ -403,8 +403,8 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         )}
         {data.outcome && (
           <div className="bg-surface-3 rounded-lg p-2.5">
-            <Eyebrow>Outcome</Eyebrow>
-            <div>{data.outcome}</div>
+            <Eyebrow>Status</Eyebrow>
+            <div className="capitalize">{data.outcome}</div>
           </div>
         )}
       </div>

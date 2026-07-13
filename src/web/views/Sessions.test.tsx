@@ -161,6 +161,23 @@ describe('Sessions view', () => {
     expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('labels the outcome field as Status, not Outcome', async () => {
+    const detailWithOutcome = {
+      sessionId: 's1',
+      durationMs: 5000,
+      toolCallCount: 1,
+      outcome: 'completed',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    renderSessions(SAMPLE_LIST, { s1: detailWithOutcome });
+    // Auto-selects s1, so just wait for it to load
+    await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
+    // Verify the label is now "Status" instead of "Outcome"
+    expect(screen.queryByText('Outcome')).toBeNull();
+    expect(screen.getByText('Status')).toBeInTheDocument();
+    expect(screen.getByText('completed')).toBeInTheDocument();
+  });
+
   it('shows the timeline header with session ID and call count', async () => {
     const detail = {
       sessionId: 's1-abcdef',
@@ -282,5 +299,31 @@ describe('Sessions view — real API shapes', () => {
     await waitFor(() => expect(screen.getByText(/abc-123/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/abc-123/)[0]);
     await waitFor(() => expect(screen.getByText(/no tool calls/i)).toBeInTheDocument());
+  });
+
+  it('renders the Session Quality and Tool Selection cards when the API attaches them', async () => {
+    renderSessions(SAMPLE_LIST, {
+      s1: {
+        sessionId: 's1',
+        timeline: [],
+        toolBreakdown: { Edit: 2 },
+        qualityProxy: {
+          diffApplyRate: 0.8,
+          testPassRate: 0.6,
+          backtrackCount: 2,
+          selfCorrectionCount: 1,
+        },
+        toolSelectionScore: {
+          score: 0.75,
+          redundantReadCount: 3,
+          repeatedFailureCount: 1,
+          unusedOutputCount: 0,
+        },
+      },
+    });
+    await waitFor(() => expect(screen.getByText('Session Quality')).toBeInTheDocument());
+    expect(screen.getByText('Tool Selection')).toBeInTheDocument();
+    expect(screen.getByText('80%')).toBeInTheDocument();
+    expect(screen.getByText('0.75')).toBeInTheDocument();
   });
 });

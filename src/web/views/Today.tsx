@@ -87,6 +87,7 @@ interface SessionAntiPattern {
   readonly readCount?: number;
   readonly repeatCount?: number;
   readonly editCount?: number;
+  readonly agentCount?: number;
 }
 
 interface SessionSummary {
@@ -393,6 +394,9 @@ export function Today(): JSX.Element {
                         {apiAntiPatterns[0].count ??
                           apiAntiPatterns[0].iterations ??
                           apiAntiPatterns[0].readCount ??
+                          apiAntiPatterns[0].repeatCount ??
+                          apiAntiPatterns[0].editCount ??
+                          apiAntiPatterns[0].agentCount ??
                           '?'}
                         × on{' '}
                       </span>

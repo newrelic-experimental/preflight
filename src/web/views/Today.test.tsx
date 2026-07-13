@@ -79,6 +79,63 @@ describe('Today view', () => {
     expect(screen.queryByText(/thrashing/i)).toBeNull();
   });
 
+  it('renders a real count for stuck_loop via the API-fallback path, not "?"', async () => {
+    useLiveStore.setState({ antiPatterns: [] });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/anti-patterns') {
+        return new Response(
+          JSON.stringify([{ type: 'stuck_loop', command: 'npm test', repeatCount: 5 }]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    await waitFor(() => expect(screen.getByText(/5× on/)).toBeInTheDocument());
+    expect(screen.queryByText(/\?× on/)).toBeNull();
+  });
+
+  it('renders a real count for blind_editing via the API-fallback path, not "?"', async () => {
+    useLiveStore.setState({ antiPatterns: [] });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/anti-patterns') {
+        return new Response(
+          JSON.stringify([{ type: 'blind_editing', file: 'app.ts', editCount: 3 }]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    await waitFor(() => expect(screen.getByText(/3× on/)).toBeInTheDocument());
+    expect(screen.queryByText(/\?× on/)).toBeNull();
+  });
+
+  it('renders a real count for over_delegation via the API-fallback path, not "?"', async () => {
+    useLiveStore.setState({ antiPatterns: [] });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/anti-patterns') {
+        return new Response(JSON.stringify([{ type: 'over_delegation', agentCount: 7 }]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    await waitFor(() => expect(screen.getByText(/7× on/)).toBeInTheDocument());
+    expect(screen.queryByText(/\?× on/)).toBeNull();
+  });
+
   it('renders the forecast-EOD card with the projected end-of-day spend', () => {
     renderToday();
     expect(screen.getByText(/forecast/i)).toBeInTheDocument();
