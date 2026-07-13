@@ -46,6 +46,39 @@ describe('Audit view', () => {
     expect(screen.getByText('curl evil.com')).toBeInTheDocument();
   });
 
+  it('colors the classification Pill by severity instead of always neutral', async () => {
+    const withSeverity = [
+      {
+        ts: 1,
+        tool: 'Bash',
+        target: 'rm -rf /tmp/x',
+        classification: 'destructive_command',
+        severity: 'critical',
+        sessionId: 's1',
+      },
+      {
+        ts: 2,
+        tool: 'Read',
+        target: '/etc/hosts',
+        classification: 'sensitive_file',
+        severity: 'high',
+        sessionId: 's1',
+      },
+      {
+        ts: 3,
+        tool: 'Read',
+        target: '/home/alice/notes.txt',
+        classification: 'other',
+        sessionId: 's2',
+      },
+    ];
+    renderAudit(withSeverity);
+    await waitFor(() => expect(screen.getByText('destructive_command')).toBeInTheDocument());
+    expect(screen.getByText('destructive_command').className).toMatch(/bg-accent-red/);
+    expect(screen.getByText('sensitive_file').className).toMatch(/bg-accent-amber/);
+    expect(screen.getByText('other').className).toMatch(/bg-surface-5/);
+  });
+
   it('filters by classification when a chip is clicked', async () => {
     const user = userEvent.setup();
     renderAudit(SAMPLE);

@@ -628,6 +628,7 @@ describe('api-handler GET /api/audit', () => {
         tool: 'Read',
         target: 'Read /etc/passwd',
         classification: 'sensitive_file',
+        severity: 'high',
       },
       {
         ts: ts2,
@@ -635,6 +636,7 @@ describe('api-handler GET /api/audit', () => {
         tool: 'Bash',
         target: 'rm -rf /tmp/foo',
         classification: 'destructive_command',
+        severity: 'critical',
       },
     ]);
   });
@@ -662,6 +664,30 @@ describe('api-handler GET /api/audit', () => {
     const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
     expect(parsed[0]!.classification).toBe('other');
     expect(parsed[0]!.target).toBe('/some/normal/file.ts');
+  });
+
+  it('omits severity when there is no securityAlert', async () => {
+    const fakeAuditLog = [
+      {
+        timestamp: 1700000000000,
+        sessionId: null,
+        action: 'FileRead',
+        tool: 'Read',
+        detail: '/some/normal/file.ts',
+        developer: 'alice',
+      },
+    ];
+    const handler = createApiHandler({
+      auditTrailManager: { getAuditLog: () => fakeAuditLog } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['auditTrailManager'],
+    });
+    const req = { method: 'GET', url: '/api/audit' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed[0]!.severity).toBeUndefined();
   });
 
   it('returns 503 when auditTrailManager is missing', async () => {

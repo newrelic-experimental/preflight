@@ -538,6 +538,41 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.totalGitCommands).toBe(3);
     });
 
+    it('carries isTestCommand/isBuildCommand through to buildBeforePush detection', () => {
+      const t = Date.now() - 3600_000;
+      // Commit precedes test/push (not the more intuitive test-then-commit):
+      // buildBeforePush only latches true when the build/test timestamp is
+      // strictly after the last commit (see the staleness guard in the
+      // 'push' case of processEvent), so an earlier test wouldn't count.
+      const timeline: ReplayTimelineEntry[] = [
+        {
+          timestamp: t,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m "verified change"',
+        },
+        {
+          timestamp: t + 1000,
+          toolName: 'Bash',
+          durationMs: 500,
+          success: true,
+          command: 'npm test',
+          isTestCommand: true,
+        },
+        {
+          timestamp: t + 2000,
+          toolName: 'Bash',
+          durationMs: 200,
+          success: true,
+          command: 'git push origin feature',
+        },
+      ];
+      tracker.replayTimeline(timeline);
+      const metrics = tracker.getMetrics();
+      expect(metrics.velocityMetrics.buildBeforePush).toBe(true);
+    });
+
     it('replays file edits for sync-before-edit detection', () => {
       const t = Date.now() - 3600_000;
       const timeline: ReplayTimelineEntry[] = [

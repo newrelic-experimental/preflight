@@ -826,7 +826,7 @@ async function main(): Promise<void> {
 
     // Hydrate git efficiency tracker with today's prior sessions so the
     // dashboard shows all-day git activity, not just the current session.
-    const todaySessions = sessionStore.loadTodaySessions();
+    const todaySessions = sessionStore.loadSessionsOverlappingToday();
     for (const session of todaySessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.timeline && session.timeline.length > 0) {
