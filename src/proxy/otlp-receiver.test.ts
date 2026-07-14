@@ -130,6 +130,28 @@ describe('enrichPayload', () => {
     const result = receiver.enrichPayload(binary);
     expect(result).toBe(binary);
   });
+
+  it('does not duplicate an enrichment key already present in the payload', () => {
+    const receiver = makeReceiver({ enrichmentAttributes: { 'ai.session.id': 'new-value' } });
+    const input = {
+      resourceSpans: [
+        {
+          resource: {
+            attributes: [{ key: 'ai.session.id', value: { stringValue: 'existing-value' } }],
+          },
+        },
+      ],
+    };
+    const result = JSON.parse(
+      receiver.enrichPayload(Buffer.from(JSON.stringify(input))).toString('utf-8'),
+    ) as typeof input;
+
+    const sessionIdEntries = result.resourceSpans[0].resource.attributes.filter(
+      (a) => a.key === 'ai.session.id',
+    );
+    expect(sessionIdEntries).toHaveLength(1);
+    expect(sessionIdEntries[0]?.value.stringValue).toBe('existing-value');
+  });
 });
 
 // ---------------------------------------------------------------------------
