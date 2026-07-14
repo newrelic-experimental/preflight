@@ -1,18 +1,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchAuditLog, qk } from '../api/client';
+import { fetchAuditLog, qk, type AuditEntry } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { GeoBanner } from '../components/GeoBanner';
 import { Button, Card, Pill } from '../components/ui';
-
-interface AuditEntry {
-  readonly ts: number;
-  readonly tool: string;
-  readonly target: string;
-  readonly classification: string;
-  readonly severity?: string;
-  readonly sessionId?: string;
-}
 
 const FILTERS = [
   { key: 'all', label: 'All' },
@@ -55,7 +46,7 @@ export function Audit(): JSX.Element {
   const [filter, setFilter] = useState<FilterKey>('all');
   const { data, isLoading, error } = useQuery<AuditEntry[]>({
     queryKey: qk.audit,
-    queryFn: () => fetchAuditLog() as Promise<AuditEntry[]>,
+    queryFn: () => fetchAuditLog(),
   });
 
   const rows = data ?? [];

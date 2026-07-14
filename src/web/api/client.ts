@@ -210,7 +210,6 @@ export interface CostResponse {
 
 export const fetchSessionCurrent = (): Promise<SessionCurrentResponse> =>
   getJson<SessionCurrentResponse>('/api/session/current');
-export const fetchSessionToday = (): Promise<unknown> => getJson<unknown>('/api/session/today');
 export const fetchSessionsList = (limit = 50): Promise<SessionListEntry[]> =>
   getJson<SessionListEntry[]>(`/api/sessions?limit=${limit}`);
 // Cross-session aggregate KPIs for the Today view.
@@ -309,7 +308,20 @@ export interface ToolSelectionMetrics {
   readonly unusedOutputCount: number;
 }
 
-export const fetchAuditLog = (): Promise<unknown> => getJson<unknown>('/api/audit');
+// Mirrors AuditEntryDto in src/dashboard/routes/api-handler.ts (not importable —
+// tsconfig.web.json excludes server source). sessionId is `string | null` at
+// runtime (never `undefined`) — the real handler's toAuditEntry() always sets it,
+// falling back to null when the underlying audit record has none.
+export interface AuditEntry {
+  readonly ts: number;
+  readonly sessionId: string | null;
+  readonly tool: string;
+  readonly target: string;
+  readonly classification: string;
+  readonly severity?: string;
+}
+
+export const fetchAuditLog = (): Promise<AuditEntry[]> => getJson<AuditEntry[]>('/api/audit');
 
 // Mirrors WeeklySummary in src/storage/weekly-summary.ts (not importable —
 // tsconfig.web.json excludes server source). Only the fields the History
@@ -324,7 +336,33 @@ export interface WeeklyRow {
 }
 
 export const fetchWeekly = (): Promise<WeeklyRow[]> => getJson<WeeklyRow[]>('/api/weekly');
-export const fetchBudget = (): Promise<unknown> => getJson<unknown>('/api/budget');
+
+// Mirrors BudgetStatus in src/metrics/budget-tracker.ts (not importable —
+// tsconfig.web.json excludes server source). Alerts.tsx never reads
+// `remainingUsd`, so it's omitted here to match the one real consumer exactly.
+export interface BudgetPeriod {
+  readonly budgetUsd: number | null;
+  readonly spentUsd: number;
+  readonly pctUsed: number | null;
+  readonly exceeded: boolean;
+}
+
+export interface BudgetAlert {
+  readonly period: string;
+  readonly thresholdPct: number;
+  readonly spentUsd: number;
+  readonly budgetUsd: number;
+  readonly timestamp: number;
+}
+
+export interface BudgetStatus {
+  readonly session: BudgetPeriod;
+  readonly daily: BudgetPeriod;
+  readonly weekly: BudgetPeriod;
+  readonly alerts: readonly BudgetAlert[];
+}
+
+export const fetchBudget = (): Promise<BudgetStatus> => getJson<BudgetStatus>('/api/budget');
 export const fetchLatency = (): Promise<LatencyMetrics> => getJson<LatencyMetrics>('/api/latency');
 
 // Mirrors CostAttribution in src/metrics/cost-per-outcome.ts (not importable).
@@ -572,8 +610,58 @@ export function fetchActivityHeatmap(
     `/api/activity-heatmap?view=${encodeURIComponent(view)}${weeks ? `&weeks=${weeks}` : ''}`,
   );
 }
-export const fetchContext = (sessionId?: string): Promise<unknown> =>
-  getJson<unknown>(
+// Mirrors ContextTrackerMetrics in src/metrics/context-tracker.ts (not
+// importable — tsconfig.web.json excludes server source). Includes `history`
+// for full accuracy even though no current consumer reads it.
+export interface ContextBreakdown {
+  readonly system: number;
+  readonly tools: number;
+  readonly user: number;
+  readonly assistant: number;
+}
+
+export interface ContextGrowthSummary {
+  readonly startTokens: number;
+  readonly currentTokens: number;
+  readonly deltaTokens: number;
+}
+
+export interface ToolContextContribution {
+  readonly tool: string;
+  readonly totalBytes: number;
+  readonly estimatedTokens: number;
+  readonly percentOfToolOutput: number;
+}
+
+export interface ContextTurnSnapshot {
+  readonly turnNumber: number;
+  readonly timestamp: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly fillPercent: number;
+  readonly breakdown: ContextBreakdown;
+}
+
+export interface ContextResponse {
+  readonly turnCount: number;
+  readonly growth: ContextGrowthSummary;
+  readonly currentBreakdown: ContextBreakdown;
+  readonly fillPercent: number;
+  /**
+   * Per-model context window cap (tokens). Resolved from the model in the
+   * Anthropic usage metadata — claude-opus-4-7 → 1_000_000, claude-haiku-4-5 →
+   * 200_000, etc. UI formats this as "X / Y" so a 250K Opus session reads as
+   * "250K / 1M (25%)" instead of "250K (125%)".
+   */
+  readonly contextWindow: number;
+  readonly toolContributions: readonly ToolContextContribution[];
+  readonly history: readonly ContextTurnSnapshot[];
+}
+
+export const fetchContext = (sessionId?: string): Promise<ContextResponse> =>
+  getJson<ContextResponse>(
     sessionId ? `/api/context?sessionId=${encodeURIComponent(sessionId)}` : '/api/context',
   );
 
@@ -602,28 +690,80 @@ export const fetchModelUsage = (): Promise<ModelUsageMetrics> =>
 export const fetchCacheHealth = (): Promise<CacheHealthResponse> =>
   getJson<CacheHealthResponse>('/api/cache-health');
 
-export const fetchSettings = (): Promise<unknown> => getJson<unknown>('/api/settings');
-export const fetchDiagnostics = (): Promise<unknown> => getJson<unknown>('/api/diagnostics');
+// Mirrors the real GET /api/settings handler response in
+// src/dashboard/routes/api-handler.ts (not importable — tsconfig.web.json
+// excludes server source). This is the full superset shape; Settings.tsx and
+// Alerts.tsx each keep their own narrower local `SettingsData` interface
+// covering only the fields they use — both are structurally assignable from
+// this type without a cast, since neither declares a field this type lacks.
+export interface SettingsResponse {
+  readonly developer: string;
+  readonly teamId: string | null;
+  readonly accountId: string | null;
+  readonly appName: string;
+  readonly mode: string;
+  readonly storagePath: string;
+  readonly highSecurity: boolean;
+  readonly licenseKey: string | null;
+  readonly sessionBudgetUsd: number | null;
+  readonly dailyBudgetUsd: number | null;
+  readonly weeklyBudgetUsd: number | null;
+  readonly retainSessionsDays: number | null;
+  readonly digestWebhookUrl: string | null;
+  readonly digestSchedule: string;
+  readonly alerts: {
+    readonly personal: {
+      readonly dailyCostUsd: number;
+      readonly sessionCostUsd: number;
+      readonly efficiencyScoreMin: number;
+      readonly stuckLoopCountMax: number;
+      readonly antiPatternCountMax: number;
+    };
+  };
+}
 
-export const patchSettings = (body: SettingsPatch): Promise<unknown> =>
+export const fetchSettings = (): Promise<SettingsResponse> =>
+  getJson<SettingsResponse>('/api/settings');
+
+// Mirrors the real exported DiagnosticCheck in src/install/diagnostics.ts
+// (not importable — tsconfig.web.json excludes server source).
+export interface DiagnosticCheck {
+  readonly check: string;
+  readonly status: 'ok' | 'warn' | 'fail' | 'skip';
+  readonly detail: string;
+  readonly fix?: string;
+}
+
+export const fetchDiagnostics = (): Promise<DiagnosticCheck[]> =>
+  getJson<DiagnosticCheck[]>('/api/diagnostics');
+
+export interface PatchSettingsResponse {
+  readonly ok: boolean;
+  readonly restartRequired: boolean;
+}
+
+export const patchSettings = (body: SettingsPatch): Promise<PatchSettingsResponse> =>
   fetch('/api/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   }).then(async (r) => {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    return (await r.json()) as unknown;
+    return (await r.json()) as PatchSettingsResponse;
   });
 
-export const postDigestSend = (): Promise<unknown> =>
+export interface DigestSendResponse {
+  readonly content: Array<{ readonly type: 'text'; readonly text: string }>;
+}
+
+export const postDigestSend = (): Promise<DigestSendResponse> =>
   fetch('/api/digest/send', { method: 'POST' }).then(async (r) => {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    return (await r.json()) as unknown;
+    return (await r.json()) as DigestSendResponse;
   });
 
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
-  sessionToday: ['session', 'today'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
   sessionDetail: (id: string) => ['session', id] as const,
   cost: ['cost'] as const,

@@ -1,41 +1,12 @@
 import { useRef, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { fetchContext, qk } from '../api/client';
+import { fetchContext, qk, type ContextResponse } from '../api/client';
 import { useLiveStore, type ContextUpdateEvent } from '../store/liveStore';
 import { Eyebrow, Pill } from './ui';
 
-export interface ContextApiResponse {
-  readonly turnCount: number;
-  readonly growth: {
-    readonly startTokens: number;
-    readonly currentTokens: number;
-    readonly deltaTokens: number;
-  };
-  readonly currentBreakdown: {
-    readonly system: number;
-    readonly tools: number;
-    readonly user: number;
-    readonly assistant: number;
-  };
-  readonly fillPercent: number;
-  /**
-   * Per-model context window cap (tokens). Resolved from the model in the
-   * Anthropic usage metadata — claude-opus-4-7 → 1_000_000, claude-haiku-4-5 →
-   * 200_000, etc. UI formats this as "X / Y" so a 250K Opus session reads as
-   * "250K / 1M (25%)" instead of "250K (125%)".
-   */
-  readonly contextWindow: number;
-  readonly toolContributions: ReadonlyArray<{
-    readonly tool: string;
-    readonly totalBytes: number;
-    readonly estimatedTokens: number;
-    readonly percentOfToolOutput: number;
-  }>;
-}
-
 export interface ContextBarProps {
-  readonly data?: ContextApiResponse | null;
+  readonly data?: ContextResponse | null;
   readonly sessionId?: string | null;
 }
 
@@ -75,7 +46,7 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function toContextEvent(api: ContextApiResponse, sessionId = ''): ContextUpdateEvent {
+function toContextEvent(api: ContextResponse, sessionId = ''): ContextUpdateEvent {
   return {
     sessionId,
     turnNumber: api.turnCount,
@@ -103,9 +74,9 @@ export function ContextBar({ data, sessionId }: ContextBarProps): JSX.Element | 
   const prevFillRef = useRef(0);
   const prevTokensRef = useRef(0);
 
-  const { data: apiContext } = useQuery<ContextApiResponse>({
+  const { data: apiContext } = useQuery<ContextResponse>({
     queryKey: sessionId ? ['context', sessionId] : qk.context,
-    queryFn: () => fetchContext(sessionId ?? undefined) as Promise<ContextApiResponse>,
+    queryFn: () => fetchContext(sessionId ?? undefined),
     refetchInterval: 10_000,
     enabled: !data,
   });

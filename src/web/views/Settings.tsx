@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { fetchSettings, patchSettings, fetchDiagnostics, qk } from '../api/client';
+import {
+  fetchSettings,
+  patchSettings,
+  fetchDiagnostics,
+  qk,
+  type DiagnosticCheck,
+} from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { Button, Card, SectionHeader } from '../components/ui';
@@ -64,13 +70,6 @@ function NullableNumberInput({
   );
 }
 
-interface DiagnosticCheck {
-  readonly check: string;
-  readonly status: 'ok' | 'warn' | 'fail' | 'skip';
-  readonly detail: string;
-  readonly fix?: string;
-}
-
 const STATUS_ICON: Record<string, string> = {
   ok: '●',
   warn: '▲',
@@ -88,7 +87,7 @@ const STATUS_COLOR: Record<string, string> = {
 function DiagnosticsPanel(): JSX.Element {
   const { data, isLoading, isError, refetch } = useQuery<DiagnosticCheck[]>({
     queryKey: qk.diagnostics,
-    queryFn: () => fetchDiagnostics() as Promise<DiagnosticCheck[]>,
+    queryFn: () => fetchDiagnostics(),
     refetchInterval: 60_000,
     staleTime: 55_000,
   });
@@ -155,7 +154,7 @@ export function Settings(): JSX.Element {
   const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery<SettingsData>({
     queryKey: qk.settings,
-    queryFn: () => fetchSettings() as Promise<SettingsData>,
+    queryFn: () => fetchSettings(),
   });
 
   const [developer, setDeveloper] = useState<string | null>(null);
