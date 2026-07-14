@@ -117,6 +117,9 @@ export function History(): JSX.Element {
     queryFn: () => fetchConcurrencyHistory(30),
   });
 
+  const hasLoadError =
+    weekly.isError || sessions.isError || costPerOutcome.isError || concurrencyHistory.isError;
+
   // API returns newest-first; reverse for chronological left-to-right chart rendering
   const weeklyChronological = [...(weekly.data ?? [])].reverse();
   const weeklyData = weeklyChronological.map((w) => {
@@ -136,6 +139,12 @@ export function History(): JSX.Element {
     <section>
       <GeoBanner theme="history" />
       <h1 className="text-xl font-semibold gradient-text mb-4">History</h1>
+
+      {hasLoadError && (
+        <div className="text-accent-red text-xs mb-3">
+          Error loading some history data. Charts below may be incomplete.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <Panel title="Weekly Efficiency · Last 12">

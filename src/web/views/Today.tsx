@@ -160,19 +160,20 @@ export function Today(): JSX.Element {
     queryKey: qk.antiPatterns,
     queryFn: fetchAntiPatterns,
   });
-  const { data: concurrency } = useQuery<ConcurrencyData>({
+  const { data: concurrency, isPending: concurrencyPending } = useQuery<ConcurrencyData>({
     queryKey: qk.concurrency,
     queryFn: fetchConcurrency,
     refetchInterval: 10_000,
   });
-  const { data: todayHeatmap } = useQuery<ActivityHeatmapTodayResponse>({
-    queryKey: qk.activityHeatmap('today'),
-    queryFn: () => fetchActivityHeatmap('today'),
-    refetchInterval: 30_000,
-  });
+  const { data: todayHeatmap, isPending: todayHeatmapPending } =
+    useQuery<ActivityHeatmapTodayResponse>({
+      queryKey: qk.activityHeatmap('today'),
+      queryFn: () => fetchActivityHeatmap('today'),
+      refetchInterval: 30_000,
+    });
   // Task #17 (D3): live-session list — drives the selector default and the
   // "Session ended" badge logic when the selected session goes stale.
-  const { data: liveSessions } = useQuery<LiveSessionEntry[]>({
+  const { data: liveSessions, isPending: liveSessionsPending } = useQuery<LiveSessionEntry[]>({
     queryKey: qk.sessionsLive,
     queryFn: fetchLiveSessions,
     refetchInterval: 10_000,
@@ -249,6 +250,9 @@ export function Today(): JSX.Element {
     !aggregatePending &&
     !sessionsPending &&
     !antiPatternsPending &&
+    !concurrencyPending &&
+    !todayHeatmapPending &&
+    !liveSessionsPending &&
     calls === 0 &&
     todayTotal === 0 &&
     flagsCount === 0;
@@ -291,7 +295,7 @@ export function Today(): JSX.Element {
                 />
                 <Kpi
                   label="spend today"
-                  tone="accent"
+                  tone="good"
                   value={spendLoading ? '…' : `$${todayTotal.toFixed(2)}`}
                   {...(!spendLoading
                     ? { animate: true, numericValue: todayTotal, prefix: '$', decimals: 2 }

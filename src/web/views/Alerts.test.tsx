@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import { Alerts } from './Alerts';
@@ -76,5 +76,57 @@ describe('Alerts view', () => {
 
     await waitFor(() => expect(screen.getByText('Not configured')).toBeInTheDocument());
     expect(input).toHaveValue('');
+  });
+});
+
+describe('Alerts view — error and loading states', () => {
+  it('shows an error message when the budget query fails', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = (async (url: string) => {
+      if (url === '/api/budget') return new Response('Internal Server Error', { status: 503 });
+      if (url === '/api/settings') return jsonResponse(BASE_SETTINGS);
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Alerts />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/Error loading budget status/)).toBeInTheDocument(),
+    );
+  });
+
+  it('shows a loading spinner on the Slack Digest card while settings are pending', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const settingsBox: { current: (() => void) | null } = { current: null };
+    globalThis.fetch = (async (url: string) => {
+      if (url === '/api/budget') return jsonResponse(DEFAULT_BUDGET);
+      if (url === '/api/settings') {
+        return new Promise<Response>((resolve) => {
+          settingsBox.current = () => resolve(jsonResponse(BASE_SETTINGS));
+        });
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Alerts />
+      </QueryClientProvider>,
+    );
+
+    const heading = await screen.findByText('Slack Digest');
+    const card = heading.closest('.glass-card');
+    expect(card).not.toBeNull();
+    // Scoped to the Slack Digest card specifically — the Alert Thresholds card
+    // above it also renders a "Loading..." node while its own query is pending,
+    // so an unscoped screen-wide query can't distinguish "this card's spinner
+    // exists" from "some other card's pre-existing spinner rendered."
+    expect(within(card as HTMLElement).getByText('Loading...')).toBeInTheDocument();
+
+    settingsBox.current?.();
   });
 });

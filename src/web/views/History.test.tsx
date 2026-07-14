@@ -345,6 +345,87 @@ describe('History view', () => {
   });
 });
 
+describe('History — error handling', () => {
+  it('shows an error banner when a query fails', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/weekly')) {
+        return Promise.resolve(new Response('Internal Server Error', { status: 503 }));
+      }
+      if (url.startsWith('/api/cost-per-outcome')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_OUTCOME), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/personal-coach')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_COACH_OK), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_SESSIONS), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/activity-heatmap')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ days: [], maxCount: 0 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/concurrency')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ dailyPeaks: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(new Response('Not Found', { status: 404 }));
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(
+      () => expect(screen.getByText(/Error loading some history data/)).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+  });
+
+  it('shows no error banner when every query succeeds', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('History')).toBeInTheDocument());
+    expect(screen.queryByText(/Error loading some history data/)).toBeNull();
+  });
+});
+
 describe('History data helpers', () => {
   describe('aggregateDailyCost', () => {
     it('groups sessions by day, sums cost, and trims to N most recent days', () => {

@@ -68,6 +68,7 @@ export function fmtElapsed(ms: number): string {
  * rounding loss would be noticeable: "45s", "3m 18s", "1h 30m", "2d 4h".
  */
 export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
   const totalSec = Math.floor(ms / 1000);
   if (totalSec < 60) return `${totalSec}s`;
   const totalMin = Math.floor(totalSec / 60);

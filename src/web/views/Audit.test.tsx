@@ -73,10 +73,31 @@ describe('Audit view', () => {
       },
     ];
     renderAudit(withSeverity);
-    await waitFor(() => expect(screen.getByText('destructive_command')).toBeInTheDocument());
-    expect(screen.getByText('destructive_command').className).toMatch(/bg-accent-red/);
-    expect(screen.getByText('sensitive_file').className).toMatch(/bg-accent-amber/);
-    expect(screen.getByText('other').className).toMatch(/bg-surface-5/);
+    await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
+    const table = screen.getByRole('table');
+    const destructivePills = Array.from(table.querySelectorAll('td'))
+      .find((td) => td.textContent?.includes('Destructive'))
+      ?.querySelector('span');
+    const sensitivePills = Array.from(table.querySelectorAll('td'))
+      .find((td) => td.textContent?.includes('Sensitive files'))
+      ?.querySelector('span');
+    const otherPills = Array.from(table.querySelectorAll('td'))
+      .find((td) => td.textContent?.includes('other'))
+      ?.querySelector('span');
+    expect(destructivePills?.className).toMatch(/bg-accent-red/);
+    expect(sensitivePills?.className).toMatch(/bg-accent-amber/);
+    expect(otherPills?.className).toMatch(/bg-surface-5/);
+  });
+
+  it('renders friendly classification labels, not raw keys', async () => {
+    renderAudit(SAMPLE);
+    await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
+    expect(screen.getAllByText('Sensitive files').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Destructive').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('External network').length).toBeGreaterThan(0);
+    expect(screen.queryByText('sensitive_file')).toBeNull();
+    expect(screen.queryByText('destructive_command')).toBeNull();
+    expect(screen.queryByText('external_network')).toBeNull();
   });
 
   it('filters by classification when a chip is clicked', async () => {

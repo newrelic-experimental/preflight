@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.40] - 2026-07-14
+
+### Fixed
+
+- Today.tsx's empty-state gate omitted concurrency/activity-heatmap/live-session pending state, letting the empty state show briefly even as a live session registered.
+- History.tsx and Alerts.tsx now surface query load errors instead of silently rendering as "no data yet."
+- Git Efficiency's branch-divergence and repo-context now derive the real default branch instead of assuming `main`.
+- `formatDuration` now guards against non-finite/negative input, matching `formatNumber`'s existing guard.
+- Alerts.tsx's Slack Digest card now shows a loading indicator while settings load, matching the cards above it.
+- Audit.tsx's classification Pill now shows the friendly label instead of the raw internal key.
+- Removed `Kpi`'s redundant `tone="accent"`, which rendered identically to `tone="good"`.
+- Corrected a stale comment in `liveStore.ts` overstating cross-path dedup guarantees for live tool-call events.
+
 ## [1.4.39] - 2026-07-14
 
 ### Fixed
