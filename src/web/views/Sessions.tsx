@@ -20,7 +20,8 @@ import {
   qk,
   type SessionDetail,
 } from '../api/client';
-import { ContextBar, type ContextApiResponse } from '../components/ContextBar';
+import { ContextBar } from '../components/ContextBar';
+import type { ContextResponse } from '../api/client';
 import { Button, Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
 import {
   fmtDateTime,
@@ -512,7 +513,7 @@ function ToolsSection({
   const [tab, setTab] = useState<'calls' | 'context'>('calls');
 
   const contextUrl = `/api/context?sessionId=${encodeURIComponent(sessionId)}`;
-  const { data: contextData } = useQuery<ContextApiResponse>({
+  const { data: contextData } = useQuery<ContextResponse>({
     queryKey: ['context', sessionId],
     queryFn: () => fetch(contextUrl).then((r) => (r.ok ? r.json() : null)),
     refetchInterval: 10_000,

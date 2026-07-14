@@ -189,7 +189,13 @@ describe('Audit downloadJsonl', () => {
 
     try {
       downloadJsonl([
-        { ts: 1, tool: 'Read', target: '/etc/hosts', classification: 'sensitive_file' },
+        {
+          ts: 1,
+          tool: 'Read',
+          target: '/etc/hosts',
+          classification: 'sensitive_file',
+          sessionId: null,
+        },
       ]);
       // Revocation must have already happened by the time the call
       // returns — no setTimeout, no microtask deferral.
@@ -222,7 +228,13 @@ describe('Audit downloadJsonl', () => {
 
     try {
       downloadJsonl([
-        { ts: 1, tool: 'Read', target: '/etc/hosts', classification: 'sensitive_file' },
+        {
+          ts: 1,
+          tool: 'Read',
+          target: '/etc/hosts',
+          classification: 'sensitive_file',
+          sessionId: null,
+        },
       ]);
       // appendChild called with the anchor element exactly once.
       const appended = appendSpy.mock.calls.find((args) => args[0] instanceof HTMLAnchorElement);
@@ -261,7 +273,13 @@ describe('Audit downloadJsonl', () => {
     try {
       expect(() =>
         downloadJsonl([
-          { ts: 1, tool: 'Read', target: '/etc/hosts', classification: 'sensitive_file' },
+          {
+            ts: 1,
+            tool: 'Read',
+            target: '/etc/hosts',
+            classification: 'sensitive_file',
+            sessionId: null,
+          },
         ]),
       ).toThrow('user cancelled');
       expect(revoked).toEqual(created);

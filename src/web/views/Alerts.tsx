@@ -2,32 +2,18 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
 
-import { fetchBudget, fetchSettings, patchSettings, postDigestSend, qk } from '../api/client';
+import {
+  fetchBudget,
+  fetchSettings,
+  patchSettings,
+  postDigestSend,
+  qk,
+  type BudgetStatus,
+  type BudgetPeriod,
+} from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { Button, Card, Eyebrow, Pill, SectionHeader } from '../components/ui';
-
-interface BudgetPeriod {
-  readonly budgetUsd: number | null;
-  readonly spentUsd: number;
-  readonly pctUsed: number | null;
-  readonly exceeded: boolean;
-}
-
-interface BudgetAlert {
-  readonly period: string;
-  readonly thresholdPct: number;
-  readonly spentUsd: number;
-  readonly budgetUsd: number;
-  readonly timestamp: number;
-}
-
-interface BudgetStatus {
-  readonly session: BudgetPeriod;
-  readonly daily: BudgetPeriod;
-  readonly weekly: BudgetPeriod;
-  readonly alerts: readonly BudgetAlert[];
-}
 
 interface PersonalThresholds {
   readonly dailyCostUsd: number;
@@ -80,13 +66,13 @@ export function Alerts(): JSX.Element {
 
   const budgetQ = useQuery<BudgetStatus>({
     queryKey: qk.budget,
-    queryFn: () => fetchBudget() as Promise<BudgetStatus>,
+    queryFn: () => fetchBudget(),
     refetchInterval: 10_000,
   });
 
   const settingsQ = useQuery<SettingsData>({
     queryKey: qk.settings,
-    queryFn: () => fetchSettings() as Promise<SettingsData>,
+    queryFn: () => fetchSettings(),
   });
 
   const budget = budgetQ.data;
@@ -110,8 +96,7 @@ export function Alerts(): JSX.Element {
   const sendMutation = useMutation({
     mutationFn: () => postDigestSend(),
     onSuccess: (result) => {
-      const r = result as { content?: Array<{ text?: string }> };
-      const text = r.content?.[0]?.text ?? '';
+      const text = result.content[0]?.text ?? '';
       try {
         const parsed = JSON.parse(text) as { ok?: boolean; error?: string };
         setDigestStatus(parsed.ok ? 'Digest sent.' : (parsed.error ?? 'Failed to send.'));
