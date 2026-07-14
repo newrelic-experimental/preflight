@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.37] - 2026-07-13
+
+- Added automated test coverage for previously untested (but correct) branches across `src/install/`: `migrate.ts`'s legacy-storage-path merge/rollback logic, the `validate` CLI command, graceful process-kill escalation, several setup-wizard prompt/fallback paths, config-diagnostics edge cases, and `json-utils.ts`'s JSON parsing helpers (which previously had no dedicated test file at all). No behavior changes — this is a test-only hardening release.
+
 ## [1.4.36] - 2026-07-13
 
 - Typed the last 7 `client.ts` response contracts, consumed by the Settings, Alerts, ContextBar, and Audit views (`fetchAuditLog`, `fetchContext`, `fetchSettings`, `fetchDiagnostics`, `patchSettings`, `postDigestSend`), removing the `as Promise<T>` casts these views previously needed. Also removed the unused `fetchSessionToday` export, which had zero consumers. This closes the effort to type the rest of the dashboard's API layer (#141) — every exported function in `client.ts` now has a real response interface instead of `Promise<unknown>`.

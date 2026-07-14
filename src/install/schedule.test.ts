@@ -140,6 +140,24 @@ describe('removeSchedule', () => {
     expect(calls.some((args) => args[0] === 'unload')).toBe(true);
     expect(existsSync(PLIST_PATH)).toBe(false);
   });
+
+  it('logs a warning but still returns true when unlinkSync fails after unload succeeds', () => {
+    if (process.getuid?.() === 0) {
+      return; // root bypasses directory permission checks — not meaningful as root
+    }
+    installSchedule('/usr/local/bin/preflight', 8, 0);
+    mockedExecFileSync.mockClear();
+    const launchAgentsDir = dirname(PLIST_PATH);
+    chmodSync(launchAgentsDir, 0o500); // read+execute, no write — unlinkSync fails EACCES
+    try {
+      const result = removeSchedule();
+      expect(result).toBe(true);
+      expect(existsSync(PLIST_PATH)).toBe(true); // file still there — delete failed
+    } finally {
+      chmodSync(launchAgentsDir, 0o755);
+      rmSync(PLIST_PATH, { force: true });
+    }
+  });
 });
 
 const FIXTURE_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
@@ -344,6 +362,24 @@ describe('removeDashboardDaemon', () => {
     expect(calls.some((args) => args[0] === 'unload')).toBe(true);
     expect(existsSync(DASHBOARD_PLIST_PATH)).toBe(false);
   });
+
+  it('logs a warning but still returns true when unlinkSync fails after unload succeeds', () => {
+    if (process.getuid?.() === 0) {
+      return; // root bypasses directory permission checks — not meaningful as root
+    }
+    installDashboardDaemon('/usr/local/bin/preflight');
+    mockedExecFileSync.mockClear();
+    const launchAgentsDir = dirname(DASHBOARD_PLIST_PATH);
+    chmodSync(launchAgentsDir, 0o500);
+    try {
+      const result = removeDashboardDaemon();
+      expect(result).toBe(true);
+      expect(existsSync(DASHBOARD_PLIST_PATH)).toBe(true);
+    } finally {
+      chmodSync(launchAgentsDir, 0o755);
+      rmSync(DASHBOARD_PLIST_PATH, { force: true });
+    }
+  });
 });
 
 describe('getDashboardDaemonStatus', () => {
@@ -426,6 +462,19 @@ describe('findExecutableNodeDir', () => {
     try {
       const result = findExecutableNodeDir([tmpDir]);
       expect(result.dir).toBeNull();
+      expect(result.hasNonExecutable).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('finds an executable binary named "nodejs" (Debian/Ubuntu package naming)', () => {
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'nr-findnode-test-'));
+    try {
+      const nodejsPath = join(tmpDir, 'nodejs');
+      writeFileSync(nodejsPath, '#!/bin/sh\necho node', { mode: 0o755 });
+      const result = findExecutableNodeDir([tmpDir]);
+      expect(result.dir).toBe(tmpDir);
       expect(result.hasNonExecutable).toBe(false);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });

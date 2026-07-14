@@ -623,6 +623,43 @@ describe('runDiagnostics', () => {
       expect(c.status).toBe('fail');
       expect(c.detail).toContain('timed out');
     });
+
+    it('skips NR check when NEW_RELIC_LICENSE_KEY env is whitespace-only (treated as absent)', async () => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        mode: 'cloud',
+        hasLicenseKey: false,
+        errors: [],
+        warnings: [],
+      });
+      const origEnv = process.env.NEW_RELIC_LICENSE_KEY;
+      process.env.NEW_RELIC_LICENSE_KEY = '   ';
+      const checks = await runDiagnostics(makeOpts());
+      process.env.NEW_RELIC_LICENSE_KEY = origEnv;
+      const c = checks.find((x) => x.check === 'NR reachable')!;
+      expect(c.status).toBe('skip');
+      expect(c.detail).toContain('set but empty or blank');
+    });
+
+    it('still runs the NR reachable check when Config valid has Zod errors on unrelated fields', async () => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        mode: 'cloud',
+        hasLicenseKey: true,
+        errors: ['accountId: Expected string, received number'],
+        warnings: [],
+      });
+      mockFetch.mockResolvedValue({ ok: true } as Response);
+
+      const checks = await runDiagnostics(makeOpts());
+
+      const configCheck = checks.find((x) => x.check === 'Config valid')!;
+      expect(configCheck.status).toBe('fail');
+      const nrCheck = checks.find((x) => x.check === 'NR reachable')!;
+      expect(nrCheck.status).toBe('ok');
+    });
   });
 
   describe('Check 7: Local instances', () => {

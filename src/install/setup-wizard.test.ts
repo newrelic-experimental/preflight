@@ -1,5 +1,6 @@
 import * as fsMod from 'node:fs';
 import * as rlMod from 'node:readline/promises';
+import { join } from 'node:path';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
 import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
@@ -67,6 +68,7 @@ const mockedFs = fsMod as unknown as {
   existsSync: jest.Mock;
   copyFileSync: jest.Mock;
   chmodSync: jest.Mock;
+  realpathSync: jest.Mock;
 };
 const mockedRl = rlMod as unknown as { createInterface: jest.Mock };
 const mockedSchedule = scheduleMod as unknown as {
@@ -82,9 +84,11 @@ const mockedDashboardHealth = {
     typeof dashboardHealthMod.waitForHealthyDashboard
   >,
 };
-const mockedCli = cliMod as unknown as {
-  runInstallCli: jest.Mock;
-  verifyBinaryOnPath: jest.Mock;
+const mockedCli = {
+  runInstallCli: cliMod.runInstallCli as jest.MockedFunction<typeof cliMod.runInstallCli>,
+  verifyBinaryOnPath: cliMod.verifyBinaryOnPath as jest.MockedFunction<
+    typeof cliMod.verifyBinaryOnPath
+  >,
 };
 const mockedPlatform = platformMod as unknown as {
   isWsl: jest.Mock;
@@ -205,6 +209,61 @@ describe('copyStarterAlertRules', () => {
     });
 
     expect(result.copied).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultStarterRulesSource — repo-root-fallback branch
+// findRepoRoot() is mocked to return null for every test in this file (see
+// the module-level jest.mock('./cli.js', ...) above), so every wizard run
+// already exercises this fallback — this test is the first to assert on the
+// exact resolved sourcePath it produces.
+// ---------------------------------------------------------------------------
+
+describe('defaultStarterRulesSource fallback (via runSetupWizard)', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    mockedFs.existsSync.mockReturnValue(false); // starter rules "source missing" — simplest path
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+  });
+
+  it('resolves the starter-rules source two directories up from the entry point when findRepoRoot returns null', async () => {
+    const originalArgv1 = process.argv[1];
+    process.argv[1] = '/opt/preflight/dist/index.js';
+    mockedFs.realpathSync.mockImplementation((p: unknown) => p);
+
+    // Order for local mode: mode, developer, teamId, projectId, sessionBudget,
+    // dashboardPort, copyStarterRules (blank = default yes, so
+    // copyStarterAlertRules actually runs), installHooks='n' (skip hooks).
+    let i = 0;
+    const values = ['local', 'tester', '', '', '', '', '', 'n'];
+    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+
+    await runSetupWizard();
+
+    process.argv[1] = originalArgv1;
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    // copyStarterAlertRules reports "source-missing" (existsSync returns false above);
+    // the wizard prints this outcome without the resolved path, so instead assert
+    // indirectly: existsSync was asked about a path ending in the expected fallback
+    // location, proving defaultStarterRulesSource computed it correctly.
+    const checkedPaths = mockedFs.existsSync.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(
+      checkedPaths.some((p) => p.endsWith(join('opt', 'examples', 'local-alert-rules.json'))),
+    ).toBe(true);
+    void output;
   });
 });
 
@@ -888,6 +947,28 @@ describe('setupWizard auto-update step', () => {
 
     expect(mockedSchedule.installSchedule).not.toHaveBeenCalled();
   });
+
+  it('falls back to 08:00 with a warning when the entered time is malformed', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', 'n', 'y', 'not-a-time');
+
+    await runSetupWizard();
+
+    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith('/usr/local/bin/preflight', 8, 0);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Invalid time "not-a-time"');
+  });
+
+  it('falls back to 08:00 with a warning when the entered hour is out of range', async () => {
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', 'n', 'y', '25:00');
+
+    await runSetupWizard();
+
+    expect(mockedSchedule.installSchedule).toHaveBeenCalledWith('/usr/local/bin/preflight', 8, 0);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Invalid time "25:00"');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1379,6 +1460,7 @@ describe('setupWizard WSL CC-mode selection', () => {
     Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
     mockedPlatform.isWsl.mockReturnValue(false);
     mockedPlatform.resolveWindowsHome.mockReturnValue(null);
+    process.exitCode = undefined;
   });
 
   // Answer order for cloud mode + WSL + installHooks='y':
@@ -1435,5 +1517,34 @@ describe('setupWizard WSL CC-mode selection', () => {
     expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--linux-cc']);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('No valid choice entered after 3 attempts');
+  });
+
+  it('does not print "Hooks installed." when runInstallCli rejects', async () => {
+    mockedPlatform.isWsl.mockReturnValue(false);
+    mockedCli.runInstallCli.mockRejectedValueOnce(new Error('hook install failed'));
+    mockedCli.verifyBinaryOnPath.mockReturnValue(true);
+    // Non-WSL cloud sequence through the hooks-install step:
+    // mode, accountId, licenseKey, environment, nrApiKey, developer, teamId, projectId,
+    // sessionBudget, installHooks='y'
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).not.toContain('Hooks installed.');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints the PATH warning at the hooks-install step when verifyBinaryOnPath returns false', async () => {
+    mockedPlatform.isWsl.mockReturnValue(false);
+    mockedCli.runInstallCli.mockResolvedValueOnce(undefined);
+    mockedCli.verifyBinaryOnPath.mockReturnValue(false);
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'y');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('is not on your PATH');
+    expect(output).toContain('npm install -g @newrelic/preflight');
   });
 });

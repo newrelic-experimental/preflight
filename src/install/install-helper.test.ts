@@ -560,6 +560,26 @@ describe('mergeMcpConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// mergeSettings / mergeMcpConfig — malformed existing-file shape
+// ---------------------------------------------------------------------------
+
+describe('mergeSettings malformed input', () => {
+  it('throws a descriptive error when existing.hooks.PreToolUse is not an array', () => {
+    expect(() =>
+      mergeSettings({ hooks: { PreToolUse: 'not-an-array' } }, '/usr/local/bin/preflight'),
+    ).toThrow(/unexpected shape/);
+  });
+});
+
+describe('mergeMcpConfig malformed input', () => {
+  it('throws a descriptive error when existing.mcpServers is not an object', () => {
+    expect(() =>
+      mergeMcpConfig({ mcpServers: 'not-an-object' }, '/usr/local/bin/preflight'),
+    ).toThrow(/unexpected shape/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // removeMcpConfig
 // ---------------------------------------------------------------------------
 
