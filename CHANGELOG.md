@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.41] - 2026-07-14
+
+### Added
+
+- Added automated test coverage for previously untested (but correct) routes and branches in `src/dashboard/routes/api-handler.ts`: cache health, quality proxy, tool selection score, git efficiency (+ repos), context, model usage, activity heatmap, settings (read + write), digest send, and the concurrency endpoint's peak/all-time-peak fields and history-view live-peak override. No behavior changes — this is a test-only hardening release.
+
 ## [1.4.40] - 2026-07-14
 
 ### Fixed

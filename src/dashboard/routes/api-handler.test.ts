@@ -1,6 +1,11 @@
 import { jest } from '@jest/globals';
 import { createApiHandler } from './api-handler.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { getIsoWeekId } from '../../storage/weekly-summary.js';
 
 jest.mock('../../install/diagnostics.js', () => ({
   runDiagnostics: jest.fn(async () => [
@@ -1790,6 +1795,90 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.buckets).toBeUndefined();
     expect(result.bucketSizeMs).toBeUndefined();
   });
+
+  it('computes real peak/allTimePeak values from live, historical, and all-time session data', async () => {
+    const start = midnightToday();
+    const overlapTs = start + 5 * 60_000;
+    const historicalSessions = [
+      { sessionId: 'h-1', timeline: [{ timestamp: overlapTs }] },
+      { sessionId: 'h-2', timeline: [{ timestamp: overlapTs }] },
+      { sessionId: 'h-3', timeline: [{ timestamp: overlapTs }] },
+    ];
+    const allTimeTs = start - 10 * 24 * 60 * 60_000;
+    const allTimeSessions = [
+      { sessionId: 'a-1', timeline: [{ timestamp: allTimeTs }] },
+      { sessionId: 'a-2', timeline: [{ timestamp: allTimeTs }] },
+      { sessionId: 'a-3', timeline: [{ timestamp: allTimeTs }] },
+      { sessionId: 'a-4', timeline: [{ timestamp: allTimeTs }] },
+      { sessionId: 'a-5', timeline: [{ timestamp: allTimeTs }] },
+    ];
+    const handler = createApiHandler({
+      concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 1 },
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => historicalSessions,
+        loadAllSessions: () => allTimeSessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // livePeak=1, historicalPeak=3 (3 sessions overlapping at the same instant) → peak = max(1,3) = 3.
+    expect(result.peak).toBe(3);
+    // allTimePeak = max(livePeak=1, historicalPeak=3, allTimePeak=5) = 5.
+    expect(result.allTimePeak).toBe(5);
+  });
+
+  it("view=history overrides today's dailyPeaks bucket with the live peak when it exceeds the disk-derived peak", async () => {
+    const handler = createApiHandler({
+      concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 9 },
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.dailyPeaks).toHaveLength(3);
+    expect(result.dailyPeaks[2].peak).toBe(9);
+  });
+
+  it("view=history leaves today's dailyPeaks bucket alone when the disk-derived peak already meets the live peak", async () => {
+    const nowUtcMidnight = new Date();
+    nowUtcMidnight.setUTCHours(0, 0, 0, 0);
+    const todayOverlapTs = nowUtcMidnight.getTime() + 5 * 60_000;
+    const allSessions = [
+      { sessionId: 'd-1', timeline: [{ timestamp: todayOverlapTs }] },
+      { sessionId: 'd-2', timeline: [{ timestamp: todayOverlapTs }] },
+    ];
+    const handler = createApiHandler({
+      concurrencyTracker: { ...makeConcurrencyTracker(), getPeakConcurrent: () => 1 },
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => allSessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.dailyPeaks).toHaveLength(3);
+    expect(result.dailyPeaks[2].peak).toBe(2);
+  });
 });
 
 import * as diagnosticsModule from '../../install/diagnostics.js';
@@ -1836,5 +1925,1093 @@ describe('GET /api/diagnostics platform forwarding', () => {
     expect(mockedRunDiagnostics).toHaveBeenCalledWith(
       expect.objectContaining({ platform: undefined }),
     );
+  });
+});
+
+describe('api-handler PATCH /api/settings', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeConfigFilePath(initialContent?: Record<string, unknown>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-settings-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    if (initialContent) {
+      fs.writeFileSync(filePath, JSON.stringify(initialContent, null, 2));
+    }
+    return filePath;
+  }
+
+  function makePatchRequest(bodyObj: unknown): IncomingMessage {
+    const json = JSON.stringify(bodyObj);
+    const readable = Readable.from([Buffer.from(json)]);
+    const req = readable as unknown as IncomingMessage;
+    req.method = 'PATCH';
+    req.url = '/api/settings';
+    return req;
+  }
+
+  it('returns 503 when configFilePath is missing', async () => {
+    const handler = createApiHandler({});
+    const req = makePatchRequest({ developer: 'x' });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'configFilePath' });
+  });
+
+  it('returns 400 invalid_json when the request body is not valid JSON', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const readable = Readable.from([Buffer.from('not valid json')]);
+    const req = readable as unknown as IncomingMessage;
+    req.method = 'PATCH';
+    req.url = '/api/settings';
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({ error: 'invalid_json' });
+  });
+
+  it('writes a valid developer field, normalizes it, and sets restartRequired true', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ developer: 'Jane Doe' });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
+    const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+    expect(written.developer).toBe('jane_doe');
+  });
+
+  it('rejects a non-string developer field', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ developer: 123 });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: ['developer must be a string'],
+    });
+  });
+
+  it('accepts teamId as a string or null, rejects other types', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+
+    const reqOk = makePatchRequest({ teamId: 'team-a' });
+    const { res: resOk, status: statusOk } = fakeRes();
+    await handler(reqOk, resOk);
+    expect(statusOk()).toBe(200);
+
+    const reqNull = makePatchRequest({ teamId: null });
+    const { res: resNull, status: statusNull } = fakeRes();
+    await handler(reqNull, resNull);
+    expect(statusNull()).toBe(200);
+
+    const reqBad = makePatchRequest({ teamId: 42 });
+    const { res: resBad, status: statusBad, body: bodyBad } = fakeRes();
+    await handler(reqBad, resBad);
+    expect(statusBad()).toBe(400);
+    expect(JSON.parse(bodyBad())).toEqual({
+      error: 'validation_failed',
+      errors: ['teamId must be string or null'],
+    });
+  });
+
+  it.each([
+    ['sessionBudgetUsd', 'sessionBudgetUsd must be a positive number or null'],
+    ['dailyBudgetUsd', 'dailyBudgetUsd must be a positive number or null'],
+    ['weeklyBudgetUsd', 'weeklyBudgetUsd must be a positive number or null'],
+  ])(
+    'accepts a positive number or null for %s, rejects zero/negative/non-number',
+    async (field, errorMsg) => {
+      const configFilePath = makeConfigFilePath({});
+      const handler = createApiHandler({ configFilePath });
+
+      const reqOk = makePatchRequest({ [field]: 10 });
+      const { res: resOk, status: statusOk } = fakeRes();
+      await handler(reqOk, resOk);
+      expect(statusOk()).toBe(200);
+
+      const reqNull = makePatchRequest({ [field]: null });
+      const { res: resNull, status: statusNull } = fakeRes();
+      await handler(reqNull, resNull);
+      expect(statusNull()).toBe(200);
+
+      const reqZero = makePatchRequest({ [field]: 0 });
+      const { res: resZero, status: statusZero, body: bodyZero } = fakeRes();
+      await handler(reqZero, resZero);
+      expect(statusZero()).toBe(400);
+      expect(JSON.parse(bodyZero())).toEqual({ error: 'validation_failed', errors: [errorMsg] });
+    },
+  );
+
+  it('accepts retainSessionsDays as integer 1-365 or null, rejects out-of-range/non-integer', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+
+    const reqOk = makePatchRequest({ retainSessionsDays: 90 });
+    const { res: resOk, status: statusOk } = fakeRes();
+    await handler(reqOk, resOk);
+    expect(statusOk()).toBe(200);
+
+    const reqNull = makePatchRequest({ retainSessionsDays: null });
+    const { res: resNull, status: statusNull } = fakeRes();
+    await handler(reqNull, resNull);
+    expect(statusNull()).toBe(200);
+
+    const reqTooHigh = makePatchRequest({ retainSessionsDays: 366 });
+    const { res: resTooHigh, status: statusTooHigh, body: bodyTooHigh } = fakeRes();
+    await handler(reqTooHigh, resTooHigh);
+    expect(statusTooHigh()).toBe(400);
+    expect(JSON.parse(bodyTooHigh())).toEqual({
+      error: 'validation_failed',
+      errors: ['retainSessionsDays must be integer 1-365 or null'],
+    });
+
+    const reqFloat = makePatchRequest({ retainSessionsDays: 1.5 });
+    const { res: resFloat, status: statusFloat } = fakeRes();
+    await handler(reqFloat, resFloat);
+    expect(statusFloat()).toBe(400);
+  });
+
+  it('accepts a Slack webhook URL or null for digestWebhookUrl, rejects any other string', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+
+    const reqOk = makePatchRequest({ digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X' });
+    const { res: resOk, status: statusOk } = fakeRes();
+    await handler(reqOk, resOk);
+    expect(statusOk()).toBe(200);
+
+    const reqNull = makePatchRequest({ digestWebhookUrl: null });
+    const { res: resNull, status: statusNull } = fakeRes();
+    await handler(reqNull, resNull);
+    expect(statusNull()).toBe(200);
+
+    const reqBad = makePatchRequest({ digestWebhookUrl: 'https://evil.example.com/hook' });
+    const { res: resBad, status: statusBad, body: bodyBad } = fakeRes();
+    await handler(reqBad, resBad);
+    expect(statusBad()).toBe(400);
+    expect(JSON.parse(bodyBad())).toEqual({
+      error: 'validation_failed',
+      errors: [
+        'digestWebhookUrl must be a Slack incoming webhook URL (https://hooks.slack.com/...) or null',
+      ],
+    });
+  });
+
+  it('sets restartRequired: false when the ONLY changed field is digestWebhookUrl', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: false });
+  });
+
+  it('sets restartRequired: true when digestWebhookUrl is changed alongside any other field', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+      teamId: 'team-a',
+    });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
+  });
+
+  it('rejects a non-string digestSchedule', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ digestSchedule: 42 });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: ['digestSchedule must be a string'],
+    });
+  });
+
+  it('validates alerts.personal.* fields, merging into any existing personal thresholds', async () => {
+    const configFilePath = makeConfigFilePath({
+      alerts: { personal: { dailyCostUsd: 5, sessionCostUsd: 1 } },
+    });
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({
+      alerts: {
+        personal: { efficiencyScoreMin: 0.6, stuckLoopCountMax: 3, antiPatternCountMax: 2 },
+      },
+    });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
+    const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+    // Pre-existing dailyCostUsd/sessionCostUsd survive the merge; new fields added.
+    expect(written.alerts.personal).toEqual({
+      dailyCostUsd: 5,
+      sessionCostUsd: 1,
+      efficiencyScoreMin: 0.6,
+      stuckLoopCountMax: 3,
+      antiPatternCountMax: 2,
+    });
+  });
+
+  it('rejects alerts.personal.efficiencyScoreMin outside 0-1', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ alerts: { personal: { efficiencyScoreMin: 1.5 } } });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: ['alerts.personal.efficiencyScoreMin must be 0-1'],
+    });
+  });
+
+  it('rejects a negative alerts.personal.stuckLoopCountMax', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ alerts: { personal: { stuckLoopCountMax: -1 } } });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: ['alerts.personal.stuckLoopCountMax must be a non-negative integer'],
+    });
+  });
+
+  it('rejects a negative alerts.personal.antiPatternCountMax', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ alerts: { personal: { antiPatternCountMax: -5 } } });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: ['alerts.personal.antiPatternCountMax must be a non-negative integer'],
+    });
+  });
+
+  it('rejects a negative alerts.personal.dailyCostUsd and sessionCostUsd', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({
+      alerts: { personal: { dailyCostUsd: -1, sessionCostUsd: -2 } },
+    });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: [
+        'alerts.personal.dailyCostUsd must be a non-negative number',
+        'alerts.personal.sessionCostUsd must be a non-negative number',
+      ],
+    });
+  });
+
+  it('accumulates multiple validation errors across unrelated fields in one response', async () => {
+    const configFilePath = makeConfigFilePath({});
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ developer: 123, teamId: 42, retainSessionsDays: 0 });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'validation_failed',
+      errors: [
+        'developer must be a string',
+        'teamId must be string or null',
+        'retainSessionsDays must be integer 1-365 or null',
+      ],
+    });
+  });
+
+  it('does not write to disk at all when validation fails', async () => {
+    const configFilePath = makeConfigFilePath({ developer: 'original' });
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ developer: 999 });
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+    expect(written.developer).toBe('original');
+  });
+
+  it('starts fresh (empty existing object) when the config file does not exist yet', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-settings-test-'));
+    tmpDirs.push(dir);
+    const configFilePath = path.join(dir, 'does-not-exist-yet.json');
+    const handler = createApiHandler({ configFilePath });
+    const req = makePatchRequest({ teamId: 'team-a' });
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
+    const written = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+    expect(written).toEqual({ teamId: 'team-a' });
+  });
+});
+
+describe('api-handler GET /api/settings', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeConfigFile(content?: Record<string, unknown>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-get-settings-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    if (content) fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
+    return filePath;
+  }
+
+  function fakeStartupConfig(): Parameters<typeof createApiHandler>[0]['config'] {
+    return {
+      developer: 'startup-dev',
+      teamId: 'startup-team',
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: 50,
+      weeklyBudgetUsd: 200,
+      retainSessionsDays: 30,
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/STARTUP',
+      digestSchedule: '0 9 * * 1',
+      personalAlertThresholds: {
+        dailyCostUsd: 2,
+        sessionCostUsd: 0.5,
+        efficiencyScoreMin: 0.5,
+        stuckLoopCountMax: 5,
+        antiPatternCountMax: 3,
+      },
+      accountId: '12345',
+      appName: 'preflight-test',
+      mode: 'local',
+      storagePath: '/tmp/does-not-matter',
+      highSecurity: false,
+      licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234',
+    } as unknown as Parameters<typeof createApiHandler>[0]['config'];
+  }
+
+  it('returns 503 when config is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'config' });
+  });
+
+  it('falls back to startup config values when no config file exists', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-get-settings-test-'));
+    tmpDirs.push(dir);
+    const configFilePath = path.join(dir, 'does-not-exist.json');
+    const handler = createApiHandler({ config: fakeStartupConfig(), configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.developer).toBe('startup-dev');
+    expect(result.teamId).toBe('startup-team');
+    expect(result.sessionBudgetUsd).toBe(10);
+    expect(result.dailyBudgetUsd).toBe(50);
+    expect(result.weeklyBudgetUsd).toBe(200);
+    expect(result.retainSessionsDays).toBe(30);
+    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/STARTUP');
+    expect(result.digestSchedule).toBe('0 9 * * 1');
+    expect(result.alerts.personal).toEqual({
+      dailyCostUsd: 2,
+      sessionCostUsd: 0.5,
+      efficiencyScoreMin: 0.5,
+      stuckLoopCountMax: 5,
+      antiPatternCountMax: 3,
+    });
+  });
+
+  it('prefers disk values over startup config for every editable field, per-field', async () => {
+    const configFilePath = makeConfigFile({
+      developer: 'disk-dev',
+      teamId: 'disk-team',
+      sessionBudgetUsd: 99,
+      dailyBudgetUsd: 999,
+      weeklyBudgetUsd: 9999,
+      retainSessionsDays: 7,
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/DISK',
+      digestSchedule: '0 8 * * 2',
+      alerts: {
+        personal: {
+          dailyCostUsd: 1,
+          sessionCostUsd: 0.1,
+          efficiencyScoreMin: 0.9,
+          stuckLoopCountMax: 1,
+          antiPatternCountMax: 1,
+        },
+      },
+    });
+    const handler = createApiHandler({ config: fakeStartupConfig(), configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.developer).toBe('disk-dev');
+    expect(result.teamId).toBe('disk-team');
+    expect(result.sessionBudgetUsd).toBe(99);
+    expect(result.dailyBudgetUsd).toBe(999);
+    expect(result.weeklyBudgetUsd).toBe(9999);
+    expect(result.retainSessionsDays).toBe(7);
+    expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/DISK');
+    expect(result.digestSchedule).toBe('0 8 * * 2');
+    expect(result.alerts.personal).toEqual({
+      dailyCostUsd: 1,
+      sessionCostUsd: 0.1,
+      efficiencyScoreMin: 0.9,
+      stuckLoopCountMax: 1,
+      antiPatternCountMax: 1,
+    });
+  });
+
+  it('falls back to startup defaults when the disk config file has invalid JSON', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-get-settings-test-'));
+    tmpDirs.push(dir);
+    const configFilePath = path.join(dir, 'config.json');
+    fs.writeFileSync(configFilePath, 'not valid json{{{');
+    const handler = createApiHandler({ config: fakeStartupConfig(), configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.developer).toBe('startup-dev');
+  });
+
+  it('masks licenseKey to a "••••" + last-4 suffix, and reports read-only fields verbatim', async () => {
+    const configFilePath = makeConfigFile({});
+    const handler = createApiHandler({ config: fakeStartupConfig(), configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.licenseKey).toBe('••••1234');
+    expect(result.accountId).toBe('12345');
+    expect(result.appName).toBe('preflight-test');
+    expect(result.mode).toBe('local');
+    expect(result.storagePath).toBe('/tmp/does-not-matter');
+    expect(result.highSecurity).toBe(false);
+  });
+
+  it('returns licenseKey: null when no license key is configured', async () => {
+    const configFilePath = makeConfigFile({});
+    const config = { ...fakeStartupConfig(), licenseKey: undefined } as unknown as Parameters<
+      typeof createApiHandler
+    >[0]['config'];
+    const handler = createApiHandler({ config, configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body()).licenseKey).toBeNull();
+  });
+});
+
+describe('api-handler POST /api/digest/send', () => {
+  const tmpDirs: string[] = [];
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    global.fetch = originalFetch;
+  });
+
+  function makeConfigFile(content: Record<string, unknown>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-digest-send-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
+    return filePath;
+  }
+
+  it('returns 503 when weeklySummaryGenerator is missing', async () => {
+    const configFilePath = makeConfigFile({});
+    const handler = createApiHandler({ configFilePath });
+    const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'digest' });
+  });
+
+  it('returns 503 when configFilePath is missing', async () => {
+    const handler = createApiHandler({
+      weeklySummaryGenerator: { generate: () => ({}), loadRecentWeeks: () => [] },
+    });
+    const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'digest' });
+  });
+
+  it('returns the "no webhook configured" content payload when digestWebhookUrl is unset', async () => {
+    const configFilePath = makeConfigFile({});
+    const handler = createApiHandler({
+      configFilePath,
+      weeklySummaryGenerator: { generate: () => ({}), loadRecentWeeks: () => [] },
+    });
+    const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    const inner = JSON.parse(result.content[0].text);
+    expect(inner.error).toBe('No webhook URL configured. Call nr_observe_subscribe_digest first.');
+  });
+
+  it('sends the digest and returns ok:true when a webhook URL is configured and the send succeeds', async () => {
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    const fakeSummary = {
+      week: '2026-W29',
+      totalCostUsd: 12.5,
+      avgEfficiencyScore: 0.8,
+      sessionCount: 4,
+      antiPatternCounts: {},
+    };
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
+    const handler = createApiHandler({
+      configFilePath,
+      weeklySummaryGenerator: {
+        generate: () => fakeSummary,
+        loadRecentWeeks: () => [],
+      },
+    });
+    const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    const inner = JSON.parse(result.content[0].text);
+    expect(inner.ok).toBe(true);
+    expect(inner.message).toBe('Digest sent successfully.');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a "Failed to send digest" content payload when the webhook POST fails', async () => {
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    const fakeSummary = {
+      week: '2026-W29',
+      totalCostUsd: 12.5,
+      avgEfficiencyScore: 0.8,
+      sessionCount: 4,
+      antiPatternCounts: {},
+    };
+    global.fetch = jest.fn(async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
+    const handler = createApiHandler({
+      configFilePath,
+      weeklySummaryGenerator: {
+        generate: () => fakeSummary,
+        loadRecentWeeks: () => [],
+      },
+    });
+    const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    const inner = JSON.parse(result.content[0].text);
+    expect(inner.error).toMatch(/^Failed to send digest:/);
+  });
+});
+
+describe('api-handler GET /api/cache-health', () => {
+  it('returns 503 when costTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/cache-health' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'costTracker' });
+  });
+
+  it('reports no_cache_activity when cacheHitRate is null', async () => {
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({ cacheHitRate: null }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cache-health' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.status).toBe('no_cache_activity');
+    expect(result.cache_hit_rate_pct).toBeNull();
+    expect(result.week_over_week_delta_pts).toBeNull();
+  });
+
+  it.each([
+    [0.75, 'excellent'],
+    [0.45, 'can_improve'],
+    [0.1, 'needs_attention'],
+  ])('classifies cacheHitRate=%p as status=%p', async (rate, expectedStatus) => {
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({
+          cacheHitRate: rate,
+          totalCacheReadTokens: 1000,
+          totalCacheCreationTokens: 200,
+          totalCacheSavingsUsd: 0.5,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cache-health' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.status).toBe(expectedStatus);
+    expect(result.cache_hit_rate_pct).toBe(Math.round(rate * 100));
+    expect(result.total_cache_read_tokens).toBe(1000);
+    expect(result.total_cache_creation_tokens).toBe(200);
+    expect(result.total_savings_usd).toBe(0.5);
+  });
+
+  it('computes week_over_week_delta_pts from the trend, excluding the current ISO week', async () => {
+    const currentWeek = getIsoWeekId(new Date());
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({ cacheHitRate: 0.5 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+      trendAnalyzer: {
+        computeTrends: () => ({
+          weeklyCacheHitRateTrend: [
+            { week: '2026-W01', value: 0.3 },
+            { week: currentWeek, value: 0.99 }, // must be filtered out — it's "this week"
+          ],
+        }),
+      },
+    });
+    const req = { method: 'GET', url: '/api/cache-health' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // cacheHitRatePct = 50, lastWeekEntry (after excluding currentWeek) = 0.3 → 30
+    expect(result.week_over_week_delta_pts).toBe(20);
+  });
+
+  it('returns week_over_week_delta_pts: null when there is no trend data', async () => {
+    const handler = createApiHandler({
+      costTracker: {
+        getMetrics: () => ({ cacheHitRate: 0.5 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cache-health' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body()).week_over_week_delta_pts).toBeNull();
+  });
+});
+
+describe('api-handler GET /api/quality-proxy', () => {
+  it('returns 503 when qualityProxyTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'qualityProxyTracker' });
+  });
+
+  it('returns the live tracker metrics directly when totalSignals > 0', async () => {
+    const liveMetrics = { totalSignals: 5, diffApplyRate: 0.8 };
+    const handler = createApiHandler({
+      qualityProxyTracker: { getMetrics: () => liveMetrics },
+    });
+    const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(liveMetrics);
+  });
+
+  it('falls back to history aggregation when totalSignals is 0 and sessionStore is present', async () => {
+    const handler = createApiHandler({
+      qualityProxyTracker: { getMetrics: () => ({ totalSignals: 0 }) },
+      sessionStore: {
+        loadTodaySessions: () => [{ testRunCount: 4, testPassCount: 3 }],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.testPassRate).toBe(0.75);
+    expect(result.totalSignals).toBe(4);
+  });
+
+  it('returns the live (zero-signal) metrics as-is when totalSignals is 0 and sessionStore is absent', async () => {
+    const liveMetrics = { totalSignals: 0 };
+    const handler = createApiHandler({
+      qualityProxyTracker: { getMetrics: () => liveMetrics },
+    });
+    const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(liveMetrics);
+  });
+});
+
+describe('api-handler GET /api/tool-selection-score', () => {
+  it('returns 503 when toolSelectionScorer is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'toolSelectionScorer' });
+  });
+
+  it('scores the current toolCallBuffer records', async () => {
+    const fakeCalls = [{ id: 'c1' }, { id: 'c2' }] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['toolCallBuffer']>['getRecords']
+    >;
+    const fakeScore = { score: 0.9, penalties: [] };
+    const scoreSession = jest.fn(() => fakeScore);
+    const handler = createApiHandler({
+      toolSelectionScorer: { scoreSession },
+      toolCallBuffer: { getRecords: () => fakeCalls },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeScore);
+    expect(scoreSession).toHaveBeenCalledWith(fakeCalls);
+  });
+
+  it('scores an empty session (score with []) when toolCallBuffer is absent', async () => {
+    const fakeScore = { score: 1, penalties: [] };
+    const scoreSession = jest.fn(() => fakeScore);
+    const handler = createApiHandler({ toolSelectionScorer: { scoreSession } });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeScore);
+    expect(scoreSession).toHaveBeenCalledWith([]);
+  });
+});
+
+describe('api-handler GET /api/model-usage', () => {
+  it('returns 503 when modelUsageTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'modelUsageTracker' });
+  });
+
+  it('returns modelUsageTracker.getMetrics() as JSON', async () => {
+    const fakeMetrics = { 'claude-sonnet-5': { totalCostUsd: 3.2, callCount: 40 } };
+    const handler = createApiHandler({
+      modelUsageTracker: { getMetrics: () => fakeMetrics },
+    });
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
+describe('api-handler GET /api/git-efficiency', () => {
+  it('returns 503 when gitEfficiencyTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/git-efficiency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'gitEfficiencyTracker' });
+  });
+
+  it('returns gitEfficiencyTracker.getMetrics() as JSON', async () => {
+    const fakeMetrics = {
+      mergeConflicts: 2,
+      forcePushes: 0,
+      repoContext: { repoName: 'preflight' },
+    };
+    const handler = createApiHandler({
+      gitEfficiencyTracker: { getMetrics: () => fakeMetrics },
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
+describe('api-handler GET /api/git-efficiency/repos', () => {
+  it('returns 503 when sessionStore is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'sessionStore' });
+  });
+
+  it("dedupes repo names across today's sessions and sorts them", async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [
+          { sessionId: 's1', repoName: 'zeta-repo' },
+          { sessionId: 's2', repoName: 'alpha-repo' },
+          { sessionId: 's3', repoName: 'alpha-repo' },
+          { sessionId: 's4', repoName: null },
+        ],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.repos).toEqual(['alpha-repo', 'zeta-repo']);
+    expect(result.currentRepo).toBeNull();
+  });
+
+  it('includes and merges in the current repo from gitEfficiencyTracker', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [{ sessionId: 's1', repoName: 'alpha-repo' }],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      gitEfficiencyTracker: {
+        getMetrics: () => ({ repoContext: { repoName: 'current-repo' } }),
+      },
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.repos).toEqual(['alpha-repo', 'current-repo']);
+    expect(result.currentRepo).toBe('current-repo');
+  });
+});
+
+describe('api-handler GET /api/context', () => {
+  it('returns 503 when contextTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/context' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'contextTracker' });
+  });
+
+  it('calls getMetrics() with undefined sessionId when no query param is given', async () => {
+    const fakeMetrics = { fillPercent: 42 };
+    const getMetrics = jest.fn(() => fakeMetrics);
+    const handler = createApiHandler({ contextTracker: { getMetrics } });
+    const req = { method: 'GET', url: '/api/context' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+    expect(getMetrics).toHaveBeenCalledWith(undefined);
+  });
+
+  it('forwards the sessionId query param to getMetrics()', async () => {
+    const fakeMetrics = { fillPercent: 10 };
+    const getMetrics = jest.fn(() => fakeMetrics);
+    const handler = createApiHandler({ contextTracker: { getMetrics } });
+    const req = { method: 'GET', url: '/api/context?sessionId=sess-abc' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+    expect(getMetrics).toHaveBeenCalledWith('sess-abc');
+  });
+});
+
+describe('api-handler GET /api/activity-heatmap', () => {
+  it('returns view=today buckets sized to elapsed time since local midnight', async () => {
+    const handler = createApiHandler({
+      toolCallBuffer: { getRecords: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/activity-heatmap?view=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.bucketSizeMs).toBe(900_000);
+    expect(Array.isArray(result.buckets)).toBe(true);
+    expect(result.buckets.length).toBeGreaterThan(0);
+    expect(result.maxCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('defaults to view=today when no view param is given', async () => {
+    const handler = createApiHandler({
+      toolCallBuffer: { getRecords: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/activity-heatmap' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body()).bucketSizeMs).toBe(900_000);
+  });
+
+  it('buckets both toolCallBuffer records and today-sessions timeline entries by 15-minute window', async () => {
+    const now = Date.now();
+    const startMs = new Date(now);
+    startMs.setHours(0, 0, 0, 0);
+    const start = startMs.getTime();
+    const handler = createApiHandler({
+      toolCallBuffer: {
+        getRecords: () =>
+          [
+            {
+              id: 'r1',
+              sessionId: 's1',
+              toolName: 'Read',
+              toolUseId: 't1',
+              timestamp: start + 60_000,
+              durationMs: 10,
+              success: true,
+            },
+          ] as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['toolCallBuffer']>['getRecords']
+          >,
+      },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 's2',
+            timeline: [{ timestamp: start + 61_000, toolName: 'Edit', success: true }],
+          },
+        ],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/activity-heatmap?view=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Both events land in bucket 0 (00:00-00:15) → count 2.
+    expect(result.buckets[0]).toBe(2);
+  });
+
+  it('returns view=history days aggregated by UTC date, respecting the weeks param', async () => {
+    const nowUtcMidnight = new Date();
+    nowUtcMidnight.setUTCHours(0, 0, 0, 0);
+    const todayKey = nowUtcMidnight.toISOString().slice(0, 10);
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [{ startTime: nowUtcMidnight.getTime() + 60_000, toolCallCount: 7 }],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/activity-heatmap?view=history&weeks=1',
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(Array.isArray(result.days)).toBe(true);
+    const todayEntry = result.days.find((d: { date: string }) => d.date === todayKey);
+    expect(todayEntry).toBeDefined();
+    expect(todayEntry.count).toBe(7);
+    expect(result.maxCount).toBeGreaterThanOrEqual(7);
+  });
+
+  it('returns 400 invalid_view for an unrecognized view param', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/activity-heatmap?view=bogus' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(400);
+    expect(JSON.parse(body())).toEqual({
+      error: 'invalid_view',
+      message: 'Use view=today or view=history',
+    });
+  });
+
+  it('returns 500 internal_error when computing the response throws', async () => {
+    const handler = createApiHandler({
+      toolCallBuffer: {
+        getRecords: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    const req = { method: 'GET', url: '/api/activity-heatmap?view=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(500);
+    expect(JSON.parse(body())).toEqual({ error: 'internal_error' });
   });
 });
