@@ -316,6 +316,37 @@ describe('StdioUpstream.forward() with mock client', () => {
     expect(result.responseSizeBytes).toBeGreaterThan(0);
     expect(typeof result.responseSizeBytes).toBe('number');
   });
+
+  it('aborts the underlying client call when dispatch times out', async () => {
+    jest.useFakeTimers();
+
+    const mockCallTool = jest
+      .fn<(...args: unknown[]) => Promise<never>>()
+      .mockReturnValue(new Promise(() => {})); // never resolves — simulates a hung child
+    const upstream = makeUpstreamWithMockClient({ callTool: mockCallTool });
+
+    const { res, getStatus } = makeFakeResponse();
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'test_tool', arguments: {} },
+      }),
+    );
+
+    const forwardPromise = upstream.forward(makeFakeRequest(), res, body);
+
+    // Advance past the 30-second dispatch timeout
+    await jest.runAllTimersAsync();
+    await forwardPromise;
+
+    expect(getStatus()).toBe(500);
+    const options = mockCallTool.mock.calls[0]?.[2] as { signal: AbortSignal } | undefined;
+    expect(options?.signal.aborted).toBe(true);
+
+    jest.useRealTimers();
+  });
 });
 
 // ---------------------------------------------------------------------------

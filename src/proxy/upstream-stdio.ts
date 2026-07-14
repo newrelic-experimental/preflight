@@ -31,6 +31,15 @@ export const DANGEROUS_ENV_KEYS = new Set([
   'DYLD_INSERT_LIBRARIES',
   'DYLD_LIBRARY_PATH',
   'NODE_OPTIONS',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+  'RUBYOPT',
+  'PERL5LIB',
+  'LD_AUDIT',
+  'GCONV_PATH',
+  'BASH_ENV',
+  'ENV',
+  'ELECTRON_RUN_AS_NODE',
 ]);
 
 export function sanitizeEnv(
@@ -288,35 +297,50 @@ export class StdioUpstream implements ProxyUpstream {
   private async dispatchToClient(rpc: JsonRpcRequest): Promise<unknown> {
     const client = this.client!;
     const params = rpc.params ?? {};
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
 
     // Wrap the dispatch in a timeout so a hung child process doesn't hold
-    // the HTTP connection open indefinitely.
+    // the HTTP connection open indefinitely. Aborting the underlying SDK
+    // call (not just racing past it) stops the abandoned request from
+    // continuing to run against the child process with nothing awaiting it.
     const timeoutPromise = new Promise<never>((_, reject) => {
-      const t = setTimeout(
-        () => reject(new Error(`Stdio dispatch timeout after ${DISPATCH_TIMEOUT_MS}ms`)),
-        DISPATCH_TIMEOUT_MS,
-      );
+      const t = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Stdio dispatch timeout after ${DISPATCH_TIMEOUT_MS}ms`));
+      }, DISPATCH_TIMEOUT_MS);
       t.unref();
     });
 
     let dispatchPromise: Promise<unknown>;
     switch (rpc.method) {
       case 'tools/call':
-        dispatchPromise = client.callTool(params as Parameters<typeof client.callTool>[0]);
+        dispatchPromise = client.callTool(
+          params as Parameters<typeof client.callTool>[0],
+          undefined,
+          options,
+        );
         break;
       case 'tools/list':
-        dispatchPromise = client.listTools(params as Parameters<typeof client.listTools>[0]);
+        dispatchPromise = client.listTools(
+          params as Parameters<typeof client.listTools>[0],
+          options,
+        );
         break;
       case 'resources/list':
         dispatchPromise = client.listResources(
           params as Parameters<typeof client.listResources>[0],
+          options,
         );
         break;
       case 'resources/read':
-        dispatchPromise = client.readResource(params as Parameters<typeof client.readResource>[0]);
+        dispatchPromise = client.readResource(
+          params as Parameters<typeof client.readResource>[0],
+          options,
+        );
         break;
       case 'ping':
-        dispatchPromise = client.ping();
+        dispatchPromise = client.ping(options);
         break;
       case 'initialize':
         // The Client has already initialized; return current server info synchronously.
@@ -329,6 +353,7 @@ export class StdioUpstream implements ProxyUpstream {
         dispatchPromise = client.request(
           { method: rpc.method, params } as Parameters<typeof client.request>[0],
           z.any(),
+          options,
         );
     }
 

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.39] - 2026-07-14
+
+### Fixed
+
+- Proxy stdio upstream: expanded the dangerous env-var denylist to cover non-Node interpreters (`PYTHONPATH`, `RUBYOPT`, `PERL5LIB`, and others) that an operator-configured stdio upstream command could be pointed at.
+- Proxy stdio upstream: a dispatch timeout now aborts the underlying MCP client call instead of only racing past it, so a wedged child process no longer accumulates abandoned in-flight requests.
+- Proxy OTLP receiver: resource-attribute enrichment no longer duplicates a key the instrumented application already set on the payload.
+
 ## [1.4.38] - 2026-07-14
 
 ### Fixed

@@ -366,8 +366,15 @@ export class OtlpReceiver {
       for (const resource of resources) {
         if (!resource.resource) resource.resource = {};
         if (!Array.isArray(resource.resource.attributes)) resource.resource.attributes = [];
+        const attributes = resource.resource.attributes as Array<{
+          key: string;
+          value?: unknown;
+        }>;
+        const existingKeys = new Set(attributes.map((a) => a.key));
         for (const [k, v] of Object.entries(attrs)) {
-          resource.resource.attributes.push({ key: k, value: { stringValue: v } });
+          // Never clobber a value the instrumented app deliberately set itself.
+          if (existingKeys.has(k)) continue;
+          attributes.push({ key: k, value: { stringValue: v } });
         }
       }
     }
