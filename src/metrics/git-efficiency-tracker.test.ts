@@ -1,4 +1,7 @@
-import { GitEfficiencyTracker } from './git-efficiency-tracker.js';
+import {
+  GitEfficiencyTracker,
+  parseDefaultBranchFromSymbolicRef,
+} from './git-efficiency-tracker.js';
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -16,6 +19,30 @@ function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
     ...overrides,
   };
 }
+
+describe('parseDefaultBranchFromSymbolicRef()', () => {
+  it('strips the remote prefix from a well-formed symbolic-ref short output', () => {
+    expect(parseDefaultBranchFromSymbolicRef('origin/main\n', 'origin')).toBe('main');
+  });
+
+  it('handles a non-main default branch name', () => {
+    expect(parseDefaultBranchFromSymbolicRef('origin/master\n', 'origin')).toBe('master');
+  });
+
+  it('handles branch names containing slashes', () => {
+    expect(parseDefaultBranchFromSymbolicRef('origin/release/stable\n', 'origin')).toBe(
+      'release/stable',
+    );
+  });
+
+  it('falls back to "main" on empty output', () => {
+    expect(parseDefaultBranchFromSymbolicRef('', 'origin')).toBe('main');
+  });
+
+  it('falls back to "main" when output does not start with the remote prefix', () => {
+    expect(parseDefaultBranchFromSymbolicRef('unexpected-output', 'origin')).toBe('main');
+  });
+});
 
 describe('GitEfficiencyTracker', () => {
   let tracker: GitEfficiencyTracker;

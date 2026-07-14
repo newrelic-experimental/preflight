@@ -166,6 +166,9 @@ export function Alerts(): JSX.Element {
       <Card padding="md" className="mb-4">
         <SectionHeader title="Budget Status" />
         {budgetQ.isLoading && <EmptyState icon="clock" variant="loading" title="Loading..." />}
+        {budgetQ.isError && (
+          <div className="text-accent-red text-xs">Error loading budget status.</div>
+        )}
         {budget && (
           <>
             <PeriodRow label="session" p={budget.session} />
@@ -264,6 +267,7 @@ export function Alerts(): JSX.Element {
           subtitle="Weekly digest sent to a Slack incoming webhook. URL changes take effect immediately."
         />
 
+        {settingsQ.isLoading && <EmptyState icon="clock" variant="loading" title="Loading..." />}
         {settings && (
           <>
             <div className="flex items-center gap-2 mb-3">

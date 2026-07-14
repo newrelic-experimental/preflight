@@ -126,7 +126,7 @@ export function Audit(): JSX.Element {
                       tone={r.severity ? (SEVERITY_TONE[r.severity] ?? 'neutral') : 'neutral'}
                       size="sm"
                     >
-                      {r.classification}
+                      {FILTERS.find((f) => f.key === r.classification)?.label ?? r.classification}
                     </Pill>
                   </td>
                   <td className="p-2 text-ink-subtle">{r.sessionId ?? '—'}</td>

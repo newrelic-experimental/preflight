@@ -1,13 +1,12 @@
 import { useAnimatedValue } from '../hooks/useAnimatedValue';
 
-export type KpiTone = 'neutral' | 'good' | 'warn' | 'bad' | 'accent';
+export type KpiTone = 'neutral' | 'good' | 'warn' | 'bad';
 
 const TONE: Record<KpiTone, string> = {
   neutral: 'text-ink-base',
   good: 'text-accent-green',
   warn: 'text-accent-amber',
   bad: 'text-accent-red',
-  accent: 'text-accent-green',
 };
 
 export interface KpiProps {

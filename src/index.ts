@@ -50,7 +50,10 @@ import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
 import { LiveSessionRegistry } from './metrics/live-session-registry.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
-import { GitEfficiencyTracker } from './metrics/git-efficiency-tracker.js';
+import {
+  GitEfficiencyTracker,
+  parseDefaultBranchFromSymbolicRef,
+} from './metrics/git-efficiency-tracker.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { LiveEventBus } from './dashboard/index.js';
@@ -885,6 +888,8 @@ async function main(): Promise<void> {
     // Repo context for the dashboard header
     const remoteResult = spawnSync('git', ['remote', 'get-url', 'origin'], GIT_OPTS);
     const branchResult = spawnSync('git', ['branch', '--show-current'], GIT_OPTS);
+    const remoteName = 'origin';
+    let defaultBranch = 'main';
     if (remoteResult.status === 0 && branchResult.status === 0) {
       const remoteUrl = remoteResult.stdout.trim();
       const branch = branchResult.stdout.trim();
@@ -892,17 +897,36 @@ async function main(): Promise<void> {
       const repoMatch = remoteUrl.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
       const repoName = repoMatch ? repoMatch[1] : null;
       currentRepoName = repoName;
+
+      const symbolicRefResult = spawnSync(
+        'git',
+        ['symbolic-ref', '--short', `refs/remotes/${remoteName}/HEAD`],
+        GIT_OPTS,
+      );
+      if (symbolicRefResult.status === 0) {
+        defaultBranch = parseDefaultBranchFromSymbolicRef(symbolicRefResult.stdout, remoteName);
+      }
+
       gitEfficiencyTracker.hydrateRepoContext({
         repoName,
         branch: branch || null,
-        remoteName: 'origin',
-        defaultBranch: 'main',
+        remoteName,
+        defaultBranch,
       });
     }
 
-    // Branch divergence from main — how far ahead/behind are we?
-    const aheadResult = spawnSync('git', ['rev-list', '--count', 'origin/main..HEAD'], GIT_OPTS);
-    const behindResult = spawnSync('git', ['rev-list', '--count', 'HEAD..origin/main'], GIT_OPTS);
+    // Branch divergence from the real default branch — how far ahead/behind are we?
+    const remoteDefaultBranch = `${remoteName}/${defaultBranch}`;
+    const aheadResult = spawnSync(
+      'git',
+      ['rev-list', '--count', `${remoteDefaultBranch}..HEAD`],
+      GIT_OPTS,
+    );
+    const behindResult = spawnSync(
+      'git',
+      ['rev-list', '--count', `HEAD..${remoteDefaultBranch}`],
+      GIT_OPTS,
+    );
     if (aheadResult.status === 0 && behindResult.status === 0) {
       const ahead = parseInt(aheadResult.stdout.trim(), 10);
       const behind = parseInt(behindResult.stdout.trim(), 10);

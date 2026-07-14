@@ -24,4 +24,10 @@ describe('Kpi', () => {
     render(<Kpi label="spend" value="$3.42" sub="+34% vs avg" />);
     expect(screen.getByText('+34% vs avg')).toBeInTheDocument();
   });
+
+  it('does not accept tone="accent" (removed — use "good")', () => {
+    render(<Kpi label="spend" value="$3.42" tone="good" />);
+    const v = screen.getByText('$3.42');
+    expect(v.className).toMatch(/text-accent-green/);
+  });
 });

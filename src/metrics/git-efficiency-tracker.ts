@@ -1,5 +1,21 @@
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
 
+/**
+ * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
+ * (e.g. "origin/main") into just the branch name. Falls back to 'main' if
+ * the ref is missing (empty output — e.g. an unusual shallow checkout that
+ * never fetched a remote HEAD) or malformed (doesn't start with the
+ * expected remote prefix).
+ */
+export function parseDefaultBranchFromSymbolicRef(output: string, remoteName: string): string {
+  const trimmed = output.trim();
+  const prefix = `${remoteName}/`;
+  if (trimmed.startsWith(prefix) && trimmed.length > prefix.length) {
+    return trimmed.slice(prefix.length);
+  }
+  return 'main';
+}
+
 // ---------------------------------------------------------------------------
 // Git command classification patterns
 // ---------------------------------------------------------------------------

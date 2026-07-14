@@ -133,7 +133,12 @@ export const useLiveStore = create<LiveState>((set) => ({
 
   pushToolCall: (e) =>
     set((s) => {
-      // Deduplicate by id so SSE and hydrateFromApi() don't push the same event twice.
+      // Deduplicate by id — but only within a single path. hydrateFromApi()
+      // builds id as `${timestamp}-${toolName}` (no server id available on
+      // that response shape), while the SSE path forwards the server's real
+      // randomUUID()-based id, so a hydrate-then-SSE double-emit of the same
+      // underlying tool call is NOT caught here — only same-path repeats
+      // (e.g. an SSE reconnect replaying an already-seen event) are.
       if (s.recentToolCalls.some((t) => t.id === e.id)) return {};
       const next = [...s.recentToolCalls, e];
       return {

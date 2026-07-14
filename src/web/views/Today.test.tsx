@@ -136,6 +136,51 @@ describe('Today view', () => {
     expect(screen.queryByText(/\?× on/)).toBeNull();
   });
 
+  it('does not show the empty state while concurrency/heatmap/liveSessions are still pending', async () => {
+    // Zero out the cost/antiPatterns/tool-call state that resetStore() (in
+    // the outer beforeEach) set to non-zero values, so calls === 0,
+    // todayTotal === 0, and flagsCount === 0 all hold here — i.e.
+    // `noActivityToday` WOULD evaluate true in this test if the
+    // concurrency/heatmap/liveSessions pending gate weren't wired in.
+    useLiveStore.setState({
+      recentToolCalls: [],
+      cost: null,
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    // /api/concurrency never resolves for the duration of this test — this
+    // simulates the race window where every other query has already settled
+    // but concurrency (backing `concurrencyPending`) has not. No resolver is
+    // needed: the test only asserts the empty state stays suppressed while
+    // this query is pending, not that it eventually stops being pending.
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/concurrency') {
+        return new Promise<Response>(() => {
+          // Intentionally never settles.
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday(qc);
+
+    // Wait until every other query (cost, aggregate, sessions, anti-patterns)
+    // has settled — the "spend today" KPI moves off its loading ellipsis to
+    // a real dollar value. This is the exact moment `noActivityToday` would
+    // flip to true if `concurrencyPending` weren't part of the gate.
+    await waitFor(() => expect(screen.getByText('$0.00')).toBeInTheDocument());
+
+    // The empty state must still be suppressed, because /api/concurrency is
+    // still pending.
+    expect(screen.queryByText(/No activity yet today/)).toBeNull();
+  });
+
   it('renders the forecast-EOD card with the projected end-of-day spend', () => {
     renderToday();
     expect(screen.getByText(/forecast/i)).toBeInTheDocument();
