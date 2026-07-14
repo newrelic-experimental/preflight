@@ -1,123 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchGitEfficiency, fetchGitEfficiencyRepos, qk } from '../api/client';
+import {
+  fetchGitEfficiency,
+  fetchGitEfficiencyRepos,
+  qk,
+  type GitSuggestion,
+  type MergeConflictRecord,
+  type GitEfficiencyData,
+  type GitEfficiencyReposResponse,
+} from '../api/client';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { EmptyState } from '../components/EmptyState';
 import { GeoBanner } from '../components/GeoBanner';
 import { Kpi } from '../components/Kpi';
 import { Card, Eyebrow, Pill, SectionHeader } from '../components/ui';
 import type { PillTone } from '../components/ui';
-
-interface GitSuggestion {
-  readonly severity: 'info' | 'warning' | 'critical';
-  readonly category: string;
-  readonly message: string;
-  readonly evidence: string;
-}
-
-interface MergeConflictRecord {
-  readonly timestamp: number;
-  readonly resolution: 'resolved' | 'aborted' | 'pending';
-  readonly resolutionTimeMs: number | null;
-  readonly command: string;
-}
-
-interface GitEvent {
-  readonly timestamp: number;
-  readonly type: string;
-  readonly command?: string;
-  readonly success: boolean;
-  readonly durationMs: number | null;
-}
-
-interface BestPractice {
-  readonly id: string;
-  readonly label: string;
-  readonly status: 'pass' | 'fail' | 'warn' | 'unknown';
-  readonly detail: string;
-}
-
-interface RiskIndicators {
-  readonly syncedBeforeEditing: boolean | null;
-  readonly timeSinceLastSyncMs: number | null;
-  readonly commitsSinceLastSync: number;
-  readonly pushRejections: number;
-  readonly forceAfterReject: number;
-  readonly hotFiles: readonly string[];
-  readonly usesWorktrees: boolean;
-  readonly usesForceWithLease: boolean;
-  readonly avgCommitsBetweenSyncs: number | null;
-  readonly commitsAheadOfMain: number | null;
-  readonly commitsBehindMain: number | null;
-  readonly sessionDurationMs: number | null;
-  readonly quickConflictResolutions: number;
-}
-
-interface RepoContext {
-  readonly repoName: string | null;
-  readonly branch: string | null;
-  readonly remoteName: string | null;
-  readonly defaultBranch: string | null;
-}
-
-interface PrEvent {
-  readonly timestamp: number;
-  readonly action: 'create' | 'merge' | 'view' | 'edit' | 'ready' | 'checks';
-  readonly prNumber: string | null;
-}
-
-interface PullRequestMetrics {
-  readonly created: number;
-  readonly merged: number;
-  readonly checksViewed: number;
-  readonly prsUpdated: number;
-  readonly prActivity: readonly PrEvent[];
-  readonly avgTimeToCreateMs: number | null;
-}
-
-interface VelocityMetrics {
-  readonly avgTimeBetweenCommitsMs: number | null;
-  readonly commitBurstCount: number;
-  readonly longestGapMs: number | null;
-  readonly worktreeCount: number;
-  readonly buildBeforePush: boolean | null;
-  readonly testBeforePush: boolean | null;
-}
-
-interface ConflictResolutionStrategy {
-  readonly oursCount: number;
-  readonly theirsCount: number;
-  readonly manualMergeCount: number;
-  readonly cherryPickCount: number;
-  readonly totalResolutions: number;
-}
-
-interface GitEfficiencyData {
-  readonly totalGitCommands: number;
-  readonly mergeConflicts: number;
-  readonly rebaseConflicts: number;
-  readonly abortedOperations: number;
-  readonly forcePushes: number;
-  readonly resetHards: number;
-  readonly discardedChanges: number;
-  readonly pullCount: number;
-  readonly pushCount: number;
-  readonly commitCount: number;
-  readonly branchOperations: number;
-  readonly conflictResolutionRate: number | null;
-  readonly avgConflictResolutionMs: number | null;
-  readonly staleBranchPulls: number;
-  readonly gitCommandTimeline: readonly GitEvent[];
-  readonly conflictHistory: readonly MergeConflictRecord[];
-  readonly suggestions: readonly GitSuggestion[];
-  readonly bestPractices: readonly BestPractice[];
-  readonly preventionScore: number | null;
-  readonly efficiencyScore: number | null;
-  readonly riskIndicators: RiskIndicators;
-  readonly velocityMetrics: VelocityMetrics;
-  readonly conflictResolutionStrategy: ConflictResolutionStrategy;
-  readonly prMetrics: PullRequestMetrics;
-  readonly repoContext: RepoContext;
-}
 
 const SEVERITY_STYLE: Record<GitSuggestion['severity'], string> = {
   info: 'border-l-accent-blue bg-accent-blue/5',
@@ -219,14 +115,13 @@ function ScoreRing({ score }: { score: number | null }): JSX.Element {
 export function GitEfficiency(): JSX.Element {
   const { data, isLoading, error } = useQuery<GitEfficiencyData>({
     queryKey: qk.gitEfficiency,
-    queryFn: () => fetchGitEfficiency() as Promise<GitEfficiencyData>,
+    queryFn: fetchGitEfficiency,
     refetchInterval: 5000,
   });
 
-  const { data: reposData } = useQuery<{ repos: string[]; currentRepo: string | null }>({
+  const { data: reposData } = useQuery<GitEfficiencyReposResponse>({
     queryKey: qk.gitEfficiencyRepos,
-    queryFn: () =>
-      fetchGitEfficiencyRepos() as Promise<{ repos: string[]; currentRepo: string | null }>,
+    queryFn: fetchGitEfficiencyRepos,
     refetchInterval: 30000,
   });
 
