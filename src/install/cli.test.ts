@@ -1790,6 +1790,70 @@ describe('preflight local', () => {
     killSpy.mockRestore();
   });
 
+  it('escalates to SIGKILL when the orphaned process does not exit within the grace period', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => [
+        { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => 'y'),
+      close: jest.fn(),
+    });
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+
+    jest.useFakeTimers();
+    const runPromise = runInstallCli(['local', '--clean']);
+    await jest.advanceTimersByTimeAsync(2100); // past the 2s grace-period loop
+    await runPromise;
+    jest.useRealTimers();
+
+    expect(killSpy).toHaveBeenCalledWith(200, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(200, 'SIGKILL');
+    killSpy.mockRestore();
+  });
+
+  it('does not escalate to SIGKILL when the process exits before the grace period ends', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => [
+        { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+    }));
+    const readlineMod = await import('node:readline/promises');
+    (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
+      question: jest.fn(async () => 'y'),
+      close: jest.fn(),
+    });
+    let probeCount = 0;
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+      if (signal === 0) {
+        probeCount++;
+        if (probeCount >= 2) {
+          throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); // dead from the 2nd probe on
+        }
+        return true; // alive on the first probe
+      }
+      return true; // SIGTERM succeeds
+    });
+
+    jest.useFakeTimers();
+    const runPromise = runInstallCli(['local', '--clean']);
+    await jest.advanceTimersByTimeAsync(2100);
+    await runPromise;
+    jest.useRealTimers();
+
+    expect(killSpy).toHaveBeenCalledWith(200, 'SIGTERM');
+    expect(killSpy).not.toHaveBeenCalledWith(200, 'SIGKILL');
+    killSpy.mockRestore();
+  });
+
   it('--clean does not kill anything when the user declines', async () => {
     const readlineMod = await import('node:readline/promises');
     (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
@@ -1921,5 +1985,94 @@ describe('preflight doctor', () => {
     const prog = createInstallProgram();
     await prog.parseAsync(['node', 'preflight', 'doctor']);
     expect(process.exitCode).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflight validate
+// ---------------------------------------------------------------------------
+
+describe('preflight validate', () => {
+  let output: string[];
+  const mockedFsForValidate = fsMod as unknown as {
+    existsSync: jest.Mock;
+    readFileSync: jest.Mock;
+  };
+
+  beforeEach(() => {
+    output = [];
+    jest.spyOn(process.stdout, 'write').mockImplementation((s) => {
+      output.push(String(s));
+      return true;
+    });
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    jest.restoreAllMocks();
+  });
+
+  it('reports no config file found when the config path does not exist', async () => {
+    mockedFsForValidate.existsSync.mockReturnValue(false);
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'validate']);
+    expect(output.join('')).toContain('No config file found');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('reports valid with no issues for a clean config', async () => {
+    mockedFsForValidate.existsSync.mockReturnValue(true);
+    mockedFsForValidate.readFileSync.mockReturnValue(
+      JSON.stringify({ licenseKey: 'NRLIC-test', accountId: '12345' }),
+    );
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'validate']);
+    expect(output.join('')).toContain('Config is valid');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('prints warnings and does not set an exit code for an unknown key', async () => {
+    mockedFsForValidate.existsSync.mockReturnValue(true);
+    mockedFsForValidate.readFileSync.mockReturnValue(JSON.stringify({ licenseKye: 'typo' }));
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'validate']);
+    const joined = output.join('');
+    expect(joined).toContain('Warning');
+    expect(joined).toContain('1 warning');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('prints errors and sets exit code 1 for invalid JSON', async () => {
+    mockedFsForValidate.existsSync.mockReturnValue(true);
+    mockedFsForValidate.readFileSync.mockReturnValue('{not valid json');
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync(['node', 'preflight', 'validate']);
+    const joined = output.join('');
+    expect(joined).toContain('Error');
+    expect(joined).toContain('Config is invalid');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('respects the --config flag for the file path', async () => {
+    mockedFsForValidate.existsSync.mockImplementation(
+      (p: unknown) => String(p) === '/custom/path/config.json',
+    );
+    mockedFsForValidate.readFileSync.mockReturnValue(JSON.stringify({ licenseKey: 'NRLIC-x' }));
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    await prog.parseAsync([
+      'node',
+      'preflight',
+      'validate',
+      '--config',
+      '/custom/path/config.json',
+    ]);
+    expect(output.join('')).toContain('/custom/path/config.json');
+    expect(output.join('')).toContain('Config is valid');
   });
 });

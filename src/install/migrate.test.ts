@@ -340,3 +340,247 @@ describe('migrateStoragePath call order', () => {
     expect(mFs.unlinkSync).toHaveBeenCalledWith(MARKER);
   });
 });
+
+// ---------------------------------------------------------------------------
+// migrateStoragePath — rename-only happy path
+// ---------------------------------------------------------------------------
+
+describe('migrateStoragePath rename-only path', () => {
+  let mFs: MockedFs & { cpSync: jest.Mock; rmSync: jest.Mock };
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mFs = fsMod as unknown as MockedFs & { cpSync: jest.Mock; rmSync: jest.Mock };
+    (fsMod as unknown as { realpathSync: jest.Mock }).realpathSync.mockImplementation(
+      (p: unknown) => p,
+    );
+    mFs.renameSync.mockImplementation(() => {});
+    mFs.unlinkSync.mockImplementation(() => {});
+    stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    // Only OLD_PATH exists — no marker, no NEW_PATH.
+    mFs.existsSync.mockImplementation((p: unknown) => String(p) === OLD_PATH);
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+  });
+
+  it('renames oldPath to newPath and prints a success notice', () => {
+    migrateStoragePath();
+
+    expect(mFs.renameSync).toHaveBeenCalledWith(OLD_PATH, STORAGE);
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Migrated storage directory');
+  });
+
+  it('returns silently when rename fails with ENOENT and newPath already exists (concurrent migration)', () => {
+    mFs.existsSync.mockImplementation(
+      (p: unknown) => String(p) === OLD_PATH || String(p) === STORAGE,
+    );
+    mFs.renameSync.mockImplementation(() => {
+      const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      throw err;
+    });
+
+    expect(() => migrateStoragePath()).not.toThrow();
+    expect(stderrSpy).not.toHaveBeenCalled();
+  });
+
+  it('prints a warning when rename fails with ENOTEMPTY (newPath created concurrently)', () => {
+    mFs.renameSync.mockImplementation(() => {
+      const err = Object.assign(new Error('ENOTEMPTY'), { code: 'ENOTEMPTY' });
+      throw err;
+    });
+
+    migrateStoragePath();
+
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('could not migrate storage directory');
+  });
+
+  it('prints a warning with the error message on an unexpected rename error', () => {
+    mFs.renameSync.mockImplementation(() => {
+      throw new Error('EACCES: permission denied');
+    });
+
+    migrateStoragePath();
+
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('could not migrate storage directory');
+    expect(output).toContain('EACCES: permission denied');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateStoragePath — both paths exist
+// ---------------------------------------------------------------------------
+
+describe('migrateStoragePath both-paths-exist branch', () => {
+  let mFs: MockedFs & {
+    cpSync: jest.Mock;
+    rmSync: jest.Mock;
+    readSync: jest.Mock;
+    openSync: jest.Mock;
+    closeSync: jest.Mock;
+  };
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  const savedIsTTY = process.stdin.isTTY;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mFs = fsMod as unknown as typeof mFs;
+    (fsMod as unknown as { realpathSync: jest.Mock }).realpathSync.mockImplementation(
+      (p: unknown) => p,
+    );
+    mFs.readFileSync.mockImplementation(() => '{}');
+    mFs.writeFileSync.mockImplementation(() => {});
+    mFs.unlinkSync.mockImplementation(() => {});
+    stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    // Both OLD_PATH and NEW_PATH (STORAGE) exist, and OLD_PATH has real content
+    // (config.json) so the branch doesn't short-circuit on hasOldContent=false.
+    const oldConfigPath = resolve(OLD_PATH, 'config.json');
+    mFs.existsSync.mockImplementation(
+      (p: unknown) =>
+        String(p) === OLD_PATH ||
+        String(p) === STORAGE ||
+        String(p) === CONFIG ||
+        String(p) === oldConfigPath,
+    );
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+    Object.defineProperty(process.stdin, 'isTTY', { value: savedIsTTY, configurable: true });
+  });
+
+  it('prints a non-interactive notice and does not prompt when interactive=false', () => {
+    migrateStoragePath(false);
+
+    expect(mFs.openSync).not.toHaveBeenCalled();
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('already exists');
+  });
+
+  it('prints a non-interactive notice and does not prompt when stdin is not a TTY, even if interactive=true', () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+
+    migrateStoragePath(true);
+
+    expect(mFs.openSync).not.toHaveBeenCalled();
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('already exists');
+  });
+
+  it('skips the prompt and returns when declined (interactive, TTY, answer "n")', () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    mFs.openSync.mockImplementation(() => 42);
+    mFs.closeSync.mockImplementation(() => {});
+    mFs.readSync.mockImplementation(
+      (
+        _fd: unknown,
+        buf: unknown,
+        offset: unknown,
+        _length: unknown,
+        _position: unknown,
+      ): number => {
+        const b = buf as Buffer;
+        const written = b.write('n\n', offset as number);
+        return written;
+      },
+    );
+
+    migrateStoragePath(true);
+
+    expect(mFs.cpSync).not.toHaveBeenCalled();
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Migration skipped');
+  });
+
+  it('merges via cpSync and removes the old directory via rmSync when accepted', () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    mFs.openSync.mockImplementation(() => 42);
+    mFs.closeSync.mockImplementation(() => {});
+    mFs.readSync.mockImplementation(
+      (
+        _fd: unknown,
+        buf: unknown,
+        offset: unknown,
+        _length: unknown,
+        _position: unknown,
+      ): number => {
+        const b = buf as Buffer;
+        return b.write('y\n', offset as number);
+      },
+    );
+    mFs.cpSync.mockImplementation(() => {});
+    mFs.rmSync.mockImplementation(() => {});
+
+    migrateStoragePath(true);
+
+    expect(mFs.cpSync).toHaveBeenCalledWith(OLD_PATH, STORAGE, {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+    });
+    expect(mFs.rmSync).toHaveBeenCalledWith(OLD_PATH, { recursive: true, force: true });
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Merged storage directory');
+  });
+
+  it('reports the cpSync error and leaves old data intact when the merge copy fails', () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    mFs.openSync.mockImplementation(() => 42);
+    mFs.closeSync.mockImplementation(() => {});
+    mFs.readSync.mockImplementation(
+      (
+        _fd: unknown,
+        buf: unknown,
+        offset: unknown,
+        _length: unknown,
+        _position: unknown,
+      ): number => {
+        const b = buf as Buffer;
+        return b.write('y\n', offset as number);
+      },
+    );
+    mFs.cpSync.mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    migrateStoragePath(true);
+
+    expect(mFs.rmSync).not.toHaveBeenCalled();
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Could not merge storage directories');
+    expect(output).toContain('ENOSPC');
+  });
+
+  it('reports the cleanup failure but does not throw when rmSync fails after a successful cpSync', () => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    mFs.openSync.mockImplementation(() => 42);
+    mFs.closeSync.mockImplementation(() => {});
+    mFs.readSync.mockImplementation(
+      (
+        _fd: unknown,
+        buf: unknown,
+        offset: unknown,
+        _length: unknown,
+        _position: unknown,
+      ): number => {
+        const b = buf as Buffer;
+        return b.write('y\n', offset as number);
+      },
+    );
+    mFs.cpSync.mockImplementation(() => {});
+    mFs.rmSync.mockImplementation(() => {
+      throw new Error('EBUSY: resource busy or locked');
+    });
+
+    expect(() => migrateStoragePath(true)).not.toThrow();
+
+    const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('but old directory could not be removed');
+    expect(output).toContain('EBUSY');
+  });
+});
