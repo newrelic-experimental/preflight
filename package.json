@@ -1,6 +1,6 @@
 {
   "name": "@newrelic/preflight",
-  "version": "1.4.37",
+  "version": "1.4.38",
   "type": "module",
   "license": "Apache-2.0",
   "private": false,
@@ -79,6 +79,7 @@
     "@opentelemetry/sdk-trace-node": "2.8.0",
     "commander": "15.0.0",
     "dotenv": "17.4.2",
+    "undici": "^7.28.0",
     "zod": "4.4.3"
   },
   "overrides": {

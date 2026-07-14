@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.38] - 2026-07-14
+
+### Fixed
+
+- `undici` is now a direct runtime dependency. `src/proxy/otlp-receiver.ts` imports it directly, but it was declared only as a version `overrides` pin (added for security hardening), never as an actual dependency — so a clean `npm install`/`npm install -g` (no devDependencies) never installed it, and the proxy crashed with `ERR_MODULE_NOT_FOUND: undici` on startup. It previously worked in this repo's own dev/CI environment only because `jsdom` (a devDependency) pulls in `undici` transitively.
+
 ## [1.4.37] - 2026-07-13
 
 - Added automated test coverage for previously untested (but correct) branches across `src/install/`: `migrate.ts`'s legacy-storage-path merge/rollback logic, the `validate` CLI command, graceful process-kill escalation, several setup-wizard prompt/fallback paths, config-diagnostics edge cases, and `json-utils.ts`'s JSON parsing helpers (which previously had no dedicated test file at all). No behavior changes — this is a test-only hardening release.
