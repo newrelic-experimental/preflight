@@ -330,19 +330,27 @@ export function getDashboardDaemonStatus(): DashboardDaemonStatus {
   }
 }
 
+const WINDOWS_BINARY_SUFFIXES = ['.cmd', '.ps1', ''];
+
 export function resolveBinaryPath(): string | null {
   // Walk PATH directly — avoids hardcoding the `which` location and is safe
   // for Nix/Homebrew installs where binaries live outside /usr/bin.
-  const pathDirs = (process.env.PATH ?? '').split(':').filter(Boolean);
+  // PATH is ':'-delimited on POSIX and ';'-delimited on Windows (whose
+  // entries themselves contain drive-letter colons, e.g. "C:\foo").
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  const suffixes = process.platform === 'win32' ? WINDOWS_BINARY_SUFFIXES : [''];
   for (const dir of pathDirs) {
-    const candidate = join(dir, 'preflight');
-    try {
-      if (statSync(candidate).isFile()) {
-        accessSync(candidate, constants.X_OK);
-        return candidate;
+    for (const suffix of suffixes) {
+      const candidate = join(dir, `preflight${suffix}`);
+      try {
+        if (statSync(candidate).isFile()) {
+          accessSync(candidate, constants.X_OK);
+          return candidate;
+        }
+      } catch {
+        continue;
       }
-    } catch {
-      continue;
     }
   }
   return null;

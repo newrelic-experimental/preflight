@@ -13,6 +13,7 @@ import {
   collectTranscriptTokens,
   readLastAssistantUsage,
   getTranscriptPath,
+  translateWslPath,
   getBufferPath,
   writePpidBreadcrumb,
   getLinuxAncestorPids,
@@ -1088,6 +1089,38 @@ describe('collector-script', () => {
 
     it('getTranscriptPath returns null when sessionId is missing', () => {
       expect(getTranscriptPath('/some/path', undefined)).toBeNull();
+    });
+
+    describe('WSL Windows path translation', () => {
+      const originalPlatform = process.platform;
+
+      afterEach(() => {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      });
+
+      it('translateWslPath converts a Windows drive path to its WSL mount on Linux', () => {
+        Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+        expect(translateWslPath('C:\\Users\\test\\.claude\\projects\\proj\\abc.jsonl')).toBe(
+          '/mnt/c/Users/test/.claude/projects/proj/abc.jsonl',
+        );
+      });
+
+      it('translateWslPath leaves POSIX paths unchanged on Linux', () => {
+        Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+        expect(translateWslPath('/home/test/.claude/projects/proj/abc.jsonl')).toBe(
+          '/home/test/.claude/projects/proj/abc.jsonl',
+        );
+      });
+
+      it('translateWslPath leaves Windows drive paths unchanged outside Linux', () => {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        expect(translateWslPath('C:\\Users\\test\\abc.jsonl')).toBe('C:\\Users\\test\\abc.jsonl');
+      });
+
+      it('getTranscriptPath sanitizes a backslash-separated (Windows) cwd into the project dir name', () => {
+        const path = getTranscriptPath('C:\\Users\\test\\myproject', 'abc-123');
+        expect(path).toContain('.claude/projects/C:-Users-test-myproject/abc-123.jsonl');
+      });
     });
 
     it('readLastAssistantUsage extracts usage from transcript', () => {

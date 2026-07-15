@@ -227,9 +227,11 @@ describe('getScheduleStatus', () => {
 
 describe('resolveBinaryPath', () => {
   const originalPath = process.env.PATH;
+  const originalPlatform = process.platform;
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   });
 
   it('returns null when no PATH directories contain the binary', () => {
@@ -251,6 +253,32 @@ describe('resolveBinaryPath', () => {
       writeFileSync(binaryPath, '#!/usr/bin/env node\n', { mode: 0o644 });
       process.env.PATH = tmpDir;
       expect(resolveBinaryPath()).toBeNull();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('splits PATH on ";" on win32, where entries contain drive-letter colons', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'schedule-test-win-'));
+    try {
+      const binaryPath = join(tmpDir, 'preflight');
+      writeFileSync(binaryPath, '#!/usr/bin/env node\n', { mode: 0o755 });
+      process.env.PATH = `C:\\nonexistent;${tmpDir}`;
+      expect(resolveBinaryPath()).toBe(binaryPath);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('probes Windows binary extensions (e.g. .cmd) on win32', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const tmpDir = mkdtempSync(join(nodeOs.tmpdir(), 'schedule-test-win-ext-'));
+    try {
+      const binaryPath = join(tmpDir, 'preflight.cmd');
+      writeFileSync(binaryPath, '@echo off\r\n', { mode: 0o755 });
+      process.env.PATH = tmpDir;
+      expect(resolveBinaryPath()).toBe(binaryPath);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }

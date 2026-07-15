@@ -174,9 +174,21 @@ function getClaudeHome(): string {
 
 function getTranscriptPath(cwd: string | undefined, sessionId: string | undefined): string | null {
   if (!sessionId) return null;
-  const projectDir = cwd ? cwd.replace(/\//g, '-') : process.env.PWD?.replace(/\//g, '-');
+  const projectDir = cwd ? cwd.replace(/[\\/]/g, '-') : process.env.PWD?.replace(/[\\/]/g, '-');
   if (!projectDir) return null;
   return resolve(getClaudeHome(), 'projects', projectDir, `${sessionId}.jsonl`);
+}
+
+const WINDOWS_DRIVE_PATH_RE = /^([A-Za-z]):[\\/](.*)$/;
+
+// Windows Claude Code sends Windows-style paths (C:\Users\...) even when this
+// collector runs inside WSL; translate to the WSL mount so statSync can read it.
+function translateWslPath(path: string): string {
+  if (process.platform !== 'linux') return path;
+  const match = WINDOWS_DRIVE_PATH_RE.exec(path);
+  if (!match) return path;
+  const [, drive, rest] = match;
+  return `/mnt/${drive.toLowerCase()}/${rest.replace(/\\/g, '/')}`;
 }
 
 function readLastAssistantUsage(transcriptPath: string): TranscriptUsage | null {
@@ -267,10 +279,11 @@ function collectTranscriptTokens(data: {
   // Prefer Claude Code's own transcript_path field — it's authoritative and
   // works under git worktrees, where deriving the path from cwd produces a
   // dashed directory that doesn't match the parent project's transcript dir.
-  const transcriptPath =
+  const rawTranscriptPath =
     typeof data.transcript_path === 'string' && data.transcript_path.length > 0
       ? data.transcript_path
       : getTranscriptPath(data.cwd, sessionId);
+  const transcriptPath = rawTranscriptPath ? translateWslPath(rawTranscriptPath) : null;
   if (!transcriptPath || !sessionId) return;
 
   let currentSize: number;
@@ -985,6 +998,7 @@ export {
   collectTranscriptTokens,
   readLastAssistantUsage,
   getTranscriptPath,
+  translateWslPath,
   getBufferPath,
   writePpidBreadcrumb,
   readStdinSync,
