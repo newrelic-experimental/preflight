@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.43] - 2026-07-14
+
+### Fixed
+
+- Fixed the WSL-hosted collector failing to read Windows-style transcript paths sent by desktop Claude Code, which silently dropped all token/model/cost collection for `wsl-windows-cc` installs.
+- Fixed `resolveBinaryPath()` splitting `PATH` on `:` instead of the platform delimiter and never probing npm's `.cmd`/`.ps1` shim extensions, which always returned null on native Windows — causing a false "not on PATH" warning, loss of absolute hook-path resolution, and a stalled hook upgrade when switching from WSL to native Windows installs.
+
 ## [1.4.42] - 2026-07-14
 
 ### Added
