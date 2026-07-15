@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.44] - 2026-07-15
+
+### Fixed
+
+- Fixed instruction/prompt drift tracking correlating on the arguments of a `Read` tool call (file path, offset, limit) instead of the target file's actual content, which produced false drift signals when re-reading an unchanged file at a different offset or limit, and missed real content changes read at an identical offset/limit.
+
 ## [1.4.43] - 2026-07-14
 
 ### Fixed

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
+import { ClaudeMdTracker } from './claudemd-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const logger = createLogger('instruction-drift');
@@ -90,8 +91,17 @@ export class InstructionDriftTracker {
     // Only track reads of instruction files
     if (!filePath.includes('CLAUDE.md') && !filePath.includes('.claude/')) return;
 
-    const hash = record.inputHash as string | undefined;
-    if (!hash) return;
+    let hash: string;
+    try {
+      hash = ClaudeMdTracker.computeFileHash(filePath);
+    } catch (err) {
+      // File gone/unreadable by the time we process this event — no signal,
+      // but log at debug level since this can also mean permission-denied
+      // or an EISDIR (unlike the pre-fix code, which never touched the
+      // filesystem here at all).
+      logger.debug('Could not hash instruction file', { filePath, error: String(err) });
+      return;
+    }
 
     this.setPromptHash(hash);
   }
