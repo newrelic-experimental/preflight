@@ -19,6 +19,11 @@ import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
 import { OtlpReceiver } from './otlp-receiver.js';
 import type { OtlpReceiverOptions } from './otlp-receiver.js';
 
+// Captured once at module load, before any test mocks globalThis.fetch, so any
+// describe block can restore the real implementation instead of leaving it
+// undefined for whichever block runs next.
+const realFetch = globalThis.fetch;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -213,7 +218,7 @@ describe('forward', () => {
   });
 
   afterEach(() => {
-    (globalThis as { fetch?: unknown }).fetch = undefined;
+    globalThis.fetch = realFetch;
   });
 
   it('calls fetch with the forward URL and api-key header', async () => {
@@ -287,17 +292,10 @@ describe('forward', () => {
 });
 
 describe('forward — DNS rebinding protection', () => {
-  // This describe block is a sibling of describe('forward', ...), not nested inside it,
-  // so that block's own beforeEach (which sets globalThis.fetch = mockFetch) never runs
-  // here. However, describe('forward', ...)'s afterEach (and the unrelated 'error
-  // message sanitization' describe block, further below) resets globalThis.fetch to
-  // `undefined` rather than restoring the original native implementation — so by the
-  // time this block's test runs, globalThis.fetch is left undefined by that earlier
-  // block's cleanup, regardless of nesting. Save the real fetch once at module load
-  // (before any test has run) and restore it around this block's own test so the
-  // Agent's connect.lookup gets a genuine, unmocked fetch to actually run through.
-  const realFetch = globalThis.fetch;
-
+  // This describe block is a sibling of describe('forward', ...), not nested inside
+  // it, so that block's own beforeEach (which mocks globalThis.fetch) never runs here.
+  // Explicitly restore the real fetch anyway so this test's Agent/connect.lookup path
+  // always runs through a genuine, unmocked fetch, independent of file-level ordering.
   beforeEach(() => {
     globalThis.fetch = realFetch;
   });
@@ -360,6 +358,51 @@ describe('start / stop lifecycle', () => {
   it('stop() resolves immediately when not yet started', async () => {
     const receiver = makeReceiver();
     await expect(receiver.stop()).resolves.toBeUndefined();
+  });
+
+  it('stop() closes the forwardDispatcher Agent when forwarding is configured', async () => {
+    const { Agent } = await import('undici');
+    const closeSpy = jest.spyOn(Agent.prototype, 'close').mockResolvedValue(undefined);
+    try {
+      const receiver = makeReceiver({ forwardEndpoint: 'https://otlp.nr-data.net' });
+      await receiver.start();
+      await receiver.stop();
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      closeSpy.mockRestore();
+    }
+  });
+
+  it('stop() does not throw when forwarding is not configured (no dispatcher to close)', async () => {
+    const receiver = makeReceiver();
+    await receiver.start();
+    await expect(receiver.stop()).resolves.toBeUndefined();
+  });
+
+  it('stop() closes the forwardDispatcher even if the receiver was never started', async () => {
+    const { Agent } = await import('undici');
+    const closeSpy = jest.spyOn(Agent.prototype, 'close').mockResolvedValue(undefined);
+    try {
+      const receiver = makeReceiver({ forwardEndpoint: 'https://otlp.nr-data.net' });
+      await receiver.stop();
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      closeSpy.mockRestore();
+    }
+  });
+
+  it('stop() still resolves even if the forwardDispatcher rejects on close()', async () => {
+    const { Agent } = await import('undici');
+    const closeSpy = jest
+      .spyOn(Agent.prototype, 'close')
+      .mockRejectedValue(new Error('already destroyed'));
+    try {
+      const receiver = makeReceiver({ forwardEndpoint: 'https://otlp.nr-data.net' });
+      await receiver.start();
+      await expect(receiver.stop()).resolves.toBeUndefined();
+    } finally {
+      closeSpy.mockRestore();
+    }
   });
 });
 
@@ -773,7 +816,7 @@ describe('incomplete body', () => {
 
 describe('error message sanitization', () => {
   afterEach(() => {
-    (globalThis as { fetch?: unknown }).fetch = undefined;
+    globalThis.fetch = realFetch;
   });
 
   it('logs only err.message without stack frames on forward error', async () => {
