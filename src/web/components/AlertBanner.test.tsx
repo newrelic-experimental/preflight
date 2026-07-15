@@ -22,7 +22,7 @@ describe('AlertBanner', () => {
     render(<AlertBanner alert={makeAlert()} onDismiss={() => {}} />);
     expect(screen.getByText('Session cost spike')).toBeInTheDocument();
     expect(screen.getByText(/Spent 12\.34/)).toBeInTheDocument();
-    expect(screen.getByText(/12\.34 \/ 10/)).toBeInTheDocument();
+    expect(screen.getByText(/12\.3 \/ 10\.0/)).toBeInTheDocument();
   });
 
   it('shows the severity label', () => {

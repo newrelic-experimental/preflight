@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.46] - 2026-07-15
+
+### Fixed
+
+- The OTLP receiver now closes its outbound connection pool when stopped, and no longer hangs if closing that pool fails, instead of leaving the pool open for the life of the process.
+- Corrected a test assertion in the alert banner suite that no longer matched the component's real number formatting.
+
 ## [1.4.45] - 2026-07-15
 
 ### Fixed

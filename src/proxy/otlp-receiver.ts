@@ -77,12 +77,20 @@ export class OtlpReceiver {
   }
 
   stop(): Promise<void> {
+    const closeDispatcher = (): Promise<void> =>
+      this.forwardDispatcher
+        ? this.forwardDispatcher.close().catch((err: unknown) => {
+            logger.error('Error closing OTLP forward dispatcher', { error: String(err) });
+          })
+        : Promise.resolve();
     return new Promise((resolve) => {
       if (!this.server) {
-        resolve();
+        void closeDispatcher().then(() => resolve());
         return;
       }
-      this.server.close(() => resolve());
+      this.server.close(() => {
+        void closeDispatcher().then(() => resolve());
+      });
     });
   }
 
