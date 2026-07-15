@@ -62,7 +62,7 @@ describe('extended-analytics-tools handlers', () => {
     expect(metrics.totalBranches).toBe(1);
     expect(metrics.longestFailureStreak).toBe(1);
     expect(metrics.note).toBe(
-      "reasoning fields above are rule-based labels (e.g. 'recovery after X failure', 'retrying Y on Z'), not extracted model chain-of-thought -- recordToolCall() has no access to actual reasoning text. Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.",
+      "reasoning fields are the model's own thinking/text output for that turn when NEW_RELIC_AI_MCP_RECORD_CONTENT is enabled and the underlying model exposes plaintext reasoning -- some models/transports return only an encrypted thinking signature with no plaintext, in which case this falls back to a rule-based label (e.g. 'recovery after X failure'). Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.",
     );
 
     const pmResult = handleGetDecisionTree(tracker, true);

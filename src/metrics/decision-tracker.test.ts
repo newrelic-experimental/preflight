@@ -1,4 +1,8 @@
 import { DecisionTracker } from './decision-tracker.js';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import type { ToolCallRecord } from '../storage/types.js';
 
 const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 afterEach(() => stderrSpy.mockClear());
@@ -22,7 +26,7 @@ describe('DecisionTracker', () => {
     const tracker = new DecisionTracker();
     const metrics = tracker.getMetrics();
     expect(metrics.note).toBe(
-      "reasoning fields above are rule-based labels (e.g. 'recovery after X failure', 'retrying Y on Z'), not extracted model chain-of-thought -- recordToolCall() has no access to actual reasoning text. Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.",
+      "reasoning fields are the model's own thinking/text output for that turn when NEW_RELIC_AI_MCP_RECORD_CONTENT is enabled and the underlying model exposes plaintext reasoning -- some models/transports return only an encrypted thinking signature with no plaintext, in which case this falls back to a rule-based label (e.g. 'recovery after X failure'). Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.",
     );
 
     // Recording a real decision must not change the note -- the limitation
@@ -185,5 +189,94 @@ describe('DecisionTracker', () => {
     tracker.reset('new-session');
     expect(tracker.getMetrics().totalBranches).toBe(0);
     expect(tracker.getBranches()).toHaveLength(0);
+  });
+});
+
+describe('DecisionTracker transcript reasoning extraction (recordContent)', () => {
+  let tmpDir: string;
+  let transcriptPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(resolve(tmpdir(), 'nr-decision-tracker-test-'));
+    transcriptPath = resolve(tmpDir, 'transcript.jsonl');
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function assistantLine(
+    messageId: string,
+    block: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return { type: 'assistant', message: { id: messageId, content: [block] } };
+  }
+
+  function writeTranscript(lines: Record<string, unknown>[]): void {
+    writeFileSync(transcriptPath, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  }
+
+  function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
+    return {
+      id: 'id-1',
+      sessionId: 'session-1',
+      toolName: 'Read',
+      toolUseId: 'tool_1',
+      timestamp: Date.now(),
+      durationMs: 10,
+      success: true,
+      ...overrides,
+    };
+  }
+
+  it('uses the extracted transcript reasoning for the recovery branch when recordContent is enabled', () => {
+    writeTranscript([
+      assistantLine('msg_1', {
+        type: 'thinking',
+        thinking: 'Retrying with Read since Bash failed.',
+      }),
+      assistantLine('msg_1', { type: 'tool_use', id: 'tool_2', name: 'Read', input: {} }),
+    ]);
+
+    const tracker = new DecisionTracker({ recordContent: true });
+    tracker.recordToolCall(makeRecord({ toolName: 'Bash', success: false, toolUseId: 'tool_1' }));
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', success: true, toolUseId: 'tool_2', transcriptPath }),
+    );
+
+    const branches = tracker.getBranches();
+    expect(branches[0]?.reasoning).toBe('Retrying with Read since Bash failed.');
+  });
+
+  it('falls back to the template reasoning when recordContent is enabled but extraction finds no match', () => {
+    writeTranscript([
+      assistantLine('msg_1', { type: 'thinking', thinking: 'Unrelated reasoning.' }),
+      assistantLine('msg_1', { type: 'tool_use', id: 'tool_other', name: 'Read', input: {} }),
+    ]);
+
+    const tracker = new DecisionTracker({ recordContent: true });
+    tracker.recordToolCall(makeRecord({ toolName: 'Bash', success: false, toolUseId: 'tool_1' }));
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', success: true, toolUseId: 'tool_2', transcriptPath }),
+    );
+
+    const branches = tracker.getBranches();
+    expect(branches[0]?.reasoning).toBe('recovery after Bash failure');
+  });
+
+  it('never attempts transcript extraction when recordContent is disabled (default)', () => {
+    writeTranscript([
+      assistantLine('msg_1', { type: 'thinking', thinking: 'This should never be read.' }),
+      assistantLine('msg_1', { type: 'tool_use', id: 'tool_2', name: 'Read', input: {} }),
+    ]);
+
+    const tracker = new DecisionTracker();
+    tracker.recordToolCall(makeRecord({ toolName: 'Bash', success: false, toolUseId: 'tool_1' }));
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', success: true, toolUseId: 'tool_2', transcriptPath }),
+    );
+
+    const branches = tracker.getBranches();
+    expect(branches[0]?.reasoning).toBe('recovery after Bash failure');
   });
 });

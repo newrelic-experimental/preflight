@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.45] - 2026-07-15
+
+### Fixed
+
+- Fixed `nr_observe_get_decision_tree`'s `reasoning` field always being one of 3 hardcoded template strings instead of the model's actual reasoning. When content recording is enabled and the underlying model exposes plaintext thinking or visible text for that turn, the field now reflects the model's real reasoning (passed through the existing redaction filter), falling back to the prior rule-based label when the model exposes no plaintext reasoning.
+
 ## [1.4.44] - 2026-07-15
 
 ### Fixed

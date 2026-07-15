@@ -948,6 +948,7 @@ function processHook(raw: string): void {
 
   // Attach session metadata
   if (data.cwd) event.cwd = data.cwd;
+  if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;

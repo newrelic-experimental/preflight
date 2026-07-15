@@ -54,7 +54,7 @@ export const LATENCY_DECOMPOSITION_TOOL = {
 export const DECISION_TREE_TOOL = {
   name: 'nr_observe_get_decision_tree',
   description:
-    'Get decision branch analysis: rule-based decision labeling and action tagging for triggered branches (recovery, retry, delegation), with outcome tagging. Includes post-mortem of failure chains and longest failure streak. LIMITATION: the reasoning field is a fixed rule-based label, not extracted model chain-of-thought, and branches are only recorded on 3 narrow triggers rather than every turn (see the note field in the response).',
+    "Get decision branch analysis: reasoning and action extraction per turn for triggered branches (recovery, retry, delegation), with outcome tagging. Includes post-mortem of failure chains and longest failure streak. LIMITATION: the reasoning field is the model's own thinking/text output only when NEW_RELIC_AI_MCP_RECORD_CONTENT is enabled and the model exposes plaintext reasoning; otherwise it falls back to a fixed rule-based label. Branches are only recorded on 3 narrow triggers rather than every turn (see the note field in the response).",
   inputSchema: {
     type: 'object' as const,
     properties: {
