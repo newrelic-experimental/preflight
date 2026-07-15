@@ -1,4 +1,5 @@
 import type { ToolCallRecord } from '../storage/types.js';
+import { extractReasoningForToolUse } from './transcript-reasoning.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +30,7 @@ export interface DecisionTreeMetrics {
 export interface DecisionTrackerOptions {
   readonly maxBranches?: number;
   readonly reasoningMaxLength?: number;
+  readonly recordContent?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,7 +41,7 @@ const DEFAULT_MAX_BRANCHES = 500;
 const DEFAULT_REASONING_MAX_LENGTH = 500;
 
 export const DECISION_TREE_REASONING_NOTE =
-  "reasoning fields above are rule-based labels (e.g. 'recovery after X failure', 'retrying Y on Z'), not extracted model chain-of-thought -- recordToolCall() has no access to actual reasoning text. Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.";
+  "reasoning fields are the model's own thinking/text output for that turn when NEW_RELIC_AI_MCP_RECORD_CONTENT is enabled and the underlying model exposes plaintext reasoning -- some models/transports return only an encrypted thinking signature with no plaintext, in which case this falls back to a rule-based label (e.g. 'recovery after X failure'). Branches are only recorded on 3 narrow triggers (failure recovery, AskUserQuestion, 3rd+ same-tool-same-file retry), not on every turn, so totalBranches undercounts ordinary turns.";
 
 // ---------------------------------------------------------------------------
 // DecisionTracker
@@ -48,6 +50,7 @@ export const DECISION_TREE_REASONING_NOTE =
 export class DecisionTracker {
   private readonly maxBranches: number;
   private readonly reasoningMaxLength: number;
+  private readonly recordContent: boolean;
   private readonly branches: DecisionBranch[] = [];
 
   private turnCounter = 0;
@@ -58,17 +61,21 @@ export class DecisionTracker {
   constructor(options?: DecisionTrackerOptions) {
     this.maxBranches = options?.maxBranches ?? DEFAULT_MAX_BRANCHES;
     this.reasoningMaxLength = options?.reasoningMaxLength ?? DEFAULT_REASONING_MAX_LENGTH;
+    this.recordContent = options?.recordContent ?? false;
   }
 
   recordToolCall(record: ToolCallRecord): void {
     this.turnCounter++;
     const turn = this.turnCounter;
+    const transcriptPath = record.transcriptPath as string | undefined;
 
     if (this.lastRecordFailed) {
       // Previous tool failed — this tool call represents a recovery decision
       this.recordDecision({
         turnNumber: turn,
-        reasoning: `recovery after ${this.lastToolName ?? 'unknown'} failure`,
+        reasoning:
+          this.extractReasoning(transcriptPath, record.toolUseId) ??
+          `recovery after ${this.lastToolName ?? 'unknown'} failure`,
         chosenAction: record.toolName,
         toolName: record.toolName,
       });
@@ -77,7 +84,7 @@ export class DecisionTracker {
     if (record.toolName === 'AskUserQuestion') {
       this.recordDecision({
         turnNumber: turn,
-        reasoning: 'delegating to user',
+        reasoning: this.extractReasoning(transcriptPath, record.toolUseId) ?? 'delegating to user',
         chosenAction: 'ask_user',
         toolName: record.toolName,
       });
@@ -92,7 +99,9 @@ export class DecisionTracker {
       if (count >= 3) {
         this.recordDecision({
           turnNumber: turn,
-          reasoning: `retrying ${record.toolName} on ${filePath} (${count} attempts)`,
+          reasoning:
+            this.extractReasoning(transcriptPath, record.toolUseId) ??
+            `retrying ${record.toolName} on ${filePath} (${count} attempts)`,
           chosenAction: 'retry',
           toolName: record.toolName,
         });
@@ -106,6 +115,11 @@ export class DecisionTracker {
 
     this.lastRecordFailed = !record.success;
     this.lastToolName = record.toolName;
+  }
+
+  private extractReasoning(transcriptPath: string | undefined, toolUseId: string): string | null {
+    if (!this.recordContent || !transcriptPath) return null;
+    return extractReasoningForToolUse(transcriptPath, toolUseId);
   }
 
   recordDecision(input: {

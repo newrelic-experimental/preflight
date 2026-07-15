@@ -802,7 +802,7 @@ async function main(): Promise<void> {
     // coarse tool-execution-vs-everything-else split isn't currently derivable.
     // Kept dormant; would need new hook wiring or an LLM-facing proxy to fix for real.
     const latencyDecompositionTracker: LatencyDecompositionTracker | undefined = undefined;
-    const decisionTracker = new DecisionTracker();
+    const decisionTracker = new DecisionTracker({ recordContent: config.recordContent });
     const instructionDriftTracker = new InstructionDriftTracker();
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();

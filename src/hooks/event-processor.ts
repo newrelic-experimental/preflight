@@ -297,6 +297,9 @@ export class HookEventProcessor {
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
         ...(preEvent.inputHash !== undefined && { inputHash: preEvent.inputHash }),
         ...(preEvent.cwd !== undefined && { cwd: preEvent.cwd as string }),
+        ...(preEvent.transcriptPath !== undefined && {
+          transcriptPath: preEvent.transcriptPath as string,
+        }),
         ...(preEvent.permissionMode !== undefined && {
           permissionMode: preEvent.permissionMode as string,
         }),

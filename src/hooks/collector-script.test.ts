@@ -135,6 +135,13 @@ describe('collector-script', () => {
       expect(event.toolUseId).toBe('toolu_abc123');
     });
 
+    it('captures transcript_path as transcriptPath', () => {
+      processHook(makePreToolUse({ transcript_path: '/tmp/fake-session.jsonl' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.transcriptPath).toBe('/tmp/fake-session.jsonl');
+    });
+
     it('does not include content fields by default', () => {
       processHook(makePreToolUse());
 

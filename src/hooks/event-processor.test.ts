@@ -116,6 +116,18 @@ describe('HookEventProcessor', () => {
       expect(record.outputSizeBytes).toBe(2048);
       expect(record.inputHash).toBe('hash1234hash1234');
     });
+
+    it('includes transcriptPath when the pre event carries one', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ transcriptPath: '/tmp/fake-transcript.jsonl' }),
+        makePostEvent(),
+      ]);
+
+      const record = records[0]!;
+      expect(record.transcriptPath).toBe('/tmp/fake-transcript.jsonl');
+    });
   });
 
   describe('processEvents() — interleaved ordering', () => {
