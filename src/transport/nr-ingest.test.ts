@@ -4,14 +4,16 @@ import {
   codingTaskToNrEvent,
   antiPatternToNrEvent,
   proxyToolCallToNrEvent,
+  proxyRequestToNrEvent,
   NrIngestManager,
   isProxyToolCall,
 } from './nr-ingest.js';
 import type { NrIngestOptions } from './nr-ingest.js';
 import type { ToolCallRecord } from '../storage/types.js';
-import type { ProxyToolCallRecord } from '../proxy/types.js';
+import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
 
@@ -37,6 +39,45 @@ function makeProxyRecord(overrides?: Partial<ProxyToolCallRecord>): ProxyToolCal
     ...makeRecord(),
     serverName: 'test-server',
     upstreamLatencyMs: 10,
+    ...overrides,
+  };
+}
+
+function makeProxyRequestRecord(overrides?: Partial<ProxyRequestRecord>): ProxyRequestRecord {
+  return {
+    id: 'preq-001',
+    serverName: 'nr-mcp-server',
+    method: 'tools/list',
+    timestamp: 1_700_000_000_000,
+    durationMs: 15,
+    upstreamLatencyMs: 10,
+    success: true,
+    ...overrides,
+  };
+}
+
+function makeContextSnapshot(overrides?: Partial<ContextTurnSnapshot>): ContextTurnSnapshot {
+  return {
+    turnNumber: 3,
+    timestamp: 1_700_000_000_000,
+    inputTokens: 5000,
+    outputTokens: 200,
+    cacheReadTokens: 1000,
+    cacheCreationTokens: 0,
+    fillPercent: 0.25,
+    breakdown: { system: 500, tools: 2000, user: 1500, assistant: 1000 },
+    ...overrides,
+  };
+}
+
+function makeToolContribution(
+  overrides?: Partial<ToolContextContribution>,
+): ToolContextContribution {
+  return {
+    tool: 'Read',
+    totalBytes: 4000,
+    estimatedTokens: 1000,
+    percentOfToolOutput: 50,
     ...overrides,
   };
 }
@@ -377,6 +418,195 @@ describe('NrIngestManager', () => {
       expect(metricNames).toContain('ai.tool.call_count');
       expect(metricNames).toContain('ai.tool.duration_ms');
       expect(metricNames).toContain('ai.tool.success');
+    });
+  });
+
+  describe('proxyRequestToNrEvent()', () => {
+    it('serializes AiProxyRequest fields correctly', () => {
+      const record = makeProxyRequestRecord();
+      const event = proxyRequestToNrEvent(record, { developer: 'dev1', appName: 'my-app' });
+
+      expect(event.eventType).toBe('AiProxyRequest');
+      expect(event.server).toBe('nr-mcp-server');
+      expect(event.method).toBe('tools/list');
+      expect(event.duration_ms).toBe(15);
+      expect(event.upstream_latency_ms).toBe(10);
+      expect(event.success).toBe(true);
+      expect(event.developer).toBe('dev1');
+      expect(event.app_name).toBe('my-app');
+    });
+
+    it('includes proxy_overhead_ms and response_size_bytes when present', () => {
+      const record = makeProxyRequestRecord({ proxyOverheadMs: 3, responseSizeBytes: 512 });
+      const event = proxyRequestToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event.proxy_overhead_ms).toBe(3);
+      expect(event.response_size_bytes).toBe(512);
+    });
+
+    it('omits proxy_overhead_ms and response_size_bytes when absent', () => {
+      const record = makeProxyRequestRecord();
+      const event = proxyRequestToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event).not.toHaveProperty('proxy_overhead_ms');
+      expect(event).not.toHaveProperty('response_size_bytes');
+    });
+
+    it('includes team_id/project_id/org_id when provided', () => {
+      const record = makeProxyRequestRecord();
+      const event = proxyRequestToNrEvent(record, {
+        developer: 'd',
+        appName: 'a',
+        teamId: 'team-1',
+        projectId: 'proj-1',
+        orgId: 'org-1',
+      });
+
+      expect(event.team_id).toBe('team-1');
+      expect(event.project_id).toBe('proj-1');
+      expect(event.org_id).toBe('org-1');
+    });
+  });
+
+  describe('ingestProxyRequest()', () => {
+    it('buffers AiProxyRequest event and records proxy metrics (verified via flush)', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestProxyRequest(makeProxyRequestRecord({ method: 'tools/call', durationMs: 42 }));
+
+      manager.start();
+      await manager.stop();
+
+      expect(mockSendEvents).toHaveBeenCalled();
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const proxyEvent = sentEvents.find((e) => e.eventType === 'AiProxyRequest')!;
+      expect(proxyEvent).toBeDefined();
+      expect(proxyEvent.method).toBe('tools/call');
+      expect(proxyEvent.duration_ms).toBe(42);
+
+      expect(mockSendMetrics).toHaveBeenCalled();
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const metricNames = sentMetrics.map((m) => m.name);
+      expect(metricNames).toContain('ai.mcp.proxy_request_count');
+      expect(metricNames).toContain('ai.mcp.proxy_request_duration_ms');
+    });
+
+    it('does not emit ai.mcp.proxy_request_duration_ms metric when durationMs is null', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestProxyRequest(makeProxyRequestRecord({ durationMs: null as unknown as number }));
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const metricNames = sentMetrics.map((m) => m.name);
+      expect(metricNames).not.toContain('ai.mcp.proxy_request_duration_ms');
+    });
+  });
+
+  describe('ingestContextSnapshot()', () => {
+    it('buffers AiContextSnapshot event with breakdown fields (verified via flush)', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestContextSnapshot(makeContextSnapshot(), [makeToolContribution()]);
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
+      expect(snapshotEvent).toBeDefined();
+      expect(snapshotEvent.turn_number).toBe(3);
+      expect(snapshotEvent.total_context_tokens).toBe(5000);
+      expect(snapshotEvent.fill_percent).toBe(0.25);
+      expect(snapshotEvent.system_tokens).toBe(500);
+      expect(snapshotEvent.tool_tokens).toBe(2000);
+      expect(snapshotEvent.user_tokens).toBe(1500);
+      expect(snapshotEvent.assistant_tokens).toBe(1000);
+      expect(snapshotEvent.top_tool).toBe('Read');
+      expect(snapshotEvent.top_tool_bytes).toBe(4000);
+      expect(snapshotEvent.top_tool_tokens).toBe(1000);
+    });
+
+    it('omits top_tool fields when topTools is empty', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestContextSnapshot(makeContextSnapshot(), []);
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
+      expect(snapshotEvent).not.toHaveProperty('top_tool');
+      expect(snapshotEvent).not.toHaveProperty('top_tool_bytes');
+      expect(snapshotEvent).not.toHaveProperty('top_tool_tokens');
+    });
+
+    it('includes session_id from sessionTraceId when set', async () => {
+      const manager = new NrIngestManager({
+        ...makeIngestOptions(),
+        sessionTraceId: 'trace-abc',
+      });
+
+      manager.ingestContextSnapshot(makeContextSnapshot(), []);
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const snapshotEvent = sentEvents.find((e) => e.eventType === 'AiContextSnapshot')!;
+      expect(snapshotEvent.session_id).toBe('trace-abc');
+    });
+  });
+
+  describe('ingestToolCall() securityAlertToNrEvent wiring', () => {
+    it('emits a SecurityAlert event when the audit record carries a security alert', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestToolCall(makeRecord({ toolName: 'Bash', command: 'rm -rf /' }));
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      // AiToolCall + AiAuditEvent + SecurityAlert
+      expect(sentEvents).toHaveLength(3);
+      const alertEvent = sentEvents.find((e) => e.eventType === 'SecurityAlert')!;
+      expect(alertEvent).toBeDefined();
+      expect(alertEvent.severity).toBe('critical');
+      expect(alertEvent.alert_type).toBe('destructive_command');
+    });
+
+    it('does not emit a SecurityAlert event for a benign tool call', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestToolCall(makeRecord({ toolName: 'Read', filePath: '/src/index.ts' }));
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      // AiToolCall + AiAuditEvent only
+      expect(sentEvents).toHaveLength(2);
+      expect(sentEvents.find((e) => e.eventType === 'SecurityAlert')).toBeUndefined();
     });
   });
 
