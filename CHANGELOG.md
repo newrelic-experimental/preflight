@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.47] - 2026-07-15
+
+### Fixed
+
+- The live dashboard's pre-connection anti-pattern hydration now maps the server's anti-pattern fields (file/command, iteration/read/repeat/edit/agent counts) onto the display shape correctly, instead of leaving the target file and count blank until the first live event arrives.
+
 ## [1.4.46] - 2026-07-15
 
 ### Fixed

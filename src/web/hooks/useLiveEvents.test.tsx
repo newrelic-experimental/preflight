@@ -117,6 +117,45 @@ describe('useLiveEvents', () => {
     expect(useLiveStore.getState().antiPatterns).toHaveLength(1);
   });
 
+  describe('REST hydration of anti-patterns', () => {
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('maps the real AntiPattern shape into the store, not the SSE shape', async () => {
+      globalThis.fetch = vi.fn((url: string, _init?: RequestInit) => {
+        if (url === '/api/anti-patterns') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve([
+                { type: 're_reading', file: 'auth.ts', readCount: 4, suggestion: 'x' },
+              ]),
+          } as Response);
+        }
+        return Promise.resolve({ ok: false } as Response);
+      }) as typeof globalThis.fetch;
+
+      renderHook(() => useLiveEvents());
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const patterns = useLiveStore.getState().antiPatterns;
+      expect(patterns).toHaveLength(1);
+      expect(patterns[0].type).toBe('re_reading');
+      expect(patterns[0].target).toBe('auth.ts');
+      expect(patterns[0].count).toBe(4);
+    });
+  });
+
   describe('staleness watchdog', () => {
     beforeEach(() => {
       vi.useFakeTimers();
