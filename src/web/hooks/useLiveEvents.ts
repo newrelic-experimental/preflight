@@ -49,7 +49,12 @@ function hydrateFromApi(signal: AbortSignal): void {
       if (!Array.isArray(data)) return;
       for (const ap of data) {
         if (ap && typeof ap === 'object' && 'type' in ap) {
-          store.pushAntiPattern(ap as unknown as { type: string; target: string; count: number });
+          store.pushAntiPattern({
+            type: ap.type,
+            target: ap.file ?? ap.command ?? 'unknown',
+            count:
+              ap.iterations ?? ap.readCount ?? ap.repeatCount ?? ap.editCount ?? ap.agentCount ?? 0,
+          });
         }
       }
     })
