@@ -1,7 +1,38 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ToolCallRecord } from '../storage/types.js';
 import { InstructionDriftTracker, hashPrompt } from './instruction-drift-tracker.js';
 
 const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 afterEach(() => stderrSpy.mockClear());
+
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = join(
+    tmpdir(),
+    `nr-instruction-drift-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  mkdirSync(tmpDir, { recursive: true });
+});
+
+afterEach(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
+function makeReadRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
+  return {
+    id: `tc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    sessionId: 'sess-1',
+    toolName: 'Read',
+    toolUseId: `tu-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    timestamp: Date.now(),
+    durationMs: 100,
+    success: true,
+    ...overrides,
+  } as ToolCallRecord;
+}
 
 describe('hashPrompt', () => {
   it('returns a 16-char hex string', () => {
@@ -255,5 +286,72 @@ describe('InstructionDriftTracker', () => {
 
     tracker.setPromptHash('def456');
     expect(tracker.promptHash).toBe('def456');
+  });
+});
+
+describe('InstructionDriftTracker.recordToolCall (content-based hashing)', () => {
+  it('detects a real content change even when inputHash is unchanged', () => {
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'v1 content');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordToolCall(makeReadRecord({ filePath: claudeMdPath, inputHash: 'same-arg-hash' }));
+    const hashAfterV1 = tracker.promptHash;
+    expect(hashAfterV1).not.toBeNull();
+
+    writeFileSync(claudeMdPath, 'v2 content, materially different');
+    tracker.recordToolCall(makeReadRecord({ filePath: claudeMdPath, inputHash: 'same-arg-hash' }));
+    const hashAfterV2 = tracker.promptHash;
+
+    expect(hashAfterV2).not.toBe(hashAfterV1);
+  });
+
+  it('does not report a change when content is unchanged, even if inputHash differs', () => {
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'stable content');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordToolCall(makeReadRecord({ filePath: claudeMdPath, inputHash: 'hash-offset-0' }));
+    const firstHash = tracker.promptHash;
+
+    // Simulates re-reading the same unchanged file at a different offset/limit —
+    // inputHash would differ under the old (buggy) args-based hashing.
+    tracker.recordToolCall(makeReadRecord({ filePath: claudeMdPath, inputHash: 'hash-offset-50' }));
+    const secondHash = tracker.promptHash;
+
+    expect(secondHash).toBe(firstHash);
+  });
+
+  it('does not throw and leaves promptHash unchanged when the file is unreadable', () => {
+    const tracker = new InstructionDriftTracker();
+    const missingPath = join(tmpDir, 'CLAUDE.md'); // never created — does not exist on disk
+
+    expect(() => tracker.recordToolCall(makeReadRecord({ filePath: missingPath }))).not.toThrow();
+    expect(tracker.promptHash).toBeNull();
+  });
+
+  it('preserves a previously-set promptHash when a later read fails', () => {
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'known-good content');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordToolCall(makeReadRecord({ filePath: claudeMdPath }));
+    const establishedHash = tracker.promptHash;
+    expect(establishedHash).not.toBeNull();
+
+    const missingPath = join(tmpDir, 'now-deleted-CLAUDE.md'); // never created
+
+    expect(() => tracker.recordToolCall(makeReadRecord({ filePath: missingPath }))).not.toThrow();
+    expect(tracker.promptHash).toBe(establishedHash);
+  });
+
+  it('ignores Read calls on files outside CLAUDE.md/.claude/', () => {
+    const otherPath = join(tmpDir, 'some-source-file.ts');
+    writeFileSync(otherPath, 'export const x = 1;');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordToolCall(makeReadRecord({ filePath: otherPath }));
+
+    expect(tracker.promptHash).toBeNull();
   });
 });
