@@ -505,4 +505,97 @@ describe('sse-handler', () => {
       await server.close();
     }
   });
+
+  it('heartbeat interval emits a real heartbeat frame after HEARTBEAT_MS elapses', () => {
+    jest.useFakeTimers();
+    try {
+      const bus = new LiveEventBus();
+      const req = new EventEmitter() as IncomingMessage;
+      req.headers = {};
+      const res = new EventEmitter() as ServerResponse;
+      const writeSpy = jest.fn();
+      (res as unknown as { writeHead: jest.Mock }).writeHead = jest.fn();
+      (res as unknown as { write: jest.Mock }).write = writeSpy;
+
+      createSseHandler(bus)(req, res);
+      writeSpy.mockClear(); // drop the initial ': stream-open\n\n' write
+
+      jest.advanceTimersByTime(30_000);
+
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      const frame = writeSpy.mock.calls[0][0] as string;
+      expect(frame).toMatch(/^event: heartbeat\n/);
+      expect(frame).toMatch(/\nid: hb-\d+\n/);
+      expect(frame).toMatch(/data: \{"ts":\d+\}/);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('res.on("error") triggers cleanup exactly once (EPIPE-style write failure)', () => {
+    const bus = new LiveEventBus();
+    const offSpy = jest.spyOn(bus, 'offWithSeq');
+
+    const req = new EventEmitter() as IncomingMessage;
+    req.headers = {};
+    const res = new EventEmitter() as ServerResponse;
+    (res as unknown as { writeHead: jest.Mock }).writeHead = jest.fn();
+    (res as unknown as { write: jest.Mock }).write = jest.fn();
+
+    createSseHandler(bus)(req, res);
+    expect(offSpy).not.toHaveBeenCalled();
+
+    res.emit('error', new Error('EPIPE'));
+
+    expect(offSpy).toHaveBeenCalledTimes(5);
+  });
+
+  it('res.destroyed short-circuits onAny — no write attempted for live frames', () => {
+    const bus = new LiveEventBus();
+    const req = new EventEmitter() as IncomingMessage;
+    req.headers = {};
+    const res = new EventEmitter() as ServerResponse;
+    const writeSpy = jest.fn();
+    (res as unknown as { writeHead: jest.Mock }).writeHead = jest.fn();
+    (res as unknown as { write: jest.Mock }).write = writeSpy;
+
+    createSseHandler(bus)(req, res);
+    writeSpy.mockClear(); // drop the initial ': stream-open\n\n' write
+    (res as unknown as { destroyed: boolean }).destroyed = true;
+
+    bus.emit('tool-call', {
+      id: 'a',
+      sessionId: 's1',
+      tool: 'Read',
+      durationMs: 1,
+      costUsd: 0,
+      ts: 1,
+    });
+
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it('cleanup clears the heartbeat interval', () => {
+    jest.useFakeTimers();
+    try {
+      const bus = new LiveEventBus();
+      const req = new EventEmitter() as IncomingMessage;
+      req.headers = {};
+      const res = new EventEmitter() as ServerResponse;
+      const writeSpy = jest.fn();
+      (res as unknown as { writeHead: jest.Mock }).writeHead = jest.fn();
+      (res as unknown as { write: jest.Mock }).write = writeSpy;
+
+      createSseHandler(bus)(req, res);
+      writeSpy.mockClear();
+
+      req.emit('close');
+
+      jest.advanceTimersByTime(60_000); // well past HEARTBEAT_MS
+
+      expect(writeSpy).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

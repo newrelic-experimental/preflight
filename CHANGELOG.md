@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.42] - 2026-07-14
+
+### Added
+
+- Added test coverage for the proxy-request and context-snapshot NR event ingestion paths, the security-alert event wiring inside tool-call ingestion, additional sensitive-file/destructive-command/network-request detection patterns, and SSE heartbeat/cleanup edge cases in the live dashboard event stream.
+
 ## [1.4.41] - 2026-07-14
 
 ### Added
