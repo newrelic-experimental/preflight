@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-15
+
+### Added
+
+- Subagent and workflow-script cost tracking: tokens spent inside Task-tool subagents and Workflow-tool script runs were previously invisible to cost tracking, meaningfully undercounting real spend on agentic sessions. Preflight now watches subagent and workflow transcripts directly, attributes their cost and token usage to the parent session, and reports it as a distinct breakdown alongside the parent session's own spend.
+- A unified session trace: parent tool calls, subagent fan-out, and workflow-run structure now render together in one attributed timeline (Gantt and list views), with drill-down into individual subagent calls.
+- Workflow-run visibility: a dedicated list and detail view showing per-run status, duration, agent count, and per-agent breakdown, including declared vs. observed phase and parallelism topology for script-based workflows.
+- Observability health status: watcher active/disabled state, files watched, and parse-error counts are now surfaced in Settings, replacing an environment-variable-based check that never worked in the browser.
+
 ## [1.4.47] - 2026-07-15
 
 ### Fixed

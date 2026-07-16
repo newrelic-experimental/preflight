@@ -14,6 +14,7 @@ import {
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { Button, Card, Eyebrow, Pill, SectionHeader } from '../components/ui';
+import { formatUsd } from '../lib/format';
 
 interface PersonalThresholds {
   readonly dailyCostUsd: number;
@@ -48,8 +49,8 @@ function PeriodRow({ label, p }: { label: string; p: BudgetPeriod }) {
       <span className="text-xs text-ink-muted w-20 shrink-0 capitalize">{label}</span>
       <SpendBar pct={p.pctUsed} exceeded={p.exceeded} />
       <span className="text-xs tabular-nums text-ink-base">
-        ${p.spentUsd.toFixed(4)}
-        {p.budgetUsd !== null ? ` / $${p.budgetUsd.toFixed(2)}` : ''}
+        {formatUsd(p.spentUsd)}
+        {p.budgetUsd !== null ? ` / ${formatUsd(p.budgetUsd)}` : ''}
         {p.pctUsed !== null ? ` (${p.pctUsed.toFixed(0)}%)` : ''}
       </span>
       {p.exceeded && (
@@ -187,7 +188,7 @@ export function Alerts(): JSX.Element {
                         <span className="text-accent-amber tabular-nums">{a.thresholdPct}%</span>
                         <span className="capitalize">{a.period}</span>
                         <span className="text-ink-muted tabular-nums">
-                          ${a.spentUsd.toFixed(4)} / ${a.budgetUsd.toFixed(2)}
+                          {formatUsd(a.spentUsd)} / {formatUsd(a.budgetUsd)}
                         </span>
                         <span className="text-ink-muted ml-auto tabular-nums">
                           {new Date(a.timestamp).toLocaleTimeString(undefined, {

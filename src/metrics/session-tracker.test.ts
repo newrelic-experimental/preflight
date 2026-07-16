@@ -353,6 +353,30 @@ describe('SessionTracker', () => {
     });
   });
 
+  describe('adoptSessionId()', () => {
+    it('updates the sessionId in place without clearing accumulated metrics', () => {
+      const tracker = new SessionTracker('provisional-id');
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', durationMs: 50 }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Edit', durationMs: 80 }));
+
+      // Adopt a real session ID.
+      tracker.adoptSessionId('real-session-id');
+
+      const metrics = tracker.getMetrics();
+      // Session ID must be updated.
+      expect(metrics.sessionId).toBe('real-session-id');
+      // Previously accumulated tool calls must be preserved.
+      expect(metrics.toolCallCount).toBe(2);
+      expect(metrics.toolCallCountByTool['Read']).toBe(1);
+      expect(metrics.toolCallCountByTool['Edit']).toBe(1);
+    });
+
+    it('throws when called with an empty string', () => {
+      const tracker = new SessionTracker('valid-session');
+      expect(() => tracker.adoptSessionId('')).toThrow(/requires a non-empty sessionId/);
+    });
+  });
+
   describe('reset()', () => {
     it('clears all counters back to initial state', () => {
       const tracker = new SessionTracker('old-session');

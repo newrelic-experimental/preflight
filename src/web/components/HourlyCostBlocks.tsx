@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import { formatUsd } from '../lib/format.js';
+
 export interface HourlyCostEntry {
   readonly hour: number; // 0..23
   readonly cost: number;
@@ -36,8 +38,9 @@ function formatHourLabel(hour: number): string {
 function describeChart(hours: ReadonlyArray<HourlyCostEntry>): string {
   const total = hours.reduce((s, h) => s + h.cost, 0);
   const max = hours.reduce((m, h) => Math.max(m, h.cost), 0);
-  const peak = hours.find((h) => h.cost === max)!;
-  return `Hourly spend today: $${total.toFixed(2)} total, peak $${max.toFixed(2)} at ${formatHourLabel(peak.hour)}`;
+  const peak = hours.find((h) => h.cost === max);
+  if (peak === undefined || max === 0) return 'Hourly spend today: no activity yet.';
+  return `Hourly spend today: ${formatUsd(total)} total, peak ${formatUsd(max)} at ${formatHourLabel(peak.hour)}`;
 }
 
 export function HourlyCostBlocks({
@@ -59,7 +62,7 @@ export function HourlyCostBlocks({
   if (maxBlocks === 0) return null;
 
   const chartHeight = maxBlocks * (BLOCK_PX + BLOCK_GAP_PX);
-  const fmt = formatValue ?? ((v: number) => `$${v.toFixed(2)}`);
+  const fmt = formatValue ?? ((v: number) => formatUsd(v));
   const label = ariaLabel ?? describeChart(hours);
 
   const hovered = hoverIdx !== null ? hours[hoverIdx] : null;

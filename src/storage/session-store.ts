@@ -269,6 +269,14 @@ export interface BuildSessionSummarySources {
   efficiencyScorer?: EfficiencyScorer;
   developer: string;
   repoName?: string | null;
+  /**
+   * Session outcome to persist. Defaults to `'completed'`. Periodic mid-session
+   * checkpoints MUST pass `'in progress'` so a live session is never persisted
+   * (and then rendered) as completed — the dashboard detail route reads this
+   * snapshot's outcome verbatim. Only the terminal (shutdown) save should write
+   * `'completed'`.
+   */
+  outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
 }
@@ -397,7 +405,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     userMessages: 0,
     assistantMessages: 0,
     userCorrections: 0,
-    outcome: 'completed',
+    outcome: sources.outcome ?? 'completed',
     platform: sources.platform,
     instructionPromptHash: sources.instructionPromptHash ?? null,
     timeline: timeline.length > 0 ? timeline : undefined,

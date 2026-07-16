@@ -69,6 +69,17 @@ describe('Sessions view', () => {
     expect(screen.getByText(/s2/)).toBeInTheDocument();
   });
 
+  it('renders the consolidated workflow KPI strip and filter controls', async () => {
+    renderSessions(SAMPLE_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    // Fleet KPI strip folded in from the former Workflows view.
+    expect(screen.getByText('Workflow runs')).toBeInTheDocument();
+    expect(screen.getByText('Workflow spend')).toBeInTheDocument();
+    // Run-level filter controls.
+    expect(screen.getByRole('group', { name: /run source filter/i })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /status filter/i })).toBeInTheDocument();
+  });
+
   it('shows tool-call count and cost per row', async () => {
     renderSessions(SAMPLE_LIST);
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
@@ -283,7 +294,9 @@ describe('Sessions view — real API shapes', () => {
     await waitFor(() => expect(screen.getByText(/abc-123/)).toBeInTheDocument());
     expect(screen.getByText(/def-456/)).toBeInTheDocument();
     expect(screen.getByText('28 calls')).toBeInTheDocument();
-    expect(screen.getByText('$0.42')).toBeInTheDocument();
+    // Sub-dollar costs render with 4 decimals via the shared formatUsd helper
+    // (0 < value < $1 keeps meaningful digits): 0.42 → "$0.4200".
+    expect(screen.getByText('$0.4200')).toBeInTheDocument();
   });
 
   it('renders without crashing when estimatedCostUsd is undefined', async () => {

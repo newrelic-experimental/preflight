@@ -137,6 +137,13 @@ export interface TodayAggregateResponse {
     readonly bucketSizeMs: number;
     readonly points: readonly number[];
   };
+  // Subagent spend rollup, served by the aggregate
+  // endpoint. These are the source of truth for the "subagent spend" KPI:
+  // the liveStore equivalents (useSubagentStats) are only populated by SSE
+  // frames that aren't emitted server-side yet, so they stay 0.
+  readonly subagentUsd?: number;
+  readonly subagentTurnCount?: number;
+  readonly workflowRunCount?: number;
 }
 
 // /api/sessions returns a heterogeneous mix of full persisted session
@@ -402,6 +409,52 @@ export const fetchRecentAlerts = (): Promise<AlertEvent[]> =>
   getJson<AlertEvent[]>('/api/alerts/recent');
 export const fetchSessionReplay = (id: string): Promise<SessionReplayResponse> =>
   getJson<SessionReplayResponse>(`/api/sessions/${encodeURIComponent(id)}/replay`);
+// Mirrors GET /api/sessions/:sessionId/subagents `agents[]`. Readonly to
+// match the dashboard's immutable-data-shape convention.
+export interface AgentSpan {
+  readonly agentId: string;
+  readonly workflowRunId: string | null;
+  readonly workflowName: string | null;
+  readonly label: string;
+  readonly model: string;
+  readonly startMs: number;
+  readonly endMs: number;
+  readonly durationMs: number;
+  readonly turnCount: number;
+  readonly totalTokens: number;
+  readonly usd: number | null;
+}
+
+export interface SessionSubagentsResponse {
+  readonly window: { readonly startMs: number; readonly endMs: number };
+  readonly agents: ReadonlyArray<AgentSpan>;
+}
+
+// Subagent fan-out timeline for a session, sorted by startMs ASC. Consumed
+// by the Sessions detail pane's AgentSwimlanes chart and by SessionTrace.
+export const fetchSessionSubagents = (id: string): Promise<SessionSubagentsResponse> =>
+  getJson<SessionSubagentsResponse>(`/api/sessions/${encodeURIComponent(id)}/subagents`);
+
+// GET /api/sessions/:id/agents/:agentId/calls → { calls: [...] }. No
+// file/command detail in this wire shape (kept lean for the per-agent
+// fetch); GanttTimeline tolerates the missing optional fields.
+export interface AgentCall {
+  readonly toolName: string;
+  readonly timestamp: number;
+  readonly durationMs: number | null;
+  readonly success: boolean;
+}
+
+export interface AgentCallsResponse {
+  readonly calls: ReadonlyArray<AgentCall>;
+}
+
+// ONE subagent's individual tool calls for the attributed session-trace
+// view, sorted by timestamp ASC. Lazily fetched when a swimlane row expands.
+export const fetchAgentCalls = (sessionId: string, agentId: string): Promise<AgentCallsResponse> =>
+  getJson<AgentCallsResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/calls`,
+  );
 export const fetchQualityProxy = (): Promise<QualityProxyMetrics> =>
   getJson<QualityProxyMetrics>('/api/quality-proxy');
 export const fetchToolSelectionScore = (): Promise<ToolSelectionMetrics> =>
@@ -762,6 +815,77 @@ export const postDigestSend = (): Promise<DigestSendResponse> =>
     return (await r.json()) as DigestSendResponse;
   });
 
+export const fetchObservabilityHealth = (): Promise<unknown> =>
+  getJson<unknown>('/api/observability-health');
+type WorkflowRunStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+
+// Mirrors WorkflowRunDto serialized by both GET /api/workflows (list, one
+// entry per run) and GET /api/workflows/:runId (detail, as the `run` field).
+export interface WorkflowRunInfo {
+  readonly runId: string;
+  readonly parentSessionId: string;
+  readonly taskId: string | null;
+  readonly workflowName: string;
+  readonly status: WorkflowRunStatus;
+  readonly defaultModel: string;
+  readonly startedAt?: number | null;
+  readonly durationMs?: number | null;
+  readonly agentCount?: number | null;
+  readonly totalTokens?: number | null;
+  readonly totalUsd?: number | null;
+  readonly declaredPhases?: number | null;
+  readonly observedPhases?: number | null;
+  readonly declaredParallelWidths?: ReadonlyArray<number | 'dynamic'> | null;
+  readonly tokenReconciliationDelta?: number | null;
+  readonly incomplete?: boolean;
+  readonly errorReason?: string | null;
+  readonly runSource?: string | null;
+  readonly scriptPath?: string | null;
+  readonly workflowJsonPath?: string | null;
+}
+
+// Declared topology parsed from the workflow script (counts only — no
+// per-phase timeline exists in the rollup).
+export interface WorkflowTopology {
+  readonly workflowName?: string | null;
+  readonly declaredPhases?: number | null;
+  readonly declaredPhaseCalls?: number | null;
+  readonly declaredAgents?: number | null;
+  readonly declaredParallelWidths?: ReadonlyArray<number | 'dynamic'> | null;
+}
+
+// Mirrors WorkflowAgentDto serialized by the /api/workflows/:runId route
+// (src/dashboard/routes/api-handler.ts). The on-disk wf_*.json rollup only
+// carries an aggregate `tokens` count and `toolCalls` per agent — there is NO
+// input/output/cache token split and no per-agent usd.
+export interface AgentRow {
+  readonly agentId: string;
+  readonly label: string;
+  readonly phaseIndex: number;
+  readonly phaseTitle: string;
+  readonly model: string;
+  readonly state: string;
+  readonly attempt: number;
+  readonly durationMs: number | null;
+  readonly tokens: number;
+  readonly toolCalls: number;
+  readonly startedAt: number | null;
+}
+
+// Wire shape returned by the detail route: { run, agents, topology }.
+export interface WorkflowRunDetailResponse {
+  readonly run: WorkflowRunInfo;
+  readonly agents: ReadonlyArray<AgentRow>;
+  readonly topology: WorkflowTopology | null;
+}
+
+// Bare array (not { runs }) — feeds straight into Array.isArray() at call
+// sites; a wrapper object would render an empty list.
+export const fetchWorkflows = (): Promise<ReadonlyArray<WorkflowRunInfo>> =>
+  getJson<ReadonlyArray<WorkflowRunInfo>>('/api/workflows');
+export const fetchWorkflowDetail = (runId: string): Promise<WorkflowRunDetailResponse> =>
+  getJson<WorkflowRunDetailResponse>(`/api/workflows/${encodeURIComponent(runId)}`);
+
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
@@ -776,6 +900,9 @@ export const qk = {
   personalCoach: ['personal-coach'] as const,
   alertsRecent: ['alerts', 'recent'] as const,
   sessionReplay: (id: string) => ['session', id, 'replay'] as const,
+  sessionSubagents: (id: string) => ['session', id, 'subagents'] as const,
+  agentCalls: (sessionId: string, agentId: string) =>
+    ['session', sessionId, 'subagent', agentId, 'calls'] as const,
   qualityProxy: ['quality-proxy'] as const,
   toolSelectionScore: ['tool-selection-score'] as const,
   gitEfficiency: ['git-efficiency'] as const,
@@ -790,5 +917,7 @@ export const qk = {
   // Query keys for live session and today aggregate endpoints
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,
+  workflows: ['workflows'] as const,
+  workflowDetail: (runId: string) => ['workflow', runId] as const,
   diagnostics: ['diagnostics'] as const,
 };

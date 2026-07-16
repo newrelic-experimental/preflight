@@ -1,5 +1,12 @@
 export interface HookEvent {
-  readonly mode: 'pre' | 'post' | 'token';
+  /**
+   * Buffer line discriminator. `pre` / `post` / `token` are the original
+   * collector modes. `subagent_token`, `workflow_run`, and
+   * `observability_health` are emitted by the SubagentWatcher /
+   * WorkflowWatcher.
+   */
+  readonly mode:
+    'pre' | 'post' | 'token' | 'subagent_token' | 'workflow_run' | 'observability_health';
   readonly tool: string;
   readonly timestamp: number;
   readonly inputHash?: string;
@@ -65,4 +72,39 @@ export interface AuditEntry {
   readonly tool?: string;
   readonly detail?: string;
   readonly [key: string]: unknown;
+}
+
+export interface SubagentTokenEvent {
+  readonly mode: 'subagent_token';
+  readonly timestamp: number;
+  readonly agentId: string;
+  readonly workflowRunId: string | null;
+  readonly messageId: string;
+  readonly model: string;
+  readonly usage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cacheCreationTokens: number;
+    readonly cacheReadTokens: number;
+    readonly reasoningTokens: number;
+  };
+  readonly parentSessionId: string;
+}
+
+export interface WorkflowRunEvent {
+  readonly mode: 'workflow_run';
+  readonly timestamp: number;
+  readonly workflowRunId: string;
+  readonly status: string;
+  readonly durationMs: number | null;
+  readonly totalTokens: number;
+  readonly agentCount: number;
+  readonly workflowName: string;
+  readonly phases: readonly string[];
+  readonly workflowProgress: ReadonlyArray<{
+    readonly type?: string;
+    readonly state?: string;
+    readonly agentId?: string;
+  }>;
+  readonly parentSessionId: string;
 }

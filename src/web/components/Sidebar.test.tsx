@@ -87,7 +87,7 @@ describe('Sidebar', () => {
     expect(audit).toHaveAttribute('aria-current', 'page');
   });
 
-  it('shows ● connected when connected=true', () => {
+  it('shows ● live when connected=true', () => {
     render(
       <Sidebar
         currentPath="/"

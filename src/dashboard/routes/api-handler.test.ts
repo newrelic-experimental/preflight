@@ -518,6 +518,131 @@ describe('api-handler GET /api/sessions/:id/replay', () => {
   });
 });
 
+describe('api-handler GET /api/sessions/:sessionId/subagents', () => {
+  const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+  it('returns the subagent timeline payload as JSON (200)', async () => {
+    const payload = {
+      window: { startMs: 100, endMs: 200 },
+      agents: [
+        {
+          agentId: 'a1111111111111111',
+          workflowRunId: null,
+          workflowName: null,
+          label: 'agent a1111111',
+          model: 'claude-opus-4-7',
+          startMs: 100,
+          endMs: 200,
+          durationMs: 100,
+          turnCount: 2,
+          totalTokens: 430,
+          usd: 0.01,
+        },
+      ],
+    };
+    const handler = createApiHandler({
+      subagentTimeline: {
+        getSubagentsForSession: (id: string) => {
+          expect(id).toBe(SESSION);
+          return payload;
+        },
+        getAgentCalls: () => ({ calls: [] }),
+      },
+    });
+    const req = {
+      method: 'GET',
+      url: `/api/sessions/${SESSION}/subagents`,
+    } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(payload);
+  });
+
+  it('returns 503 unavailable when subagentTimeline dep is absent', async () => {
+    const handler = createApiHandler({});
+    const req = {
+      method: 'GET',
+      url: `/api/sessions/${SESSION}/subagents`,
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'subagentTimeline' });
+  });
+});
+
+describe('api-handler GET /api/sessions/:sessionId/subagents/:agentId/calls', () => {
+  const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const AGENT_ID = 'a1111111111111111';
+
+  it("returns ONE subagent's calls as JSON (200), routing sessionId + agentId through", async () => {
+    const payload = {
+      calls: [
+        { toolName: 'Read', timestamp: 100, durationMs: 50, success: true },
+        { toolName: 'Bash', timestamp: 200, durationMs: null, success: false },
+      ],
+    };
+    let receivedSession = '';
+    let receivedAgent = '';
+    const handler = createApiHandler({
+      subagentTimeline: {
+        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getAgentCalls: (sessionId: string, agentId: string) => {
+          receivedSession = sessionId;
+          receivedAgent = agentId;
+          return payload;
+        },
+      },
+    });
+    const req = {
+      method: 'GET',
+      url: `/api/sessions/${SESSION}/subagents/${AGENT_ID}/calls`,
+    } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(payload);
+    expect(receivedSession).toBe(SESSION);
+    expect(receivedAgent).toBe(AGENT_ID);
+  });
+
+  it('matches the /calls route before the /subagents route (does not collapse to the swimlane endpoint)', async () => {
+    let calledTimeline = false;
+    const handler = createApiHandler({
+      subagentTimeline: {
+        getSubagentsForSession: () => {
+          calledTimeline = true;
+          return { window: { startMs: 0, endMs: 0 }, agents: [] };
+        },
+        getAgentCalls: () => ({ calls: [] }),
+      },
+    });
+    const req = {
+      method: 'GET',
+      url: `/api/sessions/${SESSION}/subagents/${AGENT_ID}/calls`,
+    } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(calledTimeline).toBe(false);
+  });
+
+  it('returns 503 unavailable when subagentTimeline dep is absent', async () => {
+    const handler = createApiHandler({});
+    const req = {
+      method: 'GET',
+      url: `/api/sessions/${SESSION}/subagents/${AGENT_ID}/calls`,
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'subagentTimeline' });
+  });
+});
+
 describe('api-handler GET /api/cost', () => {
   it('returns cost and forecast as JSON', async () => {
     const fakeCost = { sessionTotalCostUsd: 0.25, costByModel: { 'claude-sonnet': 0.25 } };
@@ -1248,6 +1373,40 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     const parsed = JSON.parse(body()) as { toolCallCount: number; totalCostUsd: number };
     expect(parsed.toolCallCount).toBe(0);
     expect(parsed.totalCostUsd).toBe(0);
+  });
+
+  it('reports today-scoped subagent spend without double-counting the total', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0 }),
+        // All-in today spend (already includes the subagent portion).
+        getCostForDay: () => 9,
+        // Today's subagent portion of that 9 — the breakdown, not an addend.
+        getSubagentCostForDay: () => 6,
+        // Session-cumulative; must NOT be what the aggregate reports.
+        getSubagentMetrics: () => ({
+          subagentUsd: 99,
+          parentUsd: 3,
+          subagentSharePct: 97,
+          reconciliationDeltaPct: null,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number; subagentUsd: number };
+    // Total is the all-in day spend — NOT inflated by folding subagent in again.
+    expect(parsed.totalCostUsd).toBeCloseTo(9, 3);
+    // Subagent KPI is the today-scoped portion (6), not the cumulative 99.
+    expect(parsed.subagentUsd).toBeCloseTo(6, 3);
   });
 
   it('skips events older than the start of today', async () => {

@@ -19,6 +19,11 @@ vi.mock('../api/client', () => ({
     retainSessionsDays: null,
   })),
   fetchDiagnostics: vi.fn(async () => []),
+  fetchObservabilityHealth: vi.fn(async () => ({
+    watcherActive: true,
+    filesWatched: 3,
+    parseErrors: 0,
+  })),
   patchSettings: vi.fn(async () => ({})),
   qk: {
     settings: ['settings'],
@@ -81,5 +86,37 @@ describe('DiagnosticsPanel', () => {
     ] as never);
     wrap(<Settings />);
     expect(await screen.findByText(/macOS only/)).toBeTruthy();
+  });
+});
+
+describe('Subagent watcher status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows disabled when the observability-health endpoint reports watcherActive: false', async () => {
+    vi.mocked(client.fetchObservabilityHealth).mockResolvedValue({
+      watcherActive: false,
+      filesWatched: 0,
+      parseErrors: 0,
+    });
+    wrap(<Settings />);
+    // The "High security" read-only field also renders the literal text
+    // "disabled" (from the mocked highSecurity: false setting), so scope
+    // the query to the watcher status's own red-text span.
+    expect(
+      await screen.findByText('disabled', { selector: '.text-accent-red' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows enabled with file/error counts when watcherActive is true', async () => {
+    vi.mocked(client.fetchObservabilityHealth).mockResolvedValue({
+      watcherActive: true,
+      filesWatched: 5,
+      parseErrors: 1,
+    });
+    wrap(<Settings />);
+    expect(await screen.findByText('enabled')).toBeInTheDocument();
+    expect(await screen.findByText(/5 files watched, 1 parse errors/i)).toBeInTheDocument();
   });
 });

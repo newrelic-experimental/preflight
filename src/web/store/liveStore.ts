@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 
 // Events that originate from a specific Claude Code session carry `sessionId`
 // so the Today view can filter by `activeId`. Optional on the client side
@@ -69,6 +70,23 @@ export interface ContextUpdateEvent {
   readonly topTools: ReadonlyArray<{ readonly tool: string; readonly estimatedTokens: number }>;
 }
 
+export interface WorkflowRunLiveState {
+  readonly workflowRunId: string;
+  readonly runSource: 'agent_tool' | 'script';
+  readonly workflowName: string;
+  readonly status: string;
+  readonly agentCount: number;
+  readonly totalTokens: number;
+  readonly ts: number;
+}
+
+export interface ObservabilityHealthState {
+  readonly filesWatched: number;
+  readonly parseErrors: number;
+  readonly watcherDisabledByLock: boolean;
+  readonly ts: number;
+}
+
 interface LiveState {
   readonly connected: boolean;
   readonly recentToolCalls: ToolCallEvent[];
@@ -84,6 +102,10 @@ interface LiveState {
   // still flow into the store but views that filter on activeSessionId render
   // empty until a selection is made.
   readonly activeSessionId: string | null;
+  readonly todaySubagentUsd: number;
+  readonly todaySubagentTurnCount: number;
+  readonly recentWorkflowRuns: WorkflowRunLiveState[];
+  readonly observabilityHealth: ObservabilityHealthState | null;
   setConnected(v: boolean): void;
   pushToolCall(e: ToolCallEvent): void;
   setCost(c: CostUpdateEvent): void;
@@ -93,10 +115,15 @@ interface LiveState {
   clearAlert(id: string): void;
   dismissAlert(id: string): void;
   setActiveSession(id: string | null): void;
+  addSubagentTurn(usdEstimate: number | null): void;
+  upsertWorkflowRun(run: WorkflowRunLiveState): void;
+  setObservabilityHealth(health: ObservabilityHealthState): void;
 }
 
 const RECENT_CAP = 20;
 const ANTI_CAP = 10;
+
+const WORKFLOW_CAP = 50;
 
 export const useLiveStore = create<LiveState>((set) => ({
   connected: false,
@@ -107,6 +134,10 @@ export const useLiveStore = create<LiveState>((set) => ({
   firingAlerts: new Map(),
   dismissedAlerts: new Set(),
   activeSessionId: null,
+  todaySubagentUsd: 0,
+  todaySubagentTurnCount: 0,
+  recentWorkflowRuns: [],
+  observabilityHealth: null,
 
   setConnected: (v) => set({ connected: v }),
 
@@ -195,6 +226,24 @@ export const useLiveStore = create<LiveState>((set) => ({
       dismissed.add(id);
       return { dismissedAlerts: dismissed };
     }),
+
+  addSubagentTurn: (usdEstimate) =>
+    set((s) => ({
+      todaySubagentTurnCount: s.todaySubagentTurnCount + 1,
+      todaySubagentUsd: usdEstimate != null ? s.todaySubagentUsd + usdEstimate : s.todaySubagentUsd,
+    })),
+
+  upsertWorkflowRun: (run) =>
+    set((s) => {
+      const filtered = s.recentWorkflowRuns.filter((r) => r.workflowRunId !== run.workflowRunId);
+      const next = [...filtered, run];
+      return {
+        recentWorkflowRuns:
+          next.length > WORKFLOW_CAP ? next.slice(next.length - WORKFLOW_CAP) : next,
+      };
+    }),
+
+  setObservabilityHealth: (health) => set({ observabilityHealth: health }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -234,3 +283,17 @@ export function selectMaxSeverity(state: LiveState): AlertEvent['severity'] | nu
   }
   return best;
 }
+
+// This selector returns a fresh `{ usd, turns }` object on every call. In
+// zustand v5 (built on React's useSyncExternalStore) a selector that allocates
+// a new object/array each render makes the snapshot compare unequal every time,
+// which drives an infinite re-render loop (React error #185). Wrapping with
+// `useShallow` makes zustand shallow-compare the projected fields, so the hook
+// only triggers a re-render when `usd` or `turns` actually changes — while
+// keeping the `{ usd, turns }` call-site API intact.
+export const useSubagentStats = (): { usd: number; turns: number } =>
+  useLiveStore(useShallow((s) => ({ usd: s.todaySubagentUsd, turns: s.todaySubagentTurnCount })));
+export const useRecentWorkflows = (): WorkflowRunLiveState[] =>
+  useLiveStore((s) => s.recentWorkflowRuns);
+export const useObservabilityHealth = (): ObservabilityHealthState | null =>
+  useLiveStore((s) => s.observabilityHealth);

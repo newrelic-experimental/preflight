@@ -15,7 +15,13 @@ import { createLogger } from '../shared/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
-import type { HookEvent, ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type {
+  HookEvent,
+  ToolCallRecord,
+  TokenEvent,
+  SubagentTokenEvent,
+  WorkflowRunEvent,
+} from '../storage/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -49,6 +55,20 @@ export interface HookEventProcessorOptions {
   onRecord: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
   /**
+   * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —
+   * feeds WorkflowRunTracker without altering the existing onRecord pipeline.
+   * Invoked AFTER onRecord; errors are logged and swallowed.
+   */
+  onWorkflowAgent?: (record: ToolCallRecord) => void;
+  /** Fires for every `mode: 'subagent_token'` line; errors swallowed. */
+  onSubagentTurn?: (turn: SubagentTurnEvent) => void;
+  /** Fires for every `mode: 'observability_health'` line; errors swallowed. */
+  onObservabilityHealth?: (event: ObservabilityHealthFrame) => void;
+  /** Fires for every `mode: 'subagent_token'` line as the typed wire shape. */
+  onSubagentToken?: (event: SubagentTokenEvent) => void;
+  /** Fires for every `mode: 'workflow_run'` line; errors swallowed. */
+  onWorkflowRun?: (event: WorkflowRunEvent) => void;
+  /**
    * Adapter used to map each platform's raw tool names (e.g. Kiro's `fs_read`)
    * to Preflight's canonical vocabulary (`Read`) before pairing/emitting.
    * Defaults to the process's auto-detected platform (env-var based via
@@ -56,6 +76,52 @@ export interface HookEventProcessorOptions {
    * (identity mapping) when no platform-specific env vars are present.
    */
   platformAdapter?: PlatformAdapter;
+}
+
+/**
+ * Flattened processor-internal shape extracted from a `mode: 'subagent_token'`
+ * buffer entry, with all-numeric defaults applied. This is DISTINCT from the
+ * storage `SubagentTokenEvent` wire shape (imported above): token counts are
+ * hoisted to top-level fields here (rather than nested under `usage`), and it
+ * carries extra processor-derived fields (`turnUuid`, `stopReason`,
+ * `schemaFingerprint`). Not a duplicate of `SubagentTokenEvent`.
+ */
+export interface SubagentTurnEvent {
+  readonly timestampMs: number;
+  readonly parentSessionId: string;
+  readonly agentId: string;
+  readonly workflowRunId: string | null;
+  readonly messageId: string;
+  readonly turnUuid: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly reasoningTokens: number;
+  readonly stopReason: string | null;
+  readonly schemaFingerprint: string;
+}
+
+/** Wire-shape data extracted from a `mode: 'observability_health'` entry. */
+export interface ObservabilityHealthFrame {
+  readonly timestamp: number;
+  readonly watcher: 'workflow' | 'subagent';
+  readonly filesWatched: number;
+  readonly linesRead: number;
+  readonly bytesRead: number;
+  readonly parseErrors: number;
+  readonly schemaDrifts: number;
+  readonly lastError: { code: string; class: string } | null;
+  readonly event?: string;
+  readonly dimension?: string;
+  readonly fingerprint?: string;
+  readonly workflowRunId?: string;
+  readonly costSelfCheckDeltaPct?: number;
+}
+
+function numAttr(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -69,7 +135,32 @@ export class HookEventProcessor {
   private drainAllSessions: boolean;
   private readonly onRecord: (record: ToolCallRecord) => void;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
+  private readonly onWorkflowAgent: ((record: ToolCallRecord) => void) | null;
+  private readonly onSubagentTurn: ((turn: SubagentTurnEvent) => void) | null;
+  private readonly onObservabilityHealth: ((event: ObservabilityHealthFrame) => void) | null;
+  private readonly onSubagentToken: ((event: SubagentTokenEvent) => void) | null;
+  private readonly onWorkflowRun: ((event: WorkflowRunEvent) => void) | null;
   private readonly platformAdapter: PlatformAdapter;
+  /**
+   * Dedup ring of `(agentId, messageId)` for recent subagent turns. Cursor
+   * recovery may re-read a line after a crash mid-write; double-counting would
+   * be silent, so we drop on the seen-set (capped at 4096 to bound memory).
+   */
+  private readonly subagentDedup = new Set<string>();
+  private readonly subagentDedupOrder: string[] = [];
+  /**
+   * Dedup ring of `(workflowRunId, timestamp)` for recent workflow_run
+   * events, mirroring subagentDedup above. This path only matters for
+   * `--local` mode's buffer.jsonl route — `--stdio` mode's WorkflowWatcher
+   * calls ingestScriptWorkflowRun() directly in-process, bypassing the
+   * buffer/crash-recovery path entirely. The `.drain` file crash-recovery
+   * path can re-deliver the same buffered line after a crash mid-write;
+   * without this, that redelivery emits a duplicate AiWorkflowRun event
+   * (doubling cost/token metrics for that run) since a new poll cycle's
+   * legitimate re-emission for the SAME run uses a different timestamp.
+   */
+  private readonly workflowRunDedup = new Set<string>();
+  private readonly workflowRunDedupOrder: string[] = [];
 
   private readonly pending: Map<string, HookEvent> = new Map();
   private readonly maxPendingEvents: number;
@@ -87,6 +178,11 @@ export class HookEventProcessor {
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
     this.onRecord = options.onRecord;
     this.onTokenEvent = options.onTokenEvent ?? null;
+    this.onWorkflowAgent = options.onWorkflowAgent ?? null;
+    this.onSubagentTurn = options.onSubagentTurn ?? null;
+    this.onObservabilityHealth = options.onObservabilityHealth ?? null;
+    this.onSubagentToken = options.onSubagentToken ?? null;
+    this.onWorkflowRun = options.onWorkflowRun ?? null;
     this.platformAdapter = options.platformAdapter ?? createDefaultRegistry().getActive();
 
     this.boundBeforeExit = () => {
@@ -189,6 +285,12 @@ export class HookEventProcessor {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
           this.handlePostEvent(event);
+        } else if (event.mode === 'subagent_token') {
+          this.handleSubagentTokenEvent(event);
+        } else if (event.mode === 'observability_health') {
+          this.handleObservabilityHealthEvent(event);
+        } else if (event.mode === 'workflow_run') {
+          this.handleWorkflowRunEvent(event as unknown as WorkflowRunEvent);
         }
       } catch (err) {
         logger.warn('Error processing hook event', {
@@ -438,6 +540,128 @@ export class HookEventProcessor {
     return oldestKey;
   }
 
+  private handleSubagentTokenEvent(event: HookEvent): void {
+    if (!this.onSubagentTurn && !this.onSubagentToken) return;
+    const agentId = (event.agentId as string | undefined) ?? '';
+    const messageId = (event.messageId as string | undefined) ?? '';
+    if (!agentId || !messageId) return;
+    const dedupKey = `${agentId}|${messageId}`;
+    if (this.subagentDedup.has(dedupKey)) return;
+    this.subagentDedup.add(dedupKey);
+    this.subagentDedupOrder.push(dedupKey);
+    if (this.subagentDedupOrder.length > 4096) {
+      const evicted = this.subagentDedupOrder.shift();
+      if (evicted) this.subagentDedup.delete(evicted);
+    }
+
+    const turn: SubagentTurnEvent = {
+      timestampMs:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      parentSessionId: (event.sessionId as string | undefined) ?? '',
+      agentId,
+      workflowRunId: (event.workflowRunId as string | null | undefined) ?? null,
+      messageId,
+      turnUuid: (event.turnUuid as string | undefined) ?? '',
+      model: (event.model as string | undefined) ?? 'unknown',
+      inputTokens: numAttr(event.inputTokens),
+      outputTokens: numAttr(event.outputTokens),
+      cacheReadTokens: numAttr(event.cacheReadTokens),
+      cacheCreationTokens: numAttr(event.cacheCreationTokens),
+      reasoningTokens: numAttr(event.reasoningTokens),
+      stopReason: (event.stopReason as string | null | undefined) ?? null,
+      schemaFingerprint: (event.schemaFingerprint as string | undefined) ?? '',
+    };
+    if (this.onSubagentTurn) {
+      try {
+        this.onSubagentTurn(turn);
+      } catch (err) {
+        logger.warn('onSubagentTurn callback failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (this.onSubagentToken) {
+      const tokenEvent: SubagentTokenEvent = {
+        mode: 'subagent_token',
+        timestamp: turn.timestampMs,
+        agentId: turn.agentId,
+        workflowRunId: turn.workflowRunId,
+        messageId: turn.messageId,
+        model: turn.model,
+        usage: {
+          inputTokens: turn.inputTokens,
+          outputTokens: turn.outputTokens,
+          cacheCreationTokens: turn.cacheCreationTokens,
+          cacheReadTokens: turn.cacheReadTokens,
+          reasoningTokens: turn.reasoningTokens,
+        },
+        parentSessionId: turn.parentSessionId,
+      };
+      try {
+        this.onSubagentToken(tokenEvent);
+      } catch (err) {
+        logger.warn('onSubagentToken callback failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  private handleWorkflowRunEvent(event: WorkflowRunEvent): void {
+    if (!this.onWorkflowRun) return;
+    const dedupKey = `${event.workflowRunId}|${event.timestamp}`;
+    if (this.workflowRunDedup.has(dedupKey)) return;
+    this.workflowRunDedup.add(dedupKey);
+    this.workflowRunDedupOrder.push(dedupKey);
+    if (this.workflowRunDedupOrder.length > 4096) {
+      const evicted = this.workflowRunDedupOrder.shift();
+      if (evicted) this.workflowRunDedup.delete(evicted);
+    }
+    try {
+      this.onWorkflowRun(event);
+    } catch (err) {
+      logger.warn('onWorkflowRun callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleObservabilityHealthEvent(event: HookEvent): void {
+    if (!this.onObservabilityHealth) return;
+    const frame: ObservabilityHealthFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      watcher: (event.watcher as 'workflow' | 'subagent' | undefined) ?? 'subagent',
+      filesWatched: numAttr(event.filesWatched),
+      linesRead: numAttr(event.linesRead),
+      bytesRead: numAttr(event.bytesRead),
+      parseErrors: numAttr(event.parseErrors),
+      schemaDrifts: numAttr(event.schemaDrifts),
+      lastError:
+        event.lastError && typeof event.lastError === 'object'
+          ? (event.lastError as { code: string; class: string })
+          : null,
+      ...(typeof event.event === 'string' ? { event: event.event } : {}),
+      ...(typeof event.dimension === 'string' ? { dimension: event.dimension } : {}),
+      ...(typeof event.fingerprint === 'string' ? { fingerprint: event.fingerprint } : {}),
+      ...(typeof event.workflowRunId === 'string' ? { workflowRunId: event.workflowRunId } : {}),
+      ...(typeof event.costSelfCheckDeltaPct === 'number'
+        ? { costSelfCheckDeltaPct: event.costSelfCheckDeltaPct }
+        : {}),
+    };
+    try {
+      this.onObservabilityHealth(frame);
+    } catch (err) {
+      logger.warn('onObservabilityHealth callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private emitRecord(record: ToolCallRecord): void {
     try {
       this.onRecord(record);
@@ -446,6 +670,18 @@ export class HookEventProcessor {
         recordId: record.id,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+    // Workflow observability — additively notify any registered tracker when
+    // an Agent tool call completes. Failures here MUST NOT propagate.
+    if (this.onWorkflowAgent !== null && record.toolName === 'Agent') {
+      try {
+        this.onWorkflowAgent(record);
+      } catch (err) {
+        logger.warn('onWorkflowAgent callback failed', {
+          recordId: record.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 }

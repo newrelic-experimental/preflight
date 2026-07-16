@@ -20,6 +20,13 @@ export interface KpiProps {
   readonly prefix?: string;
   readonly suffix?: string;
   readonly decimals?: number;
+  /**
+   * Formatter for the animated value. When set it must match the formatter used
+   * to build `value`, so the count-up and the settled string render identically
+   * (e.g. pass `formatUsd` for a cost KPI). `prefix`/`suffix`/`decimals` are then
+   * ignored — the formatter owns the whole string.
+   */
+  readonly format?: (n: number) => string;
 }
 
 export function Kpi({
@@ -33,13 +40,20 @@ export function Kpi({
   prefix = '',
   suffix = '',
   decimals = 0,
+  format,
 }: KpiProps): JSX.Element {
   const animated = useAnimatedValue(numericValue ?? 0, {
     decimals,
     enabled: animate && numericValue !== undefined,
+    format,
   });
 
-  const display = animate && numericValue !== undefined ? `${prefix}${animated}${suffix}` : value;
+  const display =
+    animate && numericValue !== undefined
+      ? format
+        ? animated
+        : `${prefix}${animated}${suffix}`
+      : value;
 
   const valueClass = hero
     ? 'text-3xl font-bold mt-1 tabular-nums gradient-text'

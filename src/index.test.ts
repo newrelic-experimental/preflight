@@ -695,7 +695,14 @@ describe('stdio integration', () => {
       // NR_AI_DASHBOARD_PORT=0 → OS-assigned ephemeral, so this test is
       // safe to run when port 7777 is occupied (e.g. a developer running
       // their production instance on the same host).
-      env: { ...process.env, NR_AI_DASHBOARD_PORT: '0', CLAUDE_JOB_DIR: tmpJobDir },
+      // NR_AI_MODE=local → skip licenseKey validation so the test runs
+      // without a real NR config file present.
+      env: {
+        ...process.env,
+        NR_AI_DASHBOARD_PORT: '0',
+        CLAUDE_JOB_DIR: tmpJobDir,
+        NR_AI_MODE: 'local',
+      },
     });
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
