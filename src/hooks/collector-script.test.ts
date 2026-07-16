@@ -1377,10 +1377,10 @@ describe('collector-script', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Fix 3: per-session buffer paths + PPID breadcrumb
+  // Per-session buffer paths + PPID breadcrumb
   // ---------------------------------------------------------------------------
 
-  describe('getBufferPath() (Fix 3)', () => {
+  describe('getBufferPath()', () => {
     it('honours NEW_RELIC_AI_MCP_BUFFER_PATH verbatim and ignores sessionId', () => {
       const explicit = resolve(tmpDir, 'explicit.jsonl');
       process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = explicit;
@@ -1406,7 +1406,7 @@ describe('collector-script', () => {
     });
   });
 
-  describe('processHook() per-session buffer scoping (Fix 3)', () => {
+  describe('processHook() per-session buffer scoping', () => {
     it('writes events to buffer-<sessionId>.jsonl when no explicit BUFFER_PATH is set', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;

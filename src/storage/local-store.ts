@@ -174,7 +174,7 @@ export class LocalStore {
     }
     for (const name of entries) {
       // Per-session: buffer-<id>.jsonl. Also pick up the legacy shared
-      // buffer.jsonl so a freshly-upgraded user's pre-Fix-3 events still flow.
+      // buffer.jsonl so a freshly-upgraded user's pre-existing events still flow.
       if (!name.endsWith('.jsonl')) continue;
       if (name !== 'buffer.jsonl' && !name.startsWith('buffer-')) continue;
       const drained = this.drainPath(resolve(this.storagePath, name));
@@ -712,7 +712,7 @@ export class LocalStore {
   }
 
   /**
-   * Migrate any pre-Fix-3 events left in the legacy shared `buffer.jsonl` into
+   * Migrate any pre-existing events left in the legacy shared `buffer.jsonl` into
    * per-session `buffer-<sessionId>.jsonl` files, then delete the legacy file.
    * Idempotent: returns 0 when the legacy file is absent or already empty.
    *

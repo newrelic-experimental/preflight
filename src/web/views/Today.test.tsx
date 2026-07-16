@@ -197,7 +197,7 @@ describe('Today view', () => {
   // un-spend money), so a raw forecast below current spend renders the
   // clamped value with an "on pace" annotation (delta ≤ 0 branch in
   // ForecastEodCard) — never a negative delta.
-  it('clamps forecast to todayTotal when raw forecast is lower (F-017)', () => {
+  it('clamps forecast to todayTotal when raw forecast is lower', () => {
     useLiveStore.setState({
       cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 8 },
     });
@@ -211,7 +211,7 @@ describe('Today view', () => {
     expect(screen.queryByText(/\$8\.00/)).toBeNull();
   });
 
-  it('still renders a positive delta with "+$" (F-017 regression guard)', () => {
+  it('still renders a positive delta with "+$"', () => {
     useLiveStore.setState({
       cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 12 },
     });
@@ -360,7 +360,7 @@ describe('Today header timestamp', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task #17 (D3): cross-session aggregate KPIs and Today view UX
+// Cross-session aggregate KPIs and Today view UX
 // ---------------------------------------------------------------------------
 
 describe('Today view — aggregate endpoint', () => {
@@ -786,7 +786,7 @@ describe('Today view — Recent alerts panel', () => {
     expect(await screen.findByText(/Error loading recent alerts/i)).toBeInTheDocument();
   });
 
-  // Regression for F-007: in cloud mode the alert engine isn't constructed
+  // Regression test: in cloud mode the alert engine isn't constructed
   // and /api/alerts/recent returns 404. The panel must render nothing —
   // not a permanent red error banner. Without this fix users running the
   // dashboard in cloud mode see "Error loading recent alerts" indefinitely.
@@ -824,11 +824,11 @@ describe('Today view — Recent alerts panel', () => {
     expect(alertsCalls).toHaveLength(1);
   });
 
-  // Regression for F-016: AlertLog.readRecent returns the file's last N
+  // Regression test: AlertLog.readRecent returns the file's last N
   // lines in append (chronological) order — oldest-first within the slice.
   // The panel must sort descending by firedAt so the most-recent firing
   // sits at the top.
-  it('orders rows by firedAt descending (most recent first — F-016)', async () => {
+  it('orders rows by firedAt descending (most recent first)', async () => {
     const oldAlert = {
       id: 'rule-old',
       state: 'firing' as const,

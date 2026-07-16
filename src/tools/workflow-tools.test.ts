@@ -437,7 +437,7 @@ describe('handleGetEfficiencyScore()', () => {
     expect(scorer.getScores()).toHaveLength(1);
   });
 
-  it('latest reflects the active task after updateScore, not a later-inserted completed task (B-05)', () => {
+  it('latest reflects the active task after updateScore, not a later-inserted completed task', () => {
     const scorer = new EfficiencyScorer();
 
     // Score active task first (inserted at index 0), endTime = 1000
@@ -671,10 +671,10 @@ describe('FeedbackCollector.emitMetrics()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MCP protocol integration — all Phase 2 tools
+// MCP protocol integration — all workflow tools
 // ---------------------------------------------------------------------------
 
-describe('MCP protocol integration — Phase 2 tools', () => {
+describe('MCP protocol integration — workflow tools', () => {
   let server: NrMcpServer;
   let client: Client;
   let costTracker: CostTracker;
@@ -713,7 +713,7 @@ describe('MCP protocol integration — Phase 2 tools', () => {
     await server.close();
   });
 
-  it('tools/list includes all Phase 2 tools with correct schemas', async () => {
+  it('tools/list includes all workflow tools with correct schemas', async () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name);
 

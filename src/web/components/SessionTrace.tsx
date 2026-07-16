@@ -14,6 +14,15 @@ import {
   fmtElapsed,
   shortToolName,
 } from '../lib/format.js';
+import {
+  groupAgents,
+  GROUP_BAR_COLORS,
+  PARENT_GROUP_ID,
+  ADHOC_GROUP_ID,
+  subagentGroupId,
+  fmtTickLabel as fmtSpanLabel,
+  type AgentGroup,
+} from '../lib/agent-groups.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,64 +67,6 @@ export interface SessionTraceProps {
   readonly parentSegments?: ReadonlyArray<ParentSegment>;
 }
 
-// ---------------------------------------------------------------------------
-// Grouping (mirrors AgentSwimlanes.groupAgents so the two charts agree on how
-// subagents bucket by workflow run — this is the chart that replaces it).
-// ---------------------------------------------------------------------------
-
-interface AgentGroup {
-  readonly runId: string | null;
-  readonly name: string;
-  readonly earliestStartMs: number;
-  readonly agents: ReadonlyArray<AgentSpan>;
-}
-
-function groupAgents(agents: ReadonlyArray<AgentSpan>): AgentGroup[] {
-  const byRun = new Map<string | null, AgentSpan[]>();
-  for (const agent of agents) {
-    const bucket = byRun.get(agent.workflowRunId);
-    if (bucket) {
-      bucket.push(agent);
-    } else {
-      byRun.set(agent.workflowRunId, [agent]);
-    }
-  }
-
-  const groups: AgentGroup[] = [];
-  for (const [runId, members] of byRun) {
-    const sortedMembers = [...members].sort((a, b) => a.startMs - b.startMs);
-    const earliestStartMs = sortedMembers.reduce(
-      (m, a) => Math.min(m, a.startMs),
-      Number.POSITIVE_INFINITY,
-    );
-    const name = runId === null ? 'Ad-hoc subagents' : (members[0]?.workflowName ?? 'Workflow run');
-    groups.push({ runId, name, earliestStartMs, agents: sortedMembers });
-  }
-
-  groups.sort((a, b) => a.earliestStartMs - b.earliestStartMs);
-  return groups;
-}
-
-// Cycle the dedicated categorical "series" ramp, one hue per workflow group —
-// matches AgentSwimlanes so a given session renders the same group colors here.
-// These tokens carry no semantic meaning (unlike green=success / red=danger);
-// the swatch reads as a CATEGORY. Index is the group's sorted position.
-const GROUP_BAR_COLORS = [
-  'bg-series-1',
-  'bg-series-2',
-  'bg-series-3',
-  'bg-series-4',
-  'bg-series-5',
-  'bg-series-6',
-] as const;
-
-const PARENT_GROUP_ID = '__parent__';
-const ADHOC_GROUP_ID = '__adhoc__';
-
-function subagentGroupId(runId: string | null): string {
-  return runId === null ? ADHOC_GROUP_ID : `run:${runId}`;
-}
-
 // Groups with more than this many agents start collapsed so the trace doesn't
 // open at an unreasonable height. Users can still expand them. Drives the
 // INITIAL collapse state only — the segmented control overrides it wholesale.
@@ -127,14 +78,6 @@ const AUTO_COLLAPSE_AGENT_THRESHOLD = 15;
 // all bars column-aligned under the one axis. Wider than the standalone w-24
 // default so longer agent labels (e.g. "investigate:…") don't truncate badly.
 const TRACE_GUTTER = 'w-44';
-
-// mm:ss span label, same style as AgentSwimlanes' group summary.
-function fmtSpanLabel(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${String(sec).padStart(2, '0')}`;
-}
 
 // Three-level expand/collapse preset for the segmented control.
 type TraceLevel = 'collapsed' | 'agents' | 'expanded';

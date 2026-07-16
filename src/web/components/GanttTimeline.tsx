@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { shortToolName } from '../lib/format.js';
 
 interface GanttTimelineEntry {
@@ -73,17 +73,52 @@ export function GanttTimeline({
 }: GanttTimelineProps): JSX.Element {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  if (entries.length === 0) {
-    return <div className="text-ink-muted text-xs">No tool calls recorded.</div>;
-  }
-
   // Sort by timestamp so out-of-order entries (clock skew, live injection) don't
   // produce negative offsets or clip bars behind the label column. Carry the
   // original index so segment indices (which refer to the unsorted `entries`)
-  // still map to the right rows after sorting.
-  const sorted = entries
-    .map((entry, originalIdx) => ({ entry, originalIdx }))
-    .sort((a, b) => a.entry.timestamp - b.entry.timestamp);
+  // still map to the right rows after sorting. Memoized: this component is now
+  // embedded repeatedly in SessionTrace (parent lane + every expanded agent's
+  // call list, sometimes thousands of rows), and hovering any bar triggers a
+  // setHoveredIndex re-render — without memoization every mouse move across
+  // bars re-sorts and rebuilds the segment map from scratch.
+  const sorted = useMemo(
+    () =>
+      entries
+        .map((entry, originalIdx) => ({ entry, originalIdx }))
+        .sort((a, b) => a.entry.timestamp - b.entry.timestamp),
+    [entries],
+  );
+
+  // Build per-row segment lookup. Segment indices reference the original
+  // `entries` order; map them through the sort so highlights land on the
+  // right row when entries arrive out of timestamp order. Also memoized —
+  // see rationale above.
+  const segmentAt = useMemo(() => {
+    const originalToSorted = new Map<number, number>();
+    for (let i = 0; i < sorted.length; i++) {
+      originalToSorted.set(sorted[i]!.originalIdx, i);
+    }
+    const segmentAt: (GanttSegment | null)[] = new Array(sorted.length).fill(null);
+    for (const seg of segments) {
+      const start = Math.max(0, seg.startIndex);
+      const end = Math.min(seg.endIndex, entries.length - 1);
+      for (let i = start; i <= end; i++) {
+        const sIdx = originalToSorted.get(i);
+        if (sIdx === undefined) continue;
+        if (
+          segmentAt[sIdx] === null ||
+          (seg.severity === 'critical' && segmentAt[sIdx]!.severity !== 'critical')
+        ) {
+          segmentAt[sIdx] = seg;
+        }
+      }
+    }
+    return segmentAt;
+  }, [sorted, segments, entries.length]);
+
+  if (entries.length === 0) {
+    return <div className="text-ink-muted text-xs">No tool calls recorded.</div>;
+  }
 
   // A shared window is supplied only when BOTH bounds are present. In that mode
   // the reference frame (firstTs + totalDuration) comes from the caller so this
@@ -118,29 +153,6 @@ export function GanttTimeline({
   const ticks: number[] = [];
   for (let t = tickIntervalMs; t < totalDuration; t += tickIntervalMs) {
     ticks.push(t);
-  }
-
-  // Build per-row segment lookup. Segment indices reference the original
-  // `entries` order; map them through the sort so highlights land on the
-  // right row when entries arrive out of timestamp order.
-  const segmentAt: (GanttSegment | null)[] = new Array(sorted.length).fill(null);
-  const originalToSorted = new Map<number, number>();
-  for (let i = 0; i < sorted.length; i++) {
-    originalToSorted.set(sorted[i]!.originalIdx, i);
-  }
-  for (const seg of segments) {
-    const start = Math.max(0, seg.startIndex);
-    const end = Math.min(seg.endIndex, entries.length - 1);
-    for (let i = start; i <= end; i++) {
-      const sIdx = originalToSorted.get(i);
-      if (sIdx === undefined) continue;
-      if (
-        segmentAt[sIdx] === null ||
-        (seg.severity === 'critical' && segmentAt[sIdx]!.severity !== 'critical')
-      ) {
-        segmentAt[sIdx] = seg;
-      }
-    }
   }
 
   const maxStaggerMs = 800;
@@ -199,6 +211,8 @@ export function GanttTimeline({
               </div>
               <div className="relative flex-1 h-full flex items-center">
                 <div
+                  role="img"
+                  aria-label={`${entry.toolName} · ${entry.durationMs != null ? `${entry.durationMs}ms` : 'unknown'} · ${entry.success ? 'success' : 'failed'}`}
                   className={`gantt-bar absolute h-5 rounded-sm opacity-80 ${getBarColor(shortToolName(entry.toolName))} ${!entry.success ? 'ring-1 ring-accent-red/60' : ''}`}
                   style={{
                     left: `${leftPct}%`,

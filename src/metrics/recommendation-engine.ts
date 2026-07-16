@@ -1,5 +1,5 @@
 /**
- * Unified Recommendation Engine — synthesizes all Phase 4 analyzers into
+ * Unified Recommendation Engine — synthesizes all analyzers into
  * a single prioritized, deduplicated recommendation list.
  *
  * Categories:

@@ -1417,7 +1417,7 @@ describe('dashboard config', () => {
   });
 });
 
-describe('alerts config (Phase 4 task 25)', () => {
+describe('alerts config', () => {
   beforeEach(() => {
     delete process.env.NR_AI_ALERTS_ENABLED;
     delete process.env.NR_AI_ALERTS_INTERVAL_SECONDS;

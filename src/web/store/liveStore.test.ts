@@ -201,7 +201,7 @@ describe('liveStore alert slice', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task #17 (D3): activeSessionId + setActiveSession
+// activeSessionId + setActiveSession
 // ---------------------------------------------------------------------------
 
 describe('liveStore — setActiveSession', () => {

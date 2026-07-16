@@ -93,7 +93,7 @@ describe('Sessions view', () => {
   });
 
   it('shows a cap notice when the list returns the full page', async () => {
-    // F-051: 50 rows is the page-size sentinel — the API caps at this and
+    // 50 rows is the page-size sentinel — the API caps at this and
     // the SPA uses the same constant. Asserting the notice appears at the
     // boundary protects the contract without having to inspect the literal.
     const fullPage = Array.from({ length: 50 }, (_, i) => ({
@@ -387,5 +387,186 @@ describe('Sessions view — real API shapes', () => {
     expect(screen.getByText('Tool Selection')).toBeInTheDocument();
     expect(screen.getByText('80%')).toBeInTheDocument();
     expect(screen.getByText('0.75')).toBeInTheDocument();
+  });
+});
+
+describe('Sessions view — workflow consolidation', () => {
+  interface WorkflowDetailMap {
+    readonly [runId: string]: unknown;
+  }
+
+  function renderSessionsFull(
+    sessionList: unknown,
+    workflowRuns: unknown,
+    workflowDetails: WorkflowDetailMap = {},
+  ) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/workflows/')) {
+        const runId = decodeURIComponent(url.split('/').pop() ?? '');
+        const detail = workflowDetails[runId] ?? { run: null, agents: [], topology: null };
+        return Promise.resolve(
+          new Response(JSON.stringify(detail), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url === '/api/workflows') {
+        return Promise.resolve(
+          new Response(JSON.stringify(workflowRuns), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '');
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: id, timeline: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(sessionList), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+    return render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+  }
+
+  const SESSIONS = [
+    {
+      sessionId: 'sess-a',
+      startTime: '2026-05-28T09:00:00Z',
+      toolCallCount: 10,
+      estimatedCostUsd: 1,
+    },
+    {
+      sessionId: 'sess-b',
+      startTime: '2026-05-27T09:00:00Z',
+      toolCallCount: 5,
+      estimatedCostUsd: 0.5,
+    },
+  ];
+
+  const RUNS = [
+    {
+      runId: 'run-1',
+      parentSessionId: 'sess-a',
+      taskId: null,
+      workflowName: 'review',
+      status: 'completed',
+      defaultModel: 'claude-sonnet-5',
+      startedAt: Date.parse('2026-05-28T09:05:00Z'),
+      durationMs: 60_000,
+      agentCount: 3,
+      totalUsd: 2,
+      runSource: 'script',
+    },
+    {
+      runId: 'run-2',
+      parentSessionId: 'sess-b',
+      taskId: null,
+      workflowName: 'migrate',
+      status: 'failed',
+      defaultModel: 'claude-sonnet-5',
+      startedAt: Date.parse('2026-05-27T09:05:00Z'),
+      durationMs: 30_000,
+      agentCount: 1,
+      totalUsd: 1,
+      runSource: 'agent_tool',
+    },
+  ];
+
+  it('computes real KPI aggregation from workflow run data, not session-shaped stand-ins', async () => {
+    const { container } = renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    // avgDurationMs = (60000 + 30000) / 2 = 45000ms — same formatDuration()
+    // convention as the existing "5s" assertion for durationMs: 5000 above.
+    expect(container.textContent).toContain('45s');
+    // totalSpend = 2 + 1 = 3 — regex tolerates whatever decimal padding
+    // formatUsdOrDash uses.
+    expect(container.textContent).toMatch(/\$3(\.0+)?/);
+  });
+
+  it('scopes the visible session list to the run-source filter', async () => {
+    renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Script' }));
+    await waitFor(() => expect(screen.queryByText(/sess-b/)).not.toBeInTheDocument());
+    expect(screen.getByText(/sess-a/)).toBeInTheDocument();
+  });
+
+  it('scopes the visible session list to the status filter', async () => {
+    renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Failed' }));
+    await waitFor(() => expect(screen.queryByText(/sess-a/)).not.toBeInTheDocument());
+    expect(screen.getByText(/sess-b/)).toBeInTheDocument();
+  });
+
+  it('expands a session to reveal its workflow runs, then expands a run to reveal its agents', async () => {
+    renderSessionsFull(SESSIONS, RUNS, {
+      'run-1': {
+        run: RUNS[0],
+        agents: [
+          {
+            agentId: 'a1',
+            label: 'agent 1',
+            model: 'claude-sonnet-5',
+            startedAt: 1000,
+            durationMs: 500,
+            toolCalls: 3,
+            tokens: 100,
+          },
+        ],
+        topology: null,
+      },
+    });
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand workflows' })[0]!);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /View workflow run review/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Expand agents' }));
+    await waitFor(() => expect(screen.getByText('agent 1')).toBeInTheDocument());
+  });
+
+  it('opens the in-place workflow-run drawer when a run row is clicked', async () => {
+    renderSessionsFull(SESSIONS, RUNS, {
+      'run-1': { run: RUNS[0], agents: [], topology: null },
+    });
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand workflows' })[0]!);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /View workflow run review/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /View workflow run review/ }));
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    // The dialog shell mounts immediately on open, before its own
+    // WorkflowRunDetail query resolves — wait for the heading separately so
+    // this doesn't race the fetch.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'review' })).toBeInTheDocument(),
+    );
+  });
+
+  it('selects the session named in the ?session= query param on mount', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = { ...original, search: '?session=sess-b' } as Location;
+    renderSessionsFull(SESSIONS, RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-b/)).toBeInTheDocument());
+    window.location = original;
   });
 });

@@ -15,7 +15,7 @@ interface ErrorBoundaryState {
 /**
  * Catches render-time errors anywhere in the subtree and renders a recoverable
  * fallback UI instead of letting React unmount the entire root and white-screen
- * the dashboard. See finding F-004.
+ * the dashboard.
  */
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null };

@@ -244,6 +244,13 @@ describe('WorkflowWatcher', () => {
     expect(runs).toHaveLength(0);
     // A discovery_skipped health event should be emitted exactly once.
     expect(health.filter((h) => h.event === 'discovery_skipped')).toHaveLength(1);
+
+    // Regression guard: a second poll must NOT re-emit discovery_skipped.
+    // The cold-skipped file's seenMtime guard entry is never part of the
+    // eviction-tracked `out` set, so a naive evictStale() would delete it
+    // every poll and cause this event to fire indefinitely instead of once.
+    watcher.poll();
+    expect(health.filter((h) => h.event === 'discovery_skipped')).toHaveLength(1);
   });
 
   it('resolves the sibling scripts/ dir and parses topology on POSIX-style paths', () => {
@@ -352,5 +359,54 @@ describe('WorkflowWatcher', () => {
     // no run and the parse error path must not throw.
     expect(() => watcher.poll()).not.toThrow();
     expect(runs).toHaveLength(0);
+  });
+
+  it('evicts seenMtime/emittedRuns entries once a run file disappears from the discovered set', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wf-evict-'));
+    const sessionId = '11111111-1111-1111-1111-111111111111';
+    const wfDir = join(root, 'proj', sessionId, 'workflows');
+    mkdirSync(wfDir, { recursive: true });
+    const runPath = join(wfDir, 'wf_evicttest.json');
+    writeFileSync(
+      runPath,
+      JSON.stringify({ runId: 'wf_evicttest', status: 'completed', startTime: Date.now() }),
+    );
+
+    const watcher = new WorkflowWatcher({ projectsDir: root, parentSessionId: sessionId });
+    watcher.poll();
+    // @ts-expect-error -- reaching into private state for the eviction assertion
+    expect(watcher.seenMtime.size).toBe(1);
+    // @ts-expect-error -- reaching into private state for the eviction assertion
+    expect(watcher.emittedRuns.size).toBe(1);
+
+    rmSync(runPath);
+    watcher.poll();
+    // @ts-expect-error -- reaching into private state for the eviction assertion
+    expect(watcher.seenMtime.size).toBe(0);
+    // @ts-expect-error -- reaching into private state for the eviction assertion
+    expect(watcher.emittedRuns.size).toBe(0);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('discovers the same run whether or not parentSessionId is set, with or without unrelated sibling sessions', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wf-shortcircuit-'));
+    const target = '22222222-2222-2222-2222-222222222222';
+    const other = '33333333-3333-3333-3333-333333333333';
+    for (const sid of [target, other]) {
+      mkdirSync(join(root, 'proj', sid, 'workflows'), { recursive: true });
+    }
+    writeFileSync(
+      join(root, 'proj', target, 'workflows', 'wf_short.json'),
+      JSON.stringify({ runId: 'wf_short', status: 'completed', startTime: Date.now() }),
+    );
+
+    const seen: string[] = [];
+    const watcher = new WorkflowWatcher({ projectsDir: root, parentSessionId: target });
+    watcher.setOnRun((run) => seen.push(run.workflow_run_id));
+    watcher.poll();
+
+    expect(seen).toEqual(['wf_short']);
+    rmSync(root, { recursive: true, force: true });
   });
 });

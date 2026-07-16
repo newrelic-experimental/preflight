@@ -43,6 +43,7 @@ import {
   LiveSessionEntry,
   NotFoundError,
   CacheHealthResponse,
+  ObservabilityHealthResponse,
   qk,
   type SessionSubagentsResponse,
 } from '../api/client';
@@ -78,7 +79,7 @@ interface CostApiResponse {
   readonly sessionTodayUsd?: number | null;
 }
 
-// Minimal view of the /api/session/current payload. F-050 added efficiencyScore.
+// Minimal view of the /api/session/current payload.
 interface SessionCurrentApiResponse {
   readonly efficiencyScore?: number | null;
   readonly toolSuccessRate?: number | null;
@@ -137,13 +138,6 @@ interface ToolSelectionMetrics {
   readonly worstOffenders: readonly ToolSelectionOffender[];
 }
 
-interface ObservabilityHealthApiResponse {
-  readonly watcherActive?: boolean;
-  readonly watcherDisabledByLock?: boolean;
-  readonly filesWatched?: number;
-  readonly parseErrors?: number;
-}
-
 const QUALITY_REFETCH_MS = 10_000;
 
 export function Today(): JSX.Element {
@@ -151,9 +145,9 @@ export function Today(): JSX.Element {
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
   const subagentStats = useSubagentStats();
   const observabilityHealth = useObservabilityHealth();
-  const { data: healthApi } = useQuery<ObservabilityHealthApiResponse>({
+  const { data: healthApi } = useQuery<ObservabilityHealthResponse>({
     queryKey: ['observability-health'],
-    queryFn: () => fetchObservabilityHealth() as Promise<ObservabilityHealthApiResponse>,
+    queryFn: fetchObservabilityHealth,
     refetchInterval: 30_000,
   });
 
@@ -161,7 +155,7 @@ export function Today(): JSX.Element {
     queryKey: qk.cost,
     queryFn: fetchCost,
   });
-  // Task #17 (D3): the dashboard owner's session_current is arbitrary across
+  // The dashboard owner's session_current is arbitrary across
   // N concurrent sessions, so we keep the call only for the efficiencyScore
   // KPI (which is local to whichever MCP holds the dashboard). All other
   // KPIs now derive from the aggregate endpoint, which fans out across every
@@ -196,7 +190,7 @@ export function Today(): JSX.Element {
       queryFn: () => fetchActivityHeatmap('today'),
       refetchInterval: 30_000,
     });
-  // Task #17 (D3): live-session list — drives the selector default and the
+  // Live-session list — drives the selector default and the
   // "Session ended" badge logic when the selected session goes stale.
   const { data: liveSessions, isPending: liveSessionsPending } = useQuery<LiveSessionEntry[]>({
     queryKey: qk.sessionsLive,
@@ -218,7 +212,7 @@ export function Today(): JSX.Element {
   );
   const hourlySpend = useMemo(() => buildHourlySpend(todaySessions ?? []), [todaySessions]);
 
-  // Task #17 (D3): prefer the cross-session aggregate when present; fall
+  // Prefer the cross-session aggregate when present; fall
   // back to the legacy persisted-sessions math during the loading window so
   // the KPIs don't blink to zero on first paint. Use Math.max (not `??`)
   // because the aggregate endpoint can legitimately return 0 when its
@@ -413,7 +407,7 @@ export function Today(): JSX.Element {
                       <span className="text-ink-muted">— </span>
                       <span>{antiPatterns[0].count}× on </span>
                       <code className="bg-surface-5 px-1 rounded">{antiPatterns[0].target}</code>
-                      {/* Task #17 (D3): per-session pill so users can identify
+                      {/* Per-session pill so users can identify
                           which of N concurrent sessions triggered the alert. */}
                       {antiPatterns[0].sessionId && (
                         <Pill tone="neutral" size="sm" className="ml-2">
@@ -840,7 +834,7 @@ function LiveSessionPane({
   const [, navigate] = useLocation();
   const setActiveSession = useLiveStore((s) => s.setActiveSession);
 
-  // Task #17 (D3): live-session ids from /api/sessions/live (already sorted
+  // Live-session ids from /api/sessions/live (already sorted
   // most-recently-active first by the server). Falls back to /api/session/
   // current's `liveSessions` array during the loading window so the pane
   // populates immediately on first paint instead of waiting an interval.
@@ -872,14 +866,14 @@ function LiveSessionPane({
     mostRecentlyActiveId ?? (liveSessionIds.size > 0 ? [...liveSessionIds][0]! : null);
   const activeId = selectedId ?? firstLiveId;
   const isLive = activeId !== null && liveSessionIds.has(activeId);
-  // Task #17 (D3): "Session ended" badge — true when the user explicitly
+  // "Session ended" badge — true when the user explicitly
   // selected a session that was previously live but is no longer in the live
   // set (e.g. the owning Claude Code window closed). We deliberately don't
   // auto-switch to a different session: that's jarring, and the user might be
   // mid-investigation. Instead we pin the selection and surface a badge.
   const sessionEnded = selectedId !== null && !liveSessionIds.has(selectedId);
 
-  // Task #17 (D3): keep the global liveStore in sync with the local selector
+  // Keep the global liveStore in sync with the local selector
   // so the rest of the dashboard (and any per-session caches) re-key when
   // the user switches. Empty deps + activeId in array — fires only on change.
   useEffect(() => {
@@ -1090,7 +1084,7 @@ function LiveSessionPane({
             <div className="flex items-center justify-between px-2 py-1 border-b border-border-subtle shrink-0">
               <Eyebrow>Trace</Eyebrow>
               <div className="flex items-center gap-2">
-                {/* Task #17 (D3): "Session ended" badge — pinned to the selected
+                {/* "Session ended" badge — pinned to the selected
                   session even after it leaves the live set, so the user can
                   finish reviewing without an auto-switch. */}
                 {sessionEnded && (
@@ -1158,7 +1152,7 @@ function LiveSessionPane({
   );
 }
 
-// Task #17 (D3): label resolver for the per-session pill on anti-pattern
+// Label resolver for the per-session pill on anti-pattern
 // alerts. Falls back to the truncated session id when no friendly name is
 // known yet — sessionName is only set after the live registry has seen a
 // `cwd` from the first hook event.
@@ -1192,7 +1186,7 @@ function RecentAlertsPanel(): JSX.Element | null {
   if (data === null) return null;
 
   const entries: readonly AlertEvent[] = data ?? [];
-  // F-016: defensive sort — `AlertLog.readRecent` already reverses the
+  // Defensive sort — `AlertLog.readRecent` already reverses the
   // last-N-lines slice before returning, so the API is newest-first today.
   // Sorting again is idempotent and pins the UI ordering against any future
   // refactor of `readRecent` that drops or reorders the .reverse() call.

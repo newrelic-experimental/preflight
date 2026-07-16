@@ -551,7 +551,7 @@ describe('Cross-session tool handlers', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 11. get_platform_comparison — error_rate weighted formula (B-02)
+  // 11. get_platform_comparison — error_rate weighted formula
   // -------------------------------------------------------------------------
 
   it('handleGetPlatformComparison error_rate uses weighted formula across sessions', () => {

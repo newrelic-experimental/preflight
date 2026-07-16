@@ -1,5 +1,5 @@
 /**
- * MCP tool handlers for extended metric trackers (Phase 2).
+ * MCP tool handlers for extended metric trackers.
  *
  * Defines and handles:
  *   - nr_observe_get_retry_alerts — thrashing/retry detection alerts

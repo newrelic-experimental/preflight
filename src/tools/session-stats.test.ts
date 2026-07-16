@@ -804,7 +804,7 @@ describe('Cross-session tool registration', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fix 3: pre-resolution gating via registerPendingTools()
+// Pre-resolution gating via registerPendingTools()
 // ---------------------------------------------------------------------------
 
 describe('registerPendingTools()', () => {

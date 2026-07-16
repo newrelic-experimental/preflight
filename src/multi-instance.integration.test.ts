@@ -27,7 +27,7 @@ import type { AddressInfo } from 'node:net';
 //        per-session-correct data, not polluted across sessions.
 //   #6 — Only one of the three MCPs binds the dashboard port; the other two
 //        log the "Dashboard already owned by..." graceful-handoff line
-//        introduced by Fix 1.
+//        introduced by that change.
 //
 // Sequencing notes:
 //   - We pre-write 50 hook events (25 pre + 25 post) to each session's
@@ -63,7 +63,7 @@ interface ChildHandle {
 }
 
 beforeAll(() => {
-  // Rebuild when the binary is missing OR when it predates the Fix 1 / Fix 3
+  // Rebuild when the binary is missing OR when it predates the
   // landmarks the test depends on. The latter guards against a stale dist
   // left over from a pre-merge checkout — without this the test would fail
   // with "session_id randomly generated" / "Dashboard port ... in use"
@@ -223,7 +223,7 @@ describe('multi-instance integration (proposal #11)', () => {
   }, 30_000);
 
   // -----------------------------------------------------------------------
-  // Task #13: dashboard ownership re-poll. After Fix 1 the second MCP runs
+  // Dashboard ownership re-poll. After this fix the second MCP runs
   // headless. This test verifies it takes over the dashboard if the owner
   // exits — without this the dashboard goes dead even though a live MCP
   // could serve it.
@@ -389,7 +389,7 @@ function spawnChild(
       // collisions when multiple children share the same parent test process.
       CLAUDE_JOB_DIR: jobDir,
       // All three children compete for the same dashboard port to exercise
-      // Fix 1's EADDRINUSE handoff.
+      // The EADDRINUSE handoff.
       NR_AI_DASHBOARD_PORT: String(port),
       NEW_RELIC_LICENSE_KEY: '',
       NEW_RELIC_ACCOUNT_ID: '',

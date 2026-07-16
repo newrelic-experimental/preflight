@@ -14,7 +14,7 @@ afterEach(() => {
   stderrSpy.mockRestore();
 });
 
-describe('Local alerts — Phase 1 acceptance', () => {
+describe('Local alerts — simple acceptance', () => {
   it('drives a budget threshold through tracker → engine → bus end-to-end', () => {
     const bus = new LiveEventBus();
     const engine = new LocalAlertEngine();
@@ -85,7 +85,7 @@ describe('Local alerts — Phase 1 acceptance', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 2 acceptance — drive the full starter rule set through evaluate()
+// Acceptance — drive the full starter rule set through evaluate()
 // ---------------------------------------------------------------------------
 
 const STARTER_RULES: LocalAlertRule[] = [
@@ -209,7 +209,7 @@ function emptySnapshot(timestamp: number, overrides: Partial<AlertSnapshot> = {}
   };
 }
 
-describe('Local alerts — Phase 2 acceptance (full starter rule set)', () => {
+describe('Local alerts — acceptance (full starter rule set)', () => {
   it('drives a sequence of synthetic snapshots and emits expected fire/clear events', () => {
     const bus = new LiveEventBus();
     const engine = new LocalAlertEngine();

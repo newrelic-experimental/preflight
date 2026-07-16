@@ -29,7 +29,7 @@ export function AlertBannerStack(): JSX.Element | null {
   const { alerts, maxSeverity, count, dismiss } = useLiveAlerts();
   const [expanded, setExpanded] = useState(false);
 
-  // F-015: when count drops back below the collapse threshold the expanded
+  // When count drops back below the collapse threshold the expanded
   // path renders without a collapse button (because count < threshold), so
   // a stuck-expanded user could never recollapse without reloading. Reset
   // expanded so the next time the threshold is crossed it starts collapsed.

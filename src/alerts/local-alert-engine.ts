@@ -23,7 +23,7 @@ const logger = createLogger('local-alert-engine');
 // ---------------------------------------------------------------------------
 
 // AlertSnapshot lives in alert-snapshot-collector.ts. Re-exported here to
-// keep Phase 1 imports stable.
+// keep imports stable.
 export type { AlertSnapshot } from './alert-snapshot-collector.js';
 import type { AlertSnapshot } from './alert-snapshot-collector.js';
 
@@ -504,7 +504,7 @@ export class LocalAlertEngine {
     return `${isoYear}-W${weekNum}`;
   }
 
-  // For tests + Phase 2 hand-off: read-only view of currently firing rules.
+  // For tests: read-only view of currently firing rules.
   getFiringRuleIds(): readonly string[] {
     const ids: string[] = [];
     for (const [id, st] of this.state.entries()) {
@@ -543,7 +543,7 @@ export class LocalAlertEngine {
     return out;
   }
 
-  /** Exposed for Phase 2 wiring; returns the current monotonic clock reading. */
+  /** Exposed for tests; returns the current monotonic clock reading. */
   now(): number {
     return this.clock();
   }

@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { formatNumber, formatDuration, formatUsdOrDash, shortToolName } from '../lib/format';
+import { formatNumber, formatDuration, formatUsdOrDash, shortToolName } from '../lib/format.js';
+import {
+  groupAgents,
+  GROUP_BAR_COLORS,
+  PARENT_GROUP_ID,
+  ADHOC_GROUP_ID,
+  subagentGroupId,
+  fmtTickLabel,
+} from '../lib/agent-groups.js';
 
 // The canonical AgentSpan type now lives in api/client.ts (it mirrors a wire
 // response, not a component-local shape) — re-exported here so none of this
@@ -24,22 +32,6 @@ export interface AgentSwimlanesProps {
   readonly onSelectRun?: (runId: string) => void;
 }
 
-// Cycle the dedicated categorical "series" ramp, one hue per workflow group.
-// These are purpose-built grouping tokens: lower-saturation and visually
-// distinct from the saturated status/tool accents, so a group bar reads as a
-// CATEGORY rather than a status. They carry no semantic meaning (unlike green
-// =success, amber=warning, teal="Agent", red=danger). Index is the group's
-// position once sorted by earliest startMs, so colors are stable for a given
-// session render.
-const GROUP_BAR_COLORS = [
-  'bg-series-1',
-  'bg-series-2',
-  'bg-series-3',
-  'bg-series-4',
-  'bg-series-5',
-  'bg-series-6',
-] as const;
-
 // Tool → accent color for the parent activity lane. Replicated from
 // GanttTimeline.getBarColor (intentionally NOT imported — we don't depend on
 // that component). These accents legitimately encode TOOL TYPE here, the same
@@ -50,61 +42,6 @@ function getParentBarColor(toolName: string): string {
   if (toolName === 'Bash') return 'bg-accent-purple';
   if (toolName === 'Agent') return 'bg-accent-teal';
   return 'bg-ink-subtle';
-}
-
-// mm:ss relative to the window start — same axis style as GanttTimeline.
-function fmtTickLabel(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${String(sec).padStart(2, '0')}`;
-}
-
-interface AgentGroup {
-  readonly runId: string | null;
-  readonly name: string;
-  readonly earliestStartMs: number;
-  readonly agents: AgentSpan[];
-}
-
-// Group agents by workflowRunId. Null runId agents collapse into a single
-// "Ad-hoc subagents" group. Groups are sorted by their earliest agent start.
-function groupAgents(agents: AgentSpan[]): AgentGroup[] {
-  const byRun = new Map<string | null, AgentSpan[]>();
-  for (const agent of agents) {
-    const key = agent.workflowRunId;
-    const bucket = byRun.get(key);
-    if (bucket) {
-      bucket.push(agent);
-    } else {
-      byRun.set(key, [agent]);
-    }
-  }
-
-  const groups: AgentGroup[] = [];
-  for (const [runId, members] of byRun) {
-    const sortedMembers = [...members].sort((a, b) => a.startMs - b.startMs);
-    const earliestStartMs = sortedMembers.reduce(
-      (m, a) => Math.min(m, a.startMs),
-      Number.POSITIVE_INFINITY,
-    );
-    const name = runId === null ? 'Ad-hoc subagents' : (members[0]?.workflowName ?? 'Workflow run');
-    groups.push({ runId, name, earliestStartMs, agents: sortedMembers });
-  }
-
-  groups.sort((a, b) => a.earliestStartMs - b.earliestStartMs);
-  return groups;
-}
-
-// Stable group id used to key collapse state. The parent lane gets a reserved
-// id; subagent groups key off their runId (with a fixed token for the ad-hoc
-// null-runId group). Stable across re-renders so a user's expand/collapse
-// choice sticks even as data refreshes.
-const PARENT_GROUP_ID = '__parent__';
-const ADHOC_GROUP_ID = '__adhoc__';
-
-function subagentGroupId(runId: string | null): string {
-  return runId === null ? ADHOC_GROUP_ID : `run:${runId}`;
 }
 
 // Groups with more than this many lanes start collapsed so the chart doesn't

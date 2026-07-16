@@ -28,7 +28,7 @@ export function downloadJsonl(rows: AuditEntry[]): void {
   a.href = url;
   a.download = `audit-${new Date().toISOString().slice(0, 10)}.jsonl`;
   a.rel = 'noopener';
-  // F-018: Firefox silently no-ops .click() on an anchor that's not in
+  // Firefox silently no-ops .click() on an anchor that's not in
   // the DOM. Append before clicking, then remove. Chromium/Safari work
   // either way; the append is harmless there.
   document.body.appendChild(a);
@@ -51,7 +51,7 @@ export function Audit(): JSX.Element {
 
   const rows = data ?? [];
   const visible = filter === 'all' ? rows : rows.filter((r) => r.classification === filter);
-  // F-029: Cap rendered rows so the Audit view stays responsive on large
+  // Cap rendered rows so the Audit view stays responsive on large
   // logs. Server-side pagination is the proper fix; this guard prevents
   // the table from freezing the page in the meantime.
   const VISIBLE_LIMIT = 200;

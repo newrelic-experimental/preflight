@@ -8,6 +8,7 @@ import {
   fetchObservabilityHealth,
   qk,
   type DiagnosticCheck,
+  type ObservabilityHealthResponse,
 } from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
@@ -26,12 +27,6 @@ interface SettingsData {
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
-}
-
-interface ObservabilityHealthApiResponse {
-  readonly watcherActive?: boolean;
-  readonly filesWatched?: number;
-  readonly parseErrors?: number;
 }
 
 function ReadOnlyField({ label, value }: { label: string; value: string | null | undefined }) {
@@ -164,9 +159,9 @@ export function Settings(): JSX.Element {
     queryFn: () => fetchSettings(),
   });
 
-  const { data: healthApi } = useQuery<ObservabilityHealthApiResponse>({
+  const { data: healthApi } = useQuery<ObservabilityHealthResponse>({
     queryKey: ['observability-health'],
-    queryFn: () => fetchObservabilityHealth() as Promise<ObservabilityHealthApiResponse>,
+    queryFn: fetchObservabilityHealth,
     refetchInterval: 30_000,
   });
 

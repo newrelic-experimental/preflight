@@ -93,6 +93,11 @@ export class WorkflowWatcher {
   private readonly seenMtime = new Map<string, number>();
   private readonly emittedRuns = new Set<string>();
   private readonly topologyCache = new Map<string, DeclaredTopology | null>();
+  // Paths whose seenMtime entry exists only to guard a one-time
+  // discovery_skipped health event (see the cold-scan-skip branch in
+  // discoverFiles()) — these never enter the processed `out` set, so
+  // evictStale() must never delete them based on currentPaths membership.
+  private readonly coldSkipGuards = new Set<string>();
 
   // Health counters
   private filesWatched = 0;
@@ -152,7 +157,11 @@ export class WorkflowWatcher {
     try {
       const files = this.discoverFiles();
       this.filesWatched = files.length;
+      const currentPaths = new Set<string>();
+      const currentRunIds = new Set<string>();
       for (const file of files) {
+        currentPaths.add(file.path);
+        currentRunIds.add(file.runId);
         let st;
         try {
           st = statSync(file.path);
@@ -164,8 +173,37 @@ export class WorkflowWatcher {
         this.seenMtime.set(file.path, st.mtimeMs);
         this.processFile(file, st.mtimeMs);
       }
+      this.evictStale(currentPaths, currentRunIds);
     } catch (err) {
       this.recordError(err);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Eviction
+  // -------------------------------------------------------------------------
+
+  // Drops bookkeeping for paths/runs no longer present in the current
+  // discovered set, mirroring SubagentWatcher.evictStalePartials() — without
+  // this, seenMtime/emittedRuns/topologyCache grow for the process lifetime in
+  // a long-lived --local dashboard, scaling with total historical run count
+  // rather than active run count. topologyCache is keyed by the
+  // content-derived runId, which can (rarely) differ from file.runId — an
+  // over-eager evict there just forces a cache-miss recompute next access,
+  // never a correctness issue. seenMtime entries in coldSkipGuards are
+  // exempt from currentPaths-based eviction — they belong to files that
+  // never enter the processed `out` set (see discoverFiles()), so they'd
+  // otherwise be deleted and re-added every poll, re-emitting the
+  // discovery_skipped health event indefinitely instead of just once.
+  private evictStale(currentPaths: ReadonlySet<string>, currentRunIds: ReadonlySet<string>): void {
+    for (const path of this.seenMtime.keys()) {
+      if (!currentPaths.has(path) && !this.coldSkipGuards.has(path)) this.seenMtime.delete(path);
+    }
+    for (const runId of this.emittedRuns) {
+      if (!currentRunIds.has(runId)) this.emittedRuns.delete(runId);
+    }
+    for (const runId of this.topologyCache.keys()) {
+      if (!currentRunIds.has(runId)) this.topologyCache.delete(runId);
     }
   }
 
@@ -194,12 +232,20 @@ export class WorkflowWatcher {
       }
       if (!st.isDirectory()) continue;
 
-      let sessionEntries: string[];
-      try {
-        sessionEntries = readdirSync(projectPath);
-      } catch {
-        continue;
-      }
+      // When a parent session filter is set (the common case for a
+      // per-session --stdio server instance), skip listing every sibling
+      // session in this project — go straight to the one directory we care
+      // about. Falls back to the full listing only when no filter is set
+      // (e.g. --local, which watches every session).
+      const sessionEntries: string[] = this.parentSessionFilter
+        ? [this.parentSessionFilter]
+        : (() => {
+            try {
+              return readdirSync(projectPath);
+            } catch {
+              return [];
+            }
+          })();
       for (const sessionId of sessionEntries) {
         if (!SESSION_ID_RE.test(sessionId)) continue;
         if (this.parentSessionFilter && sessionId !== this.parentSessionFilter) continue;
@@ -224,9 +270,13 @@ export class WorkflowWatcher {
             // Skip cold-scan of files older than the discovery budget. The
             // first time we encounter such a file we emit a discovery_skipped
             // health event so the operator can tell why a known run is absent
-            // from the dashboard.
+            // from the dashboard. This path is never pushed to `out`, so it
+            // never counts toward filesWatched/currentPaths — coldSkipGuards
+            // records it separately so evictStale() knows to spare its
+            // seenMtime entry (see the comment there).
             if (!this.seenMtime.has(path)) {
               this.seenMtime.set(path, fst.mtimeMs);
+              this.coldSkipGuards.add(path);
               this.emitHealth({ event: 'discovery_skipped' });
             }
             continue;
