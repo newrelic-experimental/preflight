@@ -258,7 +258,7 @@ html.light .mesh-bg::after {
   }
 }
 
-/* Phase 2: Motion */
+/* Motion */
 @keyframes sparkline-draw {
   from {
     stroke-dashoffset: 1;
@@ -314,7 +314,7 @@ html.light .mesh-bg::after {
   }
 }
 
-/* Phase 3: Gantt timeline */
+/* Gantt timeline */
 @keyframes gantt-bar-enter {
   from {
     transform: scaleX(0);
@@ -467,7 +467,7 @@ html.light .mesh-bg::after {
   }
 }
 
-/* Phase 3: Empty state radar */
+/* Empty state radar */
 @keyframes radar-sweep {
   from {
     transform: rotate(0deg);
@@ -488,7 +488,7 @@ html.light .mesh-bg::after {
   }
 }
 
-/* Phase 3: Shortcut overlay */
+/* Shortcut overlay */
 @keyframes overlay-enter {
   from {
     opacity: 0;

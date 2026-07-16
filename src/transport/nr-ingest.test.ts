@@ -919,11 +919,11 @@ describe('codingTaskToNrEvent()', () => {
     expect(event.end_time).toBe(1_700_000_060_000);
   });
 
-  it('sets session_id from the resolved sessionTraceId, not the tool call record (Fix 3)', () => {
+  it('sets session_id from the resolved sessionTraceId, not the tool call record', () => {
     const task = makeTask({
       toolCalls: [makeRecord({ sessionId: 'sess-from-record' })],
     });
-    // No sessionTraceId provided — Fix 3 removes the fallback to firstRecord.sessionId
+    // No sessionTraceId provided — there is no fallback to firstRecord.sessionId
     // because the MCP no longer fabricates its own ID; the resolved Claude Code
     // session_id is shared across all events of a session.
     const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a' });
@@ -1231,12 +1231,12 @@ describe('session trace ID propagation', () => {
     expect(event.session_id).toBe(TRACE_ID);
   });
 
-  it('codingTaskToNrEvent: omits session_id when sessionTraceId is absent (Fix 3 removes record fallback)', () => {
+  it('codingTaskToNrEvent: omits session_id when sessionTraceId is absent', () => {
     const task = makeTask({
       toolCalls: [makeRecord({ sessionId: 'record-session-id' })],
     });
     const event = codingTaskToNrEvent(task, { developer: 'dev', appName: 'app' });
-    // Fix 3: no longer falls back to firstRecord.sessionId. The resolved
+    // No longer falls back to firstRecord.sessionId. The resolved
     // sessionTraceId is the single source of truth for session_id on events.
     expect(event).not.toHaveProperty('session_id');
   });

@@ -782,7 +782,7 @@ async function main(): Promise<void> {
     if (options.stdio && !isProvisional) localStore.writeHeartbeat();
     localStoreForShutdown = localStore;
 
-    // Migrate any pre-Fix-3 events from the legacy shared `buffer.jsonl` into
+    // Migrate any pre-existing events from the legacy shared `buffer.jsonl` into
     // per-session files. Idempotent and a no-op on fresh installs.
     try {
       localStore.migrateLegacyBuffer();

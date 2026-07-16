@@ -116,13 +116,13 @@ describe('AlertBannerStack', () => {
     expect(screen.getAllByRole('button', { name: 'Dismiss alert' }).length).toBe(1);
   });
 
-  // F-015: once the user expands a 5+ stack and the count drops below the
+  // Once the user expands a 5+ stack and the count drops below the
   // threshold (e.g., dismisses 2 down to 4), the expanded path renders
   // without a collapse button — there's no way to recollapse without
   // reloading the page. The fix resets `expanded` when count falls back
   // below the threshold so the next time it crosses, the stack starts
   // collapsed again.
-  it('resets expanded state when count drops below the collapse threshold (F-015)', () => {
+  it('resets expanded state when count drops below the collapse threshold', () => {
     for (let i = 0; i < 6; i++) {
       fireOne({ id: `r-${i}`, title: `Rule ${i}` });
     }

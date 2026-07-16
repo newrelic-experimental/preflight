@@ -102,7 +102,7 @@ describe('handleReportTokens()', () => {
     expect(metrics.totalCacheCreationTokens).toBe(500);
   });
 
-  it('totalTokens excludes cache tokens to match Anthropic dashboard convention (B-03)', () => {
+  it('totalTokens excludes cache tokens to match Anthropic dashboard convention', () => {
     const tracker = new CostTracker();
     const args: TokenReport = {
       input_tokens: 1_000,

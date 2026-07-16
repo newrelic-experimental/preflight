@@ -815,8 +815,15 @@ export const postDigestSend = (): Promise<DigestSendResponse> =>
     return (await r.json()) as DigestSendResponse;
   });
 
-export const fetchObservabilityHealth = (): Promise<unknown> =>
-  getJson<unknown>('/api/observability-health');
+export interface ObservabilityHealthResponse {
+  readonly watcherActive?: boolean;
+  readonly watcherDisabledByLock?: boolean;
+  readonly filesWatched?: number;
+  readonly parseErrors?: number;
+}
+
+export const fetchObservabilityHealth = (): Promise<ObservabilityHealthResponse> =>
+  getJson<ObservabilityHealthResponse>('/api/observability-health');
 type WorkflowRunStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 
 // Mirrors WorkflowRunDto serialized by both GET /api/workflows (list, one

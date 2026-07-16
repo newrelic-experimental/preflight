@@ -46,8 +46,8 @@ export interface DashboardServerOptions {
   readonly bus: LiveEventBus;
   readonly staticDir?: string;
   readonly api?: ApiHandlerDeps;
-  // Phase 1 wiring: passed in when the server is constructed in local/both
-  // mode. Phase 3 will surface them via the API + SPA. They live on the
+  // Wiring: passed in when the server is constructed in local/both
+  // mode. Surfaced via the API + SPA. They live on the
   // server for now so other modules (e.g. budget threshold callback in
   // index.ts) can route events through the engine.
   readonly alertEngine?: LocalAlertEngine;
@@ -127,12 +127,12 @@ export class DashboardServer {
     });
   }
 
-  /** Phase 1 hook for tests + Phase 3 API route wiring. */
+  /** Hook for tests + API route wiring. */
   getAlertEngine(): LocalAlertEngine | undefined {
     return this.opts.alertEngine;
   }
 
-  /** Phase 1 hook for tests + Phase 3 API route wiring. */
+  /** Hook for tests + API route wiring. */
   getAlertLog(): AlertLog | undefined {
     return this.opts.alertLog;
   }

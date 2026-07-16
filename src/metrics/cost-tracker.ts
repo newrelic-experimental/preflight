@@ -54,7 +54,7 @@ const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
 
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
-  readonly costByTask: null; // stub — task boundary detection is Phase 2.3
+  readonly costByTask: null; // stub — task boundary detection is not yet implemented
   readonly costByModel: Record<string, number>;
   readonly costPerLineOfCode: number | null;
   readonly costPerFileModified: number | null;
@@ -85,7 +85,7 @@ export interface SubagentMetrics {
   readonly parentUsd: number;
   readonly subagentSharePct: number;
   /**
-   * Placeholder for Phase 3 reconciliation: the delta between total tokens
+   * Placeholder for future reconciliation: the delta between total tokens
    * reported by a WorkflowRunEvent and the sum of per-subagent cost. null
    * until at least one workflow run has both totals available.
    */
@@ -330,7 +330,7 @@ export class CostTracker {
   /**
    * Subagent / parent cost split for the current session.
    *
-   * `reconciliationDeltaPct` is a Phase 3 placeholder: it will compare the
+   * `reconciliationDeltaPct` is a placeholder: it will compare the
    * total tokens reported by WorkflowRunEvent against the sum of per-subagent
    * cost to detect attribution gaps. Returns null until that data is available.
    */

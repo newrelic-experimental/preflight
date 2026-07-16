@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-07-16
+
+### Fixed
+
+- The subagent transcript watcher now emits a health event instead of silently skipping a transcript file whose filename doesn't match the expected agent-id shape, so a future change to that format would be observable instead of silently reintroducing lost subagent cost tracking.
+- The workflow watcher no longer accumulates unbounded internal bookkeeping for the life of the process; stale tracking entries are evicted on each poll instead of persisting indefinitely.
+- Both the subagent and workflow watchers now go straight to the active session's own directory when tracking a single session, instead of listing every session on disk on every poll.
+- The session trace's Gantt timeline no longer re-sorts and rebuilds its highlight state on every mouse movement, and its bars now expose an accessible name to assistive technology.
+- Fixed a missing file extension on an internal module import.
+
+### Added
+
+- Added test coverage for the Sessions view's workflow-consolidation logic: KPI aggregation across workflow runs, run-source and status filtering, the session/run/agent expansion tree, and the in-place workflow-run detail view.
+
 ## [1.5.0] - 2026-07-15
 
 ### Added

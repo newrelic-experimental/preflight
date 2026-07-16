@@ -31,7 +31,7 @@ describe('AlertBanner', () => {
   });
 
   // role="alert" implies aria-live="assertive"; role="status" implies "polite".
-  // The explicit aria-live attribute was removed in F-048 because both roles
+  // The explicit aria-live attribute was removed because both roles
   // carry the live-region semantic by default per the ARIA spec.
   it('uses role="alert" for critical severity (assertive)', () => {
     const { container } = render(

@@ -229,10 +229,10 @@ describe('Audit downloadJsonl', () => {
     }
   });
 
-  // F-018: Firefox silently no-ops .click() on an anchor that's not in
+  // Firefox silently no-ops .click() on an anchor that's not in
   // the DOM. Audit export must append the anchor to document.body before
   // clicking and remove it after, even when click() throws.
-  it('appends the anchor to document.body before clicking and removes after (F-018)', () => {
+  it('appends the anchor to document.body before clicking and removes after', () => {
     const origCreate = URL.createObjectURL;
     const origRevoke = URL.revokeObjectURL;
     URL.createObjectURL = vi.fn(() => 'blob:test/0') as typeof URL.createObjectURL;

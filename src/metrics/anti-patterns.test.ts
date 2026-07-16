@@ -138,7 +138,7 @@ describe('Re-reading detection', () => {
     expect(reReading[0].readCount).toBe(4);
   });
 
-  it('detects when file read exactly at threshold (3 times) (B-04)', () => {
+  it('detects when file read exactly at threshold (3 times)', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [
@@ -307,7 +307,7 @@ describe('Blind editing detection', () => {
     expect(blind[0].editCount).toBe(4);
   });
 
-  it('detects exactly at threshold (3 edits) without verification (B-04)', () => {
+  it('detects exactly at threshold (3 edits) without verification', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [

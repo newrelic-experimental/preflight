@@ -411,7 +411,7 @@ describe('LocalAlertEngine — clock + state housekeeping', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 2 — non-budget rule types
+// Non-budget rule types
 // ---------------------------------------------------------------------------
 
 describe('LocalAlertEngine — cost.window rule', () => {
@@ -909,7 +909,7 @@ describe('LocalAlertEngine — getRequiredWindows', () => {
 });
 
 // ---------------------------------------------------------------------------
-// OS notification wiring (Phase 4 — task 22)
+// OS notification wiring
 // ---------------------------------------------------------------------------
 
 describe('LocalAlertEngine — OS notifications', () => {

@@ -445,6 +445,70 @@ describe('SubagentWatcher', () => {
     expect(healthEvents).toHaveLength(1);
   });
 
+  it('emits a discovery_skipped health event when an agent filename does not match AGENT_ID_RE', () => {
+    // Malformed agent id: right prefix/suffix shape, wrong length/charset.
+    const badFile = join(sessionDir, 'subagents', 'agent-not-a-valid-id.jsonl');
+    writeFileSync(badFile, '');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    const exists = existsSync(bufPath);
+    const healthEvents = exists
+      ? readFileSync(bufPath, 'utf-8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+          .filter((l) => l.mode === 'observability_health' && l.event === 'discovery_skipped')
+      : [];
+    expect(healthEvents).toHaveLength(1);
+  });
+
+  it('does not re-emit the discovery_skipped event for the same malformed agent id on a second poll', () => {
+    const badFile = join(sessionDir, 'subagents', 'agent-not-a-valid-id.jsonl');
+    writeFileSync(badFile, '');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    watcher.poll();
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    const healthEvents = readFileSync(bufPath, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.mode === 'observability_health' && l.event === 'discovery_skipped');
+    expect(healthEvents).toHaveLength(1);
+  });
+
+  it('emits a discovery_skipped health event for a malformed agent id under a workflow run dir', () => {
+    const wfDir = join(sessionDir, 'subagents', 'workflows', 'wf_abc12345-6dd');
+    mkdirSync(wfDir, { recursive: true });
+    const badFile = join(wfDir, 'agent-not-a-valid-id.jsonl');
+    writeFileSync(badFile, '');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    const exists = existsSync(bufPath);
+    const healthEvents = exists
+      ? readFileSync(bufPath, 'utf-8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+          .filter((l) => l.mode === 'observability_health' && l.event === 'discovery_skipped')
+      : [];
+    expect(healthEvents).toHaveLength(1);
+  });
+
   // -------------------------------------------------------------------------
   // Memory-bound regression tests (OOM fix)
   //

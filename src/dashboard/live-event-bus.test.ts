@@ -111,7 +111,7 @@ describe('LiveEventBus', () => {
     expect((replay[0]!.payload as { id: string }).id).toBe('first');
   });
 
-  // Task #17 (D3): the live event schema requires sessionId on the events
+  // The live event schema requires sessionId on the events
   // that have a single owning session. The compile-time test below would
   // fail to type-check if the sessionId field were ever removed; the runtime
   // test confirms the bus carries the field through to subscribers.
@@ -157,7 +157,7 @@ describe('LiveEventBus', () => {
     ]);
   });
 
-  // Task #17 (D3): AlertEvent.sessionId is optional — system-level alerts
+  // AlertEvent.sessionId is optional — system-level alerts
   // (e.g. dashboard-server health) have no owning session.
   it('AlertEvent.sessionId is optional', () => {
     const bus = new LiveEventBus();

@@ -38,7 +38,7 @@ import {
 } from '../lib/format';
 import { bucketTimeline, autoBucketSize } from '../lib/bucket';
 
-// F-051: keep the query limit and the "showing N most recent" notice in
+// Keep the query limit and the "showing N most recent" notice in
 // lock-step. If you bump this, also update the api-handler clamp upper
 // bound if you intend to allow more than the current 500 ceiling.
 const SESSIONS_PAGE_SIZE = 50;
@@ -502,7 +502,7 @@ export function Sessions(): JSX.Element {
                 onOpenRun={openRun}
               />
             ))}
-            {/* F-051: when the API returns the full page, surface that older
+            {/* When the API returns the full page, surface that older
               sessions exist beyond what's rendered. The cap is enforced
               server-side (api-handler `limit` clamp) and matches the
               `qk.sessionsList(50)` query above; bump both together if the

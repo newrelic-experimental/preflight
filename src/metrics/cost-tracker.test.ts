@@ -816,7 +816,7 @@ describe('CostTracker', () => {
       const pct = tracker.getSubagentMetrics().subagentSharePct;
       expect(pct).toBeGreaterThan(0);
       expect(pct).toBeLessThan(100);
-      // reconciliationDeltaPct is null (Phase 3 placeholder)
+      // reconciliationDeltaPct is null (not yet computed)
       expect(tracker.getSubagentMetrics().reconciliationDeltaPct).toBeNull();
     });
 

@@ -355,10 +355,10 @@ describe('LocalStore', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Fix 3: per-session buffer files
+  // Per-session buffer files
   // ---------------------------------------------------------------------------
 
-  describe('per-session buffer scoping (Fix 3)', () => {
+  describe('per-session buffer scoping', () => {
     it('uses buffer-<sessionId>.jsonl when a sessionId is passed', () => {
       const store = new LocalStore(tmpDir, 'sess-abc-123');
       mkdirSync(tmpDir, { recursive: true });
@@ -700,7 +700,7 @@ describe('LocalStore', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Task #18: orphan buffer + breadcrumb GC
+  // Orphan buffer + breadcrumb GC
   // ---------------------------------------------------------------------------
 
   describe('writeHeartbeat / removeHeartbeat', () => {

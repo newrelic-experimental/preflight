@@ -241,6 +241,9 @@ export class SubagentWatcher {
   // Files that already emitted `discovery_skipped` so we don't re-emit on
   // every poll for the same too-old file.
   private readonly discoverySkippedAnnounced = new Set<string>();
+  // Files shaped like `agent-*.jsonl` whose id doesn't match AGENT_ID_RE that
+  // already emitted `discovery_skipped`, so we don't re-emit on every poll.
+  private readonly agentIdMismatchAnnounced = new Set<string>();
   private lastCostSelfCheckMs = 0;
 
   constructor(options: SubagentWatcherOptions = {}) {
@@ -359,12 +362,16 @@ export class SubagentWatcher {
 
       // Each project dir contains <sessionId> subdirs whose name matches
       // SESSION_ID_RE (UUID v4 lower-hex with hyphens).
-      let sessionEntries: string[];
-      try {
-        sessionEntries = readdirSync(projectPath);
-      } catch {
-        continue;
-      }
+      // See workflow-watcher.ts's identical short-circuit for the rationale.
+      const sessionEntries: string[] = this.parentSessionFilter
+        ? [this.parentSessionFilter]
+        : (() => {
+            try {
+              return readdirSync(projectPath);
+            } catch {
+              return [];
+            }
+          })();
       for (const sessionId of sessionEntries) {
         if (!SESSION_ID_RE.test(sessionId)) continue;
         if (this.parentSessionFilter && sessionId !== this.parentSessionFilter) continue;
@@ -377,7 +384,10 @@ export class SubagentWatcher {
           for (const name of readdirSync(subDir)) {
             if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
             const agentId = name.slice('agent-'.length, -'.jsonl'.length);
-            if (!AGENT_ID_RE.test(agentId)) continue;
+            if (!AGENT_ID_RE.test(agentId)) {
+              this.announceAgentIdMismatch(join(subDir, name));
+              continue;
+            }
             const path = join(subDir, name);
             const stat = this.filterByMtime(path, cutoffMs);
             if (stat) {
@@ -407,7 +417,10 @@ export class SubagentWatcher {
               for (const name of readdirSync(wfRunDir)) {
                 if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
                 const agentId = name.slice('agent-'.length, -'.jsonl'.length);
-                if (!AGENT_ID_RE.test(agentId)) continue;
+                if (!AGENT_ID_RE.test(agentId)) {
+                  this.announceAgentIdMismatch(join(wfRunDir, name));
+                  continue;
+                }
                 const path = join(wfRunDir, name);
                 const stat = this.filterByMtime(path, cutoffMs);
                 if (stat) {
@@ -459,6 +472,27 @@ export class SubagentWatcher {
     } catch {
       return null;
     }
+  }
+
+  /** Emits a discovery_skipped health event, once per path, when a file
+   * shaped like `agent-*.jsonl` doesn't match AGENT_ID_RE — makes an id-format
+   * drift observable instead of a silent stop in subagent token capture. */
+  private announceAgentIdMismatch(path: string): void {
+    if (this.agentIdMismatchAnnounced.has(path)) return;
+    this.agentIdMismatchAnnounced.add(path);
+    this.appendHealth({
+      mode: 'observability_health',
+      tool: 'observability_health',
+      timestamp: Date.now(),
+      watcher: 'subagent',
+      filesWatched: 0,
+      linesRead: 0,
+      bytesRead: 0,
+      parseErrors: 0,
+      schemaDrifts: 0,
+      lastError: null,
+      event: 'discovery_skipped',
+    });
   }
 
   // -------------------------------------------------------------------------

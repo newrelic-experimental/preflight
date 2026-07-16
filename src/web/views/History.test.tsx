@@ -431,7 +431,7 @@ describe('History data helpers', () => {
     it('groups sessions by day, sums cost, and trims to N most recent days', () => {
       // Locally-constructed instants so the test is timezone-portable;
       // UTC ISO strings would shift days under negative-offset runners
-      // after the F-026 fix moved bucketing to local-time getters.
+      // after bucketing moved to local-time getters.
       const out = aggregateDailyCost(
         [
           {
@@ -649,7 +649,7 @@ describe('History data helpers', () => {
           antiPatternCounts: { stuck_loop: 4 },
         },
       ]);
-      // F-040: keep the full ISO date in chart data so cross-year ticks
+      // Keep the full ISO date in chart data so cross-year ticks
       // remain unique; the XAxis tickFormatter shortens to MM-DD on render.
       expect(out).toEqual([
         { week: '2026-04-21', count: 3 },
@@ -755,7 +755,7 @@ describe('History helpers with real API data shapes', () => {
           antiPatternCounts: { stuck_loop: 3 },
         },
       ]);
-      // F-040: keep the full week identifier in chart data; the XAxis
+      // Keep the full week identifier in chart data; the XAxis
       // tickFormatter shortens to MM-DD on render (or leaves unchanged
       // for non-ISO labels like '2026-W22').
       expect(out).toEqual([
@@ -776,7 +776,7 @@ describe('History helpers with real API data shapes', () => {
       ]);
       expect(out).toHaveLength(1);
       expect(out[0].count).toBe(5);
-      // F-040: full label preserved in chart data; XAxis tickFormatter
+      // Full label preserved in chart data; XAxis tickFormatter
       // handles display-time shortening.
       expect(out[0].week).toBe('2026-W22');
     });

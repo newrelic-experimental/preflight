@@ -387,7 +387,7 @@ describe('sse-handler', () => {
     expect(offSpy).toHaveBeenCalledTimes(5);
   });
 
-  // Task #17 (D3): server-side sessionId filtering for the per-session
+  // Server-side sessionId filtering for the per-session
   // live tail. When `?sessionId=` is present, frames with a sessionId that
   // doesn't match are dropped before being written; events with no sessionId
   // (e.g. system-level alerts) and the heartbeat keepalive always pass.

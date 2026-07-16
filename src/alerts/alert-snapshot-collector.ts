@@ -4,7 +4,7 @@ const logger = createLogger('alert-snapshot-collector');
 
 // ---------------------------------------------------------------------------
 // Snapshot type — owns the shape that LocalAlertEngine.evaluate() consumes.
-// (Re-exported from local-alert-engine.ts to keep Phase 1 imports stable.)
+// (Re-exported from local-alert-engine.ts to keep imports stable.)
 // ---------------------------------------------------------------------------
 
 /**

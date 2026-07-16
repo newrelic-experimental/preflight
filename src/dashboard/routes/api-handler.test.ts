@@ -1223,7 +1223,7 @@ describe('api-handler GET /api/personal-coach', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task #17 (D3): cross-session aggregate + live session list
+// Cross-session aggregate + live session list
 // ---------------------------------------------------------------------------
 
 describe('api-handler GET /api/sessions/live', () => {
