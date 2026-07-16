@@ -186,6 +186,7 @@ export interface CostMetrics {
   readonly costByModel: Record<string, number>;
   readonly costPerLineOfCode: number | null;
   readonly costPerFileModified: number | null;
+  readonly costPerMillionTokens: number | null;
   readonly model: string | null;
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
@@ -590,6 +591,7 @@ export interface ModelStats {
   readonly totalOutputTokens: number;
   readonly totalCostUsd: number;
   readonly costPerOutputToken: number | null;
+  readonly costPerMillionTokens: number | null;
   readonly avgOutputTokensPerRequest: number | null;
 }
 

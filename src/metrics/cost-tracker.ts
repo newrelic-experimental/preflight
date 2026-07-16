@@ -58,6 +58,8 @@ export interface CostMetrics {
   readonly costByModel: Record<string, number>;
   readonly costPerLineOfCode: number | null;
   readonly costPerFileModified: number | null;
+  /** Blended session cost rate: totalCostUsd / totalTokens (all types) * 1M. */
+  readonly costPerMillionTokens: number | null;
   readonly model: string | null;
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
@@ -365,6 +367,13 @@ export class CostTracker {
       costByWorkflowRunId[runId] = Object.fromEntries(dayMap);
     }
 
+    const totalTokensAllTypes =
+      this.totalInputTokens +
+      this.totalOutputTokens +
+      this.totalThinkingTokens +
+      this.totalCacheReadTokens +
+      this.totalCacheCreationTokens;
+
     return {
       sessionTotalCostUsd: hasData ? this.totalCostUsd : null,
       costByTask: null,
@@ -373,6 +382,10 @@ export class CostTracker {
         hasData && this.totalLinesChanged > 0 ? this.totalCostUsd / this.totalLinesChanged : null,
       costPerFileModified:
         hasData && uniqueFilesWritten > 0 ? this.totalCostUsd / uniqueFilesWritten : null,
+      costPerMillionTokens:
+        hasData && totalTokensAllTypes > 0
+          ? (this.totalCostUsd / totalTokensAllTypes) * 1_000_000
+          : null,
       model: this.currentModel,
       totalInputTokens: this.totalInputTokens,
       totalOutputTokens: this.totalOutputTokens,
@@ -394,6 +407,20 @@ export class CostTracker {
     const attrs: Record<string, string | number> = {};
     if (this.currentModel) {
       attrs.model = this.currentModel;
+    }
+
+    const totalTokensAllTypes =
+      this.totalInputTokens +
+      this.totalOutputTokens +
+      this.totalThinkingTokens +
+      this.totalCacheReadTokens +
+      this.totalCacheCreationTokens;
+    if (totalTokensAllTypes > 0) {
+      aggregator.record(
+        'ai.cost.per_million_tokens',
+        (this.totalCostUsd / totalTokensAllTypes) * 1_000_000,
+        attrs,
+      );
     }
 
     aggregator.record('ai.cost.session_total_usd', this.totalCostUsd, attrs);

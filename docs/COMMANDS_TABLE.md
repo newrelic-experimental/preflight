@@ -241,6 +241,7 @@ Session cost breakdown by task, model, and efficiency.
   "by_task": [{ "task_id": "task-001", "cost_usd": 0.25, "tokens_used": 15000 }],
   "cost_per_line_of_code": 0.003,
   "cost_per_file_modified": 0.065,
+  "cost_per_million_tokens": 7.43,
   "tokens": { "input": 50000, "output": 20000, "thinking": 10000 }
 }
 ```
@@ -254,6 +255,7 @@ Session cost breakdown by task, model, and efficiency.
 - `by_task` — maps `TaskDetector.getCompletedTasks()` to their `estimatedCostUsd` and `tokensUsed`
 - `cost_per_line_of_code` — `totalCost / totalLinesChanged` (null if no lines changed)
 - `cost_per_file_modified` — `totalCost / uniqueFilesWritten` (null if no files modified)
+- `cost_per_million_tokens` — blended session rate: `(totalCost / totalTokens) * 1_000_000`, summed across input, output, thinking, cache-read, and cache-creation tokens (null if no tokens reported). Also emitted as the `ai.cost.per_million_tokens` NR metric, faceted by `model`.
 - `tokens` — running totals by token type from all reports
 
 **Requires:** `CostTracker`; `TaskDetector` for per-task breakdown

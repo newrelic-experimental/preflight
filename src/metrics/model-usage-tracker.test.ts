@@ -57,6 +57,19 @@ describe('ModelUsageTracker', () => {
     expect(t.getMetrics().byModel['model-a']?.costPerOutputToken).toBeNull();
   });
 
+  it('computes costPerMillionTokens correctly', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('model-a', 500_000, 500_000, 1.0);
+    const stats = t.getMetrics().byModel['model-a'];
+    expect(stats?.costPerMillionTokens).toBeCloseTo(1.0);
+  });
+
+  it('costPerMillionTokens is null when no tokens are recorded', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('model-a', 0, 0, 0);
+    expect(t.getMetrics().byModel['model-a']?.costPerMillionTokens).toBeNull();
+  });
+
   it('avgOutputTokensPerRequest is correct', () => {
     const t = new ModelUsageTracker();
     t.recordUsage('model-a', 0, 200, 0);

@@ -2987,6 +2987,7 @@ describe('api-handler GET /api/model-usage', () => {
           totalOutputTokens: 500,
           totalCostUsd: 3.2,
           costPerOutputToken: 0.0064,
+          costPerMillionTokens: 2133.33,
           avgOutputTokensPerRequest: 12.5,
         },
       },
