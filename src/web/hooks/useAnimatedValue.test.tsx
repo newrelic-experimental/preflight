@@ -22,6 +22,15 @@ describe('useAnimatedValue', () => {
     expect(result.current).toBe('3.14');
   });
 
+  it('applies a custom format function and ignores decimals', () => {
+    // Guards the cost-KPI fix: the animated value must render through the same
+    // formatter as the settled `value`, not a bare toFixed(2), so the count-up
+    // and the final string never disagree on precision.
+    const fmt = (n: number) => (n < 1 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`);
+    const { result } = renderHook(() => useAnimatedValue(0.42, { decimals: 2, format: fmt }));
+    expect(result.current).toBe('$0.4200');
+  });
+
   it('returns target when enabled is false', () => {
     const { result } = renderHook(() => useAnimatedValue(100, { enabled: false }));
     expect(result.current).toBe('100');

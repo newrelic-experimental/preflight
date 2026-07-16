@@ -73,6 +73,38 @@ export interface ContextUpdateEvent {
   readonly topTools: ReadonlyArray<{ readonly tool: string; readonly estimatedTokens: number }>;
 }
 
+export interface SubagentTurnEvent {
+  readonly sessionId?: string;
+  readonly agentId: string;
+  readonly workflowRunId: string | null;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly usdEstimate: number | null;
+  readonly ts: number;
+}
+
+export interface WorkflowRunLiveEvent {
+  readonly sessionId?: string;
+  readonly workflowRunId: string;
+  readonly runSource: 'agent_tool' | 'script';
+  readonly workflowName: string;
+  readonly status: string;
+  readonly agentCount: number;
+  readonly totalTokens: number;
+  readonly durationMs: number;
+  readonly ts: number;
+}
+
+export interface ObservabilityHealthEvent {
+  readonly filesWatched: number;
+  readonly parseErrors: number;
+  readonly watcherDisabledByLock: boolean;
+  readonly ts: number;
+}
+
 export type LiveEventMap = {
   'tool-call': ToolCallEvent;
   'cost-update': CostUpdateEvent;
@@ -80,6 +112,19 @@ export type LiveEventMap = {
   'context-update': ContextUpdateEvent;
   heartbeat: HeartbeatEvent;
   alert: AlertEvent;
+  // Forward-declared, not yet wired: nothing calls bus.emit() for these three
+  // event names today, and src/dashboard/routes/sse-handler.ts only
+  // subscribes ('on'/'onWithSeq') the six names above. Reconnecting clients
+  // would still see buffered instances via replayFrom() (which streams every
+  // buffered type regardless of subscription), but a live client connected
+  // when one of these first fires would silently miss it. Before wiring an
+  // emitter for any of these three, also add the matching bus.on(...)/
+  // bus.onWithSeq(...) subscription (and SSE frame forwarding) in
+  // sse-handler.ts — see its 'tool-call'/'cost-update'/etc. wiring for the
+  // pattern to follow.
+  'subagent-turn': SubagentTurnEvent;
+  'workflow-run': WorkflowRunLiveEvent;
+  'observability-health': ObservabilityHealthEvent;
 };
 
 export type LiveEventName = keyof LiveEventMap;

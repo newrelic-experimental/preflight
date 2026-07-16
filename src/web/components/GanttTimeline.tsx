@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { shortToolName } from '../lib/format';
+import { shortToolName } from '../lib/format.js';
 
 interface GanttTimelineEntry {
   readonly timestamp: number;
@@ -20,6 +20,25 @@ interface GanttSegment {
 interface GanttTimelineProps {
   readonly entries: GanttTimelineEntry[];
   readonly segments: GanttSegment[];
+  // Optional shared time window. When BOTH are provided, bars are positioned by
+  // absolute timestamp within [windowStartMs, windowEndMs] and ticks are based
+  // on that window — used to align this gantt against another chart (e.g. the
+  // subagent swimlane) on a single shared x-scale. When omitted, the timeline
+  // self-computes its window from first..last entry (unchanged legacy behavior).
+  readonly windowStartMs?: number;
+  readonly windowEndMs?: number;
+  // When false, the top tick-axis row is omitted so this gantt can be embedded
+  // UNDER a shared axis owned by a sibling timeline (e.g. nested agent calls in
+  // SessionTrace, where only the parent gantt draws ticks). Defaults to true,
+  // which keeps the legacy standalone behavior (Today view, replay, etc.)
+  // byte-for-byte identical for any caller that doesn't pass it.
+  readonly showTicks?: boolean;
+  // Tailwind width class for the left gutter (axis spacer + row label column).
+  // Defaults to 'w-24' so standalone callers (Today view, replay) keep their
+  // exact layout. SessionTrace passes a wider gutter so its (longer) agent
+  // labels don't truncate AND so every chart it renders — parent lane, nested
+  // agent-call ganttes — column-aligns with its own axis and collapsed bars.
+  readonly gutterClass?: string;
 }
 
 function getBarColor(toolName: string): string {
@@ -44,7 +63,14 @@ function fmtTickLabel(ms: number): string {
   return `${min}:${String(sec).padStart(2, '0')}`;
 }
 
-export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.Element {
+export function GanttTimeline({
+  entries,
+  segments,
+  windowStartMs,
+  windowEndMs,
+  showTicks = true,
+  gutterClass = 'w-24',
+}: GanttTimelineProps): JSX.Element {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   if (entries.length === 0) {
@@ -58,14 +84,27 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
   const sorted = entries
     .map((entry, originalIdx) => ({ entry, originalIdx }))
     .sort((a, b) => a.entry.timestamp - b.entry.timestamp);
-  const firstTs = sorted[0]!.entry.timestamp;
+
+  // A shared window is supplied only when BOTH bounds are present. In that mode
+  // the reference frame (firstTs + totalDuration) comes from the caller so this
+  // chart shares an x-scale with another aligned chart. Otherwise we keep the
+  // exact legacy behavior: self-compute first..last from the entries.
+  const useWindow = windowStartMs !== undefined && windowEndMs !== undefined;
+
+  // firstTs is the left edge of the track in absolute ms. In windowed mode it's
+  // the supplied window start; in legacy mode it's the earliest entry.
+  const firstTs = useWindow ? windowStartMs : sorted[0]!.entry.timestamp;
   // Use the maximum end time across all entries, not just the last entry in array
   // order — an intermediate entry may have a longer duration and overflow the track.
   const maxEnd = sorted.reduce(
     (m, { entry }) => Math.max(m, entry.timestamp + (entry.durationMs ?? 50)),
     0,
   );
-  const totalDuration = Math.max(maxEnd - firstTs, 1);
+  // In windowed mode the span is fixed by the supplied window so ticks and bars
+  // line up with the sibling chart; in legacy mode it's the self-computed span.
+  const totalDuration = useWindow
+    ? Math.max(windowEndMs - windowStartMs, 1)
+    : Math.max(maxEnd - firstTs, 1);
 
   // Compute tick interval — target ~8 visible labels max
   const MAX_TICKS = 8;
@@ -73,7 +112,7 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
   // Find the smallest candidate that gives <= MAX_TICKS ticks.
   // Fall back to ceil(totalDuration / MAX_TICKS) so short sessions still
   // get tick marks rather than rendering a blank axis.
-  let tickIntervalMs =
+  const tickIntervalMs =
     candidates.find((c) => totalDuration / c <= MAX_TICKS) ?? Math.ceil(totalDuration / MAX_TICKS);
 
   const ticks: number[] = [];
@@ -109,27 +148,32 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
 
   return (
     <div className="p-2 overflow-x-hidden">
-      {/* Time axis */}
-      <div className="flex">
-        <div className="w-20 shrink-0" />
-        <div className="relative flex-1 h-5 border-b border-bg-line overflow-x-auto">
-          {ticks.map((t) => {
-            const leftPct = (t / totalDuration) * 100;
-            return (
-              <span
-                key={t}
-                className="absolute top-0 text-[9px] text-ink-muted tabular-nums -translate-x-1/2"
-                style={{ left: `${leftPct}%` }}
-              >
-                {fmtTickLabel(t)}
-              </span>
-            );
-          })}
+      {/* Time axis — omitted when showTicks is false so this gantt can be
+          embedded under a sibling's shared axis (the parent gantt in
+          SessionTrace draws the only ticks; nested agent-call ganttes reuse
+          its scale via windowStartMs/windowEndMs). */}
+      {showTicks && (
+        <div className="flex">
+          <div className={`${gutterClass} shrink-0`} />
+          <div className="relative flex-1 h-5 border-b border-bg-line overflow-x-auto">
+            {ticks.map((t) => {
+              const leftPct = (t / totalDuration) * 100;
+              return (
+                <span
+                  key={t}
+                  className="absolute top-0 text-[9px] text-ink-muted tabular-nums -translate-x-1/2"
+                  style={{ left: `${leftPct}%` }}
+                >
+                  {fmtTickLabel(t)}
+                </span>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Rows */}
-      <div className="mt-1">
+      <div className={showTicks ? 'mt-1' : ''}>
         {sorted.map(({ entry, originalIdx }, idx) => {
           const offsetMs = entry.timestamp - firstTs;
           const duration = entry.durationMs ?? 50;
@@ -148,7 +192,7 @@ export function GanttTimeline({ entries, segments }: GanttTimelineProps): JSX.El
               className={`flex items-center h-7 ${borderClass}`}
             >
               <div
-                className="w-20 shrink-0 truncate text-[11px] text-ink-subtle pr-2 text-right"
+                className={`${gutterClass} shrink-0 truncate text-[11px] text-ink-subtle pr-2 text-right`}
                 title={entry.toolName}
               >
                 {shortToolName(entry.toolName)}

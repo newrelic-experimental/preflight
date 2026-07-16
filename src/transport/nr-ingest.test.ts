@@ -4,11 +4,21 @@ import {
   codingTaskToNrEvent,
   antiPatternToNrEvent,
   proxyToolCallToNrEvent,
+  workflowRunToNrEvent,
+  scriptWorkflowRunToNrEvent,
+  subagentTurnToNrEvent,
+  observabilityHealthToNrEvent,
   proxyRequestToNrEvent,
   NrIngestManager,
   isProxyToolCall,
 } from './nr-ingest.js';
-import type { NrIngestOptions } from './nr-ingest.js';
+import type {
+  NrIngestOptions,
+  WorkflowRunMetrics,
+  ScriptWorkflowRunMetrics,
+  SubagentTurnMetrics,
+  ObservabilityHealthMetrics,
+} from './nr-ingest.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
@@ -1424,5 +1434,614 @@ describe('session trace ID propagation', () => {
       orgId: null,
     });
     expect(event.org_id).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workflowRunToNrEvent() + NrIngestManager.ingestWorkflowRun()
+// ---------------------------------------------------------------------------
+
+function makeWorkflowRun(overrides?: Partial<WorkflowRunMetrics>): WorkflowRunMetrics {
+  return {
+    workflow_run_id: 'toolu_agent_001',
+    run_source: 'agent_tool',
+    session_id: 'sess-001',
+    workflow_name: 'lookup-foo',
+    subagent_type: 'general-purpose',
+    agent_name: 'lookup-foo',
+    agent_model: 'claude-opus-4-7',
+    agent_description: 'Look up foo in the codebase',
+    run_in_background: false,
+    started_at: 1_700_000_000_000,
+    duration_ms: 12_500,
+    agent_count: 1,
+    total_tokens: 0,
+    declared_phases: null,
+    observed_phases: 0,
+    incomplete: false,
+    tool_call_count: 7,
+    child_agent_count: 0,
+    status: 'completed',
+    exit_error: null,
+    ...overrides,
+  };
+}
+
+describe('workflowRunToNrEvent()', () => {
+  it('serializes all standard fields with snake_case naming', () => {
+    const run = makeWorkflowRun();
+    const event = workflowRunToNrEvent(run, { developer: 'dev1', appName: 'my-app' });
+
+    expect(event.eventType).toBe('AiWorkflowRun');
+    expect(event.workflow_run_id).toBe('toolu_agent_001');
+    expect(event.developer).toBe('dev1');
+    expect(event.app_name).toBe('my-app');
+    expect(event.subagent_type).toBe('general-purpose');
+    expect(event.agent_name).toBe('lookup-foo');
+    expect(event.agent_model).toBe('claude-opus-4-7');
+    expect(event.run_in_background).toBe(false);
+    expect(event.started_at).toBe(1_700_000_000_000);
+    expect(event.duration_ms).toBe(12_500);
+    expect(event.tool_call_count).toBe(7);
+    expect(event.child_agent_count).toBe(0);
+    expect(event.status).toBe('completed');
+  });
+
+  it('uses started_at + duration_ms as the timestamp', () => {
+    const run = makeWorkflowRun({ started_at: 1_700_000_000_000, duration_ms: 5_000 });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event.timestamp).toBe(1_700_000_005_000);
+  });
+
+  it('redacts agent_description', () => {
+    const run = makeWorkflowRun({
+      agent_description: 'Use api key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event.agent_description).not.toContain('sk-ant-api03-');
+  });
+
+  it('omits exit_error when null', () => {
+    const event = workflowRunToNrEvent(makeWorkflowRun({ exit_error: null }), {
+      developer: 'd',
+      appName: 'a',
+    });
+
+    expect(event).not.toHaveProperty('exit_error');
+  });
+
+  it('redacts exit_error when defined', () => {
+    const run = makeWorkflowRun({
+      status: 'errored',
+      exit_error: 'curl failed: https://example.com/?token=sk-ant-api03-secrets-here',
+    });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event.status).toBe('errored');
+    expect(typeof event.exit_error).toBe('string');
+    expect(event.exit_error).not.toContain('sk-ant-api03-');
+  });
+
+  it('prefers sessionTraceId over the metrics session_id when provided', () => {
+    const run = makeWorkflowRun({ session_id: 'tracker-baked-in-id' });
+    const event = workflowRunToNrEvent(run, {
+      developer: 'd',
+      appName: 'a',
+      sessionTraceId: 'real-claude-session-id',
+    });
+
+    expect(event.session_id).toBe('real-claude-session-id');
+  });
+
+  it('falls back to the metrics session_id when sessionTraceId is absent', () => {
+    const run = makeWorkflowRun({ session_id: 'tracker-baked-in-id' });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event.session_id).toBe('tracker-baked-in-id');
+  });
+
+  it('omits session_id when both sources are empty', () => {
+    const run = makeWorkflowRun({ session_id: '' });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event).not.toHaveProperty('session_id');
+  });
+
+  it('includes team_id, project_id, org_id when set', () => {
+    const event = workflowRunToNrEvent(makeWorkflowRun(), {
+      developer: 'd',
+      appName: 'a',
+      teamId: 'team-x',
+      projectId: 'proj-y',
+      orgId: 'org-z',
+    });
+
+    expect(event.team_id).toBe('team-x');
+    expect(event.project_id).toBe('proj-y');
+    expect(event.org_id).toBe('org-z');
+  });
+});
+
+describe('NrIngestManager.ingestWorkflowRun()', () => {
+  it('queues an AiWorkflowRun event that is flushed on stop()', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestWorkflowRun(makeWorkflowRun());
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendEvents).toHaveBeenCalled();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const workflowEvent = sentEvents.find((e) => e.eventType === 'AiWorkflowRun');
+    expect(workflowEvent).toBeDefined();
+    expect(workflowEvent!.workflow_run_id).toBe('toolu_agent_001');
+    expect(workflowEvent!.duration_ms).toBe(12_500);
+    expect(workflowEvent!.status).toBe('completed');
+  });
+
+  it('workflow event is queued alongside AiToolCall events in the same batch', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestToolCall(makeRecord({ toolName: 'Agent', toolUseId: 'toolu_agent_001' }));
+    manager.ingestWorkflowRun(makeWorkflowRun());
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const eventTypes = sentEvents.map((e) => e.eventType);
+    expect(eventTypes).toContain('AiToolCall');
+    expect(eventTypes).toContain('AiWorkflowRun');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PRD §7 — Script-driven AiWorkflowRun + AiSubagentTurn + AiObservabilityHealth
+// ---------------------------------------------------------------------------
+
+function makeScriptWorkflowRun(
+  overrides?: Partial<ScriptWorkflowRunMetrics>,
+): ScriptWorkflowRunMetrics {
+  return {
+    workflow_run_id: 'wf_abc12345-6dd',
+    parent_session_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    task_id: 'task-1',
+    workflow_name: 'sample',
+    status: 'completed',
+    default_model: 'claude-opus-4-7',
+    started_at: 1781652144959,
+    duration_ms: 745892,
+    agent_count: 4,
+    total_tokens: 826463,
+    total_usd: 1.23,
+    declared_phases: 3,
+    observed_phases: 3,
+    declared_parallel_widths: '[3,"dynamic"]',
+    token_reconciliation_delta: 0.05,
+    incomplete: false,
+    backfilled: false,
+    ...overrides,
+  };
+}
+
+describe('scriptWorkflowRunToNrEvent()', () => {
+  it('serialises the canonical fields with run_source=script', () => {
+    const event = scriptWorkflowRunToNrEvent(makeScriptWorkflowRun(), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.eventType).toBe('AiWorkflowRun');
+    expect(event.run_source).toBe('script');
+    expect(event.workflow_run_id).toBe('wf_abc12345-6dd');
+    expect(event.workflow_name).toBe('sample');
+    expect(event.event_version).toBe(1);
+  });
+
+  it('omits total_usd when null (pricing miss)', () => {
+    const event = scriptWorkflowRunToNrEvent(makeScriptWorkflowRun({ total_usd: null }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.total_usd).toBeUndefined();
+  });
+
+  it('does NOT redact declarative metadata (workflow_name)', () => {
+    const event = scriptWorkflowRunToNrEvent(
+      makeScriptWorkflowRun({ workflow_name: 'CustomerAcme' }),
+      { developer: 'd', appName: 'a' },
+    );
+    expect(event.workflow_name).toBe('CustomerAcme');
+  });
+
+  it('marks incomplete runs', () => {
+    const event = scriptWorkflowRunToNrEvent(
+      makeScriptWorkflowRun({ status: 'killed', incomplete: true }),
+      { developer: 'd', appName: 'a' },
+    );
+    expect(event.incomplete).toBe(true);
+    expect(event.status).toBe('killed');
+  });
+});
+
+describe('subagentTurnToNrEvent()', () => {
+  function makeTurn(overrides?: Partial<SubagentTurnMetrics>): SubagentTurnMetrics {
+    return {
+      workflow_run_id: 'wf_abc12345-6dd',
+      agent_id: 'a1234567890abcdef',
+      parent_session_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      message_id: 'msg_1',
+      turn_uuid: 'turn-uuid-1',
+      timestamp_ms: 1781652144959,
+      model: 'claude-opus-4-7',
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_creation_tokens: 200,
+      cache_read_tokens: 1000,
+      reasoning_tokens: 0,
+      usd: 0.001,
+      stop_reason: 'end_turn',
+      schema_fingerprint: 'abc123',
+      ...overrides,
+    };
+  }
+
+  it('serialises canonical fields with eventType AiSubagentTurn', () => {
+    const event = subagentTurnToNrEvent(makeTurn(), { developer: 'd', appName: 'a' });
+    expect(event.eventType).toBe('AiSubagentTurn');
+    expect(event.event_version).toBe(1);
+    expect(event.agent_id).toBe('a1234567890abcdef');
+    expect(event.message_id).toBe('msg_1');
+    expect(event.input_tokens).toBe(100);
+  });
+
+  it('omits usd when null (pricing miss)', () => {
+    const event = subagentTurnToNrEvent(makeTurn({ usd: null }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.usd).toBeUndefined();
+  });
+
+  it('preserves model identifier verbatim (NOT redacted)', () => {
+    const event = subagentTurnToNrEvent(makeTurn({ model: 'claude-opus-4-7-secretkey-pattern' }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.model).toBe('claude-opus-4-7-secretkey-pattern');
+  });
+
+  it('forwards reasoning_tokens for extended-thinking models', () => {
+    const event = subagentTurnToNrEvent(makeTurn({ reasoning_tokens: 750 }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.reasoning_tokens).toBe(750);
+  });
+});
+
+describe('observabilityHealthToNrEvent()', () => {
+  function makeHealth(overrides?: Partial<ObservabilityHealthMetrics>): ObservabilityHealthMetrics {
+    return {
+      timestamp: 1781652144959,
+      watcher: 'subagent',
+      files_watched: 3,
+      lines_read: 27,
+      bytes_read: 81920,
+      parse_errors: 0,
+      schema_drifts: 0,
+      last_error: null,
+      ...overrides,
+    };
+  }
+
+  it('serialises base health fields', () => {
+    const event = observabilityHealthToNrEvent(makeHealth(), { developer: 'd', appName: 'a' });
+    expect(event.eventType).toBe('AiObservabilityHealth');
+    expect(event.watcher).toBe('subagent');
+    expect(event.files_watched).toBe(3);
+    expect(event.event_version).toBe(1);
+  });
+
+  it('flattens lastError into code+class fields', () => {
+    const event = observabilityHealthToNrEvent(
+      makeHealth({ last_error: { code: 'EACCES', class: 'Error' } }),
+      { developer: 'd', appName: 'a' },
+    );
+    expect(event.last_error_code).toBe('EACCES');
+    expect(event.last_error_class).toBe('Error');
+  });
+
+  it('forwards optional event/dimension/fingerprint when present', () => {
+    const event = observabilityHealthToNrEvent(
+      makeHealth({
+        event: 'schema_drift',
+        dimension: 'usage_keys',
+        fingerprint: 'abc',
+      }),
+      { developer: 'd', appName: 'a' },
+    );
+    expect(event.event).toBe('schema_drift');
+    expect(event.dimension).toBe('usage_keys');
+    expect(event.fingerprint).toBe('abc');
+  });
+
+  it('emits cost_self_check_delta_pct when present', () => {
+    const event = observabilityHealthToNrEvent(
+      makeHealth({ event: 'cost_self_check', cost_self_check_delta_pct: 7.3 }),
+      { developer: 'd', appName: 'a' },
+    );
+    expect(event.cost_self_check_delta_pct).toBe(7.3);
+  });
+});
+
+describe('NrIngestManager — new event types', () => {
+  it('queues an AiSubagentTurn that is flushed', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    manager.ingestSubagentTurn({
+      workflow_run_id: null,
+      agent_id: 'a1234567890abcdef',
+      parent_session_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      message_id: 'msg_1',
+      turn_uuid: 'u',
+      timestamp_ms: Date.now(),
+      model: 'claude-opus-4-7',
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      reasoning_tokens: 0,
+      usd: 0.0,
+      stop_reason: null,
+      schema_fingerprint: 'fp',
+    });
+    manager.start();
+    await manager.stop();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    expect(sentEvents.some((e) => e.eventType === 'AiSubagentTurn')).toBe(true);
+  });
+
+  it('queues an AiObservabilityHealth that is flushed', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    manager.ingestObservabilityHealth({
+      timestamp: Date.now(),
+      watcher: 'subagent',
+      files_watched: 1,
+      lines_read: 1,
+      bytes_read: 100,
+      parse_errors: 0,
+      schema_drifts: 0,
+      last_error: null,
+    });
+    manager.start();
+    await manager.stop();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    expect(sentEvents.some((e) => e.eventType === 'AiObservabilityHealth')).toBe(true);
+  });
+
+  it('AiWorkflowRun (agent_tool) and (script) coexist with distinct run_source', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    manager.ingestWorkflowRun(makeWorkflowRun());
+    manager.ingestScriptWorkflowRun(makeScriptWorkflowRun());
+    manager.start();
+    await manager.stop();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const wfEvents = sentEvents.filter((e) => e.eventType === 'AiWorkflowRun');
+    expect(wfEvents).toHaveLength(2);
+    const sources = wfEvents.map((e) => e.run_source);
+    expect(sources).toContain('agent_tool');
+    expect(sources).toContain('script');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// subagentTurnToNrEvent — focused test block
+// ---------------------------------------------------------------------------
+
+describe('subagentTurnToNrEvent', () => {
+  function makeTurnMinimal(overrides?: Partial<SubagentTurnMetrics>): SubagentTurnMetrics {
+    return {
+      workflow_run_id: 'wf_focused_test',
+      agent_id: 'agent-focused-01',
+      parent_session_id: 'sess-parent-01',
+      message_id: 'msg_focused_01',
+      turn_uuid: 'turn-focused-01',
+      timestamp_ms: 1_700_000_000_000,
+      model: 'claude-sonnet-4',
+      input_tokens: 1_000,
+      output_tokens: 500,
+      cache_creation_tokens: 200,
+      cache_read_tokens: 3_000,
+      reasoning_tokens: 100,
+      usd: 0.005,
+      stop_reason: 'end_turn',
+      schema_fingerprint: 'fp_focused',
+      ...overrides,
+    };
+  }
+
+  it('eventType is AiSubagentTurn', () => {
+    const event = subagentTurnToNrEvent(makeTurnMinimal(), { developer: 'd', appName: 'a' });
+    expect(event.eventType).toBe('AiSubagentTurn');
+  });
+
+  it('all five token fields are mapped correctly', () => {
+    const event = subagentTurnToNrEvent(makeTurnMinimal(), { developer: 'd', appName: 'a' });
+    expect(event.input_tokens).toBe(1_000);
+    expect(event.output_tokens).toBe(500);
+    expect(event.cache_creation_tokens).toBe(200);
+    expect(event.cache_read_tokens).toBe(3_000);
+    expect(event.reasoning_tokens).toBe(100);
+  });
+
+  it('workflowRunId=null produces empty workflow_run_id string (not null)', () => {
+    // The serializer maps null to '' so NRQL WHERE workflow_run_id IS NOT NULL is satisfied.
+    const event = subagentTurnToNrEvent(makeTurnMinimal({ workflow_run_id: null }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    // workflow_run_id must be present and falsy (empty string) rather than null.
+    expect(event.workflow_run_id).toBeDefined();
+    expect(event.workflow_run_id).not.toBeNull();
+    expect(event.workflow_run_id).toBeFalsy();
+  });
+
+  it('developer and app_name are mapped from attrs', () => {
+    const event = subagentTurnToNrEvent(makeTurnMinimal(), {
+      developer: 'my-dev',
+      appName: 'my-app',
+    });
+    expect(event.developer).toBe('my-dev');
+    expect(event.app_name).toBe('my-app');
+  });
+
+  it('team_id / project_id / org_id included when provided', () => {
+    const event = subagentTurnToNrEvent(makeTurnMinimal(), {
+      developer: 'd',
+      appName: 'a',
+      teamId: 'team-1',
+      projectId: 'proj-1',
+      orgId: 'org-1',
+    });
+    expect(event.team_id).toBe('team-1');
+    expect(event.project_id).toBe('proj-1');
+    expect(event.org_id).toBe('org-1');
+  });
+
+  it('team_id / project_id / org_id omitted when null', () => {
+    const event = subagentTurnToNrEvent(makeTurnMinimal(), {
+      developer: 'd',
+      appName: 'a',
+      teamId: null,
+      projectId: null,
+      orgId: null,
+    });
+    expect(event.team_id).toBeUndefined();
+    expect(event.project_id).toBeUndefined();
+    expect(event.org_id).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workflowRunToNrEvent — run_source discriminator test block
+// ---------------------------------------------------------------------------
+
+describe('workflowRunToNrEvent', () => {
+  it('run_source=agent_tool → agent-specific fields present, run_source is agent_tool', () => {
+    const run = makeWorkflowRun({
+      run_source: 'agent_tool',
+      subagent_type: 'researcher',
+      agent_model: 'claude-opus-4',
+      run_in_background: true,
+    });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event.run_source).toBe('agent_tool');
+    expect(event.subagent_type).toBe('researcher');
+    expect(event.agent_model).toBe('claude-opus-4');
+    expect(event.run_in_background).toBe(true);
+  });
+
+  it('run_source=agent_tool → script-only fields (declared_phases, token_reconciliation_delta) not set', () => {
+    const run = makeWorkflowRun({ run_source: 'agent_tool' });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    // workflowRunToNrEvent handles agent_tool runs — script-only fields are absent.
+    expect(event).not.toHaveProperty('declared_phases');
+    expect(event).not.toHaveProperty('token_reconciliation_delta');
+  });
+
+  it('exit_error goes through redactSensitive — secret is absent in output', () => {
+    const SECRET = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const run = makeWorkflowRun({
+      exit_error: `HTTP 401: Authorization: Bearer ${SECRET}`,
+    });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(typeof event.exit_error).toBe('string');
+    expect(event.exit_error as string).not.toContain(SECRET);
+    expect(event.exit_error as string).toContain('[REDACTED]');
+  });
+
+  it('incomplete: true surfaced via status for agent_tool runs', () => {
+    // workflowRunToNrEvent (agent_tool path) does not emit `incomplete` directly;
+    // the `incomplete` flag lives on ScriptWorkflowRunMetrics. For agent_tool runs,
+    // callers distinguish incomplete runs via `status === 'errored'`.
+    const run = makeWorkflowRun({ incomplete: true, status: 'errored' });
+    const event = workflowRunToNrEvent(run, { developer: 'd', appName: 'a' });
+
+    expect(event.status).toBe('errored');
+    expect(event.run_source).toBe('agent_tool');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NrIngestManager subagent methods
+// ---------------------------------------------------------------------------
+
+describe('NrIngestManager subagent methods', () => {
+  it('ingestSubagentTurn() calls scheduler.addEvent with eventType AiSubagentTurn', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    manager.ingestSubagentTurn({
+      workflow_run_id: 'wf_mgr_test',
+      agent_id: 'agent-mgr-01',
+      parent_session_id: 'sess-mgr-01',
+      message_id: 'msg_mgr_01',
+      turn_uuid: 'turn-mgr-01',
+      timestamp_ms: Date.now(),
+      model: 'claude-sonnet-4',
+      input_tokens: 500,
+      output_tokens: 250,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      reasoning_tokens: 0,
+      usd: 0.002,
+      stop_reason: 'end_turn',
+      schema_fingerprint: 'fp_mgr',
+    });
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendEvents).toHaveBeenCalled();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const subagentEvent = sentEvents.find((e) => e.eventType === 'AiSubagentTurn');
+    expect(subagentEvent).toBeDefined();
+    expect(subagentEvent!.agent_id).toBe('agent-mgr-01');
+    expect(subagentEvent!.input_tokens).toBe(500);
+  });
+
+  it('ingestWorkflowRun() calls scheduler.addEvent with eventType AiWorkflowRun', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    manager.ingestWorkflowRun(
+      makeWorkflowRun({
+        workflow_run_id: 'toolu_mgr_wf_001',
+        status: 'completed',
+        duration_ms: 8_000,
+      }),
+    );
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendEvents).toHaveBeenCalled();
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const wfEvent = sentEvents.find((e) => e.eventType === 'AiWorkflowRun');
+    expect(wfEvent).toBeDefined();
+    expect(wfEvent!.workflow_run_id).toBe('toolu_mgr_wf_001');
+    expect(wfEvent!.status).toBe('completed');
+    expect(wfEvent!.duration_ms).toBe(8_000);
   });
 });

@@ -54,7 +54,13 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
+import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
+import { SubagentWatcher } from './hooks/subagent-watcher.js';
+import { WorkflowWatcher } from './hooks/workflow-watcher.js';
+import { WorkflowStore } from './dashboard/workflow-store.js';
+import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
+import type { TokenUsage } from './shared/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { LiveEventBus } from './dashboard/index.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
@@ -574,7 +580,7 @@ async function main(): Promise<void> {
   let proxyManager: ProxyManager | undefined;
   let sessionStore: SessionStore | undefined;
   let weeklySummaryGenerator: WeeklySummaryGenerator | undefined;
-  let persistSession: (() => void) | undefined;
+  let persistSession: ((opts?: { periodic?: boolean }) => void) | undefined;
   let config: import('./config.js').McpServerConfig | undefined;
   let sessionTracker: SessionTracker | undefined;
   let taskDetector: TaskDetector | undefined;
@@ -587,10 +593,19 @@ async function main(): Promise<void> {
   let alertRulesWatchTimer: NodeJS.Timeout | undefined;
   let localStoreForShutdown: LocalStore | undefined;
   let gcInterval: NodeJS.Timeout | undefined;
+  // Periodic local session-JSON flush so a non-clean exit (crash/SIGKILL)
+  // loses at most one interval of session data — persistSession otherwise runs
+  // only on clean shutdown. Cleared in the shutdown handler. Synthetic /
+  // provisional ids (pending-/local-/proxy-) are skipped inside persistSession.
+  let sessionPersistInterval: NodeJS.Timeout | undefined;
   // When this MCP starts headless (EADDRINUSE skip), this interval retries
   // dashboardServer.start() periodically so we can take over if the current
   // owner exits. Cleared in the shutdown handler.
   let dashboardRepollInterval: NodeJS.Timeout | undefined;
+  // Watcher instances are declared here so the shutdown handler can stop them
+  // regardless of which mode (stdio vs. local) is active.
+  let activeSubagentWatcher: SubagentWatcher | null = null;
+  let activeWorkflowWatcher: WorkflowWatcher | null = null;
   // Aborts the async resolveSessionId polling loop when shutdown fires so
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
@@ -614,6 +629,7 @@ async function main(): Promise<void> {
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
       if (gcInterval) clearInterval(gcInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
+      if (sessionPersistInterval) clearInterval(sessionPersistInterval);
       // Remove this MCP's heartbeat so the next dashboard-owner GC pass
       // doesn't have to mtime-archive our buffer file.
       localStoreForShutdown?.removeHeartbeat();
@@ -634,6 +650,8 @@ async function main(): Promise<void> {
         alertRulesWatcher = undefined;
       }
       eventProcessor?.stop();
+      activeSubagentWatcher?.stop();
+      activeWorkflowWatcher?.stop();
       liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
@@ -817,6 +835,21 @@ async function main(): Promise<void> {
     const turnCostAttributor = new TurnCostAttributor();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
+    const workflowRunTracker = new WorkflowRunTracker();
+
+    // Read-only filesystem reader for `/api/workflows` routes.
+    // Constructed eagerly (not just inside the dashboard block) so when only
+    // the stdio MCP is running, the cost tracker still gets per-run lookups
+    // when the watcher's reconciliation pass needs them.
+    const workflowStoreInstance = new WorkflowStore({
+      getCostForRun: (runId) => costTracker.getCostForWorkflowRun(runId),
+    });
+
+    // Per-session subagent timeline reader — backs the "agent fan-out"
+    // swimlane chart (GET /api/sessions/:sessionId/subagents). On-demand,
+    // bounded, and mtime-cached; reads the same subagent JSONL transcripts the
+    // watcher tails, but only for the one session the dashboard asks about.
+    const subagentTimelineInstance = new SubagentTimelineStore({});
 
     const toolCallBuffer: import('./storage/types.js').ToolCallRecord[] = [];
     const toolCallBufferAccessor = {
@@ -1164,6 +1197,55 @@ async function main(): Promise<void> {
           localStore: {
             peekAllBuffers: () =>
               localStore.peekAllBuffers() as ReadonlyArray<{ readonly [key: string]: unknown }>,
+          },
+          // Workflow store reads on-disk wf_*.json rollups so
+          // the /api/workflows endpoints work even when the watcher is
+          // disabled — dashboard surfaces are functional from day one.
+          workflowStore: workflowStoreInstance,
+          // Agent fan-out swimlane data for one session (on-demand, bounded,
+          // mtime-cached). Wrapped so the dashboard tree only sees the single
+          // method it needs.
+          subagentTimeline: {
+            getSubagentsForSession: (id: string) =>
+              subagentTimelineInstance.getSubagentsForSession(id),
+            getAgentCalls: (s: string, a: string) => subagentTimelineInstance.getAgentCalls(s, a),
+          },
+          // Wire the observability-health snapshot so GET
+          // /api/observability-health returns live watcher state instead of
+          // always 503-ing, and /api/cost's `reconciliationDeltaPct` resolves
+          // to a real value instead of always null. Read lazily at request time
+          // via the `activeSubagentWatcher` binding (this `api` object is built
+          // before the watcher is constructed, but getSnapshot only fires on an
+          // HTTP request — long after startWatchers() has run).
+          //
+          // The SubagentWatcher does not expose a public health accessor today,
+          // so we report the honest minimum: whether the watcher is active. When
+          // it is disabled (binding null) we return a zeroed "disabled" snapshot
+          // rather than throw, so the endpoint degrades gracefully. The 1h cost
+          // self-check delta is not surfaced through a readable accessor yet, so
+          // costSelfCheckDeltaPct is null (honest) — it leaves the dashboard's
+          // reconciliation banner hidden until that plumbing lands.
+          observabilityHealth: {
+            getSnapshot: (): {
+              watcherActive: boolean;
+              filesWatched: number;
+              parseErrors: number;
+              watcherDisabledByLock: boolean;
+              costSelfCheckDeltaPct: number | null;
+            } => {
+              // Read live counters off the SubagentWatcher when it's running.
+              // A null binding => watcher disabled (env flag off / wrong mode)
+              // => a zeroed "disabled" snapshot. costSelfCheckDeltaPct stays
+              // null until the 1h self-check is wired.
+              const stats = activeSubagentWatcher?.getHealthStats();
+              return {
+                watcherActive: activeSubagentWatcher !== null,
+                filesWatched: stats?.filesWatched ?? 0,
+                parseErrors: stats?.parseErrors ?? 0,
+                watcherDisabledByLock: stats?.watcherDisabledByLock ?? false,
+                costSelfCheckDeltaPct: null,
+              };
+            },
           },
         },
         alertEngine,
@@ -1555,9 +1637,89 @@ async function main(): Promise<void> {
           });
         }
       },
+      // Feed each Agent-tool ToolCallRecord into the workflow tracker
+      // so AiWorkflowRun events ship for `run_source='agent_tool'`.
+      onWorkflowAgent: (record) => {
+        workflowRunTracker.recordToolCall(record);
+        // Drain immediately — recordToolCall already pushes the completed run
+        // into the drainable queue, so each Agent call yields exactly one
+        // AiWorkflowRun event with no harvest-tick latency.
+        for (const run of workflowRunTracker.drainCompleted()) {
+          capturedNrIngest?.ingestWorkflowRun(run);
+        }
+      },
+      // Subagent JSONL transcripts are the only place per-agent
+      // tokens (cache_read 91.5% of total!) are visible. Route through the
+      // CostTracker with the entry's `timestamp_ms` as the `ctx.timestampMs`
+      // override so cross-midnight runs bucket correctly, AND emit one
+      // `AiSubagentTurn` event per turn for NR-side queryability.
+      onSubagentTurn: (turn) => {
+        if (!costTracker || !config) return;
+        const usage: TokenUsage = {
+          inputTokens: turn.inputTokens,
+          outputTokens: turn.outputTokens,
+          // Subagent reasoning tokens (extended thinking) live under
+          // `output_tokens_details.reasoning_tokens`; map to `thinkingTokens`
+          // so the existing `thinkingPerMTok` rate column charges correctly.
+          thinkingTokens: turn.reasoningTokens,
+          cacheReadTokens: turn.cacheReadTokens,
+          cacheCreationTokens: turn.cacheCreationTokens,
+          totalTokens:
+            turn.inputTokens +
+            turn.outputTokens +
+            turn.reasoningTokens +
+            turn.cacheReadTokens +
+            turn.cacheCreationTokens,
+        };
+        const breakdown = costTracker.recordTokenUsage(usage, turn.model, {
+          timestampMs: turn.timestampMs,
+          workflowRunId: turn.workflowRunId,
+          agentId: turn.agentId,
+        });
+        // Pricing miss → usd:null on the wire; we recompute here so
+        // the breakdown view distinguishes "0 because pricing absent" from
+        // "0 because the turn truly had zero cost".
+        const usd = breakdown.totalUsd > 0 ? breakdown.totalUsd : null;
+        capturedNrIngest?.ingestSubagentTurn({
+          workflow_run_id: turn.workflowRunId,
+          agent_id: turn.agentId,
+          parent_session_id: turn.parentSessionId,
+          message_id: turn.messageId,
+          turn_uuid: turn.turnUuid,
+          timestamp_ms: turn.timestampMs,
+          model: turn.model,
+          input_tokens: turn.inputTokens,
+          output_tokens: turn.outputTokens,
+          cache_creation_tokens: turn.cacheCreationTokens,
+          cache_read_tokens: turn.cacheReadTokens,
+          reasoning_tokens: turn.reasoningTokens,
+          usd,
+          stop_reason: turn.stopReason,
+          schema_fingerprint: turn.schemaFingerprint,
+        });
+      },
+      onObservabilityHealth: (health) => {
+        capturedNrIngest?.ingestObservabilityHealth({
+          timestamp: health.timestamp,
+          watcher: health.watcher,
+          files_watched: health.filesWatched,
+          lines_read: health.linesRead,
+          bytes_read: health.bytesRead,
+          parse_errors: health.parseErrors,
+          schema_drifts: health.schemaDrifts,
+          last_error: health.lastError,
+          ...(health.event ? { event: health.event } : {}),
+          ...(health.dimension ? { dimension: health.dimension } : {}),
+          ...(health.fingerprint ? { fingerprint: health.fingerprint } : {}),
+          ...(health.workflowRunId ? { workflow_run_id: health.workflowRunId } : {}),
+          ...(typeof health.costSelfCheckDeltaPct === 'number'
+            ? { cost_self_check_delta_pct: health.costSelfCheckDeltaPct }
+            : {}),
+        });
+      },
     });
 
-    persistSession = () => {
+    persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
         const summary = buildSessionSummary({
@@ -1568,6 +1730,10 @@ async function main(): Promise<void> {
           efficiencyScorer,
           developer: config.developer ?? 'unknown',
           repoName: currentRepoName,
+          // A periodic checkpoint is a live, in-progress session — persisting it
+          // as 'completed' makes the dashboard render a still-running session as
+          // done. Only the terminal (shutdown) save marks it completed.
+          outcome: opts?.periodic ? 'in progress' : 'completed',
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
         });
@@ -1576,26 +1742,160 @@ async function main(): Promise<void> {
           instructionDriftTracker.recordSessionOutcome(driftRecord);
         }
         // Skip persisting the synthetic session JSON written by --local /
-        // proxy modes. These IDs (local-<ts>, proxy-<ts>) are MCP-internal
-        // bookkeeping; they don't correspond to a real Claude Code session
-        // and produce confusing `local-...` rows in the dashboard's history
-        // view that have no useful content to show.
+        // proxy modes and the provisional pending-<ts> id. These IDs are
+        // MCP-internal bookkeeping; they don't correspond to a real Claude
+        // Code session and produce confusing rows in the dashboard history.
+        // On the periodic path this is a silent no-op (no log spam while the
+        // real session id is still being resolved).
         const isSyntheticId = isSyntheticSessionId(summary.sessionId);
         if (isSyntheticId) {
-          logger.info('Skipping synthetic session JSON persistence', {
-            sessionId: summary.sessionId,
-          });
+          if (!opts?.periodic) {
+            logger.info('Skipping synthetic session JSON persistence', {
+              sessionId: summary.sessionId,
+            });
+          }
+          return;
+        }
+        sessionStore.saveSession(summary);
+        // checkAndGenerateLastWeek() is idempotent (existsSync check before
+        // any real work), so calling it on every periodic checkpoint too is
+        // cheap — and necessary: it otherwise only ran on the clean-shutdown
+        // path, so a SIGKILL (common in containers under memory pressure)
+        // after a periodic write meant the weekly summary never ran for that
+        // week at all.
+        weeklySummaryGenerator?.checkAndGenerateLastWeek();
+        if (opts?.periodic) {
+          // Lightweight checkpoint: log at debug so the cadence stays quiet.
+          logger.debug('Session checkpointed', { sessionId: summary.sessionId });
         } else {
-          sessionStore.saveSession(summary);
-          weeklySummaryGenerator?.checkAndGenerateLastWeek();
           logger.info('Session saved', { sessionId: summary.sessionId });
         }
       } catch (err) {
-        logger.warn('Failed to save session on shutdown', { error: String(err) });
+        logger.warn('Failed to save session', { error: String(err) });
       }
     };
 
     eventProcessor.start();
+
+    // Checkpoint the in-progress session to local JSON every 30s so a non-clean
+    // exit (crash / SIGKILL) loses at most ~30s of data instead of the whole
+    // session. persistSession() no-ops for synthetic / provisional ids, so this
+    // is safe to arm immediately. unref'd so it never keeps the process alive.
+    const SESSION_PERSIST_INTERVAL_MS = 30_000;
+    sessionPersistInterval = setInterval(() => {
+      try {
+        persistSession?.({ periodic: true });
+      } catch (err) {
+        logger.warn('Periodic session persist failed', { error: String(err) });
+      }
+    }, SESSION_PERSIST_INTERVAL_MS);
+    sessionPersistInterval.unref?.();
+
+    // Single-mode rule: the watcher runs in `--stdio` mode by default.
+    // Opt-in to watcher-in-dashboard via `NR_AI_WATCHER_MODE=local`.
+    const watcherMode = (process.env['NR_AI_WATCHER_MODE'] ?? 'stdio').toLowerCase();
+    const isStdioWatcher = options.stdio === true;
+    const isLocalWatcher = !isStdioWatcher;
+    const watcherShouldRun =
+      (isStdioWatcher && (watcherMode === 'stdio' || watcherMode === '')) ||
+      (isLocalWatcher && watcherMode === 'local');
+    // The SubagentWatcher is the ONLY thing that feeds per-agent (subagent)
+    // token cost into the CostTracker (via onSubagentTurn → subagentCostUsd).
+    // With it off, a session's persisted/headline cost silently excludes ALL
+    // subagent spend — which is the majority of agentic cost — so the dashboard
+    // shows a per-session total far below the subagent breakdown rendered right
+    // below it. It is therefore default-ON; set NR_AI_ENABLE_SUBAGENT_WATCHER=0
+    // to opt out. In `--stdio` mode it is scoped to the parent session
+    // (parentSessionId filter), so it only ever attributes that session's own
+    // subagents — parent tokens (onTokenEvent, parent transcript) and subagent
+    // tokens (onSubagentTurn, subagent transcripts) are disjoint, so there is no
+    // double count. The WorkflowWatcher stays opt-in (NR_AI_ENABLE_WORKFLOW_WATCHER=1).
+    const subagentWatcherEnabled = process.env['NR_AI_ENABLE_SUBAGENT_WATCHER'] !== '0';
+    const workflowWatcherEnabled = process.env['NR_AI_ENABLE_WORKFLOW_WATCHER'] === '1';
+
+    // Construct + start the watchers for a given session id. In `--stdio` mode
+    // the watchers filter discovered transcript dirs by `parentSessionId`; in
+    // `--local` mode they run unfiltered (parentSessionId: undefined). Shared by
+    // the initial startup call below and the async re-point call in the
+    // provisional-session path so both produce identical wiring — see
+    // repointWatchersToRealSession below.
+    const startWatchers = (watcherSessionId: string): void => {
+      if (watcherShouldRun && subagentWatcherEnabled) {
+        activeSubagentWatcher = new SubagentWatcher({
+          storagePath: config!.storagePath,
+          parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          // Runtime cost-self-check: a drift > 5% surfaces as an
+          // `AiObservabilityHealth { event: 'cost_self_check' }` event. We
+          // compare like-with-like from two INDEPENDENT code paths so a
+          // regression in either is caught:
+          //   - trackedUsd: subagent cost the live CostTracker accumulated from
+          //     the onSubagentTurn feed (the headline/persisted path), and
+          //   - groundTruthUsd: an independent re-parse of the same session's
+          //     subagent transcripts via SubagentTimelineStore (the trace path).
+          // Both dedup streaming-duplicate lines by message.id, so a healthy
+          // system reads ~0%; any divergence (e.g. one path regressing on dedup
+          // or pricing) shows up as a real, non-zero delta. Only meaningful in
+          // --stdio mode, where the watcher is scoped to this one session.
+          costSelfCheck: () => {
+            const trackedUsd = costTracker.getSubagentMetrics().subagentUsd;
+            let groundTruthUsd = trackedUsd;
+            try {
+              const tl = subagentTimelineInstance.getSubagentsForSession(watcherSessionId);
+              groundTruthUsd = tl.agents.reduce((sum, a) => sum + (a.usd ?? 0), 0);
+            } catch {
+              // On any re-parse error fall back to trackedUsd → 0% delta (no
+              // false alarm); the error is already surfaced via watcher health.
+              groundTruthUsd = trackedUsd;
+            }
+            return { trackedUsd, groundTruthUsd };
+          },
+        });
+        activeSubagentWatcher.start();
+        logger.info('SubagentWatcher started', {
+          mode: watcherMode,
+          parentSessionId: isStdioWatcher ? watcherSessionId : null,
+        });
+      }
+      if (watcherShouldRun && workflowWatcherEnabled) {
+        activeWorkflowWatcher = new WorkflowWatcher({
+          storagePath: config!.storagePath,
+          parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          getCostForRun: (runId) => costTracker.getCostForWorkflowRun(runId),
+        });
+        activeWorkflowWatcher.setOnRun((run) => {
+          capturedNrIngest?.ingestScriptWorkflowRun(run);
+        });
+        activeWorkflowWatcher.setOnHealth((health) => {
+          capturedNrIngest?.ingestObservabilityHealth(health);
+        });
+        activeWorkflowWatcher.start();
+        logger.info('WorkflowWatcher started', {
+          mode: watcherMode,
+          parentSessionId: isStdioWatcher ? watcherSessionId : null,
+        });
+      }
+    };
+
+    // Re-point the watchers from a provisional `pending-<ts>` session id to the
+    // resolved real session id. Neither SubagentWatcher nor WorkflowWatcher
+    // exposes a parentSessionId setter (the filter is `private readonly`), so we
+    // stop the provisionally-scoped instance and reconstruct it scoped to the
+    // real id — mirroring the eventProcessor.replaceStore() hot-swap. Only the
+    // watchers that were actually started get rebuilt.
+    const repointWatchersToRealSession = (realSessionId: string): void => {
+      if (activeSubagentWatcher) {
+        activeSubagentWatcher.stop();
+        activeSubagentWatcher = null;
+      }
+      if (activeWorkflowWatcher) {
+        activeWorkflowWatcher.stop();
+        activeWorkflowWatcher = null;
+      }
+      startWatchers(realSessionId);
+    };
+
+    startWatchers(sessionTraceId);
+
     if (options.stdio) {
       // Wire audit trail into resource handlers (was undefined at createServer() time).
       // Same instance is shared with the DashboardServer and NrIngestManager so all
@@ -1631,6 +1931,14 @@ async function main(): Promise<void> {
               storagePath: config!.storagePath,
               signal: sessionResolutionAbort!.signal,
             });
+
+            // Guard against a shutdown that fired while we were awaiting —
+            // the signal is aborted but no exception was thrown (e.g. the
+            // resolver returned successfully just before abort was set).
+            if (sessionResolutionAbort?.signal.aborted) {
+              logger.info('Session ID resolution aborted by shutdown (post-await guard)');
+              return;
+            }
 
             // Adopt the real session ID without clearing accumulated metrics.
             sessionTraceId = realId;
@@ -1698,6 +2006,18 @@ async function main(): Promise<void> {
               capturedNrIngest = nrIngest;
               nrIngest.start();
             }
+
+            // Re-point the subagent/workflow watchers from the provisional
+            // `pending-<ts>` id to the resolved real session id. The watchers
+            // were constructed in the startup block with the provisional id and
+            // filter discovered transcript dirs by it; a `pending-*` id never
+            // matches a real UUID session dir, so without this re-point they
+            // capture nothing for the life of the process. Done after the
+            // NrIngest reassignment above so the rebuilt WorkflowWatcher's
+            // onRun/onHealth closures observe the live `capturedNrIngest`.
+            // Guarded inside repoint: only watchers that were actually started
+            // are stopped + reconstructed; if none ran this is a no-op.
+            repointWatchersToRealSession(realId);
 
             // Register full tools, replacing the pending handlers.
             const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');

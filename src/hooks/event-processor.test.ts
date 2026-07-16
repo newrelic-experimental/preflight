@@ -705,6 +705,300 @@ describe('HookEventProcessor', () => {
     });
   });
 
+  describe('replaceStore()', () => {
+    it('swaps the underlying store — onRecord fires for events from the new store', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      // Process events against the original store.
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'tu_orig', sessionId: 'sess-orig' }),
+        makePostEvent({ toolUseId: 'tu_orig', sessionId: 'sess-orig' }),
+      ]);
+      expect(records).toHaveLength(1);
+      expect(records[0]!.sessionId).toBe('sess-orig');
+
+      // Create a second store and hot-swap.
+      const dir2 = resolve(tmpDir, 'store2');
+      mkdirSync(dir2, { recursive: true });
+      const store2 = new LocalStore(dir2);
+      store2.initialize();
+
+      // replaceStore() stops + swaps + restarts internally (no polling in this
+      // test, so we stop immediately and drive via processEvents).
+      processor.replaceStore(store2, false);
+      processor.stop();
+
+      // Callback still wired — events processed after the swap produce records.
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'tu_new', sessionId: 'sess-new' }),
+        makePostEvent({ toolUseId: 'tu_new', sessionId: 'sess-new' }),
+      ]);
+      const newStoreRecords = records.filter((r) => r.sessionId === 'sess-new');
+      expect(newStoreRecords).toHaveLength(1);
+    });
+
+    it('stop/start sequence does not drop the onRecord callback', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      // First call through the original store.
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'tu_a', sessionId: 'sess-a' }),
+        makePostEvent({ toolUseId: 'tu_a', sessionId: 'sess-a' }),
+      ]);
+      expect(records.filter((r) => r.sessionId === 'sess-a')).toHaveLength(1);
+
+      const dir2 = resolve(tmpDir, 'store2c');
+      mkdirSync(dir2, { recursive: true });
+      const store2 = new LocalStore(dir2);
+      store2.initialize();
+      processor.replaceStore(store2, false);
+      processor.stop();
+
+      // Second call after swap — both batches must be present.
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'tu_b', sessionId: 'sess-b' }),
+        makePostEvent({ toolUseId: 'tu_b', sessionId: 'sess-b' }),
+      ]);
+      expect(records.filter((r) => r.sessionId === 'sess-a')).toHaveLength(1);
+      expect(records.filter((r) => r.sessionId === 'sess-b')).toHaveLength(1);
+    });
+  });
+
+  describe('onWorkflowAgent callback', () => {
+    it('fires for paired records with toolName === "Agent"', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => {
+          workflowRecords.push(record);
+        },
+      });
+
+      processor.processEvents([
+        makePreEvent({
+          tool: 'Agent',
+          toolUseId: 'toolu_agent_1',
+          timestamp: 1000,
+        }),
+        makePostEvent({
+          tool: 'Agent',
+          toolUseId: 'toolu_agent_1',
+          timestamp: 1500,
+        }),
+      ]);
+
+      expect(workflowRecords).toHaveLength(1);
+      expect(workflowRecords[0]!.toolName).toBe('Agent');
+      expect(workflowRecords[0]!.toolUseId).toBe('toolu_agent_1');
+      expect(workflowRecords[0]!.durationMs).toBe(500);
+      // Same record reference is also delivered to onRecord
+      expect(records).toHaveLength(1);
+      expect(records[0]!.id).toBe(workflowRecords[0]!.id);
+    });
+
+    it('does NOT fire for non-Agent records', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => {
+          workflowRecords.push(record);
+        },
+      });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'Read', toolUseId: 'toolu_read', timestamp: 1000 }),
+        makePostEvent({ tool: 'Read', toolUseId: 'toolu_read', timestamp: 1100 }),
+        makePreEvent({ tool: 'Bash', toolUseId: 'toolu_bash', timestamp: 1200 }),
+        makePostEvent({ tool: 'Bash', toolUseId: 'toolu_bash', timestamp: 1300 }),
+      ]);
+
+      expect(records).toHaveLength(2);
+      expect(workflowRecords).toHaveLength(0);
+    });
+
+    it('also fires for orphaned-post Agent records (durationMs === null)', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => {
+          workflowRecords.push(record);
+        },
+      });
+
+      // Post arrives without a matching pre — an orphaned Agent post still
+      // produces a ToolCallRecord and should reach the workflow tracker.
+      processor.processEvents([
+        makePostEvent({ tool: 'Agent', toolUseId: 'toolu_orphan_agent', timestamp: 2000 }),
+      ]);
+
+      expect(workflowRecords).toHaveLength(1);
+      expect(workflowRecords[0]!.toolName).toBe('Agent');
+      expect(workflowRecords[0]!.durationMs).toBeNull();
+    });
+
+    it('swallows errors from the callback so the main pipeline keeps emitting', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: () => {
+          throw new Error('boom');
+        },
+      });
+
+      expect(() =>
+        processor.processEvents([
+          makePreEvent({ tool: 'Agent', toolUseId: 'toolu_x', timestamp: 1000 }),
+          makePostEvent({ tool: 'Agent', toolUseId: 'toolu_x', timestamp: 1100 }),
+        ]),
+      ).not.toThrow();
+
+      // onRecord still received the record
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('Agent');
+    });
+
+    it('is a no-op when not configured', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'Agent', toolUseId: 'toolu_a', timestamp: 1000 }),
+        makePostEvent({ tool: 'Agent', toolUseId: 'toolu_a', timestamp: 1100 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.toolName).toBe('Agent');
+    });
+  });
+
+  describe('PRD subagent_token + observability_health branches', () => {
+    it('routes mode:subagent_token entries through onSubagentTurn', () => {
+      const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onSubagentTurn: (t) => turns.push(t),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'subagent_token' as const,
+          tool: 'subagent',
+          timestamp: 1700000000000,
+          sessionId: 'sess-1',
+          agentId: 'a1234567890abcdef',
+          workflowRunId: 'wf_abc12345-6dd',
+          messageId: 'msg_1',
+          turnUuid: 'u1',
+          model: 'claude-opus-4-7',
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 1000,
+          cacheCreationTokens: 200,
+          reasoningTokens: 0,
+          stopReason: 'end_turn',
+          schemaFingerprint: 'fp',
+        } as HookEvent,
+      ]);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].agentId).toBe('a1234567890abcdef');
+      expect(turns[0].workflowRunId).toBe('wf_abc12345-6dd');
+      expect(turns[0].inputTokens).toBe(100);
+    });
+
+    it('dedups subagent_token entries by (agentId, messageId)', () => {
+      const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onSubagentTurn: (t) => turns.push(t),
+      });
+      const event: HookEvent = {
+        mode: 'subagent_token',
+        tool: 'subagent',
+        timestamp: 1700000000000,
+        sessionId: 'sess-1',
+        agentId: 'a1234567890abcdef',
+        workflowRunId: null,
+        messageId: 'msg_1',
+        turnUuid: 'u1',
+        model: 'claude-opus-4-7',
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+        stopReason: 'end_turn',
+        schemaFingerprint: 'fp',
+      };
+      processor.processEvents([event, event]);
+      expect(turns).toHaveLength(1);
+    });
+
+    it('routes mode:observability_health entries through onObservabilityHealth', () => {
+      const frames: import('./event-processor.js').ObservabilityHealthFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onObservabilityHealth: (f) => frames.push(f),
+      });
+      processor.processEvents([
+        {
+          mode: 'observability_health',
+          tool: 'observability_health',
+          timestamp: 1700000000000,
+          watcher: 'subagent',
+          filesWatched: 3,
+          linesRead: 27,
+          bytesRead: 81920,
+          parseErrors: 0,
+          schemaDrifts: 0,
+          lastError: null,
+          event: 'discovered_workflow',
+          workflowRunId: 'wf_abc12345-6dd',
+        } as HookEvent,
+      ]);
+      expect(frames).toHaveLength(1);
+      expect(frames[0].watcher).toBe('subagent');
+      expect(frames[0].event).toBe('discovered_workflow');
+      expect(frames[0].workflowRunId).toBe('wf_abc12345-6dd');
+    });
+
+    it('swallows errors in onSubagentTurn callback', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onSubagentTurn: () => {
+          throw new Error('boom');
+        },
+      });
+      expect(() =>
+        processor.processEvents([
+          {
+            mode: 'subagent_token',
+            tool: 'subagent',
+            timestamp: 1700000000000,
+            sessionId: 'sess-1',
+            agentId: 'a1234567890abcdef',
+            workflowRunId: null,
+            messageId: 'msg_x',
+            turnUuid: 'u',
+            model: 'claude-opus-4-7',
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            reasoningTokens: 0,
+            stopReason: 'end_turn',
+            schemaFingerprint: 'fp',
+          } as HookEvent,
+        ]),
+      ).not.toThrow();
+    });
+  });
+
   describe('platform tool-name mapping', () => {
     it('maps a non-canonical tool name using the injected platform adapter', () => {
       const fakeAdapter = {

@@ -1,32 +1,37 @@
-import {
-  useState,
-  useMemo,
-  useRef,
-  useEffect,
-  useCallback,
-  forwardRef,
-  type ReactNode,
-} from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearch } from 'wouter';
+import { ChevronRight, ChevronDown } from 'lucide-react';
 import { EmptyState } from '../components/EmptyState';
-import { GanttTimeline } from '../components/GanttTimeline';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
+import { type AgentSpan } from '../components/AgentSwimlanes';
+import { SessionTrace } from '../components/SessionTrace';
+import { WorkflowRunDetail } from '../components/WorkflowRunDetail';
+import { Kpi } from '../components/Kpi';
 import {
   fetchSessionsList,
   fetchSessionCurrent,
   fetchSessionDetail,
-  fetchSessionReplay,
+  fetchSessionSubagents,
+  fetchWorkflows,
+  fetchWorkflowDetail,
   qk,
   type SessionDetail,
+  type WorkflowRunInfo,
+  type WorkflowRunDetailResponse,
+  type SessionSubagentsResponse,
 } from '../api/client';
 import { ContextBar } from '../components/ContextBar';
 import type { ContextResponse } from '../api/client';
-import { Button, Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import type { AgentRow } from '../components/AgentTable';
+import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import type { PillTone } from '../components/ui';
 import {
   fmtDateTime,
-  fmtElapsed,
   formatDuration,
+  formatUsd,
+  formatUsdOrDash,
   rateColor,
   scoreColor,
   shortToolName,
@@ -65,22 +70,6 @@ interface TimelineEntry {
   readonly command?: string;
 }
 
-interface Segment {
-  readonly type: string;
-  readonly startIndex: number;
-  readonly endIndex: number;
-  readonly iterations: number;
-  readonly target: string;
-  readonly severity: 'warning' | 'critical';
-}
-
-interface ReplayData {
-  readonly sessionId: string;
-  readonly timeline: TimelineEntry[];
-  readonly segments: Segment[];
-  readonly worstSegment: Segment | null;
-}
-
 const SEGMENT_LABELS: Record<string, string> = {
   thrashing: 'Edit/Test Thrashing',
   stuck_loop: 'Stuck Loop',
@@ -88,20 +77,76 @@ const SEGMENT_LABELS: Record<string, string> = {
   re_reading: 'Repeated Reads',
 };
 
-const TOOL_ICONS: Record<string, string> = {
-  Read: '\u{1F4C4}',
-  Edit: '✏️',
-  Write: '\u{1F4DD}',
-  Bash: '⚡',
-  Agent: '\u{1F916}',
-  AskUserQuestion: '\u{1F4AC}',
-  TaskCreate: '\u{1F4CB}',
-  TaskUpdate: '✅',
+const WORKFLOW_STATUS_PILL: Record<WorkflowRunInfo['status'], { tone: PillTone; label: string }> = {
+  running: { tone: 'info', label: 'Running' },
+  completed: { tone: 'success', label: 'Completed' },
+  failed: { tone: 'danger', label: 'Failed' },
+  cancelled: { tone: 'warning', label: 'Cancelled' },
+  unknown: { tone: 'neutral', label: 'Unknown' },
 };
 
-const LIVE_REFETCH_MS = 3_000;
-
 type SortKey = 'date' | 'lastActive' | 'cost' | 'calls';
+
+// Run-level filters consolidated from the former Workflows view. They scope the
+// KPI strip AND the master list (a non-default filter shows only sessions that
+// own a matching run).
+type TimeWindow = 'today' | '7d' | '30d' | 'all';
+type RunSource = 'all' | 'script' | 'agent_tool';
+type StatusFilter = 'all' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+const TIME_WINDOW_OPTIONS: ReadonlyArray<{ value: TimeWindow; label: string }> = [
+  { value: 'today', label: 'Today' },
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: 'all', label: 'All' },
+];
+const RUN_SOURCE_OPTIONS: ReadonlyArray<{ value: RunSource; label: string }> = [
+  { value: 'all', label: 'All sources' },
+  { value: 'script', label: 'Script' },
+  { value: 'agent_tool', label: 'Agent tool' },
+];
+const STATUS_OPTIONS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'running', label: 'Running' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'cancelled', label: 'Cancelled' },
+];
+
+// True when `value` (a run's startedAt) falls within the selected window. Null/
+// unparseable timestamps pass (we don't hide runs we can't date). Mirrors the
+// former Workflows view's window filter.
+function isWithinWindow(value: string | number | null | undefined, window: TimeWindow): boolean {
+  if (window === 'all') return true;
+  if (value == null) return true;
+  const ms = typeof value === 'number' ? value : Date.parse(value);
+  if (!Number.isFinite(ms)) return true;
+  const now = Date.now();
+  const cutoffMs: Record<Exclude<TimeWindow, 'all'>, number> = {
+    today: new Date().setHours(0, 0, 0, 0),
+    '7d': now - 7 * 24 * 60 * 60 * 1000,
+    '30d': now - 30 * 24 * 60 * 60 * 1000,
+  };
+  return ms >= cutoffMs[window as Exclude<TimeWindow, 'all'>];
+}
+
+// Robust query-param extraction shared by the session deep-link. Returns a
+// non-empty, plausibly-shaped id or null; garbage params are ignored.
+function readSessionParam(search: string): string | null {
+  let raw: string | null;
+  try {
+    const params = new URLSearchParams(search);
+    // `?session=` is the cross-view contract with the Workflows view; `?id=`
+    // is the pre-existing param this view already honored.
+    raw = params.get('session') ?? params.get('id');
+  } catch {
+    return null;
+  }
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > 256) return null;
+  return trimmed;
+}
 
 function startTimeMs(row: SessionRow): number {
   return typeof row.startTime === 'number' ? row.startTime : new Date(row.startTime ?? 0).getTime();
@@ -131,14 +176,62 @@ function sortSessions(rows: SessionRow[], key: SortKey): SessionRow[] {
   return sorted;
 }
 
+function fmtTokensCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 export function Sessions(): JSX.Element {
-  const initialId = new URLSearchParams(window.location.search).get('id');
-  const [selectedId, setSelectedId] = useState<string | null>(initialId);
+  const search = useSearch();
+  // Mount-only initial selection, read once from the live URL (mirrors the
+  // view's prior behavior of reading the param directly at construction).
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    readSessionParam(window.location.search),
+  );
   const [sortKey, setSortKey] = useState<SortKey>('date');
+
+  // Run-level filters (consolidated from the Workflows view). Default all/all so
+  // the list shows every session; narrowing scopes both the KPI strip and the
+  // master list to sessions owning a matching run.
+  const [activeWindow, setActiveWindow] = useState<TimeWindow>('all');
+  const [runSourceFilter, setRunSourceFilter] = useState<RunSource>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
+  // 6a: in-place workflow-run drawer. Opening a run anywhere in this view sets
+  // this id and overlays WorkflowRunDetail at the Sessions root rather than
+  // navigating to the Workflows route — closing it returns the user to the
+  // exact session they were viewing.
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+
+  // Master-list tree expand state. Two independent sets keyed by id so a
+  // user's disclosure choices stick across data refreshes:
+  //   - expandedSessions: session rows whose workflow runs are revealed
+  //   - expandedRuns: run sub-rows whose agents are revealed
+  // Toggling either is separate from the detail-pane selection (the chevron
+  // stops event propagation), so expanding never moves the right-hand pane.
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(() => new Set());
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(() => new Set());
+
+  // React to query-param changes after mount, so deep-linking in from the
+  // Workflows view (?session=<id>) selects the right session even when this
+  // view is already mounted.
+  const sessionParam = useMemo(() => readSessionParam(search), [search]);
+  useEffect(() => {
+    if (sessionParam) setSelectedId(sessionParam);
+  }, [sessionParam]);
 
   const list = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
     queryFn: () => fetchSessionsList(SESSIONS_PAGE_SIZE),
+    refetchInterval: 10_000,
+  });
+
+  // All workflow runs — drives the KPI strip, the filters, and the master-list
+  // run tree. One shared query for the whole view (was one per expanded row).
+  const { data: rawWorkflows } = useQuery({
+    queryKey: qk.workflows,
+    queryFn: fetchWorkflows,
     refetchInterval: 10_000,
   });
 
@@ -173,6 +266,50 @@ export function Sessions(): JSX.Element {
     return sortSessions(persisted, sortKey);
   }, [list.data, sortKey]);
 
+  const allRuns = useMemo<ReadonlyArray<WorkflowRunInfo>>(
+    () => (Array.isArray(rawWorkflows) ? rawWorkflows : []),
+    [rawWorkflows],
+  );
+  const filteredRuns = useMemo(
+    () =>
+      allRuns.filter((run) => {
+        if (!isWithinWindow(run.startedAt, activeWindow)) return false;
+        if (runSourceFilter !== 'all' && run.runSource !== runSourceFilter) return false;
+        if (statusFilter !== 'all' && run.status !== statusFilter) return false;
+        return true;
+      }),
+    [allRuns, activeWindow, runSourceFilter, statusFilter],
+  );
+  const kpis = useMemo(() => {
+    const totalRuns = filteredRuns.length;
+    const totalAgents = filteredRuns.reduce((sum, r) => sum + (r.agentCount ?? 0), 0);
+    const spendVals = filteredRuns.map((r) => r.totalUsd).filter((v): v is number => v != null);
+    const totalSpend = spendVals.length > 0 ? spendVals.reduce((a, b) => a + b, 0) : null;
+    const durs = filteredRuns.map((r) => r.durationMs).filter((v): v is number => v != null);
+    const avgDurationMs = durs.length > 0 ? durs.reduce((a, b) => a + b, 0) / durs.length : null;
+    return { totalRuns, totalAgents, totalSpend, avgDurationMs };
+  }, [filteredRuns]);
+  // runId-set per session, built from the FILTERED runs — drives both the
+  // per-session run tree and which sessions stay visible when a filter is set.
+  const runsBySession = useMemo(() => {
+    const m = new Map<string, WorkflowRunInfo[]>();
+    for (const r of filteredRuns) {
+      const sid = r.parentSessionId;
+      if (typeof sid !== 'string') continue;
+      const arr = m.get(sid);
+      if (arr) arr.push(r);
+      else m.set(sid, [r]);
+    }
+    return m;
+  }, [filteredRuns]);
+  const filtersActive =
+    activeWindow !== 'all' || runSourceFilter !== 'all' || statusFilter !== 'all';
+  // When a filter is active, show only sessions that own a matching run.
+  const visibleRows = useMemo(
+    () => (filtersActive ? rows.filter((r) => runsBySession.has(r.sessionId)) : rows),
+    [filtersActive, rows, runsBySession],
+  );
+
   useEffect(() => {
     if (selectedId) return;
     const firstLiveId = liveSessionIds.size > 0 ? [...liveSessionIds][0]! : null;
@@ -187,12 +324,136 @@ export function Sessions(): JSX.Element {
     setSelectedId(sessionId);
   };
 
+  const toggleSession = useCallback((sessionId: string): void => {
+    setExpandedSessions((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  }, []);
+
+  const toggleRun = useCallback((runId: string): void => {
+    setExpandedRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  }, []);
+
+  // 6a: open the run as an in-place overlay drawer (no route change) so closing
+  // it returns the user to the session they were viewing.
+  const openRun = useCallback((runId: string): void => {
+    setOpenRunId(runId);
+  }, []);
+
   return (
     <section className="flex flex-col h-full">
       <div className="h-8 overflow-hidden rounded-lg mb-2 shrink-0">
         <GeoBanner theme="sessions" />
       </div>
       <h1 className="text-lg font-semibold gradient-text mb-2 shrink-0">Sessions</h1>
+
+      {/* Fleet workflow KPIs + filters (consolidated from the former Workflows
+          view). Filters scope the KPIs AND the master list below. */}
+      <Card tone="static" padding="sm" className="mb-2 shrink-0">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 divide-x divide-border-subtle">
+          <div className="px-3 first:pl-0">
+            <Kpi
+              label="Workflow runs"
+              value={String(kpis.totalRuns)}
+              numericValue={kpis.totalRuns}
+              animate
+            />
+          </div>
+          <div className="px-3">
+            <Kpi
+              label="Subagents"
+              value={String(kpis.totalAgents)}
+              numericValue={kpis.totalAgents}
+              animate
+            />
+          </div>
+          <div className="px-3">
+            <Kpi
+              label="Workflow spend"
+              value={formatUsdOrDash(kpis.totalSpend)}
+              tone={kpis.totalSpend !== null ? 'warn' : 'neutral'}
+            />
+          </div>
+          <div className="px-3">
+            <Kpi
+              label="Avg duration"
+              value={kpis.avgDurationMs !== null ? formatDuration(kpis.avgDurationMs) : '—'}
+            />
+          </div>
+        </div>
+      </Card>
+
+      <div className="flex items-center gap-3 flex-wrap mb-2 shrink-0">
+        <Tabs<TimeWindow>
+          value={activeWindow}
+          onChange={setActiveWindow}
+          options={TIME_WINDOW_OPTIONS}
+          ariaLabel="Time window"
+        />
+        <div className="h-4 w-px bg-border-subtle" aria-hidden="true" />
+        <div className="flex items-center gap-1.5" role="group" aria-label="Run source filter">
+          {RUN_SOURCE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              aria-pressed={runSourceFilter === opt.value}
+              onClick={() => setRunSourceFilter(opt.value)}
+              className={[
+                'px-2.5 py-1 rounded-full text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40',
+                runSourceFilter === opt.value
+                  ? 'bg-accent-cyan/20 text-accent-cyan font-medium'
+                  : 'text-ink-muted hover:text-ink-subtle',
+              ].join(' ')}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="h-4 w-px bg-border-subtle" aria-hidden="true" />
+        <div className="flex items-center gap-1.5" role="group" aria-label="Status filter">
+          {STATUS_OPTIONS.map((opt) => {
+            const active = statusFilter === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setStatusFilter(opt.value)}
+                className={[
+                  'px-2.5 py-1 rounded-full text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40',
+                  active
+                    ? 'bg-accent-green/20 text-accent-green font-medium'
+                    : 'text-ink-muted hover:text-ink-subtle',
+                ].join(' ')}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={() => {
+              setActiveWindow('all');
+              setRunSourceFilter('all');
+              setStatusFilter('all');
+            }}
+            className="text-[10px] text-ink-muted hover:text-ink-subtle underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40 rounded-sm"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
       <div className="grid grid-cols-[260px_1fr] gap-3 flex-1 min-h-0">
         <Card padding="none" tone="static" className="overflow-hidden flex flex-col">
           <header className="p-2 border-b border-border-subtle">
@@ -214,54 +475,33 @@ export function Sessions(): JSX.Element {
             {list.isLoading && (
               <EmptyState variant="loading" icon="timeline" title="Loading sessions" />
             )}
-            {!list.isLoading && rows.length === 0 && liveSessionIds.size === 0 && (
+            {!list.isLoading && visibleRows.length === 0 && liveSessionIds.size === 0 && (
               <EmptyState
                 icon="code"
-                title="No sessions yet"
-                subtitle="Start coding with Claude to see your sessions here."
+                title={filtersActive ? 'No matching sessions' : 'No sessions yet'}
+                subtitle={
+                  filtersActive
+                    ? 'No sessions own a workflow run matching these filters.'
+                    : 'Start coding with Claude to see your sessions here.'
+                }
               />
             )}
-            {rows.map((r) => {
-              const isLive = liveSessionIds.has(r.sessionId);
-              return (
-                <button
-                  key={r.sessionId}
-                  type="button"
-                  onClick={() => handleSessionClick(r.sessionId)}
-                  className={
-                    'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
-                    (selectedId === r.sessionId ? 'bg-surface-5' : '')
-                  }
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="font-mono text-ink-base truncate">
-                      {r.sessionName || r.sessionId.slice(0, 8)}
-                    </span>
-                    {isLive && <LiveBadge size="sm" label="live" className="shrink-0" />}
-                  </div>
-                  <div className="flex justify-between mt-1 text-ink-subtle text-[11px] tabular-nums">
-                    <span>{r.toolCallCount ?? 0} calls</span>
-                    <span
-                      className="text-ink-muted"
-                      title={
-                        sortKey === 'lastActive' && r.startTime
-                          ? `Started ${fmtDateTime(r.startTime)}`
-                          : undefined
-                      }
-                    >
-                      {!r.startTime
-                        ? '—'
-                        : sortKey === 'lastActive'
-                          ? fmtDateTime(lastActiveMs(r))
-                          : fmtDateTime(r.startTime)}
-                    </span>
-                    <span>
-                      {r.estimatedCostUsd != null ? `$${r.estimatedCostUsd.toFixed(2)}` : '—'}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
+            {visibleRows.map((r) => (
+              <SessionListRow
+                key={r.sessionId}
+                row={r}
+                isLive={liveSessionIds.has(r.sessionId)}
+                isSelected={selectedId === r.sessionId}
+                isExpanded={expandedSessions.has(r.sessionId)}
+                sortKey={sortKey}
+                runs={runsBySession.get(r.sessionId) ?? []}
+                expandedRuns={expandedRuns}
+                onSelect={handleSessionClick}
+                onToggleSession={toggleSession}
+                onToggleRun={toggleRun}
+                onOpenRun={openRun}
+              />
+            ))}
             {/* F-051: when the API returns the full page, surface that older
               sessions exist beyond what's rendered. The cap is enforced
               server-side (api-handler `limit` clamp) and matches the
@@ -290,11 +530,242 @@ export function Sessions(): JSX.Element {
             <SessionTimeline
               data={detail.data}
               isLive={!!selectedId && liveSessionIds.has(selectedId)}
+              onOpenRun={openRun}
             />
           )}
         </div>
       </div>
+
+      {/* 6a: in-place workflow-run drawer. Self-contains its backdrop, ESC and
+          focus trap (fixed z-50 overlay); we only mount/unmount it. */}
+      {openRunId != null && (
+        <WorkflowRunDetail runId={openRunId} onClose={() => setOpenRunId(null)} />
+      )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Master-list tree row (session → workflow runs → agents)
+// ---------------------------------------------------------------------------
+
+interface SessionListRowProps {
+  readonly row: SessionRow;
+  readonly isLive: boolean;
+  readonly isSelected: boolean;
+  readonly isExpanded: boolean;
+  readonly sortKey: SortKey;
+  readonly runs: ReadonlyArray<WorkflowRunInfo>;
+  readonly expandedRuns: ReadonlySet<string>;
+  readonly onSelect: (sessionId: string) => void;
+  readonly onToggleSession: (sessionId: string) => void;
+  readonly onToggleRun: (runId: string) => void;
+  readonly onOpenRun: (runId: string) => void;
+}
+
+// A single session row in the master list. Renders the selectable summary
+// button plus a SEPARATE chevron disclosure: clicking the chevron toggles the
+// session's workflow-run subtree and stops propagation so the detail-pane
+// selection is untouched. Workflow runs are lazily fetched only while expanded.
+function SessionListRow({
+  row,
+  isLive,
+  isSelected,
+  isExpanded,
+  sortKey,
+  runs,
+  expandedRuns,
+  onSelect,
+  onToggleSession,
+  onToggleRun,
+  onOpenRun,
+}: SessionListRowProps): JSX.Element {
+  return (
+    <div className="border-b border-border-subtle">
+      <div
+        className={
+          'flex items-stretch text-xs transition-colors duration-150 hover:bg-surface-5 ' +
+          (isSelected ? 'bg-surface-5' : '')
+        }
+      >
+        {/* Disclosure chevron — separate hit target from the select-click.
+            stopPropagation keeps it from also changing the detail selection. */}
+        <button
+          type="button"
+          aria-label={isExpanded ? 'Collapse workflows' : 'Expand workflows'}
+          aria-expanded={isExpanded}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSession(row.sessionId);
+          }}
+          className="shrink-0 flex items-center justify-center w-6 text-ink-muted hover:text-ink-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+        >
+          {isExpanded ? (
+            <ChevronDown size={13} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={13} aria-hidden="true" />
+          )}
+        </button>
+
+        {/* Session summary — selects this session in the detail pane. */}
+        <button
+          type="button"
+          onClick={() => onSelect(row.sessionId)}
+          className="flex-1 min-w-0 text-left py-2 pr-2"
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="font-mono text-ink-base truncate">
+              {row.sessionName || row.sessionId.slice(0, 8)}
+            </span>
+            {isLive && <LiveBadge size="sm" label="live" className="shrink-0" />}
+          </div>
+          <div className="flex justify-between mt-1 text-ink-subtle text-[11px] tabular-nums">
+            <span>{row.toolCallCount ?? 0} calls</span>
+            <span
+              className="text-ink-muted"
+              title={
+                sortKey === 'lastActive' && row.startTime
+                  ? `Started ${fmtDateTime(row.startTime)}`
+                  : undefined
+              }
+            >
+              {!row.startTime
+                ? '—'
+                : sortKey === 'lastActive'
+                  ? fmtDateTime(lastActiveMs(row))
+                  : fmtDateTime(row.startTime)}
+            </span>
+            <span>{formatUsdOrDash(row.estimatedCostUsd)}</span>
+          </div>
+        </button>
+      </div>
+
+      {/* Level 2: workflow runs for this session (lazy). */}
+      {isExpanded && (
+        <div className="pl-3 border-l border-border-subtle ml-3 mb-1">
+          {runs.length === 0 ? (
+            <div className="py-1.5 pl-1 text-[10px] text-ink-muted">
+              No workflows in this session.
+            </div>
+          ) : (
+            runs.map((run) => (
+              <SessionRunSubRow
+                key={run.runId}
+                run={run}
+                isExpanded={expandedRuns.has(run.runId)}
+                onToggleRun={onToggleRun}
+                onOpenRun={onOpenRun}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface SessionRunSubRowProps {
+  readonly run: WorkflowRunInfo;
+  readonly isExpanded: boolean;
+  readonly onToggleRun: (runId: string) => void;
+  readonly onOpenRun: (runId: string) => void;
+}
+
+// A workflow-run sub-row beneath an expanded session. Its own chevron lazily
+// fetches the run detail and lists this run's agents (level 3). Clicking the
+// run body (or any agent) opens the run in the in-place drawer (onOpenRun).
+function SessionRunSubRow({
+  run,
+  isExpanded,
+  onToggleRun,
+  onOpenRun,
+}: SessionRunSubRowProps): JSX.Element {
+  const { data: detail } = useQuery<WorkflowRunDetailResponse>({
+    queryKey: qk.workflowDetail(run.runId),
+    queryFn: () => fetchWorkflowDetail(run.runId),
+    enabled: isExpanded,
+  });
+
+  const agents = useMemo<ReadonlyArray<AgentRow>>(() => detail?.agents ?? [], [detail]);
+
+  const pillMeta = WORKFLOW_STATUS_PILL[run.status] ?? WORKFLOW_STATUS_PILL.unknown;
+
+  return (
+    <div>
+      <div className="flex items-stretch hover:bg-surface-5 rounded transition-colors">
+        {/* Run disclosure chevron — lazy-loads agents; stopPropagation so it
+            does not also open the run drawer. */}
+        <button
+          type="button"
+          aria-label={isExpanded ? 'Collapse agents' : 'Expand agents'}
+          aria-expanded={isExpanded}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleRun(run.runId);
+          }}
+          className="shrink-0 flex items-center justify-center w-5 text-ink-muted hover:text-ink-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+        >
+          {isExpanded ? (
+            <ChevronDown size={12} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={12} aria-hidden="true" />
+          )}
+        </button>
+
+        {/* Run body — opens the run in the in-place drawer. */}
+        <button
+          type="button"
+          aria-label={`View workflow run ${run.workflowName ?? run.runId}`}
+          onClick={() => onOpenRun(run.runId)}
+          className="flex-1 min-w-0 flex items-center gap-1.5 text-left py-1.5 pr-1 text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40 rounded"
+        >
+          <span className="flex-1 min-w-0 font-medium text-ink-base truncate">
+            {run.workflowName ?? run.runId}
+          </span>
+          <span className="text-ink-muted tabular-nums shrink-0">
+            {run.agentCount != null ? run.agentCount : 0}a
+          </span>
+          <span className="text-ink-muted tabular-nums shrink-0">
+            {formatUsdOrDash(run.totalUsd)}
+          </span>
+          <Pill tone={pillMeta.tone} size="sm" bordered>
+            {pillMeta.label}
+          </Pill>
+        </button>
+      </div>
+
+      {/* Level 3: agents for this run (lazy). */}
+      {isExpanded && (
+        <div className="pl-3 border-l border-border-subtle ml-2.5">
+          {agents.length === 0 ? (
+            <div className="py-1 pl-1 text-[10px] text-ink-muted">No agents recorded.</div>
+          ) : (
+            agents.map((agent) => (
+              <button
+                key={agent.agentId}
+                type="button"
+                aria-label={`View agent ${agent.label} in run ${run.workflowName ?? run.runId}`}
+                onClick={() => onOpenRun(run.runId)}
+                className="flex w-full items-center gap-1.5 text-left py-1 pr-1 text-[10px] hover:bg-surface-5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+              >
+                <span className="flex-1 min-w-0 text-ink-subtle truncate" title={agent.label}>
+                  {agent.label}
+                </span>
+                <span
+                  className="font-mono text-ink-muted truncate max-w-[72px] shrink-0"
+                  title={agent.model}
+                >
+                  {agent.model}
+                </span>
+                <span className="text-ink-muted tabular-nums shrink-0">
+                  {fmtTokensCompact(agent.tokens)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -306,7 +777,15 @@ function toolBarColor(toolName: string): string {
   return 'bg-ink-subtle/80';
 }
 
-function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolean }): JSX.Element {
+function SessionTimeline({
+  data,
+  isLive,
+  onOpenRun,
+}: {
+  data: SessionDetail;
+  isLive: boolean;
+  onOpenRun: (runId: string) => void;
+}): JSX.Element {
   const breakdown = data.toolBreakdown ?? {};
   const breakdownEntries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
   const totalCalls = data.toolCallCount ?? 0;
@@ -373,7 +852,7 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         {data.estimatedCostUsd != null && (
           <div className="bg-surface-3 rounded-lg p-2.5">
             <Eyebrow>Cost</Eyebrow>
-            <div className="tabular-nums">${data.estimatedCostUsd.toFixed(4)}</div>
+            <div className="tabular-nums">{formatUsd(data.estimatedCostUsd)}</div>
           </div>
         )}
         {data.outcome && (
@@ -457,6 +936,8 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         </div>
       )}
 
+      {/* Tools + activity density sit ABOVE the (often very long) session trace
+          so they stay visible without scrolling past the whole gantt/list. */}
       {breakdownEntries.length > 0 && (
         <ToolsSection
           breakdownEntries={breakdownEntries}
@@ -466,6 +947,7 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         />
       )}
 
+      <SessionActivityStrip timeline={entries} />
       {(data.filesRead?.length ?? 0) > 0 && (
         <div className="mb-4">
           <Eyebrow className="mb-1">Files Read</Eyebrow>
@@ -492,9 +974,153 @@ function SessionTimeline({ data, isLive }: { data: SessionDetail; isLive: boolea
         </div>
       )}
 
-      <SessionActivityStrip timeline={entries} />
+      <SessionTraceSection
+        key={data.sessionId}
+        sessionId={data.sessionId}
+        isLive={isLive}
+        parentEntries={entries}
+        onOpenRun={onOpenRun}
+      />
+    </div>
+  );
+}
 
-      <InlineReplay sessionId={data.sessionId} isLive={isLive} />
+// Unified session trace (parent tool calls + subagents on one shared axis).
+// Sits directly beneath the per-session workflows list and replaces the two
+// formerly-redundant cards (the AgentSwimlanes "Session timeline" card and the
+// Gantt/List "Replay" card): the single SessionTrace component now owns both
+// the parent tool-call gantt and the subagent fan-out, attributing every call
+// to its owning agent/run on one shared x-scale.
+//
+// This wrapper retains the subagents query (GET /api/sessions/:id/subagents)
+// and recomputes the shared time window so SessionTrace's parent + subagent
+// lanes share one scale:
+//   - startMs = min(first parent ts, subagents.window.startMs)
+//   - endMs   = max(last parent activity end, subagents.window.endMs)
+// Guards: parent timeline may be empty (use the subagent window) and the
+// subagent window may be degenerate. Computed unconditionally to keep hook
+// order stable; only consumed on the success branch.
+//
+// Three-state rendering of the subagent fetch (mirrors the loading/error/empty
+// pattern the prior SessionSubagents card used):
+//   - isLoading            → loading affordance.
+//   - isError / no data    → "Subagent timeline unavailable" EmptyState. The
+//     query runs with retry:false, so a disabled subagent watcher (a documented
+//     opt-in v0 state) or a failed fetch settles here. We still render the
+//     parent trace (agents={[]}) so the parent tool calls remain visible.
+//   - success (data set)   → unified SessionTrace (parent lane + subagents) on
+//     the shared window.
+function SessionTraceSection({
+  sessionId,
+  isLive,
+  parentEntries,
+  onOpenRun,
+}: {
+  sessionId: string;
+  isLive: boolean;
+  parentEntries: ReadonlyArray<TimelineEntry>;
+  onOpenRun: (runId: string) => void;
+}): JSX.Element {
+  const { data, isLoading, isError } = useQuery<SessionSubagentsResponse>({
+    queryKey: qk.sessionSubagents(sessionId),
+    queryFn: () => fetchSessionSubagents(sessionId),
+    retry: false,
+    refetchInterval: isLive ? 10_000 : false,
+  });
+
+  // 6b: workflow run statuses for this session, keyed by runId, so the trace
+  // can badge each run lane with its current status. Reuses the shared
+  // workflows query/key (same cache as SessionWorkflows / the master list).
+  const { data: rawWorkflows } = useQuery({
+    queryKey: qk.workflows,
+    queryFn: fetchWorkflows,
+    refetchInterval: isLive ? 10_000 : 30_000,
+  });
+
+  const runStatusById = useMemo<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    if (!Array.isArray(rawWorkflows)) return map;
+    for (const run of rawWorkflows) {
+      if (run.parentSessionId === sessionId) {
+        map[run.runId] = run.status;
+      }
+    }
+    return map;
+  }, [rawWorkflows, sessionId]);
+
+  const agents = useMemo<ReadonlyArray<AgentSpan>>(() => data?.agents ?? [], [data]);
+
+  // Shared time window spanning both the parent tool-call timeline and the
+  // subagent fan-out, so SessionTrace's parent lane + subagent lanes share one
+  // x-scale. Computed unconditionally to keep hook order stable; only consumed
+  // on the success branch.
+  const sharedWindow = useMemo<{ startMs: number; endMs: number } | null>(() => {
+    const hasAgents = data !== undefined && (data.agents?.length ?? 0) > 0;
+    const subStart = hasAgents ? data!.window.startMs : null;
+    const subEnd = hasAgents ? data!.window.endMs : null;
+
+    let parentStart: number | null = null;
+    let parentEnd: number | null = null;
+    for (const e of parentEntries) {
+      const start = e.timestamp;
+      const end = e.timestamp + (e.durationMs ?? 50);
+      if (parentStart === null || start < parentStart) parentStart = start;
+      if (parentEnd === null || end > parentEnd) parentEnd = end;
+    }
+
+    const starts = [parentStart, subStart].filter((v): v is number => v !== null);
+    const ends = [parentEnd, subEnd].filter((v): v is number => v !== null);
+    if (starts.length === 0 || ends.length === 0) return null;
+
+    return { startMs: Math.min(...starts), endMs: Math.max(...ends) };
+  }, [data, parentEntries]);
+
+  // The parent timeline entries shaped for the SessionTrace parent lane — the
+  // ReplayTimelineEntry fields (timestamp / toolName / durationMs / success /
+  // filePath / command). A fresh array of plain objects, passed straight
+  // through; SessionTrace accepts those.
+  const parentTraceEntries = useMemo(
+    () =>
+      parentEntries.map((e) => ({
+        timestamp: e.timestamp,
+        toolName: e.toolName,
+        durationMs: e.durationMs,
+        success: e.success,
+        filePath: e.filePath,
+        command: e.command,
+      })),
+    [parentEntries],
+  );
+
+  return (
+    <div className="mb-4">
+      <Eyebrow className="mb-2">Session trace</Eyebrow>
+      <Card tone="static" padding="sm">
+        {isLoading ? (
+          <EmptyState variant="loading" icon="radar" title="Loading subagents" />
+        ) : isError || data === undefined ? (
+          // Subagent fetch failed or watcher disabled: still render the parent
+          // trace (agents={[]}) so the parent tool calls remain visible rather
+          // than silently blanking the section.
+          <SessionTrace
+            sessionId={sessionId}
+            parentEntries={parentTraceEntries}
+            agents={[]}
+            window={sharedWindow ?? { startMs: 0, endMs: 1 }}
+            onSelectRun={onOpenRun}
+            runStatusById={runStatusById}
+          />
+        ) : (
+          <SessionTrace
+            sessionId={sessionId}
+            parentEntries={parentTraceEntries}
+            agents={agents}
+            window={sharedWindow ?? data.window}
+            onSelectRun={onOpenRun}
+            runStatusById={runStatusById}
+          />
+        )}
+      </Card>
     </div>
   );
 }
@@ -587,7 +1213,7 @@ function ToolsSection({
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
 }
 
@@ -627,271 +1253,4 @@ function SessionActivityStrip({
       />
     </div>
   );
-}
-
-const ScrollableTimeline = forwardRef<
-  HTMLDivElement,
-  { children: ReactNode; isLive: boolean; timelineLength?: number }
->(function ScrollableTimeline({ children, isLive, timelineLength }, ref) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [showJump, setShowJump] = useState(false);
-
-  const checkScroll = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const hasOverflow = el.scrollHeight > el.clientHeight + 40;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    setShowJump(hasOverflow && !atBottom);
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    checkScroll();
-    el.addEventListener('scroll', checkScroll, { passive: true });
-    return () => el.removeEventListener('scroll', checkScroll);
-  }, [checkScroll]);
-
-  useEffect(() => {
-    if (isLive && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-  }, [isLive, timelineLength]);
-
-  const jumpToBottom = useCallback(() => {
-    containerRef.current?.scrollTo({
-      top: containerRef.current.scrollHeight,
-      behavior: 'smooth',
-    });
-  }, []);
-
-  const mergedRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      (containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
-      if (typeof ref === 'function') ref(el);
-      else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
-    },
-    [ref],
-  );
-
-  return (
-    <div className="relative">
-      <div ref={mergedRef} className="overflow-auto max-h-[60vh]">
-        {children}
-      </div>
-      {showJump && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={jumpToBottom}
-          className="absolute bottom-2 right-3 backdrop-blur-sm shadow-lg"
-        >
-          ↓ Jump to bottom
-        </Button>
-      )}
-    </div>
-  );
-});
-
-function InlineReplay({ sessionId, isLive }: { sessionId: string; isLive: boolean }): JSX.Element {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [viewMode, setViewMode] = useState<'gantt' | 'list'>('gantt');
-
-  // Reset view mode when the selected session changes without remounting —
-  // remounting via key= causes a loading flash and discards the query cache.
-  useEffect(() => {
-    setViewMode('gantt');
-  }, [sessionId]);
-
-  const { data, isLoading, error } = useQuery<ReplayData>({
-    queryKey: qk.sessionReplay(sessionId),
-    queryFn: () => fetchSessionReplay(sessionId),
-    retry: false,
-    refetchInterval: isLive ? LIVE_REFETCH_MS : false,
-  });
-
-  useEffect(() => {
-    if (isLive && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [data?.timeline.length, isLive]);
-
-  if (isLoading) {
-    return (
-      <div className="mt-3">
-        <EmptyState variant="loading" icon="timeline" title="Loading replay" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="mt-3">
-        <EmptyState
-          icon="timeline"
-          title="Replay not available for this session"
-          subtitle="This session may predate the replay feature or have no recorded tool calls."
-        />
-      </div>
-    );
-  }
-
-  if (!data || data.timeline.length === 0) {
-    return <></>;
-  }
-
-  const segments = data.segments;
-  const firstTs = data.timeline[0]!.timestamp;
-  const segmentAt = buildSegmentLookup(data.timeline.length, segments);
-
-  return (
-    <div className="mt-4">
-      {segments.length > 0 && (
-        <div className="bg-accent-amber/5 border border-accent-amber/30 rounded-xl p-2.5 mb-3">
-          <div className="text-[11px] font-semibold text-accent-amber mb-1.5">
-            {segments.length} anti-pattern{segments.length > 1 ? 's' : ''} detected
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {aggregateSegments(segments).map(({ type, count, worstSeverity }) => (
-              <Pill
-                key={type}
-                tone={worstSeverity === 'critical' ? 'danger' : 'warning'}
-                size="sm"
-                bordered
-              >
-                {SEGMENT_LABELS[type] ?? type}
-                <span className="opacity-70">× {count}</span>
-              </Pill>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center justify-between mb-2">
-        <Tabs<'gantt' | 'list'>
-          value={viewMode}
-          onChange={setViewMode}
-          options={[
-            { value: 'gantt', label: 'Gantt' },
-            { value: 'list', label: 'List' },
-          ]}
-          size="sm"
-          tone="green"
-          ariaLabel="Replay view mode"
-        />
-        <Eyebrow>
-          Replay · {data.timeline.length} calls
-          {isLive && <span className="text-accent-cyan ml-1">· Auto-Updating</span>}
-        </Eyebrow>
-      </div>
-
-      <ScrollableTimeline ref={scrollRef} isLive={isLive} timelineLength={data.timeline.length}>
-        {viewMode === 'gantt' ? (
-          <GanttTimeline entries={data.timeline} segments={segments} />
-        ) : (
-          <div className="flex flex-col">
-            {data.timeline.map((entry, idx) => {
-              const seg = segmentAt[idx];
-              const borderColor = seg
-                ? seg.severity === 'critical'
-                  ? 'border-l-accent-red'
-                  : 'border-l-accent-amber'
-                : 'border-l-transparent';
-              const bgColor = seg
-                ? seg.severity === 'critical'
-                  ? 'bg-accent-red/5'
-                  : 'bg-accent-amber/5'
-                : '';
-              const elapsed = entry.timestamp - firstTs;
-
-              return (
-                <div
-                  key={`${idx}-${entry.timestamp}`}
-                  className={`flex items-center gap-1.5 px-2 py-0.5 border-l-2 ${borderColor} ${bgColor} text-[11px]`}
-                >
-                  <span className="w-10 text-ink-muted tabular-nums shrink-0">
-                    +{fmtElapsed(elapsed)}
-                  </span>
-                  <span className="w-4 text-center shrink-0" aria-hidden="true">
-                    {TOOL_ICONS[entry.toolName] ?? '·'}
-                  </span>
-                  <span
-                    className="w-28 truncate font-medium text-ink-base shrink-0"
-                    title={entry.toolName}
-                  >
-                    {shortToolName(entry.toolName)}
-                  </span>
-                  <span
-                    className="flex-1 truncate font-mono text-ink-subtle min-w-0"
-                    title={entry.filePath ?? entry.command ?? ''}
-                  >
-                    {entry.filePath ?? entry.command ?? ''}
-                  </span>
-                  <span className="w-14 text-right tabular-nums text-ink-muted shrink-0">
-                    {entry.durationMs != null ? `${entry.durationMs}ms` : '—'}
-                  </span>
-                  <span
-                    className={`w-3 text-center shrink-0 ${entry.success ? 'text-accent-green' : 'text-accent-red'}`}
-                  >
-                    {entry.success ? '✓' : '✗'}
-                  </span>
-                  {seg && idx === seg.startIndex && (
-                    <Pill
-                      tone={seg.severity === 'critical' ? 'danger' : 'warning'}
-                      size="sm"
-                      className="ml-0.5 font-medium shrink-0"
-                    >
-                      {SEGMENT_LABELS[seg.type] ?? seg.type}
-                    </Pill>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ScrollableTimeline>
-    </div>
-  );
-}
-
-interface AggregatedSegment {
-  readonly type: string;
-  readonly count: number;
-  readonly totalIterations: number;
-  readonly worstSeverity: 'warning' | 'critical';
-}
-
-function aggregateSegments(segments: Segment[]): AggregatedSegment[] {
-  const map = new Map<
-    string,
-    { count: number; totalIterations: number; worstSeverity: 'warning' | 'critical' }
-  >();
-  for (const seg of segments) {
-    const existing = map.get(seg.type);
-    if (existing) {
-      existing.count++;
-      existing.totalIterations += seg.iterations;
-      if (seg.severity === 'critical') existing.worstSeverity = 'critical';
-    } else {
-      map.set(seg.type, { count: 1, totalIterations: seg.iterations, worstSeverity: seg.severity });
-    }
-  }
-  return Array.from(map.entries()).map(([type, data]) => ({ type, ...data }));
-}
-
-function buildSegmentLookup(length: number, segments: Segment[]): (Segment | null)[] {
-  const lookup: (Segment | null)[] = new Array(length).fill(null);
-  for (const seg of segments) {
-    const start = Math.max(0, seg.startIndex);
-    const end = Math.min(seg.endIndex, length - 1);
-    for (let i = start; i <= end; i++) {
-      if (
-        lookup[i] === null ||
-        (seg.severity === 'critical' && lookup[i]!.severity !== 'critical')
-      ) {
-        lookup[i] = seg;
-      }
-    }
-  }
-  return lookup;
 }

@@ -8,4 +8,7 @@ export type {
   HeartbeatEvent,
   AlertEvent,
   ReplayEntry,
+  SubagentTurnEvent,
+  WorkflowRunLiveEvent,
+  ObservabilityHealthEvent,
 } from './live-event-bus.js';

@@ -31,7 +31,7 @@ import {
   type ConcurrencyHistoryResponse,
   type ActivityHeatmapHistoryResponse,
 } from '../api/client';
-import { shortToolName } from '../lib/format';
+import { formatUsdOrDash, shortToolName } from '../lib/format';
 
 interface SessionRow {
   readonly sessionId: string;
@@ -322,9 +322,7 @@ export function History(): JSX.Element {
                           ? `${Math.min(100, Math.round(m.avgSuccessRate * 100))}%`
                           : '—'}
                       </td>
-                      <td className="py-1 text-right tabular-nums">
-                        {m.avgCost !== null ? `$${m.avgCost.toFixed(2)}` : '—'}
-                      </td>
+                      <td className="py-1 text-right tabular-nums">{formatUsdOrDash(m.avgCost)}</td>
                     </tr>
                   ))}
                 </tbody>

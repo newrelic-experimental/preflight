@@ -12,6 +12,7 @@ import {
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
 import { isSyntheticSessionId } from '../../hooks/session-resolver.js';
 // ---------------------------------------------------------------------------
 // Aggregate quality-proxy metrics from today's persisted sessions so the
@@ -151,6 +152,95 @@ function toAuditEntry(entry: unknown): AuditEntryDto {
   };
 }
 
+// Wire shapes consumed by the SPA workflow views. WorkflowStore emits
+// snake_case rows (matching the AiWorkflowRun NR event shape); the React
+// views (Workflows.tsx, WorkflowRunDetail.tsx, AgentTable.tsx) read camelCase.
+// We serialize at the route boundary — same pattern as toAuditEntry above —
+// so the views never see snake_case.
+interface WorkflowRunDto {
+  readonly runId: string;
+  readonly parentSessionId: string;
+  readonly taskId: string | null;
+  readonly workflowName: string;
+  readonly status: string;
+  readonly errorReason: string | null;
+  readonly defaultModel: string;
+  readonly startedAt: number;
+  readonly durationMs: number;
+  readonly agentCount: number;
+  readonly totalTokens: number;
+  readonly totalUsd: number | null;
+  readonly declaredPhases: number | null;
+  readonly observedPhases: number;
+  readonly declaredParallelWidths: ReadonlyArray<number | 'dynamic'>;
+  readonly tokenReconciliationDelta: number | null;
+  readonly incomplete: boolean;
+  readonly runSource: 'script' | 'agent_tool';
+  readonly scriptPath: string | null;
+  readonly workflowJsonPath: string;
+}
+
+// Per-agent rows only carry an aggregate `tokens` count and `toolCalls` in the
+// on-disk wf_*.json rollup — there is NO input/output/cache split and no
+// per-agent usd. The view renders only what exists rather than padding the
+// missing dimensions with misleading zeros.
+interface WorkflowAgentDto {
+  readonly agentId: string;
+  readonly label: string;
+  readonly phaseIndex: number;
+  readonly phaseTitle: string;
+  readonly model: string;
+  readonly state: string;
+  readonly attempt: number;
+  readonly durationMs: number | null;
+  readonly tokens: number;
+  readonly toolCalls: number;
+  readonly startedAt: number | null;
+}
+
+function toWorkflowRunDto(row: unknown): WorkflowRunDto {
+  const r = (row ?? {}) as WorkflowRunRow;
+  return {
+    runId: r.workflow_run_id,
+    parentSessionId: r.parent_session_id,
+    taskId: r.task_id ?? null,
+    workflowName: r.workflow_name,
+    status: r.status,
+    errorReason: r.error_reason ?? null,
+    defaultModel: r.default_model,
+    startedAt: r.started_at,
+    durationMs: r.duration_ms,
+    agentCount: r.agent_count,
+    totalTokens: r.total_tokens,
+    totalUsd: r.total_usd ?? null,
+    declaredPhases: r.declared_phases ?? null,
+    observedPhases: r.observed_phases,
+    declaredParallelWidths: r.declared_parallel_widths ?? [],
+    tokenReconciliationDelta: r.token_reconciliation_delta,
+    incomplete: r.incomplete,
+    runSource: r.run_source,
+    scriptPath: r.script_path ?? null,
+    workflowJsonPath: r.workflow_json_path,
+  };
+}
+
+function toWorkflowAgentDto(agent: unknown): WorkflowAgentDto {
+  const a = (agent ?? {}) as WorkflowAgentRow;
+  return {
+    agentId: a.agent_id,
+    label: a.label,
+    phaseIndex: a.phase_index,
+    phaseTitle: a.phase_title,
+    model: a.model,
+    state: a.state,
+    attempt: a.attempt,
+    durationMs: a.duration_ms ?? null,
+    tokens: a.tokens,
+    toolCalls: a.tool_calls,
+    startedAt: a.started_at ?? null,
+  };
+}
+
 interface LiveSessionMetrics {
   readonly sessionId: string;
   readonly sessionName: string | null;
@@ -197,6 +287,52 @@ export interface ApiHandlerDeps {
     // a session that started yesterday counted its full cost as today's. When
     // present, the aggregate route uses it instead of session-total.
     getCostForDay?: (dayKey: string) => number;
+    // Today-scoped subagent spend (matches the day-bucketed "spend today"),
+    // distinct from getSubagentMetrics().subagentUsd which is session-cumulative.
+    getSubagentCostForDay?: (dayKey: string) => number;
+    // Subagent (workflow-attributed) spend share, used for the Today
+    // KPI + reconciliation banner.
+    getSubagentMetrics?: () => {
+      subagentUsd: number;
+      parentUsd: number;
+      subagentSharePct: number;
+      reconciliationDeltaPct: number | null;
+    };
+    getCostForWorkflowRun?: (runId: string) => number;
+  };
+  /**
+   * Optional reader for the on-disk workflow rollup JSONs and workflow
+   * scripts. The dashboard server constructs one from
+   * `~/.claude/projects/<slug>/<sessionId>/workflows/` and passes it in.
+   * Returns null when the watcher is not enabled.
+   */
+  readonly workflowStore?: {
+    listRuns: (opts?: { since?: number; runSource?: string; status?: string }) => unknown[];
+    getRun: (runId: string) => unknown | null;
+  };
+  /**
+   * Optional reader for per-session subagent timeline spans, backing the
+   * "agent fan-out" swimlane chart (GET /api/sessions/:sessionId/subagents).
+   * The dashboard server constructs a SubagentTimelineStore and passes it in;
+   * absent when the watcher / subagent data is not available, in which case
+   * the route 503s via the standard `unavailable` path.
+   *
+   * `getAgentCalls` backs the attributed session-trace view
+   * (GET /api/sessions/:sessionId/subagents/:agentId/calls), returning ONE
+   * subagent's individual tool calls. Both methods come off the same
+   * SubagentTimelineStore instance so the dashboard tree wiring stays a single
+   * dep object.
+   */
+  readonly subagentTimeline?: {
+    getSubagentsForSession: (sessionId: string) => unknown;
+    getAgentCalls: (sessionId: string, agentId: string) => unknown;
+  };
+  /**
+   * Snapshot of latest watcher health frames so the dashboard can render
+   * counters without re-reading NR.
+   */
+  readonly observabilityHealth?: {
+    getSnapshot: () => unknown;
   };
   readonly costForecast?: () => unknown;
   readonly antiPatternDetector?: { getCurrentPatterns: () => unknown };
@@ -970,10 +1106,18 @@ export function createApiHandler(
       if (typeof liveTodayUsd === 'number') {
         totalCostUsd += liveTodayUsd;
       } else {
-        // Fallback for older deployments without per-day API. This is the
-        // pre-fix behavior; only hit when getCostForDay is missing.
+        // Fallback for older deployments without the per-day API. NEVER add the
+        // full session total here: a session that began before midnight would
+        // inflate "spend today" by its entire multi-day cost (observed up to
+        // ~4.3x over-counts). Without per-day buckets we cannot pro-rate, so we
+        // only attribute a session that actually started today; a cross-midnight
+        // session is omitted (a bounded undercount) rather than over-counted.
         const sessionCost = deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null;
-        if (typeof sessionCost === 'number') totalCostUsd += sessionCost;
+        const startedTs = deps.sessionTracker?.getMetrics().sessionStartTime ?? null;
+        const startedToday = typeof startedTs === 'number' && localDateKey(startedTs) === todayKey;
+        if (typeof sessionCost === 'number' && startedToday) {
+          totalCostUsd += sessionCost;
+        }
       }
     }
 
@@ -988,6 +1132,27 @@ export function createApiHandler(
 
     const avgDurationMs = durationSamples > 0 ? totalDurationMs / durationSamples : 0;
 
+    // Subagent breakdown for the Today KPI strip. Read directly
+    // off the in-memory tracker; if the workflow store is wired, also count
+    // workflow runs that started today.
+    // Today-scoped subagent spend so the "subagent spend" KPI lines up with the
+    // day-bucketed "spend today" (totalCostUsd) above — both are today-only.
+    // IMPORTANT: getCostForDay and persisted estimatedCostUsd are already all-in
+    // (parent + subagent), so totalCostUsd ALREADY includes subagent cost. This
+    // is the breakdown, NOT an addend — do not add it to totalCostUsd.
+    const subagentUsd = deps.costTracker?.getSubagentCostForDay?.(localDateKey(now)) ?? 0;
+    let subagentTurnCount = 0;
+    let workflowRunCount = 0;
+    if (deps.workflowStore) {
+      const todayRuns = deps.workflowStore.listRuns({ since: startMs }) as Array<{
+        agent_count?: number;
+      }>;
+      workflowRunCount = todayRuns.length;
+      for (const r of todayRuns) {
+        subagentTurnCount += typeof r.agent_count === 'number' ? r.agent_count : 0;
+      }
+    }
+
     const payload = {
       toolCallCount,
       totalCostUsd: Math.round(totalCostUsd * 1000) / 1000,
@@ -995,9 +1160,41 @@ export function createApiHandler(
       avgDurationMs: Math.round(avgDurationMs),
       sessionCount: sessionsSeen.size,
       sparkline: { startTimestamp: startMs, bucketSizeMs: 60_000, points: sparkline },
+      subagentUsd: Math.round(subagentUsd * 1000) / 1000,
+      subagentTurnCount,
+      workflowRunCount,
     };
     aggregateCache = { bucket: currentBucket, payload };
     jsonOk(res, payload);
+  });
+
+  // Workflow listing (script-driven runs). Reads the workflow
+  // store, which the dashboard server constructs from on-disk wf_*.json
+  // files, so dashboards work even when the watcher is disabled.
+  routes.set('GET /api/workflows', (req, res) => {
+    if (!deps.workflowStore) return unavailable(res, 'workflowStore');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const since = url.searchParams.get('since');
+    const runSource = url.searchParams.get('run_source') ?? undefined;
+    const status = url.searchParams.get('status') ?? undefined;
+    let sinceMs: number | undefined;
+    if (since) {
+      const parsed = parseInt(since, 10);
+      if (Number.isFinite(parsed)) sinceMs = parsed;
+    }
+    const runs = deps.workflowStore.listRuns({
+      since: sinceMs,
+      runSource,
+      status,
+    });
+    // Bare array (not { runs }) — the SPA's fetchWorkflows helper feeds this
+    // straight into Array.isArray(); a wrapper object renders an empty list.
+    jsonOk(res, runs.map(toWorkflowRunDto));
+  });
+
+  routes.set('GET /api/observability-health', (_req, res) => {
+    if (!deps.observabilityHealth) return unavailable(res, 'observabilityHealth');
+    jsonOk(res, deps.observabilityHealth.getSnapshot());
   });
 
   routes.set('GET /api/cost', (_req, res) => {
@@ -1009,7 +1206,32 @@ export function createApiHandler(
     // Without it, the client would add persistedTodaySpend to forecastEndOfDayUsd and
     // risk double-counting the live session when its snapshot is already in persisted data.
     const sessionTodayUsd = deps.costTracker.getCostForDay?.(localDateKey(Date.now())) ?? null;
-    jsonOk(res, { cost, forecast, sessionTodayUsd });
+    // Extend with subagent spend breakdown so the Today view's
+    // new "Subagent spend" KPI and stacked HourlyCostBlocks have data without
+    // an extra round-trip.
+    const subagentMetrics = deps.costTracker.getSubagentMetrics?.() ?? null;
+    const subagentUsd = subagentMetrics?.subagentUsd ?? 0;
+    const totalUsd = cost.sessionTotalCostUsd ?? 0;
+    const parentUsd = subagentMetrics
+      ? subagentMetrics.parentUsd
+      : Math.max(0, totalUsd - subagentUsd);
+    const subagentSharePct =
+      subagentMetrics?.subagentSharePct ?? (totalUsd > 0 ? (subagentUsd / totalUsd) * 100 : 0);
+    // Reconciliation delta is computed by the watcher self-check; the dashboard
+    // reads the latest health snapshot here when available. A stub of `null`
+    // is returned when no self-check has run yet so the banner stays hidden.
+    const healthSnapshot = deps.observabilityHealth?.getSnapshot() as
+      { costSelfCheckDeltaPct?: number | null } | undefined;
+    const reconciliationDeltaPct = healthSnapshot?.costSelfCheckDeltaPct ?? null;
+    jsonOk(res, {
+      cost,
+      forecast,
+      sessionTodayUsd,
+      subagentUsd,
+      parentUsd,
+      subagentSharePct,
+      reconciliationDeltaPct,
+    });
   });
 
   routes.set('GET /api/anti-patterns', (_req, res) => {
@@ -1623,11 +1845,75 @@ export function createApiHandler(
 
   return async (req, res) => {
     try {
-      const path = (req.url ?? '/').split('?')[0] ?? '/';
+      const rawPath = (req.url ?? '/').split('?')[0] ?? '/';
+      // Normalize a single trailing slash so `/api/workflows/` resolves to the
+      // same static route as `/api/workflows`. Without this, a trailing-slash
+      // request misses the exact-match static `routes` map AND misses the
+      // workflow-detail regex `^/api/workflows/([…]{1,64})$` (its capture group
+      // requires ≥1 char after the slash), so it fell through to the catch-all
+      // 404 `{error:'not_found'}`. The root path `/` is preserved. Applied to
+      // every route, so detail/replay dynamic matchers also accept a trailing
+      // slash (`/api/sessions/<id>/`).
+      const path = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
       const key = `${req.method ?? 'GET'} ${path}`;
       const fn = routes.get(key);
       if (fn) {
         await fn(req, res);
+        return;
+      }
+
+      // Workflow detail. Allow `wf_<hex>-<hex>` filename runIds
+      // (lowercase letters, digits, hyphens, underscores; capped at 64 chars
+      // to defend against pathological inputs).
+      const workflowDetailMatch = /^\/api\/workflows\/([a-zA-Z0-9_-]{1,64})$/.exec(path);
+      if (req.method === 'GET' && workflowDetailMatch) {
+        const runId = workflowDetailMatch[1]!;
+        if (!deps.workflowStore) return unavailable(res, 'workflowStore');
+        const run = deps.workflowStore.getRun(runId);
+        if (run === null) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'not_found' }));
+          return;
+        }
+        // Serialize to camelCase so the detail drawer + agent table read real
+        // values instead of rendering every field as `—`. The per-agent rows
+        // only carry an aggregate `tokens` count (no input/output/cache split).
+        const runRow = run as WorkflowRunRow;
+        jsonOk(res, {
+          run: toWorkflowRunDto(runRow),
+          agents: (runRow.agents ?? []).map(toWorkflowAgentDto),
+          topology: runRow.topology ?? null,
+        });
+        return;
+      }
+
+      // ONE subagent's individual tool calls, for the attributed session-trace
+      // view. Matched BEFORE the `/subagents` branch below so the longer,
+      // more-specific path wins (`.../subagents/<agentId>/calls` would also
+      // satisfy the broader matcher's prefix otherwise). Trailing slashes are
+      // already normalized by the dispatcher, so `.../calls/` resolves here too.
+      const subagentCallsMatch =
+        /^\/api\/sessions\/([A-Za-z0-9_-]{1,128})\/subagents\/([a-zA-Z0-9_-]{1,64})\/calls$/.exec(
+          path,
+        );
+      if (req.method === 'GET' && subagentCallsMatch) {
+        if (!deps.subagentTimeline) return unavailable(res, 'subagentTimeline');
+        const sessionId = subagentCallsMatch[1]!;
+        const agentId = subagentCallsMatch[2]!;
+        jsonOk(res, deps.subagentTimeline.getAgentCalls(sessionId, agentId));
+        return;
+      }
+
+      // Agent fan-out swimlane data for one session. Dynamic `:sessionId`
+      // route — matched here alongside the other `/api/sessions/:id/...`
+      // branches (and after the workflow-detail branch above). Trailing
+      // slashes are already normalized by the dispatcher, so
+      // `/api/sessions/<id>/subagents/` resolves here too.
+      const subagentsMatch = /^\/api\/sessions\/([A-Za-z0-9_-]{1,128})\/subagents$/.exec(path);
+      if (req.method === 'GET' && subagentsMatch) {
+        if (!deps.subagentTimeline) return unavailable(res, 'subagentTimeline');
+        const sessionId = subagentsMatch[1]!;
+        jsonOk(res, deps.subagentTimeline.getSubagentsForSession(sessionId));
         return;
       }
 

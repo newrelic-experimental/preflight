@@ -4,6 +4,15 @@ interface AnimatedValueOptions {
   readonly duration?: number;
   readonly decimals?: number;
   readonly enabled?: boolean;
+  /**
+   * Custom formatter for the (possibly mid-animation) numeric value. When set,
+   * it fully owns the output string — `decimals` is ignored and the caller must
+   * NOT also apply a prefix/suffix. Use this so an animated value renders
+   * through the same formatter as its static counterpart (e.g. `formatUsd`);
+   * otherwise the count-up shows a different precision than the settled value
+   * — the exact 2dp-vs-4dp split this guards against for cost KPIs.
+   */
+  readonly format?: (n: number) => string;
 }
 
 function supportsAnimation(): boolean {
@@ -13,7 +22,7 @@ function supportsAnimation(): boolean {
 }
 
 export function useAnimatedValue(target: number, options: AnimatedValueOptions = {}): string {
-  const { duration = 800, decimals = 0, enabled = true } = options;
+  const { duration = 800, decimals = 0, enabled = true, format } = options;
   const shouldAnimate = enabled && supportsAnimation();
 
   const [current, setCurrent] = useState<number>(() => (shouldAnimate ? 0 : target));
@@ -45,5 +54,5 @@ export function useAnimatedValue(target: number, options: AnimatedValueOptions =
     };
   }, [target, duration, shouldAnimate]);
 
-  return current.toFixed(decimals);
+  return format ? format(current) : current.toFixed(decimals);
 }

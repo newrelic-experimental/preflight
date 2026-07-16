@@ -540,6 +540,30 @@ describe('buildSessionSummary', () => {
     expect(summary.outcome).toBe('completed');
   });
 
+  it("persists the provided outcome (periodic checkpoints write 'in progress')", () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'live-session',
+        sessionName: null,
+        sessionStartTime: 1000,
+        sessionDurationMs: 5000,
+        sessionEndTime: 6000,
+        toolCallCount: 3,
+        toolCallCountByTool: { Read: 3 },
+        uniqueFilesRead: 1,
+        uniqueFilesWritten: 0,
+        toolSuccessRate: 1,
+        toolCallTimeline: [],
+      }),
+    };
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+      outcome: 'in progress',
+    });
+    expect(summary.outcome).toBe('in progress');
+  });
+
   it('redacts secret-shaped substrings in filesRead and filesModified', () => {
     const mockSessionTracker = {
       getMetrics: () => ({
@@ -771,6 +795,9 @@ describe('buildSessionSummary', () => {
       reportCount: 2,
       estimationCount: 0,
       latestCostBreakdown: null,
+      subagentCostUsd: 0,
+      parentCostUsd: 0.05,
+      costByWorkflowRunId: {},
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
       sessionTracker,

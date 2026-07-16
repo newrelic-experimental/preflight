@@ -234,6 +234,25 @@ describe('Today view', () => {
     renderToday();
     expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
   });
+
+  it('shows the subagent-tracking-disabled banner when watcherActive is false', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/observability-health')) {
+        return new Response(
+          JSON.stringify({ watcherActive: false, watcherDisabledByLock: false }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
+  });
 });
 
 describe('Today view — empty state', () => {

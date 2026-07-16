@@ -1,5 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { CostTracker } from './cost-tracker.js';
+import type { TokenRecordContext } from './cost-tracker.js';
+import { localDateKey } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
 import { MetricAggregator } from '../shared/index.js';
 import type { TokenUsage } from '../shared/index.js';
@@ -246,6 +248,45 @@ describe('CostTracker', () => {
       );
 
       expect(tracker.getMetrics().costPerLineOfCode).toBeNull();
+    });
+  });
+
+  describe('getSubagentCostForDay', () => {
+    it('buckets only subagent-attributed cost per local day', () => {
+      const tracker = new CostTracker();
+      const now = Date.now();
+      const dayKey = localDateKey(now);
+      // Parent event (no agentId) — must NOT land in the subagent day bucket.
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 100_000, totalTokens: 100_000 }),
+        'claude-sonnet-4',
+        { timestampMs: now } satisfies TokenRecordContext,
+      );
+      // Subagent event (agentId set) — SHOULD land in the subagent day bucket.
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 200_000, outputTokens: 100_000, totalTokens: 300_000 }),
+        'claude-sonnet-4',
+        { agentId: 'agent-1', timestampMs: now } satisfies TokenRecordContext,
+      );
+
+      const subToday = tracker.getSubagentCostForDay(dayKey);
+      const allToday = tracker.getCostForDay(dayKey);
+      // Subagent-day spend is positive but strictly less than the all-in day
+      // total (which also includes the parent event).
+      expect(subToday).toBeGreaterThan(0);
+      expect(subToday).toBeLessThan(allToday);
+      // With a single day, the subagent-day bucket equals the cumulative
+      // subagent total — and the all-in day total is NOT double-counted.
+      expect(subToday).toBeCloseTo(tracker.getSubagentMetrics().subagentUsd, 6);
+    });
+
+    it('returns 0 for a day with no subagent activity', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1_000, totalTokens: 1_000 }),
+        'claude-sonnet-4',
+      );
+      expect(tracker.getSubagentCostForDay(localDateKey(Date.now()))).toBe(0);
     });
   });
 
@@ -672,5 +713,327 @@ describe('CostTracker', () => {
       expect(tracker.getCostForDay(dayKey)).toBe(0);
       expect(tracker.getFirstActivityMsForDay(dayKey)).toBeNull();
     });
+  });
+
+  describe('PRD ctx — timestampMs override + per-run attribution', () => {
+    it('honors ctx.timestampMs for day bucketing instead of Date.now()', () => {
+      const tracker = new CostTracker();
+      // Pick a timestamp from 2025-01-15 in local-day terms.
+      const earlyTs = new Date(2025, 0, 15, 12, 0, 0).getTime();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4',
+        { timestampMs: earlyTs },
+      );
+      // Late-arrival window: a >48h backdated ts should NOT inflate today's bucket.
+      const today = new Date();
+      const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      // The 2025-01-15 ts is more than 48h ago, so it gets dropped from buckets.
+      expect(tracker.getCostForDay('2025-01-15')).toBe(0);
+      expect(tracker.getCostForDay(todayKey)).toBe(0);
+      // …but session totals still update.
+      expect(tracker.getMetrics().sessionTotalCostUsd).toBeGreaterThan(0);
+    });
+
+    it('attributes per-day spend to a backdated-but-recent timestamp', () => {
+      const tracker = new CostTracker();
+      // Use a timestamp 2h ago (within 48h window).
+      const ts = Date.now() - 2 * 60 * 60 * 1000;
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4',
+        { timestampMs: ts },
+      );
+      const dayKey = (() => {
+        const d = new Date(ts);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      })();
+      expect(tracker.getCostForDay(dayKey)).toBeGreaterThan(0);
+      expect(tracker.getFirstActivityMsForDay(dayKey)).toBe(ts);
+    });
+
+    it('keeps the EARLIEST timestamp per day across multiple records', () => {
+      const tracker = new CostTracker();
+      const t1 = Date.now() - 2 * 60 * 60 * 1000;
+      const t0 = t1 - 60 * 1000; // t0 is earlier
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
+        'claude-sonnet-4',
+        { timestampMs: t1 },
+      );
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
+        'claude-sonnet-4',
+        { timestampMs: t0 },
+      );
+      const dayKey = (() => {
+        const d = new Date(t0);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      })();
+      expect(tracker.getFirstActivityMsForDay(dayKey)).toBe(t0);
+    });
+
+    it('records per-workflow-run cost when ctx.workflowRunId is present', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4',
+        { workflowRunId: 'wf_abc' },
+      );
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
+        'claude-sonnet-4',
+        { workflowRunId: 'wf_abc' },
+      );
+      const cost = tracker.getCostForWorkflowRun('wf_abc');
+      expect(cost).toBeGreaterThan(0);
+      expect(tracker.getCostForWorkflowRun('wf_other')).toBe(0);
+    });
+
+    it('tracks subagentCostUsd and parentCostUsd via agentId split', () => {
+      const tracker = new CostTracker();
+      // No tokens recorded yet — both should be 0.
+      expect(tracker.getSubagentMetrics().subagentUsd).toBe(0);
+      expect(tracker.getSubagentMetrics().parentUsd).toBe(0);
+
+      // agentId present → subagent bucket
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4',
+        { workflowRunId: 'wf_a', agentId: 'agent-1' },
+      );
+      expect(tracker.getSubagentMetrics().subagentUsd).toBeGreaterThan(0);
+      expect(tracker.getSubagentMetrics().parentUsd).toBe(0);
+
+      // agentId absent → parent bucket
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
+        'claude-sonnet-4',
+        { workflowRunId: 'wf_a' },
+      );
+      expect(tracker.getSubagentMetrics().parentUsd).toBeGreaterThan(0);
+      // subagentSharePct should be between 0 and 100
+      const pct = tracker.getSubagentMetrics().subagentSharePct;
+      expect(pct).toBeGreaterThan(0);
+      expect(pct).toBeLessThan(100);
+      // reconciliationDeltaPct is null (Phase 3 placeholder)
+      expect(tracker.getSubagentMetrics().reconciliationDeltaPct).toBeNull();
+    });
+
+    it('reset() clears workflow-run cost and subagent totals', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4',
+        { workflowRunId: 'wf_a' },
+      );
+      tracker.reset();
+      expect(tracker.getCostForWorkflowRun('wf_a')).toBe(0);
+      expect(tracker.getSubagentMetrics().subagentUsd).toBe(0);
+      expect(tracker.getSubagentMetrics().parentUsd).toBe(0);
+    });
+
+    it('records last-mutation ms per day for cache invalidation', () => {
+      const tracker = new CostTracker();
+      const ts = Date.now() - 60 * 1000;
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
+        'claude-sonnet-4',
+        { timestampMs: ts },
+      );
+      const dayKey = (() => {
+        const d = new Date(ts);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      })();
+      const last = tracker.getLastMutationMsForDay(dayKey);
+      expect(last).not.toBeNull();
+      expect(last!).toBeGreaterThanOrEqual(ts);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagent token support
+// ---------------------------------------------------------------------------
+
+/** Helper: produce a YYYY-MM-DD key from any epoch-ms value. */
+function dayKeyFromMs(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+describe('subagent token support', () => {
+  it('ctx.timestampMs attributes cost to the correct dayKey (not Date.now())', () => {
+    const tracker = new CostTracker();
+    // Use a timestamp 6 hours ago — within the 48h window so it is not dropped.
+    const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+    const ctx: TokenRecordContext = { timestampMs: sixHoursAgo };
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      ctx,
+    );
+
+    const expectedDayKey = dayKeyFromMs(sixHoursAgo);
+    expect(tracker.getCostForDay(expectedDayKey)).toBeGreaterThan(0);
+    expect(tracker.getFirstActivityMsForDay(expectedDayKey)).toBe(sixHoursAgo);
+  });
+
+  it('cross-midnight: entries from yesterday go to yesterday bucket, today to today bucket', () => {
+    const tracker = new CostTracker();
+
+    // Build two timestamps around midnight using fake timers so the test is
+    // date-independent: yesterday at 23:00 and today at 01:00.
+    const yesterday11pm = new Date();
+    yesterday11pm.setDate(yesterday11pm.getDate() - 1);
+    yesterday11pm.setHours(23, 0, 0, 0);
+    const today1am = new Date(yesterday11pm.getTime() + 2 * 3_600_000);
+
+    const yKey = dayKeyFromMs(yesterday11pm.getTime());
+    const tKey = dayKeyFromMs(today1am.getTime());
+
+    jest.useFakeTimers();
+    try {
+      // Record a token event attributed to yesterday (fake wall clock at yesterday).
+      jest.setSystemTime(yesterday11pm);
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+        'claude-sonnet-4',
+        { timestampMs: yesterday11pm.getTime() },
+      );
+      const yesterdayCost = tracker.getCostForDay(yKey);
+      expect(yesterdayCost).toBeGreaterThan(0);
+
+      // Record a token event attributed to today.
+      jest.setSystemTime(today1am);
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 2_000, outputTokens: 1_000, totalTokens: 3_000 }),
+        'claude-sonnet-4',
+        { timestampMs: today1am.getTime() },
+      );
+      const todayCost = tracker.getCostForDay(tKey);
+      expect(todayCost).toBeGreaterThan(0);
+
+      // Yesterday's bucket must not have grown when today's tokens landed.
+      expect(tracker.getCostForDay(yKey)).toBe(yesterdayCost);
+      expect(todayCost).toBeGreaterThan(yesterdayCost);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('late arrival (>48h): day bucket skipped, session total still accumulates', () => {
+    const tracker = new CostTracker();
+    const oldTs = Date.now() - 49 * 60 * 60 * 1000; // 49h ago
+    const ctx: TokenRecordContext = { timestampMs: oldTs };
+
+    const breakdown = tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      ctx,
+    );
+
+    // The CostBreakdown return value must be valid (not zeroed — cost is real).
+    expect(breakdown.totalUsd).toBeGreaterThan(0);
+
+    // Day bucket for the backdated key must remain 0 (rejected).
+    const oldDayKey = dayKeyFromMs(oldTs);
+    expect(tracker.getCostForDay(oldDayKey)).toBe(0);
+
+    // Session-level total still captures the cost.
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeGreaterThan(0);
+    expect(tracker.getMetrics().reportCount).toBe(1);
+  });
+
+  it('late arrival (>48h): totalCacheSavingsUsd still accumulates like every other session total', () => {
+    const tracker = new CostTracker();
+    const oldTs = Date.now() - 49 * 60 * 60 * 1000; // 49h ago
+    const ctx: TokenRecordContext = { timestampMs: oldTs };
+
+    // A cache-heavy usage shape guarantees savingsFromCacheUsd > 0 for a
+    // real model (mirrors the 'accumulates totalCacheSavingsUsd' test above).
+    tracker.recordTokenUsage(
+      makeUsage({
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cacheReadTokens: 5_000,
+        cacheCreationTokens: 0,
+        totalTokens: 1_500,
+      }),
+      'claude-sonnet-4-6',
+      ctx,
+    );
+
+    // Every other session-level total accumulates on the late-arrival path
+    // (asserted by the sibling test above); totalCacheSavingsUsd must too.
+    expect(tracker.getMetrics().totalCacheSavingsUsd).toBeGreaterThan(0);
+  });
+
+  it('ctx.agentId set → cost attributed to subagentCostUsd in getMetrics()', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { agentId: 'agent-abc' },
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.subagentCostUsd).toBeGreaterThan(0);
+    expect(metrics.parentCostUsd).toBe(0);
+  });
+
+  it('ctx.agentId absent → cost attributed to parentCostUsd in getMetrics()', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_x' }, // workflowRunId present but no agentId
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.parentCostUsd).toBeGreaterThan(0);
+    expect(metrics.subagentCostUsd).toBe(0);
+  });
+
+  it('ctx.workflowRunId set → cost appears in costByWorkflowRunId[runId][dayKey]', () => {
+    const tracker = new CostTracker();
+    const ts = Date.now() - 30 * 60 * 1000; // 30 min ago
+    const expectedDayKey = dayKeyFromMs(ts);
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_test_run', timestampMs: ts },
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.costByWorkflowRunId).toHaveProperty('wf_test_run');
+    const runDays = metrics.costByWorkflowRunId['wf_test_run'];
+    expect(runDays).toHaveProperty(expectedDayKey);
+    expect(runDays![expectedDayKey]).toBeGreaterThan(0);
+  });
+
+  it('getSubagentMetrics() returns correct subagent/parent split and share percentage', () => {
+    const tracker = new CostTracker();
+
+    // Subagent call: 10k input ($0.03) + 2k output ($0.03) = $0.06 on sonnet
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { agentId: 'sub-1' },
+    );
+    // Parent call: 5k input ($0.015) + 1k output ($0.015) = $0.03
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
+      'claude-sonnet-4',
+    );
+
+    const sub = tracker.getSubagentMetrics();
+    expect(sub.subagentUsd).toBeCloseTo(0.06, 4);
+    expect(sub.parentUsd).toBeCloseTo(0.03, 4);
+    // 0.06 / (0.06 + 0.03) * 100 ≈ 66.7%
+    expect(sub.subagentSharePct).toBeCloseTo(66.67, 1);
+    expect(sub.reconciliationDeltaPct).toBeNull();
   });
 });

@@ -23,9 +23,10 @@ import {
 const logger = createLogger('nr-ingest');
 import { redactSensitive } from '../config.js';
 import { VERSION } from '../version.js';
-import type { ToolCallRecord } from '../storage/types.js';
+import type { ToolCallRecord, SubagentTokenEvent } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
+import type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -355,10 +356,316 @@ export function codingTaskToNrEvent(
   if (attrs.projectId) event.project_id = attrs.projectId;
   if (attrs.orgId) event.org_id = attrs.orgId;
 
-  // sessionTraceId is the resolved Claude Code session_id; the
+  // Fix 3: sessionTraceId is the resolved Claude Code session_id; the
   // firstRecord?.sessionId fallback was only meaningful when the MCP fabricated
   // its own UUID and lost cross-reference with the tool-call records.
   if (attrs.sessionTraceId != null) event.session_id = attrs.sessionTraceId;
+
+  return event;
+}
+
+/**
+ * Re-export `WorkflowRunMetrics` so call sites that import the shape from
+ * `nr-ingest.ts` continue to resolve. The single source of truth lives in
+ * the workflow-run-tracker module.
+ */
+export type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
+
+// ---------------------------------------------------------------------------
+// Wire-shape types — script-driven workflow / subagent observability
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggregated record produced by `WorkflowWatcher` from a `wf_*.json` file.
+ * Mirrors the wire shape on `AiWorkflowRun` for `run_source='script'`.
+ * Used as input to `ingestScriptWorkflowRun` — distinct from
+ * `WorkflowRunMetrics` (the agent-tool-spawn record from hooks).
+ */
+export interface ScriptWorkflowRunMetrics {
+  readonly workflow_run_id: string; // wf_<hex>-<hex>
+  readonly parent_session_id: string;
+  readonly task_id: string | null;
+  readonly workflow_name: string;
+  readonly status: string;
+  readonly default_model: string;
+  readonly started_at: number;
+  readonly duration_ms: number;
+  readonly agent_count: number;
+  /** Re-derived from sum of subagent JSONL usage; falls back to rollup totalTokens. */
+  readonly total_tokens: number;
+  readonly total_usd: number | null;
+  readonly declared_phases: number | null;
+  readonly observed_phases: number;
+  /** JSON-encoded array, e.g. `[3,"dynamic",6]`. */
+  readonly declared_parallel_widths: string;
+  /**
+   * (rollup.totalTokens − Σ subagent tokens) / rollup.totalTokens, in [-1,+∞).
+   * `null` when no subagent token data has been collected for this run yet —
+   * distinct from a genuine 0% delta.
+   */
+  readonly token_reconciliation_delta: number | null;
+  readonly incomplete: boolean;
+  readonly backfilled: boolean;
+}
+
+export interface SubagentTurnMetrics {
+  readonly workflow_run_id: string | null;
+  readonly agent_id: string;
+  readonly parent_session_id: string;
+  readonly message_id: string;
+  readonly turn_uuid: string;
+  readonly timestamp_ms: number;
+  readonly model: string;
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_creation_tokens: number;
+  readonly cache_read_tokens: number;
+  readonly reasoning_tokens: number;
+  readonly usd: number | null;
+  readonly stop_reason: string | null;
+  readonly schema_fingerprint: string;
+}
+
+export interface ObservabilityHealthMetrics {
+  readonly timestamp: number;
+  readonly watcher: 'workflow' | 'subagent';
+  readonly files_watched: number;
+  readonly lines_read: number;
+  readonly bytes_read: number;
+  readonly parse_errors: number;
+  readonly schema_drifts: number;
+  readonly last_error: { code: string; class: string } | null;
+  readonly event?: string;
+  readonly dimension?: string;
+  readonly fingerprint?: string;
+  readonly workflow_run_id?: string;
+  readonly cost_self_check_delta_pct?: number;
+}
+
+export function subagentTurnToNrEvent(
+  metrics: SubagentTurnMetrics,
+  attrs: {
+    developer: string;
+    appName: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiSubagentTurn',
+    event_version: 1,
+    timestamp: metrics.timestamp_ms,
+    workflow_run_id: metrics.workflow_run_id ?? '',
+    agent_id: metrics.agent_id,
+    parent_session_id: metrics.parent_session_id,
+    message_id: metrics.message_id,
+    turn_uuid: metrics.turn_uuid,
+    timestamp_ms: metrics.timestamp_ms,
+    // Declarative metadata: NOT redacted. The model identifier is
+    // author-declared and must remain stable for grouping in NR.
+    model: metrics.model,
+    input_tokens: metrics.input_tokens,
+    output_tokens: metrics.output_tokens,
+    cache_creation_tokens: metrics.cache_creation_tokens,
+    cache_read_tokens: metrics.cache_read_tokens,
+    reasoning_tokens: metrics.reasoning_tokens,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+  };
+  if (metrics.usd !== null) event.usd = metrics.usd;
+  if (metrics.stop_reason !== null) event.stop_reason = metrics.stop_reason;
+  if (metrics.schema_fingerprint) event.schema_fingerprint = metrics.schema_fingerprint;
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+  return event;
+}
+
+/**
+ * Convert a `SubagentTokenEvent` (storage-layer record from the watcher
+ * pipeline) into a flat NR event object.  Distinct from
+ * `subagentTurnToNrEvent` which accepts the richer `SubagentTurnMetrics`
+ * shape produced after USD computation.
+ */
+export function subagentTokenEventToNrEvent(
+  event: SubagentTokenEvent,
+  attrs: {
+    developer: string;
+    appName: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const ev: NrEventData = {
+    eventType: 'AiSubagentTurn',
+    event_version: 1,
+    timestamp: event.timestamp,
+    agent_id: event.agentId,
+    parent_session_id: event.parentSessionId,
+    message_id: event.messageId,
+    model: event.model,
+    input_tokens: event.usage.inputTokens,
+    output_tokens: event.usage.outputTokens,
+    cache_creation_tokens: event.usage.cacheCreationTokens,
+    cache_read_tokens: event.usage.cacheReadTokens,
+    reasoning_tokens: event.usage.reasoningTokens,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+  };
+  if (event.workflowRunId != null) ev.workflow_run_id = event.workflowRunId;
+  if (attrs.teamId) ev.team_id = attrs.teamId;
+  if (attrs.projectId) ev.project_id = attrs.projectId;
+  if (attrs.orgId) ev.org_id = attrs.orgId;
+  return ev;
+}
+
+export function scriptWorkflowRunToNrEvent(
+  metrics: ScriptWorkflowRunMetrics,
+  attrs: {
+    developer: string;
+    appName: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiWorkflowRun',
+    event_version: 1,
+    timestamp: metrics.started_at + metrics.duration_ms,
+    run_source: 'script',
+    workflow_run_id: metrics.workflow_run_id,
+    // Declarative metadata: NOT redacted. meta.name is author-declared
+    // and must remain stable for grouping in NR.
+    workflow_name: metrics.workflow_name,
+    parent_session_id: metrics.parent_session_id,
+    status: metrics.status,
+    default_model: metrics.default_model,
+    started_at: metrics.started_at,
+    duration_ms: metrics.duration_ms,
+    agent_count: metrics.agent_count,
+    total_tokens: metrics.total_tokens,
+    observed_phases: metrics.observed_phases,
+    declared_parallel_widths: metrics.declared_parallel_widths,
+    incomplete: metrics.incomplete,
+    backfilled: metrics.backfilled,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+  };
+  if (metrics.task_id !== null) event.task_id = metrics.task_id;
+  if (metrics.declared_phases !== null) event.declared_phases = metrics.declared_phases;
+  if (metrics.total_usd !== null) event.total_usd = metrics.total_usd;
+  if (metrics.token_reconciliation_delta !== null) {
+    event.token_reconciliation_delta = metrics.token_reconciliation_delta;
+  }
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+  return event;
+}
+
+export function observabilityHealthToNrEvent(
+  metrics: ObservabilityHealthMetrics,
+  attrs: {
+    developer: string;
+    appName: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiObservabilityHealth',
+    event_version: 1,
+    timestamp: metrics.timestamp,
+    watcher: metrics.watcher,
+    files_watched: metrics.files_watched,
+    lines_read: metrics.lines_read,
+    bytes_read: metrics.bytes_read,
+    parse_errors: metrics.parse_errors,
+    schema_drifts: metrics.schema_drifts,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+  };
+  if (metrics.last_error !== null) {
+    event.last_error_code = metrics.last_error.code;
+    event.last_error_class = metrics.last_error.class;
+  }
+  if (metrics.event) event.event = metrics.event;
+  if (metrics.dimension) event.dimension = metrics.dimension;
+  if (metrics.fingerprint) event.fingerprint = metrics.fingerprint;
+  if (metrics.workflow_run_id) event.workflow_run_id = metrics.workflow_run_id;
+  if (typeof metrics.cost_self_check_delta_pct === 'number') {
+    event.cost_self_check_delta_pct = metrics.cost_self_check_delta_pct;
+  }
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+  return event;
+}
+
+/**
+ * Convert a WorkflowRunMetrics into a flat NR event object.
+ *
+ * Mirrors the shape of `codingTaskToNrEvent` — snake_case attributes, team
+ * attribution merged from `attrs`, the workflow agent description redacted
+ * to match the policy applied to `Agent` tool input on the AiToolCall path.
+ */
+export function workflowRunToNrEvent(
+  metrics: WorkflowRunMetrics,
+  attrs: {
+    developer: string;
+    appName: string;
+    sessionTraceId?: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiWorkflowRun',
+    event_version: 1,
+    // Identifier-space discriminator: hook-derived agent-tool runs
+    // (toolu_*) coexist with script-driven runs (wf_<hex>-<hex>) in this
+    // event type — `run_source` is the load-bearing field that lets NRQL
+    // separate the two populations without colliding the id space.
+    run_source: 'agent_tool',
+    timestamp: metrics.started_at + metrics.duration_ms,
+    workflow_run_id: metrics.workflow_run_id,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    subagent_type: metrics.subagent_type ?? '',
+    agent_name: metrics.agent_name ?? '',
+    agent_model: metrics.agent_model ?? '',
+    // Same redaction policy as the AiToolCall path — Agent descriptions are
+    // user-supplied prompts that occasionally contain secrets.
+    agent_description: redactSensitive(metrics.agent_description ?? ''),
+    run_in_background: metrics.run_in_background ?? false,
+    started_at: metrics.started_at,
+    duration_ms: metrics.duration_ms,
+    tool_call_count: metrics.tool_call_count,
+    child_agent_count: metrics.child_agent_count,
+    status: metrics.status,
+  };
+
+  if (metrics.exit_error != null) {
+    // Workflow exit messages occasionally include URLs from failed curl/HTTP
+    // calls inside the agent — same egress channel as `event.error` on
+    // AiToolCall, so apply the same redaction.
+    event.exit_error = redactSensitive(metrics.exit_error);
+  }
+
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+
+  // Prefer the resolved Claude Code session ID when threaded through the
+  // manager (matches Fix 3 on codingTaskToNrEvent); otherwise fall back to
+  // the session ID baked into the tracker output.
+  const resolvedSessionId = attrs.sessionTraceId ?? metrics.session_id;
+  if (resolvedSessionId) event.session_id = resolvedSessionId;
 
   return event;
 }
@@ -668,6 +975,86 @@ export class NrIngestManager {
       developer: this.developer,
       appName: this.appName,
       sessionTraceId: this.sessionTraceId,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(event);
+  }
+
+  /**
+   * Buffer a completed workflow run as a single `AiWorkflowRun` event.
+   * Designed to be called from the runtime wiring (`src/index.ts`) for each
+   * entry returned by `WorkflowRunTracker.drainCompleted()`. Mirrors
+   * `ingestCodingTask` — single buffered event, no additional metric
+   * emission for v0.
+   */
+  ingestWorkflowRun(metrics: WorkflowRunMetrics): void {
+    const event = workflowRunToNrEvent(metrics, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionTraceId: this.sessionTraceId,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(event);
+  }
+
+  /**
+   * Buffer a script-watcher-derived workflow run (`run_source='script'`).
+   * Distinct from `ingestWorkflowRun` — that path serializes the agent-tool
+   * `WorkflowRunMetrics` shape; this one serializes the on-disk `wf_*.json`
+   * rollup with subagent reconciliation.
+   */
+  ingestScriptWorkflowRun(metrics: ScriptWorkflowRunMetrics): void {
+    const event = scriptWorkflowRunToNrEvent(metrics, {
+      developer: this.developer,
+      appName: this.appName,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(event);
+  }
+
+  /**
+   * Buffer a single subagent assistant turn (`AiSubagentTurn`).
+   * Called per ToolCallRecord-equivalent by the SubagentWatcher pipeline
+   * after `CostTracker.recordTokenUsage` has computed the per-turn USD.
+   */
+  ingestSubagentTurn(metrics: SubagentTurnMetrics): void {
+    const event = subagentTurnToNrEvent(metrics, {
+      developer: this.developer,
+      appName: this.appName,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(event);
+  }
+
+  /**
+   * Buffer a `SubagentTokenEvent` (storage-layer record) as an `AiSubagentTurn`
+   * NR event.  Distinct from `ingestSubagentTurn` which accepts the richer
+   * `SubagentTurnMetrics` shape produced after USD computation.
+   */
+  ingestSubagentTokenEvent(event: SubagentTokenEvent): void {
+    const ev = subagentTokenEventToNrEvent(event, {
+      developer: this.developer,
+      appName: this.appName,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(ev);
+  }
+
+  /** Buffer an `AiObservabilityHealth` event from the watcher pipeline. */
+  ingestObservabilityHealth(metrics: ObservabilityHealthMetrics): void {
+    const event = observabilityHealthToNrEvent(metrics, {
+      developer: this.developer,
+      appName: this.appName,
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,

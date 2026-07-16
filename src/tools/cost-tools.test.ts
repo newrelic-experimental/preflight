@@ -219,6 +219,9 @@ describe('handleGetPromptCacheHealth()', () => {
       reportCount: 0,
       estimationCount: 0,
       latestCostBreakdown: null,
+      subagentCostUsd: 0,
+      parentCostUsd: 0,
+      costByWorkflowRunId: {},
       ...overrides,
     } satisfies CostMetrics);
     return tracker;

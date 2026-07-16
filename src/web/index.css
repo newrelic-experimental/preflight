@@ -37,6 +37,17 @@
   /* Cyan is now a distinct color (no longer aliased to green) */
   --color-accent-cyan: #22d3ee;
 
+  /* Categorical "series" ramp — non-semantic, for grouping/categories only.
+     Deliberately lower-saturation than the status/tool accents so a series bar
+     reads as a CATEGORY, never as a status. Used by the agent swimlane chart to
+     color workflow-run groups. Tuned for bars sitting on #07090d / #161b22. */
+  --color-series-1: #6e8bd6; /* periwinkle */
+  --color-series-2: #b083d9; /* muted violet */
+  --color-series-3: #d98aa8; /* dusty rose */
+  --color-series-4: #5fa8a0; /* muted seafoam */
+  --color-series-5: #c2a25e; /* ochre */
+  --color-series-6: #8a93a6; /* slate */
+
   /* Fonts */
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
@@ -87,6 +98,16 @@ html.light {
   --color-accent-red: #dc2626;
   --color-accent-cyan: #0891b2;
   --color-accent-indigo: #4f46e5;
+
+  /* Categorical "series" ramp — darkened for adequate contrast on light bg.
+     Same non-semantic, muted-vs-accents intent as the dark values above. Tuned
+     for bars sitting on #f7f8fa / #f1f3f5. */
+  --color-series-1: #4760b0; /* periwinkle */
+  --color-series-2: #8a55b8; /* muted violet */
+  --color-series-3: #b35878; /* dusty rose */
+  --color-series-4: #3f8077; /* muted seafoam */
+  --color-series-5: #927b3e; /* ochre */
+  --color-series-6: #5c6577; /* slate */
 
   /* Chart fills in light mode — slightly darker teal for contrast on white */
   --color-chart-block: rgba(10, 155, 128, 0.7);

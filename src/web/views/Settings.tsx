@@ -5,12 +5,13 @@ import {
   fetchSettings,
   patchSettings,
   fetchDiagnostics,
+  fetchObservabilityHealth,
   qk,
   type DiagnosticCheck,
 } from '../api/client';
 import type { SettingsPatch } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
-import { Button, Card, SectionHeader } from '../components/ui';
+import { Button, Card, Eyebrow, SectionHeader } from '../components/ui';
 
 interface SettingsData {
   readonly developer: string;
@@ -25,6 +26,12 @@ interface SettingsData {
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+}
+
+interface ObservabilityHealthApiResponse {
+  readonly watcherActive?: boolean;
+  readonly filesWatched?: number;
+  readonly parseErrors?: number;
 }
 
 function ReadOnlyField({ label, value }: { label: string; value: string | null | undefined }) {
@@ -155,6 +162,12 @@ export function Settings(): JSX.Element {
   const { data, isLoading, error } = useQuery<SettingsData>({
     queryKey: qk.settings,
     queryFn: () => fetchSettings(),
+  });
+
+  const { data: healthApi } = useQuery<ObservabilityHealthApiResponse>({
+    queryKey: ['observability-health'],
+    queryFn: () => fetchObservabilityHealth() as Promise<ObservabilityHealthApiResponse>,
+    refetchInterval: 30_000,
   });
 
   const [developer, setDeveloper] = useState<string | null>(null);
@@ -331,6 +344,48 @@ export function Settings(): JSX.Element {
         </div>
         {restartBanner('budgets')}
       </Card>
+
+      {/* Observability */}
+      <section className="mt-8">
+        <Eyebrow>Observability</Eyebrow>
+        <Card padding="md" className="mt-3">
+          <h3 className="text-sm font-medium text-ink mb-3">Subagent &amp; Workflow Watcher</h3>
+          <p className="text-xs text-ink-muted mb-4">
+            Monitors subagent JSONL transcripts and workflow records to provide accurate cost
+            tracking. Default: enabled in --stdio mode.
+          </p>
+          <div className="flex flex-col gap-2 text-xs text-ink-muted">
+            <div>
+              Subagent watcher:{' '}
+              {healthApi?.watcherActive === true ? (
+                <span className="text-accent-green">enabled</span>
+              ) : healthApi?.watcherActive === false ? (
+                <span className="text-accent-red">disabled</span>
+              ) : (
+                <span className="text-ink-muted">checking…</span>
+              )}
+              {healthApi?.watcherActive === true && (
+                <span className="text-ink-muted">
+                  {' '}
+                  ({healthApi.filesWatched ?? 0} files watched, {healthApi.parseErrors ?? 0} parse
+                  errors)
+                </span>
+              )}
+            </div>
+            <div>
+              Set{' '}
+              <code className="font-mono bg-surface-5 px-1 rounded">
+                NR_AI_ENABLE_SUBAGENT_WATCHER=0
+              </code>{' '}
+              to disable, or{' '}
+              <code className="font-mono bg-surface-5 px-1 rounded">
+                NR_AI_ENABLE_SUBAGENT_WATCHER=1
+              </code>{' '}
+              to explicitly enable.
+            </div>
+          </div>
+        </Card>
+      </section>
     </section>
   );
 }

@@ -1,17 +1,24 @@
 import { useMemo, useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
-import { useLiveStore, type AlertEvent } from '../store/liveStore';
+import {
+  useLiveStore,
+  useSubagentStats,
+  useObservabilityHealth,
+  type AlertEvent,
+} from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { HourlyCostBlocks, type HourlyCostEntry } from '../components/HourlyCostBlocks';
 import { EmptyState } from '../components/EmptyState';
-import { GanttTimeline } from '../components/GanttTimeline';
+import { SessionTrace } from '../components/SessionTrace';
+import { WorkflowRunDetail } from '../components/WorkflowRunDetail';
+import type { AgentSpan } from '../components/AgentSwimlanes';
 import { ConcurrencyIndicator, type ConcurrencyData } from '../components/ConcurrencyIndicator';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { ContextBar } from '../components/ContextBar';
-import { Card, Eyebrow, LiveBadge, Pill, Tabs } from '../components/ui';
+import { Card, Eyebrow, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
   fetchCacheHealth,
@@ -19,6 +26,8 @@ import {
   fetchSessionCurrent,
   fetchSessionsList,
   fetchSessionReplay,
+  fetchSessionSubagents,
+  fetchWorkflows,
   fetchAntiPatterns,
   fetchQualityProxy,
   fetchToolSelectionScore,
@@ -28,17 +37,19 @@ import {
   fetchModelUsage,
   fetchLiveSessions,
   fetchTodayAggregate,
+  fetchObservabilityHealth,
   TodayAggregateResponse,
   ActivityHeatmapTodayResponse,
   LiveSessionEntry,
   NotFoundError,
   CacheHealthResponse,
   qk,
+  type SessionSubagentsResponse,
 } from '../api/client';
 import {
-  fmtElapsed,
   fmtTimeOfDay,
   formatNumber,
+  formatUsd,
   rateColor,
   scoreColor,
   shortToolName,
@@ -126,11 +137,25 @@ interface ToolSelectionMetrics {
   readonly worstOffenders: readonly ToolSelectionOffender[];
 }
 
+interface ObservabilityHealthApiResponse {
+  readonly watcherActive?: boolean;
+  readonly watcherDisabledByLock?: boolean;
+  readonly filesWatched?: number;
+  readonly parseErrors?: number;
+}
+
 const QUALITY_REFETCH_MS = 10_000;
 
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
+  const subagentStats = useSubagentStats();
+  const observabilityHealth = useObservabilityHealth();
+  const { data: healthApi } = useQuery<ObservabilityHealthApiResponse>({
+    queryKey: ['observability-health'],
+    queryFn: () => fetchObservabilityHealth() as Promise<ObservabilityHealthApiResponse>,
+    refetchInterval: 30_000,
+  });
 
   const { data: costApi, isPending: costPending } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
@@ -222,6 +247,18 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
+
+  // The subagent KPI must source from the polled aggregate
+  // endpoint, not the liveStore — the SSE frames that would populate
+  // useSubagentStats are never emitted server-side, so subagentStats stays 0.
+  // Take the larger of the API value and the live-tick value so SSE bursts
+  // (if/when wired) still bump the KPI between aggregate refetches, while the
+  // API remains the source of truth for the at-rest value via polling.
+  const subagentUsd = Math.max(aggregate?.subagentUsd ?? 0, subagentStats.usd);
+  const subagentTurns = Math.max(aggregate?.subagentTurnCount ?? 0, subagentStats.turns);
+  // Distinguish "no data yet" (aggregate still loading and no live ticks) from
+  // a genuine zero so the KPI shows the em-dash empty state instead of $0.00.
+  const subagentHasData = aggregate !== undefined || subagentStats.turns > 0;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
   );
@@ -281,9 +318,24 @@ export function Today(): JSX.Element {
         </>
       ) : (
         <>
+          {(observabilityHealth?.watcherDisabledByLock === true ||
+            healthApi?.watcherDisabledByLock === true) && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300 mb-4">
+              Subagent watcher is disabled (lock conflict). Subagent costs may be undercounted.
+              Check Settings &rarr; Observability health.
+            </div>
+          )}
+          {healthApi?.watcherActive === false && subagentStats.turns === 0 && (
+            <div className="rounded-lg border border-border-subtle bg-surface-5 px-4 py-3 text-sm text-ink-muted mb-4">
+              Subagent cost tracking is disabled (
+              <code className="font-mono text-xs">NR_AI_ENABLE_SUBAGENT_WATCHER=0</code>), so spend
+              shown here excludes subagents. Unset that variable (it is on by default) and restart
+              to see full spend.
+            </div>
+          )}
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <Kpi
                   label="efficiency"
                   hero
@@ -296,9 +348,17 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="spend today"
                   tone="good"
-                  value={spendLoading ? '…' : `$${todayTotal.toFixed(2)}`}
+                  value={spendLoading ? '…' : formatUsd(todayTotal)}
                   {...(!spendLoading
-                    ? { animate: true, numericValue: todayTotal, prefix: '$', decimals: 2 }
+                    ? { animate: true, numericValue: todayTotal, format: formatUsd }
+                    : {})}
+                />
+                <Kpi
+                  label="subagent spend"
+                  value={!subagentHasData ? '—' : formatUsd(subagentUsd)}
+                  sub={`${subagentTurns} turns`}
+                  {...(subagentHasData
+                    ? { animate: true, numericValue: subagentUsd, format: formatUsd }
                     : {})}
                 />
                 <Kpi label="tool calls" value={String(calls)} animate numericValue={calls} />
@@ -327,6 +387,7 @@ export function Today(): JSX.Element {
                       : null))
               }
               hourlySpend={hourlySpend}
+              subagentUsd={subagentUsd}
             />
             {concurrency && concurrency.buckets && (
               <ConcurrencyIndicator
@@ -645,7 +706,7 @@ function ModelUsagePanel(): JSX.Element {
               <span className="text-ink-muted truncate">{model}</span>
               <div className="flex gap-3 shrink-0 tabular-nums">
                 <span className="text-ink-subtle">{s.requestCount}req</span>
-                <span className="text-ink-base">${s.totalCostUsd.toFixed(4)}</span>
+                <span className="text-ink-base">{formatUsd(s.totalCostUsd)}</span>
               </div>
             </div>
           ))}
@@ -763,17 +824,6 @@ interface ReplayData {
   readonly segments?: ReplaySegment[];
 }
 
-const TOOL_ICONS: Record<string, string> = {
-  Read: '\u{1F4C4}',
-  Edit: '\u{270F}\u{FE0F}',
-  Write: '\u{1F4DD}',
-  Bash: '\u{26A1}',
-  Agent: '\u{1F916}',
-  AskUserQuestion: '\u{1F4AC}',
-  TaskCreate: '\u{1F4CB}',
-  TaskUpdate: '\u{2705}',
-};
-
 const LIVE_TAIL_REFETCH_MS = 3_000;
 
 function LiveSessionPane({
@@ -784,7 +834,9 @@ function LiveSessionPane({
   liveSessions: LiveSessionEntry[];
 }): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'gantt' | 'list'>('list');
+  // In-place workflow-run drawer (same pattern as the Sessions view) — opening
+  // a run from the trace overlays the detail rather than navigating away.
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [, navigate] = useLocation();
   const setActiveSession = useLiveStore((s) => s.setActiveSession);
 
@@ -840,6 +892,24 @@ function LiveSessionPane({
     enabled: activeId !== null,
     retry: false,
     refetchInterval: isLive ? LIVE_TAIL_REFETCH_MS : false,
+  });
+
+  // Subagent fan-out for the active session — same source as the Sessions view's
+  // trace. Tolerates a malformed/array payload (no agents) so the live tail
+  // still renders the parent lane.
+  const { data: subagentData } = useQuery<SessionSubagentsResponse>({
+    queryKey: activeId ? qk.sessionSubagents(activeId) : ['subagents', 'none'],
+    queryFn: () => fetchSessionSubagents(activeId!),
+    enabled: activeId !== null,
+    retry: false,
+    refetchInterval: isLive ? LIVE_TAIL_REFETCH_MS : false,
+  });
+
+  // Workflow runs → status lookup for the trace's per-group status icons.
+  const { data: workflowsData } = useQuery({
+    queryKey: qk.workflows,
+    queryFn: fetchWorkflows,
+    refetchInterval: isLive ? 10_000 : false,
   });
 
   const tailRef = useRef<HTMLDivElement>(null);
@@ -909,170 +979,182 @@ function LiveSessionPane({
     return [...byId.values()].sort((a, b) => lastActivityFor(b) - lastActivityFor(a)).slice(0, 10);
   }, [sessions, liveSessions]);
 
-  const timeline = replay?.timeline ?? [];
-  const firstTs = timeline.length > 0 ? timeline[0]!.timestamp : 0;
+  const timeline = useMemo<ReplayTimelineEntry[]>(() => replay?.timeline ?? [], [replay]);
+
+  // Subagents for the active session (defensive against an empty/array payload).
+  const traceAgents = useMemo<AgentSpan[]>(
+    () => (Array.isArray(subagentData?.agents) ? subagentData!.agents : []),
+    [subagentData],
+  );
+
+  // Shared window spanning the parent timeline + the subagent fan-out so the
+  // SessionTrace parent lane and subagent lanes share one x-scale.
+  const traceWindow = useMemo<{ startMs: number; endMs: number }>(() => {
+    let startMs: number | null = null;
+    let endMs: number | null = null;
+    for (const e of timeline) {
+      const end = e.timestamp + (e.durationMs ?? 50);
+      if (startMs === null || e.timestamp < startMs) startMs = e.timestamp;
+      if (endMs === null || end > endMs) endMs = end;
+    }
+    const sub = subagentData?.window;
+    if (sub && Number.isFinite(sub.startMs) && Number.isFinite(sub.endMs)) {
+      startMs = startMs === null ? sub.startMs : Math.min(startMs, sub.startMs);
+      endMs = endMs === null ? sub.endMs : Math.max(endMs, sub.endMs);
+    }
+    if (startMs === null || endMs === null) return { startMs: 0, endMs: 1 };
+    return { startMs, endMs: endMs > startMs ? endMs : startMs + 1 };
+  }, [timeline, subagentData]);
+
+  // runId → status for the trace's per-group status icons (this session only).
+  const runStatusById = useMemo<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    if (Array.isArray(workflowsData)) {
+      for (const run of workflowsData as ReadonlyArray<{
+        runId?: string;
+        parentSessionId?: string | null;
+        status?: string;
+      }>) {
+        if (
+          run &&
+          typeof run.runId === 'string' &&
+          typeof run.status === 'string' &&
+          run.parentSessionId === activeId
+        ) {
+          map[run.runId] = run.status;
+        }
+      }
+    }
+    return map;
+  }, [workflowsData, activeId]);
 
   return (
-    <div
-      className="glass-card mb-3 grid grid-cols-[220px_1fr] overflow-hidden"
-      style={{ height: '320px' }}
-    >
-      {/* Session list */}
-      <div className="border-r border-border-subtle overflow-auto">
-        <Eyebrow className="p-2 border-b border-border-subtle">Session Live Tail</Eyebrow>
-        {todaySessions.map((s) => {
-          const isSessionLive = liveSessionIds.has(s.sessionId);
-          return (
-            <button
-              key={s.sessionId}
-              type="button"
-              onClick={() => setSelectedId(s.sessionId)}
-              className={
-                'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
-                (activeId === s.sessionId ? 'bg-surface-5' : '')
-              }
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="font-mono text-ink-base">
-                  {s.sessionName || s.sessionId.slice(0, 8)}
-                </span>
-                {isSessionLive ? (
-                  <LiveBadge label="live" size="sm" />
-                ) : (
-                  <span
-                    className="text-[10px] text-ink-muted"
-                    title={s.startTime ? `Started ${fmtTimeOfDay(s.startTime)}` : undefined}
-                  >
-                    {s.startTime ? fmtTimeOfDay(s.startTime + (s.durationMs ?? 0)) : ''}
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-2 mt-0.5 text-[10px] text-ink-subtle">
-                <span>{s.toolCallCount ?? 0} calls</span>
-                {s.estimatedCostUsd != null && s.estimatedCostUsd > 0 ? (
-                  <span>${s.estimatedCostUsd.toFixed(2)}</span>
-                ) : (
-                  <span>—</span>
-                )}
-              </div>
-            </button>
-          );
-        })}
-        {liveSessionIds.size === 0 && todaySessions.length === 0 && (
-          <EmptyState
-            icon="code"
-            title="No sessions today"
-            subtitle="Start coding with Claude to see sessions here."
-          />
-        )}
-      </div>
-
-      {/* Live tail */}
-      <div className="flex flex-col overflow-hidden">
-        {activeId && (
-          <div className="flex items-center justify-between px-2 py-1 border-b border-border-subtle shrink-0">
-            <Tabs
-              value={viewMode}
-              onChange={setViewMode}
-              size="sm"
-              tone="green"
-              ariaLabel="Timeline view mode"
-              options={[
-                { value: 'gantt', label: 'Gantt' },
-                { value: 'list', label: 'List' },
-              ]}
-            />
-            <div className="flex items-center gap-2">
-              {/* Task #17 (D3): "Session ended" badge — pinned to the selected
-                  session even after it leaves the live set, so the user can
-                  finish reviewing without an auto-switch. */}
-              {sessionEnded && (
-                <span data-testid="session-ended-badge">
-                  <Pill tone="neutral" size="sm" uppercase>
-                    Session ended
-                  </Pill>
-                </span>
-              )}
+    <>
+      <div
+        className="glass-card mb-3 grid grid-cols-[220px_1fr] overflow-hidden"
+        style={{ height: '320px' }}
+      >
+        {/* Session list */}
+        <div className="border-r border-border-subtle overflow-auto">
+          <Eyebrow className="p-2 border-b border-border-subtle">Session Live Tail</Eyebrow>
+          {todaySessions.map((s) => {
+            const isSessionLive = liveSessionIds.has(s.sessionId);
+            return (
               <button
+                key={s.sessionId}
                 type="button"
-                onClick={() => navigate(`/sessions?id=${activeId}`)}
-                className="text-[10px] text-accent-cyan hover:underline transition-colors duration-150"
+                onClick={() => setSelectedId(s.sessionId)}
+                className={
+                  'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
+                  (activeId === s.sessionId ? 'bg-surface-5' : '')
+                }
               >
-                full session &rarr;
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-ink-base">
+                    {s.sessionName || s.sessionId.slice(0, 8)}
+                  </span>
+                  {isSessionLive ? (
+                    <LiveBadge label="live" size="sm" />
+                  ) : (
+                    <span
+                      className="text-[10px] text-ink-muted"
+                      title={s.startTime ? `Started ${fmtTimeOfDay(s.startTime)}` : undefined}
+                    >
+                      {s.startTime ? fmtTimeOfDay(s.startTime + (s.durationMs ?? 0)) : ''}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2 mt-0.5 text-[10px] text-ink-subtle">
+                  <span>{s.toolCallCount ?? 0} calls</span>
+                  {s.estimatedCostUsd != null && s.estimatedCostUsd > 0 ? (
+                    <span>{formatUsd(s.estimatedCostUsd)}</span>
+                  ) : (
+                    <span>—</span>
+                  )}
+                </div>
               </button>
-            </div>
-          </div>
-        )}
-        <div ref={tailRef} className="overflow-auto flex-1 p-2">
-          {!activeId && (
-            <div className="text-ink-muted text-xs p-2">Select a session to view its timeline.</div>
-          )}
-          {activeId && timeline.length === 0 && (
+            );
+          })}
+          {liveSessionIds.size === 0 && todaySessions.length === 0 && (
             <EmptyState
-              icon="timeline"
-              title={isLive ? 'Waiting for tool calls' : 'No tool calls'}
-              subtitle={
-                isLive
-                  ? 'Tool calls will appear here in real time.'
-                  : 'This session has no recorded tool calls.'
-              }
+              icon="code"
+              title="No sessions today"
+              subtitle="Start coding with Claude to see sessions here."
             />
-          )}
-          {timeline.length > 0 && viewMode === 'gantt' && (
-            <GanttTimeline entries={timeline} segments={replay?.segments ?? []} />
-          )}
-          {timeline.length > 0 && viewMode === 'list' && (
-            <div className="flex flex-col">
-              {timeline.map((entry, idx) => {
-                const elapsed = entry.timestamp - firstTs;
-                return (
-                  <div
-                    key={`${idx}-${entry.timestamp}`}
-                    className="flex items-center gap-1.5 px-1 py-0.5 text-xs border-b border-border-subtle/50 last:border-b-0"
-                  >
-                    <span className="w-10 text-ink-muted tabular-nums text-[11px] shrink-0">
-                      +{fmtElapsed(elapsed)}
-                    </span>
-                    <span className="w-4 text-center text-[11px]" aria-hidden="true">
-                      {TOOL_ICONS[entry.toolName] ?? '\u{00B7}'}
-                    </span>
-                    <span
-                      className="w-28 truncate font-medium text-ink-base text-[11px]"
-                      title={entry.toolName}
-                    >
-                      {shortToolName(entry.toolName)}
-                    </span>
-                    <span
-                      className="flex-1 truncate font-mono text-ink-subtle text-[10px]"
-                      title={entry.filePath ?? entry.command ?? ''}
-                    >
-                      {entry.filePath ?? entry.command ?? ''}
-                    </span>
-                    <span className="w-12 text-right tabular-nums text-ink-muted text-[10px]">
-                      {entry.durationMs != null ? `${entry.durationMs}ms` : ''}
-                    </span>
-                    <span
-                      className={`w-3 text-center text-[10px] ${entry.success ? 'text-accent-green' : 'text-accent-red'}`}
-                    >
-                      {entry.success ? '\u{2713}' : '\u{2717}'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
           )}
         </div>
-        {/* Per-session ContextBar — pinned to the bottom of the tail so it
+
+        {/* Live tail */}
+        <div className="flex flex-col overflow-hidden">
+          {activeId && (
+            <div className="flex items-center justify-between px-2 py-1 border-b border-border-subtle shrink-0">
+              <Eyebrow>Trace</Eyebrow>
+              <div className="flex items-center gap-2">
+                {/* Task #17 (D3): "Session ended" badge — pinned to the selected
+                  session even after it leaves the live set, so the user can
+                  finish reviewing without an auto-switch. */}
+                {sessionEnded && (
+                  <span data-testid="session-ended-badge">
+                    <Pill tone="neutral" size="sm" uppercase>
+                      Session ended
+                    </Pill>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => navigate(`/sessions?id=${activeId}`)}
+                  className="text-[10px] text-accent-cyan hover:underline transition-colors duration-150"
+                >
+                  full session &rarr;
+                </button>
+              </div>
+            </div>
+          )}
+          <div ref={tailRef} className="overflow-auto flex-1 p-2">
+            {!activeId && (
+              <div className="text-ink-muted text-xs p-2">
+                Select a session to view its timeline.
+              </div>
+            )}
+            {activeId && timeline.length === 0 && traceAgents.length === 0 && (
+              <EmptyState
+                icon="timeline"
+                title={isLive ? 'Waiting for tool calls' : 'No tool calls'}
+                subtitle={
+                  isLive
+                    ? 'Tool calls will appear here in real time.'
+                    : 'This session has no recorded tool calls.'
+                }
+              />
+            )}
+            {activeId && (timeline.length > 0 || traceAgents.length > 0) && (
+              <SessionTrace
+                key={activeId}
+                sessionId={activeId}
+                parentEntries={timeline}
+                agents={traceAgents}
+                window={traceWindow}
+                runStatusById={runStatusById}
+                parentSegments={replay?.segments ?? []}
+                onSelectRun={(runId) => setOpenRunId(runId)}
+              />
+            )}
+          </div>
+          {/* Per-session ContextBar — pinned to the bottom of the tail so it
             shows for both Gantt and List view modes. Hidden when no session
             is selected or the selected session has ended (the context
             numbers would be stale and the SSE feed won't be updating). */}
-        {isLive && activeId && (
-          <div className="border-t border-bg-line px-3 py-2 shrink-0">
-            <ContextBar sessionId={activeId} />
-          </div>
-        )}
+          {isLive && activeId && (
+            <div className="border-t border-bg-line px-3 py-2 shrink-0">
+              <ContextBar sessionId={activeId} />
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+      {openRunId != null && (
+        <WorkflowRunDetail runId={openRunId} onClose={() => setOpenRunId(null)} />
+      )}
+    </>
   );
 }
 
@@ -1269,16 +1351,22 @@ function ForecastEodCard({
   todayTotal,
   forecastEod,
   hourlySpend,
+  subagentUsd = 0,
 }: {
   todayTotal: number;
   forecastEod: number | null;
   hourlySpend: HourlyCostEntry[];
+  subagentUsd?: number;
 }): JSX.Element {
   const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
   const effectiveForecast = hasForecast ? Math.max(forecastEod, todayTotal) : 0;
   const delta = hasForecast ? effectiveForecast - todayTotal : 0;
   const pct = hasForecast && todayTotal > 0 ? (delta / todayTotal) * 100 : 0;
   const hasSpend = hourlySpend.some((h) => h.cost > 0);
+  // todayTotal and subagentUsd are each a Math.max over different endpoints, so
+  // the subtraction can momentarily go negative when they pick different
+  // sources; clamp to 0 (the server clamps its own parentUsd the same way).
+  const parentUsd = subagentUsd > 0 ? Math.max(0, todayTotal - subagentUsd) : 0;
 
   return (
     <Card padding="sm" className="mb-3 h-full">
@@ -1287,12 +1375,12 @@ function ForecastEodCard({
         <>
           <div className="flex items-baseline gap-3">
             <span className="text-lg font-semibold text-accent-cyan tabular-nums">
-              ${effectiveForecast.toFixed(2)}
+              {formatUsd(effectiveForecast)}
             </span>
             <span className="text-xs text-ink-muted tabular-nums">
               {delta > 0 ? (
                 <>
-                  +${delta.toFixed(2)}
+                  +{formatUsd(delta)}
                   {todayTotal > 0 && ` (+${pct.toFixed(0)}%)`} from now
                 </>
               ) : (
@@ -1303,6 +1391,13 @@ function ForecastEodCard({
           {hasSpend && (
             <div className="mt-2">
               <HourlyCostBlocks hours={hourlySpend} />
+              {subagentUsd > 0 && (
+                <div className="flex gap-3 mt-1 text-[10px] text-ink-muted tabular-nums">
+                  <span>parent {formatUsd(parentUsd)}</span>
+                  <span className="text-ink-subtle">·</span>
+                  <span>subagent {formatUsd(subagentUsd)}</span>
+                </div>
+              )}
             </div>
           )}
         </>

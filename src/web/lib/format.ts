@@ -103,6 +103,51 @@ export function formatNumber(n: number): string {
 }
 
 /**
+ * Single source of truth for rendering a USD cost. EVERY dollar figure in the
+ * dashboard must go through this so the same value renders byte-identically
+ * wherever it appears — a session that reads `$6.05` in the list must read
+ * `$6.05` in the detail panel, never `$6.0473`. Mixing `toFixed(2)` and
+ * `toFixed(4)` on the same field across views is what made costs look wrong.
+ *
+ * One precision rule, applied uniformly:
+ * - `≥ $1`            → 2 decimals (`$6.05`, `$45.48`) — clean for the common case.
+ * - `0 < value < $1`  → 4 decimals (`$0.0125`) — small costs keep meaningful digits.
+ * - exactly `0`       → `$0.00` (a real, measured zero).
+ *
+ * Non-finite input renders `$0.00`; use {@link formatUsdOrDash} when a missing
+ * value (null/undefined) should read as the em-dash placeholder instead.
+ */
+export function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return '$0.00';
+  const decimals = Math.abs(value) > 0 && Math.abs(value) < 1 ? 4 : 2;
+  return `$${value.toFixed(decimals)}`;
+}
+
+/**
+ * USD cost that may be absent. `null`/`undefined`/non-finite → the em-dash
+ * placeholder (`—`, meaning "no data / not computed") — kept distinct from
+ * {@link formatUsd}(0)'s `$0.00` (a measured zero) so the UI never conflates
+ * "we don't know" with "it was free".
+ */
+export function formatUsdOrDash(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return formatUsd(value);
+}
+
+/**
+ * Compact token-count label, consistent across the dashboard: "1.3M", "45.2k",
+ * "123". Use for any token figure so large counts don't render as a wall of
+ * digits (e.g. 32030011 → "32.0M"). Non-finite → em dash.
+ */
+export function formatTokensCompact(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+/**
  * Shorten MCP tool names for display. Strips the `mcp__<server>__` prefix
  * and shows only the tool-specific suffix (e.g. `nr_observe_health`).
  * Non-MCP tool names pass through unchanged.
