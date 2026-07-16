@@ -190,6 +190,12 @@ function checkDaemon(): DiagnosticCheck[] {
   return [installedCheck, nodePathCheck];
 }
 
+/** The only two settings.json hook keys this diagnostic checks for. */
+interface ClaudeSettingsHooks {
+  readonly PreToolUse?: unknown;
+  readonly PostToolUse?: unknown;
+}
+
 function checkHooksWired(settingsPaths: string[], platform: string | undefined): DiagnosticCheck {
   if (platform !== undefined && platform !== 'claude-code') {
     const registry = createDefaultRegistry();
@@ -222,7 +228,7 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
     try {
       const settings = JSON.parse(readFileSync(sp, 'utf-8')) as Record<string, unknown>;
       anyParsed = true;
-      const hooks = settings.hooks as Record<string, unknown[]> | undefined;
+      const hooks = settings.hooks as ClaudeSettingsHooks | undefined;
       if (Array.isArray(hooks?.PreToolUse)) {
         hooksPre ||= hooks.PreToolUse.some(entryContainsNrObserve);
         hooksPreAny ||= hooks.PreToolUse.some(entryHasAnyCommandHook);

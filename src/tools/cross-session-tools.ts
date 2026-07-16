@@ -600,14 +600,13 @@ export function handleGetPlatformComparison(
   // Group sessions by platform (uses 'claude-code' as default)
   const byPlatform = new Map<string, typeof sessions>();
   for (const s of sessions) {
-    const rawPlatform = (s as Record<string, unknown>).platform;
-    const platform = typeof rawPlatform === 'string' ? rawPlatform : 'claude-code';
+    const platform = s.platform ?? 'claude-code';
     const list = byPlatform.get(platform) ?? [];
     list.push(s);
     byPlatform.set(platform, list);
   }
 
-  const comparison: Record<string, unknown> = {};
+  const comparison: Record<string, { session_count: number; average: number }> = {};
 
   for (const [platform, platformSessions] of byPlatform) {
     const count = platformSessions.length;
@@ -755,7 +754,24 @@ export async function handleGetTeamSummary(options: {
 
   const nerdgraphUrl = getNerdgraphUrl(options.collectorHost ?? null);
 
-  async function runNrql(nrql: string): Promise<Array<Record<string, unknown>>> {
+  /**
+   * The one row shape all three per-developer NerdGraph queries below return
+   * (`SELECT ... FACET developer`). This is unvalidated third-party API JSON
+   * with no runtime shape check beyond envelope-level `Array.isArray` — every
+   * field stays `unknown` on purpose, and every per-field read downstream
+   * keeps its existing `String(...)`/`toFiniteNumber(...)` coercion unchanged.
+   * Only the three fields actually read by this function's three queries are
+   * named; unused fields on a given query's actual result are simply absent
+   * at runtime, which `unknown` already tolerates.
+   */
+  interface NrqlDeveloperRow {
+    readonly developer?: unknown;
+    readonly totalCost?: unknown;
+    readonly avgScore?: unknown;
+    readonly antiPatterns?: unknown;
+  }
+
+  async function runNrql<T = Record<string, unknown>>(nrql: string): Promise<T[]> {
     const resp = await fetch(nerdgraphUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'API-Key': options.nrApiKey! },
@@ -765,37 +781,35 @@ export async function handleGetTeamSummary(options: {
       throw new Error(`NerdGraph request failed: HTTP ${resp.status} ${resp.statusText}`);
     }
     const json = (await resp.json()) as {
-      data?: { actor: { account: { nrql: { results: unknown[] } } } };
-      errors?: unknown[];
+      data?: { actor: { account: { nrql: { results: T[] } } } };
+      errors?: Array<{ message?: string }>;
     };
     if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
-      const msg = (json.errors as Array<{ message?: unknown }>)
-        .map((e) => String(e.message ?? e))
-        .join('; ');
+      const msg = json.errors.map((e) => String(e.message ?? e)).join('; ');
       throw new Error(`NerdGraph errors: ${msg}`);
     }
     if (!json.data?.actor?.account?.nrql?.results) {
       throw new Error('NerdGraph query returned no data (unexpected response structure)');
     }
-    return json.data.actor.account.nrql.results as Array<Record<string, unknown>>;
+    return json.data.actor.account.nrql.results;
   }
 
-  let costRows: Array<Record<string, unknown>>;
-  let effRows: Array<Record<string, unknown>>;
-  let antiPatternRows: Array<Record<string, unknown>>;
+  let costRows: NrqlDeveloperRow[];
+  let effRows: NrqlDeveloperRow[];
+  let antiPatternRows: NrqlDeveloperRow[];
   try {
     [costRows, effRows, antiPatternRows] = await Promise.all([
-      runNrql(
+      runNrql<NrqlDeveloperRow>(
         `SELECT sum(ai.estimated_cost_usd) AS totalCost
          FROM AiCodingTask WHERE team_id = '${safeTeamId}'
          SINCE ${since} FACET developer LIMIT 50`,
       ),
-      runNrql(
+      runNrql<NrqlDeveloperRow>(
         `SELECT average(ai.efficiency.score) AS avgScore
          FROM Metric WHERE team_id = '${safeTeamId}'
          SINCE ${since} FACET developer LIMIT 50`,
       ),
-      runNrql(
+      runNrql<NrqlDeveloperRow>(
         `SELECT count(*) AS antiPatterns
          FROM AiAntiPattern WHERE team_id = '${safeTeamId}'
          SINCE ${since} FACET developer LIMIT 50`,

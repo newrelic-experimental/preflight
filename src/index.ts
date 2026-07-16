@@ -64,6 +64,7 @@ import type { TokenUsage } from './shared/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { LiveEventBus } from './dashboard/index.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
+import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
 import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
 import { AlertLog } from './alerts/alert-log.js';
@@ -353,7 +354,7 @@ export function startDashboardRepoll(opts: DashboardRepollOptions): NodeJS.Timeo
           // can't recover by retrying and we don't want to spam the log.
           clearInterval(interval);
           log.warn('Dashboard re-poll stopped after unexpected error', {
-            error: String((decision as { error: unknown }).error),
+            error: String(decision.error),
           });
         }
         // EADDRINUSE: port still owned — keep polling silently.
@@ -1226,13 +1227,7 @@ async function main(): Promise<void> {
           // costSelfCheckDeltaPct is null (honest) — it leaves the dashboard's
           // reconciliation banner hidden until that plumbing lands.
           observabilityHealth: {
-            getSnapshot: (): {
-              watcherActive: boolean;
-              filesWatched: number;
-              parseErrors: number;
-              watcherDisabledByLock: boolean;
-              costSelfCheckDeltaPct: number | null;
-            } => {
+            getSnapshot: (): ObservabilityHealthSnapshot => {
               // Read live counters off the SubagentWatcher when it's running.
               // A null binding => watcher disabled (env flag off / wrong mode)
               // => a zeroed "disabled" snapshot. costSelfCheckDeltaPct stays

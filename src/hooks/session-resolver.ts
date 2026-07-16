@@ -39,6 +39,11 @@ export interface SessionResolverOptions {
   readonly suppressWarn?: boolean;
 }
 
+/** The one field `resolveFromJobDir` reads out of `CLAUDE_JOB_DIR/state.json`. */
+interface ClaudeJobDirState {
+  readonly linkScanPath?: unknown;
+}
+
 /**
  * Try to resolve the session_id synchronously from `CLAUDE_JOB_DIR/state.json`.
  * Returns the validated session_id or null.
@@ -62,7 +67,7 @@ export function resolveFromJobDir(claudeJobDir: string | null | undefined): stri
     return null;
   }
   if (parsed === null || typeof parsed !== 'object') return null;
-  const linkScanPath = (parsed as Record<string, unknown>).linkScanPath;
+  const linkScanPath = (parsed as ClaudeJobDirState).linkScanPath;
   if (typeof linkScanPath !== 'string' || linkScanPath.length === 0) return null;
 
   // The session UUID is the basename minus its extension. Validate against

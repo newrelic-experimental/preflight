@@ -25,6 +25,20 @@ const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
  */
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
+/**
+ * The on-disk shape of `local-dashboard.pid` and `local-instances/<pid>.json`
+ * — both self-written by this same class. Every field stays `unknown`; every
+ * caller already runs a full `typeof`/`Array.isArray` validation pass before
+ * trusting a value (a lockfile from an older build, or a partially-written
+ * file from a crash mid-write, may not match this shape).
+ */
+interface LiveProcessInfo {
+  readonly pid?: unknown;
+  readonly argv?: unknown;
+  readonly cwd?: unknown;
+  readonly startedAt?: unknown;
+}
+
 function parseHookEvents(raw: string): HookEvent[] {
   if (!raw.trim()) {
     return [];
@@ -329,11 +343,7 @@ export class LocalStore {
     const path = resolve(this.storagePath, 'local-dashboard.pid');
     if (!existsSync(path)) return null;
     try {
-      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
-        pid?: unknown;
-        argv?: unknown;
-        cwd?: unknown;
-      };
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as LiveProcessInfo;
       const pid = parsed.pid;
       const argv = parsed.argv;
       const cwd = parsed.cwd;
@@ -361,7 +371,7 @@ export class LocalStore {
     const path = resolve(this.storagePath, 'local-dashboard.pid');
     try {
       if (!existsSync(path)) return;
-      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { pid?: unknown };
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Pick<LiveProcessInfo, 'pid'>;
       if (parsed.pid !== process.pid) return;
       unlinkSync(path);
     } catch (err) {
@@ -444,12 +454,7 @@ export class LocalStore {
     for (const name of entries) {
       if (!name.endsWith('.json')) continue;
       try {
-        const parsed = JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as {
-          pid?: unknown;
-          argv?: unknown;
-          cwd?: unknown;
-          startedAt?: unknown;
-        };
+        const parsed = JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as LiveProcessInfo;
         const { pid, argv, cwd, startedAt } = parsed;
         if (
           typeof pid !== 'number' ||

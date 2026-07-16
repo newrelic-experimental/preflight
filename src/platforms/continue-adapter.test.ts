@@ -186,6 +186,15 @@ describe('ContinueAdapter', () => {
       expect(normalized.toolName).toBe('Unknown');
     });
 
+    it('falls back to safe defaults when raw is not an object (e.g. null)', () => {
+      const normalized = adapter.normalizeToolCall(null);
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('unknown');
+      expect(normalized.platform).toBe('continue');
+      expect(normalized.success).toBe(true);
+      expect(normalized.durationMs).toBeNull();
+    });
+
     it('defaults success to true when not provided', () => {
       const normalized = adapter.normalizeToolCall({ tool: 'read_file', timestamp: 2000 });
       expect(normalized.success).toBe(true);

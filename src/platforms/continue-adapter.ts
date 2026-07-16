@@ -37,7 +37,10 @@ interface ContinueToolCallEvent {
   inputSizeBytes?: number;
   outputSizeBytes?: number;
   sessionId?: string;
-  [key: string]: unknown;
+}
+
+function isContinueToolCallEvent(x: unknown): x is ContinueToolCallEvent {
+  return typeof x === 'object' && x !== null;
 }
 
 export class ContinueAdapter implements PlatformAdapter {
@@ -54,7 +57,7 @@ export class ContinueAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as ContinueToolCallEvent;
+    const event = isContinueToolCallEvent(raw) ? raw : {};
     // Continue may use either 'tool' or 'toolName'
     const platformToolName = event.tool ?? event.toolName ?? 'unknown';
     const toolName = CONTINUE_TOOL_MAP[platformToolName] ?? 'Unknown';

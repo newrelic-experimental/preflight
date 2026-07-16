@@ -448,23 +448,76 @@ function formatDate(date: Date): string {
 }
 
 /**
+ * The on-disk shape `deserializeFullSessionSummary` reads. Every field stays
+ * `unknown` except the five that get `Array.isArray`/`typeof === 'object'`
+ * checked before further processing below — those get just enough shape to
+ * remove the inner cast that check's body previously needed, while every
+ * runtime guard stays exactly as defensive as before (a legacy on-disk file
+ * from an older build may not match this shape).
+ */
+interface SerializedFullSessionSummary {
+  readonly sessionId?: unknown;
+  readonly sessionName?: unknown;
+  readonly repoName?: unknown;
+  readonly startTime?: unknown;
+  readonly endTime?: unknown;
+  readonly durationMs?: unknown;
+  readonly toolCallCount?: unknown;
+  readonly developer?: unknown;
+  readonly model?: unknown;
+  readonly toolBreakdown?: Record<string, unknown>;
+  readonly filesRead?: unknown[];
+  readonly filesModified?: unknown[];
+  readonly linesAdded?: unknown;
+  readonly linesRemoved?: unknown;
+  readonly bashCommandCount?: unknown;
+  readonly testRunCount?: unknown;
+  readonly testPassCount?: unknown;
+  readonly buildRunCount?: unknown;
+  readonly buildPassCount?: unknown;
+  readonly estimatedCostUsd?: unknown;
+  readonly tokensInput?: unknown;
+  readonly tokensOutput?: unknown;
+  readonly tokensThinking?: unknown;
+  readonly tokensCacheRead?: unknown;
+  readonly tokensCacheCreation?: unknown;
+  readonly cacheSavingsUsd?: unknown;
+  readonly efficiencyScore?: unknown;
+  readonly antiPatterns?: Array<Record<string, unknown>>;
+  readonly taskCount?: unknown;
+  readonly taskSuccessRate?: unknown;
+  readonly toolSuccessRate?: unknown;
+  readonly contextCompressions?: unknown;
+  readonly agentSpawns?: unknown;
+  readonly userMessages?: unknown;
+  readonly assistantMessages?: unknown;
+  readonly userCorrections?: unknown;
+  readonly outcome?: unknown;
+  readonly platform?: unknown;
+  readonly instructionPromptHash?: unknown;
+  readonly timeline?: Array<Record<string, unknown>>;
+}
+
+/**
  * Explicitly extract known fields from a raw session object (already parsed
  * from JSON) rather than blindly casting. Prevents untrusted keys from disk
  * being misinterpreted as typed properties. Exported for testing.
  */
-export function deserializeFullSessionSummary(obj: Record<string, unknown>): FullSessionSummary {
+export function deserializeFullSessionSummary(
+  obj: SerializedFullSessionSummary,
+): FullSessionSummary {
   const toolBreakdown = Object.create(null) as Record<string, number>;
   if (typeof obj.toolBreakdown === 'object' && obj.toolBreakdown !== null) {
-    for (const [k, v] of Object.entries(obj.toolBreakdown as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(obj.toolBreakdown)) {
       if (typeof v === 'number') toolBreakdown[k] = v;
     }
   }
 
   const antiPatterns: Array<{ type: string; count: number }> = [];
   if (Array.isArray(obj.antiPatterns)) {
-    for (const ap of obj.antiPatterns as unknown[]) {
+    for (const ap of obj.antiPatterns) {
       if (typeof ap === 'object' && ap !== null) {
-        const a = ap as Record<string, unknown>;
+        const a = ap;
         if (typeof a.type === 'string' && typeof a.count === 'number') {
           antiPatterns.push({ type: a.type, count: a.count });
         }
@@ -485,10 +538,10 @@ export function deserializeFullSessionSummary(obj: Record<string, unknown>): Ful
     model: typeof obj.model === 'string' ? obj.model : null,
     toolBreakdown,
     filesRead: Array.isArray(obj.filesRead)
-      ? (obj.filesRead as unknown[]).filter((f): f is string => typeof f === 'string')
+      ? obj.filesRead.filter((f): f is string => typeof f === 'string')
       : [],
     filesModified: Array.isArray(obj.filesModified)
-      ? (obj.filesModified as unknown[]).filter((f): f is string => typeof f === 'string')
+      ? obj.filesModified.filter((f): f is string => typeof f === 'string')
       : [],
     linesAdded: typeof obj.linesAdded === 'number' ? obj.linesAdded : 0,
     linesRemoved: typeof obj.linesRemoved === 'number' ? obj.linesRemoved : 0,
@@ -519,13 +572,13 @@ export function deserializeFullSessionSummary(obj: Record<string, unknown>): Ful
     instructionPromptHash:
       typeof obj.instructionPromptHash === 'string' ? obj.instructionPromptHash : null,
     timeline: Array.isArray(obj.timeline)
-      ? (obj.timeline as unknown[])
+      ? obj.timeline
           .filter(
             (e): e is Record<string, unknown> =>
               typeof e === 'object' &&
               e !== null &&
-              typeof (e as Record<string, unknown>).timestamp === 'number' &&
-              typeof (e as Record<string, unknown>).toolName === 'string',
+              typeof e.timestamp === 'number' &&
+              typeof e.toolName === 'string',
           )
           .map((e) => ({
             timestamp: e.timestamp as number,
@@ -555,7 +608,7 @@ function deserializeSession(raw: string): FullSessionSummary | null {
     return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
-  return deserializeFullSessionSummary(parsed as Record<string, unknown>);
+  return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
 }
 
 function parseSessionFilename(filename: string): SessionFileInfo | null {

@@ -25,6 +25,10 @@ function isNewerVersion(candidate: string, installed: string): boolean {
   return cc > ic;
 }
 
+interface NpmRegistryLatestResponse {
+  readonly version?: unknown;
+}
+
 async function defaultNpmFetcher(): Promise<string | null> {
   try {
     const res = await fetch('https://registry.npmjs.org/@newrelic/preflight/latest', {
@@ -32,8 +36,8 @@ async function defaultNpmFetcher(): Promise<string | null> {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as Record<string, unknown>;
-    const v = data['version'];
+    const data = (await res.json()) as NpmRegistryLatestResponse;
+    const v = data.version;
     return typeof v === 'string' ? v : null;
   } catch {
     return null;

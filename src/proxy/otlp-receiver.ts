@@ -23,6 +23,15 @@ class RateLimitExceededError extends Error {}
 class AuthenticationError extends Error {}
 class UnsupportedContentTypeError extends Error {}
 
+interface OtlpAttribute {
+  readonly key: string;
+  readonly value?: unknown;
+}
+
+interface OtlpResourceItem {
+  resource?: { attributes?: OtlpAttribute[] };
+}
+
 export interface OtlpReceiverOptions {
   readonly port: number;
   readonly bindAddress?: string;
@@ -367,17 +376,13 @@ export class OtlpReceiver {
     // OTLP JSON structure: { resourceSpans: [{ resource: { attributes: [...] }, ... }] }
     // Also handle resourceMetrics and resourceLogs for /v1/metrics and /v1/logs
     for (const key of ['resourceSpans', 'resourceMetrics', 'resourceLogs']) {
-      const resources = payload[key] as
-        Array<{ resource?: { attributes?: unknown[] } }> | undefined;
+      const resources = payload[key] as OtlpResourceItem[] | undefined;
       if (!Array.isArray(resources)) continue;
 
       for (const resource of resources) {
         if (!resource.resource) resource.resource = {};
         if (!Array.isArray(resource.resource.attributes)) resource.resource.attributes = [];
-        const attributes = resource.resource.attributes as Array<{
-          key: string;
-          value?: unknown;
-        }>;
+        const attributes = resource.resource.attributes;
         const existingKeys = new Set(attributes.map((a) => a.key));
         for (const [k, v] of Object.entries(attrs)) {
           // Never clobber a value the instrumented app deliberately set itself.

@@ -1,4 +1,5 @@
 import { createLogger } from '../shared/index.js';
+import type { CostForecast } from '../metrics/cost-forecast.js';
 
 const logger = createLogger('alert-snapshot-collector');
 
@@ -77,7 +78,7 @@ export interface AlertSnapshotCollectorDeps {
    * by the snapshot path (kept for symmetry with index.ts wiring); may be
    * consumed in the future for true rolling-window cost.
    */
-  readonly costForecast?: () => unknown;
+  readonly costForecast?: () => CostForecast;
   readonly efficiencyScorer?: {
     /**
      * Returns the current efficiency score in [0, 1], or `null` if there

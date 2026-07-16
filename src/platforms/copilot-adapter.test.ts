@@ -98,13 +98,13 @@ describe('CopilotAdapter', () => {
       expect(normalized.toolName).toBe('Bash');
     });
 
-    it('maps unknown event type to "Unknown"', () => {
+    it('maps unrecognized event type to "Unknown" and falls back platformToolName to "unknown"', () => {
       const normalized = adapter.normalizeToolCall({
         type: 'copilot_special',
         timestamp: 5000,
       } as unknown);
       expect(normalized.toolName).toBe('Unknown');
-      expect(normalized.platformToolName).toBe('copilot_special');
+      expect(normalized.platformToolName).toBe('unknown');
     });
 
     it('infers durationMs from timestamp and endTimestamp', () => {
@@ -192,6 +192,21 @@ describe('CopilotAdapter', () => {
         sessionId: 'copilot-sess-001',
       });
       expect(normalized.sessionId).toBe('copilot-sess-001');
+    });
+
+    it('falls back to safe defaults when raw is not an object (e.g. null)', () => {
+      const normalized = adapter.normalizeToolCall(null);
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('unknown');
+      expect(normalized.platform).toBe('copilot');
+      expect(normalized.success).toBe(true);
+      expect(normalized.durationMs).toBeNull();
+    });
+
+    it('falls back to safe defaults when raw has an unrecognized type field', () => {
+      const normalized = adapter.normalizeToolCall({ type: 'not_a_real_event_type' });
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('unknown');
     });
   });
 

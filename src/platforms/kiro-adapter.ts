@@ -63,7 +63,10 @@ interface KiroToolCallEvent {
   inputSizeBytes?: number;
   outputSizeBytes?: number;
   sessionId?: string;
-  [key: string]: unknown;
+}
+
+function isKiroToolCallEvent(x: unknown): x is KiroToolCallEvent {
+  return typeof x === 'object' && x !== null;
 }
 
 export class KiroAdapter implements PlatformAdapter {
@@ -74,7 +77,7 @@ export class KiroAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as KiroToolCallEvent;
+    const event = isKiroToolCallEvent(raw) ? raw : {};
     const platformToolName = event.tool ?? event.toolName ?? 'unknown';
     const toolName = KIRO_TOOL_MAP[platformToolName] ?? 'Unknown';
     const filePath = event.filePath ?? event.path;

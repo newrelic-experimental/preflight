@@ -1,6 +1,31 @@
 import type { WeeklySummary } from '../storage/weekly-summary.js';
 
-export function formatSlackDigest(summary: WeeklySummary): Record<string, unknown> {
+interface SlackHeaderBlock {
+  readonly type: 'header';
+  readonly text: { readonly type: 'plain_text'; readonly text: string };
+}
+
+interface SlackSectionBlock {
+  readonly type: 'section';
+  readonly fields: ReadonlyArray<{ readonly type: 'mrkdwn'; readonly text: string }>;
+}
+
+interface SlackDividerBlock {
+  readonly type: 'divider';
+}
+
+interface SlackContextBlock {
+  readonly type: 'context';
+  readonly elements: ReadonlyArray<{ readonly type: 'mrkdwn'; readonly text: string }>;
+}
+
+type SlackBlock = SlackHeaderBlock | SlackSectionBlock | SlackDividerBlock | SlackContextBlock;
+
+export type SlackBlockKitPayload = {
+  readonly blocks: readonly SlackBlock[];
+};
+
+export function formatSlackDigest(summary: WeeklySummary): SlackBlockKitPayload {
   const totalCost = summary.totalCostUsd?.toFixed(4) ?? '—';
   const avgEfficiency =
     summary.avgEfficiencyScore != null ? (summary.avgEfficiencyScore * 100).toFixed(1) : '—';

@@ -119,8 +119,7 @@ export class ClaudeMdTracker {
       return null;
     }
 
-    const rec = toolCall as Record<string, unknown>;
-    const filePath = typeof rec.filePath === 'string' ? rec.filePath : null;
+    const filePath = typeof toolCall.filePath === 'string' ? toolCall.filePath : null;
     if (!filePath || !CLAUDEMD_PATTERN.test(filePath)) {
       return null;
     }
@@ -131,16 +130,16 @@ export class ClaudeMdTracker {
 
     if (toolCall.toolName === 'Write') {
       changeType = 'created';
-      linesAdded = typeof rec.lineCount === 'number' ? rec.lineCount : 0;
+      linesAdded = typeof toolCall.lineCount === 'number' ? toolCall.lineCount : 0;
     } else {
       // Edit tool
-      if (rec.isDelete === true) {
+      if (toolCall.isDelete === true) {
         changeType = 'deleted';
       } else {
         changeType = 'modified';
       }
-      linesAdded = typeof rec.newLineCount === 'number' ? rec.newLineCount : 0;
-      linesRemoved = typeof rec.oldLineCount === 'number' ? rec.oldLineCount : 0;
+      linesAdded = typeof toolCall.newLineCount === 'number' ? toolCall.newLineCount : 0;
+      linesRemoved = typeof toolCall.oldLineCount === 'number' ? toolCall.oldLineCount : 0;
     }
 
     const diffSummary = `${changeType} ${filePath}: +${linesAdded}/-${linesRemoved} lines`;

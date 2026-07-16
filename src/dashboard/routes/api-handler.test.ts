@@ -389,11 +389,18 @@ describe('api-handler GET /api/sessions/:id', () => {
           testPassRate: null,
           backtrackCount: 0,
           selfCorrectionCount: 0,
+          qualityByTurnBucket: [],
+          degradationDetected: false,
+          events: [],
         }),
       },
       toolSelectionScorer: {
         scoreSession: (calls: readonly unknown[]) => ({
           score: 0.9,
+          totalCalls: calls.length,
+          penalizedCalls: 0,
+          penalties: [],
+          worstOffenders: [],
           redundantReadCount: calls.length,
           repeatedFailureCount: 0,
           unusedOutputCount: 0,
@@ -651,7 +658,11 @@ describe('api-handler GET /api/cost', () => {
       costTracker: { getMetrics: () => fakeCost } as unknown as Parameters<
         typeof createApiHandler
       >[0]['costTracker'],
-      costForecast: () => fakeForecast,
+      // Fake only carries the two fields this test asserts on; safe because
+      // the route just forwards the value from costForecast() as JSON.
+      costForecast: (() => fakeForecast) as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['costForecast'],
     });
     const req = { method: 'GET', url: '/api/cost' } as IncomingMessage;
     const { res, status, body, headers } = fakeRes();
@@ -1126,11 +1137,13 @@ describe('api-handler GET /api/alerts/recent', () => {
     let receivedLimit = 0;
     const handler = createApiHandler({
       alertLog: {
+        // fakeEntries' `state` fields widen to `string`; safe cast since the
+        // route just JSON-serializes whatever readRecent() returns.
         readRecent: async (limit: number) => {
           receivedLimit = limit;
           return fakeEntries;
         },
-      },
+      } as unknown as Parameters<typeof createApiHandler>[0]['alertLog'],
     });
     const req = { method: 'GET', url: '/api/alerts/recent' } as IncomingMessage;
     const { res, status, body, headers } = fakeRes();
@@ -2629,7 +2642,10 @@ describe('api-handler POST /api/digest/send', () => {
 
   it('returns 503 when configFilePath is missing', async () => {
     const handler = createApiHandler({
-      weeklySummaryGenerator: { generate: () => ({}), loadRecentWeeks: () => [] },
+      weeklySummaryGenerator: {
+        generate: () => ({}),
+        loadRecentWeeks: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'],
     });
     const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
     const { res, status, body } = fakeRes();
@@ -2642,7 +2658,10 @@ describe('api-handler POST /api/digest/send', () => {
     const configFilePath = makeConfigFile({});
     const handler = createApiHandler({
       configFilePath,
-      weeklySummaryGenerator: { generate: () => ({}), loadRecentWeeks: () => [] },
+      weeklySummaryGenerator: {
+        generate: () => ({}),
+        loadRecentWeeks: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'],
     });
     const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
     const { res, status, body } = fakeRes();
@@ -2667,10 +2686,12 @@ describe('api-handler POST /api/digest/send', () => {
     global.fetch = jest.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
     const handler = createApiHandler({
       configFilePath,
+      // fakeSummary only carries the fields this test asserts on; safe
+      // because handleSendDigest just forwards generate()'s return value.
       weeklySummaryGenerator: {
         generate: () => fakeSummary,
         loadRecentWeeks: () => [],
-      },
+      } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'],
     });
     const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
     const { res, status, body } = fakeRes();
@@ -2697,10 +2718,12 @@ describe('api-handler POST /api/digest/send', () => {
     global.fetch = jest.fn(async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
     const handler = createApiHandler({
       configFilePath,
+      // fakeSummary only carries the fields this test asserts on; safe
+      // because handleSendDigest just forwards generate()'s return value.
       weeklySummaryGenerator: {
         generate: () => fakeSummary,
         loadRecentWeeks: () => [],
-      },
+      } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'],
     });
     const req = { method: 'POST', url: '/api/digest/send' } as IncomingMessage;
     const { res, status, body } = fakeRes();
@@ -2814,7 +2837,16 @@ describe('api-handler GET /api/quality-proxy', () => {
   });
 
   it('returns the live tracker metrics directly when totalSignals > 0', async () => {
-    const liveMetrics = { totalSignals: 5, diffApplyRate: 0.8 };
+    const liveMetrics = {
+      totalSignals: 5,
+      diffApplyRate: 0.8,
+      testPassRate: null,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+      qualityByTurnBucket: [],
+      degradationDetected: false,
+      events: [],
+    };
     const handler = createApiHandler({
       qualityProxyTracker: { getMetrics: () => liveMetrics },
     });
@@ -2827,7 +2859,18 @@ describe('api-handler GET /api/quality-proxy', () => {
 
   it('falls back to history aggregation when totalSignals is 0 and sessionStore is present', async () => {
     const handler = createApiHandler({
-      qualityProxyTracker: { getMetrics: () => ({ totalSignals: 0 }) },
+      qualityProxyTracker: {
+        getMetrics: () => ({
+          totalSignals: 0,
+          diffApplyRate: null,
+          testPassRate: null,
+          backtrackCount: 0,
+          selfCorrectionCount: 0,
+          qualityByTurnBucket: [],
+          degradationDetected: false,
+          events: [],
+        }),
+      },
       sessionStore: {
         loadTodaySessions: () => [{ testRunCount: 4, testPassCount: 3 }],
         loadAllSessions: () => [],
@@ -2845,7 +2888,16 @@ describe('api-handler GET /api/quality-proxy', () => {
   });
 
   it('returns the live (zero-signal) metrics as-is when totalSignals is 0 and sessionStore is absent', async () => {
-    const liveMetrics = { totalSignals: 0 };
+    const liveMetrics = {
+      totalSignals: 0,
+      diffApplyRate: null,
+      testPassRate: null,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+      qualityByTurnBucket: [],
+      degradationDetected: false,
+      events: [],
+    };
     const handler = createApiHandler({
       qualityProxyTracker: { getMetrics: () => liveMetrics },
     });
@@ -2871,7 +2923,16 @@ describe('api-handler GET /api/tool-selection-score', () => {
     const fakeCalls = [{ id: 'c1' }, { id: 'c2' }] as unknown as ReturnType<
       NonNullable<Parameters<typeof createApiHandler>[0]['toolCallBuffer']>['getRecords']
     >;
-    const fakeScore = { score: 0.9, penalties: [] };
+    const fakeScore = {
+      score: 0.9,
+      totalCalls: 2,
+      penalizedCalls: 0,
+      penalties: [],
+      worstOffenders: [],
+      redundantReadCount: 0,
+      repeatedFailureCount: 0,
+      unusedOutputCount: 0,
+    };
     const scoreSession = jest.fn(() => fakeScore);
     const handler = createApiHandler({
       toolSelectionScorer: { scoreSession },
@@ -2886,7 +2947,16 @@ describe('api-handler GET /api/tool-selection-score', () => {
   });
 
   it('scores an empty session (score with []) when toolCallBuffer is absent', async () => {
-    const fakeScore = { score: 1, penalties: [] };
+    const fakeScore = {
+      score: 1,
+      totalCalls: 0,
+      penalizedCalls: 0,
+      penalties: [],
+      worstOffenders: [],
+      redundantReadCount: 0,
+      repeatedFailureCount: 0,
+      unusedOutputCount: 0,
+    };
     const scoreSession = jest.fn(() => fakeScore);
     const handler = createApiHandler({ toolSelectionScorer: { scoreSession } });
     const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
@@ -2909,7 +2979,21 @@ describe('api-handler GET /api/model-usage', () => {
   });
 
   it('returns modelUsageTracker.getMetrics() as JSON', async () => {
-    const fakeMetrics = { 'claude-sonnet-5': { totalCostUsd: 3.2, callCount: 40 } };
+    const fakeMetrics = {
+      byModel: {
+        'claude-sonnet-5': {
+          requestCount: 40,
+          totalInputTokens: 1000,
+          totalOutputTokens: 500,
+          totalCostUsd: 3.2,
+          costPerOutputToken: 0.0064,
+          avgOutputTokensPerRequest: 12.5,
+        },
+      },
+      mostUsedModel: 'claude-sonnet-5',
+      mostEfficientModel: 'claude-sonnet-5',
+      totalModelsUsed: 1,
+    };
     const handler = createApiHandler({
       modelUsageTracker: { getMetrics: () => fakeMetrics },
     });
@@ -2933,9 +3017,70 @@ describe('api-handler GET /api/git-efficiency', () => {
 
   it('returns gitEfficiencyTracker.getMetrics() as JSON', async () => {
     const fakeMetrics = {
+      totalGitCommands: 10,
       mergeConflicts: 2,
+      rebaseConflicts: 0,
+      abortedOperations: 0,
       forcePushes: 0,
-      repoContext: { repoName: 'preflight' },
+      resetHards: 0,
+      discardedChanges: 0,
+      pullCount: 2,
+      pushCount: 3,
+      commitCount: 5,
+      branchOperations: 1,
+      conflictResolutionRate: 1,
+      avgConflictResolutionMs: 5000,
+      staleBranchPulls: 0,
+      gitCommandTimeline: [],
+      conflictHistory: [],
+      suggestions: [],
+      bestPractices: [],
+      preventionScore: 0.8,
+      efficiencyScore: 0.9,
+      riskIndicators: {
+        syncedBeforeEditing: true,
+        timeSinceLastSyncMs: 5000,
+        commitsSinceLastSync: 1,
+        pushRejections: 0,
+        forceAfterReject: 0,
+        hotFiles: [],
+        usesWorktrees: false,
+        usesForceWithLease: false,
+        avgCommitsBetweenSyncs: null,
+        commitsAheadOfMain: null,
+        commitsBehindMain: null,
+        sessionDurationMs: 30000,
+        quickConflictResolutions: 0,
+      },
+      velocityMetrics: {
+        avgTimeBetweenCommitsMs: 10000,
+        commitBurstCount: 0,
+        longestGapMs: 20000,
+        worktreeCount: 0,
+        buildBeforePush: null,
+        testBeforePush: null,
+      },
+      conflictResolutionStrategy: {
+        oursCount: 0,
+        theirsCount: 0,
+        manualMergeCount: 0,
+        cherryPickCount: 0,
+        totalResolutions: 0,
+      },
+      prMetrics: {
+        created: 0,
+        merged: 2,
+        checksViewed: 0,
+        prsUpdated: 0,
+        prActivity: [],
+        avgTimeToCreateMs: null,
+      },
+      repoContext: {
+        repoName: 'preflight',
+        branch: 'main',
+        remoteName: 'origin',
+        defaultBranch: 'main',
+      },
     };
     const handler = createApiHandler({
       gitEfficiencyTracker: { getMetrics: () => fakeMetrics },
@@ -2990,7 +3135,72 @@ describe('api-handler GET /api/git-efficiency/repos', () => {
         loadSession: () => null,
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
       gitEfficiencyTracker: {
-        getMetrics: () => ({ repoContext: { repoName: 'current-repo' } }),
+        getMetrics: () => ({
+          totalGitCommands: 0,
+          mergeConflicts: 0,
+          rebaseConflicts: 0,
+          abortedOperations: 0,
+          forcePushes: 0,
+          resetHards: 0,
+          discardedChanges: 0,
+          pullCount: 0,
+          pushCount: 0,
+          commitCount: 0,
+          branchOperations: 0,
+          conflictResolutionRate: null,
+          avgConflictResolutionMs: null,
+          staleBranchPulls: 0,
+          gitCommandTimeline: [],
+          conflictHistory: [],
+          suggestions: [],
+          bestPractices: [],
+          preventionScore: null,
+          efficiencyScore: null,
+          riskIndicators: {
+            syncedBeforeEditing: null,
+            timeSinceLastSyncMs: null,
+            commitsSinceLastSync: 0,
+            pushRejections: 0,
+            forceAfterReject: 0,
+            hotFiles: [],
+            usesWorktrees: false,
+            usesForceWithLease: false,
+            avgCommitsBetweenSyncs: null,
+            commitsAheadOfMain: null,
+            commitsBehindMain: null,
+            sessionDurationMs: null,
+            quickConflictResolutions: 0,
+          },
+          velocityMetrics: {
+            avgTimeBetweenCommitsMs: null,
+            commitBurstCount: 0,
+            longestGapMs: null,
+            worktreeCount: 0,
+            buildBeforePush: null,
+            testBeforePush: null,
+          },
+          conflictResolutionStrategy: {
+            oursCount: 0,
+            theirsCount: 0,
+            manualMergeCount: 0,
+            cherryPickCount: 0,
+            totalResolutions: 0,
+          },
+          prMetrics: {
+            created: 0,
+            merged: 0,
+            checksViewed: 0,
+            prsUpdated: 0,
+            prActivity: [],
+            avgTimeToCreateMs: null,
+          },
+          repoContext: {
+            repoName: 'current-repo',
+            branch: null,
+            remoteName: null,
+            defaultBranch: null,
+          },
+        }),
       },
     });
     const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
@@ -3014,7 +3224,15 @@ describe('api-handler GET /api/context', () => {
   });
 
   it('calls getMetrics() with undefined sessionId when no query param is given', async () => {
-    const fakeMetrics = { fillPercent: 42 };
+    const fakeMetrics = {
+      turnCount: 5,
+      growth: { startTokens: 1000, currentTokens: 1500, deltaTokens: 500 },
+      currentBreakdown: { system: 100, tools: 200, user: 300, assistant: 400 },
+      fillPercent: 42,
+      contextWindow: 200000,
+      toolContributions: [],
+      history: [],
+    };
     const getMetrics = jest.fn(() => fakeMetrics);
     const handler = createApiHandler({ contextTracker: { getMetrics } });
     const req = { method: 'GET', url: '/api/context' } as IncomingMessage;
@@ -3026,7 +3244,15 @@ describe('api-handler GET /api/context', () => {
   });
 
   it('forwards the sessionId query param to getMetrics()', async () => {
-    const fakeMetrics = { fillPercent: 10 };
+    const fakeMetrics = {
+      turnCount: 3,
+      growth: { startTokens: 1000, currentTokens: 1200, deltaTokens: 200 },
+      currentBreakdown: { system: 50, tools: 100, user: 150, assistant: 200 },
+      fillPercent: 10,
+      contextWindow: 200000,
+      toolContributions: [],
+      history: [],
+    };
     const getMetrics = jest.fn(() => fakeMetrics);
     const handler = createApiHandler({ contextTracker: { getMetrics } });
     const req = { method: 'GET', url: '/api/context?sessionId=sess-abc' } as IncomingMessage;

@@ -24,7 +24,7 @@ export type ExecFileFn = (
   file: string,
   args: readonly string[],
   callback: (err: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void,
-) => unknown;
+) => void;
 
 export interface OsNotifierOptions {
   readonly platform?: NodeJS.Platform;
