@@ -109,9 +109,7 @@ export class CostPerOutcomeAnalyzer {
     let sawEditAfterFailure = false;
 
     for (const tc of toolCalls) {
-      const rec = tc as Record<string, unknown>;
-
-      if (rec.isTestCommand === true) {
+      if (tc.isTestCommand === true) {
         if (tc.success === false) {
           hasTestFailure = true;
         } else if (tc.success === true && hasTestFailure && sawEditAfterFailure) {

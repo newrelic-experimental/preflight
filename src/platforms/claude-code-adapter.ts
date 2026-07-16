@@ -13,9 +13,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
     // No-op — Claude Code hooks are configured externally
   }
 
-  normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const record = raw as ToolCallRecord;
-
+  normalizeToolCall(record: ToolCallRecord): NormalizedToolCall {
     return {
       toolName: record.toolName,
       platformToolName: record.toolName,

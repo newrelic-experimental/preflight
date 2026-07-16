@@ -21,7 +21,25 @@ export interface CopilotToolCallEvent {
   readonly inputSizeBytes?: number;
   readonly outputSizeBytes?: number;
   readonly sessionId?: string;
-  readonly [key: string]: unknown;
+}
+
+const COPILOT_EVENT_TYPES = new Set<string>([
+  'file_edit',
+  'file_open',
+  'file_create',
+  'file_delete',
+  'terminal_command',
+  'task',
+]);
+
+function isCopilotToolCallEvent(x: unknown): x is CopilotToolCallEvent {
+  return (
+    typeof x === 'object' &&
+    x !== null &&
+    'type' in x &&
+    typeof (x as { type: unknown }).type === 'string' &&
+    COPILOT_EVENT_TYPES.has((x as { type: string }).type)
+  );
 }
 
 const COPILOT_EVENT_TYPE_MAP: Record<string, string> = {
@@ -40,7 +58,6 @@ export interface CopilotUsageRecord {
   readonly total_lines_suggested?: number;
   readonly total_lines_accepted?: number;
   readonly total_active_users?: number;
-  readonly [key: string]: unknown;
 }
 
 export function parseCopilotUsageResponse(raw: unknown): CopilotUsageRecord[] {
@@ -60,13 +77,13 @@ export class CopilotAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as CopilotToolCallEvent;
-    const eventType = event.type ?? 'unknown';
+    const event = isCopilotToolCallEvent(raw) ? raw : undefined;
+    const eventType = event?.type ?? 'unknown';
     const toolName = COPILOT_EVENT_TYPE_MAP[eventType] ?? 'Unknown';
 
-    const timestamp = event.timestamp ?? Date.now();
+    const timestamp = event?.timestamp ?? Date.now();
     const durationMs =
-      event.timestamp !== undefined && event.endTimestamp !== undefined
+      event?.timestamp !== undefined && event?.endTimestamp !== undefined
         ? Math.max(0, event.endTimestamp - event.timestamp)
         : null;
 
@@ -76,13 +93,13 @@ export class CopilotAdapter implements PlatformAdapter {
       platform: this.platformName,
       timestamp,
       durationMs,
-      success: event.success ?? true,
-      ...(event.error !== undefined && { error: event.error }),
-      ...(event.inputSizeBytes !== undefined && { inputSizeBytes: event.inputSizeBytes }),
-      ...(event.outputSizeBytes !== undefined && { outputSizeBytes: event.outputSizeBytes }),
-      ...(event.filePath !== undefined && { filePath: event.filePath }),
-      ...(event.command !== undefined && { command: event.command }),
-      ...(event.sessionId !== undefined && { sessionId: event.sessionId }),
+      success: event?.success ?? true,
+      ...(event?.error !== undefined && { error: event.error }),
+      ...(event?.inputSizeBytes !== undefined && { inputSizeBytes: event.inputSizeBytes }),
+      ...(event?.outputSizeBytes !== undefined && { outputSizeBytes: event.outputSizeBytes }),
+      ...(event?.filePath !== undefined && { filePath: event.filePath }),
+      ...(event?.command !== undefined && { command: event.command }),
+      ...(event?.sessionId !== undefined && { sessionId: event.sessionId }),
     };
   }
 

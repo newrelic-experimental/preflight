@@ -159,6 +159,15 @@ describe('WindsurfAdapter', () => {
       });
       expect(normalized.durationMs).toBe(150);
     });
+
+    it('falls back to safe defaults when raw is not an object (e.g. null)', () => {
+      const normalized = adapter.normalizeToolCall(null);
+      expect(normalized.toolName).toBe('Unknown');
+      expect(normalized.platformToolName).toBe('unknown');
+      expect(normalized.platform).toBe('windsurf');
+      expect(normalized.success).toBe(true);
+      expect(normalized.durationMs).toBeNull();
+    });
   });
 
   describe('getSessionMetadata', () => {

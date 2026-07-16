@@ -32,7 +32,10 @@ interface WindsurfToolCallEvent {
   inputSizeBytes?: number;
   outputSizeBytes?: number;
   sessionId?: string;
-  [key: string]: unknown;
+}
+
+function isWindsurfToolCallEvent(x: unknown): x is WindsurfToolCallEvent {
+  return typeof x === 'object' && x !== null;
 }
 
 export class WindsurfAdapter implements PlatformAdapter {
@@ -47,7 +50,7 @@ export class WindsurfAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as WindsurfToolCallEvent;
+    const event = isWindsurfToolCallEvent(raw) ? raw : {};
     const platformToolName = event.tool ?? 'unknown';
     const toolName = WINDSURF_TOOL_MAP[platformToolName] ?? 'Unknown';
 

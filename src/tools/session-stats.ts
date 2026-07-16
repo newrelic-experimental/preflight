@@ -784,7 +784,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const lastN = (args as Record<string, unknown> | undefined)?.last_n;
+          const lastN = args?.last_n;
           return handleGetSessionTimeline(sessionTracker, typeof lastN === 'number' ? lastN : 20);
         }
 
@@ -892,8 +892,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const taskId = (args as Record<string, unknown> | undefined)?.task_id as
-            string | undefined;
+          const taskId = args?.task_id as string | undefined;
           return handleGetWorkflowTrace(
             taskDetector,
             antiPatternDetector,
@@ -978,7 +977,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const historyArgs = (args ?? {}) as Record<string, unknown>;
+          const historyArgs: Record<string, unknown> = args ?? {};
           return handleGetSessionHistory(sessionStore, {
             since: historyArgs.since as string | undefined,
             developer: historyArgs.developer as string | undefined,
@@ -998,7 +997,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const weekArgs = (args ?? {}) as Record<string, unknown>;
+          const weekArgs: Record<string, unknown> = args ?? {};
           return handleGetWeeklySummary(weeklySummaryGenerator, {
             week: weekArgs.week as string | undefined,
           });
@@ -1016,7 +1015,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const trendArgs = (args ?? {}) as Record<string, unknown>;
+          const trendArgs: Record<string, unknown> = args ?? {};
           return handleGetTrends(trendAnalyzer, {
             metric: trendArgs.metric as string | undefined,
             developer: trendArgs.developer as string | undefined,
@@ -1036,7 +1035,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const profileArgs = (args ?? {}) as Record<string, unknown>;
+          const profileArgs: Record<string, unknown> = args ?? {};
           return handleGetCollaborationProfile(collaborationProfiler, {
             developer: profileArgs.developer as string | undefined,
           });
@@ -1071,7 +1070,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const costArgs = (args ?? {}) as Record<string, unknown>;
+          const costArgs: Record<string, unknown> = args ?? {};
           return handleGetCostPerOutcome(costPerOutcomeAnalyzer, taskDetector, {
             since: costArgs.since as string | undefined,
           });
@@ -1089,7 +1088,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const recArgs = (args ?? {}) as Record<string, unknown>;
+          const recArgs: Record<string, unknown> = args ?? {};
           return handleGetRecommendations(recommendationEngine, {
             developer: recArgs.developer as string | undefined,
             topN: recArgs.topN as number | undefined,
@@ -1108,7 +1107,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const pcArgs = (args ?? {}) as Record<string, unknown>;
+          const pcArgs: Record<string, unknown> = args ?? {};
           return handleGetPlatformComparison(sessionStore, {
             metric: pcArgs.metric as string | undefined,
             weeks: pcArgs.weeks as number | undefined,
@@ -1127,7 +1126,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const summaryArgs = (args ?? {}) as Record<string, unknown>;
+          const summaryArgs: Record<string, unknown> = args ?? {};
           return handleGetTeamSummary({
             teamId: options.teamId,
             accountId: options.accountId ?? '',
@@ -1149,7 +1148,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const digestArgs = (args ?? {}) as Record<string, unknown>;
+          const digestArgs: Record<string, unknown> = args ?? {};
           return handleSubscribeDigest(
             typeof digestArgs.webhookUrl === 'string' ? digestArgs.webhookUrl : '',
             options.configFilePath,
@@ -1340,7 +1339,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
               isError: true,
             };
           }
-          const dtArgs = (args ?? {}) as Record<string, unknown>;
+          const dtArgs: Record<string, unknown> = args ?? {};
           return handleGetDecisionTree(decisionTracker, dtArgs.post_mortem === true);
         }
 

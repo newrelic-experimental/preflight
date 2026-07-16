@@ -71,7 +71,10 @@ interface WorkflowJsonShape {
   readonly agentCount?: number;
   readonly totalTokens?: number;
   readonly scriptPath?: string;
-  readonly workflowProgress?: ReadonlyArray<Record<string, unknown>>;
+  readonly workflowProgress?: ReadonlyArray<{
+    readonly type?: unknown;
+    readonly phaseTitle?: unknown;
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,8 +340,8 @@ export class WorkflowWatcher {
     const seenPhaseTitles = new Set<string>();
     for (const entry of wp) {
       if (entry && typeof entry === 'object') {
-        const t = (entry as Record<string, unknown>).type;
-        const title = (entry as Record<string, unknown>).phaseTitle;
+        const t = entry.type;
+        const title = entry.phaseTitle;
         if (t === 'workflow_agent' && typeof title === 'string') {
           seenPhaseTitles.add(title);
         }

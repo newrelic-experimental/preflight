@@ -36,6 +36,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { calculateCost, createLogger, type TokenUsage } from '../shared/index.js';
+import type {
+  RawTranscriptEntry,
+  RawAssistantMessage,
+  RawUsage,
+} from '../hooks/transcript-types.js';
 import { WorkflowStore } from './workflow-store.js';
 
 const logger = createLogger('subagent-timeline-store');
@@ -131,7 +136,7 @@ export interface SubagentTimelineStoreOptions {
 
 /** Minimal slice of WorkflowStore needed to resolve declarative labels. */
 interface WorkflowResolver {
-  getRun: (runId: string) => unknown | null;
+  getRun: (runId: string) => WorkflowRunLike | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +596,7 @@ export class SubagentTimelineStore {
     let workflowName: string | null = null;
     try {
       const store = this.getWorkflowStore();
-      const run = store.getRun(workflowRunId) as WorkflowRunLike | null;
+      const run = store.getRun(workflowRunId);
       if (run) {
         workflowName =
           typeof run.workflow_name === 'string' && run.workflow_name.length > 0
@@ -656,12 +661,12 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const obj = parsed as Record<string, unknown>;
+  const obj = parsed as RawTranscriptEntry;
   if (obj.type !== 'assistant') return null;
 
   const message = obj.message;
   if (!message || typeof message !== 'object') return null;
-  const m = message as Record<string, unknown>;
+  const m = message as RawAssistantMessage;
 
   const model = typeof m.model === 'string' ? m.model : '';
   // `<synthetic>` turns carry no real usage and no priceable model.
@@ -678,7 +683,7 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
 
   const usage = m.usage;
   if (!usage || typeof usage !== 'object') return null;
-  const u = usage as Record<string, unknown>;
+  const u = usage as RawUsage;
 
   const tsRaw = typeof obj.timestamp === 'string' ? obj.timestamp : null;
   const timestampMs = tsRaw ? Date.parse(tsRaw) : NaN;
@@ -722,6 +727,23 @@ interface PendingToolUse {
   readonly toolName: string;
   readonly timestamp: number;
 }
+
+/**
+ * A single content block inside an assistant or user turn's `message.content`
+ * array. Only the two variants this file reads are modeled; every other
+ * Claude Code content-block type (text, thinking, image, ...) falls through
+ * the `type` checks in `readToolUse`/`readToolResult` unchanged.
+ */
+type RawContentBlock =
+  | { readonly type: 'tool_use'; readonly name?: string; readonly id?: string }
+  | { readonly type: 'tool_result'; readonly tool_use_id?: string; readonly is_error?: boolean }
+  | {
+      readonly type?: string;
+      readonly name?: string;
+      readonly id?: string;
+      readonly tool_use_id?: string;
+      readonly is_error?: boolean;
+    };
 
 /**
  * Walk a transcript line-by-line and build the ordered list of tool calls.
@@ -826,7 +848,7 @@ function parseTurnBlocks(line: string): TurnBlocks | null {
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const obj = parsed as Record<string, unknown>;
+  const obj = parsed as RawTranscriptEntry;
   const role = obj.type;
   if (role !== 'assistant' && role !== 'user') return null;
 
@@ -836,7 +858,7 @@ function parseTurnBlocks(line: string): TurnBlocks | null {
 
   const message = obj.message;
   if (!message || typeof message !== 'object') return null;
-  const content = (message as Record<string, unknown>).content;
+  const content = (message as RawAssistantMessage).content;
   if (!Array.isArray(content)) return null;
 
   return { role, timestamp, blocks: content };
@@ -848,7 +870,7 @@ function parseTurnBlocks(line: string): TurnBlocks | null {
  */
 function readToolUse(block: unknown): { name: string; id: string } | null {
   if (!block || typeof block !== 'object') return null;
-  const b = block as Record<string, unknown>;
+  const b = block as RawContentBlock;
   if (b.type !== 'tool_use') return null;
   const name = typeof b.name === 'string' ? b.name : '';
   if (name.length === 0) return null;
@@ -863,7 +885,7 @@ function readToolUse(block: unknown): { name: string; id: string } | null {
  */
 function readToolResult(block: unknown): { toolUseId: string; isError: boolean } | null {
   if (!block || typeof block !== 'object') return null;
-  const b = block as Record<string, unknown>;
+  const b = block as RawContentBlock;
   if (b.type !== 'tool_result') return null;
   const toolUseId = typeof b.tool_use_id === 'string' ? b.tool_use_id : '';
   if (toolUseId.length === 0) return null;

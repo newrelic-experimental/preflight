@@ -170,8 +170,17 @@ export function handleGetWorkflowTrace(
     };
   }
 
+  interface WorkflowTraceEntry {
+    seq: number;
+    tool: string;
+    target: string | null;
+    duration_ms: number | null;
+    success: boolean;
+    exit_code?: unknown;
+  }
+
   const toolCalls = task.toolCalls.map((call, index) => {
-    const entry: Record<string, unknown> = {
+    const entry: WorkflowTraceEntry = {
       seq: index + 1,
       tool: call.toolName,
       target: (call.filePath as string | undefined) ?? (call.command as string | undefined) ?? null,

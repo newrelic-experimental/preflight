@@ -11,8 +11,23 @@ import {
 } from '../../metrics/cost-per-outcome.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
+import type { AntiPatternSegment } from './replay-analyzer.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import type { FullSessionSummary, SessionFileInfo } from '../../storage/session-store.js';
 import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
+import type { SubagentTimeline, AgentCall } from '../subagent-timeline-store.js';
+import type { CostForecast } from '../../metrics/cost-forecast.js';
+import type { AlertEvent } from '../live-event-bus.js';
+import type { BudgetStatus } from '../../metrics/budget-tracker.js';
+import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
+import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
+import type { QualityProxyMetrics } from '../../metrics/quality-proxy-tracker.js';
+import type { ToolSelectionMetrics } from '../../metrics/tool-selection-scorer.js';
+import type { ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
+import type { ContextTrackerMetrics } from '../../metrics/context-tracker.js';
+import type { AntiPattern } from '../../metrics/anti-patterns.js';
+import type { AuditRecord } from '../../security/audit-trail.js';
 import { isSyntheticSessionId } from '../../hooks/session-resolver.js';
 // ---------------------------------------------------------------------------
 // Aggregate quality-proxy metrics from today's persisted sessions so the
@@ -258,17 +273,25 @@ interface LiveSessionMetrics {
   }>;
 }
 
+export interface ObservabilityHealthSnapshot {
+  readonly watcherActive: boolean;
+  readonly filesWatched: number;
+  readonly parseErrors: number;
+  readonly watcherDisabledByLock: boolean;
+  readonly costSelfCheckDeltaPct: number | null;
+}
+
 export interface ApiHandlerDeps {
   readonly sessionTracker?: { getMetrics: () => LiveSessionMetrics };
   readonly sessionStore?: {
-    loadTodaySessions: () => unknown[];
+    loadTodaySessions: () => FullSessionSummary[];
     // Optional: introduced for the cross-midnight cost fix (sessions that
     // started yesterday and ended today need their today-portion summed).
     // Older fakes/mocks that don't implement it fall through to the legacy
     // path which sees only same-day-started sessions.
-    loadSessionsOverlappingToday?: () => unknown[];
-    listSessions: (opts?: { since?: Date; developer?: string }) => unknown[];
-    loadSession: (id: string) => unknown | null;
+    loadSessionsOverlappingToday?: () => FullSessionSummary[];
+    listSessions: (opts?: { since?: Date; developer?: string }) => SessionFileInfo[];
+    loadSession: (id: string) => FullSessionSummary | null;
     loadAllSessions?: (opts?: {
       since?: Date;
       developer?: string;
@@ -307,8 +330,8 @@ export interface ApiHandlerDeps {
    * Returns null when the watcher is not enabled.
    */
   readonly workflowStore?: {
-    listRuns: (opts?: { since?: number; runSource?: string; status?: string }) => unknown[];
-    getRun: (runId: string) => unknown | null;
+    listRuns: (opts?: { since?: number; runSource?: string; status?: string }) => WorkflowRunRow[];
+    getRun: (runId: string) => WorkflowRunRow | null;
   };
   /**
    * Optional reader for per-session subagent timeline spans, backing the
@@ -324,32 +347,29 @@ export interface ApiHandlerDeps {
    * dep object.
    */
   readonly subagentTimeline?: {
-    getSubagentsForSession: (sessionId: string) => unknown;
-    getAgentCalls: (sessionId: string, agentId: string) => unknown;
+    getSubagentsForSession: (sessionId: string) => SubagentTimeline;
+    getAgentCalls: (sessionId: string, agentId: string) => { calls: readonly AgentCall[] };
   };
   /**
    * Snapshot of latest watcher health frames so the dashboard can render
    * counters without re-reading NR.
    */
   readonly observabilityHealth?: {
-    getSnapshot: () => unknown;
+    getSnapshot: () => ObservabilityHealthSnapshot;
   };
-  readonly costForecast?: () => unknown;
-  readonly antiPatternDetector?: { getCurrentPatterns: () => unknown };
-  readonly auditTrailManager?: { getAuditLog: () => readonly unknown[] };
-  readonly weeklySummaryGenerator?: {
-    loadRecentWeeks: (count: number) => unknown[];
-    generate: (weekId: string) => unknown;
-  };
-  readonly budgetTracker?: { getStatus: () => unknown };
-  readonly latencyTracker?: { getMetrics: () => unknown };
-  readonly personalCoach?: { generate: () => unknown };
+  readonly costForecast?: () => CostForecast;
+  readonly antiPatternDetector?: { getCurrentPatterns: () => readonly AntiPattern[] };
+  readonly auditTrailManager?: { getAuditLog: () => readonly AuditRecord[] };
+  readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
+  readonly budgetTracker?: { getStatus: () => BudgetStatus };
+  readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
       weeklyCacheHitRateTrend: ReadonlyArray<{ readonly week: string; readonly value: number }>;
     };
   };
-  readonly alertLog?: { readRecent: (limit: number) => Promise<readonly unknown[]> };
+  readonly alertLog?: { readRecent: (limit: number) => Promise<AlertEvent[]> };
   readonly taskDetector?: {
     getCompletedTasks: () => readonly { toolCalls: readonly ToolCallRecord[] }[];
     getCurrentTask: () => { toolCalls: readonly ToolCallRecord[] } | null;
@@ -357,10 +377,12 @@ export interface ApiHandlerDeps {
   // Minimal interface — we only need the rolling session-average score for the
   // Today KPI; richer per-task breakdowns ship via the existing MCP tool path.
   readonly efficiencyScorer?: { getSessionAverage: () => { score: number } | null };
-  readonly gitEfficiencyTracker?: { getMetrics: () => unknown };
-  readonly qualityProxyTracker?: { getMetrics: () => unknown };
-  readonly toolSelectionScorer?: { scoreSession: (calls: readonly ToolCallRecord[]) => unknown };
-  readonly modelUsageTracker?: { getMetrics: () => unknown };
+  readonly gitEfficiencyTracker?: { getMetrics: () => GitEfficiencyMetrics };
+  readonly qualityProxyTracker?: { getMetrics: () => QualityProxyMetrics };
+  readonly toolSelectionScorer?: {
+    scoreSession: (calls: readonly ToolCallRecord[]) => ToolSelectionMetrics;
+  };
+  readonly modelUsageTracker?: { getMetrics: () => ModelUsageMetrics };
   readonly toolCallBuffer?: { getRecords: () => readonly ToolCallRecord[] };
   readonly liveSessionRegistry?: {
     getLiveSessions: () => string[];
@@ -375,7 +397,7 @@ export interface ApiHandlerDeps {
     getPeakConcurrent: () => number;
     getConcurrencyTimeSeries: () => readonly { timestamp: number; count: number }[];
   };
-  readonly contextTracker?: { getMetrics: (sessionId?: string) => unknown };
+  readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
   readonly config?: McpServerConfig;
   readonly configFilePath?: string;
   // Resolved lazily (not captured as a plain value) because the platform
@@ -464,6 +486,38 @@ interface SessionInterval {
   readonly endTime: number;
 }
 
+interface SessionActivityLike {
+  readonly timeline?: readonly { readonly timestamp: number }[];
+}
+
+interface SessionIdentityLike {
+  readonly sessionId?: string;
+  readonly toolCallCount?: number;
+}
+
+interface ReplaySessionResponse {
+  readonly sessionId: string;
+  readonly timeline: readonly ReplayTimelineEntry[];
+  readonly segments: readonly AntiPatternSegment[];
+  readonly worstSegment: AntiPatternSegment | null;
+}
+
+interface TodayAggregatePayload {
+  readonly toolCallCount: number;
+  readonly totalCostUsd: number;
+  readonly antiPatternCount: number;
+  readonly avgDurationMs: number;
+  readonly sessionCount: number;
+  readonly sparkline: {
+    readonly startTimestamp: number;
+    readonly bucketSizeMs: number;
+    readonly points: number[];
+  };
+  readonly subagentUsd: number;
+  readonly subagentTurnCount: number;
+  readonly workflowRunCount: number;
+}
+
 // Build [startTime, endTime] intervals for every session that has any activity
 // today. Persisted sessions contribute their stored startTime/endTime.
 // Currently-live sessions (in the registry but not yet persisted) derive
@@ -472,15 +526,14 @@ interface SessionInterval {
 // Sessions that appear in both the persisted store and the live registry are
 // deduped by sessionId; the live (extended-to-now) interval wins.
 function collectTodaySessionIntervals(
-  todaySessions: readonly unknown[],
+  todaySessions: readonly FullSessionSummary[],
   liveSessionIds: readonly string[],
   bufferRecords: readonly ToolCallRecord[],
   now: number,
 ): SessionInterval[] {
   const byId = new Map<string, SessionInterval>();
 
-  for (const raw of todaySessions) {
-    const s = raw as { sessionId?: string; startTime?: number; endTime?: number | null };
+  for (const s of todaySessions) {
     if (typeof s.startTime !== 'number') continue;
     const end = typeof s.endTime === 'number' ? s.endTime : now;
     if (end <= s.startTime) continue;
@@ -579,10 +632,9 @@ function computeTodayConcurrencyBuckets(
   return buckets;
 }
 
-function computeTodayPeakConcurrency(sessions: readonly unknown[]): number {
+function computeTodayPeakConcurrency(sessions: readonly SessionActivityLike[]): number {
   const events: Array<{ ts: number; delta: number }> = [];
-  for (const s of sessions) {
-    const session = s as { timeline?: readonly { timestamp: number }[] };
+  for (const session of sessions) {
     if (!session.timeline || session.timeline.length === 0) continue;
 
     const windows = mergeActivityWindows(session.timeline);
@@ -603,7 +655,7 @@ function computeTodayPeakConcurrency(sessions: readonly unknown[]): number {
 }
 
 function computeDailyPeakConcurrency(
-  sessions: readonly unknown[],
+  sessions: readonly SessionActivityLike[],
   days: number,
 ): Array<{ date: string; peak: number }> {
   const now = new Date();
@@ -622,8 +674,7 @@ function computeDailyPeakConcurrency(
 
     // Find sessions that overlap with this day and have timeline data
     const events: Array<{ ts: number; delta: number }> = [];
-    for (const s of sessions) {
-      const session = s as { timeline?: readonly { timestamp: number }[] };
+    for (const session of sessions) {
       if (!session.timeline || session.timeline.length === 0) continue;
 
       // Only include tool calls within this day
@@ -672,14 +723,16 @@ function toolCallToTimelineEntry(tc: ToolCallRecord): ReplayTimelineEntry {
   };
 }
 
-function buildReplayResponse(sessionId: string, deps: ApiHandlerDeps): unknown | null {
+function buildReplayResponse(
+  sessionId: string,
+  deps: ApiHandlerDeps,
+): ReplaySessionResponse | null {
   // Try persisted session first
   if (deps.sessionStore) {
-    const session = deps.sessionStore.loadSession(sessionId) as Record<string, unknown> | null;
-    if (session && Array.isArray(session['timeline'])) {
-      const rawTimeline = session['timeline'] as ReplayTimelineEntry[];
+    const session = deps.sessionStore.loadSession(sessionId);
+    if (session && Array.isArray(session.timeline)) {
       // Redact sensitive fields before sending to the browser
-      const timeline = rawTimeline.map((e) => ({
+      const timeline = session.timeline.map((e) => ({
         ...e,
         filePath: e.filePath ? redactSensitive(String(e.filePath)) : undefined,
         command: e.command ? redactSensitive(String(e.command)) : undefined,
@@ -792,9 +845,9 @@ export function createApiHandler(
     // Claude Code sessions. The synthetic-shutdown filter in src/index.ts
     // prevents new ones from being persisted, but stale ones from before
     // that filter shipped need to be hidden at read time.
-    const withActivity = (allSessions as unknown[]).filter((s) => {
-      const sid = (s as { sessionId?: string }).sessionId;
-      const calls = (s as { toolCallCount?: number }).toolCallCount ?? 0;
+    const withActivity = (allSessions as readonly SessionIdentityLike[]).filter((s) => {
+      const sid = s.sessionId;
+      const calls = s.toolCallCount ?? 0;
       return calls > 0 && (!sid || !isSyntheticSessionId(sid));
     });
     const sliced = withActivity.slice(-limit);
@@ -815,7 +868,7 @@ export function createApiHandler(
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
           estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
-        });
+        } as SessionIdentityLike);
       }
     }
 
@@ -855,7 +908,7 @@ export function createApiHandler(
             durationMs: lastActivityTs != null ? Math.max(0, lastActivityTs - sessionStart) : 0,
             toolCallCount: stats?.count ?? 0,
             estimatedCostUsd: null,
-          });
+          } as SessionIdentityLike);
         }
       }
     }
@@ -949,7 +1002,7 @@ export function createApiHandler(
   // computation per bucket. TTL is short enough that the live-feel KPI
   // (sparkline tail, tool-call count) lags by at most ~5s.
   const AGGREGATE_TTL_MS = 5_000;
-  let aggregateCache: { bucket: number; payload: unknown } | null = null;
+  let aggregateCache: { bucket: number; payload: TodayAggregatePayload } | null = null;
 
   routes.set('GET /api/sessions/today/aggregate', (_req, res) => {
     const now = Date.now();
@@ -1126,7 +1179,7 @@ export function createApiHandler(
     // session is already in todaySessions, its anti-patterns were counted in
     // the loop above — don't double-count.
     if (deps.antiPatternDetector && !liveAlreadyPersisted) {
-      const live = deps.antiPatternDetector.getCurrentPatterns() as ReadonlyArray<unknown>;
+      const live = deps.antiPatternDetector.getCurrentPatterns();
       antiPatternCount += live.length;
     }
 
@@ -1144,12 +1197,10 @@ export function createApiHandler(
     let subagentTurnCount = 0;
     let workflowRunCount = 0;
     if (deps.workflowStore) {
-      const todayRuns = deps.workflowStore.listRuns({ since: startMs }) as Array<{
-        agent_count?: number;
-      }>;
+      const todayRuns = deps.workflowStore.listRuns({ since: startMs });
       workflowRunCount = todayRuns.length;
       for (const r of todayRuns) {
-        subagentTurnCount += typeof r.agent_count === 'number' ? r.agent_count : 0;
+        subagentTurnCount += r.agent_count;
       }
     }
 
@@ -1220,8 +1271,7 @@ export function createApiHandler(
     // Reconciliation delta is computed by the watcher self-check; the dashboard
     // reads the latest health snapshot here when available. A stub of `null`
     // is returned when no self-check has run yet so the banner stays hidden.
-    const healthSnapshot = deps.observabilityHealth?.getSnapshot() as
-      { costSelfCheckDeltaPct?: number | null } | undefined;
+    const healthSnapshot = deps.observabilityHealth?.getSnapshot();
     const reconciliationDeltaPct = healthSnapshot?.costSelfCheckDeltaPct ?? null;
     jsonOk(res, {
       cost,
@@ -1402,7 +1452,10 @@ export function createApiHandler(
         const since = new Date(localStartOfDay());
         since.setDate(since.getDate() - days);
         const allSessions = deps.sessionStore?.loadAllSessions?.({ since }) ?? [];
-        const dailyPeaks = computeDailyPeakConcurrency(allSessions, days);
+        const dailyPeaks = computeDailyPeakConcurrency(
+          allSessions as readonly SessionActivityLike[],
+          days,
+        );
         // Override today's bucket with the live peak — disk-derived
         // concurrency only sees persisted (completed) sessions, so a
         // dashboard with active concurrent sessions but nothing flushed
@@ -1418,7 +1471,9 @@ export function createApiHandler(
       }
 
       const allSessions = deps.sessionStore?.loadAllSessions?.() ?? [];
-      const allTimePeak = computeTodayPeakConcurrency(allSessions);
+      const allTimePeak = computeTodayPeakConcurrency(
+        allSessions as readonly SessionActivityLike[],
+      );
 
       // 96 × 15-minute fixed-grid buckets covering today (local midnight →
       // local midnight + 24h). Each bucket holds the peak concurrent
@@ -1560,10 +1615,7 @@ export function createApiHandler(
     // Include the current repo from git efficiency tracker if available
     let currentRepo: string | null = null;
     if (deps.gitEfficiencyTracker) {
-      const metrics = deps.gitEfficiencyTracker.getMetrics() as {
-        repoContext?: { repoName?: string | null };
-      };
-      const trackerRepo = metrics.repoContext?.repoName ?? null;
+      const trackerRepo = deps.gitEfficiencyTracker.getMetrics().repoContext.repoName;
       if (trackerRepo) {
         currentRepo = trackerRepo;
         repoSet.add(trackerRepo);
@@ -1836,10 +1888,7 @@ export function createApiHandler(
 
   routes.set('POST /api/digest/send', async (_req, res) => {
     if (!deps.weeklySummaryGenerator || !deps.configFilePath) return unavailable(res, 'digest');
-    const result = await handleSendDigest(
-      deps.weeklySummaryGenerator as unknown as WeeklySummaryGenerator,
-      deps.configFilePath,
-    );
+    const result = await handleSendDigest(deps.weeklySummaryGenerator, deps.configFilePath);
     jsonOk(res, result);
   });
 
@@ -1938,7 +1987,7 @@ export function createApiHandler(
         const session = deps.sessionStore.loadSession(sessionId);
         if (session != null) {
           const quality = aggregateQualityFromHistory([session]);
-          const responseBody: Record<string, unknown> = { ...(session as Record<string, unknown>) };
+          const responseBody: Record<string, unknown> = { ...session };
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
           jsonOk(res, responseBody);
           return;
@@ -1950,8 +1999,14 @@ export function createApiHandler(
             const costMetrics = deps.costTracker?.getMetrics();
             const costUsd = costMetrics?.sessionTotalCostUsd ?? null;
             const model = costMetrics?.model ?? null;
+            // BUG (pre-existing, not introduced here): getCurrentPatterns() returns
+            // per-occurrence AntiPattern objects (type/file/iterations/...), not the
+            // {type,count}[] aggregate the frontend expects here (see
+            // FullSessionSummary.antiPatterns and src/web/views/Sessions.tsx:866-870).
+            // This cast preserves that existing behavior; fixing it requires grouping
+            // by type (see src/storage/session-store.ts:335-343) — a separate change.
             const antiPatterns = deps.antiPatternDetector
-              ? (deps.antiPatternDetector.getCurrentPatterns() as Array<{
+              ? (deps.antiPatternDetector.getCurrentPatterns() as unknown as Array<{
                   type: string;
                   count: number;
                 }>)
@@ -1959,8 +2014,7 @@ export function createApiHandler(
             const ownSessionRecords = (deps.toolCallBuffer?.getRecords() ?? []).filter(
               (r) => r.sessionId === sessionId,
             );
-            const quality = deps.qualityProxyTracker?.getMetrics() as
-              { totalSignals: number } | undefined;
+            const quality = deps.qualityProxyTracker?.getMetrics();
             jsonOk(res, {
               sessionId: live.sessionId,
               sessionName: live.sessionName ?? null,

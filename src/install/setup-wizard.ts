@@ -8,6 +8,8 @@ import {
   realpathSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { z } from 'zod';
+
 import { normalizeDeveloperName, ConfigFileSchema, DEFAULT_STORAGE_PATH } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import { runInstallCli, verifyBinaryOnPath, findRepoRoot } from './cli.js';
@@ -99,7 +101,7 @@ function print(msg = ''): void {
   process.stdout.write(msg + '\n');
 }
 
-function loadExisting(): Record<string, unknown> {
+function loadExisting(): Partial<z.infer<typeof ConfigFileSchema>> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
@@ -127,10 +129,10 @@ function loadExisting(): Record<string, unknown> {
   }
   // Strip unknown keys from the validated object so they don't get spread
   // back into the rewritten config.
-  const filtered: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(validation.data as Record<string, unknown>)) {
+  const filtered: Partial<z.infer<typeof ConfigFileSchema>> = {};
+  for (const [key, value] of Object.entries(validation.data)) {
     if (knownKeys.has(key)) {
-      filtered[key] = value;
+      (filtered as Record<string, unknown>)[key] = value;
     }
   }
   return filtered;
@@ -139,7 +141,7 @@ function loadExisting(): Record<string, unknown> {
 export type WizardMode = 'cloud' | 'local' | 'both';
 
 export function buildConfig(
-  existing: Record<string, unknown>,
+  existing: Partial<z.infer<typeof ConfigFileSchema>>,
   inputs: {
     accountId: string;
     licenseKey: string;
@@ -152,7 +154,7 @@ export function buildConfig(
     nrApiKey?: string | null;
     collectorHost?: string | null;
   },
-): Record<string, unknown> {
+): Partial<z.infer<typeof ConfigFileSchema>> {
   const mode = inputs.mode ?? 'cloud';
   const includeNrCreds = mode !== 'local';
   return {

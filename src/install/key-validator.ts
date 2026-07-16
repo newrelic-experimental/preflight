@@ -106,13 +106,13 @@ export async function validateApiKey(params: {
     }
     const json = (await res.json()) as {
       data?: { actor?: { user?: { email?: string } } };
-      errors?: unknown[];
+      errors?: Array<{ extensions?: { code?: unknown } }>;
     };
     if (json.errors?.length) {
       // Inspect error codes — AUTHENTICATION_ERROR means bad key; anything
       // else is a server-side or schema problem unrelated to key validity.
-      const isAuthError = (json.errors as Array<Record<string, unknown>>).some((e) => {
-        const code = (e?.extensions as Record<string, unknown> | undefined)?.code;
+      const isAuthError = json.errors.some((e) => {
+        const code = e.extensions?.code;
         return typeof code === 'string' && /auth/i.test(code);
       });
       return {

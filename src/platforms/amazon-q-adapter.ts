@@ -38,7 +38,10 @@ interface AmazonQToolCallEvent {
   inputSizeBytes?: number;
   outputSizeBytes?: number;
   sessionId?: string;
-  [key: string]: unknown;
+}
+
+function isAmazonQToolCallEvent(x: unknown): x is AmazonQToolCallEvent {
+  return typeof x === 'object' && x !== null;
 }
 
 export class AmazonQAdapter implements PlatformAdapter {
@@ -57,7 +60,7 @@ export class AmazonQAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as AmazonQToolCallEvent;
+    const event = isAmazonQToolCallEvent(raw) ? raw : {};
     const platformToolName = event.tool ?? event.toolName ?? 'unknown';
     const toolName = AMAZON_Q_TOOL_MAP[platformToolName] ?? 'Unknown';
     const filePath = event.filePath ?? event.path;

@@ -14,7 +14,7 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 // it as `sessionId?: string`. HeartbeatEvent has none (and is unfiltered).
 function extractSessionId(payload: LiveEventMap[LiveEventName]): string | undefined {
   if (payload && typeof payload === 'object' && 'sessionId' in payload) {
-    const sid = (payload as { sessionId?: unknown }).sessionId;
+    const sid = payload.sessionId;
     if (typeof sid === 'string' && sid.length > 0) return sid;
   }
   return undefined;

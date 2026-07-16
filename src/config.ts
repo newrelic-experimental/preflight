@@ -280,7 +280,7 @@ function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
   return defaultValue;
 }
 
-function loadConfigFile(filePath: string): Record<string, unknown> {
+function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
   let raw: string;
   try {
     raw = readFileSync(filePath, 'utf-8');
@@ -471,7 +471,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   ]);
   const knownDashboardKeys = new Set(['port', 'host', 'openOnStart']);
   if (file.alerts && typeof file.alerts === 'object') {
-    const alerts = file.alerts as Record<string, unknown>;
+    const alerts = file.alerts;
     const unknownAlertsKeys = Object.keys(alerts).filter((k) => !knownAlertsKeys.has(k));
     if (unknownAlertsKeys.length > 0) {
       logger.warn('Unknown keys in alerts config (ignored)', {
@@ -480,7 +480,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       });
     }
     if (alerts.personal && typeof alerts.personal === 'object') {
-      const personal = alerts.personal as Record<string, unknown>;
+      const personal = alerts.personal;
       const unknownAlertsPersonalKeys = Object.keys(personal).filter(
         (k) => !knownAlertsPersonalKeys.has(k),
       );
@@ -493,7 +493,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     }
   }
   if (file.dashboard && typeof file.dashboard === 'object') {
-    const dashboard = file.dashboard as Record<string, unknown>;
+    const dashboard = file.dashboard;
     const unknownDashboardKeys = Object.keys(dashboard).filter((k) => !knownDashboardKeys.has(k));
     if (unknownDashboardKeys.length > 0) {
       logger.warn('Unknown keys in dashboard config (ignored)', {
@@ -507,8 +507,8 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   // File mode is already validated by the zod schema in loadConfigFile.
   const VALID_MODES = ['cloud', 'local', 'both'] as const;
   type Mode = (typeof VALID_MODES)[number];
-  const isValidMode = (v: unknown): v is Mode =>
-    typeof v === 'string' && (VALID_MODES as readonly string[]).includes(v);
+  const isValidMode = (v: string | undefined): v is Mode =>
+    v !== undefined && (VALID_MODES as readonly string[]).includes(v);
   const envMode = process.env.NR_AI_MODE;
   if (envMode !== undefined && envMode !== '' && !isValidMode(envMode)) {
     throw new Error(`Invalid NR_AI_MODE='${envMode}'. Must be one of: ${VALID_MODES.join(', ')}.`);
@@ -805,14 +805,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     })(),
 
     personalAlertThresholds: (() => {
-      const fileThresholds =
-        typeof file.alerts === 'object' && file.alerts !== null
-          ? (file.alerts as Record<string, unknown>).personal
-          : undefined;
+      const fileThresholds = file.alerts?.personal;
       if (typeof fileThresholds !== 'object' || fileThresholds === null) {
         return DEFAULT_PERSONAL_THRESHOLDS;
       }
-      const t = fileThresholds as Record<string, unknown>;
+      const t = fileThresholds;
       return {
         dailyCostUsd:
           typeof t.dailyCostUsd === 'number'
@@ -881,10 +878,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       // `personalAlertThresholds` (above) — they share the `alerts` key in
       // the file schema for backwards compatibility, but expose different
       // fields. `enabled` defaults to true outside of cloud-only mode.
-      const alertsFile =
-        typeof file.alerts === 'object' && file.alerts !== null
-          ? (file.alerts as Record<string, unknown>)
-          : {};
+      const alertsFile = file.alerts ?? {};
       const fileEnabled = typeof alertsFile.enabled === 'boolean' ? alertsFile.enabled : undefined;
       const fileInterval =
         typeof alertsFile.evaluationIntervalSeconds === 'number'

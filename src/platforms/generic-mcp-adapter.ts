@@ -112,7 +112,16 @@ export function validateReportToolCallInput(raw: unknown): ReportToolCallInput {
   if (obj.input !== undefined && (typeof obj.input !== 'object' || obj.input === null)) {
     throw new Error('Field input must be an object when present');
   }
-  return obj as unknown as ReportToolCallInput;
+  return {
+    tool: obj.tool,
+    success: obj.success,
+    ...(obj.input_size_bytes !== undefined && { input_size_bytes: obj.input_size_bytes }),
+    ...(obj.output_size_bytes !== undefined && { output_size_bytes: obj.output_size_bytes }),
+    ...(obj.duration_ms !== undefined && { duration_ms: obj.duration_ms }),
+    ...(obj.timestamp !== undefined && { timestamp: obj.timestamp }),
+    ...(obj.error !== undefined && { error: obj.error }),
+    ...(obj.input !== undefined && { input: obj.input as Record<string, unknown> }),
+  };
 }
 
 export class GenericMcpAdapter implements PlatformAdapter {

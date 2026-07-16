@@ -286,7 +286,29 @@ export function loadPersonalThresholds(): PersonalAlertThresholds {
   }
 }
 
-export function buildConditionInput(cond: AlertConditionDefinition): Record<string, unknown> {
+interface NrqlConditionInput {
+  readonly name: string;
+  readonly description: string;
+  readonly enabled: boolean;
+  readonly nrql: { readonly query: string };
+  readonly signal: {
+    readonly aggregationMethod: 'EVENT_FLOW' | 'EVENT_TIMER' | 'CADENCE';
+    readonly aggregationWindow: number;
+    readonly aggregationDelay?: number;
+    readonly aggregationTimer?: number;
+  };
+  readonly terms: Array<{
+    readonly threshold: number;
+    readonly thresholdDuration: number;
+    readonly thresholdOccurrences: 'ALL' | 'AT_LEAST_ONCE';
+    readonly operator:
+      'ABOVE' | 'ABOVE_OR_EQUALS' | 'BELOW' | 'BELOW_OR_EQUALS' | 'EQUALS' | 'NOT_EQUALS';
+    readonly priority: 'CRITICAL' | 'WARNING';
+  }>;
+  readonly violationTimeLimitSeconds: number;
+}
+
+export function buildConditionInput(cond: AlertConditionDefinition): NrqlConditionInput {
   return {
     name: cond.name,
     description: cond.description,
@@ -313,7 +335,7 @@ export function buildConditionInput(cond: AlertConditionDefinition): Record<stri
               thresholdDuration: cond.thresholdWarning.duration,
               thresholdOccurrences: cond.thresholdWarning.occurrences,
               operator: cond.thresholdOperator,
-              priority: 'WARNING',
+              priority: 'WARNING' as const,
             },
           ]
         : []),

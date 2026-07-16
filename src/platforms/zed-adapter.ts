@@ -40,7 +40,10 @@ interface ZedToolCallEvent {
   inputSizeBytes?: number;
   outputSizeBytes?: number;
   sessionId?: string;
-  [key: string]: unknown;
+}
+
+function isZedToolCallEvent(x: unknown): x is ZedToolCallEvent {
+  return typeof x === 'object' && x !== null;
 }
 
 export class ZedAdapter implements PlatformAdapter {
@@ -60,7 +63,7 @@ export class ZedAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as ZedToolCallEvent;
+    const event = isZedToolCallEvent(raw) ? raw : {};
     const platformToolName = event.tool ?? 'unknown';
     const toolName = ZED_TOOL_MAP[platformToolName] ?? 'Unknown';
 

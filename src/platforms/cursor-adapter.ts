@@ -54,7 +54,10 @@ interface CursorToolCallEvent {
   inputSizeBytes?: number;
   outputSizeBytes?: number;
   sessionId?: string;
-  [key: string]: unknown;
+}
+
+function isCursorToolCallEvent(x: unknown): x is CursorToolCallEvent {
+  return typeof x === 'object' && x !== null;
 }
 
 export class CursorAdapter implements PlatformAdapter {
@@ -70,7 +73,7 @@ export class CursorAdapter implements PlatformAdapter {
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = raw as CursorToolCallEvent;
+    const event = isCursorToolCallEvent(raw) ? raw : {};
     const platformToolName = event.tool ?? 'unknown';
     const toolName = CURSOR_TOOL_MAP[platformToolName] ?? 'Unknown';
 

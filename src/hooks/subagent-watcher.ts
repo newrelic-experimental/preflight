@@ -43,6 +43,7 @@ import { createHash } from 'node:crypto';
 
 import { createLogger } from '../shared/index.js';
 import type { LocalStore } from '../storage/local-store.js';
+import type { RawTranscriptEntry, RawAssistantMessage, RawUsage } from './transcript-types.js';
 
 const logger = createLogger('subagent-watcher');
 
@@ -666,18 +667,18 @@ export class SubagentWatcher {
       return null;
     }
     if (!parsed || typeof parsed !== 'object') return null;
-    const obj = parsed as Record<string, unknown>;
+    const obj = parsed as RawTranscriptEntry;
     if (obj.type !== 'assistant') return null;
     const message = obj.message;
     if (!message || typeof message !== 'object') return null;
-    const m = message as Record<string, unknown>;
+    const m = message as RawAssistantMessage;
     const model = typeof m.model === 'string' ? m.model : null;
     if (!model || model === '<synthetic>') return null;
     const messageId = typeof m.id === 'string' ? m.id : null;
     if (!messageId) return null;
     const usage = m.usage;
     if (!usage || typeof usage !== 'object') return null;
-    const u = usage as Record<string, unknown>;
+    const u = usage as RawUsage;
 
     const turnUuid = typeof obj.uuid === 'string' ? obj.uuid : '';
     const tsRaw = typeof obj.timestamp === 'string' ? obj.timestamp : null;
@@ -691,7 +692,7 @@ export class SubagentWatcher {
     let reasoningTokens = 0;
     const otd = u.output_tokens_details;
     if (otd && typeof otd === 'object') {
-      reasoningTokens = num((otd as Record<string, unknown>).reasoning_tokens);
+      reasoningTokens = num(otd.reasoning_tokens);
     }
     const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
 

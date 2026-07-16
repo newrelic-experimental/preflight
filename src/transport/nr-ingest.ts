@@ -735,6 +735,40 @@ function isNonRetryable4xx(statusCode: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Developer-attributed metric aggregation
+// ---------------------------------------------------------------------------
+
+/**
+ * A `MetricAggregator` whose `record()` forwards straight to a callback
+ * instead of bucketing samples itself — used to inject developer/team
+ * attribution onto every metric a tracker's `emitMetrics(aggregator)` call
+ * records, without a cast-based monkey patch. Always returns `true` from
+ * `record()` regardless of what the callback does, matching the pre-existing
+ * monkey-patched behavior exactly (the original replacement never delegated
+ * to the base class's own validation).
+ */
+class DeveloperAttributedMetricAggregator extends MetricAggregator {
+  constructor(
+    private readonly onRecord: (
+      name: string,
+      value: number,
+      attrs: Record<string, string | number>,
+    ) => void,
+  ) {
+    super();
+  }
+
+  override record(
+    name: string,
+    value: number,
+    attrs: Record<string, string | number> = {},
+  ): boolean {
+    this.onRecord(name, value, attrs);
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // NrIngestManager
 // ---------------------------------------------------------------------------
 
@@ -1200,15 +1234,7 @@ export class NrIngestManager {
     if (this.costTracker || this.efficiencyScorer || this.feedbackCollector) {
       const developer = this.developer;
       const scheduler = this.scheduler;
-      const devAggregator = new MetricAggregator();
-      const _origRecord = devAggregator.record.bind(devAggregator);
-      // Override record() to inject developer + team attribution on every metric.
-      // The bound original is preserved so TypeScript sees the full MetricAggregator type.
-      (devAggregator as unknown as { record: typeof _origRecord }).record = (
-        name: string,
-        value: number,
-        attrs: Record<string, string | number> = {},
-      ) => {
+      const devAggregator = new DeveloperAttributedMetricAggregator((name, value, attrs) => {
         scheduler.recordMetric(
           name,
           value,
@@ -1216,8 +1242,7 @@ export class NrIngestManager {
             ? { developer, session_id: sessionId, ...teamAttrs, ...attrs }
             : { developer, ...teamAttrs, ...attrs },
         );
-        return true;
-      };
+      });
       this.costTracker?.emitMetrics(devAggregator);
       this.efficiencyScorer?.emitMetrics(devAggregator);
       this.feedbackCollector?.emitMetrics(devAggregator);

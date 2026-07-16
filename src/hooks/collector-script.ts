@@ -27,6 +27,8 @@ import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
+import type { RawTranscriptEntry, RawAssistantMessage } from './transcript-types.js';
+
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
 // ---------------------------------------------------------------------------
@@ -168,6 +170,16 @@ interface TranscriptUsage {
   model?: string;
 }
 
+/** A content block carrying a `text` field — narrows before reading `.text`. */
+function hasStringText(block: unknown): block is { text: string } {
+  return (
+    typeof block === 'object' &&
+    block !== null &&
+    'text' in block &&
+    typeof (block as { text?: unknown }).text === 'string'
+  );
+}
+
 function getClaudeHome(): string {
   return process.env.NR_AI_OBSERVE_CLAUDE_HOME ?? resolve(homedir(), '.claude');
 }
@@ -206,9 +218,9 @@ function readLastAssistantUsage(transcriptPath: string): TranscriptUsage | null 
       const lines = tail.split('\n').filter(Boolean);
       for (let i = lines.length - 1; i >= 0; i--) {
         try {
-          const entry = JSON.parse(lines[i]) as Record<string, unknown>;
+          const entry = JSON.parse(lines[i]) as RawTranscriptEntry;
           if (entry.type === 'assistant' && entry.message && typeof entry.message === 'object') {
-            const msg = entry.message as Record<string, unknown>;
+            const msg = entry.message as RawAssistantMessage;
             // Skip synthetic entries (Claude Code's internal injections —
             // compaction summaries, system messages). They carry model:
             // '<synthetic>' which doesn't match any pricing table entry.
@@ -606,13 +618,8 @@ function extractOutputMeta(toolName: string, output: unknown): Record<string, un
     if (Array.isArray(obj.content)) {
       let lineCount = 0;
       for (const block of obj.content) {
-        if (
-          block &&
-          typeof block === 'object' &&
-          'text' in (block as Record<string, unknown>) &&
-          typeof (block as Record<string, unknown>).text === 'string'
-        ) {
-          lineCount += ((block as Record<string, unknown>).text as string).split('\n').length;
+        if (hasStringText(block)) {
+          lineCount += block.text.split('\n').length;
         }
       }
       if (lineCount > 0) meta.grepResultLines = lineCount;
@@ -629,13 +636,8 @@ function extractOutputMeta(toolName: string, output: unknown): Record<string, un
     else if (Array.isArray(obj.content)) {
       let totalLen = 0;
       for (const block of obj.content) {
-        if (
-          block &&
-          typeof block === 'object' &&
-          'text' in (block as Record<string, unknown>) &&
-          typeof (block as Record<string, unknown>).text === 'string'
-        ) {
-          totalLen += ((block as Record<string, unknown>).text as string).length;
+        if (hasStringText(block)) {
+          totalLen += block.text.length;
         }
       }
       if (totalLen > 0) meta.agentResultLength = totalLen;
