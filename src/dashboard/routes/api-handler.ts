@@ -1999,18 +1999,16 @@ export function createApiHandler(
             const costMetrics = deps.costTracker?.getMetrics();
             const costUsd = costMetrics?.sessionTotalCostUsd ?? null;
             const model = costMetrics?.model ?? null;
-            // BUG (pre-existing, not introduced here): getCurrentPatterns() returns
-            // per-occurrence AntiPattern objects (type/file/iterations/...), not the
-            // {type,count}[] aggregate the frontend expects here (see
-            // FullSessionSummary.antiPatterns and src/web/views/Sessions.tsx:866-870).
-            // This cast preserves that existing behavior; fixing it requires grouping
-            // by type (see src/storage/session-store.ts:335-343) — a separate change.
-            const antiPatterns = deps.antiPatternDetector
-              ? (deps.antiPatternDetector.getCurrentPatterns() as unknown as Array<{
-                  type: string;
-                  count: number;
-                }>)
-              : [];
+            const antiPatterns: Array<{ type: string; count: number }> = [];
+            if (deps.antiPatternDetector) {
+              const grouped = new Map<string, number>();
+              for (const p of deps.antiPatternDetector.getCurrentPatterns()) {
+                grouped.set(p.type, (grouped.get(p.type) ?? 0) + 1);
+              }
+              for (const [type, count] of grouped) {
+                antiPatterns.push({ type, count });
+              }
+            }
             const ownSessionRecords = (deps.toolCallBuffer?.getRecords() ?? []).filter(
               (r) => r.sessionId === sessionId,
             );

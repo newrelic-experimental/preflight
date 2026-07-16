@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
-import type { HookEvent, ToolCallRecord } from '../storage/types.js';
+import type { HookEvent, PreHookEvent, PostHookEvent, ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -35,7 +35,7 @@ afterEach(() => {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makePreEvent(overrides?: Partial<HookEvent>): HookEvent {
+function makePreEvent(overrides?: Partial<Omit<PreHookEvent, 'mode'>>): PreHookEvent {
   return {
     mode: 'pre',
     tool: 'Read',
@@ -48,7 +48,7 @@ function makePreEvent(overrides?: Partial<HookEvent>): HookEvent {
   };
 }
 
-function makePostEvent(overrides?: Partial<HookEvent>): HookEvent {
+function makePostEvent(overrides?: Partial<Omit<PostHookEvent, 'mode'>>): PostHookEvent {
   return {
     mode: 'post',
     tool: 'Read',
@@ -61,7 +61,7 @@ function makePostEvent(overrides?: Partial<HookEvent>): HookEvent {
   };
 }
 
-function makeFailureEvent(overrides?: Partial<HookEvent>): HookEvent {
+function makeFailureEvent(overrides?: Partial<Omit<PostHookEvent, 'mode'>>): PostHookEvent {
   return {
     mode: 'post',
     tool: 'Bash',

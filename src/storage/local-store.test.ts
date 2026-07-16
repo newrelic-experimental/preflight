@@ -13,7 +13,7 @@ import {
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from './local-store.js';
-import type { HookEvent, AuditEntry } from './types.js';
+import type { HookEvent, PostHookEvent, AuditEntry } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -33,12 +33,11 @@ afterEach(() => {
   }
 });
 
-function makeEvent(overrides?: Partial<HookEvent>): HookEvent {
+function makeEvent(overrides?: Partial<Omit<PostHookEvent, 'mode'>>): PostHookEvent {
   return {
     mode: 'post',
     tool: 'Read',
     timestamp: Date.now(),
-    inputSize: 42,
     outputSize: 100,
     success: true,
     ...overrides,
@@ -312,7 +311,7 @@ describe('LocalStore', () => {
       mkdirSync(tmpDir, { recursive: true });
 
       const bufferPath = resolve(tmpDir, 'buffer.jsonl');
-      const eventCount = 12_000;
+      const eventCount = 13_000;
       const lines: string[] = [];
       for (let i = 0; i < eventCount; i++) {
         lines.push(JSON.stringify(makeEvent({ tool: `tool-${i}`, timestamp: i })));

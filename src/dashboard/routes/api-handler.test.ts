@@ -442,6 +442,45 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(parsed.toolSelectionScore?.redundantReadCount).toBe(1);
   });
 
+  it('aggregates live-session anti-patterns by type into {type, count} pairs', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({
+          sessionId: 'live-anti',
+          sessionName: null,
+          sessionStartTime: 1000,
+          sessionDurationMs: 500,
+          toolCallCount: 3,
+          toolCallCountByTool: { Read: 3 },
+          uniqueFilesRead: 1,
+          uniqueFilesWritten: 0,
+          toolCallTimeline: [],
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      antiPatternDetector: {
+        getCurrentPatterns: () => [
+          { type: 're_reading', file: '/a.ts', readCount: 4, suggestion: 'Consider breaking task' },
+          { type: 're_reading', file: '/b.ts', readCount: 5, suggestion: 'Consider breaking task' },
+          { type: 'thrashing', file: '/c.ts', iterations: 3, suggestion: 'Try different approach' },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/live-anti' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { antiPatterns?: Array<{ type: string; count: number }> };
+    expect(parsed.antiPatterns).toEqual([
+      { type: 're_reading', count: 2 },
+      { type: 'thrashing', count: 1 },
+    ]);
+  });
+
   it('attaches toolSelectionScore (but not qualityProxy) to the registry-synthesized branch', async () => {
     const handler = createApiHandler({
       sessionStore: {

@@ -17,6 +17,11 @@ import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
 import type {
   HookEvent,
+  PreHookEvent,
+  PostHookEvent,
+  TokenHookEvent,
+  SubagentTokenHookEvent,
+  ObservabilityHealthHookEvent,
   ToolCallRecord,
   TokenEvent,
   SubagentTokenEvent,
@@ -162,7 +167,7 @@ export class HookEventProcessor {
   private readonly workflowRunDedup = new Set<string>();
   private readonly workflowRunDedupOrder: string[] = [];
 
-  private readonly pending: Map<string, HookEvent> = new Map();
+  private readonly pending: Map<string, PreHookEvent> = new Map();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -290,7 +295,7 @@ export class HookEventProcessor {
         } else if (event.mode === 'observability_health') {
           this.handleObservabilityHealthEvent(event);
         } else if (event.mode === 'workflow_run') {
-          this.handleWorkflowRunEvent(event as unknown as WorkflowRunEvent);
+          this.handleWorkflowRunEvent(event);
         }
       } catch (err) {
         logger.warn('Error processing hook event', {
@@ -328,7 +333,7 @@ export class HookEventProcessor {
     return this.drainAllSessions ? this.store.drainAllBuffers() : this.store.drainBuffer();
   }
 
-  private handlePreEvent(event: HookEvent): void {
+  private handlePreEvent(event: PreHookEvent): void {
     if (this.pending.size >= this.maxPendingEvents) {
       // Prefer evicting events that are already past the orphan timeout
       const now = Date.now();
@@ -351,9 +356,9 @@ export class HookEventProcessor {
         const toolFields = parseToolSpecificFields(evicted.tool, evicted.toolInput, undefined);
         this.emitRecord({
           id: randomUUID(),
-          sessionId: (evicted.sessionId as string) ?? null,
+          sessionId: evicted.sessionId ?? null,
           toolName: evicted.tool,
-          toolUseId: (evicted.toolUseId as string) ?? evictedKey,
+          toolUseId: evicted.toolUseId ?? evictedKey,
           timestamp: evicted.timestamp,
           durationMs: null,
           success: false,
@@ -367,8 +372,8 @@ export class HookEventProcessor {
     this.pending.set(this.pairingKey(event), event);
   }
 
-  private handlePostEvent(event: HookEvent): void {
-    const toolUseId = event.toolUseId as string | undefined;
+  private handlePostEvent(event: PostHookEvent): void {
+    const toolUseId = event.toolUseId;
     // When toolUseId is present use it directly; otherwise find the oldest pending
     // pre-event with the same tool name (FIFO) so parallel same-tool calls don't
     // collide — the counter in pairingKey() gives each pre-event a unique key.
@@ -388,22 +393,22 @@ export class HookEventProcessor {
       );
       const record: ToolCallRecord = {
         id: randomUUID(),
-        sessionId: (preEvent.sessionId as string) ?? (event.sessionId as string) ?? null,
+        sessionId: preEvent.sessionId ?? event.sessionId ?? null,
         toolName: preEvent.tool,
-        toolUseId: (preEvent.toolUseId as string) ?? key,
+        toolUseId: preEvent.toolUseId ?? key,
         timestamp: preEvent.timestamp,
         durationMs: Math.max(0, event.timestamp - preEvent.timestamp),
         success: event.success ?? true,
-        ...(event.error !== undefined && { error: event.error as string }),
+        ...(event.error !== undefined && { error: event.error }),
         ...(preEvent.inputSize !== undefined && { inputSizeBytes: preEvent.inputSize }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
         ...(preEvent.inputHash !== undefined && { inputHash: preEvent.inputHash }),
-        ...(preEvent.cwd !== undefined && { cwd: preEvent.cwd as string }),
+        ...(preEvent.cwd !== undefined && { cwd: preEvent.cwd }),
         ...(preEvent.transcriptPath !== undefined && {
-          transcriptPath: preEvent.transcriptPath as string,
+          transcriptPath: preEvent.transcriptPath,
         }),
         ...(preEvent.permissionMode !== undefined && {
-          permissionMode: preEvent.permissionMode as string,
+          permissionMode: preEvent.permissionMode,
         }),
         ...toolFields,
       };
@@ -414,13 +419,13 @@ export class HookEventProcessor {
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, event.toolOutput);
       const record: ToolCallRecord = {
         id: randomUUID(),
-        sessionId: (event.sessionId as string) ?? null,
+        sessionId: event.sessionId ?? null,
         toolName: event.tool,
-        toolUseId: (event.toolUseId as string) ?? key,
+        toolUseId: event.toolUseId ?? key,
         timestamp: event.timestamp,
         durationMs: null,
         success: event.success ?? true,
-        ...(event.error !== undefined && { error: event.error as string }),
+        ...(event.error !== undefined && { error: event.error }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
         ...toolFields,
       };
@@ -428,7 +433,7 @@ export class HookEventProcessor {
     }
   }
 
-  private handleTokenEvent(event: HookEvent): void {
+  private handleTokenEvent(event: TokenHookEvent): void {
     if (!this.onTokenEvent) return;
     const tokenEvent: TokenEvent = {
       mode: 'token',
@@ -447,8 +452,8 @@ export class HookEventProcessor {
         typeof event.cacheCreationTokens === 'number' && !isNaN(event.cacheCreationTokens)
           ? event.cacheCreationTokens
           : 0,
-      model: (event.model as string) ?? 'unknown',
-      sessionId: event.sessionId as string | undefined,
+      model: event.model ?? 'unknown',
+      sessionId: event.sessionId,
     };
     try {
       this.onTokenEvent(tokenEvent);
@@ -476,9 +481,9 @@ export class HookEventProcessor {
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
       const record: ToolCallRecord = {
         id: randomUUID(),
-        sessionId: (event.sessionId as string) ?? null,
+        sessionId: event.sessionId ?? null,
         toolName: event.tool,
-        toolUseId: (event.toolUseId as string) ?? key,
+        toolUseId: event.toolUseId ?? key,
         timestamp: event.timestamp,
         durationMs: null,
         success: false,
@@ -496,9 +501,9 @@ export class HookEventProcessor {
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
       const record: ToolCallRecord = {
         id: randomUUID(),
-        sessionId: (event.sessionId as string) ?? null,
+        sessionId: event.sessionId ?? null,
         toolName: event.tool,
-        toolUseId: (event.toolUseId as string) ?? key,
+        toolUseId: event.toolUseId ?? key,
         timestamp: event.timestamp,
         durationMs: null,
         success: false,
@@ -512,8 +517,8 @@ export class HookEventProcessor {
     this.pending.clear();
   }
 
-  private pairingKey(event: HookEvent): string {
-    const toolUseId = event.toolUseId as string | undefined;
+  private pairingKey(event: PreHookEvent): string {
+    const toolUseId = event.toolUseId;
     if (toolUseId) return toolUseId;
     // Append UUID so parallel pre-events for the same tool at the same timestamp
     // each get a unique slot in this.pending instead of overwriting each other.
@@ -540,10 +545,10 @@ export class HookEventProcessor {
     return oldestKey;
   }
 
-  private handleSubagentTokenEvent(event: HookEvent): void {
+  private handleSubagentTokenEvent(event: SubagentTokenHookEvent): void {
     if (!this.onSubagentTurn && !this.onSubagentToken) return;
-    const agentId = (event.agentId as string | undefined) ?? '';
-    const messageId = (event.messageId as string | undefined) ?? '';
+    const agentId = event.agentId ?? '';
+    const messageId = event.messageId ?? '';
     if (!agentId || !messageId) return;
     const dedupKey = `${agentId}|${messageId}`;
     if (this.subagentDedup.has(dedupKey)) return;
@@ -559,19 +564,19 @@ export class HookEventProcessor {
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
           ? event.timestamp
           : Date.now(),
-      parentSessionId: (event.sessionId as string | undefined) ?? '',
+      parentSessionId: event.sessionId ?? '',
       agentId,
-      workflowRunId: (event.workflowRunId as string | null | undefined) ?? null,
+      workflowRunId: event.workflowRunId ?? null,
       messageId,
-      turnUuid: (event.turnUuid as string | undefined) ?? '',
-      model: (event.model as string | undefined) ?? 'unknown',
+      turnUuid: event.turnUuid ?? '',
+      model: event.model ?? 'unknown',
       inputTokens: numAttr(event.inputTokens),
       outputTokens: numAttr(event.outputTokens),
       cacheReadTokens: numAttr(event.cacheReadTokens),
       cacheCreationTokens: numAttr(event.cacheCreationTokens),
       reasoningTokens: numAttr(event.reasoningTokens),
-      stopReason: (event.stopReason as string | null | undefined) ?? null,
-      schemaFingerprint: (event.schemaFingerprint as string | undefined) ?? '',
+      stopReason: event.stopReason ?? null,
+      schemaFingerprint: event.schemaFingerprint ?? '',
     };
     if (this.onSubagentTurn) {
       try {
@@ -628,23 +633,20 @@ export class HookEventProcessor {
     }
   }
 
-  private handleObservabilityHealthEvent(event: HookEvent): void {
+  private handleObservabilityHealthEvent(event: ObservabilityHealthHookEvent): void {
     if (!this.onObservabilityHealth) return;
     const frame: ObservabilityHealthFrame = {
       timestamp:
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
           ? event.timestamp
           : Date.now(),
-      watcher: (event.watcher as 'workflow' | 'subagent' | undefined) ?? 'subagent',
+      watcher: event.watcher ?? 'subagent',
       filesWatched: numAttr(event.filesWatched),
       linesRead: numAttr(event.linesRead),
       bytesRead: numAttr(event.bytesRead),
       parseErrors: numAttr(event.parseErrors),
       schemaDrifts: numAttr(event.schemaDrifts),
-      lastError:
-        event.lastError && typeof event.lastError === 'object'
-          ? (event.lastError as { code: string; class: string })
-          : null,
+      lastError: event.lastError && typeof event.lastError === 'object' ? event.lastError : null,
       ...(typeof event.event === 'string' ? { event: event.event } : {}),
       ...(typeof event.dimension === 'string' ? { dimension: event.dimension } : {}),
       ...(typeof event.fingerprint === 'string' ? { fingerprint: event.fingerprint } : {}),

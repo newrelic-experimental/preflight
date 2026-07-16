@@ -12,6 +12,7 @@ import type { McpServerConfig } from './config.js';
 import { ProxyManager } from './proxy/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import { LocalStore } from './storage/index.js';
+import type { ToolCallRecord } from './storage/types.js';
 import {
   SessionStore,
   buildSessionSummary,
@@ -1197,7 +1198,9 @@ async function main(): Promise<void> {
           // so the dashboard tree stays decoupled from storage internals.
           localStore: {
             peekAllBuffers: () =>
-              localStore.peekAllBuffers() as ReadonlyArray<{ readonly [key: string]: unknown }>,
+              localStore.peekAllBuffers() as unknown as ReadonlyArray<{
+                readonly [key: string]: unknown;
+              }>,
           },
           // Workflow store reads on-disk wf_*.json rollups so
           // the /api/workflows endpoints work even when the watcher is
@@ -1387,7 +1390,7 @@ async function main(): Promise<void> {
       // live sessions' events. After real session ID resolution the processor
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
-      onRecord: (record) => {
+      onRecord: (rawRecord) => {
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -1397,10 +1400,10 @@ async function main(): Promise<void> {
         const taskIdBeforeRecord =
           config.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
 
-        sessionTracker.recordToolCall(record);
-        taskDetector.recordToolCall(record);
-        if (record.sessionId) {
-          liveSessionRegistry!.touch(record.sessionId, record.cwd as string | undefined);
+        sessionTracker.recordToolCall(rawRecord);
+        taskDetector.recordToolCall(rawRecord);
+        if (rawRecord.sessionId) {
+          liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
 
         if (config.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
@@ -1409,28 +1412,27 @@ async function main(): Promise<void> {
           const parentCtx = taskIdBeforeRecord
             ? taskSpanTracker.getContext(taskIdBeforeRecord, sessionSpan.getContext())
             : sessionSpan.getContext();
-          emitToolCallSpan(record, parentCtx, activeTaskId ?? undefined);
+          emitToolCallSpan(rawRecord, parentCtx, activeTaskId ?? undefined);
 
           // Open a task span if a new task was started by this record
           if (activeTaskId !== null && activeTaskId !== taskIdBeforeRecord) {
-            taskSpanTracker.openTask(activeTaskId, record.toolName, sessionSpan.getContext());
+            taskSpanTracker.openTask(activeTaskId, rawRecord.toolName, sessionSpan.getContext());
           }
         }
 
-        contextWindowTracker.recordToolCall(record);
-        contextTracker.recordToolCall(record);
-        latencyTracker.recordToolCall(record);
-        retryDetector.recordToolCall(record);
-        qualityProxyTracker.recordToolCall(record);
-        const turnId = turnTracker.recordToolCall(record);
+        contextWindowTracker.recordToolCall(rawRecord);
+        contextTracker.recordToolCall(rawRecord);
+        latencyTracker.recordToolCall(rawRecord);
+        retryDetector.recordToolCall(rawRecord);
+        qualityProxyTracker.recordToolCall(rawRecord);
+        const turnId = turnTracker.recordToolCall(rawRecord);
         const turnNumber = turnTracker.getCurrentTurnNumber();
-        turnCostAttributor.recordToolCall(record, turnId);
-        decisionTracker.recordToolCall(record);
-        instructionDriftTracker.recordToolCall(record);
-        gitEfficiencyTracker.recordToolCall(record);
+        turnCostAttributor.recordToolCall(rawRecord, turnId);
+        decisionTracker.recordToolCall(rawRecord);
+        instructionDriftTracker.recordToolCall(rawRecord);
+        gitEfficiencyTracker.recordToolCall(rawRecord);
 
-        (record as Record<string, unknown>).turn_id = turnId;
-        (record as Record<string, unknown>).turn_number = turnNumber;
+        const record: ToolCallRecord = { ...rawRecord, turn_id: turnId, turn_number: turnNumber };
 
         toolCallBuffer.push(record);
 
