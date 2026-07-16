@@ -246,6 +246,22 @@ describe('toolCallToNrEvent()', () => {
     expect(event.bashNetwork).toBe(false);
   });
 
+  it('includes turn_id and turn_number when present on the record', () => {
+    // Locks in the mechanism the index.ts onRecord restructuring depends on:
+    // turn_id/turn_number are attached to a plain ToolCallRecord object (not
+    // mutated onto a readonly-typed one) and must still flow through here via
+    // the generic index-signature spread loop.
+    const record = makeRecord({
+      turn_id: 'turn-abc-123',
+      turn_number: 4,
+    } as Partial<ToolCallRecord>);
+
+    const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+    expect(event.turn_id).toBe('turn-abc-123');
+    expect(event.turn_number).toBe(4);
+  });
+
   it('includes platform attribute defaulting to claude-code', () => {
     const record = makeRecord();
     const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });

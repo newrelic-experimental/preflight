@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-07-16
+
+### Fixed
+
+- The dashboard's live-session view now aggregates anti-pattern occurrences by type before returning them, instead of returning a mismatched shape the frontend couldn't render correctly.
+- Replaced an unsafe type cast used to attach turn attribution to tool-call records with a properly-typed record construction; no change to the attribution data itself.
+- The hook event buffer's internal type now reflects that each buffered line has a different shape depending on its mode, removing an unchecked type cast from the event-processing pipeline.
+
 ## [1.5.2] - 2026-07-16
 
 ### Changed
