@@ -583,80 +583,86 @@ interface TodayAggregatePayload {
   readonly workflowRunCount: number;
 }
 
-// Build [startTime, endTime] intervals for every session that has any activity
-// today. Persisted sessions contribute their stored startTime/endTime.
-// Currently-live sessions (in the registry but not yet persisted) derive
-// startTime from the in-memory tool-call buffer (oldest observed timestamp)
-// and use `now` as endTime — matching the convention used by /api/sessions/live.
-// Sessions that appear in both the persisted store and the live registry are
-// deduped by sessionId; the live (extended-to-now) interval wins.
-function collectTodaySessionIntervals(
+// Build activity windows for every session with activity today, using the SAME
+// 3-minute activity-window model as computeTodayPeakConcurrency() (the source of
+// the headline `peak`). Each session contributes one or more windows: contiguous
+// tool-call activity merges into a single window, while an idle gap longer than
+// ACTIVITY_WINDOW_MS splits a session into separate windows.
+//
+// This is what keeps the chart's tallest column equal to the headline peak. The
+// earlier version used whole-session [startTime, endTime] spans (extending live
+// sessions to `now`), which counted a long-idle-but-not-yet-ended session as
+// continuously concurrent and inflated recent buckets well above the peak — the
+// chart could read 7 while the headline read 4.
+//
+// Activity timestamps per session are unioned from BOTH the persisted timeline
+// and the in-memory tool-call buffer (for live sessions whose latest activity
+// hasn't been flushed to disk), then merged once per session id so a single
+// session can never overlap itself.
+function collectTodayActivityWindows(
   todaySessions: readonly FullSessionSummary[],
   liveSessionIds: readonly string[],
   bufferRecords: readonly ToolCallRecord[],
-  now: number,
 ): SessionInterval[] {
-  const byId = new Map<string, SessionInterval>();
+  const timestampsById = new Map<string, number[]>();
+  const addTimestamps = (id: string, times: readonly number[]): void => {
+    const existing = timestampsById.get(id);
+    if (existing) existing.push(...times);
+    else timestampsById.set(id, [...times]);
+  };
 
   for (const s of todaySessions) {
-    if (typeof s.startTime !== 'number') continue;
-    const end = typeof s.endTime === 'number' ? s.endTime : now;
-    if (end <= s.startTime) continue;
-    if (typeof s.sessionId === 'string' && s.sessionId.length > 0) {
-      byId.set(s.sessionId, { startTime: s.startTime, endTime: end });
-    } else {
-      // No id — use a synthetic key so it still contributes.
-      byId.set(`__anon_${byId.size}`, { startTime: s.startTime, endTime: end });
-    }
+    if (!s.timeline || s.timeline.length === 0) continue;
+    const times = s.timeline.map((t) => t.timestamp);
+    // `sessionId` is a required field on FullSessionSummary; the synthetic-key
+    // fallback only guards against malformed on-disk JSON (these records are
+    // read from disk, not schema-validated).
+    const id =
+      typeof s.sessionId === 'string' && s.sessionId.length > 0
+        ? s.sessionId
+        : `__anon_${timestampsById.size}`;
+    addTimestamps(id, times);
   }
 
+  // Fold in live sessions' buffered (not-yet-persisted) activity, keyed by the
+  // same session id so it merges with the persisted timeline rather than
+  // double-counting a session that appears in both.
   if (liveSessionIds.length > 0) {
-    const firstTsBySession = new Map<string, number>();
+    const liveSet = new Set(liveSessionIds);
     for (const r of bufferRecords) {
       const sid = (r as { sessionId?: string | null }).sessionId;
-      if (!sid) continue;
+      if (!sid || !liveSet.has(sid)) continue;
       const ts = (r as { timestamp?: number }).timestamp ?? 0;
       if (!ts) continue;
-      const prev = firstTsBySession.get(sid);
-      if (prev === undefined || ts < prev) firstTsBySession.set(sid, ts);
-    }
-    for (const sid of liveSessionIds) {
-      const existing = byId.get(sid);
-      const bufferStart = firstTsBySession.get(sid);
-      // Prefer the EARLIER startTime: a persisted entry's startTime is
-      // authoritative (e.g. 09:00) and would be clobbered if we keyed solely
-      // off the buffer's earliest record (which may be much later if the
-      // buffer was drained between flushes). Extend endTime to `now` —
-      // that's the original intent of this loop (a live session is, by
-      // definition, ongoing).
-      const candidates: number[] = [];
-      if (existing !== undefined) candidates.push(existing.startTime);
-      if (bufferStart !== undefined) candidates.push(bufferStart);
-      if (candidates.length === 0) continue;
-      const startTime = Math.min(...candidates);
-      if (now <= startTime) continue;
-      byId.set(sid, { startTime, endTime: now });
+      addTimestamps(sid, [ts]);
     }
   }
 
-  return Array.from(byId.values());
+  const windows: SessionInterval[] = [];
+  for (const times of timestampsById.values()) {
+    for (const w of mergeActivityWindows(times.map((t) => ({ timestamp: t })))) {
+      windows.push({ startTime: w.start, endTime: w.end });
+    }
+  }
+
+  return windows;
 }
 
 function computeTodayConcurrencyBuckets(
-  intervals: readonly SessionInterval[],
+  windows: readonly SessionInterval[],
   startTimestamp: number,
 ): ConcurrencyBucket[] {
-  // Single pass O(N log N) — build delta events from every interval,
+  // Single pass O(N log N) — build delta events from every activity window,
   // clamped to today's window, then sort once and sweep across the 96
   // buckets in lockstep with the event cursor. Buckets containing no
   // events still need a count: the value carried over from the previous
-  // bucket's tail (a session that spans many buckets without a delta in
+  // bucket's tail (a window that spans many buckets without a delta in
   // between must propagate as count=1+ in those buckets).
   const dayEnd = startTimestamp + CONCURRENCY_BUCKET_COUNT * CONCURRENCY_BUCKET_SIZE_MS;
   const events: Array<{ ts: number; delta: number }> = [];
-  for (const interval of intervals) {
-    const start = Math.max(interval.startTime, startTimestamp);
-    const end = Math.min(interval.endTime, dayEnd);
+  for (const window of windows) {
+    const start = Math.max(window.startTime, startTimestamp);
+    const end = Math.min(window.endTime, dayEnd);
     if (start < end) {
       events.push({ ts: start, delta: 1 }, { ts: end, delta: -1 });
     }
@@ -674,19 +680,29 @@ function computeTodayConcurrencyBuckets(
   for (let b = 0; b < CONCURRENCY_BUCKET_COUNT; b++) {
     const bucketStart = startTimestamp + b * CONCURRENCY_BUCKET_SIZE_MS;
     const bucketEnd = bucketStart + CONCURRENCY_BUCKET_SIZE_MS;
-    // Flush any boundary events whose ts falls AT OR BEFORE bucketStart.
-    // Without this, a session ending at exactly t=bucketStart (e.g. a
-    // 15-min-aligned endTime) would still be carried as current=1 into
-    // this bucket before the -1 fires, inflating the bucket's initial peak
-    // by 1. Flushing first means peak is initialised from the correct
-    // post-close concurrency level.
+    // Peak defaults to the carried-over level so a session spanning many
+    // buckets with no events exactly at this boundary propagates as
+    // count=N+ here. But if one or more events DO land exactly on
+    // bucketStart, that default must be discarded rather than treated as a
+    // peak candidate — it reflects state from strictly BEFORE this bucket's
+    // range, not a value actually attained within it. (A session closing
+    // at exactly t=bucketStart is no longer active as of bucketStart; using
+    // the pre-close `current` as this bucket's floor would wrongly count it
+    // as still open here.) Once a boundary event fires, peak is instead
+    // sampled fresh after each one — same as the mid-bucket sweep below and
+    // as computeTodayPeakConcurrency's continuous sweep — so an exact-touch
+    // pair (one session's close coinciding with another's open, both at
+    // bucketStart) still registers the momentary overlap via the
+    // open-before-close tiebreaker, without resurrecting an already-closed
+    // session that has no such coincident open.
+    let peak = current;
+    let flushedAny = false;
     while (cursor < events.length && events[cursor]!.ts <= bucketStart) {
       current += events[cursor]!.delta;
+      peak = flushedAny ? Math.max(peak, current) : current;
+      flushedAny = true;
       cursor++;
     }
-    // Peak starts at the carried-over (post-flush) level. Sessions spanning
-    // many buckets with no mid-bucket events propagate as count=N+ here.
-    let peak = current;
     while (cursor < events.length && events[cursor]!.ts < bucketEnd) {
       current += events[cursor]!.delta;
       if (current > peak) peak = current;
@@ -1505,8 +1521,6 @@ export function createApiHandler(
   routes.set('GET /api/concurrency', (req, res) => {
     if (!deps.concurrencyTracker) return unavailable(res, 'concurrencyTracker');
     try {
-      const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
-      const historicalPeak = computeTodayPeakConcurrency(todaySessions);
       const livePeak = deps.concurrencyTracker.getPeakConcurrent();
 
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -1535,10 +1549,25 @@ export function createApiHandler(
         return;
       }
 
+      // Synthetic session ids (`local-*`, `proxy-*`) are hidden from
+      // /api/sessions and /api/sessions/live. Exclude them here too so
+      // `allTimePeak` can't be inflated by sessions that never appear
+      // anywhere else in the UI — it must stay comparable to `peak`, which
+      // is filtered the same way below.
       const allSessions = deps.sessionStore?.loadAllSessions?.() ?? [];
-      const allTimePeak = computeTodayPeakConcurrency(
-        allSessions as readonly SessionActivityLike[],
+      const filteredAllSessions = (allSessions as readonly SessionIdentityLike[]).filter(
+        (s) => !isSyntheticSessionId(s.sessionId),
       );
+      const allTimePeak = computeTodayPeakConcurrency(
+        filteredAllSessions as readonly SessionActivityLike[],
+      );
+
+      // Synthetic session ids (`local-*`, `proxy-*`) are hidden from
+      // /api/sessions and /api/sessions/live. Exclude them from the chart
+      // buckets below so they agree with the session list shown alongside
+      // the chart.
+      const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
+      const filteredTodaySessions = todaySessions.filter((s) => !isSyntheticSessionId(s.sessionId));
 
       // 96 × 15-minute fixed-grid buckets covering today (local midnight →
       // local midnight + 24h). Each bucket holds the peak concurrent
@@ -1548,26 +1577,32 @@ export function createApiHandler(
       const startTimestamp = localStartOfDay();
       const liveIds = deps.liveSessionRegistry?.getLiveSessions() ?? [];
       const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
-      // Synthetic session ids (`local-*`, `proxy-*`) are hidden from
-      // /api/sessions and /api/sessions/live. Apply the same filter here
-      // so persisted synthetic records on disk don't contribute to bucket
-      // counts either — otherwise the buckets disagree with the session
-      // list shown alongside the chart.
-      const filteredTodaySessions = todaySessions.filter((s) => {
-        const sid = (s as { sessionId?: string | null }).sessionId;
-        return !isSyntheticSessionId(sid);
-      });
-      const intervals = collectTodaySessionIntervals(
+      const windows = collectTodayActivityWindows(
         filteredTodaySessions,
         liveIds.filter((id) => !isSyntheticSessionId(id)),
         bufferRecords,
-        Date.now(),
       );
-      const buckets = computeTodayConcurrencyBuckets(intervals, startTimestamp);
+      const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
+      // Derive the headline "today peak" from the SAME buckets shown in the
+      // chart — rather than from an independent computation over a
+      // differently-scoped session set — so the two numbers can never
+      // disagree by construction. (This was the root cause of the bug this
+      // fix addresses: the headline and the chart used to be computed from
+      // two different concurrency models that could silently drift apart.)
+      //
+      // Deliberately NOT folded with `livePeak` here (unlike allTimePeak
+      // below): `livePeak` is a synthetic-id-unfiltered, never-reset
+      // lifetime max from LiveSessionRegistry, so mixing it into today's
+      // headline can reintroduce a chart/headline disagreement — the exact
+      // class of bug this fix exists to eliminate. It's unnecessary anyway:
+      // `windows` already unions each live session's buffered (not-yet-
+      // persisted) activity into the same buckets, so a currently-live
+      // session with any tool-call activity is already reflected here.
+      const historicalPeak = buckets.reduce((max, b) => Math.max(max, b.count), 0);
 
       jsonOk(res, {
         current: deps.concurrencyTracker.getConcurrentCount(),
-        peak: Math.max(livePeak, historicalPeak),
+        peak: historicalPeak,
         allTimePeak: Math.max(livePeak, historicalPeak, allTimePeak),
         bucketSizeMs: CONCURRENCY_BUCKET_SIZE_MS,
         startTimestamp,

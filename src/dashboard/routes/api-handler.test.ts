@@ -7,6 +7,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 
+import type { ToolCallRecord } from '../../storage/types.js';
+
 jest.mock('../../install/diagnostics.js', () => ({
   runDiagnostics: jest.fn(async () => [
     { check: 'Config valid', status: 'ok', detail: 'ok', fix: undefined },
@@ -1798,6 +1800,30 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     };
   }
 
+  // Build a session timeline covering [fromMin, toMin] (minutes past local
+  // midnight) with one tool-call sample per minute. Since samples sit ≤ the
+  // 3-minute ACTIVITY_WINDOW_MS apart, mergeActivityWindows() folds them into a
+  // single activity window [fromMin, toMin + 3min] — the same model the headline
+  // peak uses, so the chart's tallest column equals the headline peak.
+  function makeTimeline(fromMin: number, toMin: number): Array<{ timestamp: number }> {
+    const start = midnightToday();
+    const entries: Array<{ timestamp: number }> = [];
+    for (let m = fromMin; m <= toMin; m++) entries.push({ timestamp: start + m * 60_000 });
+    return entries;
+  }
+
+  function makeBufferRecord(sessionId: string, atMin: number): ToolCallRecord {
+    return {
+      id: `r-${sessionId}-${atMin}`,
+      sessionId,
+      toolName: 'Read',
+      toolUseId: `tu-${sessionId}-${atMin}`,
+      timestamp: midnightToday() + atMin * 60_000,
+      durationMs: 100,
+      success: true,
+    };
+  }
+
   it('returns the new bucket shape with exactly 96 buckets at 15-minute spacing', async () => {
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
@@ -1828,18 +1854,18 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   });
 
   it('computes per-bucket peak concurrent sessions via sweepline', async () => {
-    const start = midnightToday();
-    const fifteen = 900_000;
-    // Bucket 0 (00:00–00:15): two sessions overlap fully → peak=2
-    // Bucket 1 (00:15–00:30): one session ends at 00:20, another spans → peak=2
-    //   - sessions A=[start, start+20min], B=[start, start+25min] overlap in bucket 1
-    //     up to start+20min then only B → peak=2
-    // Bucket 2 (00:30–00:45): no sessions → peak=0
-    // Bucket 3 (00:45–01:00): one session [start+50min, start+58min] → peak=1
+    // Activity windows (session timelines, folded to [from, to+3min]):
+    //   A active 00:00–00:17 → window [00:00, 00:20]
+    //   B active 00:00–00:22 → window [00:00, 00:25]
+    //   C active 00:50–00:55 → window [00:50, 00:58]
+    // Bucket 0 (00:00–00:15): A + B overlap → peak=2
+    // Bucket 1 (00:15–00:30): A ends 00:20, B ends 00:25 → peak=2
+    // Bucket 2 (00:30–00:45): no activity → peak=0
+    // Bucket 3 (00:45–01:00): only C → peak=1
     const todaySessions = [
-      { sessionId: 's-a', startTime: start, endTime: start + 20 * 60_000 },
-      { sessionId: 's-b', startTime: start, endTime: start + 25 * 60_000 },
-      { sessionId: 's-c', startTime: start + 50 * 60_000, endTime: start + 58 * 60_000 },
+      { sessionId: 's-a', timeline: makeTimeline(0, 17) },
+      { sessionId: 's-b', timeline: makeTimeline(0, 22) },
+      { sessionId: 's-c', timeline: makeTimeline(50, 55) },
     ];
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
@@ -1860,7 +1886,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.buckets[1].count).toBe(2);
     expect(result.buckets[2].count).toBe(0);
     expect(result.buckets[3].count).toBe(1);
-    // Bucket 4 onward have no sessions today → all zero
+    // Bucket 4 onward have no activity today → all zero
     for (let i = 4; i < 96; i++) {
       expect(result.buckets[i].count).toBe(0);
     }
@@ -1870,18 +1896,15 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // peak is still derived from livePeak/historicalPeak (NOT recomputed
     // from buckets), so it's whatever the existing path returned.
     expect(typeof result.peak).toBe('number');
-    // Reference unused local to keep eslint happy — the bucket size is the
-    // grid's invariant width.
-    expect(fifteen).toBe(900_000);
   });
 
   it('does not exceed overall day peak in any bucket', async () => {
-    const start = midnightToday();
-    // 5 sessions all overlapping in bucket 0 → bucket peak=5, day peak=5
+    // 5 sessions all active inside bucket 0 → bucket peak=5, day peak=5.
+    // Session i active [i, i+5]min → window [i, i+8]; all overlap around
+    // [00:04, 00:08], entirely within bucket 0.
     const todaySessions = Array.from({ length: 5 }, (_v, i) => ({
       sessionId: `s-${i}`,
-      startTime: start + i * 60_000, // staggered by 1 min
-      endTime: start + 14 * 60_000, // all end inside bucket 0
+      timeline: makeTimeline(i, i + 5),
     }));
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
@@ -1905,117 +1928,85 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     for (const c of counts) expect(c).toBeLessThanOrEqual(bucketMax);
   });
 
-  it('treats live sessions as extending to "now" using the buffer for startTime', async () => {
-    const start = midnightToday();
-    const realNow = Date.now;
-    // Pin Date.now to a known instant well past midnight so live extension
-    // lands in a predictable bucket.
-    const mockNow = start + 32 * 60_000; // 00:32 — bucket 2
-    Date.now = () => mockNow;
-    try {
-      const handler = createApiHandler({
-        concurrencyTracker: makeConcurrencyTracker(),
-        liveSessionRegistry: {
-          getLiveSessions: () => ['live-1'],
-          getSessionName: () => null,
-          getLastActivity: () => mockNow,
-        },
-        toolCallBuffer: {
-          getRecords: () => [
-            // Live session's first observed event is at 00:05 (bucket 0)
-            {
-              id: 'r1',
-              sessionId: 'live-1',
-              toolName: 'Read',
-              toolUseId: 'tu1',
-              timestamp: start + 5 * 60_000,
-              durationMs: 100,
-              success: true,
-            },
-          ],
-        },
-        sessionStore: {
-          loadTodaySessions: () => [],
-          loadAllSessions: () => [],
-          listSessions: () => [],
-          loadSession: () => null,
-        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      });
-      const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
-      const { res, status, body } = fakeRes();
-      await handler(req, res);
-      expect(status()).toBe(200);
-      const result = JSON.parse(body());
-      // Live session [00:05, 00:32) overlaps buckets 0, 1, 2.
-      expect(result.buckets[0].count).toBe(1);
-      expect(result.buckets[1].count).toBe(1);
-      expect(result.buckets[2].count).toBe(1);
-      // Bucket 3 (00:45–01:00) is in the future relative to mockNow → 0.
-      expect(result.buckets[3].count).toBe(0);
-    } finally {
-      Date.now = realNow;
-    }
+  it("counts a live session's buffered activity as discrete 3-minute windows, not a continuous span to now", async () => {
+    // A live session's not-yet-persisted activity comes from the tool-call
+    // buffer. Each cluster of activity is a 3-minute window — an idle gap
+    // between clusters is NOT filled (the old span model extended the session
+    // to `now`, which over-counted every idle-but-live session).
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: {
+        getLiveSessions: () => ['live-1'],
+        getSessionName: () => null,
+        getLastActivity: () => null,
+      },
+      toolCallBuffer: {
+        // Activity at 00:05 (bucket 0) and again at 00:30 (bucket 2); idle
+        // from 00:08 → 00:30 (bucket 1) with no buffered events.
+        getRecords: () => [makeBufferRecord('live-1', 5), makeBufferRecord('live-1', 30)],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Window [00:05, 00:08] → bucket 0; window [00:30, 00:33] → bucket 2.
+    expect(result.buckets[0].count).toBe(1);
+    // Idle bucket 1 is NOT filled — the two windows do not merge across the gap.
+    expect(result.buckets[1].count).toBe(0);
+    expect(result.buckets[2].count).toBe(1);
+    expect(result.buckets[3].count).toBe(0);
   });
 
-  it('dedupes a session that appears in both persisted store and live registry', async () => {
-    const start = midnightToday();
-    const realNow = Date.now;
-    const mockNow = start + 30 * 60_000; // 00:30
-    Date.now = () => mockNow;
-    try {
-      const handler = createApiHandler({
-        concurrencyTracker: makeConcurrencyTracker(),
-        liveSessionRegistry: {
-          getLiveSessions: () => ['dup-1'],
-          getSessionName: () => null,
-          getLastActivity: () => mockNow,
-        },
-        toolCallBuffer: {
-          getRecords: () => [
-            {
-              id: 'r1',
-              sessionId: 'dup-1',
-              toolName: 'Read',
-              toolUseId: 'tu1',
-              timestamp: start + 5 * 60_000,
-              durationMs: 100,
-              success: true,
-            },
-          ],
-        },
-        sessionStore: {
-          loadTodaySessions: () => [
-            // Same session id, partial flush had endTime in the past.
-            { sessionId: 'dup-1', startTime: start, endTime: start + 10 * 60_000 },
-          ],
-          loadAllSessions: () => [],
-          listSessions: () => [],
-          loadSession: () => null,
-        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      });
-      const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
-      const { res, status, body } = fakeRes();
-      await handler(req, res);
-      expect(status()).toBe(200);
-      const result = JSON.parse(body());
-      // Only one session counted — bucket 1 (00:15–00:30) sees the live
-      // interval [00:05, 00:30), so peak=1, not 2 (no double-count).
-      expect(result.buckets[1].count).toBe(1);
-    } finally {
-      Date.now = realNow;
-    }
+  it('does not double-count a session that appears in both the persisted store and the live buffer', async () => {
+    // The same session id contributes a persisted timeline AND a live buffer
+    // record. Their timestamps are unioned per id and merged into one window
+    // set, so the session can never overlap itself.
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: {
+        getLiveSessions: () => ['dup-1'],
+        getSessionName: () => null,
+        getLastActivity: () => null,
+      },
+      toolCallBuffer: {
+        // Buffered activity at 00:07 — adjacent to the persisted 00:05–00:06
+        // timeline, so it merges into a single window rather than a second one.
+        getRecords: () => [makeBufferRecord('dup-1', 7)],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [{ sessionId: 'dup-1', timeline: makeTimeline(5, 6) }],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // One merged window [00:05, 00:10] → bucket 0 count is 1, not 2.
+    expect(result.buckets[0].count).toBe(1);
+    const maxBucket = Math.max(...result.buckets.map((b: { count: number }) => b.count));
+    expect(maxBucket).toBe(1);
   });
 
   it('counts a bucket peak of 2 when one session ends exactly as another starts (boundary tiebreaker matches headline peak)', async () => {
-    const start = midnightToday();
-    // Sessions A=[00:00, 00:10] and B=[00:10, 00:20]. At t=00:10 A closes
-    // as B opens. With open-before-close tiebreaker (the +1 fires before
-    // the -1), the bucket peak should be 2 — matching the headline peak
-    // semantics. The previous tiebreaker (close-before-open) would have
-    // produced 1.
+    // A active 00:00–00:07 → window [00:00, 00:10]; B active 00:10–00:17 →
+    // window [00:10, 00:20]. At t=00:10 A's window closes as B's opens. With
+    // the open-before-close tiebreaker (+1 fires before -1) the bucket peak is
+    // 2 — matching the headline peak semantics. Close-before-open would give 1.
     const todaySessions = [
-      { sessionId: 's-a', startTime: start, endTime: start + 10 * 60_000 },
-      { sessionId: 's-b', startTime: start + 10 * 60_000, endTime: start + 20 * 60_000 },
+      { sessionId: 's-a', timeline: makeTimeline(0, 7) },
+      { sessionId: 's-b', timeline: makeTimeline(10, 17) },
     ];
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
@@ -2040,71 +2031,52 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(maxBucket).toBe(2);
   });
 
-  it('keeps persisted startTime when the same id is also live (does not regress to buffer.firstTs)', async () => {
-    const start = midnightToday();
-    const realNow = Date.now;
-    const mockNow = start + 12 * 60 * 60_000; // 12:00
-    Date.now = () => mockNow;
-    try {
-      const handler = createApiHandler({
-        concurrencyTracker: makeConcurrencyTracker(),
-        liveSessionRegistry: {
-          getLiveSessions: () => ['sess-x'],
-          getSessionName: () => null,
-          getLastActivity: () => mockNow,
-        },
-        toolCallBuffer: {
-          // Buffer was drained recently; earliest buffered event is at 11:00.
-          getRecords: () => [
-            {
-              id: 'r1',
-              sessionId: 'sess-x',
-              toolName: 'Read',
-              toolUseId: 'tu1',
-              timestamp: start + 11 * 60 * 60_000,
-              durationMs: 100,
-              success: true,
-            },
-          ],
-        },
-        sessionStore: {
-          // Authoritative persisted record knows the real start: 09:00.
-          loadTodaySessions: () => [
-            {
-              sessionId: 'sess-x',
-              startTime: start + 9 * 60 * 60_000,
-              endTime: start + 10 * 60 * 60_000,
-            },
-          ],
-          loadAllSessions: () => [],
-          listSessions: () => [],
-          loadSession: () => null,
-        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      });
-      const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
-      const { res, status, body } = fakeRes();
-      await handler(req, res);
-      expect(status()).toBe(200);
-      const result = JSON.parse(body());
-      // Resulting interval should be [09:00, 12:00). Buckets covering
-      // 09:00–11:00 (inclusive of bucket starts at 09:00, 09:15, ..., 10:45)
-      // must show count >= 1, proving the persisted startTime survived.
-      // Bucket index for 09:00 = (9*60)/15 = 36. Bucket for 10:45 = 43.
-      for (let i = 36; i <= 43; i++) {
-        expect(result.buckets[i].count).toBeGreaterThanOrEqual(1);
-      }
-    } finally {
-      Date.now = realNow;
+  it('counts persisted-timeline and live-buffer activity for one session as separate windows across an idle gap', async () => {
+    // The same session has persisted activity 09:00–10:00 and later live
+    // buffer activity at 11:00, with an idle gap in between. Both contribute
+    // (neither is dropped), but they do NOT merge into one continuous span —
+    // the gap reads 0, unlike the old model which extended the session to now.
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: {
+        getLiveSessions: () => ['sess-x'],
+        getSessionName: () => null,
+        getLastActivity: () => null,
+      },
+      toolCallBuffer: {
+        // Live buffered activity at 11:00 (bucket 44), 60 min after the
+        // persisted window closes — well beyond the 3-min merge threshold.
+        getRecords: () => [makeBufferRecord('sess-x', 11 * 60)],
+      },
+      sessionStore: {
+        // Persisted activity spans 09:00–10:00.
+        loadTodaySessions: () => [{ sessionId: 'sess-x', timeline: makeTimeline(9 * 60, 10 * 60) }],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Persisted window [09:00, 10:03] → buckets 36..40 show >= 1.
+    for (let i = 36; i <= 40; i++) {
+      expect(result.buckets[i].count).toBeGreaterThanOrEqual(1);
     }
+    // Idle gap 10:15–10:45 (buckets 41..42) is NOT filled.
+    expect(result.buckets[42].count).toBe(0);
+    // Live buffered window [11:00, 11:03] → bucket 44 shows 1.
+    expect(result.buckets[44].count).toBe(1);
   });
 
   it('excludes synthetic-id (local-/proxy-) persisted sessions from bucket counts', async () => {
-    const start = midnightToday();
     const todaySessions = [
       // Synthetic id — must be filtered out, contributes 0.
-      { sessionId: 'local-abc123', startTime: start, endTime: start + 20 * 60_000 },
+      { sessionId: 'local-abc123', timeline: makeTimeline(0, 17) },
       // Real id — should still contribute.
-      { sessionId: 'real-session-1', startTime: start, endTime: start + 20 * 60_000 },
+      { sessionId: 'real-session-1', timeline: makeTimeline(0, 17) },
     ];
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
@@ -2131,12 +2103,9 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     // session's -1 to be processed at the START of the next bucket, after
     // peak was already initialised from the carried-over current=1, so the
     // next bucket falsely read count=1.
-    const start = midnightToday();
-    const fifteen = 900_000; // 15 min in ms
-    const todaySessions = [
-      // Session ends exactly at the 15-min bucket boundary (t=15min).
-      { sessionId: 's-boundary', startTime: start, endTime: start + fifteen },
-    ];
+    // Session active 00:00–00:12 → window [00:00, 00:15], ending exactly at
+    // the 15-min bucket boundary.
+    const todaySessions = [{ sessionId: 's-boundary', timeline: makeTimeline(0, 12) }];
     const handler = createApiHandler({
       concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: makeLiveRegistry(),
@@ -2158,6 +2127,103 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.buckets[1].count).toBe(0);
     // All remaining buckets also 0.
     for (let i = 2; i < 96; i++) expect(result.buckets[i].count).toBe(0);
+  });
+
+  it('counts a bucket peak of 2 when one session ends exactly as another starts on a bucket grid line', async () => {
+    // A active 00:00–00:12 → window [00:00, 00:15]; B active 00:15–00:22 →
+    // window [00:15, 00:25]. Unlike the mid-bucket touch test above (t=00:10,
+    // inside bucket0), this touch lands EXACTLY on the bucket0/bucket1 grid
+    // line: both A's close and B's open fall into bucket1's flush loop
+    // (events with ts <= bucketStart). Without tracking peak during that
+    // flush, the momentary 2-session overlap is missed and bucket1
+    // undercounts to 1.
+    const todaySessions = [
+      { sessionId: 's-a', timeline: makeTimeline(0, 12) },
+      { sessionId: 's-b', timeline: makeTimeline(15, 22) },
+    ];
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => todaySessions,
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Bucket 0 [00:00, 00:15): only A is open → count=1.
+    expect(result.buckets[0].count).toBe(1);
+    // Bucket 1 [00:15, 00:30): A's close and B's open both land exactly at
+    // 00:15 → momentary overlap → count=2.
+    expect(result.buckets[1].count).toBe(2);
+    const maxBucket = Math.max(...result.buckets.map((b: { count: number }) => b.count));
+    expect(maxBucket).toBe(2);
+    // The headline peak is derived from these same buckets — it must agree.
+    expect(result.peak).toBe(2);
+  });
+
+  it('does not fold livePeak into the headline peak (avoids reintroducing chart/headline disagreement)', async () => {
+    // Chart's tallest bucket is 1 (one session, briefly active). If a stale
+    // or synthetic-inflated livePeak (e.g. 5, from LiveSessionRegistry's
+    // never-reset, unfiltered lifetime max) were folded into `peak` via
+    // Math.max, the headline would read 5 while the tallest visible bar
+    // reads 1 — reproducing the exact class of bug this route exists to
+    // eliminate.
+    const todaySessions = [{ sessionId: 's-a', timeline: makeTimeline(0, 5) }];
+    const handler = createApiHandler({
+      concurrencyTracker: {
+        getConcurrentCount: () => 0,
+        getPeakConcurrent: () => 5,
+        getConcurrencyTimeSeries: () => [],
+      },
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => todaySessions,
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    const maxBucket = Math.max(...result.buckets.map((b: { count: number }) => b.count));
+    expect(maxBucket).toBe(1);
+    expect(result.peak).toBe(1);
+  });
+
+  it('excludes synthetic-id sessions from allTimePeak, matching the filtering already applied to peak', async () => {
+    // Both all-time sessions are synthetic (local-mode). allTimePeak must
+    // exclude them just like `peak`/`historicalPeak` already exclude
+    // synthetic ids from today's buckets — otherwise allTimePeak could
+    // report a number driven by sessions invisible everywhere else in the UI.
+    const allSessions = [
+      { sessionId: 'local-abc', timeline: makeTimeline(0, 5) },
+      { sessionId: 'local-def', timeline: makeTimeline(0, 5) },
+    ];
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => allSessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.allTimePeak).toBe(0);
   });
 
   it('preserves view=history branch unchanged', async () => {
