@@ -332,6 +332,50 @@ describe('WorkflowWatcher', () => {
     }
   });
 
+  it('emits parser_skip for a contained (non-traversal) script that parseWorkflowScript itself rejects', () => {
+    const projectsDir = mkdtempSync(join(tmpdir(), 'wfw-malformed-script-'));
+    try {
+      const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const wfDir = join(projectsDir, 'proj', sessionId, 'workflows');
+      mkdirSync(wfDir, { recursive: true });
+      const runId = 'wf_deadbeefcafebabe';
+      // Contained under projectsDir — no path-traversal — but has no
+      // `export const meta = {...}` block, so parseWorkflowScript itself
+      // returns { status: 'parser_skip', reason: 'no_meta' }.
+      const malformedScript = join(wfDir, 'malformed.js');
+      writeFileSync(malformedScript, "const x = 1;\nagent('a')\n");
+      writeFileSync(
+        join(wfDir, `${runId}.json`),
+        JSON.stringify({
+          runId,
+          workflowName: 'malformed-meta',
+          status: 'completed',
+          startTime: Date.now(),
+          durationMs: 1000,
+          agentCount: 1,
+          totalTokens: 10,
+          scriptPath: malformedScript,
+        }),
+      );
+
+      const runs: ScriptWorkflowRunMetrics[] = [];
+      const health: ObservabilityHealthMetrics[] = [];
+      const watcher = new WorkflowWatcher({ projectsDir });
+      watcher.setOnRun((r) => runs.push(r));
+      watcher.setOnHealth((h) => health.push(h));
+      watcher.poll();
+
+      expect(runs).toHaveLength(1);
+      // The run still emits — topology falls back to null, distinct from
+      // (and independent of) the containment-escape branch tested above.
+      expect(runs[0]!.declared_phases).toBeNull();
+      expect(runs[0]!.workflow_name).toBe('malformed-meta');
+      expect(health.some((h) => h.event === 'parser_skip')).toBe(true);
+    } finally {
+      rmSync(projectsDir, { recursive: true, force: true });
+    }
+  });
+
   it('counts parse errors when bad JSON has a stable mtime', () => {
     // The partial-write protection discards errors only when mtime changes
     // between read and re-stat. With stable mtime the error is counted.

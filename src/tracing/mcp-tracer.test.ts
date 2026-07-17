@@ -20,8 +20,10 @@ describe('mcp-tracer', () => {
     expect(tracer).not.toBeNull();
   });
 
-  test('getMcpTracer returns tracer without prior init', () => {
-    const tracer = getMcpTracer();
+  test('getMcpTracer returns tracer without prior init', async () => {
+    jest.resetModules();
+    const freshModule = await import('./mcp-tracer.js');
+    const tracer = freshModule.getMcpTracer();
     expect(tracer).not.toBeNull();
   });
 

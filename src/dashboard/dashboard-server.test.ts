@@ -6,6 +6,7 @@ import { DashboardServer } from './dashboard-server.js';
 import { LiveEventBus } from './live-event-bus.js';
 import { LocalAlertEngine } from '../alerts/local-alert-engine.js';
 import { AlertLog } from '../alerts/alert-log.js';
+import { VERSION } from '../version.js';
 
 describe('DashboardServer', () => {
   let server: DashboardServer;
@@ -110,6 +111,74 @@ describe('DashboardServer', () => {
     const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.updateAvailable).toBe(false);
+  });
+
+  it('health updateAvailable is true for a same-major, newer-minor candidate', async () => {
+    const [major, minor] = VERSION.split('.').map(Number);
+    const candidate = `${major}.${(minor ?? 0) + 1}.0`;
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve(candidate),
+    });
+    const addr = await server.start();
+    await Promise.resolve();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.updateAvailable).toBe(true);
+  });
+
+  it('health updateAvailable is true for a same-major-minor, newer-patch candidate', async () => {
+    const [major, minor, patch] = VERSION.split('.').map(Number);
+    const candidate = `${major}.${minor}.${(patch ?? 0) + 1}`;
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve(candidate),
+    });
+    const addr = await server.start();
+    await Promise.resolve();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.updateAvailable).toBe(true);
+  });
+
+  // Without stripping the `-beta` suffix before parsing, the patch segment
+  // ("<n>-beta") parses to NaN and the newer-patch comparison silently
+  // resolves to false instead of true — this pins the strip-before-parse
+  // regex, not just the numeric comparison.
+  it('health updateAvailable strips a -beta prerelease suffix before comparing the patch number', async () => {
+    const [major, minor, patch] = VERSION.split('.').map(Number);
+    const candidate = `${major}.${minor}.${(patch ?? 0) + 1}-beta`;
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve(candidate),
+    });
+    const addr = await server.start();
+    await Promise.resolve();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.updateAvailable).toBe(true);
+  });
+
+  it('health updateAvailable strips a -rc.1 prerelease suffix before comparing the patch number', async () => {
+    const [major, minor, patch] = VERSION.split('.').map(Number);
+    const candidate = `${major}.${minor}.${(patch ?? 0) + 1}-rc.1`;
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      npmFetcher: () => Promise.resolve(candidate),
+    });
+    const addr = await server.start();
+    await Promise.resolve();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.updateAvailable).toBe(true);
   });
 
   it('stop() closes the server cleanly', async () => {
@@ -463,5 +532,88 @@ describe('DashboardServer security headers', () => {
     const addr = await server.start();
     const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+});
+
+describe('DashboardServer handle() defensive error handling', () => {
+  let server: DashboardServer;
+  afterEach(async () => {
+    await server?.stop();
+  });
+
+  // Regression guard for the registered-route try/catch in handle(): the
+  // /sse route handler has no internal error handling of its own, so a
+  // throw from bus.replayFrom() (invoked synchronously when a client
+  // reconnects with Last-Event-ID) must be caught and logged by handle()
+  // rather than crashing the request.
+  it('logs and swallows a synchronous throw from a registered route handler (/sse replay)', async () => {
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const bus = new LiveEventBus();
+    jest.spyOn(bus, 'replayFrom').mockImplementation(() => {
+      throw new Error('replay boom');
+    });
+    try {
+      server = new DashboardServer({ port: 0, host: '127.0.0.1', bus });
+      const addr = await server.start();
+      await new Promise<void>((resolve) => {
+        const req = http.request(
+          {
+            hostname: '127.0.0.1',
+            port: addr.port,
+            path: '/sse',
+            method: 'GET',
+            headers: { 'last-event-id': '0' },
+          },
+          (res) => {
+            res.on('data', () => {});
+            req.destroy();
+            resolve();
+          },
+        );
+        req.on('error', () => resolve());
+        req.end();
+      });
+      await new Promise((r) => setImmediate(r));
+      const captured = stderrSpy.mock.calls.map((args) => String(args[0])).join('');
+      expect(captured).toContain('Route handler error');
+      expect(captured).toContain('replay boom');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  // Regression guard for the /api/... branch's try/catch in handle(): the
+  // api handler (routes/api-handler.ts) already catches dependency-level
+  // throws internally and returns its own 500 response, so that path never
+  // reaches handle()'s own fallback. This reaches into the private
+  // apiHandler field to simulate a throw that escapes the inner handler
+  // entirely, proving handle()'s defense-in-depth fallback (500
+  // {error:'internal'}) still logs and responds correctly.
+  it('logs and falls back to 500 {error:"internal"} when the api handler itself throws', async () => {
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      server = new DashboardServer({
+        port: 0,
+        host: '127.0.0.1',
+        bus: new LiveEventBus(),
+        api: {},
+      });
+      const addr = await server.start();
+      (
+        server as unknown as {
+          apiHandler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
+        }
+      ).apiHandler = () => {
+        throw new Error('api handler boom');
+      };
+      const res = await fetch(`http://127.0.0.1:${addr.port}/api/whatever`);
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'internal' });
+      const captured = stderrSpy.mock.calls.map((args) => String(args[0])).join('');
+      expect(captured).toContain('API handler error');
+      expect(captured).toContain('api handler boom');
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

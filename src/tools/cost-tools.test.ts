@@ -3,8 +3,13 @@ import {
   handleReportTokens,
   REPORT_TOKENS_TOOL,
   handleGetPromptCacheHealth,
+  handleGetBudgetStatus,
+  handleGetCostForecast,
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { BudgetTracker } from '../metrics/budget-tracker.js';
+import { localDateKey } from '../lib/date.js';
+import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import type { TokenReport } from './cost-tools.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 
@@ -293,5 +298,88 @@ describe('handleGetPromptCacheHealth()', () => {
     expect(body.total_savings_usd).toBe(0.25);
     expect(body.total_cache_read_tokens).toBe(6_000);
     expect(body.total_cache_creation_tokens).toBe(1_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleGetBudgetStatus
+// ---------------------------------------------------------------------------
+
+describe('handleGetBudgetStatus()', () => {
+  it('returns the budget tracker status as JSON, including fired threshold alerts', () => {
+    const tracker = new BudgetTracker({
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+    });
+    tracker.updateCost(6, 0, 0); // 60% of session budget — crosses the 50% threshold
+
+    const result = handleGetBudgetStatus(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body).toEqual(tracker.getStatus());
+    expect(body.session.pctUsed).toBe(60);
+    expect(body.session.exceeded).toBe(false);
+    expect(body.alerts).toHaveLength(1);
+    expect(body.alerts[0].thresholdPct).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleGetCostForecast
+// ---------------------------------------------------------------------------
+
+describe('handleGetCostForecast()', () => {
+  it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
+    const tracker = new CostTracker();
+
+    // Backdated (but within the 48h late-arrival window) so it inflates the
+    // session-wide total without landing in today's day-bucket.
+    const yesterday = Date.now() - 25 * 60 * 60 * 1000;
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 10_000_000,
+        outputTokens: 2_000_000,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 12_000_000,
+      },
+      'claude-sonnet-4',
+      { timestampMs: yesterday },
+    );
+
+    // "Today's" spend — small, and reported with no ctx so it lands in today's bucket.
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 1_000,
+        outputTokens: 200,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 1_200,
+      },
+      'claude-sonnet-4',
+    );
+
+    const sessionStartMs = yesterday;
+    const result = handleGetCostForecast(tracker, sessionStartMs);
+    const body = JSON.parse(result.content[0].text);
+
+    const todayKey = localDateKey();
+    const sessionTotalCostUsd = tracker.getMetrics().sessionTotalCostUsd ?? 0;
+    const expected = buildCostForecastFromInputs({
+      sessionSpentUsd: sessionTotalCostUsd,
+      sessionStartMs,
+      dailySpentUsd: tracker.getCostForDay(todayKey),
+      dailyFirstActivityMs: tracker.getFirstActivityMsForDay(todayKey),
+    });
+
+    // If the handler regressed to anchoring the EoD baseline on the full
+    // session spend instead of today's day-bucket, `expected` (computed here
+    // from the correct daily-anchored inputs) would diverge sharply from
+    // `body` given the huge backdated "yesterday" spend above.
+    expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd ?? 0, 2);
+    expect(sessionTotalCostUsd).toBeGreaterThan(tracker.getCostForDay(todayKey));
   });
 });

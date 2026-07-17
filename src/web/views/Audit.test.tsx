@@ -137,6 +137,23 @@ describe('Audit view', () => {
     expect(screen.queryByText(/showing first/i)).toBeNull();
   });
 
+  it('shows an error message when the audit log fetch fails', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response('Internal Server Error', { status: 500 }))) as typeof fetch;
+    render(
+      <QueryClientProvider client={qc}>
+        <Audit />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Error loading audit log.')).toBeInTheDocument();
+  });
+
+  it('shows "No matching entries." for a genuinely empty dataset', async () => {
+    renderAudit([]);
+    expect(await screen.findByText('No matching entries.')).toBeInTheDocument();
+  });
+
   it('exports only the filtered and capped rows, not the full unfiltered set', async () => {
     const user = userEvent.setup();
     const sensitiveRows = Array.from({ length: 250 }, (_, i) => ({

@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import {
@@ -723,6 +723,70 @@ describe('stdio integration', () => {
       await client.close();
     } finally {
       rmSync(tmpJobDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('serves the pending tool set immediately when session_id cannot resolve synchronously, then swaps to the full set once the breadcrumb resolves', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-provisional-storage-'));
+
+    // Deliberately omit CLAUDE_JOB_DIR and pre-write no breadcrumb, so neither
+    // resolveFromJobDir() nor resolveFromBreadcrumb() can resolve synchronously
+    // at startup — main() falls back to the provisional `pending-<ts>` session
+    // id and registers the pending tool set (registerPendingTools) immediately.
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+
+      const pendingTools = await client.listTools();
+      const pendingNames = pendingTools.tools.map((t) => t.name);
+      expect(pendingNames).toContain('nr_observe_health');
+      expect(pendingNames).toContain('nr_observe_install_hooks');
+      expect(pendingNames).not.toContain('nr_observe_get_session_stats');
+
+      // Supply the breadcrumb asynchronously. The spawned child sees this
+      // test process as its ppid (direct child_process.spawn), so
+      // resolveFromBreadcrumb() looks for <storagePath>/session-by-ppid/<our
+      // own process.pid>.txt — matching resolveSessionId()'s default
+      // `options.ppid ?? process.ppid` inside the child.
+      const breadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), 'resolved-real-session-id');
+
+      // Poll listTools() until the full tool set (registerTools) replaces the
+      // pending one — resolution happens on resolveSessionId()'s backoff
+      // schedule (100/200/500/1000/2000ms, then steady 2s).
+      let sawFullSet = false;
+      for (let i = 0; i < 20; i++) {
+        const result = await client.listTools();
+        if (result.tools.map((t) => t.name).includes('nr_observe_get_session_stats')) {
+          sawFullSet = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(sawFullSet).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
     }
   }, 30000);
 });

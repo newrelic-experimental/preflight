@@ -761,6 +761,43 @@ describe('NrIngestManager', () => {
       expect(metricNames).toContain('ai.session.duration_ms');
       expect(metricNames).toContain('ai.session.unique_files_read');
     });
+
+    it('emits aggregated proxy metrics (server_call_count, tool_popularity) sourced from proxyMetrics on stop', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestToolCall(
+        makeProxyRecord({ serverName: 'nr-mcp-server', toolName: 'nr_observe_get_session_stats' }),
+      );
+      manager.ingestToolCall(
+        makeProxyRecord({ serverName: 'nr-mcp-server', toolName: 'nr_observe_get_session_stats' }),
+      );
+      manager.ingestProxyRequest(
+        makeProxyRequestRecord({ serverName: 'nr-mcp-server', method: 'tools/list' }),
+      );
+
+      manager.start();
+      await manager.stop();
+
+      expect(mockSendMetrics).toHaveBeenCalled();
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<{
+        name: string;
+        attributes?: Record<string, unknown>;
+        value: { sum: number };
+      }>;
+
+      // 2 tool calls (recordProxyCall) + 1 discovery request (recordProxyRequest) — both
+      // feed the same per-server call count.
+      const callCountMetric = sentMetrics.find((m) => m.name === 'ai.mcp.server_call_count');
+      expect(callCountMetric).toBeDefined();
+      expect(callCountMetric!.value.sum).toBe(3);
+      expect(callCountMetric!.attributes?.server).toBe('nr-mcp-server');
+
+      const popularityMetric = sentMetrics.find((m) => m.name === 'ai.mcp.tool_popularity');
+      expect(popularityMetric).toBeDefined();
+      expect(popularityMetric!.value.sum).toBe(2);
+      expect(popularityMetric!.attributes?.tool).toBe('nr_observe_get_session_stats');
+      expect(popularityMetric!.attributes?.server).toBe('nr-mcp-server');
+    });
   });
 
   describe('error handling', () => {

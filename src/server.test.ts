@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { createServer, NrMcpServer } from './server.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 
@@ -96,5 +97,27 @@ describe('MCP protocol via InMemoryTransport', () => {
     const text = 'text' in content ? content.text : '';
     const parsed = JSON.parse(text) as unknown[];
     expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('resources/read rejects an unknown resource URI with McpError InvalidRequest', async () => {
+    await expect(client.readResource({ uri: 'nr-observe://nonexistent' })).rejects.toMatchObject({
+      code: ErrorCode.InvalidRequest,
+    });
+  });
+
+  it('resources/read logs and re-throws when the handler throws a non-McpError', async () => {
+    server.auditTrailManager = new AuditTrailManager({ developer: 'test', sessionId: null });
+    jest.spyOn(server.auditTrailManager, 'getAuditLog').mockImplementation(() => {
+      throw new Error('audit log unavailable');
+    });
+
+    await expect(
+      client.readResource({ uri: 'nr-observe://session/audit-log' }),
+    ).rejects.not.toMatchObject({ code: ErrorCode.InvalidRequest });
+
+    const logged = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(
+      logged.some((l: string) => l.includes('Resource handler error') && l.includes('audit-log')),
+    ).toBe(true);
   });
 });

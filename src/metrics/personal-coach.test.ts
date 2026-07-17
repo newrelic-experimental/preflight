@@ -241,6 +241,27 @@ describe('PersonalCoach', () => {
     }
   });
 
+  it('flags anti-pattern regression against baseline and prioritizes it in topRecommendation', () => {
+    // baseline rate (thrashing:3/200=0.015 across 3 weeks) vs this week (stuck_loop:10/200=0.05)
+    // is a >25% spike, and thisWeek.antiPatternRate > baseline.antiPatternRate * 1.25.
+    const summaries = [
+      makeWeeklySummary('2026-W04', developer, { antiPatternCounts: { stuck_loop: 10 } }),
+      makeWeeklySummary('2026-W03', developer, { antiPatternCounts: { thrashing: 3 } }),
+      makeWeeklySummary('2026-W02', developer, { antiPatternCounts: { thrashing: 3 } }),
+      makeWeeklySummary('2026-W01', developer, { antiPatternCounts: { thrashing: 3 } }),
+    ];
+    const gen = makeSummaryGenerator(summaries);
+    const coach = new PersonalCoach(gen, developer);
+    const result = coach.generate();
+    expect(result.status).toBe('ok');
+    if (result.status === 'ok') {
+      expect(
+        result.regressions.some((r) => r.includes('Anti-pattern rate') && r.includes('stuck loop')),
+      ).toBe(true);
+      expect(result.topRecommendation).toContain('Focus on reducing "stuck loop"');
+    }
+  });
+
   it('baseline metrics do not contain NaN', () => {
     const summaries = [
       makeWeeklySummary('2026-W02', developer),

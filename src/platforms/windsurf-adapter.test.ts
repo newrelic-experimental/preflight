@@ -168,6 +168,11 @@ describe('WindsurfAdapter', () => {
       expect(normalized.success).toBe(true);
       expect(normalized.durationMs).toBeNull();
     });
+
+    it('does not validate field types — a string-typed "durationMs" leaks through unchanged', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'Read File', durationMs: '150' });
+      expect(normalized.durationMs).toBe('150');
+    });
   });
 
   describe('getSessionMetadata', () => {

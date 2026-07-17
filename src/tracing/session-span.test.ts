@@ -88,4 +88,21 @@ describe('SessionSpan', () => {
     const ctx = session.getContext();
     expect(ctx).toBe(context.active());
   });
+
+  test('end is a no-op when called before start', () => {
+    const session = new SessionSpan('test-session-id', 'test-developer');
+    session.end(0, 0);
+
+    expect(mockTracer.startSpan).not.toHaveBeenCalled();
+    expect(mockSpan.end).not.toHaveBeenCalled();
+  });
+
+  test('end is idempotent when called a second time', () => {
+    const session = new SessionSpan('test-session-id', 'test-developer');
+    session.start();
+    session.end(5, 2);
+    session.end(5, 2);
+
+    expect(mockSpan.end).toHaveBeenCalledTimes(1);
+  });
 });

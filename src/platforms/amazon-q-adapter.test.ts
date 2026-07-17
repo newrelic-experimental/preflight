@@ -166,6 +166,12 @@ describe('AmazonQAdapter', () => {
       });
       expect(normalized.sessionId).toBe('q-sess-001');
     });
+
+    it('does not validate field types — a wrong-typed "tool" leaks through unchanged', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 42, timestamp: 'not-a-number' });
+      expect(normalized.platformToolName).toBe(42);
+      expect(normalized.timestamp).toBe('not-a-number');
+    });
   });
 
   describe('getSessionMetadata', () => {

@@ -714,6 +714,71 @@ describe('HttpUpstream.forward()', () => {
     expect(result.responseSizeBytes).toBeGreaterThan(0);
   });
 
+  it('resolves, destroys the client socket, and destroys the upstream response when the ByteCountTransform errors mid-SSE', async () => {
+    const transformSpy = jest
+      .spyOn(ByteCountTransform.prototype, '_transform')
+      .mockImplementationOnce((_chunk, _encoding, callback) => {
+        callback(new Error('boom'));
+      });
+
+    let upstreamSocketClosed = false;
+    ({ server: mockServer, port } = await createMockServer((_req, res) => {
+      _req.socket.on('close', () => {
+        upstreamSocketClosed = true;
+      });
+      _req.on('data', () => {});
+      _req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        res.write('data: {"event":"one"}\n\n');
+        // Intentionally never end — the transform error should resolve forward() early.
+      });
+    }));
+
+    const upstream = new HttpUpstream(makeConfig(port));
+
+    const outcome = await new Promise<{
+      fwdResult: import('./types.js').ForwardResult;
+      clientSocketDestroyed: boolean;
+    }>((resolve) => {
+      const proxyServer = createServer(async (proxyReq, proxyRes) => {
+        let clientSocketDestroyed = false;
+        const socket = proxyRes.socket;
+        if (socket) {
+          const originalDestroy = socket.destroy.bind(socket);
+          socket.destroy = ((...args: Parameters<typeof originalDestroy>) => {
+            clientSocketDestroyed = true;
+            return originalDestroy(...args);
+          }) as typeof socket.destroy;
+        }
+        const fwdResult = await upstream.forward(proxyReq, proxyRes, Buffer.from('{}'));
+        proxyServer.close(() => resolve({ fwdResult, clientSocketDestroyed }));
+      });
+      proxyServer.listen(0, '127.0.0.1', () => {
+        const addr = proxyServer.address();
+        const proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
+        const req = nodeRequest({
+          hostname: '127.0.0.1',
+          port: proxyPort,
+          method: 'POST',
+          path: '/',
+        });
+        req.on('error', () => {
+          // Expected once the server-side socket is destroyed mid-response.
+        });
+        req.end();
+      });
+    });
+
+    // Give the destroyed upstream socket a tick to emit its 'close' event.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(outcome.fwdResult.isStreaming).toBe(true);
+    expect(outcome.clientSocketDestroyed).toBe(true);
+    expect(upstreamSocketClosed).toBe(true);
+
+    transformSpy.mockRestore();
+  });
+
   it('strips hop-by-hop headers from upstream response', async () => {
     ({ server: mockServer, port } = await createMockServer((_req, res) => {
       _req.on('data', () => {});

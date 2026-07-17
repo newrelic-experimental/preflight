@@ -3,7 +3,7 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 jest.mock('node:dns', () => ({ lookup: jest.fn() }));
 
 import * as dns from 'node:dns';
-import { createSsrfSafeLookup } from './ssrf.js';
+import { createSsrfSafeLookup, validateSsrfUrl } from './ssrf.js';
 
 // `dns.lookup` is a 5-overload union with no single callable type, so it can't
 // flow into `jest.Mock`'s generic directly. Naming the one overload shape this
@@ -106,5 +106,69 @@ describe('createSsrfSafeLookup', () => {
     const result = await callLookup(lookup, 'nonexistent.example', true);
 
     expect(result.err).toBe(dnsError);
+  });
+});
+
+describe('validateSsrfUrl', () => {
+  it('allows a safe public https URL', () => {
+    expect(() => validateSsrfUrl('test', new URL('https://example.com/path'))).not.toThrow();
+  });
+
+  it('rejects a decimal-integer-encoded loopback host (e.g. http://2130706433/)', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://2130706433/'))).toThrow(
+      /private or loopback/,
+    );
+  });
+
+  it('rejects an octal-leading-zero-encoded loopback host (e.g. http://0177.0.0.1/)', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://0177.0.0.1/'))).toThrow(
+      /private or loopback/,
+    );
+  });
+
+  it('rejects a hex-encoded loopback host (e.g. http://0x7f.0.0.1/)', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://0x7f.0.0.1/'))).toThrow(
+      /private or loopback/,
+    );
+  });
+
+  it('rejects the metadata.google.internal cloud-metadata FQDN', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://metadata.google.internal/'))).toThrow(
+      /cloud metadata service endpoint/,
+    );
+  });
+
+  it('rejects the 169.254.169.254 metadata IP (caught by the link-local block)', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://169.254.169.254/'))).toThrow(
+      /private or loopback/,
+    );
+  });
+
+  it('rejects the 100.100.100.200 metadata IP (explicit metadata-IP blocklist)', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://100.100.100.200/'))).toThrow(
+      /cloud metadata service endpoint/,
+    );
+  });
+
+  it('rejects an IPv4-mapped-IPv6 loopback host (::ffff:127.0.0.1)', () => {
+    expect(() => validateSsrfUrl('test', new URL('http://[::ffff:127.0.0.1]/'))).toThrow(
+      /private or loopback/,
+    );
+  });
+
+  it('rejects an IPv4-mapped-IPv6 multicast host not covered by the hardcoded hex-prefix regex (::ffff:224.0.0.1)', () => {
+    // Node normalizes this to the hex form ::ffff:e000:1. Its "e0" prefix isn't one of the
+    // loopback/RFC-1918/link-local prefixes BLOCKED_HOST_RE's mapped-IPv6 branch hardcodes, so
+    // this specifically exercises extractIPv4FromMappedIPv6's decode-then-recheck fallback,
+    // rather than the plain regex match that the other mapped-IPv6 case above hits directly.
+    expect(() => validateSsrfUrl('test', new URL('http://[::ffff:224.0.0.1]/'))).toThrow(
+      /private or loopback/,
+    );
+  });
+
+  it('rejects a disallowed scheme (ftp:)', () => {
+    expect(() => validateSsrfUrl('test', new URL('ftp://127.0.0.1/'))).toThrow(
+      /scheme "ftp:" is not allowed/,
+    );
   });
 });

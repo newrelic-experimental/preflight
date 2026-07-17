@@ -156,6 +156,48 @@ describe('useLiveEvents', () => {
     });
   });
 
+  describe('REST hydration of the tool call timeline', () => {
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('pushes toolCallTimeline entries with a derived id and durationMs ?? 0 fallback', async () => {
+      globalThis.fetch = vi.fn((url: string, _init?: RequestInit) => {
+        if (url === '/api/session/current') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                sessionId: 'sess-1',
+                toolCallTimeline: [
+                  { timestamp: 1000, toolName: 'Read', durationMs: null, success: true },
+                ],
+              }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: false } as Response);
+      }) as typeof globalThis.fetch;
+
+      renderHook(() => useLiveEvents());
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const calls = useLiveStore.getState().recentToolCalls;
+      expect(calls).toHaveLength(1);
+      expect(calls[0].id).toBe('1000-Read');
+      expect(calls[0].durationMs).toBe(0);
+      expect(calls[0].sessionId).toBe('sess-1');
+    });
+  });
+
   describe('staleness watchdog', () => {
     beforeEach(() => {
       vi.useFakeTimers();

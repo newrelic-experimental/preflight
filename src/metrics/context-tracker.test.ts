@@ -1,4 +1,4 @@
-import { ContextTracker } from './context-tracker.js';
+import { ContextTracker, ContextTrackerRegistry } from './context-tracker.js';
 import type { TokenEvent, ToolCallRecord } from '../storage/types.js';
 
 function makeTokenEvent(overrides: Partial<TokenEvent> = {}): TokenEvent {
@@ -306,5 +306,75 @@ describe('ContextTracker', () => {
       expect(fresh.getMetrics().fillPercent).toBe(60.5);
       expect(snapshot.fillPercent).toBe(60.5);
     });
+  });
+});
+
+describe('ContextTrackerRegistry', () => {
+  it('evicts the oldest session once maxSessions is exceeded (LRU)', () => {
+    const registry = new ContextTrackerRegistry({ maxSessions: 2 });
+
+    registry.recordTurn(
+      makeTokenEvent({
+        sessionId: 'sess-a',
+        inputTokens: 10_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      }),
+    );
+    registry.recordTurn(
+      makeTokenEvent({
+        sessionId: 'sess-b',
+        inputTokens: 20_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      }),
+    );
+    registry.recordTurn(
+      makeTokenEvent({
+        sessionId: 'sess-c',
+        inputTokens: 30_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      }),
+    );
+
+    expect(registry.getTracker('sess-a')).toBeUndefined();
+    expect(registry.getMetrics('sess-b').growth.currentTokens).toBe(20_000);
+    expect(registry.getMetrics('sess-c').growth.currentTokens).toBe(30_000);
+  });
+
+  it('getMetrics() with no sessionId returns the most-recently-active tracker', () => {
+    const registry = new ContextTrackerRegistry({ maxSessions: 5 });
+
+    registry.recordTurn(
+      makeTokenEvent({
+        sessionId: 'sess-a',
+        inputTokens: 10_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      }),
+    );
+    registry.recordTurn(
+      makeTokenEvent({
+        sessionId: 'sess-b',
+        inputTokens: 90_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      }),
+    );
+
+    // sess-a was created first, but sess-b was touched most recently —
+    // getMetrics() with no sessionId must return sess-b's metrics, not sess-a's.
+    expect(registry.getMetrics().growth.currentTokens).toBe(90_000);
+  });
+
+  it('ignores recordToolCall and recordTurn when sessionId is empty', () => {
+    const registry = new ContextTrackerRegistry();
+
+    registry.recordToolCall(makeRecord({ sessionId: '' }));
+    const snapshot = registry.recordTurn(makeTokenEvent({ sessionId: '' }));
+
+    expect(snapshot).toBeNull();
+    expect(registry.getSessionIds()).toHaveLength(0);
   });
 });

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-07-17
+
+### Added
+
+- Added test coverage across the MCP server's session and hook handling, metric trackers, platform adapters, proxy and transport layer, storage, alerting, and MCP tool handlers, plus the web dashboard's components, views, and API client — covering error paths, malformed-input handling, and edge-case behavior that previously worked but was unverified.
+
+### Fixed
+
+- Corrected an ambiguous assertion in the Today view's test suite that could match either of two KPI tiles rendering the same value, instead of the one it was meant to check.
+
 ## [1.5.3] - 2026-07-16
 
 ### Fixed

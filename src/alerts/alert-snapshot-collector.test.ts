@@ -291,4 +291,28 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     const collector = new AlertSnapshotCollector(deps);
     expect(collector.snapshot(NOW, []).cost.sessionUsd).toBe(0);
   });
+
+  it('reads todayUsd/weekUsd from budgetTracker.getStatus()', () => {
+    const deps: AlertSnapshotCollectorDeps = {
+      budgetTracker: {
+        getStatus: () => ({ daily: { spentUsd: 12 }, weekly: { spentUsd: 40 } }),
+      },
+    };
+    const collector = new AlertSnapshotCollector(deps);
+    const snap = collector.snapshot(NOW, []);
+    expect(snap.cost.todayUsd).toBe(12);
+    expect(snap.cost.weekUsd).toBe(40);
+  });
+
+  it('swallows errors from budgetTracker.getStatus() and falls back to zeros', () => {
+    const deps: AlertSnapshotCollectorDeps = {
+      budgetTracker: {
+        getStatus: () => {
+          throw new Error('boom');
+        },
+      },
+    };
+    const collector = new AlertSnapshotCollector(deps);
+    expect(collector.snapshot(NOW, []).cost).toEqual({ sessionUsd: 0, todayUsd: 0, weekUsd: 0 });
+  });
 });

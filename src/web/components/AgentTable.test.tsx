@@ -55,4 +55,38 @@ describe('AgentTable sortable headers', () => {
     const agentHeader = screen.getByRole('columnheader', { name: 'Agent' });
     expect(agentHeader).toHaveAttribute('aria-sort', 'descending');
   });
+
+  it('changes row order after sorting the Tokens column ascending', async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentTable
+        agents={[
+          makeAgent({ agentId: 'a1', label: 'high', tokens: 200 }),
+          makeAgent({ agentId: 'a2', label: 'low', tokens: 100 }),
+        ]}
+      />,
+    );
+
+    // Default sort is tokens/desc: high (200) before low (100).
+    const rowsBefore = screen.getAllByRole('row').slice(1);
+    expect(rowsBefore.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('high'),
+      expect.stringContaining('low'),
+    ]);
+
+    await user.click(screen.getByRole('button', { name: 'Tokens' }));
+
+    const rowsAfter = screen.getAllByRole('row').slice(1);
+    expect(rowsAfter.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('low'),
+      expect.stringContaining('high'),
+    ]);
+  });
+});
+
+describe('AgentTable empty state', () => {
+  it('renders the empty-state message when agents is empty', () => {
+    render(<AgentTable agents={[]} />);
+    expect(screen.getByText('No agent data recorded for this run.')).toBeInTheDocument();
+  });
 });

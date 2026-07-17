@@ -1,9 +1,17 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createServer, NrMcpServer } from '../server.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { BudgetTracker } from '../metrics/budget-tracker.js';
+import { ContextWindowTracker } from '../metrics/context-window-tracker.js';
+import { TaskDetector } from '../metrics/task-detector.js';
+import { SessionStore } from '../storage/session-store.js';
 import { FeedbackCollector } from './workflow-tools.js';
 import {
   handleGetSessionStats,
@@ -11,17 +19,16 @@ import {
   handleHealth,
   handleGetConfig,
   handleInstallHooks,
+  registerTools,
 } from './session-stats.js';
-import type { ConfigSummary } from './session-stats.js';
+import type { ConfigSummary, ToolRegistrationOptions } from './session-stats.js';
 import type { HeadlessInstallResult } from '../install/headless-install.js';
 import type { ToolCallRecord } from '../storage/types.js';
-import type { SessionStore } from '../storage/session-store.js';
 import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
 import type { TrendAnalyzer } from '../metrics/trend-analyzer.js';
 import type { CollaborationProfiler } from '../metrics/collaboration-profile.js';
 import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
-import type { TaskDetector } from '../metrics/task-detector.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 
 // ---------------------------------------------------------------------------
@@ -880,5 +887,162 @@ describe('registerPendingTools()', () => {
 
     await client.close();
     await server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP protocol integration — registerTools() dispatched directly (not via
+// createServer()/ServerOptions, which only wires a subset of trackers).
+// Covers a representative sample of the switch-case's un-validated `args`
+// casts and "tracker not available" branches for tools not otherwise
+// exercised through an actual client.callTool() round trip.
+// ---------------------------------------------------------------------------
+
+describe('MCP protocol integration — direct registerTools() dispatch', () => {
+  let server: Server;
+  let client: Client;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = resolve(
+      tmpdir(),
+      `nr-sstats-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await client?.close();
+    await server?.close();
+    if (existsSync(tmpDir)) {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  async function connectDirect(options: ToolRegistrationOptions): Promise<void> {
+    server = new Server({ name: 'direct-test', version: '0.0.1' }, { capabilities: { tools: {} } });
+    registerTools(server, options);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: 'test-client', version: '1.0.0' });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  }
+
+  it('nr_observe_get_budget_status returns an explanatory error when BudgetTracker is absent', async () => {
+    await connectDirect({});
+    const result = await client.callTool({ name: 'nr_observe_get_budget_status', arguments: {} });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.error).toBe('BudgetTracker not available');
+  });
+
+  it('nr_observe_get_budget_status returns the real budget status when BudgetTracker is provided', async () => {
+    const budgetTracker = new BudgetTracker({
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+    });
+    budgetTracker.updateCost(6, 0, 0);
+    await connectDirect({ budgetTracker });
+
+    const result = await client.callTool({ name: 'nr_observe_get_budget_status', arguments: {} });
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body).toEqual(budgetTracker.getStatus());
+    expect(body.session.pctUsed).toBe(60);
+  });
+
+  it('nr_observe_get_cost_forecast returns an explanatory error when sessionStartMs is not available', async () => {
+    const costTracker = new CostTracker();
+    await connectDirect({ costTracker });
+    const result = await client.callTool({ name: 'nr_observe_get_cost_forecast', arguments: {} });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.error).toBe('CostTracker or sessionStartMs not available');
+  });
+
+  it('nr_observe_get_cost_forecast returns a real forecast when CostTracker and sessionStartMs are provided', async () => {
+    const costTracker = new CostTracker();
+    costTracker.recordTokenUsage(
+      {
+        inputTokens: 1_000,
+        outputTokens: 200,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 1_200,
+      },
+      'claude-sonnet-4',
+    );
+    await connectDirect({ costTracker, sessionStartMs: Date.now() - 20 * 60 * 1000 });
+
+    const result = await client.callTool({ name: 'nr_observe_get_cost_forecast', arguments: {} });
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(typeof body.confidenceNote).toBe('string');
+    expect(body.forecastEndOfDayUsd).toBeGreaterThanOrEqual(0);
+  });
+
+  it('nr_observe_get_session_history silently coerces a numeric "since" (documented as an ISO string) via new Date(number) instead of rejecting it', async () => {
+    const sessionStore = new SessionStore({ storagePath: tmpDir });
+    await connectDirect({ sessionStore });
+
+    const result = await client.callTool({
+      name: 'nr_observe_get_session_history',
+      arguments: { since: 1_700_000_000_000 },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.sessions).toEqual([]);
+    expect(body.count).toBe(0);
+  });
+
+  it('nr_observe_get_workflow_trace with a non-string task_id never matches (strict equality, no coercion) instead of crashing', async () => {
+    const taskDetector = new TaskDetector();
+    taskDetector.recordToolCall(makeRecord({ toolName: 'Read', sessionId: 'wf-1' }));
+    taskDetector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion', sessionId: 'wf-1' }));
+    await connectDirect({ taskDetector });
+
+    const result = await client.callTool({
+      name: 'nr_observe_get_workflow_trace',
+      arguments: { task_id: 12345 },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.error).toBe('No matching task found');
+    expect(body.task_id).toBe(12345);
+  });
+
+  it('nr_observe_subscribe_digest writes a validated Slack webhook URL to the config file via the MCP boundary', async () => {
+    const configFilePath = resolve(tmpDir, 'config.json');
+    await connectDirect({ configFilePath });
+
+    const webhookUrl = 'https://hooks.slack.com/services/T000/B000/XXXX';
+    const result = await client.callTool({
+      name: 'nr_observe_subscribe_digest',
+      arguments: { webhookUrl },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const written = JSON.parse(readFileSync(configFilePath, 'utf-8'));
+    expect(written.digestWebhookUrl).toBe(webhookUrl);
+  });
+
+  it('nr_observe_get_context_efficiency returns the ContextWindowTracker metrics verbatim', async () => {
+    const contextWindowTracker = new ContextWindowTracker();
+    contextWindowTracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+    contextWindowTracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+    await connectDirect({ contextWindowTracker });
+
+    const result = await client.callTool({
+      name: 'nr_observe_get_context_efficiency',
+      arguments: {},
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body).toEqual(contextWindowTracker.getMetrics());
+    expect(body.repeatedReadCount).toBe(1);
   });
 });

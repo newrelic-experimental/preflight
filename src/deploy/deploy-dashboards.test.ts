@@ -281,6 +281,86 @@ describe('runDeployDashboards', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('--update finds the existing dashboard and updates it', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const { fetch: fetchImpl, calls } = makeFetchMock([
+      // findDashboardGuid
+      {
+        data: {
+          actor: {
+            entitySearch: {
+              results: { entities: [{ guid: 'GUID-EXISTING', name: 'Test Dashboard' }] },
+            },
+          },
+        },
+      },
+      // dashboardUpdate
+      {
+        data: {
+          dashboardUpdate: {
+            entityResult: { guid: 'GUID-EXISTING', name: 'Test Dashboard' },
+            errors: null,
+          },
+        },
+      },
+    ]);
+    const out = new CapturedStdout();
+    const code = await runDeployDashboards({
+      all: false,
+      update: true,
+      teardown: false,
+      print: false,
+      eu: false,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      fetchImpl,
+      stdout: out,
+    });
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.query).toContain('dashboardUpdate');
+    expect(out.text()).toContain('Updating...');
+    expect(out.text()).toContain('GUID: GUID-EXISTING');
+  });
+
+  it('--teardown finds the existing dashboard and deletes it', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const { fetch: fetchImpl, calls } = makeFetchMock([
+      // findDashboardGuid
+      {
+        data: {
+          actor: {
+            entitySearch: {
+              results: { entities: [{ guid: 'GUID-EXISTING', name: 'Test Dashboard' }] },
+            },
+          },
+        },
+      },
+      // dashboardDelete
+      { data: { dashboardDelete: { status: 'SUCCESS', errors: null } } },
+    ]);
+    const out = new CapturedStdout();
+    const code = await runDeployDashboards({
+      all: false,
+      update: false,
+      teardown: true,
+      print: false,
+      eu: false,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      fetchImpl,
+      stdout: out,
+    });
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.query).toContain('dashboardDelete');
+    expect(out.text()).toContain('✓ Deleted "Test Dashboard" (SUCCESS)');
+  });
+
   it('--teardown skips when no matching dashboard is found', async () => {
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     process.env.NEW_RELIC_API_KEY = 'NRAK-test';

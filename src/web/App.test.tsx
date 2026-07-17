@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
 import { useLiveStore, type AlertEvent } from './store/liveStore';
@@ -62,6 +62,7 @@ describe('App shell', () => {
   afterEach(() => {
     resetStore();
     vi.restoreAllMocks();
+    window.history.pushState({}, '', '/');
   });
 
   it('renders the sidebar', () => {
@@ -89,5 +90,103 @@ describe('App shell', () => {
     const banner = screen.getByRole('alert');
     expect(banner).toBeInTheDocument();
     expect(banner.textContent).toContain('Boom');
+  });
+
+  it('navigates to the Git Efficiency view via the sidebar and renders its heading', async () => {
+    const gitEfficiencyPayload = {
+      totalGitCommands: 1,
+      mergeConflicts: 0,
+      rebaseConflicts: 0,
+      abortedOperations: 0,
+      forcePushes: 0,
+      resetHards: 0,
+      discardedChanges: 0,
+      pullCount: 0,
+      pushCount: 0,
+      commitCount: 0,
+      branchOperations: 0,
+      conflictResolutionRate: null,
+      avgConflictResolutionMs: null,
+      staleBranchPulls: 0,
+      gitCommandTimeline: [],
+      conflictHistory: [],
+      suggestions: [],
+      bestPractices: [],
+      preventionScore: null,
+      efficiencyScore: null,
+      riskIndicators: {
+        syncedBeforeEditing: null,
+        timeSinceLastSyncMs: null,
+        commitsSinceLastSync: 0,
+        pushRejections: 0,
+        forceAfterReject: 0,
+        hotFiles: [],
+        usesWorktrees: false,
+        usesForceWithLease: false,
+        avgCommitsBetweenSyncs: null,
+        commitsAheadOfMain: null,
+        commitsBehindMain: null,
+        sessionDurationMs: null,
+        quickConflictResolutions: 0,
+      },
+      velocityMetrics: {
+        avgTimeBetweenCommitsMs: null,
+        commitBurstCount: 0,
+        longestGapMs: null,
+        worktreeCount: 0,
+        buildBeforePush: null,
+        testBeforePush: null,
+      },
+      conflictResolutionStrategy: {
+        oursCount: 0,
+        theirsCount: 0,
+        manualMergeCount: 0,
+        cherryPickCount: 0,
+        totalResolutions: 0,
+      },
+      prMetrics: {
+        created: 0,
+        merged: 0,
+        checksViewed: 0,
+        prsUpdated: 0,
+        prActivity: [],
+        avgTimeToCreateMs: null,
+      },
+      repoContext: { repoName: null, branch: null, remoteName: null, defaultBranch: null },
+    };
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url === '/api/git-efficiency') {
+        return Promise.resolve(
+          new Response(JSON.stringify(gitEfficiencyPayload), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url === '/api/git-efficiency/repos') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ repos: [], currentRepo: null }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    renderApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Git' }));
+    expect(await screen.findByRole('heading', { name: 'Git Efficiency' })).toBeInTheDocument();
+  });
+
+  it('renders the "Not found" fallback for an unknown route', () => {
+    window.history.pushState({}, '', '/nope');
+    renderApp();
+    expect(screen.getByText('Not found')).toBeInTheDocument();
   });
 });

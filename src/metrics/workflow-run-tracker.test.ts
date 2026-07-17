@@ -227,6 +227,36 @@ describe('WorkflowRunTracker', () => {
     expect(drained.map((r) => r.workflow_run_id)).toEqual(['b', 'c']);
   });
 
+  it('enforceOpenRunsCap evicts the oldest open run once maxOpenRuns is exceeded', () => {
+    const tracker = new WorkflowRunTracker({ maxOpenRuns: 2 });
+
+    // Three non-overlapping run windows: a=[1000,1100], b=[2000,2100], c=[3000,3100].
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'a', timestamp: 1_100, durationMs: 100 }));
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'b', timestamp: 2_100, durationMs: 100 }));
+    tracker.recordToolCall(makeAgentRecord({ toolUseId: 'c', timestamp: 3_100, durationMs: 100 }));
+
+    // Drain so `completed` no longer holds these runs -- only openRuns (now
+    // capped to the 2 most-recently-opened) can serve attribution below.
+    tracker.drainCompleted();
+
+    // A child call inside the evicted run 'a's window finds no enclosing run.
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', timestamp: 1_050, toolUseId: 'child_a' }),
+    );
+    // Child calls inside the two retained runs' windows still attribute correctly.
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', timestamp: 2_050, toolUseId: 'child_b' }),
+    );
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Bash', timestamp: 3_050, toolUseId: 'child_c' }),
+    );
+
+    const byId = new Map(tracker.getMetrics().map((r) => [r.workflow_run_id, r]));
+    expect(byId.has('a')).toBe(false);
+    expect(byId.get('b')?.tool_call_count).toBe(1);
+    expect(byId.get('c')?.tool_call_count).toBe(1);
+  });
+
   it('getMetrics returns a snapshot without clearing', () => {
     const tracker = new WorkflowRunTracker();
     tracker.recordToolCall(makeAgentRecord());
