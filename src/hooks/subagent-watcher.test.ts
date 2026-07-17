@@ -621,4 +621,109 @@ describe('SubagentWatcher', () => {
     // duplicated, the JSON would be malformed and never parse to msg_b.
     expect(tokens[1]!.messageId).toBe('msg_b');
   });
+
+  // -------------------------------------------------------------------------
+  // Schema-drift + cost self-check observability health events
+  // -------------------------------------------------------------------------
+
+  function makeAssistantLineWithUsage(
+    messageId: string,
+    uuid: string,
+    usage: Record<string, unknown>,
+  ): string {
+    return JSON.stringify({
+      type: 'assistant',
+      agentId: AGENT_ID,
+      uuid,
+      timestamp: '2026-06-15T12:00:00.000Z',
+      sessionId: PARENT_SESSION,
+      message: {
+        id: messageId,
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text' }],
+        usage,
+      },
+    });
+  }
+
+  function readHealthEvents(): {
+    event?: string;
+    dimension?: string;
+    costSelfCheckDeltaPct?: number;
+  }[] {
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    if (!existsSync(bufPath)) return [];
+    return readFileSync(bufPath, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.mode === 'observability_health');
+  }
+
+  it('emits schema_drift once for a new usage-key shape, then suppresses a repeat within the reemission window', () => {
+    const fullUsage = {
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_input_tokens: 1000,
+      cache_creation_input_tokens: 200,
+    };
+    const missingCacheCreation = {
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_input_tokens: 1000,
+    };
+    const driftEvents = () =>
+      readHealthEvents().filter((e) => e.event === 'schema_drift' && e.dimension === 'usage_keys');
+
+    writeFileSync(agentJsonl, makeAssistantLineWithUsage('msg_1', 'u1', fullUsage) + '\n');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    // Baseline fingerprint — first time seen, so it fires.
+    expect(driftEvents()).toHaveLength(1);
+
+    writeFileSync(
+      agentJsonl,
+      makeAssistantLineWithUsage('msg_1', 'u1', fullUsage) +
+        '\n' +
+        makeAssistantLineWithUsage('msg_2', 'u2', missingCacheCreation) +
+        '\n',
+    );
+    watcher.poll();
+    // A distinct usage-key shape produces its own new schema_drift event.
+    expect(driftEvents()).toHaveLength(2);
+
+    writeFileSync(
+      agentJsonl,
+      makeAssistantLineWithUsage('msg_1', 'u1', fullUsage) +
+        '\n' +
+        makeAssistantLineWithUsage('msg_2', 'u2', missingCacheCreation) +
+        '\n' +
+        makeAssistantLineWithUsage('msg_3', 'u3', missingCacheCreation) +
+        '\n',
+    );
+    watcher.poll();
+    // The same shape recurring within the 1h reemission window does not re-fire.
+    expect(driftEvents()).toHaveLength(2);
+  });
+
+  it('emits cost_self_check with the ground-truth-vs-tracked delta percentage', () => {
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+      costSelfCheck: () => ({ trackedUsd: 8, groundTruthUsd: 10 }),
+    });
+    watcher.poll();
+
+    const costEvents = readHealthEvents().filter((e) => e.event === 'cost_self_check');
+    expect(costEvents).toHaveLength(1);
+    // (groundTruthUsd - trackedUsd) / groundTruthUsd * 100 = (10 - 8) / 10 * 100 = 20
+    expect(costEvents[0]!.costSelfCheckDeltaPct).toBeCloseTo(20, 5);
+  });
 });

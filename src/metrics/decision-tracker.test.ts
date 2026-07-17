@@ -192,6 +192,49 @@ describe('DecisionTracker', () => {
   });
 });
 
+describe('DecisionTracker.recordToolCall triggers', () => {
+  function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
+    return {
+      id: 'id-1',
+      sessionId: 'session-1',
+      toolName: 'Read',
+      toolUseId: 'tool_1',
+      timestamp: Date.now(),
+      durationMs: 10,
+      success: true,
+      ...overrides,
+    };
+  }
+
+  it('records an ask_user branch when AskUserQuestion is called', () => {
+    const tracker = new DecisionTracker();
+    tracker.recordToolCall(makeRecord({ toolName: 'AskUserQuestion', toolUseId: 'tool_1' }));
+
+    const branches = tracker.getBranches();
+    expect(branches).toHaveLength(1);
+    expect(branches[0].chosenAction).toBe('ask_user');
+    expect(branches[0].reasoning).toBe('delegating to user');
+  });
+
+  it('records a retry branch on the 3rd same-tool-same-file call, with the count in the reasoning', () => {
+    const tracker = new DecisionTracker();
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', filePath: 'src/a.ts', toolUseId: 'tool_1' }),
+    );
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', filePath: 'src/a.ts', toolUseId: 'tool_2' }),
+    );
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Read', filePath: 'src/a.ts', toolUseId: 'tool_3' }),
+    );
+
+    const branches = tracker.getBranches();
+    const retryBranch = branches.find((b) => b.chosenAction === 'retry');
+    expect(retryBranch).toBeDefined();
+    expect(retryBranch?.reasoning).toBe('retrying Read on src/a.ts (3 attempts)');
+  });
+});
+
 describe('DecisionTracker transcript reasoning extraction (recordContent)', () => {
   let tmpDir: string;
   let transcriptPath: string;

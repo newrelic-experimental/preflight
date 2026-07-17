@@ -417,6 +417,12 @@ describe('collector-script', () => {
 
       expect(readBufferEvents()).toHaveLength(0);
     });
+
+    it('silently ignores malformed (non-JSON) stdin payloads', () => {
+      expect(() => processHook('not valid json{{{')).not.toThrow();
+
+      expect(readBufferEvents()).toHaveLength(0);
+    });
   });
 
   function makeKiroPreToolUse(overrides?: Record<string, unknown>): string {

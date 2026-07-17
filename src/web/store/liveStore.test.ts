@@ -3,6 +3,7 @@ import {
   selectVisibleFiringAlerts,
   selectMaxSeverity,
   type AlertEvent,
+  type WorkflowRunLiveState,
 } from './liveStore';
 
 function fireAlert(overrides: Partial<AlertEvent> = {}): AlertEvent {
@@ -279,5 +280,91 @@ describe('liveStore — setActiveSession', () => {
     pushToolCall({ id: 'legacy', tool: 'Read', durationMs: 1, costUsd: 0, ts: 1 });
     setActiveSession('sess-A');
     expect(useLiveStore.getState().recentToolCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// upsertWorkflowRun / addSubagentTurn / setObservabilityHealth
+// ---------------------------------------------------------------------------
+
+function workflowRun(overrides: Partial<WorkflowRunLiveState> = {}): WorkflowRunLiveState {
+  return {
+    workflowRunId: 'run-1',
+    runSource: 'agent_tool',
+    workflowName: 'wf',
+    status: 'running',
+    agentCount: 1,
+    totalTokens: 100,
+    ts: 1,
+    ...overrides,
+  };
+}
+
+describe('liveStore — upsertWorkflowRun', () => {
+  beforeEach(() => {
+    useLiveStore.setState({ recentWorkflowRuns: [] });
+  });
+
+  it('replaces an existing entry with the same workflowRunId instead of duplicating it', () => {
+    useLiveStore.getState().upsertWorkflowRun(workflowRun({ status: 'running', totalTokens: 100 }));
+    useLiveStore
+      .getState()
+      .upsertWorkflowRun(workflowRun({ status: 'completed', totalTokens: 500 }));
+    const runs = useLiveStore.getState().recentWorkflowRuns;
+    expect(runs).toHaveLength(1);
+    expect(runs[0].status).toBe('completed');
+    expect(runs[0].totalTokens).toBe(500);
+  });
+
+  it('caps at 50 entries, dropping the oldest', () => {
+    const { upsertWorkflowRun } = useLiveStore.getState();
+    for (let i = 0; i < 51; i++) {
+      upsertWorkflowRun(workflowRun({ workflowRunId: `run-${i}`, ts: i }));
+    }
+    const runs = useLiveStore.getState().recentWorkflowRuns;
+    expect(runs).toHaveLength(50);
+    expect(runs[0].workflowRunId).toBe('run-1');
+    expect(runs[49].workflowRunId).toBe('run-50');
+  });
+});
+
+describe('liveStore — addSubagentTurn', () => {
+  beforeEach(() => {
+    useLiveStore.setState({ todaySubagentUsd: 0, todaySubagentTurnCount: 0 });
+  });
+
+  it('accumulates the usd estimate and turn count', () => {
+    const { addSubagentTurn } = useLiveStore.getState();
+    addSubagentTurn(0.5);
+    addSubagentTurn(0.25);
+    const s = useLiveStore.getState();
+    expect(s.todaySubagentTurnCount).toBe(2);
+    expect(s.todaySubagentUsd).toBe(0.75);
+  });
+
+  it('counts the turn but skips the usd accumulation when the estimate is null', () => {
+    const { addSubagentTurn } = useLiveStore.getState();
+    addSubagentTurn(1);
+    addSubagentTurn(null);
+    const s = useLiveStore.getState();
+    expect(s.todaySubagentTurnCount).toBe(2);
+    expect(s.todaySubagentUsd).toBe(1);
+  });
+});
+
+describe('liveStore — setObservabilityHealth', () => {
+  it('replaces the observability health snapshot', () => {
+    useLiveStore.getState().setObservabilityHealth({
+      filesWatched: 12,
+      parseErrors: 0,
+      watcherDisabledByLock: false,
+      ts: 1000,
+    });
+    expect(useLiveStore.getState().observabilityHealth).toEqual({
+      filesWatched: 12,
+      parseErrors: 0,
+      watcherDisabledByLock: false,
+      ts: 1000,
+    });
   });
 });

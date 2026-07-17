@@ -79,6 +79,13 @@ describe('ModelUsageTracker', () => {
     expect(t.getMetrics().mostEfficientModel).toBe('cheap-model');
   });
 
+  it('mostEfficientModel breaks a costPerOutputToken tie alphabetically', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('model-b', 0, 100, 0.1);
+    t.recordUsage('model-a', 0, 100, 0.1);
+    expect(t.getMetrics().mostEfficientModel).toBe('model-a');
+  });
+
   it('totalModelsUsed counts distinct models', () => {
     const t = new ModelUsageTracker();
     t.recordUsage('model-a', 100, 50, 0.01);

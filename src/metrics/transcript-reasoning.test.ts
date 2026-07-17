@@ -1,7 +1,25 @@
+import { jest } from '@jest/globals';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+
+// statSync/openSync are wrapped in jest.fn() (defaulting to the real
+// implementation) so the WSL-translation test below can redirect calls for a
+// specific translated path onto the real transcript file, while every other
+// test in this file continues to hit the real filesystem unmodified.
+jest.mock('node:fs', () => {
+  const real = jest.requireActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...real,
+    statSync: jest.fn(real.statSync),
+    openSync: jest.fn(real.openSync),
+  };
+});
+
+import * as nodeFs from 'node:fs';
 import { extractReasoningForToolUse } from './transcript-reasoning.js';
+
+const realFs = jest.requireActual<typeof import('node:fs')>('node:fs');
 
 let tmpDir: string;
 let transcriptPath: string;
@@ -13,6 +31,12 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
+  (nodeFs.statSync as jest.Mock).mockImplementation(
+    realFs.statSync as (...args: unknown[]) => unknown,
+  );
+  (nodeFs.openSync as jest.Mock).mockImplementation(
+    realFs.openSync as (...args: unknown[]) => unknown,
+  );
 });
 
 function assistantLine(messageId: string, block: Record<string, unknown>): Record<string, unknown> {
@@ -121,5 +145,56 @@ describe('extractReasoningForToolUse', () => {
     const result = extractReasoningForToolUse(transcriptPath, 'tool_a');
     expect(result).toContain('[REDACTED]');
     expect(result).not.toContain('sk-abc123def456');
+  });
+
+  describe('translateWslPath (via the exported extractReasoningForToolUse)', () => {
+    let originalPlatform: string;
+
+    beforeEach(() => {
+      originalPlatform = process.platform;
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+    });
+
+    it('translates a Windows drive path to its WSL mount and reads the file when platform is linux', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+      writeTranscript([
+        assistantLine('msg_1', { type: 'thinking', thinking: 'Reasoning from the WSL mount.' }),
+        assistantLine('msg_1', { type: 'tool_use', id: 'tool_a', name: 'Read', input: {} }),
+      ]);
+
+      const windowsPath = 'C:\\Users\\dev\\project\\transcript.jsonl';
+      const translatedPath = '/mnt/c/Users/dev/project/transcript.jsonl';
+
+      // Redirect only the translated path onto the real temp transcript file;
+      // any other path (e.g. the untranslated windowsPath, proving a bug)
+      // falls through to the real filesystem call and fails to resolve.
+      (nodeFs.statSync as jest.Mock).mockImplementation((p: unknown) =>
+        realFs.statSync(p === translatedPath ? transcriptPath : (p as string)),
+      );
+      (nodeFs.openSync as jest.Mock).mockImplementation((p: unknown, flags: unknown) =>
+        realFs.openSync(p === translatedPath ? transcriptPath : (p as string), flags as number),
+      );
+
+      expect(extractReasoningForToolUse(windowsPath, 'tool_a')).toBe(
+        'Reasoning from the WSL mount.',
+      );
+    });
+
+    it('leaves a Windows drive path untranslated on a non-linux platform, so it fails to resolve', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+
+      writeTranscript([
+        assistantLine('msg_1', { type: 'thinking', thinking: 'Reasoning from the WSL mount.' }),
+        assistantLine('msg_1', { type: 'tool_use', id: 'tool_a', name: 'Read', input: {} }),
+      ]);
+
+      const windowsPath = 'C:\\Users\\dev\\project\\transcript.jsonl';
+
+      expect(extractReasoningForToolUse(windowsPath, 'tool_a')).toBeNull();
+    });
   });
 });

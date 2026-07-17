@@ -1595,6 +1595,182 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
   });
 });
 
+describe('api-handler GET /api/workflows', () => {
+  it('returns 503 unavailable when workflowStore dep is absent', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/workflows' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'workflowStore' });
+  });
+
+  it('passes since/run_source/status query params through to listRuns() unchanged, and returns a bare array', async () => {
+    const fakeRow = {
+      workflow_run_id: 'wf_abc12345-6dd',
+      parent_session_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      task_id: null,
+      workflow_name: 'sample',
+      status: 'completed',
+      incomplete: false,
+      error_reason: null,
+      default_model: 'claude-opus-4-7',
+      started_at: 1_781_652_144_959,
+      duration_ms: 745_892,
+      agent_count: 2,
+      total_tokens: 826_463,
+      total_usd: null,
+      declared_phases: null,
+      observed_phases: 1,
+      declared_parallel_widths: [],
+      token_reconciliation_delta: null,
+      run_source: 'script',
+      script_path: null,
+      workflow_json_path: '/tmp/wf_abc12345-6dd.json',
+    };
+    const listRunsSpy = jest.fn(() => [fakeRow]);
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: listRunsSpy,
+        getRun: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['workflowStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/workflows?since=1000&run_source=agent_tool&status=incomplete',
+    } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(listRunsSpy).toHaveBeenCalledWith({
+      since: 1000,
+      runSource: 'agent_tool',
+      status: 'incomplete',
+    });
+    const parsed = JSON.parse(body());
+    // Bare array, not { runs: [...] } — the SPA feeds this straight into
+    // Array.isArray().
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].runId).toBe('wf_abc12345-6dd');
+  });
+});
+
+describe('api-handler GET /api/observability-health', () => {
+  it('returns 503 unavailable when observabilityHealth dep is absent', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/observability-health' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'observabilityHealth' });
+  });
+
+  it('passes through observabilityHealth.getSnapshot()', async () => {
+    const snapshot = {
+      watcherActive: true,
+      filesWatched: 3,
+      parseErrors: 0,
+      watcherDisabledByLock: false,
+      costSelfCheckDeltaPct: null,
+    };
+    const handler = createApiHandler({
+      observabilityHealth: { getSnapshot: () => snapshot },
+    });
+    const req = { method: 'GET', url: '/api/observability-health' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(snapshot);
+  });
+});
+
+describe('api-handler GET /api/workflows/:runId', () => {
+  it('returns 503 unavailable when workflowStore dep is absent', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/workflows/wf_abc12345-6dd' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'workflowStore' });
+  });
+
+  it('returns 404 {error:"not_found"} when getRun() returns null', async () => {
+    const handler = createApiHandler({
+      workflowStore: { listRuns: () => [], getRun: () => null },
+    });
+    const req = { method: 'GET', url: '/api/workflows/wf_nonexistent' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(404);
+    expect(JSON.parse(body())).toEqual({ error: 'not_found' });
+  });
+
+  it('maps the run + agents + topology fields to their DTO shape when found', async () => {
+    const runRow = {
+      workflow_run_id: 'wf_abc12345-6dd',
+      parent_session_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      task_id: 'task-1',
+      workflow_name: 'sample',
+      status: 'completed',
+      incomplete: false,
+      error_reason: null,
+      default_model: 'claude-opus-4-7',
+      started_at: 1_781_652_144_959,
+      duration_ms: 745_892,
+      agent_count: 1,
+      total_tokens: 137_810,
+      total_usd: 4.56,
+      declared_phases: 2,
+      observed_phases: 1,
+      declared_parallel_widths: [1, 'dynamic'],
+      token_reconciliation_delta: null,
+      run_source: 'script',
+      script_path: null,
+      workflow_json_path: '/tmp/wf_abc12345-6dd.json',
+      agents: [
+        {
+          agent_id: 'a45d96d201bf2f1ef',
+          label: 'investigate:hooks-coverage',
+          phase_index: 1,
+          phase_title: 'Investigate',
+          model: 'claude-opus-4-7',
+          state: 'done',
+          attempt: 1,
+          duration_ms: 222_186,
+          tokens: 137_810,
+          tool_calls: 35,
+          started_at: 1,
+        },
+      ],
+      topology: {
+        workflowName: 'sample',
+        declaredPhases: 2,
+        declaredParallelWidths: [1, 'dynamic'],
+      },
+    };
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [],
+        getRun: (runId: string) => (runId === 'wf_abc12345-6dd' ? runRow : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['workflowStore'],
+    });
+    const req = { method: 'GET', url: '/api/workflows/wf_abc12345-6dd' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect(parsed.run.runId).toBe('wf_abc12345-6dd');
+    expect(parsed.run.taskId).toBe('task-1');
+    expect(parsed.run.totalUsd).toBeCloseTo(4.56, 2);
+    expect(parsed.agents).toHaveLength(1);
+    expect(parsed.agents[0].agentId).toBe('a45d96d201bf2f1ef');
+    expect(parsed.topology).toEqual(runRow.topology);
+  });
+});
+
 describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   function midnightToday(): number {
     const d = new Date();

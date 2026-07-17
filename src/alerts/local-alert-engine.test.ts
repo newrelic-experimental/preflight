@@ -389,6 +389,56 @@ describe('LocalAlertEngine — budget rules', () => {
   });
 });
 
+describe('LocalAlertEngine — budget.daily / budget.weekly periodKey rollover', () => {
+  it('clears a firing budget.daily rule when the calendar day rolls over', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule({ id: 'daily-budget', type: 'budget.daily' })]);
+
+    const day1 = new Date(2026, 5, 15, 10, 0, 0).getTime();
+    const day2 = new Date(2026, 5, 16, 10, 0, 0).getTime();
+
+    let events = engine.evaluate(
+      makeSnapshot({
+        budgetThresholds: [{ period: 'daily', thresholdPct: 80, spentUsd: 4, budgetUsd: 5 }],
+      }),
+      day1,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.state).toBe('firing');
+
+    // Day rolls over with no matching threshold — must clear, proving periodKey()'s
+    // 'daily' branch rolled over rather than treating the rule as still in-period.
+    events = engine.evaluate(makeSnapshot(), day2);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.state).toBe('cleared');
+    expect(engine.getFiringRuleIds()).toEqual([]);
+  });
+
+  it('clears a firing budget.weekly rule across an ISO week boundary (Sun -> Mon)', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule({ id: 'weekly-budget', type: 'budget.weekly' })]);
+
+    const sunday = new Date(2026, 5, 7, 10, 0, 0).getTime();
+    const monday = new Date(2026, 5, 8, 10, 0, 0).getTime();
+
+    let events = engine.evaluate(
+      makeSnapshot({
+        budgetThresholds: [{ period: 'weekly', thresholdPct: 80, spentUsd: 40, budgetUsd: 50 }],
+      }),
+      sunday,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.state).toBe('firing');
+
+    // Monday starts a new ISO week — must clear, proving periodKey()'s 'weekly'
+    // branch computed a different ISO week number.
+    events = engine.evaluate(makeSnapshot(), monday);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.state).toBe('cleared');
+    expect(engine.getFiringRuleIds()).toEqual([]);
+  });
+});
+
 describe('LocalAlertEngine — clock + state housekeeping', () => {
   it('uses the injected clock for now()', () => {
     const engine = new LocalAlertEngine({ clock: () => 42 });

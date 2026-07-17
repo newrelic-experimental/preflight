@@ -103,6 +103,30 @@ describe('Idle-based task detection', () => {
 
     detector.dispose();
   });
+
+  it('caps durationMs at 4 hours when the measured span exceeds it (laptop sleep/container pause)', () => {
+    const detector = new TaskDetector();
+    const start = Date.now();
+
+    detector.recordToolCall(makeRecord({ toolName: 'Read', timestamp: start }));
+
+    // Jump the clock forward without running pending timers, simulating a
+    // process suspension rather than a normal idle gap.
+    const fourHoursMs = 4 * 60 * 60 * 1000;
+    const resumedAt = start + fourHoursMs + 60_000;
+    jest.setSystemTime(resumedAt);
+
+    // Explicit boundary signal closes the task at the jumped timestamp.
+    detector.recordToolCall(
+      makeRecord({ toolName: 'AskUserQuestion', questionCount: 1, timestamp: resumedAt }),
+    );
+
+    const tasks = detector.getCompletedTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].durationMs).toBe(fourHoursMs);
+
+    detector.dispose();
+  });
 });
 
 // ---------------------------------------------------------------------------

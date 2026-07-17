@@ -999,6 +999,53 @@ describe('HookEventProcessor', () => {
     });
   });
 
+  describe('mode: workflow_run', () => {
+    function makeWorkflowRunEvent(overrides?: Partial<Omit<HookEvent, 'mode'>>): HookEvent {
+      return {
+        mode: 'workflow_run',
+        tool: 'workflow_run',
+        timestamp: 1700000000000,
+        workflowRunId: 'wf_abc12345-6dd',
+        status: 'completed',
+        durationMs: 5000,
+        totalTokens: 1234,
+        agentCount: 3,
+        workflowName: 'my-workflow',
+        phases: ['phase-1', 'phase-2'],
+        workflowProgress: [],
+        parentSessionId: 'sess-1',
+        ...overrides,
+      } as HookEvent;
+    }
+
+    it('dedups by (workflowRunId, timestamp) — fires onWorkflowRun exactly once', () => {
+      const runs: import('../storage/types.js').WorkflowRunEvent[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onWorkflowRun: (event) => runs.push(event),
+      });
+      const event = makeWorkflowRunEvent();
+
+      processor.processEvents([event, event]);
+
+      expect(runs).toHaveLength(1);
+      expect(runs[0].workflowRunId).toBe('wf_abc12345-6dd');
+    });
+
+    it('swallows errors from a throwing onWorkflowRun callback', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onWorkflowRun: () => {
+          throw new Error('boom');
+        },
+      });
+
+      expect(() => processor.processEvents([makeWorkflowRunEvent()])).not.toThrow();
+    });
+  });
+
   describe('platform tool-name mapping', () => {
     it('maps a non-canonical tool name using the injected platform adapter', () => {
       const fakeAdapter = {

@@ -210,6 +210,11 @@ describe('KiroAdapter', () => {
       });
       expect(normalized.sessionId).toBe('kiro-sess-001');
     });
+
+    it('does not validate field types — a numeric "path" leaks through unchanged as filePath', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'fsRead', path: 12345 });
+      expect(normalized.filePath).toBe(12345);
+    });
   });
 
   describe('getSessionMetadata', () => {

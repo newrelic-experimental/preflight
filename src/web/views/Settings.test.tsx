@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Settings } from './Settings.js';
 
@@ -118,5 +118,33 @@ describe('Subagent watcher status', () => {
     wrap(<Settings />);
     expect(await screen.findByText('enabled')).toBeInTheDocument();
     expect(await screen.findByText(/5 files watched, 1 parse errors/i)).toBeInTheDocument();
+  });
+});
+
+describe('Identity & Account save flow', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('saves an edited developer name and shows the restart banner', async () => {
+    wrap(<Settings />);
+    const input = await screen.findByDisplayValue('dev');
+    fireEvent.change(input, { target: { value: 'newdev' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+
+    await waitFor(() => expect(client.patchSettings).toHaveBeenCalledWith({ developer: 'newdev' }));
+    expect(
+      await screen.findByText('Saved. Restart the server for changes to take effect.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the red saveError banner when the save mutation rejects', async () => {
+    vi.mocked(client.patchSettings).mockRejectedValueOnce(new Error('disk full'));
+    wrap(<Settings />);
+    const input = await screen.findByDisplayValue('dev');
+    fireEvent.change(input, { target: { value: 'newdev' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+
+    expect(await screen.findByText(/disk full/)).toBeInTheDocument();
   });
 });

@@ -38,3 +38,19 @@ describe('ActivityHeatmap grid variant — timezone handling', () => {
     expect(rect).toHaveAttribute('y', '38');
   });
 });
+
+describe('ActivityHeatmap strip variant', () => {
+  it('renders one <rect> per bucket', () => {
+    const { container } = render(
+      <ActivityHeatmap variant="strip" buckets={[1, 2, 3, 0]} maxCount={3} />,
+    );
+    expect(container.querySelectorAll('rect')).toHaveLength(4);
+  });
+
+  it('maps a zero count to the lowest intensity color and the max count to the top level', () => {
+    const { container } = render(<ActivityHeatmap variant="strip" buckets={[0, 3]} maxCount={3} />);
+    const rects = container.querySelectorAll('rect');
+    expect(rects[0]).toHaveAttribute('fill', 'var(--color-heatmap-0)');
+    expect(rects[1]).toHaveAttribute('fill', 'var(--color-heatmap-4)');
+  });
+});

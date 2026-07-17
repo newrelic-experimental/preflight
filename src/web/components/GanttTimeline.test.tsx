@@ -37,4 +37,24 @@ describe('GanttTimeline', () => {
     expect(screen.getByRole('img', { name: 'Edit · 240ms · success' })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'Bash · 80ms · failed' })).toBeInTheDocument();
   });
+
+  it('applies severity-based border-highlight classes to segmented rows', () => {
+    const entries = [
+      { timestamp: 0, toolName: 'Read', durationMs: 100, success: true },
+      { timestamp: 100, toolName: 'Edit', durationMs: 100, success: true },
+      { timestamp: 200, toolName: 'Bash', durationMs: 100, success: true },
+    ];
+    render(
+      <GanttTimeline
+        entries={entries}
+        segments={[
+          { type: 'thrashing', startIndex: 0, endIndex: 0, severity: 'critical' },
+          { type: 're_reading', startIndex: 1, endIndex: 1, severity: 'warning' },
+        ]}
+      />,
+    );
+    expect(screen.getByTitle('Read').parentElement).toHaveClass('border-l-accent-red');
+    expect(screen.getByTitle('Edit').parentElement).toHaveClass('border-l-accent-amber');
+    expect(screen.getByTitle('Bash').parentElement).toHaveClass('border-l-transparent');
+  });
 });

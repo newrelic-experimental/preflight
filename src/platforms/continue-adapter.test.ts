@@ -238,6 +238,12 @@ describe('ContinueAdapter', () => {
       });
       expect(normalized.sessionId).toBe('cont-sess-001');
     });
+
+    it('does not validate field types — wrong-typed "tool" and "filepath" leak through unchanged', () => {
+      const normalized = adapter.normalizeToolCall({ tool: ['read_file'], filepath: 99 });
+      expect(normalized.platformToolName).toEqual(['read_file']);
+      expect(normalized.filePath).toBe(99);
+    });
   });
 
   describe('getSessionMetadata', () => {

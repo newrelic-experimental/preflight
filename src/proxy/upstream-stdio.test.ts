@@ -1,5 +1,6 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   StdioUpstream,
   sanitizeEnv,
@@ -526,5 +527,50 @@ describe('StdioUpstream.connect() command validation', () => {
       transportType: 'stdio',
     });
     await expect(upstream.connect()).rejects.toThrow('must be an absolute path');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connect() — transport.onclose wiring
+// ---------------------------------------------------------------------------
+
+describe('StdioUpstream connect() onclose wiring', () => {
+  it('marks the upstream disconnected when the transport reports an unexpected process exit', async () => {
+    // Client.connect() calls transport.start(), which spawns a real child
+    // process — mock it out so this test never spawns anything, while the
+    // rest of connect() (constructing a real StdioClientTransport and wiring
+    // its onclose callback) runs unmodified.
+    const connectSpy = jest.spyOn(Client.prototype, 'connect').mockResolvedValue(undefined);
+
+    const upstream = new StdioUpstream({
+      name: 'test',
+      command: '/usr/bin/node',
+      transportType: 'stdio',
+    });
+
+    await upstream.connect();
+
+    const transport = (upstream as unknown as Record<string, unknown>).transport as {
+      onclose?: () => void;
+    };
+    expect(typeof transport.onclose).toBe('function');
+
+    // Simulate the child process exiting unexpectedly.
+    transport.onclose!();
+
+    const { res, getStatus, getBody } = makeFakeResponse();
+    const result = await upstream.forward(
+      makeFakeRequest(),
+      res,
+      Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })),
+    );
+
+    expect(result.statusCode).toBe(500);
+    expect(getStatus()).toBe(500);
+    const body = JSON.parse(getBody());
+    expect(body.error.code).toBe(-32603);
+    expect(body.error.message).toBe('Upstream not connected');
+
+    connectSpy.mockRestore();
   });
 });

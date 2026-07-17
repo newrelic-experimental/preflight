@@ -392,6 +392,53 @@ describe('SessionStore', () => {
     expect(sessions).toHaveLength(2);
     expect(sessions.map((s) => s.sessionId)).toEqual(['today-1', 'today-2']);
   });
+
+  it('loadSessionsOverlappingToday includes cross-midnight and endTime=0 sessions, excludes yesterday-only sessions', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    // Use local midnight so the boundary is correct for any timezone
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const startOfYesterday = startOfToday - 86_400_000;
+
+    // Started and ended entirely yesterday — should be excluded.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'yesterday-only',
+        startTime: startOfYesterday + 1000,
+        endTime: startOfYesterday + 5000,
+      }),
+    );
+
+    // Started yesterday evening, ended after today's local midnight — should
+    // be included via the endTime-overlap filter.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'cross-midnight',
+        startTime: startOfYesterday + 80_000_000,
+        endTime: startOfToday + 1000,
+      }),
+    );
+
+    // Legacy/crashed session written without an endTime field at all —
+    // deserializes to endTime: 0 and should be included via the explicit
+    // endTime === 0 carve-out. Written directly to disk to simulate a file
+    // an older build produced (FullSessionSummary.endTime is required, so
+    // saveSession() itself cannot omit it).
+    const noEndTimeDate = today.toISOString().slice(0, 10);
+    const { endTime: _unused, ...withoutEndTime } = makeSummary({
+      sessionId: 'no-end-time',
+      startTime: startOfToday + 2000,
+    });
+    writeFileSync(
+      resolve(tmpDir, 'sessions', `${noEndTimeDate}_no-end-time.json`),
+      JSON.stringify(withoutEndTime),
+    );
+
+    const sessions = store.loadSessionsOverlappingToday();
+    expect(sessions.map((s) => s.sessionId).sort()).toEqual(['cross-midnight', 'no-end-time']);
+  });
 });
 
 // ---------------------------------------------------------------------------

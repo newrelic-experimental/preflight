@@ -5,6 +5,7 @@ import {
   rmSync,
   readFileSync,
   readdirSync,
+  renameSync,
   writeFileSync,
   utimesSync,
   statSync,
@@ -327,6 +328,42 @@ describe('LocalStore', () => {
     });
   });
 
+  describe('drainBuffer() concurrent-write-during-drain race', () => {
+    it('a write landing between the claim-rename and the read is never lost or interleaved', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir);
+      const bufferPath = resolve(tmpDir, 'buffer.jsonl');
+      const drainPath = bufferPath + '.drain';
+
+      const inFlightEvent = makeEvent({ tool: 'in-flight' });
+      store.appendToBuffer(inFlightEvent);
+
+      // Mirror the first half of drainPath()'s rename-then-read: claim the
+      // buffer for draining, as if a drain were mid-flight but hadn't read
+      // the renamed file yet.
+      renameSync(bufferPath, drainPath);
+
+      // A concurrent collector append lands here, mid-drain — it must recreate
+      // a fresh bufferPath rather than touching the already-claimed .drain file.
+      const raceEvent = makeEvent({ tool: 'landed-during-drain' });
+      store.appendToBuffer(raceEvent);
+      expect(existsSync(bufferPath)).toBe(true);
+
+      // The claimed .drain file is exactly the pre-race snapshot, untouched
+      // by the new append that landed after the claim.
+      const claimed = readFileSync(drainPath, 'utf-8');
+      expect(JSON.parse(claimed.trim())).toEqual(inFlightEvent);
+
+      // The next poll's drainBuffer() recovers the still-present .drain file
+      // AND the freshly-appended buffer — both events come back intact,
+      // neither lost nor interleaved.
+      const drained = store.drainBuffer();
+      expect(drained.map((e) => e.tool)).toEqual(['in-flight', 'landed-during-drain']);
+      expect(existsSync(drainPath)).toBe(false);
+      expect(existsSync(bufferPath)).toBe(false);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Directory permissions
   // ---------------------------------------------------------------------------
@@ -350,6 +387,39 @@ describe('LocalStore', () => {
         const mode = statSync(dir).mode & 0o777;
         expect(mode).toBe(0o700);
       }
+    });
+  });
+
+  describe('file permissions (CLAUDE.md storage-permission invariant)', () => {
+    it('writes the buffer file with mode 0o600', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir);
+      store.appendToBuffer(makeEvent({ tool: 'Read' }));
+
+      const mode = statSync(store.getBufferPath()).mode & 0o777;
+      expect(mode).toBe(0o600);
+    });
+
+    it('writes the audit log file with mode 0o600', () => {
+      const store = new LocalStore(tmpDir);
+      store.initialize();
+
+      const entry = makeAudit({ timestamp: Date.now() });
+      store.appendAuditLog(entry);
+
+      const dateStr = new Date(entry.timestamp).toISOString().slice(0, 10);
+      const filepath = resolve(tmpDir, 'audit', `${dateStr}.jsonl`);
+      const mode = statSync(filepath).mode & 0o777;
+      expect(mode).toBe(0o600);
+    });
+
+    it('writes the heartbeat pid file with mode 0o600', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir, 'sess-perm-1');
+      store.writeHeartbeat(12345);
+
+      const mode = statSync(resolve(tmpDir, 'active-sess-perm-1.pid')).mode & 0o777;
+      expect(mode).toBe(0o600);
     });
   });
 

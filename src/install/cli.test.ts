@@ -66,6 +66,9 @@ jest.mock('../config.js', () => ({
   ...(jest.requireActual('../config.js') as object),
   loadMcpConfig: jest.fn(),
 }));
+jest.mock('./setup-wizard.js', () => ({
+  runSetupWizard: jest.fn(),
+}));
 
 import { LocalStore } from '../storage/index.js';
 import * as scheduleMod from './schedule.js';
@@ -73,6 +76,7 @@ import * as platformMod from './platform.js';
 import { runInstallCli } from './cli.js';
 import * as installHelperMod from './install-helper.js';
 import * as configMod from '../config.js';
+import * as setupWizardMod from './setup-wizard.js';
 
 const mockedRunDiagnostics = diagnostics.runDiagnostics as jest.MockedFunction<
   typeof diagnostics.runDiagnostics
@@ -97,6 +101,11 @@ const mockedHelper = installHelperMod as unknown as {
   detectMcpConfigPath: jest.Mock;
 };
 const mockedConfig = configMod as unknown as { loadMcpConfig: jest.Mock };
+const mockedSetupWizard = {
+  runSetupWizard: setupWizardMod.runSetupWizard as jest.MockedFunction<
+    typeof setupWizardMod.runSetupWizard
+  >,
+};
 
 describe('schedule subcommand', () => {
   let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -1459,6 +1468,33 @@ describe('preflight update', () => {
     expect(output).not.toContain('could not be verified');
   });
 
+  it('reports unhealthy when the daemon restarts but responds with a stale/mismatched version', async () => {
+    mockSuccessfulBuild();
+    mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
+      installed: true,
+      readable: true,
+      binaryPath: '/usr/local/bin/preflight',
+    });
+    mFs.readFileSync.mockReturnValue('{"version":"1.4.0"}');
+    mockedConfig.loadMcpConfig.mockReturnValue({
+      dashboard: { host: '127.0.0.1', port: 7777 },
+    });
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, version: '0.9.0' }),
+    } as unknown as Response);
+
+    jest.useFakeTimers();
+    const updatePromise = runInstallCli(['update']);
+    await jest.advanceTimersByTimeAsync(6_000);
+    await updatePromise;
+    jest.useRealTimers();
+
+    const output = getOutput();
+    expect(output).toContain('could not be verified as healthy');
+    expect(output).not.toContain('✓ Restarted the dashboard daemon');
+  });
+
   it('skips verification silently and keeps the success message when config cannot be loaded', async () => {
     mockSuccessfulBuild();
     mockedSchedule.getDashboardDaemonStatus.mockReturnValue({
@@ -2074,5 +2110,41 @@ describe('preflight validate', () => {
     ]);
     expect(output.join('')).toContain('/custom/path/config.json');
     expect(output.join('')).toContain('Config is valid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflight setup
+// ---------------------------------------------------------------------------
+
+describe('preflight setup', () => {
+  let output: string[];
+
+  beforeEach(() => {
+    output = [];
+    jest.spyOn(process.stdout, 'write').mockImplementation((s) => {
+      output.push(String(s));
+      return true;
+    });
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    jest.restoreAllMocks();
+  });
+
+  it('prints "Setup failed" and sets exitCode 1 when the wizard rejects', async () => {
+    mockedSetupWizard.runSetupWizard.mockRejectedValue(new Error('boom'));
+    await runInstallCli(['setup']);
+    expect(output.join('')).toContain('Setup failed: boom');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints nothing and leaves exitCode unset when the wizard resolves', async () => {
+    mockedSetupWizard.runSetupWizard.mockResolvedValue(undefined);
+    await runInstallCli(['setup']);
+    expect(output.join('')).not.toContain('Setup failed');
+    expect(process.exitCode).toBeFalsy();
   });
 });

@@ -53,4 +53,18 @@ describe('formatSlackDigest', () => {
     );
     expect(JSON.stringify(payload)).toContain('thrashing');
   });
+
+  it('falls back to "none" for the top anti-pattern when antiPatternCounts is empty', () => {
+    const payload = formatSlackDigest(makeWeeklySummary({ antiPatternCounts: {} }));
+    expect(JSON.stringify(payload)).toContain('`none`');
+  });
+
+  it('sanitizes backticks and newlines in the top anti-pattern label before embedding it in a Slack code span', () => {
+    const payload = formatSlackDigest(
+      makeWeeklySummary({ antiPatternCounts: { 'evil`pattern\ninjected': 5 } }),
+    );
+    const text = JSON.stringify(payload);
+    expect(text).not.toContain('evil`pattern');
+    expect(text).toContain('evil_pattern_injected');
+  });
 });

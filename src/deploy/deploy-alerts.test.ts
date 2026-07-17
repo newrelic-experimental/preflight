@@ -1,12 +1,25 @@
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { jest } from '@jest/globals';
+
+// Point homedir() at a throw-away temp tree so loadPersonalThresholds() (which
+// reads ~/.newrelic-preflight/config.json with no injection seam) never
+// touches the real user home directory.
+const TEST_HOME = `/tmp/nr-deploy-alerts-test-${process.pid}`;
+jest.mock('node:os', () => {
+  const real = jest.requireActual<typeof import('node:os')>('node:os');
+  return { ...real, homedir: () => TEST_HOME };
+});
+
 import {
   runDeployAlerts,
   loadDefinitions,
   loadPersonalDefinitions,
   buildConditionInput,
+  loadPersonalThresholds,
 } from './deploy-alerts.js';
+import { DEFAULT_PERSONAL_THRESHOLDS } from '../alerts/types.js';
 import type { PersonalAlertThresholds } from '../alerts/types.js';
 
 interface MockResponse {
@@ -572,5 +585,33 @@ describe('runDeployAlerts', () => {
       stdout: out,
     });
     expect(calls[0].url).toBe('https://api.eu.newrelic.com/graphql');
+  });
+});
+
+describe('loadPersonalThresholds', () => {
+  const configDir = join(TEST_HOME, '.newrelic-preflight');
+
+  beforeEach(() => {
+    mkdirSync(configDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_HOME, { recursive: true, force: true });
+  });
+
+  it('mixes a partial alerts.personal config with DEFAULT_PERSONAL_THRESHOLDS for the rest', () => {
+    writeFileSync(
+      join(configDir, 'config.json'),
+      JSON.stringify({ alerts: { personal: { dailyCostUsd: 9.5 } } }),
+    );
+    expect(loadPersonalThresholds()).toEqual({
+      ...DEFAULT_PERSONAL_THRESHOLDS,
+      dailyCostUsd: 9.5,
+    });
+  });
+
+  it('falls back to DEFAULT_PERSONAL_THRESHOLDS entirely on malformed JSON', () => {
+    writeFileSync(join(configDir, 'config.json'), '{ not valid json');
+    expect(loadPersonalThresholds()).toEqual(DEFAULT_PERSONAL_THRESHOLDS);
   });
 });

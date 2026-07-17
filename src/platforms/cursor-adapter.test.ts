@@ -149,6 +149,12 @@ describe('CursorAdapter', () => {
       expect(normalized.success).toBe(true);
       expect(normalized.durationMs).toBeNull();
     });
+
+    it('does not validate field types — an object-typed "tool" leaks through unchanged', () => {
+      const normalized = adapter.normalizeToolCall({ tool: { nested: true }, timestamp: 2000 });
+      expect(normalized.platformToolName).toEqual({ nested: true });
+      expect(normalized.toolName).toBe('Unknown');
+    });
   });
 
   describe('getSessionMetadata', () => {

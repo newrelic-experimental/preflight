@@ -570,3 +570,66 @@ describe('Sessions view — workflow consolidation', () => {
     window.location = original;
   });
 });
+
+describe('Sessions view — subagent fetch failure fallback', () => {
+  // Documented fallback in SessionTraceSection: when the /subagents fetch
+  // fails (retry: false, so a 404 or network error settles immediately as
+  // isError), the section must still render the parent tool-call trace
+  // (agents={[]}) rather than going blank.
+  it('still renders the parent trace when /api/sessions/:id/subagents 404s', async () => {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    const subagentsCalls: string[] = [];
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.includes('/subagents')) {
+        subagentsCalls.push(url);
+        return Promise.resolve(
+          new Response('{"error":"not_found"}', {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.includes('/replay')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ timeline: detail.timeline, segments: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions/')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(detail), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(SAMPLE_LIST), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText(/s1/)[0]);
+
+    // The parent lane's own group header must render — proof the section
+    // fell through to the fallback SessionTrace render rather than blanking.
+    await waitFor(() => expect(screen.getByText('Parent')).toBeInTheDocument());
+    expect(screen.queryByText('Loading subagents')).toBeNull();
+    await waitFor(() => expect(subagentsCalls.length).toBeGreaterThan(0));
+  });
+});

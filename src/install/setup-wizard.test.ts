@@ -1363,6 +1363,35 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(output).toContain('⚠ License key: could not reach NR ingest API');
   });
 
+  it('prints ⚠ "unexpected response" when license key check returns a server error', async () => {
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({
+      valid: false,
+      reason: 'server-error',
+      detail: 'HTTP 500',
+    });
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('⚠ License key: unexpected response (HTTP 500) — proceeding anyway');
+  });
+
+  it('prints ⚠ "unexpected response" when API key check returns a server error', async () => {
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({
+      valid: false,
+      reason: 'server-error',
+      detail: 'HTTP 500',
+    });
+    answers('cloud', '12345', 'NRLIC-test', '', 'NRAK-bad', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('⚠ API key: unexpected response (HTTP 500) — proceeding anyway');
+  });
+
   it('skips API key validation when no API key is set', async () => {
     answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'n');
 

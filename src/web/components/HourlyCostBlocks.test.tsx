@@ -24,4 +24,13 @@ describe('HourlyCostBlocks', () => {
     render(<HourlyCostBlocks hours={hours} ariaLabel="Custom label" />);
     expect(screen.getByRole('img', { name: 'Custom label' })).toBeInTheDocument();
   });
+
+  it('renders nothing when a nonzero cost rounds to 0 blocks at every unit step', () => {
+    const hours = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      cost: hour === 3 ? 0.001 : 0,
+    }));
+    const { container } = render(<HourlyCostBlocks hours={hours} />);
+    expect(container.firstChild).toBeNull();
+  });
 });

@@ -68,5 +68,30 @@ describe('digest-sender', () => {
         global.fetch = originalFetch;
       }
     });
+
+    it('rejects a malformed URL with no parseable scheme', async () => {
+      await expect(sendSlackDigest('not-a-url-at-all', { text: 'test' })).rejects.toThrow(
+        'Invalid webhook URL: must be a valid https://hooks.slack.com/ URL',
+      );
+    });
+
+    it('rejects when Slack responds with a non-2xx status', async () => {
+      const validUrl = 'https://hooks.slack.com/services/T00/B00/X';
+
+      const originalFetch = global.fetch;
+      global.fetch = async () =>
+        ({
+          ok: false,
+          status: 500,
+        }) as Response;
+
+      try {
+        await expect(sendSlackDigest(validUrl, { text: 'test' })).rejects.toThrow(
+          'Slack webhook returned 500',
+        );
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
   });
 });

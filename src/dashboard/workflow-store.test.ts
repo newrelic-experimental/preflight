@@ -246,6 +246,30 @@ describe('WorkflowStore', () => {
     expect(row!.error_reason!.length).toBe(200);
   });
 
+  // WorkflowStore's readRow() currently hardcodes run_source: 'script' for
+  // every wf_*.json it reads (there is no on-disk producer of 'agent_tool'
+  // rows yet), so this pins the query-filtering branch itself (lines
+  // ~161-167) in both directions rather than asserting on an unfiltered row:
+  // filtering FOR the value every row actually has must include it,
+  // filtering for the OTHER value must exclude it, and 'all'/omitted must
+  // never filter.
+  it('listRuns() filters by runSource, excluding non-matching values', () => {
+    writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
+    const store = new WorkflowStore({ projectsDir });
+    const scriptOnly = store.listRuns({ runSource: 'script' });
+    expect(scriptOnly).toHaveLength(1);
+    expect(scriptOnly[0].run_source).toBe('script');
+
+    const agentToolOnly = store.listRuns({ runSource: 'agent_tool' });
+    expect(agentToolOnly).toHaveLength(0);
+
+    const all = store.listRuns({ runSource: 'all' });
+    expect(all).toHaveLength(1);
+
+    const omitted = store.listRuns();
+    expect(omitted).toHaveLength(1);
+  });
+
   it('caps listRuns() at MAX_RUNS, keeping the most recent runs', () => {
     const TOTAL = 520; // exceeds the planned MAX_RUNS = 500 cap
     for (let i = 0; i < TOTAL; i++) {

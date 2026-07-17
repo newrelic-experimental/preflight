@@ -286,6 +286,79 @@ describe('RecommendationEngine', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 7. generateTeamRecommendations
+  // -------------------------------------------------------------------------
+
+  it('generateTeamRecommendations flags high team correction rate and low autonomy', () => {
+    const { engine } = createEngine();
+
+    for (const developer of ['alice', 'bob']) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `team-${developer}`,
+          developer,
+          userMessages: 10,
+          userCorrections: 8, // correctionRate = 1 - 8/10 = 0.2 -> team correction pct = 80%
+          toolCallCount: 5,
+          assistantMessages: 10, // autonomy = (5/10)/5 = 0.1
+        }),
+      );
+    }
+
+    const recs = engine.generateTeamRecommendations();
+
+    expect(
+      recs.some(
+        (r) =>
+          r.category === 'efficiency' &&
+          r.priority === 'high' &&
+          r.title === 'High team correction rate',
+      ),
+    ).toBe(true);
+    expect(
+      recs.some(
+        (r) =>
+          r.category === 'prompt_engineering' &&
+          r.priority === 'medium' &&
+          r.title === 'Low team autonomy',
+      ),
+    ).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // 8. getModelRecommendations via generateAllRecommendations
+  // -------------------------------------------------------------------------
+
+  it('flags cost-inefficient model usage when cost ratio exceeds 2x with <15% efficiency difference', () => {
+    const { engine } = createEngine();
+
+    for (let i = 0; i < 2; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `expensive-${i}`,
+          model: 'model-alpha',
+          estimatedCostUsd: 1.0,
+          efficiencyScore: 0.8,
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: `cheap-${i}`,
+          model: 'model-beta',
+          estimatedCostUsd: 0.4,
+          efficiencyScore: 0.8,
+        }),
+      );
+    }
+
+    const recs = engine.generateAllRecommendations('alice');
+
+    const modelRec = recs.find((r) => r.category === 'model_selection');
+    expect(modelRec).toBeDefined();
+    expect(modelRec?.detail).toContain('model-beta');
+  });
+
+  // -------------------------------------------------------------------------
   // 6. emitMetrics
   // -------------------------------------------------------------------------
 

@@ -180,6 +180,20 @@ describe('LogIngestManager', () => {
     expect(sentLogs[0]!.message).toBe('important log');
   });
 
+  it('drops batch without re-queuing on non-retryable 4xx (400)', async () => {
+    mockSendLogs.mockResolvedValueOnce({ success: false, statusCode: 400, retryCount: 0 });
+
+    const manager = new LogIngestManager(makeLogIngestOptions());
+    manager.addAuditRecord(makeAuditRecord({ detail: 'bad payload' }));
+
+    await manager.flush();
+    expect(mockSendLogs).toHaveBeenCalledTimes(1);
+
+    // Batch was dropped, not re-queued — a second flush() has nothing to send.
+    await manager.flush();
+    expect(mockSendLogs).toHaveBeenCalledTimes(1);
+  });
+
   it('re-queues batch when sendLogsFn throws', async () => {
     mockSendLogs
       .mockRejectedValueOnce(new Error('network timeout'))

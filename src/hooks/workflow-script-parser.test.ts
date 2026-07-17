@@ -1,5 +1,8 @@
-import { describe, expect, it } from '@jest/globals';
-import { parseWorkflowScriptSource } from './workflow-script-parser.js';
+import { describe, expect, it, afterEach } from '@jest/globals';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseWorkflowScript, parseWorkflowScriptSource } from './workflow-script-parser.js';
 
 describe('parseWorkflowScriptSource', () => {
   it('extracts a simple meta block with phases', () => {
@@ -175,5 +178,41 @@ describe('parseWorkflowScriptSource', () => {
     // The parser counts all agent() call sites regardless of nesting:
     // 1 (Seed) + 1 (Fetch inside map lambda) + 3 (Verify) + 1 (Synthesize) = 6
     expect(result.topology?.declaredAgents).toBe(6);
+  });
+});
+
+describe('parseWorkflowScript', () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir) {
+      rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  it('returns parser_skip with reason file_not_found for a missing path', () => {
+    const result = parseWorkflowScript('/does/not/exist.js');
+    expect(result).toEqual({ status: 'parser_skip', reason: 'file_not_found', topology: null });
+  });
+
+  it('reads a real file and returns the same topology parseWorkflowScriptSource would produce', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'workflow-script-parser-test-'));
+    const src = `
+      export const meta = {
+        name: 'sample',
+        phases: [{ title: 'Investigate', detail: 'go' }],
+      }
+      phase('Investigate')
+      const a = await agent('do thing')
+    `;
+    const path = join(tmpDir, 'workflow.js');
+    writeFileSync(path, src);
+
+    const fileResult = parseWorkflowScript(path);
+    const sourceResult = parseWorkflowScriptSource(src);
+
+    expect(fileResult.status).toBe('ok');
+    expect(fileResult).toEqual(sourceResult);
   });
 });

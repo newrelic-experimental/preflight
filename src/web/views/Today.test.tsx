@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Today } from './Today';
 import { useLiveStore } from '../store/liveStore';
@@ -174,7 +174,13 @@ describe('Today view', () => {
     // has settled — the "spend today" KPI moves off its loading ellipsis to
     // a real dollar value. This is the exact moment `noActivityToday` would
     // flip to true if `concurrencyPending` weren't part of the gate.
-    await waitFor(() => expect(screen.getByText('$0.00')).toBeInTheDocument());
+    // Scoped to the "spend today" tile specifically — the "subagent spend"
+    // KPI also renders "$0.00" in this fixture state, so an unscoped
+    // `getByText('$0.00')` would throw on multiple-element ambiguity.
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$0.00')).toBeInTheDocument();
+    });
 
     // The empty state must still be suppressed, because /api/concurrency is
     // still pending.

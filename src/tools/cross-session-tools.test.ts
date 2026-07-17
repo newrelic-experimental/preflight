@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../storage/session-store.js';
@@ -12,6 +12,7 @@ import { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import { TaskDetector } from '../metrics/task-detector.js';
 import { PromptFeedbackEngine } from '../metrics/prompt-feedback.js';
 import { RecommendationEngine } from '../metrics/recommendation-engine.js';
+import { PersonalCoach } from '../metrics/personal-coach.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   handleGetSessionHistory,
@@ -23,6 +24,10 @@ import {
   handleGetRecommendations,
   handleGetPlatformComparison,
   handleGetTeamSummary,
+  handleSubscribeDigest,
+  handleUnsubscribeDigest,
+  handleSendDigest,
+  handleGetPersonalInsights,
   toFiniteNumber,
 } from './cross-session-tools.js';
 
@@ -917,6 +922,156 @@ describe('Cross-session tool handlers', () => {
 
     it('uses a custom fallback when provided', () => {
       expect(toFiniteNumber('abc', -1)).toBe(-1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // handleGetTeamSummary — success path (byDev construction + result assembly)
+  // -------------------------------------------------------------------------
+
+  describe('handleGetTeamSummary success path', () => {
+    it('merges rows from all 3 NRQL queries into developers/totals', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        let results: Array<Record<string, unknown>> = [];
+        if (body.includes('totalCost')) {
+          results = [
+            { developer: 'alice', totalCost: 12.5 },
+            { developer: 'bob', totalCost: 7.25 },
+          ];
+        } else if (body.includes('avgScore')) {
+          results = [
+            { developer: 'alice', avgScore: 0.8 },
+            { developer: 'bob', avgScore: 0.6 },
+          ];
+        } else if (body.includes('antiPatterns')) {
+          results = [
+            { developer: 'alice', antiPatterns: 3 },
+            { developer: 'bob', antiPatterns: 1 },
+          ];
+        }
+        return {
+          ok: true,
+          json: async () => ({ data: { actor: { account: { nrql: { results } } } } }),
+        } as Response;
+      });
+
+      try {
+        const result = await handleGetTeamSummary({
+          teamId: 'my-team',
+          accountId: '12345',
+          nrApiKey: 'test-key',
+        });
+        expect(result.isError).toBeUndefined();
+        const body = JSON.parse(result.content[0]!.text);
+
+        expect(body.developers).toEqual(
+          expect.arrayContaining([
+            { developer: 'alice', costUsd: 12.5, efficiencyScore: 0.8, antiPatterns: 3 },
+            { developer: 'bob', costUsd: 7.25, efficiencyScore: 0.6, antiPatterns: 1 },
+          ]),
+        );
+        expect(body.totals).toEqual({ costUsd: 19.75, developerCount: 2 });
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Digest subscribe / unsubscribe / send + personal insights
+  // -------------------------------------------------------------------------
+
+  describe('handleSubscribeDigest()', () => {
+    it('rejects a webhook URL that is not a Slack incoming webhook', () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      const result = handleSubscribeDigest('https://evil.example.com/webhook', configFilePath);
+      expect(result.isError).toBe(true);
+      const body = JSON.parse(result.content[0]!.text);
+      expect(body.error).toMatch(/Slack incoming webhook/);
+      expect(existsSync(configFilePath)).toBe(false);
+    });
+
+    it('writes a valid Slack webhook URL to the config file, preserving existing keys', () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      writeFileSync(configFilePath, JSON.stringify({ developer: 'alice' }), 'utf-8');
+
+      const webhookUrl = 'https://hooks.slack.com/services/T000/B000/XXXX';
+      const result = handleSubscribeDigest(webhookUrl, configFilePath);
+
+      expect(result.isError).toBeUndefined();
+      const written = JSON.parse(readFileSync(configFilePath, 'utf-8'));
+      expect(written.digestWebhookUrl).toBe(webhookUrl);
+      expect(written.developer).toBe('alice');
+    });
+  });
+
+  describe('handleUnsubscribeDigest()', () => {
+    it('removes digestWebhookUrl from an existing config file', () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      writeFileSync(
+        configFilePath,
+        JSON.stringify({ developer: 'alice', digestWebhookUrl: 'https://hooks.slack.com/x' }),
+        'utf-8',
+      );
+
+      const result = handleUnsubscribeDigest(configFilePath);
+
+      expect(result.isError).toBeUndefined();
+      const written = JSON.parse(readFileSync(configFilePath, 'utf-8'));
+      expect(written.digestWebhookUrl).toBeUndefined();
+      expect(written.developer).toBe('alice');
+    });
+  });
+
+  describe('handleSendDigest()', () => {
+    it('returns the "call subscribe first" message when no webhook is configured', async () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+      const result = await handleSendDigest(generator, configFilePath);
+
+      const body = JSON.parse(result.content[0]!.text);
+      expect(body.error).toMatch(/Call nr_observe_subscribe_digest first/);
+    });
+
+    it('posts the formatted weekly digest via sendSlackDigest when a webhook is configured', async () => {
+      const configFilePath = resolve(tmpDir, 'config.json');
+      const webhookUrl = 'https://hooks.slack.com/services/T000/B000/XXXX';
+      writeFileSync(configFilePath, JSON.stringify({ digestWebhookUrl: webhookUrl }), 'utf-8');
+      store.saveSession(makeSummary({ sessionId: 'digest-week', estimatedCostUsd: 1.5 }));
+      const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+      const fetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async () => ({ ok: true }) as Response);
+
+      try {
+        const result = await handleSendDigest(generator, configFilePath);
+        const body = JSON.parse(result.content[0]!.text);
+
+        expect(body.ok).toBe(true);
+        expect(body.message).toBe('Digest sent successfully.');
+        expect(fetchSpy).toHaveBeenCalledWith(
+          webhookUrl,
+          expect.objectContaining({ method: 'POST' }),
+        );
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('handleGetPersonalInsights()', () => {
+    it('delegates to PersonalCoach.generate() and returns its result verbatim', () => {
+      store.saveSession(makeSummary({ sessionId: 'insights-1', developer: 'alice' }));
+      const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+      const result = handleGetPersonalInsights(generator, 'alice');
+      const body = JSON.parse(result.content[0]!.text);
+
+      const expected = new PersonalCoach(generator, 'alice').generate();
+      expect({ ...body, generatedAt: 0 }).toEqual({ ...expected, generatedAt: 0 });
     });
   });
 });

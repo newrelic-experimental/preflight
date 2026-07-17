@@ -640,4 +640,168 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.forcePushes).toBe(1);
     });
   });
+
+  describe('GitHub CLI PR tracking', () => {
+    it('tracks PR create/checks/merge events and captures the PR number', () => {
+      tracker.recordToolCall(makeRecord({ command: 'gh pr create --title "Add feature"' }));
+      tracker.recordToolCall(makeRecord({ command: 'gh pr checks 42' }));
+      tracker.recordToolCall(makeRecord({ command: 'gh pr merge 42' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(1);
+      expect(metrics.prMetrics.checksViewed).toBe(1);
+      expect(metrics.prMetrics.merged).toBe(1);
+
+      const checksEvent = metrics.prMetrics.prActivity.find((e) => e.action === 'checks');
+      const mergeEvent = metrics.prMetrics.prActivity.find((e) => e.action === 'merge');
+      expect(checksEvent?.prNumber).toBe('42');
+      expect(mergeEvent?.prNumber).toBe('42');
+    });
+
+    it('tracks gh pr edit/ready as prsUpdated', () => {
+      tracker.recordToolCall(makeRecord({ command: 'gh pr edit 7 --add-label ready' }));
+      tracker.recordToolCall(makeRecord({ command: 'gh pr ready 7' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.prsUpdated).toBe(2);
+    });
+
+    it('does not treat "gh" text inside a git commit message as a gh command', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "gh pr create note"' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(0);
+    });
+  });
+
+  describe('hydration entry points', () => {
+    it('hydrateGitLog adds historical commits without double-counting duplicates', () => {
+      const t = Date.now() - 3600_000;
+      tracker.hydrateGitLog([
+        { timestamp: t, hash: 'abc123' },
+        { timestamp: t + 1000, hash: 'def456' },
+      ]);
+
+      let metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(2);
+      expect(metrics.totalGitCommands).toBe(2);
+      // Historical commits must not count toward real-time sync drift.
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(0);
+
+      // Re-hydrating an already-seen hash must not create a duplicate event.
+      tracker.hydrateGitLog([{ timestamp: t, hash: 'abc123' }]);
+      metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(2);
+    });
+
+    it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {
+      tracker.hydrateBranchDivergence(3, 7);
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.riskIndicators.commitsAheadOfMain).toBe(3);
+      expect(metrics.riskIndicators.commitsBehindMain).toBe(7);
+    });
+
+    it('hydrateRepoContext sets the repo context returned in metrics', () => {
+      tracker.hydrateRepoContext({
+        repoName: 'nr-ai-observatory',
+        branch: 'main',
+        remoteName: 'origin',
+        defaultBranch: 'main',
+      });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.repoContext).toEqual({
+        repoName: 'nr-ai-observatory',
+        branch: 'main',
+        remoteName: 'origin',
+        defaultBranch: 'main',
+      });
+    });
+  });
+
+  describe('conflict resolution strategy', () => {
+    it('tracks ours/theirs/cherry-pick conflict resolution counters', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git checkout --ours file.ts' }));
+      tracker.recordToolCall(makeRecord({ command: 'git checkout --theirs other.ts' }));
+      tracker.recordToolCall(makeRecord({ command: 'git cherry-pick abc123' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictResolutionStrategy.oursCount).toBe(1);
+      expect(metrics.conflictResolutionStrategy.theirsCount).toBe(1);
+      expect(metrics.conflictResolutionStrategy.cherryPickCount).toBe(1);
+    });
+  });
+
+  describe('velocity metrics', () => {
+    it('computes avg/longest gap and detects a 3-commit burst', () => {
+      const t = Date.now();
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: t }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "b"', timestamp: t + 10_000 }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "c"', timestamp: t + 20_000 }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.velocityMetrics.avgTimeBetweenCommitsMs).toBe(10_000);
+      expect(metrics.velocityMetrics.longestGapMs).toBe(10_000);
+      expect(metrics.velocityMetrics.commitBurstCount).toBe(1);
+    });
+
+    it('does not flag a burst when commits are spread far apart', () => {
+      const t = Date.now();
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: t }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "b"', timestamp: t + 10_000 }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "c"', timestamp: t + 500_000 }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.velocityMetrics.longestGapMs).toBe(490_000);
+      expect(metrics.velocityMetrics.commitBurstCount).toBe(0);
+    });
+  });
+
+  describe('conflict resolution edge cases', () => {
+    it('clears the pending conflict without recording a resolution on --amend', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          timestamp: t,
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in src/file.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit --amend -m "fix"', timestamp: t + 5000 }),
+      );
+      let metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory).toHaveLength(0);
+
+      // A later, unrelated commit must not retroactively resolve the old conflict.
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "later change"', timestamp: t + 10_000 }),
+      );
+      metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory).toHaveLength(0);
+    });
+
+    it('flags quick conflict resolutions when a multi-file conflict resolves in under 30s', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          timestamp: t,
+          success: false,
+          error:
+            'CONFLICT (content): Merge conflict in src/a.ts\n' +
+            'CONFLICT (content): Merge conflict in src/b.ts\n' +
+            'Automatic merge failed',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve"', timestamp: t + 15_000 }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.riskIndicators.quickConflictResolutions).toBe(1);
+    });
+  });
 });

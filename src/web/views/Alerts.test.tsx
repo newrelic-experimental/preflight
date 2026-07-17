@@ -77,6 +77,72 @@ describe('Alerts view', () => {
     await waitFor(() => expect(screen.getByText('Not configured')).toBeInTheDocument());
     expect(input).toHaveValue('');
   });
+
+  it('saves an edited threshold and shows the "Saved" confirmation', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const patchBodies: unknown[] = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      if (url === '/api/budget') return jsonResponse(DEFAULT_BUDGET);
+      if (url === '/api/settings' && init?.method === 'PATCH') {
+        patchBodies.push(JSON.parse(String(init.body)));
+        return jsonResponse({ ok: true, restartRequired: false });
+      }
+      if (url === '/api/settings') return jsonResponse(BASE_SETTINGS);
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Alerts />
+      </QueryClientProvider>,
+    );
+
+    const label = await screen.findByText('Daily cost ($)');
+    const input = label.closest('div')!.querySelector('input')!;
+    fireEvent.change(input, { target: { value: '42' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save thresholds' }));
+
+    await waitFor(() => expect(patchBodies).toHaveLength(1));
+    expect(patchBodies[0]).toEqual({ alerts: { personal: { dailyCostUsd: 42 } } });
+
+    expect(await screen.findByText(/Saved\. Run `npm run deploy:alerts`/)).toBeInTheDocument();
+  });
+});
+
+describe('Alerts view — Recent Warnings', () => {
+  it('renders pct/period/spent values from budget.alerts', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const budgetWithAlert = {
+      ...DEFAULT_BUDGET,
+      alerts: [
+        {
+          thresholdPct: 80,
+          period: 'daily',
+          spentUsd: 8,
+          budgetUsd: 10,
+          timestamp: Date.now(),
+        },
+      ],
+    };
+    globalThis.fetch = (async (url: string) => {
+      if (url === '/api/budget') return jsonResponse(budgetWithAlert);
+      if (url === '/api/settings') return jsonResponse(BASE_SETTINGS);
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Alerts />
+      </QueryClientProvider>,
+    );
+
+    const warningsHeading = await screen.findByText('Recent Warnings');
+    const warningsSection = warningsHeading.closest('div')!.parentElement as HTMLElement;
+    expect(within(warningsSection).getByText('80%')).toBeInTheDocument();
+    expect(within(warningsSection).getByText('daily')).toBeInTheDocument();
+    expect(within(warningsSection).getByText(/\$8\.00 \/ \$10\.00/)).toBeInTheDocument();
+  });
 });
 
 describe('Alerts view — error and loading states', () => {

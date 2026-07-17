@@ -1,5 +1,13 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from './session-store.js';
@@ -352,5 +360,40 @@ describe('WeeklySummaryGenerator', () => {
     writeFileSync(join(tmpDir, 'weekly_summaries', '2026-W16.json'), 'NOT VALID JSON');
 
     expect(generator.getLatest()).toBeNull();
+  });
+
+  it('generate() returns the in-memory summary (not a throw) when the disk write fails', () => {
+    if (process.getuid?.() === 0) return; // root bypasses permission checks
+
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(
+      makeSummary({ sessionId: 'write-fail-sess', startTime: start.getTime() + 1000 }),
+    );
+
+    const summariesDir = join(tmpDir, 'weekly_summaries');
+    // Read-only directory: writeFileSync(tmpFilepath) can't create the new
+    // tmp file inside it, forcing generate()'s write-failure fallback path.
+    chmodSync(summariesDir, 0o500);
+
+    try {
+      const summary = generator.generate('2026-W16');
+
+      expect(summary.week).toBe('2026-W16');
+      expect(summary.sessionCount).toBe(1);
+
+      const leftovers = readdirSync(summariesDir).filter((f) => f.includes('.tmp'));
+      expect(leftovers).toEqual([]);
+
+      const logged = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+      expect(
+        logged.some(
+          (l: string) => l.includes('"error"') && l.includes('Failed to write weekly summary'),
+        ),
+      ).toBe(true);
+    } finally {
+      chmodSync(summariesDir, 0o700);
+    }
   });
 });

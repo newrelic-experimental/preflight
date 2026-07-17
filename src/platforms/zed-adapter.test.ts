@@ -192,6 +192,11 @@ describe('ZedAdapter', () => {
       expect(normalized.success).toBe(true);
       expect(normalized.durationMs).toBeNull();
     });
+
+    it('does not validate field types — a numeric "sessionId" leaks through unchanged', () => {
+      const normalized = adapter.normalizeToolCall({ tool: 'read_file', sessionId: 42 });
+      expect(normalized.sessionId).toBe(42);
+    });
   });
 
   describe('getSessionMetadata', () => {
