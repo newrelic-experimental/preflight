@@ -576,3 +576,180 @@ describe('SubagentTimelineStore.getAgentCalls', () => {
     expect(second.calls).toHaveLength(1);
   });
 });
+
+describe('SubagentTimelineStore.getRunLive', () => {
+  let projectsDir: string;
+  let wfRunDir: string;
+
+  beforeEach(() => {
+    process.stderr.write = jest.fn(() => true) as unknown as typeof process.stderr.write;
+    projectsDir = mkTmp();
+    // A live run's per-agent transcripts exist here; the wf_*.json rollup does
+    // NOT (that is written only at termination).
+    wfRunDir = join(projectsDir, SLUG, SESSION, 'subagents', 'workflows', WF_RUN_ID);
+    mkdirSync(wfRunDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    process.stderr.write = STDERR_WRITE;
+    rmSync(projectsDir, { recursive: true, force: true });
+  });
+
+  it('assembles a running run from live transcripts when no rollup exists', () => {
+    writeFileSync(
+      join(wfRunDir, `agent-${WF_AGENT}.jsonl`),
+      [
+        assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 100, output: 50 }),
+        assistantLine({ timestamp: '2026-06-16T12:00:20.000Z', input: 200, output: 80 }),
+      ].join('\n') + '\n',
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const live = store.getRunLive(WF_RUN_ID);
+
+    expect(live).not.toBeNull();
+    expect(live!.runId).toBe(WF_RUN_ID);
+    expect(live!.parentSessionId).toBe(SESSION);
+    expect(live!.defaultModel).toBe(KNOWN_MODEL);
+    expect(live!.agentCount).toBe(1);
+    expect(live!.agents).toHaveLength(1);
+    expect(live!.agents[0]!.agentId).toBe(WF_AGENT);
+    // No rollup mid-run → the same `agent <id8>` label fallback the swimlane uses.
+    expect(live!.agents[0]!.label).toBe(`agent ${WF_AGENT.slice(0, 8)}`);
+    expect(live!.startedAt).toBe(Date.parse('2026-06-16T12:00:00.000Z'));
+    expect(live!.durationMs).toBe(20_000);
+    expect(live!.totalTokens).toBe(430);
+    expect(live!.totalUsd).toBeGreaterThan(0); // KNOWN_MODEL is priced
+    expect(live!.workflowName).toBeNull(); // no script → no declared name
+    expect(live!.topology).toBeNull();
+  });
+
+  it('reports null cost when every agent model is unpriced', () => {
+    writeFileSync(
+      join(wfRunDir, `agent-${WF_AGENT}.jsonl`),
+      assistantLine({
+        timestamp: '2026-06-16T12:00:00.000Z',
+        model: UNKNOWN_MODEL,
+        input: 10,
+        output: 5,
+      }) + '\n',
+    );
+    const store = new SubagentTimelineStore({ projectsDir });
+    const live = store.getRunLive(WF_RUN_ID);
+    expect(live!.totalUsd).toBeNull();
+  });
+
+  it('counts real per-agent tool calls (not turns)', () => {
+    writeFileSync(
+      join(wfRunDir, `agent-${WF_AGENT}.jsonl`),
+      [
+        assistantToolUseLine({
+          timestamp: '2026-06-16T12:00:00.000Z',
+          uses: [
+            { id: 'tu_1', name: 'Read' },
+            { id: 'tu_2', name: 'Bash' },
+          ],
+        }),
+        userToolResultLine({
+          timestamp: '2026-06-16T12:00:01.000Z',
+          results: [{ toolUseId: 'tu_1' }, { toolUseId: 'tu_2' }],
+        }),
+      ].join('\n') + '\n',
+    );
+    const store = new SubagentTimelineStore({ projectsDir });
+    const live = store.getRunLive(WF_RUN_ID);
+    expect(live!.agents[0]!.toolCalls).toBe(2);
+  });
+
+  it('picks defaultModel deterministically (most-recently-active agent, not directory order)', () => {
+    // Written first (so a naive "last file iterated wins" implementation would
+    // pick the OTHER agent's model on filesystems that list entries in
+    // creation order) but has the LATER turn — the correct `defaultModel` is
+    // driven by endMs, not by write/iteration order.
+    writeFileSync(
+      join(wfRunDir, `agent-${AGENT_A}.jsonl`),
+      assistantLine({
+        timestamp: '2026-06-16T12:10:00.000Z',
+        model: 'model-late',
+        input: 10,
+        output: 5,
+      }) + '\n',
+    );
+    writeFileSync(
+      join(wfRunDir, `agent-${AGENT_B}.jsonl`),
+      assistantLine({
+        timestamp: '2026-06-16T12:05:00.000Z',
+        model: 'model-early',
+        input: 10,
+        output: 5,
+      }) + '\n',
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const live = store.getRunLive(WF_RUN_ID);
+
+    expect(live!.defaultModel).toBe('model-late');
+  });
+
+  it('reuses the cached run location on repeated polls (consistent results)', () => {
+    writeFileSync(
+      join(wfRunDir, `agent-${WF_AGENT}.jsonl`),
+      assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 10, output: 5 }) + '\n',
+    );
+    const store = new SubagentTimelineStore({ projectsDir });
+    const first = store.getRunLive(WF_RUN_ID);
+    const second = store.getRunLive(WF_RUN_ID);
+    expect(second).toEqual(first);
+    expect(second!.agentCount).toBe(1);
+  });
+
+  it('invalidates the cached run location and returns null once the run dir is gone', () => {
+    writeFileSync(
+      join(wfRunDir, `agent-${WF_AGENT}.jsonl`),
+      assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 10, output: 5 }) + '\n',
+    );
+    const store = new SubagentTimelineStore({ projectsDir });
+    expect(store.getRunLive(WF_RUN_ID)).not.toBeNull(); // resolves + caches the location
+    rmSync(wfRunDir, { recursive: true, force: true });
+    expect(store.getRunLive(WF_RUN_ID)).toBeNull(); // cache entry re-validated, falls through
+  });
+
+  it('resolves workflowName + declared topology from the persisted script', () => {
+    writeFileSync(
+      join(wfRunDir, `agent-${WF_AGENT}.jsonl`),
+      assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 10, output: 5 }) + '\n',
+    );
+    const scriptsDir = join(projectsDir, SLUG, SESSION, 'workflows', 'scripts');
+    mkdirSync(scriptsDir, { recursive: true });
+    writeFileSync(
+      join(scriptsDir, `live-demo-${WF_RUN_ID}.js`),
+      "export const meta = { name: 'live-demo', description: 'x', " +
+        "phases: [{ title: 'A' }, { title: 'B' }] }\nawait agent('go');\n",
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const live = store.getRunLive(WF_RUN_ID);
+
+    expect(live!.workflowName).toBe('live-demo');
+    expect(live!.topology?.declaredPhases).toBe(2);
+    expect(live!.scriptPath).toContain(`live-demo-${WF_RUN_ID}.js`);
+  });
+
+  it('returns null for an unknown run id', () => {
+    const store = new SubagentTimelineStore({ projectsDir });
+    expect(store.getRunLive('wf_does-not-exist')).toBeNull();
+  });
+
+  it('returns null for a malformed run id (no path traversal / non-wf id)', () => {
+    const store = new SubagentTimelineStore({ projectsDir });
+    expect(store.getRunLive('../../etc/passwd')).toBeNull();
+    expect(store.getRunLive('not-a-wf-id')).toBeNull();
+  });
+
+  it('returns null when the run dir has no valid agent transcripts', () => {
+    // wfRunDir exists (created in beforeEach) but is empty → no agents → null,
+    // so the detail route falls through to its 404.
+    const store = new SubagentTimelineStore({ projectsDir });
+    expect(store.getRunLive(WF_RUN_ID)).toBeNull();
+  });
+});

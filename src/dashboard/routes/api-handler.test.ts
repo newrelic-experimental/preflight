@@ -3615,3 +3615,185 @@ describe('api-handler GET /api/activity-heatmap', () => {
     expect(JSON.parse(body())).toEqual({ error: 'internal_error' });
   });
 });
+
+describe('api-handler GET /api/workflows/:runId', () => {
+  const RUN_ID = 'wf_abc12345-6dd';
+  const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+  type Deps = Parameters<typeof createApiHandler>[0];
+
+  it('serves the on-disk rollup (200) when the run has terminated', async () => {
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [],
+        getRun: (id: string) => {
+          expect(id).toBe(RUN_ID);
+          return {
+            workflow_run_id: RUN_ID,
+            parent_session_id: SESSION,
+            workflow_name: 'demo',
+            status: 'completed',
+            incomplete: false,
+            default_model: 'claude-opus-4-7',
+            started_at: 1000,
+            duration_ms: 5000,
+            agent_count: 1,
+            total_tokens: 430,
+            total_usd: 0.02,
+            observed_phases: 2,
+            declared_parallel_widths: [],
+            token_reconciliation_delta: 0,
+            run_source: 'script',
+            workflow_json_path: '/x/wf.json',
+            agents: [],
+            topology: null,
+          };
+        },
+      } as unknown as Deps['workflowStore'],
+    });
+    const req = { method: 'GET', url: `/api/workflows/${RUN_ID}` } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect(parsed.run.status).toBe('completed');
+    expect(parsed.run.runId).toBe(RUN_ID);
+  });
+
+  it('falls back to a live detail (200, status running) when no rollup exists yet', async () => {
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [],
+        getRun: () => null, // still running → no rollup on disk
+      } as unknown as Deps['workflowStore'],
+      subagentTimeline: {
+        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getAgentCalls: () => ({ calls: [] }),
+        getRunLive: (id: string) => {
+          expect(id).toBe(RUN_ID);
+          return {
+            runId: RUN_ID,
+            parentSessionId: SESSION,
+            workflowName: 'live-demo',
+            defaultModel: 'claude-opus-4-7',
+            startedAt: 1000,
+            durationMs: 20000,
+            agentCount: 1,
+            totalTokens: 430,
+            totalUsd: 0.02,
+            scriptPath: '/x/scripts/live-demo-wf_abc12345-6dd.js',
+            topology: {
+              workflowName: 'live-demo',
+              declaredPhases: 2,
+              declaredPhaseCalls: 2,
+              declaredAgents: 1,
+              declaredParallelWidths: [],
+            },
+            agents: [
+              {
+                agentId: 'a45d96d201bf2f1ef',
+                label: 'agent a45d96d2',
+                model: 'claude-opus-4-7',
+                durationMs: 20000,
+                tokens: 430,
+                toolCalls: 3,
+                startedAt: 1000,
+              },
+            ],
+          };
+        },
+      } as unknown as Deps['subagentTimeline'],
+    });
+    const req = { method: 'GET', url: `/api/workflows/${RUN_ID}` } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect(parsed.run.status).toBe('running');
+    expect(parsed.run.incomplete).toBe(true);
+    expect(parsed.run.runId).toBe(RUN_ID);
+    expect(parsed.run.workflowName).toBe('live-demo');
+    expect(parsed.run.workflowJsonPath).toBe('');
+    expect(parsed.agents).toHaveLength(1);
+    expect(parsed.agents[0].state).toBe('running');
+    expect(parsed.agents[0].toolCalls).toBe(3);
+    expect(parsed.topology.declaredPhases).toBe(2);
+  });
+
+  it('falls back to the runId as the name when the live script name is absent', async () => {
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [],
+        getRun: () => null,
+      } as unknown as Deps['workflowStore'],
+      subagentTimeline: {
+        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getAgentCalls: () => ({ calls: [] }),
+        getRunLive: () => ({
+          runId: RUN_ID,
+          parentSessionId: SESSION,
+          workflowName: null,
+          defaultModel: '',
+          startedAt: 1000,
+          durationMs: 0,
+          agentCount: 1,
+          totalTokens: 10,
+          totalUsd: null,
+          scriptPath: null,
+          topology: null,
+          agents: [
+            {
+              agentId: 'a45d96d201bf2f1ef',
+              label: 'agent a45d96d2',
+              model: '',
+              durationMs: 0,
+              tokens: 10,
+              toolCalls: 0,
+              startedAt: 1000,
+            },
+          ],
+        }),
+      } as unknown as Deps['subagentTimeline'],
+    });
+    const req = { method: 'GET', url: `/api/workflows/${RUN_ID}` } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect(parsed.run.workflowName).toBe(RUN_ID);
+    expect(parsed.run.totalUsd).toBeNull();
+    expect(parsed.topology).toBeNull();
+  });
+
+  it('404s when neither a rollup nor live data exists', async () => {
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [],
+        getRun: () => null,
+      } as unknown as Deps['workflowStore'],
+      subagentTimeline: {
+        getSubagentsForSession: () => ({ window: { startMs: 0, endMs: 0 }, agents: [] }),
+        getAgentCalls: () => ({ calls: [] }),
+        getRunLive: () => null,
+      } as unknown as Deps['subagentTimeline'],
+    });
+    const req = { method: 'GET', url: `/api/workflows/${RUN_ID}` } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(404);
+    expect(JSON.parse(body())).toEqual({ error: 'not_found' });
+  });
+
+  it('404s when the run is absent and no subagentTimeline dep is wired', async () => {
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [],
+        getRun: () => null,
+      } as unknown as Deps['workflowStore'],
+    });
+    const req = { method: 'GET', url: `/api/workflows/${RUN_ID}` } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(404);
+  });
+});
