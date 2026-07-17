@@ -36,12 +36,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { calculateCost, createLogger, type TokenUsage } from '../shared/index.js';
+import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
+import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
 import type {
   RawTranscriptEntry,
   RawAssistantMessage,
   RawUsage,
 } from '../hooks/transcript-types.js';
-import { WorkflowStore } from './workflow-store.js';
 
 const logger = createLogger('subagent-timeline-store');
 
@@ -58,6 +59,12 @@ const MAX_CACHE_ENTRIES = 4096;
 const MAX_AGENTS_PER_SESSION = 500;
 /** Hard cap on individual tool calls returned for a single agent. */
 const MAX_CALLS_PER_AGENT = 2000;
+/**
+ * Hard cap on distinct runIds retained in `runLocationCache` — mirrors
+ * WorkflowStore's MAX_RUNS so the resolved-location cache can't grow
+ * unbounded on a long-running dashboard server.
+ */
+const MAX_RUN_LOCATION_CACHE_ENTRIES = 500;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -100,6 +107,45 @@ export interface SubagentTimelineWindow {
 export interface SubagentTimeline {
   readonly window: SubagentTimelineWindow;
   readonly agents: readonly AgentSpan[];
+}
+
+/**
+ * One agent of a still-running workflow, synthesized from its live transcript.
+ * A running workflow has NO on-disk `wf_*.json` rollup yet (that is written
+ * only at termination), so there are no declared per-agent labels/phases/state
+ * to read — the detail route fills those with running-run defaults. Carries
+ * only declarative timing/token/tool-count data (NFR-2).
+ */
+export interface LiveAgentRow {
+  readonly agentId: string;
+  readonly label: string;
+  readonly model: string;
+  readonly durationMs: number;
+  readonly tokens: number;
+  readonly toolCalls: number;
+  readonly startedAt: number;
+}
+
+/**
+ * A running workflow's detail, assembled from its live subagent transcripts
+ * (which exist mid-run) plus the persisted orchestration script (topology).
+ * Returned by `getRunLive` so `GET /api/workflows/:runId` can serve an
+ * in-progress run instead of 404ing before its rollup lands.
+ */
+export interface LiveWorkflowRunDetail {
+  readonly runId: string;
+  readonly parentSessionId: string;
+  readonly workflowName: string | null;
+  /** Model of the most-recently-active agent (highest `endMs`); '' when none observed yet. */
+  readonly defaultModel: string;
+  readonly startedAt: number;
+  readonly durationMs: number;
+  readonly agentCount: number;
+  readonly totalTokens: number;
+  readonly totalUsd: number | null;
+  readonly scriptPath: string | null;
+  readonly topology: DeclaredTopology | null;
+  readonly agents: readonly LiveAgentRow[];
 }
 
 /**
@@ -150,6 +196,25 @@ interface DiscoveredAgentFile {
   readonly workflowRunId: string | null;
 }
 
+/** The owning session + agent transcripts for a single live workflow run. */
+interface DiscoveredRun {
+  readonly parentSessionId: string;
+  /** `<project>/<sessionId>/workflows` dir, for resolving the script/topology. */
+  readonly workflowsDir: string;
+  readonly files: readonly DiscoveredAgentFile[];
+}
+
+/**
+ * A resolved run's on-disk location, cached by runId so repeated polls of a
+ * live run's detail (the drawer refetches every 5s while open) skip the full
+ * projects/sessions scan after the first resolution.
+ */
+interface RunLocation {
+  readonly parentSessionId: string;
+  readonly workflowsDir: string;
+  readonly wfRunDir: string;
+}
+
 /** Aggregate produced by parsing one agent transcript. */
 interface ParsedAgentFile {
   readonly startMs: number;
@@ -193,6 +258,8 @@ export class SubagentTimelineStore {
   private readonly cache = new Map<string, CacheEntry>();
   /** mtime-gated per-file tool-call cache, keyed by absolute file path. */
   private readonly callsCache = new Map<string, CallsCacheEntry>();
+  /** Resolved run → directory location cache, keyed by runId. See `RunLocation`. */
+  private readonly runLocationCache = new Map<string, RunLocation>();
 
   constructor(options: SubagentTimelineStoreOptions = {}) {
     this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
@@ -296,6 +363,110 @@ export class SubagentTimelineStore {
   }
 
   /**
+   * Assemble a still-running workflow's detail from its live subagent
+   * transcripts. Returns null when no `subagents/workflows/<runId>/` transcripts
+   * exist for the run (in which case the caller 404s). The on-disk `wf_*.json`
+   * rollup is written only at termination, so this is the ONLY source of a
+   * live run's per-agent breakdown — without it the detail drawer 404s on any
+   * workflow the user opens before it finishes.
+   *
+   * Token/tool/timing data mirrors `getSubagentsForSession`; per-agent labels,
+   * phases, and state don't exist pre-rollup and are left to the route's
+   * running-run defaults. Never throws.
+   */
+  getRunLive(runId: string): LiveWorkflowRunDetail | null {
+    if (!WORKFLOW_RUN_ID_RE.test(runId)) return null;
+
+    let discovered: DiscoveredRun | null;
+    try {
+      discovered = this.discoverRunAgentFiles(runId);
+    } catch (err) {
+      this.recordError('discover live run', err);
+      return null;
+    }
+    if (discovered === null || discovered.files.length === 0) return null;
+
+    const agents: LiveAgentRow[] = [];
+    let startedAt = Infinity;
+    let endMs = -Infinity;
+    let totalTokens = 0;
+    let totalUsd = 0;
+    let anyPriced = false;
+    let defaultModel = '';
+    // Tracks the endMs of whichever agent currently backs `defaultModel`, so
+    // the choice is deterministic (most-recently-active agent) rather than
+    // dependent on readdir's unspecified file-listing order.
+    let defaultModelEndMs = -Infinity;
+
+    for (const file of discovered.files) {
+      if (agents.length >= MAX_AGENTS_PER_SESSION) break;
+      const parsed = this.parseAgentFile(file.path);
+      if (parsed === null) continue;
+
+      totalTokens += parsed.totalTokens;
+      const usd = computeUsd(parsed.usage, parsed.model);
+      if (usd !== null) {
+        totalUsd += usd;
+        anyPriced = true;
+      }
+      if (parsed.startMs < startedAt) startedAt = parsed.startMs;
+      if (parsed.endMs > endMs) endMs = parsed.endMs;
+      if (parsed.model.length > 0 && parsed.endMs > defaultModelEndMs) {
+        defaultModel = parsed.model;
+        defaultModelEndMs = parsed.endMs;
+      }
+
+      agents.push({
+        agentId: file.agentId,
+        // No rollup labels exist mid-run — same `agent <id8>` fallback the
+        // live swimlane uses.
+        label: `agent ${file.agentId.slice(0, 8)}`,
+        model: parsed.model,
+        durationMs: Math.max(0, parsed.endMs - parsed.startMs),
+        tokens: parsed.totalTokens,
+        toolCalls: this.parseAgentCalls(file.path).length,
+        startedAt: parsed.startMs,
+      });
+    }
+    if (agents.length === 0) return null;
+
+    agents.sort((a, b) => a.startedAt - b.startedAt);
+
+    // Declared topology + workflow name from the persisted script (best-effort;
+    // the script is written at Workflow-tool invocation, so it usually exists
+    // while the run is live).
+    let scriptPath: string | null = null;
+    let topology: DeclaredTopology | null = null;
+    try {
+      scriptPath = findWorkflowScriptPath(discovered.workflowsDir, runId);
+      if (scriptPath !== null) {
+        const result = parseWorkflowScript(scriptPath);
+        if (result.status === 'ok') topology = result.topology;
+      }
+    } catch (err) {
+      this.recordError('resolve live topology', err);
+    }
+
+    const start = Number.isFinite(startedAt) ? startedAt : 0;
+    const end = Number.isFinite(endMs) ? endMs : start;
+
+    return {
+      runId,
+      parentSessionId: discovered.parentSessionId,
+      workflowName: topology?.workflowName ?? null,
+      defaultModel,
+      startedAt: start,
+      durationMs: Math.max(0, end - start),
+      agentCount: agents.length,
+      totalTokens,
+      totalUsd: anyPriced ? totalUsd : null,
+      scriptPath,
+      topology,
+      agents,
+    };
+  }
+
+  /**
    * Return ONE subagent's individual tool calls, for the attributed
    * session-trace view. Always returns a value — `{ calls: [] }` for a bad
    * session/agent id, a missing transcript, an oversized file, or any error.
@@ -369,6 +540,85 @@ export class SubagentTimelineStore {
       }
     }
     return out;
+  }
+
+  /**
+   * Locate a single workflow run's live transcripts by scanning every project
+   * for a session that owns `subagents/workflows/<runId>/agent-*.jsonl`. A given
+   * runId lives under exactly one session, so the first match wins. Returns null
+   * when the run has no transcripts (unknown or not-yet-started run).
+   *
+   * The resolved location is cached by runId (see `runLocationCache`) so the
+   * detail drawer's 5s poll of a still-live run only pays for the full
+   * projects/sessions scan once; subsequent polls go straight to the known
+   * directory. A cache hit is re-validated with `existsSync` and dropped if
+   * the directory is gone (e.g. session pruned), falling back to a fresh scan.
+   */
+  private discoverRunAgentFiles(runId: string): DiscoveredRun | null {
+    const cached = this.runLocationCache.get(runId);
+    if (cached !== undefined) {
+      if (existsSync(cached.wfRunDir)) {
+        const files: DiscoveredAgentFile[] = [];
+        this.collectAgentFiles(cached.wfRunDir, runId, files);
+        if (files.length > 0) {
+          return {
+            parentSessionId: cached.parentSessionId,
+            workflowsDir: cached.workflowsDir,
+            files,
+          };
+        }
+      }
+      this.runLocationCache.delete(runId);
+    }
+
+    if (!existsSync(this.projectsDir)) return null;
+
+    let projectEntries: string[];
+    try {
+      projectEntries = readdirSync(this.projectsDir);
+    } catch (err) {
+      this.recordError('readdir projects (live run)', err);
+      return null;
+    }
+
+    for (const project of projectEntries) {
+      const projectPath = join(this.projectsDir, project);
+      let sessionEntries: string[];
+      try {
+        if (!statSync(projectPath).isDirectory()) continue;
+        sessionEntries = readdirSync(projectPath);
+      } catch {
+        continue;
+      }
+      for (const sessionId of sessionEntries) {
+        if (!SESSION_ID_RE.test(sessionId)) continue;
+        // runId is validated against WORKFLOW_RUN_ID_RE by the caller, so it
+        // carries no path separators or `..` — safe as a path segment.
+        const wfRunDir = join(projectPath, sessionId, 'subagents', 'workflows', runId);
+        if (!existsSync(wfRunDir)) continue;
+        try {
+          if (!statSync(wfRunDir).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        const files: DiscoveredAgentFile[] = [];
+        this.collectAgentFiles(wfRunDir, runId, files);
+        if (files.length === 0) continue;
+        const workflowsDir = join(projectPath, sessionId, 'workflows');
+        SubagentTimelineStore.boundedSet(
+          this.runLocationCache,
+          runId,
+          { parentSessionId: sessionId, workflowsDir, wfRunDir },
+          MAX_RUN_LOCATION_CACHE_ENTRIES,
+        );
+        return {
+          parentSessionId: sessionId,
+          workflowsDir,
+          files,
+        };
+      }
+    }
+    return null;
   }
 
   /** Push every well-named `agent-<id>.jsonl` in `dir` onto `out`. */

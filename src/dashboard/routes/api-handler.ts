@@ -15,7 +15,11 @@ import type { AntiPatternSegment } from './replay-analyzer.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
 import type { FullSessionSummary, SessionFileInfo } from '../../storage/session-store.js';
 import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
-import type { SubagentTimeline, AgentCall } from '../subagent-timeline-store.js';
+import type {
+  SubagentTimeline,
+  AgentCall,
+  LiveWorkflowRunDetail,
+} from '../subagent-timeline-store.js';
 import type { CostForecast } from '../../metrics/cost-forecast.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type { BudgetStatus } from '../../metrics/budget-tracker.js';
@@ -256,6 +260,60 @@ function toWorkflowAgentDto(agent: unknown): WorkflowAgentDto {
   };
 }
 
+// Serialize a still-running workflow (assembled from live subagent transcripts,
+// no on-disk rollup) into the SAME `{ run, agents, topology }` wire shape the
+// completed path emits, so WorkflowRunDetail.tsx renders it unchanged. Fields
+// that only exist post-rollup are filled with running-run defaults: status
+// 'running', incomplete true, no error/task/reconciliation, and per-agent
+// phase/state placeholders (phaseIndex -1, phaseTitle '', state 'running').
+function toLiveWorkflowDetail(live: LiveWorkflowRunDetail): {
+  run: WorkflowRunDto;
+  agents: WorkflowAgentDto[];
+  topology: LiveWorkflowRunDetail['topology'];
+} {
+  const run: WorkflowRunDto = {
+    runId: live.runId,
+    parentSessionId: live.parentSessionId,
+    taskId: null,
+    // Fall back to the runId when the script (and thus meta.name) can't be read.
+    workflowName: live.workflowName ?? live.runId,
+    status: 'running',
+    errorReason: null,
+    defaultModel: live.defaultModel,
+    startedAt: live.startedAt,
+    durationMs: live.durationMs,
+    agentCount: live.agentCount,
+    totalTokens: live.totalTokens,
+    totalUsd: live.totalUsd,
+    declaredPhases: live.topology?.declaredPhases ?? null,
+    // No phase-title telemetry exists mid-run (that comes from the rollup's
+    // workflowProgress), so observed phases are unknown → 0.
+    observedPhases: 0,
+    declaredParallelWidths: live.topology?.declaredParallelWidths ?? [],
+    tokenReconciliationDelta: 0,
+    incomplete: true,
+    // wf_<hex> runIds are script/Workflow-tool orchestrations (agent_tool runs
+    // key off toolu_* ids), so this is always a 'script' run.
+    runSource: 'script',
+    scriptPath: live.scriptPath,
+    workflowJsonPath: '',
+  };
+  const agents: WorkflowAgentDto[] = live.agents.map((a) => ({
+    agentId: a.agentId,
+    label: a.label,
+    phaseIndex: -1,
+    phaseTitle: '',
+    model: a.model,
+    state: 'running',
+    attempt: 1,
+    durationMs: a.durationMs,
+    tokens: a.tokens,
+    toolCalls: a.toolCalls,
+    startedAt: a.startedAt,
+  }));
+  return { run, agents, topology: live.topology ?? null };
+}
+
 interface LiveSessionMetrics {
   readonly sessionId: string;
   readonly sessionName: string | null;
@@ -349,6 +407,13 @@ export interface ApiHandlerDeps {
   readonly subagentTimeline?: {
     getSubagentsForSession: (sessionId: string) => SubagentTimeline;
     getAgentCalls: (sessionId: string, agentId: string) => { calls: readonly AgentCall[] };
+    /**
+     * Live-run fallback for the workflow-detail route: a still-running workflow
+     * has no on-disk rollup, so `workflowStore.getRun` returns null; this
+     * assembles the detail from the run's live subagent transcripts instead.
+     * Optional so older fakes / mocks without it still type-check.
+     */
+    getRunLive?: (runId: string) => LiveWorkflowRunDetail | null;
   };
   /**
    * Snapshot of latest watcher health frames so the dashboard can render
@@ -1920,6 +1985,17 @@ export function createApiHandler(
         if (!deps.workflowStore) return unavailable(res, 'workflowStore');
         const run = deps.workflowStore.getRun(runId);
         if (run === null) {
+          // Live fallback: a still-running workflow has no on-disk `wf_*.json`
+          // rollup yet (that is written only at termination), but its subagent
+          // transcripts already exist and the swimlane surfaces the run as
+          // clickable. Synthesize a 'running' detail from those transcripts so
+          // the drawer shows live progress instead of "Failed to load run
+          // details." Falls through to 404 only when no live data exists either.
+          const live = deps.subagentTimeline?.getRunLive?.(runId) ?? null;
+          if (live !== null) {
+            jsonOk(res, toLiveWorkflowDetail(live));
+            return;
+          }
           res.writeHead(404, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ error: 'not_found' }));
           return;

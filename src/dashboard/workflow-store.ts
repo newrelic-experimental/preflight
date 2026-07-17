@@ -31,6 +31,27 @@ const PROJECTS_DIR_NAME = '.claude/projects';
 // written across all projects/sessions with no upper bound.
 const MAX_RUNS = 500;
 
+/**
+ * Locate the persisted orchestration script for a run inside a session's
+ * `workflows/scripts/` dir. The Workflow tool writes `<name>-<runId>.js`, so we
+ * match on the `-<runId>.js` suffix. Returns the absolute path or null. Shared
+ * by the on-disk rollup reader (below) and the live-run reader in
+ * SubagentTimelineStore so a still-running workflow can resolve its declared
+ * topology before its rollup exists. Never throws.
+ */
+export function findWorkflowScriptPath(workflowsDir: string, runId: string): string | null {
+  const scriptsDir = join(workflowsDir, 'scripts');
+  if (!existsSync(scriptsDir)) return null;
+  try {
+    for (const name of readdirSync(scriptsDir)) {
+      if (name.endsWith(`-${runId}.js`)) return join(scriptsDir, name);
+    }
+  } catch {
+    /* skip */
+  }
+  return null;
+}
+
 export interface WorkflowRunRow {
   readonly workflow_run_id: string;
   readonly parent_session_id: string;
@@ -293,20 +314,7 @@ export class WorkflowStore {
     // Topology from script (best-effort)
     let scriptPath = typeof parsed.scriptPath === 'string' ? parsed.scriptPath : null;
     if (!scriptPath) {
-      const wfDir = dirname(path);
-      const scriptsDir = join(wfDir, 'scripts');
-      if (existsSync(scriptsDir)) {
-        try {
-          for (const name of readdirSync(scriptsDir)) {
-            if (name.endsWith(`-${runId}.js`)) {
-              scriptPath = join(scriptsDir, name);
-              break;
-            }
-          }
-        } catch {
-          /* skip */
-        }
-      }
+      scriptPath = findWorkflowScriptPath(dirname(path), runId);
     }
     // Security: `parsed.scriptPath` is read verbatim from an untrusted on-disk
     // wf_*.json. Before reading it, require the resolved path to stay under

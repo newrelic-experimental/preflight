@@ -1213,6 +1213,9 @@ async function main(): Promise<void> {
             getSubagentsForSession: (id: string) =>
               subagentTimelineInstance.getSubagentsForSession(id),
             getAgentCalls: (s: string, a: string) => subagentTimelineInstance.getAgentCalls(s, a),
+            // Live-run fallback so GET /api/workflows/:runId serves a still-
+            // running workflow (no rollup on disk yet) instead of 404ing.
+            getRunLive: (runId: string) => subagentTimelineInstance.getRunLive(runId),
           },
           // Wire the observability-health snapshot so GET
           // /api/observability-health returns live watcher state instead of

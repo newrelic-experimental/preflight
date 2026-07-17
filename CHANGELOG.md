@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.5] - 2026-07-17
+
+### Fixed
+
+- Opening a workflow run's detail view while the run was still in progress showed "Failed to load run details" instead of live progress. The detail view now shows in-progress agent activity and automatically upgrades to the final summary once the run completes.
+
 ## [1.5.4] - 2026-07-17
 
 ### Added
