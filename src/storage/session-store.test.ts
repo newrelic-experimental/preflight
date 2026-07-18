@@ -14,6 +14,7 @@ import { CostTracker } from '../metrics/cost-tracker.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -585,6 +586,79 @@ describe('buildSessionSummary', () => {
     expect(summary.agentSpawns).toBe(1);
     expect(summary.toolSuccessRate).toBe(0.9);
     expect(summary.outcome).toBe('completed');
+  });
+
+  it('reads userMessages/assistantMessages/userCorrections from transcriptMessageTracker', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 0,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const mockTranscriptMessageTracker = {
+      getMetrics: () => ({
+        userMessages: 4,
+        assistantMessages: 6,
+        userCorrections: 1,
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      transcriptMessageTracker: mockTranscriptMessageTracker as unknown as TranscriptMessageTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.userMessages).toBe(4);
+    expect(summary.assistantMessages).toBe(6);
+    expect(summary.userCorrections).toBe(1);
+  });
+
+  it('defaults userMessages/assistantMessages/userCorrections to 0 when transcriptMessageTracker is absent', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 0,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.userMessages).toBe(0);
+    expect(summary.assistantMessages).toBe(0);
+    expect(summary.userCorrections).toBe(0);
   });
 
   it("persists the provided outcome (periodic checkpoints write 'in progress')", () => {

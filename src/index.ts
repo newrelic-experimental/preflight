@@ -55,6 +55,7 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
+import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
 import { SubagentWatcher } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
@@ -823,6 +824,7 @@ async function main(): Promise<void> {
     // Kept dormant; would need new hook wiring or an LLM-facing proxy to fix for real.
     const latencyDecompositionTracker: LatencyDecompositionTracker | undefined = undefined;
     const decisionTracker = new DecisionTracker({ recordContent: config.recordContent });
+    const transcriptMessageTracker = new TranscriptMessageTracker();
     const instructionDriftTracker = new InstructionDriftTracker();
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
@@ -1432,6 +1434,9 @@ async function main(): Promise<void> {
         const turnNumber = turnTracker.getCurrentTurnNumber();
         turnCostAttributor.recordToolCall(rawRecord, turnId);
         decisionTracker.recordToolCall(rawRecord);
+        transcriptMessageTracker.observeTranscriptPath(
+          rawRecord.transcriptPath as string | undefined,
+        );
         instructionDriftTracker.recordToolCall(rawRecord);
         gitEfficiencyTracker.recordToolCall(rawRecord);
 
@@ -1722,12 +1727,14 @@ async function main(): Promise<void> {
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
+        transcriptMessageTracker.refresh();
         const summary = buildSessionSummary({
           sessionTracker,
           costTracker,
           taskDetector,
           antiPatternDetector,
           efficiencyScorer,
+          transcriptMessageTracker,
           developer: config.developer ?? 'unknown',
           repoName: currentRepoName,
           // A periodic checkpoint is a live, in-progress session — persisting it
