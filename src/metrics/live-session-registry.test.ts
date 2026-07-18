@@ -61,6 +61,39 @@ describe('LiveSessionRegistry', () => {
     expect(reg.getLiveSessions()).toEqual([]);
   });
 
+  it('getLiveSessions excludes synthetic session IDs by default', () => {
+    const reg = new LiveSessionRegistry();
+    reg.touch('real-session');
+    reg.touch('local-1234567890');
+    reg.touch('proxy-9876543210');
+    reg.touch('pending-1111111111');
+    expect(reg.getLiveSessions()).toEqual(['real-session']);
+  });
+
+  it('getLiveSessions({ includeSynthetic: true }) returns every live session', () => {
+    const reg = new LiveSessionRegistry();
+    reg.touch('real-session');
+    reg.touch('local-1234567890');
+    const all = reg.getLiveSessions({ includeSynthetic: true });
+    expect(all).toEqual(expect.arrayContaining(['real-session', 'local-1234567890']));
+    expect(all).toHaveLength(2);
+  });
+
+  it('getPeakConcurrent() still counts synthetic sessions (unfiltered internal tracking)', () => {
+    const reg = new LiveSessionRegistry(5000);
+    reg.touch('local-a');
+    reg.touch('local-b');
+    reg.touch('real-c');
+    expect(reg.getPeakConcurrent()).toBe(3);
+  });
+
+  it('getConcurrentCount() still counts synthetic sessions (unfiltered internal tracking)', () => {
+    const reg = new LiveSessionRegistry(5000);
+    reg.touch('local-a');
+    reg.touch('proxy-b');
+    expect(reg.getConcurrentCount()).toBe(2);
+  });
+
   it('reset() clears all tracked sessions', () => {
     const reg = new LiveSessionRegistry();
     reg.touch('sess-a');

@@ -323,6 +323,59 @@ describe('SessionStore', () => {
     expect(all.map((s) => s.sessionId)).toEqual(['s1', 's3', 's2']);
   });
 
+  it('loadAllSessions excludes synthetic session IDs (local-/proxy-/pending- prefixes)', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+
+    store.saveSession(makeSummary({ sessionId: 'real-session-1', startTime: Date.now() - 3000 }));
+    store.saveSession(makeSummary({ sessionId: 'local-1234567890', startTime: Date.now() - 2000 }));
+    store.saveSession(makeSummary({ sessionId: 'proxy-9876543210', startTime: Date.now() - 1500 }));
+    store.saveSession(
+      makeSummary({ sessionId: 'pending-1111111111', startTime: Date.now() - 1000 }),
+    );
+    store.saveSession(makeSummary({ sessionId: 'real-session-2', startTime: Date.now() - 500 }));
+
+    const all = store.loadAllSessions();
+    expect(all.map((s) => s.sessionId).sort()).toEqual(['real-session-1', 'real-session-2']);
+  });
+
+  it('loadTodaySessions excludes synthetic session IDs', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const now = Date.now();
+
+    store.saveSession(makeSummary({ sessionId: 'real-today', startTime: now - 1000 }));
+    store.saveSession(makeSummary({ sessionId: 'local-today', startTime: now - 500 }));
+
+    const sessions = store.loadTodaySessions();
+    expect(sessions.map((s) => s.sessionId)).toEqual(['real-today']);
+  });
+
+  it('loadSessionsOverlappingToday excludes synthetic session IDs', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+
+    // Started yesterday, ends after today's midnight — real overlapping session.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'real-overlap',
+        startTime: startOfToday - 3_600_000,
+        endTime: startOfToday + 3_600_000,
+      }),
+    );
+    // Same overlap window, but a synthetic ID — must still be excluded.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'proxy-overlap',
+        startTime: startOfToday - 3_600_000,
+        endTime: startOfToday + 3_600_000,
+      }),
+    );
+
+    const sessions = store.loadSessionsOverlappingToday();
+    expect(sessions.map((s) => s.sessionId)).toEqual(['real-overlap']);
+  });
+
   it('saveSession rejects sessionId containing path traversal and writes no file', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 
