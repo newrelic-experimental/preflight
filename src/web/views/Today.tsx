@@ -51,6 +51,7 @@ import {
   fmtTimeOfDay,
   formatNumber,
   formatUsd,
+  formatUsdOrDash,
   rateColor,
   scoreColor,
   shortToolName,
@@ -660,6 +661,7 @@ interface ModelStats {
   readonly requestCount: number;
   readonly totalCostUsd: number;
   readonly costPerOutputToken: number | null;
+  readonly costPerMillionTokens: number | null;
 }
 
 interface ModelUsageMetrics {
@@ -700,6 +702,9 @@ function ModelUsagePanel(): JSX.Element {
               <span className="text-ink-muted truncate">{model}</span>
               <div className="flex gap-3 shrink-0 tabular-nums">
                 <span className="text-ink-subtle">{s.requestCount}req</span>
+                <span className="text-ink-subtle">
+                  {formatUsdOrDash(s.costPerMillionTokens)}/1M tok
+                </span>
                 <span className="text-ink-base">{formatUsd(s.totalCostUsd)}</span>
               </div>
             </div>

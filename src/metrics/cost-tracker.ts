@@ -58,6 +58,12 @@ export interface CostMetrics {
   readonly costByModel: Record<string, number>;
   readonly costPerLineOfCode: number | null;
   readonly costPerFileModified: number | null;
+  /**
+   * Blended session cost rate: totalCostUsd / totalTokens (all types) * 1M.
+   * Broader than ModelUsageTracker's per-model `costPerMillionTokens`, which
+   * only counts input+output tokens — the two are not directly comparable.
+   */
+  readonly costPerMillionTokens: number | null;
   readonly model: string | null;
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
@@ -365,6 +371,13 @@ export class CostTracker {
       costByWorkflowRunId[runId] = Object.fromEntries(dayMap);
     }
 
+    const totalTokensAllTypes =
+      this.totalInputTokens +
+      this.totalOutputTokens +
+      this.totalThinkingTokens +
+      this.totalCacheReadTokens +
+      this.totalCacheCreationTokens;
+
     return {
       sessionTotalCostUsd: hasData ? this.totalCostUsd : null,
       costByTask: null,
@@ -373,6 +386,10 @@ export class CostTracker {
         hasData && this.totalLinesChanged > 0 ? this.totalCostUsd / this.totalLinesChanged : null,
       costPerFileModified:
         hasData && uniqueFilesWritten > 0 ? this.totalCostUsd / uniqueFilesWritten : null,
+      costPerMillionTokens:
+        hasData && totalTokensAllTypes > 0
+          ? (this.totalCostUsd / totalTokensAllTypes) * 1_000_000
+          : null,
       model: this.currentModel,
       totalInputTokens: this.totalInputTokens,
       totalOutputTokens: this.totalOutputTokens,
@@ -396,6 +413,14 @@ export class CostTracker {
       attrs.model = this.currentModel;
     }
 
+    // Deliberately not emitted as its own NR metric: cost-per-million-tokens
+    // is a pure ratio of session_total_usd and the tokens_* counts already
+    // emitted below, so NRQL can compute it at query time
+    // (sum(cost)/sum(tokens)*1e6) with full facet/time-window flexibility —
+    // a pre-baked gauge scoped to today's attrs would be strictly less
+    // flexible and adds ingest volume for no analytical benefit. It's still
+    // computed locally (see getMetrics().costPerMillionTokens) for the MCP
+    // tool responses and local dashboard, which have no NRQL alternative.
     aggregator.record('ai.cost.session_total_usd', this.totalCostUsd, attrs);
     aggregator.record('ai.cost.tokens_input', this.totalInputTokens, attrs);
     aggregator.record('ai.cost.tokens_output', this.totalOutputTokens, attrs);

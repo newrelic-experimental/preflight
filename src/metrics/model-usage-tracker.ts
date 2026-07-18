@@ -4,6 +4,13 @@ export interface ModelStats {
   readonly totalOutputTokens: number;
   readonly totalCostUsd: number;
   readonly costPerOutputToken: number | null;
+  /**
+   * Per-model rate: totalCostUsd / (totalInputTokens + totalOutputTokens) * 1M.
+   * Narrower than CostTracker's session-blended `costPerMillionTokens`, which
+   * also folds in thinking/cache-read/cache-creation tokens — the two are not
+   * directly comparable.
+   */
+  readonly costPerMillionTokens: number | null;
   readonly avgOutputTokensPerRequest: number | null;
 }
 
@@ -46,6 +53,9 @@ export class ModelUsageTracker {
     for (const [model, stats] of this.byModel) {
       const costPerOutputToken =
         stats.totalOutputTokens > 0 ? stats.totalCostUsd / stats.totalOutputTokens : null;
+      const totalTokens = stats.totalInputTokens + stats.totalOutputTokens;
+      const costPerMillionTokens =
+        totalTokens > 0 ? (stats.totalCostUsd / totalTokens) * 1_000_000 : null;
       const avgOutputTokensPerRequest =
         stats.requestCount > 0 ? stats.totalOutputTokens / stats.requestCount : null;
 
@@ -55,6 +65,7 @@ export class ModelUsageTracker {
         totalOutputTokens: stats.totalOutputTokens,
         totalCostUsd: stats.totalCostUsd,
         costPerOutputToken,
+        costPerMillionTokens,
         avgOutputTokensPerRequest,
       };
 

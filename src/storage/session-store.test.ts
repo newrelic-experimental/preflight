@@ -831,6 +831,7 @@ describe('buildSessionSummary', () => {
       costByModel: {},
       costPerLineOfCode: null,
       costPerFileModified: null,
+      costPerMillionTokens: null,
       model: 'claude-sonnet-4-6',
       totalInputTokens: 3_000,
       totalOutputTokens: 1_000,

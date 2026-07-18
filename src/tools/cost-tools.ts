@@ -159,6 +159,7 @@ export function handleGetCostBreakdown(costTracker: CostTracker, taskDetector?: 
     by_task: byTask,
     cost_per_line_of_code: metrics.costPerLineOfCode,
     cost_per_file_modified: metrics.costPerFileModified,
+    cost_per_million_tokens: metrics.costPerMillionTokens,
     tokens: {
       input: metrics.totalInputTokens,
       output: metrics.totalOutputTokens,

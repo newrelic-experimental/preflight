@@ -241,6 +241,7 @@ Session cost breakdown by task, model, and efficiency.
   "by_task": [{ "task_id": "task-001", "cost_usd": 0.25, "tokens_used": 15000 }],
   "cost_per_line_of_code": 0.003,
   "cost_per_file_modified": 0.065,
+  "cost_per_million_tokens": 7.43,
   "tokens": { "input": 50000, "output": 20000, "thinking": 10000 }
 }
 ```
@@ -254,6 +255,7 @@ Session cost breakdown by task, model, and efficiency.
 - `by_task` — maps `TaskDetector.getCompletedTasks()` to their `estimatedCostUsd` and `tokensUsed`
 - `cost_per_line_of_code` — `totalCost / totalLinesChanged` (null if no lines changed)
 - `cost_per_file_modified` — `totalCost / uniqueFilesWritten` (null if no files modified)
+- `cost_per_million_tokens` — blended session rate: `(totalCost / totalTokens) * 1_000_000`, summed across input, output, thinking, cache-read, and cache-creation tokens (null if no tokens reported). Not shipped as its own NR metric — it's a pure ratio of `ai.cost.session_total_usd` and the `ai.cost.tokens_*` counts already emitted, so it's more flexibly computed in NRQL at query time (`sum(cost)/sum(tokens)*1e6`, facetable by any dimension) than as a pre-baked gauge.
 - `tokens` — running totals by token type from all reports
 
 **Requires:** `CostTracker`; `TaskDetector` for per-task breakdown
@@ -1132,34 +1134,46 @@ Which AI model was used per request and cost-efficiency per model.
 
 ```json
 {
-  "model_distribution": {
+  "byModel": {
     "claude-sonnet-4-6": {
-      "request_count": 25,
-      "total_cost": 0.42,
-      "avg_cost": 0.017,
-      "efficiency_score": 0.82
+      "requestCount": 25,
+      "totalInputTokens": 120000,
+      "totalOutputTokens": 45000,
+      "totalCostUsd": 0.42,
+      "costPerOutputToken": 0.0000093,
+      "costPerMillionTokens": 2.55,
+      "avgOutputTokensPerRequest": 1800
     },
     "claude-opus-4-7": {
-      "request_count": 3,
-      "total_cost": 0.18,
-      "avg_cost": 0.06,
-      "efficiency_score": 0.88
+      "requestCount": 3,
+      "totalInputTokens": 20000,
+      "totalOutputTokens": 8000,
+      "totalCostUsd": 0.18,
+      "costPerOutputToken": 0.0000225,
+      "costPerMillionTokens": 6.43,
+      "avgOutputTokensPerRequest": 2666.67
     }
   },
-  "total_requests": 28,
-  "total_cost": 0.6,
-  "cost_per_request": 0.021
+  "mostUsedModel": "claude-sonnet-4-6",
+  "mostEfficientModel": "claude-sonnet-4-6",
+  "totalModelsUsed": 2
 }
 ```
+
+**Field notes:**
+
+- `costPerOutputToken` — `totalCostUsd / totalOutputTokens` (null if no output tokens)
+- `costPerMillionTokens` — per-model rate: `(totalCostUsd / (totalInputTokens + totalOutputTokens)) * 1_000_000` (null if no tokens). Only counts input+output tokens — narrower than `nr_observe_get_cost_breakdown`'s session-blended `cost_per_million_tokens`, which also folds in thinking/cache-read/cache-creation tokens. The two figures are not directly comparable.
+- `mostUsedModel` — the model with the highest `requestCount`
+- `mostEfficientModel` — the model with the lowest `costPerOutputToken`
 
 **Data source:** `ModelUsageTracker`
 
 **How it works:**
 
 - Tracks `model` field from each request (e.g., "claude-sonnet-4-6")
-- Aggregates cost per model
-- Computes `efficiency_score` for each model: `(completedTasks / failedAttempts) / (costPerRequest / averageCostPerRequest)`
-- Helps identify cost-effectiveness of model choices
+- Aggregates request count, input/output tokens, and cost per model
+- Picks `mostUsedModel` (highest request count) and `mostEfficientModel` (lowest `costPerOutputToken`)
 
 **Requires:** `ModelUsageTracker`
 

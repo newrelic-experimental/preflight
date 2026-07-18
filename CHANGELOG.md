@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-07-17
+
+### Added
+
+- A normalized cost-rate metric, cost per million tokens, so spend can be compared across sessions and models independent of raw token volume. A session-blended rate (across input, output, thinking, cache-read, and cache-creation tokens) is available from `nr_observe_get_cost_breakdown`, and a per-model rate (input+output tokens) is available from `nr_observe_get_model_usage` and shown in the dashboard's Today and History views.
+
 ## [1.5.6] - 2026-07-17
 
 ### Fixed

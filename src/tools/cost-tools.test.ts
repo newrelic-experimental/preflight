@@ -5,6 +5,7 @@ import {
   handleGetPromptCacheHealth,
   handleGetBudgetStatus,
   handleGetCostForecast,
+  handleGetCostBreakdown,
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
@@ -199,6 +200,34 @@ describe('handleReportTokens()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// handleGetCostBreakdown
+// ---------------------------------------------------------------------------
+
+describe('handleGetCostBreakdown()', () => {
+  it('includes cost_per_million_tokens in the response', () => {
+    const tracker = new CostTracker();
+    handleReportTokens(tracker, {
+      input_tokens: 500_000,
+      output_tokens: 500_000,
+      model: 'claude-sonnet-4',
+    });
+
+    const result = handleGetCostBreakdown(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.cost_per_million_tokens).toBeCloseTo(9.0, 2);
+  });
+
+  it('returns null cost_per_million_tokens when no tokens reported', () => {
+    const tracker = new CostTracker();
+    const result = handleGetCostBreakdown(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.cost_per_million_tokens).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // handleGetPromptCacheHealth
 // ---------------------------------------------------------------------------
 
@@ -213,6 +242,7 @@ describe('handleGetPromptCacheHealth()', () => {
       costByModel: {},
       costPerLineOfCode: null,
       costPerFileModified: null,
+      costPerMillionTokens: null,
       model: null,
       totalInputTokens: 0,
       totalOutputTokens: 0,
