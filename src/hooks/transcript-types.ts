@@ -12,6 +12,16 @@ export interface RawTranscriptEntry {
   readonly message?: unknown;
   readonly uuid?: string;
   readonly timestamp?: string;
+  /** True for harness-injected synthetic entries (e.g. local-command caveats). */
+  readonly isMeta?: boolean;
+  /** True for subagent/Task-tool turns inlined into the main transcript. */
+  readonly isSidechain?: boolean;
+  /** True for context-compaction continuation-summary entries. */
+  readonly isCompactSummary?: boolean;
+  /** Present on `type: 'user'` entries that are actually a tool result echoed back, not a real message. */
+  readonly toolUseResult?: unknown;
+  /** Present on some harness-injected entries (e.g. background task notifications). */
+  readonly origin?: { readonly kind?: string };
 }
 
 /** The `message` field of an assistant-turn transcript entry. */

@@ -22,6 +22,7 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 
 const logger = createLogger('session-store');
@@ -267,6 +268,7 @@ export interface BuildSessionSummarySources {
   taskDetector?: TaskDetector;
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
+  transcriptMessageTracker?: TranscriptMessageTracker;
   developer: string;
   repoName?: string | null;
   /**
@@ -294,6 +296,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   const sessionMetrics = sessionTracker.getMetrics();
   const costMetrics = costTracker?.getMetrics() ?? null;
   const taskMetrics = taskDetector?.getMetrics() ?? null;
+  const transcriptMessageMetrics = sources.transcriptMessageTracker?.getMetrics();
 
   // Aggregate task-level data
   const allFilesRead = new Set<string>();
@@ -402,9 +405,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     toolSuccessRate: sessionMetrics.toolSuccessRate,
     contextCompressions: 0,
     agentSpawns: totalAgentSpawns,
-    userMessages: 0,
-    assistantMessages: 0,
-    userCorrections: 0,
+    userMessages: transcriptMessageMetrics?.userMessages ?? 0,
+    assistantMessages: transcriptMessageMetrics?.assistantMessages ?? 0,
+    userCorrections: transcriptMessageMetrics?.userCorrections ?? 0,
     outcome: sources.outcome ?? 'completed',
     platform: sources.platform,
     instructionPromptHash: sources.instructionPromptHash ?? null,
