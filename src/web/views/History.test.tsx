@@ -846,6 +846,57 @@ describe('aggregateModelPerformance', () => {
     expect(opus.flagged).toBe(false);
   });
 
+  it('computes costPerMillionTokens as a blended rate across all sessions for the model', () => {
+    const sessions = [
+      {
+        sessionId: 's1',
+        model: 'claude-opus-4-6',
+        estimatedCostUsd: 6.0,
+        tokensInput: 400_000,
+        tokensOutput: 200_000,
+      },
+      {
+        sessionId: 's2',
+        model: 'claude-opus-4-6',
+        estimatedCostUsd: 3.0,
+        tokensInput: 300_000,
+        tokensOutput: 100_000,
+      },
+    ];
+    const result = aggregateModelPerformance(sessions);
+    // totalCost=9.0, totalTokens=1_000_000 -> 9.0 / 1_000_000 * 1e6 = 9.0
+    expect(result[0].costPerMillionTokens).toBeCloseTo(9.0);
+  });
+
+  it('returns null costPerMillionTokens when no token counts are present', () => {
+    const sessions = [{ sessionId: 's1', model: 'claude-opus-4-6', estimatedCostUsd: 1.0 }];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].costPerMillionTokens).toBeNull();
+  });
+
+  it("excludes a session's cost from costPerMillionTokens when it has no token counts yet", () => {
+    const sessions = [
+      // Persisted session: cost and tokens both known.
+      {
+        sessionId: 's1',
+        model: 'claude-opus-4-6',
+        estimatedCostUsd: 9.0,
+        tokensInput: 800_000,
+        tokensOutput: 200_000,
+      },
+      // Live session stub: cost already reported, but token counts haven't
+      // persisted yet. Including its cost without matching tokens would
+      // inflate the blended rate above the true 9.0 for this model.
+      {
+        sessionId: 's2-live',
+        model: 'claude-opus-4-6',
+        estimatedCostUsd: 5.0,
+      },
+    ];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].costPerMillionTokens).toBeCloseTo(9.0);
+  });
+
   it('flags models that have sessions below 85% success rate', () => {
     const sessions = [
       { sessionId: 's1', model: 'claude-opus-4-6', toolSuccessRate: 0.95 },

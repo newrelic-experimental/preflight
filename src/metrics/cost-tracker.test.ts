@@ -337,6 +337,54 @@ describe('CostTracker', () => {
     });
   });
 
+  describe('costPerMillionTokens', () => {
+    it('computes the blended session rate across input/output tokens', () => {
+      const tracker = new CostTracker();
+
+      // claude-sonnet-4: 500k*3/1M + 500k*15/1M = 1.5 + 7.5 = 9.0 for 1M tokens
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 500_000, outputTokens: 500_000, totalTokens: 1_000_000 }),
+        'claude-sonnet-4',
+      );
+
+      expect(tracker.getMetrics().costPerMillionTokens).toBeCloseTo(9.0, 2);
+    });
+
+    it('returns null when no tokens have been reported', () => {
+      const tracker = new CostTracker();
+      expect(tracker.getMetrics().costPerMillionTokens).toBeNull();
+    });
+
+    it('includes thinking, cache-read, and cache-creation tokens in the blended denominator', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(
+        makeUsage({
+          inputTokens: 100_000,
+          outputTokens: 50_000,
+          thinkingTokens: 20_000,
+          cacheReadTokens: 30_000,
+          cacheCreationTokens: 10_000,
+          totalTokens: 210_000,
+        }),
+        'claude-sonnet-4',
+      );
+
+      const metrics = tracker.getMetrics();
+      const totalTokensAllTypes =
+        metrics.totalInputTokens +
+        metrics.totalOutputTokens +
+        metrics.totalThinkingTokens +
+        metrics.totalCacheReadTokens +
+        metrics.totalCacheCreationTokens;
+
+      expect(totalTokensAllTypes).toBe(210_000);
+      expect(metrics.costPerMillionTokens).toBeCloseTo(
+        (metrics.sessionTotalCostUsd! / totalTokensAllTypes) * 1_000_000,
+        6,
+      );
+    });
+  });
+
   describe('null fields when no data', () => {
     it('returns null for cost fields when no tokens reported', () => {
       const tracker = new CostTracker();
@@ -345,6 +393,7 @@ describe('CostTracker', () => {
       expect(metrics.sessionTotalCostUsd).toBeNull();
       expect(metrics.costPerLineOfCode).toBeNull();
       expect(metrics.costPerFileModified).toBeNull();
+      expect(metrics.costPerMillionTokens).toBeNull();
       expect(metrics.costByTask).toBeNull();
       expect(metrics.model).toBeNull();
       expect(metrics.latestCostBreakdown).toBeNull();
@@ -499,6 +548,21 @@ describe('CostTracker', () => {
       expect(names).toContain('ai.cost.cost_per_line_of_code');
       expect(names).toContain('ai.cost.report_count');
       expect(names).toContain('ai.cost.estimation_count');
+    });
+
+    it('never emits a per_million_tokens metric — it is derivable in NRQL from session_total_usd and the tokens_* counts already emitted', () => {
+      const tracker = new CostTracker();
+
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+        'claude-sonnet-4',
+      );
+
+      const aggregator = new MetricAggregator();
+      tracker.emitMetrics(aggregator);
+
+      const names = aggregator.harvest(60_000).map((m) => m.name);
+      expect(names).not.toContain('ai.cost.per_million_tokens');
     });
 
     it('emits cost_per_file_modified when session tracker has file data', () => {

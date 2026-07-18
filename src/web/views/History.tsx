@@ -42,6 +42,8 @@ interface SessionRow {
   readonly efficiencyScore?: number | null;
   readonly toolCallCount?: number;
   readonly toolBreakdown?: Record<string, number>;
+  readonly tokensInput?: number;
+  readonly tokensOutput?: number;
 }
 
 const TICK_STYLE = { fill: 'var(--color-ink-muted)', fontSize: 10 };
@@ -303,6 +305,7 @@ export function History(): JSX.Element {
                     <th className="text-right pb-1">Eff.</th>
                     <th className="text-right pb-1">Success</th>
                     <th className="text-right pb-1">Avg $</th>
+                    <th className="text-right pb-1">$/1M tok</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -323,6 +326,9 @@ export function History(): JSX.Element {
                           : '—'}
                       </td>
                       <td className="py-1 text-right tabular-nums">{formatUsdOrDash(m.avgCost)}</td>
+                      <td className="py-1 text-right tabular-nums text-ink-subtle">
+                        {formatUsdOrDash(m.costPerMillionTokens)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -555,6 +561,14 @@ export interface ModelPerformanceRow {
   readonly avgEfficiency: number | null;
   readonly avgSuccessRate: number | null;
   readonly avgCost: number | null;
+  // Blended rate across sessions for this model that report both cost and
+  // token counts — (totalCost / totalTokens) * 1e6, input+output tokens only
+  // (matching ModelUsageTracker's server-side per-model figure, which is a
+  // different token set than CostTracker's session-blended rate). Unlike
+  // avgCost (a mean of per-session costs), this is stable across sessions of
+  // very different size, so it's the more meaningful number for comparing
+  // models' actual spend efficiency.
+  readonly costPerMillionTokens: number | null;
   readonly flagged: boolean;
 }
 
@@ -571,6 +585,8 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       successCount: number;
       costSum: number;
       costCount: number;
+      blendedCostSum: number;
+      blendedTokensSum: number;
       lowSuccessSessions: number;
     }
   >();
@@ -587,6 +603,8 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
         successCount: 0,
         costSum: 0,
         costCount: 0,
+        blendedCostSum: 0,
+        blendedTokensSum: 0,
         lowSuccessSessions: 0,
       };
       byModel.set(model, entry);
@@ -606,6 +624,14 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
     if (r.estimatedCostUsd != null) {
       entry.costSum += r.estimatedCostUsd;
       entry.costCount++;
+      // Only blend cost and tokens from the same session — a live session row
+      // can carry a cost before its token counts have been persisted, which
+      // would otherwise inflate costPerMillionTokens by counting cost against
+      // fewer tokens than were actually spent.
+      if (r.tokensInput != null || r.tokensOutput != null) {
+        entry.blendedCostSum += r.estimatedCostUsd;
+        entry.blendedTokensSum += (r.tokensInput ?? 0) + (r.tokensOutput ?? 0);
+      }
     }
   }
 
@@ -617,6 +643,8 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       avgEfficiency: e.effCount > 0 ? e.effSum / e.effCount : null,
       avgSuccessRate: e.successCount > 0 ? e.successSum / e.successCount : null,
       avgCost: e.costCount > 0 ? e.costSum / e.costCount : null,
+      costPerMillionTokens:
+        e.blendedTokensSum > 0 ? (e.blendedCostSum / e.blendedTokensSum) * 1_000_000 : null,
       flagged: e.lowSuccessSessions > 0,
     });
   }
