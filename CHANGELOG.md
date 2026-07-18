@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-07-18
+
+### Fixed
+
+- Internal bookkeeping session IDs from `--local` and proxy mode could occasionally still show up in the session list, live sessions view, or concurrency chart, since each dashboard endpoint filtered them independently and inconsistently. That filtering is now applied once, centrally, wherever session data is loaded, so it can no longer be missed for any given view.
+
 ## [1.6.1] - 2026-07-18
 
 ### Fixed

@@ -282,7 +282,9 @@ export function setupDashboardPostBind(
       localStore.gcDeadLocalInstances();
       const live = localStore.getActiveSessionIdsFromHeartbeats();
       if (liveSessionRegistry) {
-        for (const id of liveSessionRegistry.getLiveSessions()) live.add(id);
+        for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
+          live.add(id);
+        }
       }
       localStore.gcOrphanBuffers(live);
     } catch (err) {

@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
+import { isSyntheticSessionId } from '../hooks/session-resolver.js';
 import type { SessionSummary, ReplayTimelineEntry } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -216,6 +217,16 @@ export class SessionStore {
         const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
         const session = deserializeSession(raw);
         if (!session) continue;
+
+        // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
+        // MCP-internal bookkeeping from --local / proxy modes, never a real
+        // Claude Code session. persistSession() in src/index.ts already
+        // refuses to write new ones; any that still exist on disk are stale
+        // artifacts from before that guard shipped. Filtering them here
+        // means every consumer of this loader (and of loadTodaySessions() /
+        // loadSessionsOverlappingToday(), which both delegate to it) gets
+        // clean data without re-implementing the same check.
+        if (isSyntheticSessionId(session.sessionId)) continue;
 
         if (options?.developer && session.developer !== options.developer) continue;
 

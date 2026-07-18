@@ -1316,24 +1316,6 @@ describe('api-handler GET /api/sessions/live', () => {
     expect(parsed[0]!.lastActivity).toBe(9_000_000);
   });
 
-  it('filters synthetic session IDs (local- and proxy- prefixes) from the response', async () => {
-    const ids = ['local-1234567890', 'real-session-abc', 'proxy-9876543210'];
-    const handler = createApiHandler({
-      liveSessionRegistry: {
-        getLiveSessions: () => ids,
-        getSessionName: () => null,
-        getLastActivity: () => null,
-      },
-      toolCallBuffer: { getRecords: () => [] },
-    });
-    const req = { method: 'GET', url: '/api/sessions/live' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const parsed = JSON.parse(body()) as Array<{ sessionId: string }>;
-    expect(parsed.map((p) => p.sessionId)).toEqual(['real-session-abc']);
-  });
-
   it('returns 503 when liveSessionRegistry is missing', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/sessions/live' } as IncomingMessage;
@@ -2071,33 +2053,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.buckets[44].count).toBe(1);
   });
 
-  it('excludes synthetic-id (local-/proxy-) persisted sessions from bucket counts', async () => {
-    const todaySessions = [
-      // Synthetic id — must be filtered out, contributes 0.
-      { sessionId: 'local-abc123', timeline: makeTimeline(0, 17) },
-      // Real id — should still contribute.
-      { sessionId: 'real-session-1', timeline: makeTimeline(0, 17) },
-    ];
-    const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
-      liveSessionRegistry: makeLiveRegistry(),
-      sessionStore: {
-        loadTodaySessions: () => todaySessions,
-        loadAllSessions: () => [],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-    });
-    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    // Bucket 0 should see only the one real session, not both → count=1.
-    expect(result.buckets[0].count).toBe(1);
-    expect(result.buckets[1].count).toBe(1);
-  });
-
   it('does not inflate the next bucket when a session ends exactly at a bucket boundary', async () => {
     // Regression: events deferred via `ts < bucketEnd` (not `<=`) left the
     // session's -1 to be processed at the START of the next bucket, after
@@ -2197,33 +2152,6 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     const maxBucket = Math.max(...result.buckets.map((b: { count: number }) => b.count));
     expect(maxBucket).toBe(1);
     expect(result.peak).toBe(1);
-  });
-
-  it('excludes synthetic-id sessions from allTimePeak, matching the filtering already applied to peak', async () => {
-    // Both all-time sessions are synthetic (local-mode). allTimePeak must
-    // exclude them just like `peak`/`historicalPeak` already exclude
-    // synthetic ids from today's buckets — otherwise allTimePeak could
-    // report a number driven by sessions invisible everywhere else in the UI.
-    const allSessions = [
-      { sessionId: 'local-abc', timeline: makeTimeline(0, 5) },
-      { sessionId: 'local-def', timeline: makeTimeline(0, 5) },
-    ];
-    const handler = createApiHandler({
-      concurrencyTracker: makeConcurrencyTracker(),
-      liveSessionRegistry: makeLiveRegistry(),
-      sessionStore: {
-        loadTodaySessions: () => [],
-        loadAllSessions: () => allSessions,
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-    });
-    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.allTimePeak).toBe(0);
   });
 
   it('preserves view=history branch unchanged', async () => {

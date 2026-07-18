@@ -4,6 +4,7 @@
  */
 
 import { basename } from 'node:path';
+import { isSyntheticSessionId } from '../hooks/session-resolver.js';
 
 const DEFAULT_STALE_THRESHOLD_MS = 180_000; // 3 minutes
 const MAX_CONCURRENCY_SAMPLES = 2880; // 24h at 30s intervals
@@ -34,7 +35,7 @@ export class LiveSessionRegistry {
         this.sessionNames.set(sessionId, name);
       }
     }
-    const liveCount = this.getLiveSessions().length;
+    const liveCount = this.getLiveSessions({ includeSynthetic: true }).length;
     if (liveCount > this.peakConcurrent) {
       this.peakConcurrent = liveCount;
     }
@@ -52,7 +53,7 @@ export class LiveSessionRegistry {
     return this.lastActivity.get(sessionId) ?? null;
   }
 
-  getLiveSessions(): string[] {
+  getLiveSessions(options?: { includeSynthetic?: boolean }): string[] {
     const now = Date.now();
     const live: string[] = [];
     const stale: string[] = [];
@@ -67,7 +68,12 @@ export class LiveSessionRegistry {
       this.lastActivity.delete(id);
       this.sessionNames.delete(id);
     }
-    return live;
+    // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
+    // MCP-internal bookkeeping from --local / proxy modes, not real Claude
+    // Code sessions — dashboard consumers shouldn't see them as clickable
+    // rows. Default to filtered; internal peak/count tracking opts into
+    // `includeSynthetic: true` to keep its numbers unchanged.
+    return options?.includeSynthetic ? live : live.filter((id) => !isSyntheticSessionId(id));
   }
 
   reset(): void {
@@ -89,7 +95,7 @@ export class LiveSessionRegistry {
   startSampling(): void {
     if (this.samplingInterval) return;
     this.samplingInterval = setInterval(() => {
-      const count = this.getLiveSessions().length;
+      const count = this.getLiveSessions({ includeSynthetic: true }).length;
       this.concurrencyTimeSeries.push({ timestamp: Date.now(), count });
       if (this.concurrencyTimeSeries.length > MAX_CONCURRENCY_SAMPLES) {
         this.concurrencyTimeSeries.shift();
@@ -106,7 +112,7 @@ export class LiveSessionRegistry {
   }
 
   getConcurrentCount(): number {
-    return this.getLiveSessions().length;
+    return this.getLiveSessions({ includeSynthetic: true }).length;
   }
 
   getPeakConcurrent(): number {

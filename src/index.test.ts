@@ -471,6 +471,28 @@ describe('setupDashboardPostBind()', () => {
     clearInterval(handle);
   });
 
+  it('requests synthetic session ids from the registry so their buffers survive GC', () => {
+    // getLiveSessions() now defaults to filtering out local-*/proxy-*/pending-
+    // ids for dashboard display, but the orphan-buffer GC pass must keep
+    // seeing every live session — including synthetic ones still mid-flight
+    // in --local / proxy mode — or it would delete their active buffer files.
+    const { store, gcOrphanBuffers } = makeLocalStore();
+    const getLiveSessions = jest.fn(
+      (_options?: { includeSynthetic?: boolean }) => new Set(['proxy-1234567890']),
+    );
+    const liveSessionRegistry = {
+      getLiveSessions,
+    } as unknown as Parameters<typeof setupDashboardPostBind>[1]['liveSessionRegistry'];
+    const handle = setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, liveSessionRegistry, openOnStart: false, isLocalMode: false },
+    );
+    expect(getLiveSessions).toHaveBeenCalledWith({ includeSynthetic: true });
+    const liveArg = gcOrphanBuffers.mock.calls[0]?.[0] as Set<string>;
+    expect(liveArg.has('proxy-1234567890')).toBe(true);
+    clearInterval(handle);
+  });
+
   it('writes the local-dashboard pid file when isLocalMode is true', () => {
     const { store, writeLocalDashboardPid } = makeLocalStore();
     const handle = setupDashboardPostBind(

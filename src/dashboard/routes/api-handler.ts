@@ -920,22 +920,26 @@ export function createApiHandler(
     const allSessions = deps.sessionStore.loadAllSessions
       ? deps.sessionStore.loadAllSessions()
       : deps.sessionStore.listSessions();
-    // Filter synthetic IDs (`local-<ts>`, `proxy-<ts>`) from the historical
-    // list. They're MCP-internal bookkeeping IDs persisted incidentally by
-    // older builds; they appear as confusing "duplicate" rows next to real
-    // Claude Code sessions. The synthetic-shutdown filter in src/index.ts
-    // prevents new ones from being persisted, but stale ones from before
-    // that filter shipped need to be hidden at read time.
+    // `allSessions` comes from SessionStore.loadAllSessions(), which already
+    // excludes synthetic IDs (`local-<ts>`, `proxy-<ts>`, `pending-<ts>`) —
+    // MCP-internal bookkeeping from --local / proxy modes that would
+    // otherwise appear as confusing "duplicate" rows next to real Claude
+    // Code sessions.
     const withActivity = (allSessions as readonly SessionIdentityLike[]).filter((s) => {
-      const sid = s.sessionId;
       const calls = s.toolCallCount ?? 0;
-      return calls > 0 && (!sid || !isSyntheticSessionId(sid));
+      return calls > 0;
     });
     const sliced = withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
-    // shutdown — but skip synthetic sessionTraceIds from --local / proxy
-    // modes (the same filter as for persisted entries above).
+    // shutdown. Unlike `allSessions` above, `live.sessionId` comes straight
+    // from this process's own SessionTracker, not SessionStore or
+    // LiveSessionRegistry — there's no shared producer boundary to push this
+    // check into, since --local / proxy mode's own session ID is synthetic
+    // for its entire lifetime and SessionTracker must keep reporting it
+    // unfiltered (persistSession() in src/index.ts depends on the real,
+    // unfiltered ID to decide whether to skip persisting). So this filter
+    // stays here.
     if (deps.sessionTracker) {
       const live = deps.sessionTracker.getMetrics();
       const alreadyPersisted = sliced.some(
@@ -1023,15 +1027,12 @@ export function createApiHandler(
   // yet, startTime defaults to lastActivity (or now() if both are missing).
   routes.set('GET /api/sessions/live', (_req, res) => {
     if (!deps.liveSessionRegistry) return unavailable(res, 'liveSessionRegistry');
-    // Filter out synthetic session identities used by --local / proxy modes
-    // (`local-<ts>`, `proxy-<ts>`). They're MCP-internal bookkeeping IDs,
-    // not real Claude Code sessions, so they shouldn't appear as clickable
-    // rows in the dashboard's live-sessions selector. The real user sessions
-    // (with proper session_ids resolved via the breadcrumb / CLAUDE_JOB_DIR
-    // path) are what users want to see and click.
-    const ids = deps.liveSessionRegistry
-      .getLiveSessions()
-      .filter((id) => !isSyntheticSessionId(id));
+    // getLiveSessions() already excludes synthetic session identities used by
+    // --local / proxy modes (`local-<ts>`, `proxy-<ts>`, `pending-<ts>`) —
+    // MCP-internal bookkeeping IDs, not real Claude Code sessions, so they
+    // shouldn't appear as clickable rows in the dashboard's live-sessions
+    // selector.
+    const ids = deps.liveSessionRegistry.getLiveSessions();
     const records = deps.toolCallBuffer?.getRecords() ?? [];
     const perSession = new Map<string, { firstTs: number; lastTs: number }>();
     for (const r of records) {
@@ -1549,25 +1550,19 @@ export function createApiHandler(
         return;
       }
 
-      // Synthetic session ids (`local-*`, `proxy-*`) are hidden from
-      // /api/sessions and /api/sessions/live. Exclude them here too so
-      // `allTimePeak` can't be inflated by sessions that never appear
-      // anywhere else in the UI — it must stay comparable to `peak`, which
-      // is filtered the same way below.
+      // loadAllSessions() already excludes synthetic session ids (`local-*`,
+      // `proxy-*`, `pending-*`) — same producer-level guarantee that keeps
+      // them out of /api/sessions and /api/sessions/live — so `allTimePeak`
+      // stays comparable to `peak` below without re-filtering here.
       const allSessions = deps.sessionStore?.loadAllSessions?.() ?? [];
-      const filteredAllSessions = (allSessions as readonly SessionIdentityLike[]).filter(
-        (s) => !isSyntheticSessionId(s.sessionId),
-      );
       const allTimePeak = computeTodayPeakConcurrency(
-        filteredAllSessions as readonly SessionActivityLike[],
+        allSessions as readonly SessionActivityLike[],
       );
 
-      // Synthetic session ids (`local-*`, `proxy-*`) are hidden from
-      // /api/sessions and /api/sessions/live. Exclude them from the chart
-      // buckets below so they agree with the session list shown alongside
-      // the chart.
+      // loadTodaySessions() already excludes synthetic session ids, so the
+      // chart buckets below agree with the session list shown alongside the
+      // chart without re-filtering here.
       const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
-      const filteredTodaySessions = todaySessions.filter((s) => !isSyntheticSessionId(s.sessionId));
 
       // 96 × 15-minute fixed-grid buckets covering today (local midnight →
       // local midnight + 24h). Each bucket holds the peak concurrent
@@ -1575,13 +1570,10 @@ export function createApiHandler(
       // renders cleanly at any zoom level. Replaces the prior unbounded
       // 30-second rolling timeSeries.
       const startTimestamp = localStartOfDay();
+      // getLiveSessions() already excludes synthetic session ids too.
       const liveIds = deps.liveSessionRegistry?.getLiveSessions() ?? [];
       const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
-      const windows = collectTodayActivityWindows(
-        filteredTodaySessions,
-        liveIds.filter((id) => !isSyntheticSessionId(id)),
-        bufferRecords,
-      );
+      const windows = collectTodayActivityWindows(todaySessions, liveIds, bufferRecords);
       const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
       // Derive the headline "today peak" from the SAME buckets shown in the
       // chart — rather than from an independent computation over a
