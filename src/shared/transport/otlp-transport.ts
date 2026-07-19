@@ -243,7 +243,7 @@ export class OtlpTransport {
     };
   }
 
-  // summary is now a first-class type with a structured
+  // summary is a first-class type with a structured
   // value `{ count, sum, min, max }`. OTLP doesn't have a single
   // "Summary"-shaped metric kind; the closest faithful mapping is OTLP
   // Histogram with explicit `count` and `sum` fields plus per-data-point

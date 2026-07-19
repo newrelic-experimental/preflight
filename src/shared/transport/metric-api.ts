@@ -20,12 +20,6 @@ function toWireMetric(m: NrMetric): WireMetric {
   return { ...(rest as Omit<NrMetric, 'intervalMs'>), 'interval.ms': intervalMs };
 }
 
-/**
- * Send a batch of `NrMetric` records to NR's Metric API. Encodes the
- * discriminated union (`gauge`, `count`, `summary`) per NR's wire format,
- * compresses with gzip, and uses the same retry / timeout machinery as
- * `sendEvents`.
- */
 export async function sendMetrics(
   metrics: NrMetric[],
   licenseKey: string,

@@ -104,15 +104,10 @@ describe('sendLogs', () => {
     expect(url).toBe('https://collector.eu01.nr-data.net/log/v1');
   });
 
-  it('uses literal collectorHost as URL host when it contains a port', async () => {
-    await sendLogs(testLogs, 'us01xxUSKEY', {
-      ...baseOptions,
-      collectorHost: 'my-proxy.example.com:8443',
-    });
-
-    const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://my-proxy.example.com:8443/log/v1');
-  });
+  // The port-in-host variant of this literal-collectorHost passthrough is
+  // covered directly (and more thoroughly) in http-client.test.ts's URL
+  // builder tests — this wrapper only needs to prove the dot-in-host case
+  // wires through correctly.
 });
 
 // ---------------------------------------------------------------------------

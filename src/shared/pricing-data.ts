@@ -8,7 +8,7 @@ import type { ModelPricing } from './pricing.js';
 // alias, the prefix-match heuristic in resolveModelPricing() prefers longer
 // keys (dated suffixes like "-20250514") and silently returns LEGACY pricing,
 // e.g. claude-opus-4 → claude-opus-4-20250514 ($15/$75) instead of the
-// current claude-opus-4-7 ($5/$25). That's a 3× cost overestimate.
+// current claude-opus-4-8 ($5/$25). That's a 3× cost overestimate.
 //
 // Resolution order in resolveModelPricing(): exact → alias → forward-prefix
 // → reverse-prefix → null.
@@ -55,6 +55,9 @@ export const MODEL_ALIASES: Record<string, string> = {
 
 export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // ---- Anthropic (current generation) ----
+  // "Fable" — internal/beta codename for a Claude variant priced ahead of a
+  // public model-name announcement; update or remove once it ships under a
+  // public name.
   'claude-fable-5': {
     inputPerMTok: 10,
     outputPerMTok: 50,
@@ -110,9 +113,10 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Anthropic (legacy Claude 4 generation) ----
-  // These legacy entries are retained for historical-cost backfill. Context
-  // windows differ from current-gen (200K vs 1M). Family-name routing
-  // (e.g. `claude-opus-4` → current generation) is handled by MODEL_ALIASES.
+  // These legacy entries are retained for historical-cost backfill. Most use
+  // the pre-1M-context window (200K); claude-opus-4-7 already had the
+  // 1M-context bump backported. Family-name routing (e.g. `claude-opus-4` →
+  // current generation) is handled by MODEL_ALIASES.
   'claude-opus-4-7': {
     inputPerMTok: 5,
     outputPerMTok: 25,
@@ -145,13 +149,11 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheCreationPerMTok: 6.25,
     contextWindow: 200_000,
   },
-  // WARNING: this key uses a version-number suffix (-1) not a date suffix.
-  // The reverse-prefix algorithm strips only 8-digit date suffixes, so a
-  // future model named 'claude-opus-4-10' (or 'claude-opus-4-100') would
-  // match this entry via reverse-prefix because
-  // 'claude-opus-4-10'.startsWith('claude-opus-4-1') is true.
-  // If Anthropic releases a claude-opus-4-10 model, add an explicit alias
-  // before that model key appears in the table.
+  // This key uses a version-number suffix (-1), not an 8-digit date suffix,
+  // so DATED_SUFFIX_RE never strips it — it's ineligible as a reverse-prefix
+  // base. A future 'claude-opus-4-10' resolves via the dated-key + alias path
+  // instead (see pricing.test.ts "13b"), never through this entry — no
+  // action needed here when that model ships.
   'claude-opus-4-1': {
     inputPerMTok: 15,
     outputPerMTok: 75,
@@ -275,11 +277,12 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheReadPerMTok: 0.5,
     contextWindow: 1_000_000,
     // OpenAI long-context pricing is marginal: only tokens above 270k are
-    // billed at the tier rate — not the entire request.
+    // billed at the tier rate — not the entire request. Output always bills
+    // at outputPerMTok in marginal mode (see ModelPricing.tierMode), so no
+    // tierOutputPerMTok is set here — it would be dead data.
     tierThreshold: 270_000,
     tierMode: 'marginal',
     tierInputPerMTok: 10,
-    tierOutputPerMTok: 45,
   },
   'gpt-5.4': {
     inputPerMTok: 2.5,
@@ -289,7 +292,6 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     tierThreshold: 270_000,
     tierMode: 'marginal',
     tierInputPerMTok: 5,
-    tierOutputPerMTok: 22.5,
   },
   'gpt-5.4-mini': {
     inputPerMTok: 0.75,
@@ -514,10 +516,9 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 0.6,
     contextWindow: 128_000,
   },
-  // `command` and `command-light` are deprecated (2024)
-  // but retained for historical-cost backfill of consumer apps that haven't
-  // migrated. Context window is 4096 tokens, not 4000 — the round-number
-  // approximation in the original entry was off by 96 tokens.
+  // `command` and `command-light` are deprecated (2024) but retained for
+  // historical-cost backfill of consumer apps that haven't migrated.
+  // Context window is 4096 tokens, not the round number 4000.
   command: {
     inputPerMTok: 1,
     outputPerMTok: 2,

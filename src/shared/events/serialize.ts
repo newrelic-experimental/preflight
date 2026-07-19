@@ -81,22 +81,19 @@ function applyCustomAttributes(
 // Truncating by character count can still exceed the byte cap for multi-byte
 // scripts (CJK = 3 bytes/char, emoji = 4 bytes/char). Truncate by byte count.
 const NR_VALUE_MAX_BYTES = 4096;
-const NR_VALUE_SUFFIX = '...'; // 3 bytes (ASCII)
+const NR_VALUE_SUFFIX = '...';
 
 // Shared helper used by both truncate() and clipCustomAttribute().
 // Finds the longest code-point prefix of `s` whose UTF-8 byte length fits
 // within `maxBytes`, then appends '...'. Called only when the string is
 // already known to exceed `maxBytes`.
 //
-// Uses binary search (O(log n) Buffer.byteLength calls) instead of the
-// previous linear-decrement loop (O(n) calls). For a worst-case string of
-// all 4-byte emoji at the 4096-byte cap, this reduces ~1024 Buffer.byteLength
-// calls to ~12.
-const SUFFIX_BYTES = Buffer.byteLength(NR_VALUE_SUFFIX, 'utf8'); // 3 (ASCII)
+// Binary search (O(log n) Buffer.byteLength calls): ~12 calls for a
+// worst-case string of all 4-byte emoji at the 4096-byte cap.
+const SUFFIX_BYTES = Buffer.byteLength(NR_VALUE_SUFFIX, 'utf8');
 function truncateToBytes(s: string, maxBytes: number): string {
   const target = maxBytes - SUFFIX_BYTES;
   const codePoints = Array.from(s);
-  // Binary search for the largest cut that fits within target bytes.
   let lo = 0;
   let hi = codePoints.length;
   while (lo < hi) {
@@ -111,7 +108,9 @@ function truncateToBytes(s: string, maxBytes: number): string {
 }
 
 function truncate(s: string): string {
-  // Fast path: ASCII-only strings — byte length == char length.
+  // Fast path: even in the worst case (every char 4 bytes in UTF-8), a
+  // string this short can't exceed NR_VALUE_MAX_BYTES, so skip the
+  // expensive Buffer.byteLength check below.
   if (s.length <= NR_VALUE_MAX_BYTES / 4) return s;
   if (Buffer.byteLength(s, 'utf8') <= NR_VALUE_MAX_BYTES) return s;
   return truncateToBytes(s, NR_VALUE_MAX_BYTES);
@@ -159,8 +158,8 @@ function clipCustomAttribute(
  *     characters** (with a trailing `...` marker). Numeric custom
  *     attributes pass through unchanged. Applies to **all** serializers.
  *     In normal mode (highSecurity: false / omitted), string values are
- *     still truncated at 4000 chars so a long attribute cannot push the
- *     event past NR's 4096-byte per-attribute cap.
+ *     still truncated at 4096 UTF-8 bytes (`NR_VALUE_MAX_BYTES`) so a long
+ *     attribute cannot push the event past NR's per-attribute cap.
  *
  * Structural / metadata fields are intentionally NOT suppressed in
  * high-security mode — they are bounded identifiers, not free-form
@@ -284,6 +283,9 @@ export function aiRequestToNrEvent(event: AiRequest, options?: SerializeOptions)
     'nr.appName': event['nr.appName'],
   };
 
+  // Omit rather than null out optional fields throughout this file — the NR
+  // Events API has no null attribute type, so an explicit null key behaves
+  // differently from a genuinely absent one for NRQL filtering.
   if (event.maxTokens !== null) data.maxTokens = event.maxTokens;
   if (event.temperature !== null) data.temperature = event.temperature;
   if (event.topP !== null) data.topP = event.topP;
@@ -293,6 +295,10 @@ export function aiRequestToNrEvent(event: AiRequest, options?: SerializeOptions)
   if (event['nr.entityGuid'] !== null) data['nr.entityGuid'] = event['nr.entityGuid'];
 
   // GenAI semantic convention attributes (OTel spec, experimental)
+  // The `?? event.provider` fallback is a runtime safety net for callers
+  // that bypass the AiProvider type (e.g. plain-JS SDK consumers) — the
+  // Record above is exhaustive only at compile time, so an unrecognized
+  // runtime value falls through as-is instead of being dropped.
   const genAiSystem = PROVIDER_TO_GENAI_SYSTEM[event.provider] ?? event.provider;
   data['gen_ai.system'] = genAiSystem;
   data['gen_ai.request.model'] = event.model;
@@ -329,9 +335,7 @@ export function aiResponseToNrEvent(event: AiResponse, options?: SerializeOption
   };
 
   // Emit `nr.entityGuid` so AiResponse events route to the
-  // owning NR entity surface, matching `aiRequestToNrEvent`. Without this the
-  // factory's entityGuid input was silently dropped at serialization time
-  // even though the AiResponse interface declared the field.
+  // owning NR entity surface, matching `aiRequestToNrEvent`.
   if (event['nr.entityGuid'] !== null) data['nr.entityGuid'] = event['nr.entityGuid'];
 
   if (event.timeToFirstTokenMs !== null) data.timeToFirstTokenMs = event.timeToFirstTokenMs;
@@ -429,11 +433,11 @@ export function aiMessageToNrEvent(event: AiMessage, options?: SerializeOptions)
 }
 
 /**
- * Dotted-key naming convention for the four newer
- * agent-shaped event types (`AiAgentTaskSummary`, `AiAntiPattern`,
- * `AiAgentMessage`, `AiContextReset`). These serializers emit attributes
- * with a `<namespace>.<field>` shape (e.g. `ai.agent.task_duration_ms`,
- * `ai.antipattern.severity`) alongside top-level non-namespaced fields
+ * Dotted-key naming convention, used by `AiAgentTaskSummary` only (not the
+ * other three agent-shaped event types below it — `AiAntiPattern`,
+ * `AiAgentMessage`, `AiContextReset` are flat). Its serializer emits
+ * attributes with a `<namespace>.<field>` shape (e.g.
+ * `ai.agent.task_duration_ms`) alongside top-level non-namespaced fields
  * (e.g. `id`, `timestamp`, `taskName`).
  *
  * The dotted form is the OTel-style and aligns with `gen_ai.*` already in
@@ -443,18 +447,13 @@ export function aiMessageToNrEvent(event: AiMessage, options?: SerializeOptions)
  * The mixed top-level + namespaced shape (`taskName` flat, `ai.agent.*`
  * dotted) is intentional: the top-level fields carry record identity that
  * the eventType bucket already groups by (you query `FROM AiAgentTaskSummary`
- * so `eventType` provides the namespace), while the `ai.<area>.*` fields
+ * so `eventType` provides the namespace), while the `ai.agent.*` fields
  * cluster metric-shaped attributes by source area so dashboards can
  * `SELECT keyset() WHERE attribute LIKE 'ai.agent.%'`.
  *
- * This convention is documented here rather than enforced — adding new
- * fields to these event types should follow it for consistency, but the
- * library does not validate the shape at runtime.
+ * This convention is documented here rather than enforced — adopting it for
+ * new fields on other event types is a style choice, not a runtime rule.
  */
-// NOTE: The four agent-shaped event types below do not emit gen_ai.*
-// OTel SemConv attributes (e.g. gen_ai.system) because they lack a `provider`
-// field. Adding provider to these types is a post-0.1.0 task; until then,
-// NRQL queries on gen_ai.* will not return these event types.
 export function aiAgentTaskSummaryToNrEvent(
   event: AiAgentTaskSummary,
   options?: SerializeOptions,

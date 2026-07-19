@@ -29,11 +29,9 @@ export class EventBuffer {
 
   constructor(options?: EventBufferOptions) {
     const maxSize = options?.maxSize ?? DEFAULT_MAX_SIZE;
-    // Validate maxSize at construction. Pre-fix, values like
-    // 0 / negative / NaN turned the buffer into a silent /dev/null because the
-    // overflow comparison `buffer.length >= maxSize` is never true (NaN) or
-    // immediately true with no event ever stored (0 / negative). All
-    // observability would silently disappear with no diagnostic.
+    // maxSize<=0 or NaN would make "buffer.length >= maxSize" never true
+    // (NaN) or always true (0/negative), silently discarding every event
+    // with no diagnostic — validate eagerly instead.
     if (!Number.isInteger(maxSize) || maxSize <= 0) {
       throw new RangeError(
         `EventBuffer: maxSize must be a positive integer, got ${String(maxSize)}`,
@@ -50,15 +48,16 @@ export class EventBuffer {
    *
    * Returns `true` when the event was added without evicting another, and
    * `false` when the buffer was already at `maxSize` and the oldest event
-   * was head-dropped to make room. Callers ignoring
-   * the return value see the same behavior as before; callers that want
-   * backpressure feedback can use it to throttle producers.
+   * was head-dropped to make room. Callers that want backpressure feedback
+   * can use the return value to throttle producers.
    */
   add(event: NrEventData): boolean {
     this.totalSeen++;
 
     let dropped = false;
     if (this.buffer.length >= this.maxSize) {
+      // Array-backed, so this shift() is O(n) — bounded by maxSize, so the
+      // eviction cost per add() stays capped regardless of buffer size.
       this.buffer.shift();
       this.droppedSinceDrain++;
       dropped = true;

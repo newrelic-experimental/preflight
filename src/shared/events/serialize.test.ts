@@ -254,6 +254,27 @@ describe('aiMessageToNrEvent', () => {
     expect(nrEvent['nr.appName']).toBe('my-app');
     expect(nrEvent['custom.conversationId']).toBe('conv-1');
   });
+
+  it('returns an ASCII string between the fast-path length threshold and the byte cap unchanged', () => {
+    // truncate()'s fast path only covers length <= NR_VALUE_MAX_BYTES / 4
+    // (1024). This string's length (2000) skips that fast path but its byte
+    // length (2000, pure ASCII) is still <= the 4096 byte cap — the exact
+    // case the second check (line 116) exists to handle. No prior test used
+    // a length in (1024, 4096].
+    const content = 'x'.repeat(2000);
+    const event = createAiMessage({
+      role: 'user',
+      content,
+      contentLength: content.length,
+      sequence: 0,
+      appName: 'my-app',
+    });
+
+    const nrEvent = aiMessageToNrEvent(event);
+
+    expect(nrEvent.content).toBe(content);
+    expect((nrEvent.content as string).endsWith('...')).toBe(false);
+  });
 });
 
 // All three serializers must emit nr.entityGuid when set.

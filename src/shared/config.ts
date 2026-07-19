@@ -3,11 +3,6 @@ import { createLogger } from './logger.js';
 import type { TransportMode } from './transport/types.js';
 import { DEFAULT_CLIENT_NAME, sanitizeClientString } from './transport/otlp-shared.js';
 
-/**
- * Strings that count as `true`. The lowercased env
- * value is checked against these literal sets — any other value falls
- * through to the default.
- */
 const ENV_TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const ENV_FALSY = new Set(['false', '0', 'no', 'off']);
 
@@ -246,6 +241,7 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
 // (no NRAL-suffix enforcement) to avoid false-rejecting older keys, but
 // strict enough to catch common mistakes: trailing newlines from `cat`
 // pipes, embedded CR/LF (would inject HTTP headers), or empty strings.
+// Never logged — only used for validation.
 const LICENSE_KEY_RE = /^[\x21-\x7E]{20,128}$/;
 
 /**
@@ -257,11 +253,6 @@ const LICENSE_KEY_RE = /^[\x21-\x7E]{20,128}$/;
  * Precedence: `overrides` (when present per key) > env vars > defaults. The
  * function is stateless from the library's perspective — call it again to
  * pick up env-var changes (the SIGHUP pattern).
- *
- * License-key validation enforces a printable-ASCII regex (20–128 chars,
- * no whitespace) — strict enough to catch trailing newlines from `cat` pipes
- * and empty strings, lenient enough to accept older keys without an `NRAL`
- * suffix. Never logs the key value.
  *
  * @param overrides Optional partial config that wins over env vars.
  * @returns Deep-frozen `AgentConfig`.
@@ -317,12 +308,8 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
       ? overrides.accountId
       : (process.env.NEW_RELIC_ACCOUNT_ID ?? null);
   if (accountId !== null && !/^[1-9]\d*$/.test(accountId)) {
-    // Positive-integer-only, no leading zeros, any length.
-    // - Removes the prior 12-digit cap so consumers don't have to release a
-    //   new version when NR issues 13+ digit account IDs server-side.
-    // - Rejects '0' / leading-zero strings (e.g. '07' would have passed the
-    //   old `/^\d{1,12}$/` regex even though no NR account uses leading zeros).
-    // The upper bound is enforced server-side by the ingest API.
+    // Positive-integer-only, no leading zeros, unbounded length — the ingest
+    // API enforces any upper bound server-side.
     throw new Error(
       'Invalid configuration: NEW_RELIC_ACCOUNT_ID must be a positive decimal integer (no leading zeros). ' +
         `Received: "${accountId}"`,
@@ -346,11 +333,12 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
 
   const highSecurity = overrides?.highSecurity ?? envBool('NEW_RELIC_AI_HIGH_SECURITY', false);
 
+  // highSecurity forcibly disables content recording, silently overriding any
+  // explicit recordContent override.
   const recordContent = highSecurity
     ? false
     : (overrides?.recordContent ?? envBool('NEW_RELIC_AI_RECORD_CONTENT', false));
 
-  // Build global attribution defaults from env vars and/or overrides
   const attributionDefaults = buildAttributionDefaults(overrides?.attributionDefaults);
 
   const config: AgentConfig = {

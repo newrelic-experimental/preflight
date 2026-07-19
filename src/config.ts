@@ -446,7 +446,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   const unknownTopKeys = Object.keys(file).filter((k) => !knownTopKeys.has(k));
   if (unknownTopKeys.length > 0) {
     logger.warn('Unknown keys in config file (ignored)', {
-      unknownKeys: unknownTopKeys,
+      unknownFields: unknownTopKeys,
       path: configFilePath,
     });
   }
@@ -475,7 +475,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     const unknownAlertsKeys = Object.keys(alerts).filter((k) => !knownAlertsKeys.has(k));
     if (unknownAlertsKeys.length > 0) {
       logger.warn('Unknown keys in alerts config (ignored)', {
-        unknownKeys: unknownAlertsKeys,
+        unknownFields: unknownAlertsKeys,
         path: configFilePath,
       });
     }
@@ -486,7 +486,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       );
       if (unknownAlertsPersonalKeys.length > 0) {
         logger.warn('Unknown keys in alerts.personal config (ignored)', {
-          unknownKeys: unknownAlertsPersonalKeys,
+          unknownFields: unknownAlertsPersonalKeys,
           path: configFilePath,
         });
       }
@@ -497,7 +497,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     const unknownDashboardKeys = Object.keys(dashboard).filter((k) => !knownDashboardKeys.has(k));
     if (unknownDashboardKeys.length > 0) {
       logger.warn('Unknown keys in dashboard config (ignored)', {
-        unknownKeys: unknownDashboardKeys,
+        unknownFields: unknownDashboardKeys,
         path: configFilePath,
       });
     }

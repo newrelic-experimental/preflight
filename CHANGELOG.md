@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.6] - 2026-07-19
+
+### Fixed
+
+- The "Unknown keys in config file (ignored)" warning (and its `alerts`/`dashboard` variants) was masking the actual unrecognized key names behind `***`, since the secret-redaction logic treated the log field's own name as sensitive. The warning now shows the real key names, so a typo'd or stale config field is actually visible in the logs.
+
 ## [1.6.5] - 2026-07-19
 
 ### Removed

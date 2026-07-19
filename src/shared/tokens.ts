@@ -88,9 +88,6 @@ export function extractAnthropicTokens(response: AnthropicResponse): TokenUsage 
   const outputTokens = safeInt(usage.output_tokens);
   const cacheReadTokens = safeInt(usage.cache_read_input_tokens);
   const cacheCreationTokens = safeInt(usage.cache_creation_input_tokens);
-  // Anthropic currently folds thinking into output_tokens. If a future SDK
-  // exposes a dedicated thinking_tokens field, pick it up automatically.
-  // safeInt(undefined) === 0 preserves current behavior when absent.
   const thinkingTokens = safeInt(usage.thinking_tokens);
 
   return {
@@ -263,9 +260,6 @@ export function extractCohereTokens(response: CohereResponse): TokenUsage {
   const usage = response.usage ?? response.meta;
   if (!usage) return { ...EMPTY_USAGE };
 
-  // Prefer the `tokens` block (actual counts). Fall back to `billed_units`
-  // when `tokens` is missing — Cohere has historically populated both, but
-  // older / less-common endpoints may surface only one.
   const counts = usage.tokens ?? usage.billed_units ?? {};
   const inputTokens = safeInt(counts.input_tokens);
   const outputTokens = safeInt(counts.output_tokens);
@@ -285,7 +279,7 @@ export function extractCohereTokens(response: CohereResponse): TokenUsage {
 //
 // Mistral La Plateforme's Chat Completions API uses an OpenAI-compatible
 // usage shape (`prompt_tokens` / `completion_tokens` / `total_tokens`). The
-// type alias below documents the equivalence so a future Mistral-specific
+// interface below documents the equivalence so a future Mistral-specific
 // extension (e.g. cache fields if Mistral adds them) has a place to land
 // without conflating with OpenAI's shape.
 // ---------------------------------------------------------------------------
@@ -339,8 +333,7 @@ interface BedrockUsage {
   outputTokens?: number;
   totalTokens?: number;
   // Canonical AWS SDK field names from @aws-sdk/client-bedrock-runtime
-  // TokenUsage interface. Previously mis-named as cacheReadInputTokenCount /
-  // cacheWriteInputTokenCount.
+  // TokenUsage interface.
   cacheReadInputTokens?: number;
   cacheWriteInputTokens?: number;
 }
@@ -601,7 +594,6 @@ export class TokenAccumulator {
   }
 
   private addAnthropicChunk(event: AnthropicStreamEvent): void {
-    // message_start carries the initial usage with input token counts.
     if (event.type === 'message_start' && event.message?.usage) {
       const usage = event.message.usage;
       this.latestUsage.inputTokens = safeInt(usage.input_tokens);
@@ -634,8 +626,6 @@ export class TokenAccumulator {
       if (u.cache_creation_input_tokens !== undefined) {
         this.latestUsage.cacheCreationTokens = safeInt(u.cache_creation_input_tokens);
       }
-      // Pick up thinking_tokens when Anthropic starts emitting it on streaming
-      // events. Matches the non-streaming path in extractAnthropicTokens.
       if (u.thinking_tokens !== undefined) {
         this.latestUsage.thinkingTokens = safeInt(u.thinking_tokens);
       }

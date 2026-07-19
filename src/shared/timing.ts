@@ -55,7 +55,7 @@ export interface RequestTimerMetrics {
    * Assumes thinking does not overlap with content generation; see file header.
    */
   readonly generationDurationMs: number;
-  /** Output tokens / (durationMs / 1000); null if outputTokens not provided. */
+  /** (Output tokens / durationMs) * 1000; null if outputTokens not provided. */
   readonly tokensPerSecond: number | null;
   /**
    * Estimated SDK/network overhead — the wall-clock time the request spent
@@ -212,20 +212,11 @@ export class RequestTimer {
 
     const generationDurationMs = Math.max(0, durationMs - (thinkingDurationMs ?? 0));
 
-    // Align tokensPerSecond semantics with `factory.ts` —
-    // return `null` when either the duration is zero or no output tokens were
-    // produced, treating both as "no meaningful rate to report". The previous
-    // path returned 0 when `outputTokens === 0`, which read downstream as a
-    // measured-zero rate rather than a missing measurement.
-    //
-    // Compute as `(outputTokens / durationMs) * 1000`
-    // rather than `outputTokens / (durationMs / 1000)`. The two are
-    // mathematically equivalent for non-degenerate inputs but the multiply
-    // form preserves precision better when `durationMs` is small (e.g.
-    // sub-millisecond synthetic test inputs) — `durationMs / 1000` rounds to
-    // a tiny float before the division. Aligns with the formula in
-    // `events/factory.ts:tokensPerSecond` so the two paths agree bit-for-bit
-    // on identical inputs.
+    // Return `null` when either the duration is zero or no output tokens were
+    // produced, treating both as "no meaningful rate to report" rather than a
+    // measured-zero rate. Computed as `(outputTokens / durationMs) * 1000`
+    // to match the formula in `events/factory.ts:tokensPerSecond` so the two
+    // paths agree bit-for-bit on identical inputs.
     const tokensPerSecond =
       outputTokens !== undefined && outputTokens > 0 && durationMs > 0
         ? (outputTokens / durationMs) * 1000

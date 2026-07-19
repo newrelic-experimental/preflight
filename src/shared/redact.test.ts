@@ -38,7 +38,7 @@ describe('redact', () => {
   });
 
   it('preserves null/undefined under secret keys (does not stringify)', () => {
-    const out = redact({ apiKey: null, token: undefined }) as Record<string, unknown>;
+    const out = redact({ apiKey: null, token: undefined });
     expect(out.apiKey).toBeNull();
     expect(out.token).toBeUndefined();
   });
@@ -77,7 +77,7 @@ describe('redact', () => {
     const input: Record<string, unknown> = { a: 1 };
     input.self = input;
     expect(() => redact(input)).not.toThrow();
-    const out = redact(input) as Record<string, unknown>;
+    const out = redact(input);
     expect(out.a).toBe(1);
     expect(out.self).toBe('[circular]');
   });
@@ -98,7 +98,7 @@ describe('redact', () => {
     // regression visible. Keep 20 comfortably above MAX_DEPTH to ensure truncation.
     let deep: Record<string, unknown> = { leaf: 'bottom' };
     for (let i = 0; i < 20; i++) deep = { nested: deep };
-    const out = redact(deep) as Record<string, unknown>;
+    const out = redact(deep);
     let cursor: unknown = out;
     let depth = 0;
     while (
@@ -123,8 +123,17 @@ describe('redact', () => {
   });
 
   it('preserves keys (plural) — does not redact it as a secret key', () => {
-    const out = redact({ keys: ['feature-a', 'feature-b'] }) as Record<string, unknown>;
+    const out = redact({ keys: ['feature-a', 'feature-b'] });
     expect(out.keys).toEqual(['feature-a', 'feature-b']);
+  });
+
+  it('redacts plural compound key fields (apiKeys, license_keys) — arrays of real secrets', () => {
+    const out = redact({
+      apiKeys: ['sk-live-1', 'sk-live-2'],
+      license_keys: ['us01xxSECRET1', 'us01xxSECRET2'],
+    }) as Record<string, unknown>;
+    expect(out.apiKeys).toBe('***');
+    expect(out.license_keys).toBe('***');
   });
 
   it('preserves apiKey (singular) — still redacted since it IS a secret', () => {
@@ -133,10 +142,7 @@ describe('redact', () => {
   });
 
   it('preserves tokenCount, tokenize, tokenAmount — compound token fields must not be redacted', () => {
-    const out = redact({ tokenCount: 128, tokenize: true, tokenAmount: 50 }) as Record<
-      string,
-      unknown
-    >;
+    const out = redact({ tokenCount: 128, tokenize: true, tokenAmount: 50 });
     expect(out.tokenCount).toBe(128);
     expect(out.tokenize).toBe(true);
     expect(out.tokenAmount).toBe(50);
@@ -147,26 +153,20 @@ describe('redact', () => {
       credentialType: 'api-key',
       credentialProvider: 'aws',
       credentialId: 'my-cred',
-    }) as Record<string, unknown>;
+    });
     expect(out.credentialType).toBe('api-key');
     expect(out.credentialProvider).toBe('aws');
     expect(out.credentialId).toBe('my-cred');
   });
 
   it('still redacts credential and credentials', () => {
-    const out = redact({ credential: 'secret', credentials: { user: 'a', pass: 'b' } }) as Record<
-      string,
-      unknown
-    >;
+    const out = redact({ credential: 'secret', credentials: { user: 'a', pass: 'b' } });
     expect(out.credential).toBe('***');
     expect(out.credentials).toBe('***');
   });
 
   it('preserves passwordPolicy, passwordStrength — compound password fields', () => {
-    const out = redact({ passwordPolicy: 'strong', passwordStrength: 3 }) as Record<
-      string,
-      unknown
-    >;
+    const out = redact({ passwordPolicy: 'strong', passwordStrength: 3 });
     expect(out.passwordPolicy).toBe('strong');
     expect(out.passwordStrength).toBe(3);
   });
@@ -203,7 +203,7 @@ describe('redact', () => {
     const url = new URL('https://example.com/path');
     const buf = Buffer.from('hello');
     const u8 = new Uint8Array([1, 2, 3]);
-    const out = redact({ date, re, url, buf, u8 }) as Record<string, unknown>;
+    const out = redact({ date, re, url, buf, u8 });
     expect(out.date).toBe(date);
     expect(out.re).toBe(re);
     expect(out.url).toBe(url);
@@ -214,7 +214,7 @@ describe('redact', () => {
   it('summarises Map and Set as [Map(N)] / [Set(N)] instead of {}', () => {
     const m = new Map([['k', 'v']]);
     const s = new Set([1, 2, 3]);
-    const out = redact({ m, s }) as Record<string, unknown>;
+    const out = redact({ m, s });
     expect(out.m).toBe('[Map(1)]');
     expect(out.s).toBe('[Set(3)]');
   });
@@ -228,6 +228,17 @@ describe('redact', () => {
     expect(out.apiToken).toBe('***');
     expect(out.AccessToken).toBe('***');
     expect(out.token).toBe('***');
+  });
+
+  it('KNOWN GAP (accepted): plural token fields (accessTokens) are NOT redacted', () => {
+    // Unlike `keys` -> `(?<=\w)keys\b`, `token` is deliberately NOT widened to
+    // match plurals. This library's own domain is token *counting* — widening
+    // would false-positive on input_tokens/cacheReadTokens/thinkingTokens (see
+    // the test below), which are far more common than a literal array of
+    // secret token strings. If this test starts failing because someone
+    // "fixed" the regex, check it didn't just break token-count redaction.
+    const out = redact({ accessTokens: ['tok-1', 'tok-2'] }) as Record<string, unknown>;
+    expect(out.accessTokens).toEqual(['tok-1', 'tok-2']);
   });
 });
 

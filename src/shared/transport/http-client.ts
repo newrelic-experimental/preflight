@@ -65,7 +65,6 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
 
   const lowerKey = licenseKey.toLowerCase();
 
-  // Exact prefix match — the only path that reliably resolves to a known region.
   for (const [prefix, region] of Object.entries(LICENSE_KEY_REGION_PREFIXES)) {
     if (lowerKey.startsWith(prefix)) return region;
   }
@@ -228,7 +227,6 @@ export function decorrelatedJitter(
   // never negative when maxDelayMs < baseDelayMs (a misconfiguration, but
   // unguarded — without the clamp the sample can be zero or negative).
   const upper = Math.max(baseDelayMs, Math.min(maxDelayMs, prevSleepMs * 3));
-  // Math.random() returns [0, 1); spread baseDelayMs..upper.
   const sample = baseDelayMs + (upper - baseDelayMs) * Math.random();
   return Math.min(maxDelayMs, Math.max(baseDelayMs, sample));
 }
@@ -247,11 +245,9 @@ function parseRetryAfterMs(response: Response): number | null {
   const raw = response.headers.get('retry-after');
   if (!raw) return null;
   const trimmed = raw.trim();
-  // Try delta-seconds first
   if (/^\d+$/.test(trimmed)) {
     return parseInt(trimmed, 10) * 1000;
   }
-  // Try HTTP-date
   const ts = Date.parse(trimmed);
   if (!Number.isNaN(ts)) {
     return Math.max(0, ts - Date.now());
@@ -262,9 +258,6 @@ function parseRetryAfterMs(response: Response): number | null {
 export async function sendWithRetry(options: HttpSendOptions): Promise<TransportResult> {
   const { url, body, licenseKey, maxRetries, baseDelayMs, maxDelayMs, requestTimeoutMs } = options;
 
-  // Per-request correlation ID. Stamped on every
-  // log line emitted from this call so concurrent retries to different
-  // batches can be disambiguated in stderr.
   const requestId = newRequestId();
 
   let compressed: Buffer;
@@ -276,12 +269,10 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
     return { success: false, statusCode: null, retryCount: 0, error: `gzip failed: ${message}` };
   }
 
-  // Decorrelated jitter tracks the previous sleep across
-  // attempts so each subsequent retry samples from a wider [base, prev*3] band.
-  // Initialize to baseDelayMs so the first retry samples [base, base*3].
   let prevSleepMs = baseDelayMs;
   const userAgent = buildUserAgent(options.clientName, options.clientVersion);
 
+  // attempt <= maxRetries: total attempts = 1 initial try + maxRetries retries.
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       // Node 18+ fetch accepts Buffer bodies, but under TS6 Buffer<ArrayBufferLike>
@@ -389,7 +380,6 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
         };
       }
 
-      // Non-retryable, non-standard status
       logger.warn('Unexpected status code — dropping batch', {
         requestId,
         statusCode: status,
@@ -402,7 +392,6 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
         error: `unexpected status: ${status}`,
       };
     } catch (err) {
-      // Network error — retryable
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Network error during send', { requestId, error: message, attempt });
       if (attempt < maxRetries) {

@@ -16,7 +16,7 @@
 import type { AgentConfig } from './config.js';
 
 // Pattern notes:
-// - `key(?!s)` matches `apiKey`, `licenseKey`, bare `key`, but NOT `keys` (plural).
+// - `key(?!s)` matches `apiKey`, `licenseKey`, bare `key`, but NOT bare `keys` (plural).
 //   The `\b` word-boundary upgrade that was applied to `token\b` and
 //   `credentials?\b` cannot be applied here: CamelCase names like `licenseKey`
 //   and `apiKey` do NOT have a word boundary before the `K` (both sides are word chars),
@@ -24,12 +24,28 @@ import type { AgentConfig } from './config.js';
 //   Mid-word false positives (`monkey`, `jockey`) are accepted in exchange for reliably
 //   redacting all camelCase key properties. A regex-only fix is not feasible without
 //   enumerating every legitimate CamelCase prefix, which would miss future additions.
+// - `(?<=\w)keys\b` additionally matches plural COMPOUND forms — `apiKeys`,
+//   `license_keys` — where an actual array of secret key strings is a realistic
+//   shape. It does NOT match bare `keys` (nothing precedes it), which stays
+//   preserved: a standalone `keys` field is more often a list of identifiers
+//   (e.g. feature-flag names) than a list of secrets.
+//   Scope note: the lookbehind only requires *some* preceding word character,
+//   not specifically a camelCase/snake_case compound boundary — so plain
+//   English plurals ending in "keys" (`monkeys`, `jockeys`, `turkeys`) also
+//   match. That's an extension of the same mid-word false-positive trade-off
+//   already accepted above for `monkey`/`jockey` (singular); the failure
+//   direction is over-redaction, which is the safe side to err on.
 // - `token\b` matches `apiToken`, `accessToken`, bare `token`, but NOT `tokenCount`,
-//   `tokenize`, `tokenAmount`, etc. The `\b` works here because `token` almost
-//   never appears mid-word in legitimate property names.
+//   `tokenize`, `tokenAmount`, etc. Deliberately NOT extended to plural `tokens`:
+//   this library's own domain is token *counting*, so `input_tokens`,
+//   `cacheReadTokens`, `thinkingTokens`, etc. are pervasive, legitimate,
+//   non-secret fields (see the dedicated test below.) Widening to catch
+//   plural secret-token arrays (e.g. `accessTokens`) would false-positive on
+//   those far more common count fields — an accepted, deliberate gap.
 // - `credentials?\b` matches `credential` and `credentials`, but NOT `credentialType`,
 //   `credentialProvider`, etc. Same fix applied to `passwords?\b`.
-const SECRET_KEY_RE = /key(?!s)|token\b|secret|passwords?\b|authorization|credentials?\b|bearer/i;
+const SECRET_KEY_RE =
+  /key(?!s)|(?<=\w)keys\b|token\b|secret|passwords?\b|authorization|credentials?\b|bearer/i;
 const REDACTED = '***';
 const MAX_DEPTH = 8;
 

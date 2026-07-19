@@ -9,15 +9,8 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
-/**
- * Type-safe narrowing helper. The previous
- * `envLevel in LOG_LEVEL_ORDER` check + `as LogLevel` cast was sound at
- * runtime today but the cast hid the gap: TS can't narrow `string` to a
- * literal union via `in`, so a refactor that broadened `LOG_LEVEL_ORDER`
- * (e.g. added `trace`) would silently let `envLevel` flow through with
- * the wrong type. Explicit type guard removes the cast and makes the
- * literal-union membership check the single source of truth.
- */
+// Explicit type guard so a future broadening of LOG_LEVEL_ORDER (e.g. adding
+// 'trace') can't silently type-check as LogLevel via an `in` check + cast.
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 
 function isLogLevel(value: string): value is LogLevel {
@@ -25,7 +18,7 @@ function isLogLevel(value: string): value is LogLevel {
 }
 
 function resolveLogLevel(): LogLevel {
-  const envLevel = process.env.NEW_RELIC_AI_LOG_LEVEL?.toLowerCase();
+  const envLevel = process.env.NEW_RELIC_AI_LOG_LEVEL?.toLowerCase().trim();
   if (envLevel !== undefined && isLogLevel(envLevel)) {
     return envLevel;
   }
@@ -202,7 +195,7 @@ function createLoggerInternal(
         // bound context per log call. Note: per-call data is still
         // redacted on every emit — only bound context gets the
         // creation-time optimization.
-        ...(redact(context) as Record<string, unknown>),
+        ...redact(context),
       }),
   };
 }

@@ -1,4 +1,34 @@
-import { DEFAULT_CLIENT_NAME, sanitizeClientString, buildUserAgent } from './otlp-shared.js';
+import {
+  DEFAULT_CLIENT_NAME,
+  sanitizeClientString,
+  buildUserAgent,
+  hasOtlpAuthHeader,
+} from './otlp-shared.js';
+
+describe('hasOtlpAuthHeader', () => {
+  // Existing coverage (via OtlpTransport/OtlpEventBridge "no auth header"
+  // warning tests) only ever exercises lowercase 'api-key'. This function is
+  // shared by both transports, so its other two recognized header names and
+  // case-insensitive matching deserve direct tests.
+  it('recognizes "authorization" (case-insensitive)', () => {
+    expect(hasOtlpAuthHeader({ Authorization: 'Bearer x' })).toBe(true);
+    expect(hasOtlpAuthHeader({ AUTHORIZATION: 'Bearer x' })).toBe(true);
+  });
+
+  it('recognizes "x-license-key" (case-insensitive)', () => {
+    expect(hasOtlpAuthHeader({ 'X-License-Key': 'abc' })).toBe(true);
+    expect(hasOtlpAuthHeader({ 'x-license-key': 'abc' })).toBe(true);
+  });
+
+  it('recognizes "api-key" case-insensitively (not just lowercase)', () => {
+    expect(hasOtlpAuthHeader({ 'API-KEY': 'abc' })).toBe(true);
+  });
+
+  it('returns false when no recognized auth header is present', () => {
+    expect(hasOtlpAuthHeader({ 'X-Service-Name': 'my-service' })).toBe(false);
+    expect(hasOtlpAuthHeader({})).toBe(false);
+  });
+});
 
 describe('sanitizeClientString', () => {
   it('returns fallback when input is undefined', () => {

@@ -26,10 +26,6 @@
  */
 export type TransportMode = 'nr-events-api' | 'otlp' | 'both';
 
-/**
- * Wire-format value for an `NrMetric` of type `'summary'`.
- * Mirrors the NR Metric API summary shape exactly.
- */
 export interface NrMetricSummaryValue {
   readonly count: number;
   readonly sum: number;
@@ -57,7 +53,6 @@ export interface NrMetricBase {
   readonly intervalMs?: number;
 }
 
-/** Point-in-time gauge metric. */
 export interface NrGaugeMetric extends NrMetricBase {
   readonly type: 'gauge';
   readonly value: number;
@@ -90,7 +85,10 @@ export type NrMetric = NrGaugeMetric | NrCountMetric | NrSummaryMetric;
 export interface TransportOptions {
   /** NR account ID — required for Events API URL path. */
   readonly accountId: string;
-  /** Override collector host; used for EU region routing or custom endpoints. */
+  /**
+   * Override collector host — either a region keyword ('us'|'eu'|'gov')
+   * or a literal hostname for custom endpoints.
+   */
   readonly collectorHost?: string | null;
   /** Max retry attempts for retryable errors. Default: 3. */
   readonly maxRetries?: number;

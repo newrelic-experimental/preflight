@@ -75,6 +75,9 @@ function escapeKeyPart(s: string): string {
 }
 
 function makeKey(name: string, attributes: Record<string, MetricAttributeValue>): string {
+  // Sort so attribute insertion order doesn't affect bucket identity —
+  // otherwise {a:1,b:2} and {b:2,a:1} would key differently and silently
+  // fragment into separate buckets depending on caller insertion order.
   const sorted = Object.entries(attributes).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return (
     escapeKeyPart(name) +
@@ -87,11 +90,9 @@ export class MetricAggregator {
   private buckets: Map<string, Bucket>;
   /**
    * Number of `record()` calls rejected since the last `drainDropCount()`.
-   * Incremented on non-finite values and invalid attribute types.
-   * Mirrors the pattern in `EventBuffer.dropCount` so
-   * `HarvestScheduler` can emit a `nr.ai.dropped_metrics` self-monitoring
-   * gauge each harvest tick — operators currently see only `logger.warn`
-   * spam, with no aggregate count of "we silently dropped N samples".
+   * Incremented on non-finite values and invalid attribute types. Mirrors
+   * the pattern in `EventBuffer.dropCount` so `HarvestScheduler` can emit a
+   * `nr.ai.dropped_metrics` self-monitoring gauge each harvest tick.
    */
   private droppedCount = 0;
 
@@ -104,10 +105,9 @@ export class MetricAggregator {
    *
    * Returns `true` when the sample was accepted into a bucket, and `false`
    * when it was rejected (non-finite value or invalid attribute type) per
-   * the strict validation contract. The boolean return surface
-   * exposes the rejection signal so callers can implement backpressure or
-   * surface invalid-input metrics. Existing callers
-   * that ignore the return value see unchanged behavior.
+   * the strict validation contract. The boolean return surface exposes the
+   * rejection signal so callers can implement backpressure or surface
+   * invalid-input metrics.
    */
   record(
     name: string,
@@ -198,7 +198,10 @@ export class MetricAggregator {
     for (const s of snapshots) {
       // Guard against corrupt snapshots (e.g. built manually — the type is
       // exported). A negative count or non-finite sum would permanently corrupt
-      // the bucket's accumulators.
+      // the bucket's accumulators. Unlike record(), corruption here is
+      // silently discarded without logging/counting against droppedCount —
+      // merge() only ever receives our own previously-harvested snapshots,
+      // so corruption here would mean an internal bug, not bad caller input.
       if (
         !Number.isFinite(s.sum) ||
         !Number.isFinite(s.min) ||
@@ -260,12 +263,7 @@ export class MetricAggregator {
    *
    * Public so consumers can build self-monitoring metrics on top of the
    * aggregator (e.g. emit `harvest.metric_aggregator.bucket_count` to NR
-   * each tick to detect cardinality explosions). Used internally by
-   * `metric-aggregator.test.ts` to verify post-`harvest()` state.
-   *
-   * Not used by `HarvestScheduler` today; surfacing it (rather than dropping
-   * the accessor) keeps the surface stable for the
-   * self-monitoring work.
+   * each tick to detect cardinality explosions).
    */
   get bucketCount(): number {
     return this.buckets.size;
@@ -274,15 +272,8 @@ export class MetricAggregator {
 
 /**
  * Convert each {@link MetricSnapshot} to a single wire-format `NrMetric` of
- * type `'summary'`.
- *
- * Previously this function emitted four separate metrics per snapshot
- * (`{name}.count`, `.sum`, `.min`, `.max`) — three of them as `gauge` (which
- * is semantically wrong for a delta-aggregated value) and one as `count`
- * (without the required `interval.ms` field). The summary type collapses
- * those four into one record carrying `{ count, sum, min, max }` plus the
- * harvest interval, halving payload cardinality and producing correct
- * NR-side aggregate stats.
+ * type `'summary'`, carrying `{ count, sum, min, max }` plus the harvest
+ * interval.
  *
  * @param intervalMs Harvest interval in ms — appears on the wire as
  *                   `interval.ms` per NR's Metric API contract.
