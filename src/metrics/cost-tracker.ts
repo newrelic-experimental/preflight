@@ -43,9 +43,6 @@ export interface TokenRecordContext {
   readonly agentId?: string;
 }
 
-/** @deprecated Use TokenRecordContext instead. */
-export type CostAccumulationContext = TokenRecordContext;
-
 const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------

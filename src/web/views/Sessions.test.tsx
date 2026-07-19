@@ -10,18 +10,6 @@ function renderSessions(listData: unknown, detailMap: DetailMap = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
   globalThis.fetch = ((url: string) => {
     if (url.startsWith('/api/sessions/')) {
-      // InlineReplay fetches /api/sessions/:id/replay — return timeline as ReplayData
-      if (url.includes('/replay')) {
-        const sessionId = decodeURIComponent(url.split('/').slice(-2)[0] ?? '');
-        const detail = (detailMap[sessionId] ?? {}) as { timeline?: unknown[] };
-        const replayData = { timeline: detail.timeline ?? [], segments: [] };
-        return Promise.resolve(
-          new Response(JSON.stringify(replayData), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
       const id = decodeURIComponent(url.split('/').pop() ?? '');
       const detail = detailMap[id] ?? { sessionId: id, timeline: [] };
       return Promise.resolve(
@@ -140,7 +128,7 @@ describe('Sessions view', () => {
     renderSessions(SAMPLE_LIST, { s1: detail });
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByText(/s1/)[0]);
-    // InlineReplay defaults to Gantt view — tool names appear as row labels
+    // SessionTrace defaults to Gantt view — tool names appear as row labels
     await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
     expect(screen.getAllByText('Edit').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Bash').length).toBeGreaterThanOrEqual(1);
@@ -589,14 +577,6 @@ describe('Sessions view — subagent fetch failure fallback', () => {
         return Promise.resolve(
           new Response('{"error":"not_found"}', {
             status: 404,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.includes('/replay')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ timeline: detail.timeline, segments: [] }), {
-            status: 200,
             headers: { 'content-type': 'application/json' },
           }),
         );
