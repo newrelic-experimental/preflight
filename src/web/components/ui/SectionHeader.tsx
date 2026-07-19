@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 
 export interface SectionHeaderProps {
   readonly title: ReactNode;

@@ -932,7 +932,7 @@ describe('aggregateModelPerformance', () => {
 
 describe('aggregateToolUsage', () => {
   it('merges tool breakdowns across sessions and returns top 8', () => {
-    const sessions = [
+    const sessions: Parameters<typeof aggregateToolUsage>[0] = [
       { sessionId: 's1', toolBreakdown: { Read: 10, Edit: 5, Bash: 3 } },
       { sessionId: 's2', toolBreakdown: { Read: 8, Edit: 7, Write: 2 } },
     ];

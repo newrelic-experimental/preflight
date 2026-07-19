@@ -1,3 +1,5 @@
+import type { JSX } from 'react';
+
 export type BannerTheme = 'observatory' | 'sessions' | 'history' | 'audit' | 'git';
 
 export function GeoBanner({ theme = 'observatory' }: { theme?: BannerTheme }): JSX.Element {

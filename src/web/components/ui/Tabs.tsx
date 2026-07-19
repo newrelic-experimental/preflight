@@ -1,3 +1,5 @@
+import type { JSX } from 'react';
+
 export type TabsSize = 'sm' | 'md';
 export type TabsTone = 'green' | 'cyan';
 

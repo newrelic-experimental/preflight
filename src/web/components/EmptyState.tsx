@@ -1,3 +1,5 @@
+import type { JSX } from 'react';
+
 type EmptyIcon = 'radar' | 'code' | 'timeline' | 'checkmark' | 'clock';
 
 type EmptyStateVariant = 'empty' | 'loading';

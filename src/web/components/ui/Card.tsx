@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 
 export type CardPadding = 'none' | 'sm' | 'md' | 'lg';
 export type CardTone = 'default' | 'elevated' | 'static' | 'danger' | 'warning';

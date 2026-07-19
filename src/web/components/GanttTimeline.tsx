@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { JSX } from 'react';
 import { shortToolName } from '../lib/format.js';
 
 interface GanttTimelineEntry {

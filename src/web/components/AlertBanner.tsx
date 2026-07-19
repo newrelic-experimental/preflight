@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from 'react';
+import type { JSX, KeyboardEvent } from 'react';
 import { X } from 'lucide-react';
 
 import type { AlertEvent } from '../store/liveStore';

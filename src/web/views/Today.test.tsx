@@ -716,7 +716,7 @@ describe('Today view — Recent alerts panel', () => {
 
   it('calls /api/alerts/recent and renders an empty state when the log is empty', async () => {
     const fetchSpy = vi.fn(
-      async () =>
+      async (_url: RequestInfo | URL) =>
         new Response(JSON.stringify([]), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -803,7 +803,7 @@ describe('Today view — Recent alerts panel', () => {
   // `retry: false` from Today.tsx would still pass with the default helper.
   it('renders nothing (no error banner) when /api/alerts/recent returns 404', async () => {
     const fetchSpy = vi.fn(
-      async () =>
+      async (_url: RequestInfo | URL) =>
         new Response('{"error":"not_found"}', {
           status: 404,
           headers: { 'content-type': 'application/json' },
