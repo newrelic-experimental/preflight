@@ -146,6 +146,11 @@ export class DecisionTracker {
   }
 
   recordOutcome(turnNumber: number, success: boolean): void {
+    // DecisionBranch's fields are `readonly` in its public type (consumers
+    // shouldn't mutate a branch they read out via getMetrics()/getBranches()),
+    // but this class itself needs to fill in the outcome after the branch is
+    // created and its eventual tool result is known — the mapped-type cast
+    // below strips `readonly` for that one internal mutation.
     // Tag the most recent branch at or before this turn
     for (let i = this.branches.length - 1; i >= 0; i--) {
       const branch = this.branches[i];

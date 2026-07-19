@@ -492,8 +492,11 @@ export class LocalAlertEngine {
       const day = String(d.getDate()).padStart(2, '0');
       return `${y}-${m}-${day}`;
     }
-    // ISO 8601 week — mirrors BudgetTracker.currentPeriodId() exactly so
-    // period keys match when comparing alert engine state to budget thresholds.
+    // ISO 8601 week — the day/week boundary math intentionally matches
+    // BudgetTracker.currentPeriodId() so a period rolls over here at the same
+    // moment BudgetTracker considers it rolled over. The string format itself
+    // doesn't need to match: this key is only ever compared against its own
+    // prior output (above), never against BudgetTracker's period id.
     const utc = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     const dayOfWeek = utc.getUTCDay() || 7; // 1=Mon … 7=Sun
     utc.setUTCDate(utc.getUTCDate() + 4 - dayOfWeek); // nearest Thursday

@@ -208,11 +208,12 @@ export function SessionTrace({
     }
   };
 
-  // Reflect the current sets back to a level for aria-pressed. "expanded" when
-  // no group is collapsed AND every agent's calls are open; "agents" when no
-  // group is collapsed and no agent is expanded; otherwise "collapsed" is the
-  // active preset only when every group is shut. When the state matches none of
-  // the presets (mixed manual toggling), no button reads as pressed.
+  // Reflect the current sets back to a level for aria-pressed. "collapsed" when
+  // every group is shut and no agent is expanded; "expanded" when no group is
+  // collapsed AND every agent's calls are open; "agents" when the parent is
+  // shut, every subagent group is open, and no agent is expanded (see below).
+  // When the state matches none of the presets (mixed manual toggling), no
+  // button reads as pressed.
   const activeLevel = useMemo<TraceLevel | null>(() => {
     const hasParent = parentEntries.length > 0;
     const subagentGroupIds = allGroupIds.filter((id) => id !== PARENT_GROUP_ID);
@@ -1070,9 +1071,6 @@ function AgentCallsList({
   );
 }
 
-// Shared collapsible group header used by both views (parent + subagent
-// groups). Accessible <button> with aria-expanded and a lucide chevron. An
-// optional workflow-run status icon renders after the count when supplied.
 // Compact rolled-up metrics cluster shown on the right of a List-mode group or
 // parent header — mirrors the per-agent row columns (turns · tokens · cost ·
 // time). Only the provided fields render, so the Parent line (no per-call
@@ -1102,6 +1100,9 @@ function RollupMetrics({
   );
 }
 
+// Shared collapsible group header used by both views (parent + subagent
+// groups). Accessible <button> with aria-expanded and a lucide chevron. An
+// optional workflow-run status icon renders after the count when supplied.
 function GroupHeader({
   collapsed,
   onToggle,

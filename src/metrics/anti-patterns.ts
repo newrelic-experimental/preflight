@@ -55,6 +55,10 @@ export interface AntiPatternOptions {
 // Defaults
 // ---------------------------------------------------------------------------
 
+// 3 chosen consistently across all five pattern types as a low-friction
+// threshold — few enough repeats that a flag still means something, but not
+// so few that normal iteration (e.g. one legitimate retry) gets flagged.
+// Tune per-detector via AntiPatternOptions if a specific pattern is too noisy.
 const DEFAULT_THRASH_THRESHOLD = 3;
 const DEFAULT_RE_READ_THRESHOLD = 3;
 const DEFAULT_STUCK_LOOP_THRESHOLD = 3;
@@ -293,6 +297,10 @@ export class AntiPatternDetector {
         (call.isTestCommand || call.isBuildCommand || call.isLintCommand)
       ) {
         if (call.success) {
+          // A successful verification clears streaks for every file, not just
+          // the one being edited — a passing test/build/lint run typically
+          // verifies the whole batch of pending changes at once, not one
+          // file in isolation.
           editStreaks.clear();
         }
       }

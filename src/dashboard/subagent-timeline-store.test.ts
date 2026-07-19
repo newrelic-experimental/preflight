@@ -435,7 +435,7 @@ describe('SubagentTimelineStore.getAgentCalls', () => {
     expect(grep.durationMs).toBeNull();
   });
 
-  it('emits ONLY toolName/timestamp/durationMs/success — no tool inputs or outputs leak (NFR-2)', () => {
+  it('emits ONLY toolName/timestamp/durationMs/success — no tool inputs or outputs leak', () => {
     writeFileSync(
       join(subDir, `agent-${AGENT_A}.jsonl`),
       [

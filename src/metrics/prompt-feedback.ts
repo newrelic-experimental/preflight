@@ -86,6 +86,8 @@ export class PromptFeedbackEngine {
    */
   correlatePromptStyleWithOutcomes(
     developer: string,
+    // ~2 months of history — enough sessions for a meaningful with/without
+    // comparison per behavior without diluting it with stale history.
     windowWeeks: number = 8,
   ): PromptCorrelation[] {
     const since = new Date(Date.now() - windowWeeks * 7 * 86_400_000);
@@ -98,6 +100,10 @@ export class PromptFeedbackEngine {
       test: (s: FullSessionSummary) => boolean;
     }> = [
       {
+        // Proxy signal: when the developer names the target file(s) upfront,
+        // the AI doesn't need many Read calls to locate them before editing —
+        // low read-to-total-calls ratio alongside actual file modifications
+        // is treated as evidence the prompt already supplied the path(s).
         name: 'provides file paths',
         test: (s) => {
           if (s.toolCallCount === 0) return false;

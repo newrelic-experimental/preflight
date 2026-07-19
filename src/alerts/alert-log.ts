@@ -50,14 +50,14 @@ export class AlertLog {
     this.pending = this.pending.then(async () => {
       try {
         await this.ensureInitialized();
-        // rotateIfNeeded() can rename log.jsonl → log.jsonl.1 and
-        // a process crash before the appendFile below would lose the
-        // current event (not in .1, not in the new file). Acceptable for
-        // Acceptable trade-off: (a) rotation is rare — tens of MB of alert
-        // history per device — so the crash window is small; (b) the
-        // alternative (write-temp + rename + append) doubles the I/O
-        // cost on every append. Revisit if audit-trail compliance ever
-        // demands stronger durability than "best-effort tail".
+        // rotateIfNeeded() can rename log.jsonl → log.jsonl.1, and a process
+        // crash before the appendFile below would lose the current event
+        // (not in .1, not in the new file). Acceptable trade-off: (a)
+        // rotation is rare — tens of MB of alert history per device — so
+        // the crash window is small; (b) the alternative (write-temp +
+        // rename + append) doubles the I/O cost on every append. Revisit if
+        // audit-trail compliance ever demands stronger durability than
+        // "best-effort tail".
         await this.rotateIfNeeded();
         const line = JSON.stringify(event) + '\n';
         await fs.appendFile(this.path, line, { mode: 0o600 });

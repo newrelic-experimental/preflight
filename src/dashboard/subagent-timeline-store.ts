@@ -114,7 +114,8 @@ export interface SubagentTimeline {
  * A running workflow has NO on-disk `wf_*.json` rollup yet (that is written
  * only at termination), so there are no declared per-agent labels/phases/state
  * to read — the detail route fills those with running-run defaults. Carries
- * only declarative timing/token/tool-count data (NFR-2).
+ * only declarative timing/token/tool-count data — never message content or
+ * prompt text.
  */
 export interface LiveAgentRow {
   readonly agentId: string;

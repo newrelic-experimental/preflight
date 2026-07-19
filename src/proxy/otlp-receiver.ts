@@ -324,11 +324,11 @@ export class OtlpReceiver {
       timestamps.shift();
     }
 
-    // Check if rate limit exceeded. Every distinct source IP that ever makes
-    // one request would otherwise leave a permanent (if empty) entry in
-    // this.rateLimiter for the process lifetime — delete rather than
-    // re-insert an empty array before throwing, so a rejected/aged-out IP
-    // doesn't occupy a Map slot forever.
+    // Check if rate limit exceeded. This only reaches a genuinely empty
+    // `timestamps` when rateLimitPerMinute is configured at or below 0
+    // (deny-all) — delete rather than re-insert that empty array before
+    // throwing, so a permanently-rejected IP doesn't occupy a Map slot
+    // for the process lifetime.
     if (timestamps.length >= rateLimitPerMinute) {
       if (timestamps.length === 0) {
         this.rateLimiter.delete(remoteAddr);

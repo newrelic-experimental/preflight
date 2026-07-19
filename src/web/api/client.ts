@@ -148,7 +148,7 @@ export interface TodayAggregateResponse {
 
 // /api/sessions returns a heterogeneous mix of full persisted session
 // summaries and small live-session stub objects (see the route handler at
-// api-handler.ts:641) — only sessionId is guaranteed present on every item.
+// api-handler.ts:911) — only sessionId is guaranteed present on every item.
 export interface SessionListEntry {
   readonly sessionId: string;
   readonly sessionName?: string | null;
@@ -412,8 +412,7 @@ export const fetchRecentAlerts = (): Promise<AlertEvent[]> =>
   getJson<AlertEvent[]>('/api/alerts/recent');
 export const fetchSessionReplay = (id: string): Promise<SessionReplayResponse> =>
   getJson<SessionReplayResponse>(`/api/sessions/${encodeURIComponent(id)}/replay`);
-// Mirrors GET /api/sessions/:sessionId/subagents `agents[]`. Readonly to
-// match the dashboard's immutable-data-shape convention.
+// Mirrors GET /api/sessions/:sessionId/subagents `agents[]`.
 export interface AgentSpan {
   readonly agentId: string;
   readonly workflowRunId: string | null;
@@ -438,7 +437,7 @@ export interface SessionSubagentsResponse {
 export const fetchSessionSubagents = (id: string): Promise<SessionSubagentsResponse> =>
   getJson<SessionSubagentsResponse>(`/api/sessions/${encodeURIComponent(id)}/subagents`);
 
-// GET /api/sessions/:id/agents/:agentId/calls → { calls: [...] }. No
+// GET /api/sessions/:id/subagents/:agentId/calls → { calls: [...] }. No
 // file/command detail in this wire shape (kept lean for the per-agent
 // fetch); GanttTimeline tolerates the missing optional fields.
 export interface AgentCall {
@@ -925,7 +924,6 @@ export const qk = {
   modelUsage: ['model-usage'] as const,
   cacheHealth: ['cache-health'] as const,
   settings: ['settings'] as const,
-  // Query keys for live session and today aggregate endpoints
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,
   workflows: ['workflows'] as const,

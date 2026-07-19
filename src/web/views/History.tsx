@@ -524,8 +524,8 @@ export function buildOutcomeData(
 /**
  * Pad daily-cost data to a fixed window of `days` columns ending today.
  * Days with no recorded cost are emitted with `cost: 0` so the chart
- * renders a 30-column bar chart instead of stretching a single bar to
- * fill the entire plot area.
+ * renders a full `days`-column bar chart instead of stretching a single
+ * bar to fill the entire plot area.
  */
 export function padDailyCostWindow(
   data: Array<{ day: string; cost: number }>,
@@ -669,8 +669,9 @@ export function aggregateToolUsage(rows: SessionRow[]): Array<{ tool: string; co
 // Tooltip positioning here was previously `left: tooltip.x` (raw px in
 // viewBox units), which misaligned by hundreds of pixels at any non-native
 // render width. Routing through the shared `DiscreteBlockChart` fixes that
-// for free — the shared component uses %-based positioning that survives
-// the SVG's `xMidYMax meet` scaling.
+// for free — the shared component measures the rendered column via
+// `getBoundingClientRect` instead of deriving position from the viewBox,
+// so it survives the SVG's `xMidYMax meet` scaling.
 function ConcurrencyBlockChart({
   data,
 }: {

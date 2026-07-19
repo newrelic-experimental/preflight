@@ -39,6 +39,9 @@ const CHERRY_PICK_ABORT_RE = /\bgit\s+cherry-pick\s+--abort\b/;
 const GIT_PULL_RE = /\bgit\s+pull\b/;
 const GIT_FETCH_RE = /\bgit\s+fetch\b/;
 const GIT_PUSH_RE = /\bgit\s+push\b/;
+// `(?!-)` excludes `--force-with-lease` — without it, a lease-protected force
+// push would also match this plain "unsafe force push" pattern, since
+// "--force-with-lease" starts with the literal text "--force".
 const GIT_PUSH_FORCE_RE = /\bgit\s+push\s+.*--force(?!-)|\bgit\s+push\s+-f\b/;
 const GIT_PUSH_FORCE_LEASE_RE = /--force-with-lease\b/;
 const GIT_MERGE_RE = /\bgit\s+merge\b/;
@@ -550,6 +553,10 @@ export class GitEfficiencyTracker {
   // Internals
   // -------------------------------------------------------------------------
 
+  // Order matters: several patterns overlap (e.g. a force-push-with-lease
+  // command also matches the plain push/force-push patterns), so more
+  // specific checks must run before the more general ones they'd otherwise
+  // be shadowed by.
   private classifyGitCommand(command: string, record: ToolCallRecord): GitEvent {
     const base = {
       timestamp: record.timestamp,
@@ -757,6 +764,10 @@ export class GitEfficiencyTracker {
     }
   }
 
+  // A pull immediately followed by a conflict means the branch had already
+  // diverged enough that even the act of syncing produced a conflict — a
+  // stronger signal of a stale branch than a conflict from, say, a later
+  // merge or rebase attempted well after the pull.
   private countStaleBranchPulls(): number {
     let staleCount = 0;
     for (let i = 0; i < this.events.length - 1; i++) {
@@ -1286,6 +1297,9 @@ export class GitEfficiencyTracker {
 
     let score = 100;
 
+    // All per-event penalties and caps below are hand-tuned weights reflecting
+    // relative severity (e.g. a conflict is worse than a discard), not derived
+    // from data. Tune here if the resulting score reads as too harsh/lenient.
     const conflictPenalty = Math.min((stats.mergeConflicts + stats.rebaseConflicts) * 10, 40);
     score -= conflictPenalty;
 
@@ -1335,6 +1349,10 @@ export class GitEfficiencyTracker {
       buildBeforePush: this.buildBeforePush,
       // Use the push-time snapshot rather than comparing current timestamps, which go
       // stale when new builds run after the push.
+      // Intentionally the same value as buildBeforePush, not a separate signal:
+      // recordToolCall() tracks build and test commands as one combined
+      // "verification happened" timestamp (isTestCommand || isBuildCommand),
+      // so there's no way to distinguish "tested" from "built" after the fact.
       testBeforePush: this.buildBeforePush,
     };
   }

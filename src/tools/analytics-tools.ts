@@ -6,6 +6,7 @@
  *   - nr_observe_get_latency_percentiles — tool call latency percentiles
  *   - nr_observe_get_task_completion_rate — task lifecycle metrics
  *   - nr_observe_get_model_usage — per-model usage and efficiency
+ *   - nr_observe_get_context_tracking — per-turn context token growth and breakdown
  */
 
 import type { ContextWindowTracker } from '../metrics/context-window-tracker.js';

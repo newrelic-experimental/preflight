@@ -8,7 +8,7 @@
  * `--stdio` mode emits the same data to NR; this reader is the local-side
  * mirror so the dashboard works offline.
  *
- * Cheap by construction: stat-then-read with a 24h cutoff and an in-memory
+ * Cheap by construction: stat-then-read with a 30-day cutoff and an in-memory
  * mtime cache. Doesn't load script files (script parsing happens in the
  * watcher and is shipped as part of the NR event; the dashboard reads the
  * declared topology back via NR / live SSE).

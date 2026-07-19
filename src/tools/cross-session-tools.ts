@@ -6,7 +6,8 @@
  *   nr_observe_get_claudemd_impact, nr_observe_get_cost_per_outcome,
  *   nr_observe_get_recommendations, nr_observe_get_platform_comparison,
  *   nr_observe_get_team_summary, nr_observe_subscribe_digest,
- *   nr_observe_unsubscribe_digest, nr_observe_send_digest
+ *   nr_observe_unsubscribe_digest, nr_observe_send_digest,
+ *   nr_observe_get_personal_insights
  *
  * Tool defs and handlers are exported for integration into the main
  * registerTools() in session-stats.ts.

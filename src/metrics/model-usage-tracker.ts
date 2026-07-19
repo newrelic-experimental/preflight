@@ -74,6 +74,11 @@ export class ModelUsageTracker {
         mostUsedModel = model;
       }
 
+      // On an exact tie, prefer the alphabetically-first model name for a
+      // deterministic result regardless of Map iteration order. '￿' (U+FFFF)
+      // sorts after every realistic model name, so `mostEfficientModel ?? '￿'`
+      // always loses the very first comparison and lets the first real
+      // candidate win.
       if (
         costPerOutputToken !== null &&
         (costPerOutputToken < lowestCostPerOutputToken ||

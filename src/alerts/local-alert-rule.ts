@@ -48,11 +48,13 @@ const antiPatternTypeSchema = z.enum([
 
 const percentileSchema = z.union([z.literal(50), z.literal(95), z.literal(99)]);
 
-// Default to 'session' because the snapshot collector only populates
-// sessionUsd — today/week always read 0 and any rule asking for those
-// periods silently never fires. parseLocalAlertRules logs a warning when
-// today/week is configured so users editing rules.json don't get a silent
-// no-op..
+// Default to 'session'. today/week periods need the snapshot collector to
+// be constructed with a `budgetTracker` dep (see AlertSnapshotCollectorDeps
+// in alert-snapshot-collector.ts) — without it, today/week read 0 forever
+// and the rule silently never fires. loadAlertRulesFromDisk (src/index.ts)
+// still unconditionally warns on any non-'session' costPeriod even though
+// production now wires the budgetTracker dep — that warning predates the
+// fix and hasn't been reconciled with it.
 const costPeriodSchema = z.enum(['session', 'today', 'week']).default('session');
 
 // ---------------------------------------------------------------------------

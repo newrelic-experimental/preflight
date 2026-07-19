@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-07-18
+
+### Changed
+
+- Cleaned up outdated, duplicated, and unclear comments across the entire codebase — the metrics engine, MCP server tools and installer, platform adapters, storage, proxy, alerting, transport, security, tracing, digest delivery, and the web dashboard — for accuracy. No user-visible behavior change.
+
 ## [1.6.2] - 2026-07-18
 
 ### Fixed

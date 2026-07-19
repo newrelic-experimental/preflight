@@ -386,8 +386,8 @@ export class WorkflowRunTracker {
   /**
    * Find the most-recently-started run in the same session whose
    * [started_at, started_at + duration_ms] window encloses `timestamp`.
-   * Falls back to the most recent run that started before `timestamp` when
-   * no window encloses it (best-effort attribution).
+   * Returns null (no attribution) when no run's window encloses it — this is
+   * a strict window check, not a nearest-run fallback.
    */
   private findEnclosingRun(sessionId: string, timestamp: number): MutableRun | null {
     let best: MutableRun | null = null;

@@ -121,8 +121,8 @@ describe('parseWorkflowScriptSource', () => {
 
   it('does not count nested parallel inside pipeline() at top level as a separate site', () => {
     // The pipeline() call wraps parallel() — the parser still finds it (regex-only, no AST)
-    // but the PRD §FR-5 contract only promises that top-level literal-array widths are
-    // counted as integers; a nested parallel whose args start with a non-'[' char yields 'dynamic'.
+    // but only top-level literal-array widths are counted as integers; a nested parallel
+    // whose args start with a non-'[' char yields 'dynamic'.
     const src = `
       export const meta = { name: 'nested', phases: [{title:'a',detail:''}] };
       await pipeline(

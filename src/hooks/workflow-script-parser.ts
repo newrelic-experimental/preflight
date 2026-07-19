@@ -14,8 +14,10 @@
  *     number of literal-array thunks if the source is `[a,b,c]`,
  *     otherwise `'dynamic'`.
  *
- * Only **top-level** `parallel()` calls are counted:
- * nested-in-pipeline, `parallel(arr.map(...))`, `Array.from(...)`, and any
+ * Every `parallel(...)` call site found by the flat regex scan is classified
+ * by its own argument syntax, regardless of whether it's nested inside
+ * `pipeline(...)`: a literal array (`parallel([a, b, c])`) counts its
+ * elements; `parallel(arr.map(...))`, `Array.from(...)`, and any other
  * scope-dependent expression yields `'dynamic'`.
  */
 
@@ -151,9 +153,9 @@ export function parseWorkflowScriptSource(source: string): ParseResult {
  *   - `parallel([a, b, c])` → 3 (literal array, count the top-level commas)
  *   - anything else (`.map`, `Array.from`, identifiers, expressions) → 'dynamic'
  *
- * Nested-in-pipeline calls are still counted as separate parallel sites; the
- * top-level-only rule is enforced upstream by skipping the literal
- * count when the parallel call sits inside a pipeline.
+ * A `parallel(...)` call nested inside `pipeline(...)` is found and
+ * classified the same way as any other — there is no pipeline-awareness
+ * here, only argument-syntax matching.
  */
 function extractParallelWidths(body: string): Array<number | 'dynamic'> {
   const out: Array<number | 'dynamic'> = [];

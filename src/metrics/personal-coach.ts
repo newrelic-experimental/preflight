@@ -49,6 +49,8 @@ export type PersonalInsightsResult = PersonalInsightsReport | PersonalInsightsIn
 // ---------------------------------------------------------------------------
 
 const WEEKS_REQUIRED = 2;
+// ~2 months of history — enough for a meaningful baseline mean without
+// diluting it with data old enough to no longer reflect current habits.
 const WEEKS_TO_LOAD = 8;
 
 export class PersonalCoach {
@@ -199,6 +201,10 @@ export class PersonalCoach {
     };
   }
 
+  // buildHighlights/buildRegressions/buildTopRecommendation below gate on
+  // hand-picked deltas (5 points, 15%, 20%, 25%, etc.) chosen to surface
+  // changes big enough to be worth mentioning in a weekly narrative, not
+  // thresholds derived from data. Tune them here if they read as noisy.
   private buildHighlights(
     thisWeek: PersonalWeekMetrics,
     lastWeek: PersonalWeekMetrics | null,

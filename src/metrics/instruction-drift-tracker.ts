@@ -1,3 +1,13 @@
+/**
+ * Instruction Drift Tracking — correlates changes to the active instruction
+ * prompt (CLAUDE.md / system prompt, identified by content hash) with the
+ * outcomes of sessions run under each version, to flag whether a prompt
+ * change measurably helped or hurt. Distinct from ClaudeMdTracker's
+ * before/after window comparison: this tracks per-session outcomes tagged
+ * by exact prompt hash, so it can compare across many prompt variants, not
+ * just the single most recent change.
+ */
+
 import { createHash } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
 import { ClaudeMdTracker } from './claudemd-tracker.js';
@@ -272,6 +282,9 @@ export class InstructionDriftTracker {
         ? toAvg.efficiency - fromAvg.efficiency
         : null;
 
+    // Thresholds below are hand-picked "big enough to matter" cutoffs, not
+    // derived from data — any one signal crossing its threshold is enough to
+    // call the change degraded/improved.
     let verdict: DriftCorrelation['verdict'] = 'neutral';
     if (successDelta !== null) {
       if (successDelta < -0.1 || thrashingDelta > 0.5 || tokensDelta > 5000) {

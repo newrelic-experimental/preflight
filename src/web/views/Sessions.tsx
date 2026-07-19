@@ -136,8 +136,9 @@ function readSessionParam(search: string): string | null {
   let raw: string | null;
   try {
     const params = new URLSearchParams(search);
-    // `?session=` is the cross-view contract with the Workflows view; `?id=`
-    // is the pre-existing param this view already honored.
+    // `?session=` was the contract with the former Workflows view (since
+    // consolidated into this one); `?id=` is the pre-existing param this
+    // view already honored. Both still work for deep-linking in.
     raw = params.get('session') ?? params.get('id');
   } catch {
     return null;
@@ -198,7 +199,7 @@ export function Sessions(): JSX.Element {
   const [runSourceFilter, setRunSourceFilter] = useState<RunSource>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
-  // 6a: in-place workflow-run drawer. Opening a run anywhere in this view sets
+  // In-place workflow-run drawer. Opening a run anywhere in this view sets
   // this id and overlays WorkflowRunDetail at the Sessions root rather than
   // navigating to the Workflows route — closing it returns the user to the
   // exact session they were viewing.
@@ -213,8 +214,8 @@ export function Sessions(): JSX.Element {
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(() => new Set());
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(() => new Set());
 
-  // React to query-param changes after mount, so deep-linking in from the
-  // Workflows view (?session=<id>) selects the right session even when this
+  // React to query-param changes after mount, so deep-linking in via
+  // ?session=<id> (or ?id=<id>) selects the right session even when this
   // view is already mounted.
   const sessionParam = useMemo(() => readSessionParam(search), [search]);
   useEffect(() => {
@@ -342,7 +343,7 @@ export function Sessions(): JSX.Element {
     });
   }, []);
 
-  // 6a: open the run as an in-place overlay drawer (no route change) so closing
+  // Opens the run as an in-place overlay drawer (no route change) so closing
   // it returns the user to the session they were viewing.
   const openRun = useCallback((runId: string): void => {
     setOpenRunId(runId);
@@ -536,7 +537,7 @@ export function Sessions(): JSX.Element {
         </div>
       </div>
 
-      {/* 6a: in-place workflow-run drawer. Self-contains its backdrop, ESC and
+      {/* In-place workflow-run drawer. Self-contains its backdrop, ESC and
           focus trap (fixed z-50 overlay); we only mount/unmount it. */}
       {openRunId != null && (
         <WorkflowRunDetail runId={openRunId} onClose={() => setOpenRunId(null)} />
@@ -566,7 +567,7 @@ interface SessionListRowProps {
 // A single session row in the master list. Renders the selectable summary
 // button plus a SEPARATE chevron disclosure: clicking the chevron toggles the
 // session's workflow-run subtree and stops propagation so the detail-pane
-// selection is untouched. Workflow runs are lazily fetched only while expanded.
+// selection is untouched.
 function SessionListRow({
   row,
   isLive,
@@ -999,15 +1000,16 @@ function SessionTimeline({
 //   - endMs   = max(last parent activity end, subagents.window.endMs)
 // Guards: parent timeline may be empty (use the subagent window) and the
 // subagent window may be degenerate. Computed unconditionally to keep hook
-// order stable; only consumed on the success branch.
+// order stable; both the fallback (isError/no-data) and success render
+// branches below consume it, each with a different fallback value.
 //
 // Three-state rendering of the subagent fetch (mirrors the loading/error/empty
 // pattern the prior SessionSubagents card used):
 //   - isLoading            → loading affordance.
-//   - isError / no data    → "Subagent timeline unavailable" EmptyState. The
-//     query runs with retry:false, so a disabled subagent watcher (a documented
-//     opt-in v0 state) or a failed fetch settles here. We still render the
-//     parent trace (agents={[]}) so the parent tool calls remain visible.
+//   - isError / no data    → still renders the parent trace (agents={[]})
+//     rather than blanking the section. The query runs with retry:false, so
+//     a disabled subagent watcher (a documented opt-in v0 state) or a failed
+//     fetch settles here immediately.
 //   - success (data set)   → unified SessionTrace (parent lane + subagents) on
 //     the shared window.
 function SessionTraceSection({
@@ -1028,9 +1030,9 @@ function SessionTraceSection({
     refetchInterval: isLive ? 10_000 : false,
   });
 
-  // 6b: workflow run statuses for this session, keyed by runId, so the trace
-  // can badge each run lane with its current status. Reuses the shared
-  // workflows query/key (same cache as SessionWorkflows / the master list).
+  // Workflow run statuses for this session, keyed by runId, so the trace
+  // can badge each run lane with its current status. Reuses the same
+  // qk.workflows query/key as the KPI strip and master-list run tree above.
   const { data: rawWorkflows } = useQuery({
     queryKey: qk.workflows,
     queryFn: fetchWorkflows,
@@ -1052,8 +1054,9 @@ function SessionTraceSection({
 
   // Shared time window spanning both the parent tool-call timeline and the
   // subagent fan-out, so SessionTrace's parent lane + subagent lanes share one
-  // x-scale. Computed unconditionally to keep hook order stable; only consumed
-  // on the success branch.
+  // x-scale. Computed unconditionally to keep hook order stable; both the
+  // fallback (isError/no-data) and success render branches below consume it,
+  // each with a different fallback value.
   const sharedWindow = useMemo<{ startMs: number; endMs: number } | null>(() => {
     const hasAgents = data !== undefined && (data.agents?.length ?? 0) > 0;
     const subStart = hasAgents ? data!.window.startMs : null;

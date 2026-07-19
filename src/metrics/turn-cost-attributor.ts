@@ -38,8 +38,17 @@ export interface CostAttributionMetrics {
 // Constants
 // ---------------------------------------------------------------------------
 
+// Tool calls within this gap of each other are treated as one "turn" (one
+// LLM response driving a burst of tool use). Chosen to bridge normal
+// back-to-back tool latency without merging genuinely separate turns.
 const TURN_GAP_MS = 2_000;
+// A token event is attributed to the pending turn only if it arrives within
+// this window after the turn's last tool call — token usage is reported
+// asynchronously, so some slack is needed, but too much risks attributing
+// a later turn's tokens to this one.
 const TOKEN_MATCH_WINDOW_MS = 5_000;
+// Bounds memory for long sessions; only the most recent turns are needed for
+// the cost-by-tool-type breakdown this class serves.
 const MAX_TURNS = 200;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +97,10 @@ export class TurnCostAttributor {
   recordTokenEvent(event: TokenEvent): void {
     if (!this.pendingTurn) return;
 
+    // A token event outside the match window can't be reliably tied to the
+    // pending turn — silently drop it rather than risk mis-attributing cost
+    // to the wrong turn. Dropped events show up as a lower `attributionRate`
+    // in getMetrics(), not as an error.
     const timeSinceLastTool = event.timestamp - this.pendingTurn.endTime;
     if (timeSinceLastTool < 0 || timeSinceLastTool > TOKEN_MATCH_WINDOW_MS) return;
 

@@ -110,8 +110,10 @@ export class OsNotifier {
           return;
       }
     } catch (err) {
-      // Defensive: notifyXxx() already routes failures through the logger.
-      // Reaching here means an unexpected synchronous throw in our own code.
+      // notifyLinux and notifyWin32 fully catch (and log) their own failures
+      // and never propagate here. notifyDarwin has no try/catch of its own,
+      // so an osascript failure (missing binary, script error) legitimately
+      // reaches here as an async rejection — not just a synchronous throw.
       this.log.warn('os-notifier: unexpected error', {
         error: err instanceof Error ? err.message : String(err),
         platform: this.platform,
@@ -199,9 +201,11 @@ export class OsNotifier {
           if (err) {
             // ENOENT: missing binary (e.g. notify-send not installed).
             // We do NOT log here — the caller decides whether the failure
-            // is interesting. notifyDarwin/notifyLinux propagate to the
-            // try/catch in notify(); notifyWin32 uses the rejection to
-            // pick its fallback.
+            // is interesting. notifyDarwin has no try/catch of its own, so
+            // its rejection propagates up to the try/catch in notify();
+            // notifyLinux and notifyWin32 each catch (and log) their own
+            // failures here and never propagate — notifyWin32 uses the
+            // rejection to pick its fallback.
             rejectFn(err);
             return;
           }

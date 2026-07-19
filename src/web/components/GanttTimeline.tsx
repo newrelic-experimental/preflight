@@ -22,22 +22,24 @@ interface GanttTimelineProps {
   readonly segments: GanttSegment[];
   // Optional shared time window. When BOTH are provided, bars are positioned by
   // absolute timestamp within [windowStartMs, windowEndMs] and ticks are based
-  // on that window — used to align this gantt against another chart (e.g. the
-  // subagent swimlane) on a single shared x-scale. When omitted, the timeline
+  // on that window — used to align this gantt with its sibling GanttTimeline
+  // instances (the parent lane plus every subagent's nested calls) under
+  // SessionTrace's single shared TraceAxis. When omitted, the timeline
   // self-computes its window from first..last entry (unchanged legacy behavior).
   readonly windowStartMs?: number;
   readonly windowEndMs?: number;
   // When false, the top tick-axis row is omitted so this gantt can be embedded
   // UNDER a shared axis owned by a sibling timeline (e.g. nested agent calls in
-  // SessionTrace, where only the parent gantt draws ticks). Defaults to true,
-  // which keeps the legacy standalone behavior (Today view, replay, etc.)
-  // byte-for-byte identical for any caller that doesn't pass it.
+  // SessionTrace, where only the parent gantt draws ticks). Defaults to true;
+  // SessionTrace (the only production caller) always passes false, so the
+  // `true` standalone layout is currently exercised only by this component's
+  // own tests.
   readonly showTicks?: boolean;
   // Tailwind width class for the left gutter (axis spacer + row label column).
-  // Defaults to 'w-24' so standalone callers (Today view, replay) keep their
-  // exact layout. SessionTrace passes a wider gutter so its (longer) agent
-  // labels don't truncate AND so every chart it renders — parent lane, nested
-  // agent-call ganttes — column-aligns with its own axis and collapsed bars.
+  // Defaults to 'w-24'. SessionTrace (the only production caller) always
+  // passes a wider gutter so its (longer) agent labels don't truncate AND so
+  // every chart it renders — parent lane, nested agent-call ganttes —
+  // column-aligns with its own axis and collapsed bars.
   readonly gutterClass?: string;
 }
 
@@ -145,8 +147,10 @@ export function GanttTimeline({
   const MAX_TICKS = 8;
   const candidates = [10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000];
   // Find the smallest candidate that gives <= MAX_TICKS ticks.
-  // Fall back to ceil(totalDuration / MAX_TICKS) so short sessions still
-  // get tick marks rather than rendering a blank axis.
+  // Fall back to ceil(totalDuration / MAX_TICKS) for sessions longer than the
+  // largest candidate can support (30 min * MAX_TICKS = 4h) — otherwise the
+  // axis would be capped at that coarsest fixed interval and render far more
+  // than MAX_TICKS ticks.
   const tickIntervalMs =
     candidates.find((c) => totalDuration / c <= MAX_TICKS) ?? Math.ceil(totalDuration / MAX_TICKS);
 

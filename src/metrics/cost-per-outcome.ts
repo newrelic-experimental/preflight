@@ -70,6 +70,10 @@ export interface TaskOutcomeEvent {
 // Constants
 // ---------------------------------------------------------------------------
 
+// Rough, deliberately conservative estimates of developer hours an AI-assisted
+// task of this outcome type would otherwise take by hand — there's no way to
+// measure this directly, so ROI figures derived from it are an approximation,
+// not a precise measurement. Callers can override via the constructor.
 const DEFAULT_HOURS_SAVED: Record<OutcomeType, number> = {
   bug_fix: 2,
   feature: 4,
@@ -249,9 +253,6 @@ export class CostPerOutcomeAnalyzer {
     };
   }
 
-  /**
-   * Emit outcome metrics to New Relic.
-   */
   emitMetrics(aggregator: MetricAggregator, tasks: AiCodingTask[], developer: string): void {
     const attribution = this.attributeCosts(tasks);
 
@@ -307,20 +308,34 @@ export interface SessionOutcomeInputs {
 }
 
 export function classifySessionOutcome(s: SessionOutcomeInputs): OutcomeType {
+  // Mirrors classifyOutcome's priority order (see its own per-branch
+  // comments above for the full rationale), adapted to session-level
+  // aggregates instead of a per-task tool-call sequence.
+
+  // Priority 1: failed_attempt — tests ran and never passed.
   if (s.testRunCount > 0 && s.testPassCount === 0) return 'failed_attempt';
+  // Priority 2: bug_fix — tests ran and passed, with files modified. Can't
+  // detect the precise "fail → edit → pass" ordering from aggregates alone
+  // (see SessionOutcomeInputs doc above), so any passing-test session with
+  // edits is treated as bug_fix.
   if (s.testRunCount > 0 && s.testPassCount > 0 && s.filesModified.length > 0) return 'bug_fix';
 
+  // Priority 3: feature — new files created.
   const writeCount = s.toolBreakdown['Write'] ?? 0;
   if (writeCount >= 1 && s.filesModified.length > 0) return 'feature';
 
+  // Priority 4: configuration — only config files modified.
   if (s.filesModified.length > 0 && s.filesModified.every((f) => CONFIG_EXTENSIONS.test(f))) {
     return 'configuration';
   }
+  // Priority 5: documentation — only .md files modified.
   if (s.filesModified.length > 0 && s.filesModified.every((f) => DOC_EXTENSIONS.test(f))) {
     return 'documentation';
   }
+  // Priority 6: refactor — files modified, no test regressions.
   if (s.filesModified.length > 0) return 'refactor';
 
+  // Priority 7: investigation — mostly read/search tools.
   if (s.toolCallCount > 0) {
     const readCount =
       (s.toolBreakdown['Read'] ?? 0) +
@@ -329,6 +344,7 @@ export function classifySessionOutcome(s: SessionOutcomeInputs): OutcomeType {
     if (readCount / s.toolCallCount >= 0.8) return 'investigation';
   }
 
+  // Default
   return 'feature';
 }
 

@@ -114,12 +114,14 @@ export type LiveEventMap = {
   alert: AlertEvent;
   // Forward-declared, not yet wired: nothing calls bus.emit() for these three
   // event names today, and src/dashboard/routes/sse-handler.ts only
-  // subscribes ('on'/'onWithSeq') the six names above. Reconnecting clients
-  // would still see buffered instances via replayFrom() (which streams every
-  // buffered type regardless of subscription), but a live client connected
-  // when one of these first fires would silently miss it. Before wiring an
-  // emitter for any of these three, also add the matching bus.on(...)/
-  // bus.onWithSeq(...) subscription (and SSE frame forwarding) in
+  // subscribes ('on'/'onWithSeq') 'tool-call', 'cost-update', 'anti-pattern',
+  // 'context-update', and 'alert' — 'heartbeat' isn't a bus subscription at
+  // all; sse-handler generates it locally via its own setInterval. Reconnecting
+  // clients would still see buffered instances via replayFrom() (which streams
+  // every buffered type regardless of subscription), but a live client
+  // connected when one of these first fires would silently miss it. Before
+  // wiring an emitter for any of these three, also add the matching
+  // bus.on(...)/bus.onWithSeq(...) subscription (and SSE frame forwarding) in
   // sse-handler.ts — see its 'tool-call'/'cost-update'/etc. wiring for the
   // pattern to follow.
   'subagent-turn': SubagentTurnEvent;

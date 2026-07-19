@@ -28,7 +28,13 @@ export interface TurnMetrics {
   readonly turnsByToolCount: Record<number, number>;
 }
 
+// Tool calls within this gap of each other are grouped into the same "turn"
+// (one LLM response driving a burst of tool use) rather than starting a new
+// one. Chosen to bridge normal back-to-back tool latency.
 const DEFAULT_GAP_THRESHOLD_MS = 2000;
+// When a call's real duration isn't known yet, assume it occupies this much
+// time for the purposes of gap/parallelism computation — an unmeasured call
+// shouldn't be treated as if it ended instantly.
 const NULL_DURATION_BUFFER_MS = 500;
 const MAX_RECENT_TURNS = 20;
 

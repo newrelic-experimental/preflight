@@ -115,6 +115,8 @@ export function buildCostForecastFromInputs(
   const msUntilEndOfWeek = ((7 - isoDay) % 7) * 86_400_000 + msUntilEndOfDay;
   const forecastEndOfWeekUsd = effectiveBaseUsd + effectiveRateUsdPerMs * msUntilEndOfWeek;
 
+  // Assumes a full 8-hour workday as the session-end horizon — there's no
+  // real "end of session" signal to anchor this forecast to otherwise.
   const SESSION_TARGET_MS = 8 * 60 * 60 * 1000;
   const msUntilSessionEnd = Math.max(0, SESSION_TARGET_MS - elapsedMs);
   const forecastSessionEndUsd = sessionSpentUsd + sessionRateUsdPerMs * msUntilSessionEnd;
