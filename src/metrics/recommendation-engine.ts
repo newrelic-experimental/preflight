@@ -117,6 +117,8 @@ export class RecommendationEngine {
 
   /**
    * Team-level recommendations aggregating patterns across developers.
+   * Like the per-developer collectors below, the thresholds here are
+   * hand-picked judgment calls, not derived from data.
    */
   generateTeamRecommendations(options?: { since?: Date }): Recommendation[] {
     const recs: Recommendation[] = [];
@@ -174,6 +176,12 @@ export class RecommendationEngine {
 
   // -------------------------------------------------------------------------
   // Sub-analyzer recommendation collectors
+  //
+  // Each method below gates its recommendation behind a hand-picked numeric
+  // threshold (waste ratio, cost delta, efficiency drop, etc.) — these are
+  // heuristic judgment calls about what's worth surfacing to a developer,
+  // not thresholds derived from data. Tune them here if they fire too often
+  // or too rarely in practice.
   // -------------------------------------------------------------------------
 
   private getCostRecommendations(

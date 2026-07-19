@@ -148,6 +148,8 @@ export class SessionTracker {
     if (record.durationMs !== null && record.durationMs !== undefined) {
       const durations = this.toolDurationsByTool.get(tool);
       if (durations) {
+        // Bounds memory per tool — 500 samples is already far more than
+        // needed for a stable p95 within one session.
         if (durations.length < 500) durations.push(record.durationMs);
       } else {
         this.toolDurationsByTool.set(tool, [record.durationMs]);

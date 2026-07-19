@@ -1,3 +1,11 @@
+/**
+ * Retry/Thrashing Detection — flags a sliding window of recent tool calls
+ * where the same tool is either failing repeatedly or being called with
+ * near-identical input, both signs of retrying the same broken approach
+ * instead of changing strategy. Similarity between calls is measured with
+ * Levenshtein distance over each call's serialized (non-metadata) fields.
+ */
+
 import type { MetricAggregator } from '../shared/index.js';
 import { createLogger } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -37,6 +45,10 @@ export interface RetryDetectorOptions {
 const DEFAULT_MIN_OCCURRENCES = 3;
 const DEFAULT_WINDOW_SIZE = 5;
 const DEFAULT_SIMILARITY_THRESHOLD = 0.8;
+// Same rough chars-per-token heuristic used elsewhere in this codebase for
+// estimating token counts without an actual tokenizer (see CostTracker's
+// recordEstimatedTokens). Only used here to estimate wasted tokens for
+// reporting, not for billing, so the approximation is acceptable.
 const BYTES_PER_TOKEN_ESTIMATE = 4;
 
 // ---------------------------------------------------------------------------
@@ -216,6 +228,10 @@ export class RetryDetector {
     return comparisons > 0 ? totalSimilarity / comparisons : 0;
   }
 
+  // Excludes per-call metadata that varies even when the actual tool
+  // input/arguments are identical (timestamps, ids, sizes, error details) —
+  // without stripping these, every call would serialize as "different" and
+  // similarity would never detect a genuine repeated-input retry.
   private serializeInput(record: ToolCallRecord): string {
     const {
       id: _id,

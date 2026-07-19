@@ -30,9 +30,10 @@ export interface AntiPatternEvent {
   readonly count: number;
 }
 
-// Mirror of the AlertEvent shape from src/dashboard/live-event-bus.ts. Kept
-// local to the SPA to keep the web bundle decoupled from the server tree —
-// see CLAUDE.md "Type imports" guidance.
+// Mirror of the AlertEvent shape from src/dashboard/live-event-bus.ts, minus
+// its optional `sessionId` — alerts aren't session-scoped client-side (every
+// firing alert is shown regardless of which session triggered it). Kept
+// local to the SPA to keep the web bundle decoupled from the server tree.
 export interface AlertEvent {
   readonly id: string;
   readonly state: 'firing' | 'cleared';

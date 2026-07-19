@@ -1471,7 +1471,7 @@ export function createApiHandler(
   routes.set('GET /api/alerts/recent', async (_req, res) => {
     // 404 (not 503) when alerts are not configured — the route does not
     // exist as a logical resource in cloud-only mode or when alerts are
-    // disabled. Plan §8 acceptance criterion calls for 404.
+    // disabled.
     if (!deps.alertLog) {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_found' }));

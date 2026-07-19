@@ -1,7 +1,9 @@
 /**
- * Pure logic for generating and merging Claude Code hook/MCP settings.
+ * Logic for generating and merging Claude Code hook/MCP settings.
  *
- * All functions are side-effect-free — file I/O happens in the CLI layer (cli.ts).
+ * Most functions are pure/side-effect-free, with file I/O happening in the
+ * CLI layer (cli.ts) or the caller of `readAndCheckHooks`, the one exception
+ * that reads a settings file directly.
  */
 
 import { dirname, join, resolve } from 'node:path';

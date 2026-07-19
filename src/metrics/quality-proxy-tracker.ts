@@ -1,3 +1,16 @@
+/**
+ * Quality Proxy Tracking — since there's no ground-truth "was this good code"
+ * signal, this infers quality from cheap proxy signals observable from tool
+ * calls alone: clean diff applications, test pass/fail, backtracking (re-
+ * reading a file whose edit just failed or broke a test), and self-correction
+ * (re-editing the same file shortly after a test failure).
+ *
+ * Signals are bucketed by turn range so `degradationDetected` can flag a
+ * session whose quality ratio drops significantly from its early buckets to
+ * its late ones — a proxy for "this session went off the rails partway
+ * through," without needing to understand the actual code changes.
+ */
+
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
@@ -51,6 +64,9 @@ export interface QualityProxyOptions {
 
 const DEFAULT_BUCKET_SIZE = 10;
 const DEFAULT_MAX_EVENTS = 500;
+// A 30-point drop in quality ratio between the early and late thirds of a
+// session is treated as a meaningful regression, not noise — smaller swings
+// are common turn-to-turn and would make this trigger too often to be useful.
 const DEFAULT_DEGRADATION_THRESHOLD = 0.3;
 
 // ---------------------------------------------------------------------------

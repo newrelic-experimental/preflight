@@ -1,10 +1,11 @@
 /**
- * MCP tool handlers for session observability and cost tracking.
- *
- * Registers tools based on which trackers are provided:
- *   - nr_observe_get_session_stats  — current session metrics snapshot
- *   - nr_observe_get_session_timeline — recent tool call timeline
- *   - nr_observe_report_tokens — self-report token usage for cost tracking
+ * `registerTools()` — the MCP server's main tool registry. Builds the
+ * `tools/list` response and `tools/call` dispatch from whichever trackers
+ * were constructed for this session (session stats/timeline, health,
+ * config, install-hooks, git efficiency, and every cost/workflow/cross-session/
+ * analytics/extended-analytics tool re-exported from the sibling files in
+ * this directory) — each tool is only advertised when its backing tracker
+ * is present.
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';

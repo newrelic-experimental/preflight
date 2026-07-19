@@ -373,7 +373,7 @@ describe('SubagentWatcher', () => {
     expect(tokenLines[1].messageId).toBe('msg_second');
   });
 
-  it('NFR-2: emitted subagent_token events contain no message content or prompt text', () => {
+  it('emitted subagent_token events contain no message content or prompt text', () => {
     // The source JSONL line contains a full `message` object with content blocks.
     // The emitted event must strip all content fields — only metadata/counts allowed.
     writeFileSync(

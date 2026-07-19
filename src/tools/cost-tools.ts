@@ -4,6 +4,9 @@
  * Defines:
  *   - `nr_observe_report_tokens` — self-report token usage for cost tracking
  *   - `nr_observe_get_cost_breakdown` — session cost breakdown by task
+ *   - `nr_observe_get_budget_status` — spend vs. configured budget caps
+ *   - `nr_observe_get_cost_forecast` — projected spend for day/week/session
+ *   - `nr_observe_get_prompt_cache_health` — cache hit rate and recommendation
  */
 
 import type { CostTracker } from '../metrics/cost-tracker.js';

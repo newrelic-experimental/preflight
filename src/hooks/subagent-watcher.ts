@@ -5,8 +5,8 @@
  *
  * This closes a cost-correctness gap: subagent tokens (visible only
  * inside `~/.claude/projects/<slug>/<sessionId>/subagents/agent-*.jsonl`) never
- * reached `CostTracker.recordTokenUsage()` because the existing collector at
- * `collector-script.ts:178-219 readLastAssistantUsage()` only tails the parent
+ * reached `CostTracker.recordTokenUsage()` because the existing collector's
+ * `readLastAssistantUsage()` in collector-script.ts only tails the parent
  * session's transcript.
  *
  * Watches two paths under each session directory:
@@ -834,8 +834,8 @@ export class SubagentWatcher {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      // Trim entries older than the re-emission window so the file does not
-      // grow unbounded.
+      // Trim entries older than 24x the re-emission window (24h, since
+      // SCHEMA_FINGERPRINT_REEMIT_MS is 1h) so the file does not grow unbounded.
       const now = Date.now();
       const out: Record<string, number> = {};
       for (const [k, v] of this.seenFingerprints) {

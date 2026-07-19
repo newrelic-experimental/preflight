@@ -918,9 +918,10 @@ function LiveSessionPane({
     }
   }, [replay?.timeline.length, isLive]);
 
-  // Sort today's sessions by startTime descending (newest first), then merge
-  // in any live sessions that haven't yet persisted to disk so the selector
-  // shows them immediately. A session counts as "today" if it started today
+  // Filter to sessions that count as "today", then merge in any live
+  // sessions that haven't yet persisted to disk so the selector shows them
+  // immediately (sort order is applied below, by last activity). A session
+  // counts as "today" if it started today
   // OR is currently live OR had recent activity today (last activity within
   // RECENT_ACTIVITY_MS of now AND falling on today's calendar date).
   //

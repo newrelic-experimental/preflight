@@ -102,6 +102,11 @@ export class BudgetTracker {
     return '';
   }
 
+  // A threshold that already fired for a past period (e.g. yesterday's
+  // "daily_80") must not suppress it firing again once a new period starts —
+  // otherwise a session/day/week that repeatedly crosses 50/80/100% would
+  // only ever alert once, ever. Drop any fired-threshold entry whose stored
+  // period ID no longer matches the current one so it's free to fire again.
   private pruneStaleThresholds(): void {
     for (const [key, periodId] of this.firedThresholds.entries()) {
       const period = key.split('_')[0] as BudgetPeriod;

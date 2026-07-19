@@ -132,8 +132,10 @@ function buildDetail(record: ToolCallRecord): string {
 
   // Redact at the source so every downstream egress (NR Events API,
   // NR Logs API, persisted on-disk audit log) sees only scrubbed strings.
-  // detectSecurityAlert runs against the raw record before this is invoked,
-  // so pattern matching still works correctly against unredacted input.
+  // Call-order-independent: this only reads record.filePath/command and
+  // returns a new string — it never mutates `record` itself, so
+  // detectSecurityAlert() (called separately against the same `record`)
+  // still sees the original unredacted values no matter which runs first.
   if (filePath) return `${tool} ${redactSensitive(filePath)}`;
   if (command) return `${tool}: ${redactSensitive(command)}`;
   if (agentDescription) return `${tool}: ${redactSensitive(agentDescription)}`;

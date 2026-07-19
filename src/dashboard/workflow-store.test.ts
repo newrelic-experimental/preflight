@@ -91,7 +91,7 @@ describe('WorkflowStore', () => {
     expect(row!.agents![0].agent_id).toBe('a45d96d201bf2f1ef');
   });
 
-  it('NEVER exposes user-content fields on agent rows (NFR-2)', () => {
+  it('never exposes user-content fields on agent rows', () => {
     writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
     const store = new WorkflowStore({ projectsDir });
     const row = store.getRun('wf_abc12345-6dd');

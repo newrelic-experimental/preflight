@@ -8,6 +8,9 @@ export async function sendSlackDigest(
   } catch {
     throw new Error('Invalid webhook URL: must be a valid https://hooks.slack.com/ URL');
   }
+  // Pin to Slack's own domain — a misconfigured or tampered `digestWebhookUrl`
+  // must not be able to redirect the weekly summary payload to an arbitrary
+  // HTTPS endpoint.
   if (parsed.protocol !== 'https:' || parsed.hostname !== 'hooks.slack.com') {
     throw new Error('Invalid webhook URL: must be a valid https://hooks.slack.com/ URL');
   }

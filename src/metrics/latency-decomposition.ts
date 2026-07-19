@@ -1,3 +1,12 @@
+/**
+ * Latency Decomposition — splits each turn's wall-clock time into where it
+ * was actually spent: waiting on the LLM API, running tool calls, or
+ * `overhead` (everything else — internal processing, queueing, etc. that
+ * isn't directly attributable to either). `overhead` isn't measured
+ * directly; it's the remainder after subtracting the other two from the
+ * turn's total wall-clock duration.
+ */
+
 import type { MetricAggregator } from '../shared/index.js';
 import { computePercentile } from './percentile.js';
 
@@ -75,6 +84,9 @@ export class LatencyDecompositionTracker {
     const wallClockMs = report.turnEndMs - report.turnStartMs;
     const llmApiMs = report.llmApiMs;
     const toolExecutionMs = report.toolExecutionMs;
+    // Clamp at 0 — imprecise/overlapping timing between the LLM API and tool
+    // execution measurements could otherwise sum to slightly more than the
+    // observed wall-clock time, producing a nonsensical negative overhead.
     const overheadMs = Math.max(0, wallClockMs - llmApiMs - toolExecutionMs);
 
     this.llmSamples.push(llmApiMs);
