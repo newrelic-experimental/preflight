@@ -212,6 +212,26 @@ describe('classifyError', () => {
     // Anthropic 529 still maps to OVERLOADED (covered above in test #2)
     expect(classifyError({ status: 529 }, 'anthropic')).toBe(AiErrorClassification.OVERLOADED);
   });
+
+  it('classifies HTTP 401 and 403 as AUTHENTICATION', () => {
+    expect(classifyError({ status: 401 }, 'anthropic')).toBe(AiErrorClassification.AUTHENTICATION);
+    expect(classifyError({ status: 403 }, 'openai')).toBe(AiErrorClassification.AUTHENTICATION);
+  });
+
+  it('classifies HTTP 402 (Payment Required) as UNKNOWN (non-retryable)', () => {
+    expect(classifyError({ status: 402 }, 'anthropic')).toBe(AiErrorClassification.UNKNOWN);
+  });
+
+  it('classifies HTTP 404 as NOT_FOUND', () => {
+    expect(classifyError({ status: 404 }, 'openai')).toBe(AiErrorClassification.NOT_FOUND);
+  });
+
+  it('classifies a message-only timeout (no status, no code) as TIMEOUT', () => {
+    // No `status` and no cause-chain `code` at all — must fall through to the
+    // pre-switch message-based check (line ~138), not the switch's default case.
+    const err = new Error('Request timeout while waiting for upstream');
+    expect(classifyError(err, 'openai')).toBe(AiErrorClassification.TIMEOUT);
+  });
 });
 
 describe('isRetryable', () => {
@@ -509,5 +529,15 @@ describe('classifyErrorDetailed', () => {
     // Empty string is treated as "no message" so callers don't have to special-case it.
     expect(detailed.originalMessage).toBeNull();
     expect(detailed.classification).toBe(AiErrorClassification.SERVER_ERROR);
+  });
+
+  it('falls back to the first cause-chain code when none matches NETWORK_CODES/TIMEOUT_CODES', () => {
+    // EAI_AGAIN is a real Node DNS code, but not in either classified set —
+    // extractCode's firstFound fallback should still surface it rather than
+    // returning null, even though the classification itself stays UNKNOWN.
+    const err = Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' });
+    const detailed = classifyErrorDetailed(err, 'anthropic');
+    expect(detailed.code).toBe('EAI_AGAIN');
+    expect(detailed.classification).toBe(AiErrorClassification.UNKNOWN);
   });
 });

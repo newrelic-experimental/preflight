@@ -109,8 +109,10 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(p.cacheReadPerMTok).toBe(0.5);
       expect(p.contextWindow).toBe(1_000_000);
       expect(p.tierThreshold).toBe(270_000);
+      expect(p.tierMode).toBe('marginal');
       expect(p.tierInputPerMTok).toBe(10);
-      expect(p.tierOutputPerMTok).toBe(45);
+      // marginal mode ignores tierOutputPerMTok — must not be set (dead data).
+      expect(p.tierOutputPerMTok).toBeUndefined();
     });
 
     it('has gpt-5.4 with correct rates and long-context tier', () => {
@@ -120,8 +122,10 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(p.outputPerMTok).toBe(15);
       expect(p.cacheReadPerMTok).toBe(0.25);
       expect(p.tierThreshold).toBe(270_000);
+      expect(p.tierMode).toBe('marginal');
       expect(p.tierInputPerMTok).toBe(5);
-      expect(p.tierOutputPerMTok).toBe(22.5);
+      // marginal mode ignores tierOutputPerMTok — must not be set (dead data).
+      expect(p.tierOutputPerMTok).toBeUndefined();
     });
 
     it('has gpt-5.4-mini and gpt-5.4-nano', () => {

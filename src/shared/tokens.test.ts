@@ -185,6 +185,42 @@ describe('extractStreamTokens', () => {
     expect(result.totalTokens).toBe(150);
   });
 
+  it('returns empty usage for a Bedrock stream chunk with a metadata key but no usage inside it', () => {
+    // Shape detection (stream vs non-stream) is keyed on the *presence* of
+    // `metadata`, independent of whether it carries `usage` — this exercises
+    // a metadata event that carries no usage, which must NOT fall through to
+    // the non-streaming extractor (whose top-level `usage` is also absent).
+    const bedrockMetadataNoUsage = { metadata: { requestId: 'abc-123' } };
+    const result = extractStreamTokens(bedrockMetadataNoUsage, 'bedrock');
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(0);
+    expect(result.totalTokens).toBe(0);
+  });
+
+  it('returns empty usage for null/non-object input without throwing, for every provider', () => {
+    const zeroUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 0,
+    };
+    for (const provider of [
+      'anthropic',
+      'google',
+      'openai',
+      'bedrock',
+      'mistral',
+      'cohere',
+    ] as const) {
+      expect(extractStreamTokens(null, provider)).toEqual(zeroUsage);
+      expect(extractStreamTokens(undefined, provider)).toEqual(zeroUsage);
+      expect(extractStreamTokens('not-an-object', provider)).toEqual(zeroUsage);
+      expect(extractStreamTokens(42, provider)).toEqual(zeroUsage);
+    }
+  });
+
   it('delegates to mistral extractor', () => {
     const result = extractStreamTokens(
       { usage: { prompt_tokens: 50, completion_tokens: 25, total_tokens: 75 } },
@@ -956,7 +992,7 @@ describe('TokenAccumulator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // S-05: safeInt rejects Infinity, -Infinity, negative values, and floats
+  // safeInt rejects Infinity, -Infinity, negative values, and floats
   // ---------------------------------------------------------------------------
   describe('safeInt guard', () => {
     it('clamps Infinity token counts to 0', () => {

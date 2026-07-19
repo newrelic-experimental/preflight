@@ -8,6 +8,47 @@ import type { NrMetric } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
+interface MockMeterProviderInstance {
+  forceFlush: jest.Mock;
+  shutdown: jest.Mock;
+  getMeter: jest.Mock;
+}
+
+interface OtlpWireAttributeValue {
+  readonly stringValue?: string;
+  readonly doubleValue?: number;
+  readonly boolValue?: boolean;
+}
+
+interface OtlpWireMetric {
+  readonly name: string;
+  readonly gauge?: { readonly dataPoints: ReadonlyArray<Record<string, unknown>> };
+  readonly sum?: {
+    readonly dataPoints: ReadonlyArray<Record<string, unknown>>;
+    readonly aggregationTemporality: number;
+    readonly isMonotonic: boolean;
+  };
+  readonly histogram?: {
+    readonly dataPoints: ReadonlyArray<Record<string, unknown>>;
+    readonly aggregationTemporality: number;
+  };
+}
+
+interface OtlpMetricsWirePayload {
+  readonly resourceMetrics: ReadonlyArray<{
+    readonly resource: {
+      readonly attributes: ReadonlyArray<{
+        readonly key: string;
+        readonly value: OtlpWireAttributeValue;
+      }>;
+    };
+    readonly scopeMetrics: ReadonlyArray<{
+      readonly scope: { readonly name: string; readonly version?: string };
+      readonly metrics: ReadonlyArray<OtlpWireMetric>;
+    }>;
+  }>;
+}
+
 // Mock OTel SDK modules
 jest.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
   OTLPTraceExporter: jest.fn().mockImplementation(() => ({
@@ -150,7 +191,7 @@ describe('OtlpTransport', () => {
       shutdown: jest.fn().mockResolvedValue(undefined),
       getTracer: jest.fn().mockReturnValue({}),
     }));
-    MeterProvider.mockImplementationOnce(function (this: Record<string, unknown>) {
+    MeterProvider.mockImplementationOnce(function (this: MockMeterProviderInstance) {
       this.forceFlush = meterFlush;
       this.shutdown = jest.fn().mockResolvedValue(undefined);
       this.getMeter = jest.fn().mockReturnValue({});
@@ -183,7 +224,7 @@ describe('OtlpTransport', () => {
       shutdown: jest.fn().mockResolvedValue(undefined),
       getTracer: jest.fn().mockReturnValue({}),
     }));
-    MeterProvider.mockImplementationOnce(function (this: Record<string, unknown>) {
+    MeterProvider.mockImplementationOnce(function (this: MockMeterProviderInstance) {
       this.forceFlush = jest.fn().mockRejectedValue(new Error('meter flush failed'));
       this.shutdown = jest.fn().mockResolvedValue(undefined);
       this.getMeter = jest.fn().mockReturnValue({});
@@ -359,23 +400,28 @@ describe('OtlpTransport', () => {
   // (resourceMetrics → scopeMetrics → metrics → gauge|sum|histogram)
   // matches the OTLP spec for each metric type.
   describe('exportMetrics() wire format', () => {
-    function captureWirePayload(): { transport: OtlpTransport; getPayload: () => unknown } {
+    function captureWirePayload(): {
+      transport: OtlpTransport;
+      getPayload: () => OtlpMetricsWirePayload;
+    } {
       const transport = new OtlpTransport({
         endpoint: 'https://otlp.nr-data.net',
         appName: 'test-app',
       });
-      let captured: unknown;
+      let captured!: OtlpMetricsWirePayload;
       jest
         .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
-        .mockImplementation(async (_url: unknown, init: unknown) => {
-          captured = JSON.parse(gunzipSync((init as { body: Buffer }).body).toString());
-          return new Response('', { status: 200 });
-        });
+        .mockImplementation(
+          async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            captured = JSON.parse(gunzipSync(init?.body as Buffer).toString());
+            return new Response('', { status: 200 });
+          },
+        );
       return { transport, getPayload: () => captured };
     }
 
     it('includes scope.version in OTLP payload when clientVersion is set', async () => {
-      let captured: unknown;
+      let captured!: OtlpMetricsWirePayload;
       const transport = new OtlpTransport({
         endpoint: 'https://otlp.nr-data.net',
         appName: 'test-app',
@@ -384,51 +430,43 @@ describe('OtlpTransport', () => {
       });
       jest
         .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
-        .mockImplementation(async (_url: unknown, init: unknown) => {
-          captured = JSON.parse(gunzipSync((init as { body: Buffer }).body).toString());
-          return new Response('', { status: 200 });
-        });
+        .mockImplementation(
+          async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            captured = JSON.parse(gunzipSync(init?.body as Buffer).toString());
+            return new Response('', { status: 200 });
+          },
+        );
 
       await transport.exportMetrics([
         { name: 'ai.tokens', type: 'gauge', value: 1, timestamp: Date.now() },
       ]);
 
-      const scope = (
-        captured as {
-          resourceMetrics: Array<{
-            scopeMetrics: Array<{ scope: { name: string; version?: string } }>;
-          }>;
-        }
-      ).resourceMetrics[0].scopeMetrics[0].scope;
+      const scope = captured.resourceMetrics[0].scopeMetrics[0].scope;
 
       expect(scope.name).toBe('preflight');
       expect(scope.version).toBe('3.0.0');
     });
 
     it('omits scope.version from OTLP payload when clientVersion is empty', async () => {
-      let captured: unknown;
+      let captured!: OtlpMetricsWirePayload;
       const transport = new OtlpTransport({
         endpoint: 'https://otlp.nr-data.net',
         appName: 'test-app',
       });
       jest
         .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
-        .mockImplementation(async (_url: unknown, init: unknown) => {
-          captured = JSON.parse(gunzipSync((init as { body: Buffer }).body).toString());
-          return new Response('', { status: 200 });
-        });
+        .mockImplementation(
+          async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            captured = JSON.parse(gunzipSync(init?.body as Buffer).toString());
+            return new Response('', { status: 200 });
+          },
+        );
 
       await transport.exportMetrics([
         { name: 'ai.tokens', type: 'gauge', value: 1, timestamp: Date.now() },
       ]);
 
-      const scope = (
-        captured as {
-          resourceMetrics: Array<{
-            scopeMetrics: Array<{ scope: Record<string, unknown> }>;
-          }>;
-        }
-      ).resourceMetrics[0].scopeMetrics[0].scope;
+      const scope = captured.resourceMetrics[0].scopeMetrics[0].scope;
 
       expect(scope).not.toHaveProperty('version');
     });
@@ -439,12 +477,7 @@ describe('OtlpTransport', () => {
         { name: 'ai.tokens', type: 'gauge', value: 100, timestamp: Date.now(), attributes: {} },
       ]);
 
-      const body = getPayload() as {
-        resourceMetrics: Array<{
-          resource: { attributes: Array<{ key: string; value: { stringValue: string } }> };
-          scopeMetrics: Array<{ scope: { name: string }; metrics: unknown[] }>;
-        }>;
-      };
+      const body = getPayload();
 
       expect(body.resourceMetrics).toHaveLength(1);
       const resource = body.resourceMetrics[0];
@@ -461,13 +494,7 @@ describe('OtlpTransport', () => {
         { name: 'ai.gauge', type: 'gauge', value: 42, timestamp: 1700000000000, attributes: {} },
       ]);
 
-      const m = (
-        getPayload() as {
-          resourceMetrics: Array<{
-            scopeMetrics: Array<{ metrics: Array<Record<string, unknown>> }>;
-          }>;
-        }
-      ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+      const m = getPayload().resourceMetrics[0].scopeMetrics[0].metrics[0];
 
       expect(m.name).toBe('ai.gauge');
       expect(m).toHaveProperty('gauge');
@@ -487,13 +514,7 @@ describe('OtlpTransport', () => {
         { name: 'ai.count', type: 'count', value: 5, timestamp, intervalMs, attributes: {} },
       ]);
 
-      const m = (
-        getPayload() as {
-          resourceMetrics: Array<{
-            scopeMetrics: Array<{ metrics: Array<Record<string, unknown>> }>;
-          }>;
-        }
-      ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+      const m = getPayload().resourceMetrics[0].scopeMetrics[0].metrics[0];
 
       expect(m).toHaveProperty('sum');
       expect(m).not.toHaveProperty('gauge');
@@ -511,6 +532,27 @@ describe('OtlpTransport', () => {
       expect(sum.dataPoints[0].timeUnixNano).toBe(timestamp * 1_000_000);
     });
 
+    it('clamps startTimeUnixNano to 0 for a count metric when timestamp < intervalMs', async () => {
+      // A misconfigured metric (clock skew, or intervalMs larger than the
+      // timestamp itself) would otherwise produce a negative
+      // startTimeUnixNano, which strict OTLP collectors reject.
+      const { transport, getPayload } = captureWirePayload();
+      await transport.exportMetrics([
+        {
+          name: 'ai.count',
+          type: 'count',
+          value: 5,
+          timestamp: 1_000,
+          intervalMs: 60_000,
+          attributes: {},
+        },
+      ]);
+
+      const m = getPayload().resourceMetrics[0].scopeMetrics[0].metrics[0];
+      const sum = m.sum as { dataPoints: ReadonlyArray<Record<string, unknown>> };
+      expect(sum.dataPoints[0].startTimeUnixNano).toBe(0);
+    });
+
     it('encodes attribute values with the correct OTLP scalar shapes (string | number | boolean)', async () => {
       const { transport, getPayload } = captureWirePayload();
       await transport.exportMetrics([
@@ -523,24 +565,13 @@ describe('OtlpTransport', () => {
         },
       ]);
 
-      const m = (
-        getPayload() as {
-          resourceMetrics: Array<{
-            scopeMetrics: Array<{
-              metrics: Array<{
-                gauge: {
-                  dataPoints: Array<{
-                    attributes: Array<{ key: string; value: Record<string, unknown> }>;
-                  }>;
-                };
-              }>;
-            }>;
-          }>;
-        }
-      ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+      const m = getPayload().resourceMetrics[0].scopeMetrics[0].metrics[0];
+      const gauge = m.gauge as {
+        dataPoints: Array<{ attributes: Array<{ key: string; value: OtlpWireAttributeValue }> }>;
+      };
 
-      const attrs = m.gauge.dataPoints[0].attributes;
-      const byKey: Record<string, Record<string, unknown>> = {};
+      const attrs = gauge.dataPoints[0].attributes;
+      const byKey: Record<string, OtlpWireAttributeValue> = {};
       for (const a of attrs) byKey[a.key] = a.value;
       expect(byKey.svc.stringValue).toBe('parser');
       expect(byKey.count.doubleValue).toBe(7);
@@ -711,13 +742,15 @@ describe('OtlpTransport', () => {
       appName: 'test-app',
     });
 
-    let capturedBody: unknown;
+    let capturedBody!: OtlpMetricsWirePayload;
     const fetchSpy = jest
       .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
-      .mockImplementation(async (_url: unknown, init: unknown) => {
-        capturedBody = JSON.parse(gunzipSync((init as { body: Buffer }).body).toString());
-        return new Response('', { status: 200 });
-      });
+      .mockImplementation(
+        async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          capturedBody = JSON.parse(gunzipSync(init?.body as Buffer).toString());
+          return new Response('', { status: 200 });
+        },
+      );
 
     const metrics: NrMetric[] = [
       {
@@ -732,13 +765,7 @@ describe('OtlpTransport', () => {
 
     await transport.exportMetrics(metrics);
 
-    const wireMetric = (
-      capturedBody as {
-        resourceMetrics: Array<{
-          scopeMetrics: Array<{ metrics: Array<Record<string, unknown>> }>;
-        }>;
-      }
-    ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+    const wireMetric = capturedBody.resourceMetrics[0].scopeMetrics[0].metrics[0];
 
     expect(wireMetric).toHaveProperty('histogram');
     expect(wireMetric).not.toHaveProperty('gauge');
@@ -760,6 +787,42 @@ describe('OtlpTransport', () => {
     expect(dp.explicitBounds).toEqual([]);
     // OTLP spec requires startTimeUnixNano on DELTA histogram data points
     expect(dp.startTimeUnixNano).toBe((metrics[0].timestamp - 60_000) * 1_000_000);
+
+    fetchSpy.mockRestore();
+  });
+
+  it('exportMetrics() clamps startTimeUnixNano to 0 for a summary metric when timestamp < intervalMs', async () => {
+    const transport = new OtlpTransport({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+    });
+
+    let capturedBody!: OtlpMetricsWirePayload;
+    const fetchSpy = jest
+      .spyOn(globalThis as unknown as { fetch: typeof fetch }, 'fetch')
+      .mockImplementation(
+        async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          capturedBody = JSON.parse(gunzipSync(init?.body as Buffer).toString());
+          return new Response('', { status: 200 });
+        },
+      );
+
+    await transport.exportMetrics([
+      {
+        name: 'ai.latency',
+        type: 'summary',
+        value: { count: 1, sum: 5, min: 5, max: 5 },
+        timestamp: 1_000,
+        intervalMs: 60_000,
+        attributes: {},
+      },
+    ]);
+
+    const wireMetric = capturedBody.resourceMetrics[0].scopeMetrics[0].metrics[0];
+    const histogram = wireMetric.histogram as {
+      dataPoints: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(histogram.dataPoints[0].startTimeUnixNano).toBe(0);
 
     fetchSpy.mockRestore();
   });

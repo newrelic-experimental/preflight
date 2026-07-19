@@ -134,10 +134,6 @@ export class HarvestScheduler {
   private retryOtlpMetricSnapshots: MetricSnapshot[] = [];
   private readonly maxRetryEvents: number;
   private readonly maxRetryMetricSnapshotsCap: number;
-  // Snapshot cap: 500 buckets ≈ 2000 wire metrics post-explosion. Larger
-  // effective ceiling than the previous 500-NrMetric cap (~125 buckets) by
-  // design — retry pressure is rare and the previous limit was tighter than
-  // intended.
 
   private readonly boundBeforeExit: () => void;
 
@@ -159,8 +155,6 @@ export class HarvestScheduler {
     this.transport = options.transport ?? 'nr-events-api';
     this.allowProcessExit = options.allowProcessExit ?? false;
 
-    // Warn when the transport configuration requires an OTLP component that
-    // was not provided — events/metrics would be silently dropped.
     const wantOtlp = this.transport === 'otlp' || this.transport === 'both';
     if (wantOtlp && !this.otlpEventBridge) {
       logger.warn(
@@ -175,11 +169,6 @@ export class HarvestScheduler {
 
     this.eventBuffer = new EventBuffer({ maxSize: options.maxEventBufferSize });
     this.metricAggregator = new MetricAggregator();
-    // maxRetryEvents defaults to maxEventBufferSize when
-    // not specified, preserving prior behavior. Operators that need a
-    // deeper retry cap (bursty failures, long downstream outages) can set
-    // it independently — peak in-memory event count is then roughly
-    // maxEventBufferSize + maxRetryEvents.
     this.maxRetryEvents = options.maxRetryEvents ?? options.maxEventBufferSize ?? 1_000;
     this.maxRetryMetricSnapshotsCap = options.maxRetryMetricSnapshots ?? 500;
 
@@ -193,11 +182,9 @@ export class HarvestScheduler {
    *
    * Returns `true` when the event was added without evicting another, and
    * `false` when the event buffer was already full and the oldest event
-   * was head-dropped. Callers ignoring the return
-   * value see the same behavior as before — the per-harvest
-   * `nr.ai.dropped_events` self-monitoring metric still counts the drops
-   * regardless. The boolean lets producers throttle or surface a custom
-   * backpressure metric instead of polling.
+   * was head-dropped. The per-harvest `nr.ai.dropped_events` self-monitoring
+   * metric counts the drops regardless of whether the caller uses the
+   * return value.
    */
   addEvent(event: NrEventData): boolean {
     return this.eventBuffer.add(event);
@@ -208,8 +195,7 @@ export class HarvestScheduler {
    *
    * Returns `true` when the sample was accepted into a bucket, and `false`
    * when it was rejected (non-finite value or invalid attribute type) per
-   * the strict validation contract. Existing
-   * callers that ignore the return value see unchanged behavior.
+   * the strict validation contract.
    */
   recordMetric(
     name: string,
@@ -303,11 +289,6 @@ export class HarvestScheduler {
     }, this.metricHarvestIntervalMs);
 
     if (this.allowProcessExit) {
-      // Opt-in path for short-lived CLI tools. unref()'d
-      // intervals don't hold the loop open, and beforeExit is registered as
-      // a best-effort final-flush attempt. Both are best-effort: Node can
-      // exit before the fire-and-forget stop() finishes, so events may be
-      // lost. Consumers should still prefer awaiting stop() explicitly.
       this.eventIntervalId.unref();
       this.metricIntervalId.unref();
       process.once('beforeExit', this.boundBeforeExit);
@@ -411,7 +392,6 @@ export class HarvestScheduler {
       });
     }
 
-    // Final flush of in-memory buffers
     await Promise.all([this.harvestEvents(), this.harvestMetrics()]);
 
     // Flush OTLP-managed buffers (they live inside the OTel SDK batch
@@ -462,17 +442,15 @@ export class HarvestScheduler {
   }
 
   private async doHarvestEvents(): Promise<void> {
-    // Scoped child logger stamps `harvestId` on every
-    // log line emitted during this cycle (overflow, retry, requeue,
-    // OTLP-export failures). Operators searching stderr for one harvest's
-    // story have a single pivot.
     const harvestLog = logger.child({ harvestId: newHarvestId(), scope: 'events' });
 
     const fresh = this.eventBuffer.flush();
 
     // Surface event-buffer head-drops as a self-monitoring metric so
     // overflow loss is visible in the consumer's own NR dashboards. Drained
-    // once per harvest, paired with a single warn log.
+    // once per harvest, paired with a single warn log. Recorded into
+    // metricAggregator, so this ships on the METRIC harvest cadence (default
+    // 60s), not this 5s event cadence.
     const dropped = this.eventBuffer.drainDropCount();
     if (dropped > 0) {
       harvestLog.warn('EventBuffer overflow — oldest entries dropped', { dropped });
@@ -480,9 +458,6 @@ export class HarvestScheduler {
         source: 'event_buffer',
       });
     }
-    // Drain the add counter each cycle so totalAdded represents adds-since-
-    // last-flush. Not emitted as a metric today; wired here so a
-    // future nr.ai.added_events metric reads the correct per-interval value.
     this.eventBuffer.drainAddCount();
 
     const wantNr = this.transport === 'nr-events-api' || this.transport === 'both';
@@ -572,8 +547,6 @@ export class HarvestScheduler {
   }
 
   private async doHarvestMetrics(): Promise<void> {
-    // Scoped child logger stamps a `harvestId` on every
-    // log line emitted during this metric harvest cycle.
     const harvestLog = logger.child({ harvestId: newHarvestId(), scope: 'metrics' });
 
     // Self-monitoring: drain MetricAggregator's
@@ -674,9 +647,9 @@ export class HarvestScheduler {
       } else {
         // Debug-level success log so operators tailing stderr can
         // distinguish "harvest completed cleanly with N metrics" from
-        // "harvest never ran". Includes both the wire batch count and
-        // the underlying snapshot count so a future cardinality-explosion
-        // signal is visible at debug.
+        // "harvest never ran". batchSize and snapshotCount are always equal
+        // under the current 1-NrMetric-per-snapshot wire format; both are
+        // logged so that no longer holding true is visible at debug.
         log.debug('Sent metrics to NR', {
           batchSize: batch.length,
           snapshotCount: snapshots.length,
@@ -750,7 +723,6 @@ export class HarvestScheduler {
       const dropped = this.retryNrEventBatch.length - this.maxRetryEvents;
       this.retryNrEventBatch.splice(0, dropped);
       log.warn('NR event retry buffer overflow — oldest entries dropped', { dropped });
-      // Surface as self-monitoring metric so NR dashboards show retry-buffer drops.
       this.metricAggregator.record('nr.ai.dropped_events', dropped, {
         source: 'retry_buffer',
         transport: 'nr-events-api',

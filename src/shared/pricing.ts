@@ -27,15 +27,15 @@ export interface ModelPricing {
    * `'flat'` (current behavior, matches Gemini 1.5/2.5 Pro semantics).
    *
    * - `'flat'`: the **entire request** (input, output, thinking) is billed at
-   *   the tier rates. This is what every provider we currently price uses.
+   *   the tier rates. Matches Gemini 1.5/2.5 Pro semantics.
    * - `'marginal'`: only the **input tokens above the threshold** are billed
    *   at `tierInputPerMTok`; tokens up to the threshold use `inputPerMTok`.
    *   Output and thinking always use their base rates in this mode — the
    *   `tierOutputPerMTok` / `tierThinkingPerMTok` fields are ignored. This
-   *   models providers that charge a higher rate purely for excess context.
-   *
-   * No currently wrapped provider needs `'marginal'`; the mode exists for
-   * forward compatibility.
+   *   models providers that charge a higher rate purely for excess context,
+   *   e.g. OpenAI's gpt-5.5/gpt-5.4 long-context pricing. Do not set
+   *   `tierOutputPerMTok`/`tierThinkingPerMTok` on a `'marginal'` entry —
+   *   they would be dead data.
    */
   readonly tierMode?: 'flat' | 'marginal';
 }
@@ -186,6 +186,9 @@ function validatePricingEntry(model: string, entry: unknown): ModelPricing | nul
     );
     return null;
   }
+  // Note: does not warn when tierMode is 'marginal' but tierOutputPerMTok /
+  // tierThinkingPerMTok are also set — accepted but ignored as dead data by
+  // computeCost().
 
   // Relational sanity checks — accept the entry but warn on configurations
   // that almost always indicate a misconfiguration. These are warnings, not
@@ -426,7 +429,6 @@ export class PricingTable {
       return { ...this.table[modelName] };
     }
 
-    // 2. Family-name alias
     const aliasTarget = MODEL_ALIASES[modelName];
     if (aliasTarget && Object.hasOwn(this.table, aliasTarget)) {
       return { ...this.table[aliasTarget] };
@@ -538,12 +540,13 @@ export function initPricing(customFilePath?: string | null): void {
  * Resolve a model name against the default singleton pricing table.
  *
  * 1. Exact match (e.g. `claude-sonnet-4-20250514`)
- * 2. Family-name alias (e.g. `claude-opus-4` → `claude-opus-4-7`) — see
+ * 2. Family-name alias (e.g. `claude-opus-4` → `claude-opus-4-8`) — see
  *    MODEL_ALIASES in pricing-data.ts. Aliases are the *primary* mechanism
  *    for routing family names to current-generation pricing.
- * 3. Forward prefix — table key starts with modelName
- *    (e.g. an unaliased `gemini-2.5-flash` would match itself; only used for
- *    coverage of new keys not yet in the alias map)
+ * 3. Forward prefix — table key starts with modelName followed by a
+ *    digit-led suffix. No built-in model name exercises this today (every
+ *    real family name already has an alias); reachable via a custom pricing
+ *    entry whose key extends a shorter query name.
  * 4. Reverse prefix — modelName starts with table key's base (date stripped)
  *    (e.g. `claude-opus-4-99` matches base `claude-opus-4` from a dated key)
  * 5. Return `null` and log a warning if nothing matches.

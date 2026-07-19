@@ -1,5 +1,19 @@
 import { gunzip } from 'node:zlib';
+import * as zlib from 'node:zlib';
 import { promisify } from 'node:util';
+
+// http-client.ts does `const gzipAsync = promisify(gzip)` at module-load
+// time, capturing the function reference immediately — a jest.spyOn() after
+// that module has loaded would be too late to affect it. jest.mock() at the
+// top of this file replaces the module in the registry before http-client.ts
+// ever imports it, so its captured `gzip` reference is this mock from the
+// start. Defaults to the real implementation; individual tests can override
+// with mockImplementationOnce.
+jest.mock('node:zlib', () => {
+  const actual = jest.requireActual<typeof import('node:zlib')>('node:zlib');
+  return { ...actual, gzip: jest.fn(actual.gzip) };
+});
+
 import {
   resolveRegion,
   getEventsApiUrl,
@@ -361,6 +375,50 @@ describe('sendWithRetry', () => {
     expect(result.success).toBe(false);
     // Truncation cap is 1024 chars; surrounding "bad request: " prefix adds bytes.
     expect((result.error ?? '').length).toBeLessThanOrEqual(1024 + 'bad request: '.length);
+  });
+
+  // Non-retryable, non-400/403 status code — the catch-all default path.
+  // NR ingest could plausibly return 401 (revoked key) or 404 (misconfigured
+  // region host); this is the only path that fires for those.
+  it('returns failure with "unexpected status" for a non-retryable, non-400/403 status and does not retry', async () => {
+    fetchSpy.mockResolvedValue(new Response('', { status: 401 }));
+
+    const result = await sendWithRetry(baseOptions());
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBe(401);
+    expect(result.error).toBe('unexpected status: 401');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns failure with "unexpected status: 404" and does not retry', async () => {
+    fetchSpy.mockResolvedValue(new Response('', { status: 404 }));
+
+    const result = await sendWithRetry(baseOptions());
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBe(404);
+    expect(result.error).toBe('unexpected status: 404');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // gzip/compress failure path — statusCode: null distinguishes this from
+  // an HTTP-level failure so callers/HarvestScheduler don't retry it as if
+  // the network request itself failed.
+  it('returns statusCode: null and a "gzip failed" error when payload compression throws', async () => {
+    const gzipMock = zlib.gzip as unknown as jest.Mock;
+    gzipMock.mockImplementationOnce(
+      (_data: unknown, cb: (err: Error | null, result?: Buffer) => void) => {
+        cb(new Error('boom'));
+      },
+    );
+
+    const result = await sendWithRetry(baseOptions());
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBeNull();
+    expect(result.error).toBe('gzip failed: boom');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   // 7. 429 response — retries

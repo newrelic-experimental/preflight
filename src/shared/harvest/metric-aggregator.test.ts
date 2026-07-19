@@ -85,6 +85,26 @@ describe('MetricAggregator', () => {
     expect(gemini.value.count).toBe(1);
   });
 
+  // makeKey() sorts attribute entries before building the bucket key
+  // specifically so insertion order doesn't matter — this is the invariant
+  // that sort exists to guarantee, and every other multi-attribute test only
+  // ever records with keys in one fixed order.
+  it('buckets the same metric+attributes together regardless of attribute key insertion order', () => {
+    const agg = new MetricAggregator();
+
+    agg.record('ai.cost', 1, { provider: 'anthropic', model: 'sonnet' });
+    agg.record('ai.cost', 2, { model: 'sonnet', provider: 'anthropic' });
+
+    expect(agg.bucketCount).toBe(1);
+
+    const metrics = agg.harvest(TEST_INTERVAL_MS);
+    expect(metrics).toHaveLength(1);
+    const [metric] = metrics;
+    if (metric.type !== 'summary') throw new Error('expected summary metric');
+    expect(metric.value.count).toBe(2);
+    expect(metric.value.sum).toBe(3);
+  });
+
   // ---------------------------------------------------------------------------
   // 4. Empty harvest returns []
   // ---------------------------------------------------------------------------
@@ -94,7 +114,7 @@ describe('MetricAggregator', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // S-04: non-finite values are rejected
+  // non-finite values are rejected
   // ---------------------------------------------------------------------------
   it.each([NaN, Infinity, -Infinity])(
     'ignores non-finite value %p and leaves bucket clean',

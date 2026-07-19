@@ -286,6 +286,16 @@ describe('calculateCost', () => {
       // Flat: 300_000 * 2.50 = 0.75 (NOT a marginal split)
       expect(cost.inputUsd).toBeCloseTo(0.75, 6);
     });
+
+    it('bills gpt-5.5 output at the base rate above the tier threshold (marginal mode has no tiered output)', () => {
+      // Regression: gpt-5.5 is 'marginal' mode and must not carry a
+      // tierOutputPerMTok — output always bills at outputPerMTok ($30),
+      // never the base rate's would-be tier multiplier, even when input
+      // exceeds the 270k threshold.
+      const cost = calculateCost('gpt-5.5', usage({ inputTokens: 300_000, outputTokens: 10_000 }));
+      // Output: 10_000 * 30 / 1_000_000 = 0.3
+      expect(cost.outputUsd).toBeCloseTo(0.3, 6);
+    });
   });
 });
 
@@ -490,7 +500,52 @@ describe('custom pricing file', () => {
     expect(opus!.outputPerMTok).toBe(75);
   });
 
-  // S-01: path traversal / extension validation
+  // Forward-prefix resolution step (resolveModelPricing doc step 3): a table
+  // key that starts with the query followed by a digit-led suffix, with no
+  // alias involved. Real model names never happen to exercise this path
+  // today, so it's only reachable via a custom pricing entry.
+  it('resolves a custom model via forward-prefix match when no alias exists', () => {
+    const customFile = join(tmpDir, 'forward-prefix.json');
+    writeFileSync(
+      customFile,
+      JSON.stringify({
+        'zzz-custom-model-2': { inputPerMTok: 7, outputPerMTok: 21, contextWindow: 50_000 },
+      }),
+    );
+    initPricing(customFile);
+
+    const pricing = resolveModelPricing('zzz-custom-model');
+    expect(pricing).not.toBeNull();
+    expect(pricing!.inputPerMTok).toBe(7);
+    expect(pricing!.outputPerMTok).toBe(21);
+    expect(pricing!.contextWindow).toBe(50_000);
+  });
+
+  // Reverse-prefix resolution step, taken WITHOUT an alias redirect (the
+  // `return Object.hasOwn(this.table, bestBaseKey) ? ... : null` fallback).
+  // Every existing reverse-prefix test happens to hit a base that has a
+  // MODEL_ALIASES entry; this uses a synthetic dated key with no alias so the
+  // matched dated key itself is what gets returned.
+  it('resolves a custom dated model via reverse-prefix without an alias redirect', () => {
+    const customFile = join(tmpDir, 'reverse-prefix.json');
+    writeFileSync(
+      customFile,
+      JSON.stringify({
+        'zzz-custom-model-20250101': { inputPerMTok: 9, outputPerMTok: 27, contextWindow: 8_000 },
+      }),
+    );
+    initPricing(customFile);
+
+    // Not an exact match, not a forward-prefix match (the stored key doesn't
+    // start with this query — it diverges after "zzz-custom-model-").
+    const pricing = resolveModelPricing('zzz-custom-model-x1');
+    expect(pricing).not.toBeNull();
+    expect(pricing!.inputPerMTok).toBe(9);
+    expect(pricing!.outputPerMTok).toBe(27);
+    expect(pricing!.contextWindow).toBe(8_000);
+  });
+
+  // path traversal / extension validation
   it('rejects paths without a .json extension', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -537,7 +592,7 @@ describe('custom pricing file', () => {
     stderrSpy.mockRestore();
   });
 
-  // S-02: per-entry validation of rate fields
+  // per-entry validation of rate fields
   it('skips entries with negative inputPerMTok and keeps valid ones', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -978,6 +1033,79 @@ describe('custom pricing file', () => {
     expect(entry.tierOutputPerMTok).toBe(4);
     expect(entry.tierThinkingPerMTok).toBe(6);
     expect(entry.tierMode).toBe('marginal');
+  });
+
+  it('rejects an invalid tierMode value while keeping other valid entries', () => {
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const customFile = join(tmpDir, 'bad-tier-mode.json');
+    writeFileSync(
+      customFile,
+      JSON.stringify({
+        'bad-tier-mode': {
+          inputPerMTok: 1,
+          outputPerMTok: 2,
+          contextWindow: 100_000,
+          tierMode: 'bogus',
+        },
+        valid: { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 100_000 },
+      }),
+    );
+
+    const result = loadCustomPricing(customFile);
+    expect(result).not.toBeNull();
+    expect(result!['bad-tier-mode']).toBeUndefined();
+    expect(result!['valid']).toBeDefined();
+    const output = getLogOutput(stderrSpy);
+    expect(output).toContain('invalid tierMode');
+    stderrSpy.mockRestore();
+  });
+
+  it('rejects a custom pricing file whose top-level JSON is not an object', () => {
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const arrayFile = join(tmpDir, 'array-top-level.json');
+    writeFileSync(arrayFile, JSON.stringify([{ inputPerMTok: 1, outputPerMTok: 2 }]));
+    expect(loadCustomPricing(arrayFile)).toBeNull();
+
+    const stringFile = join(tmpDir, 'string-top-level.json');
+    writeFileSync(stringFile, JSON.stringify('just a string'));
+    expect(loadCustomPricing(stringFile)).toBeNull();
+
+    const numberFile = join(tmpDir, 'number-top-level.json');
+    writeFileSync(numberFile, '42');
+    expect(loadCustomPricing(numberFile)).toBeNull();
+
+    const output = getLogOutput(stderrSpy);
+    expect(output).toContain('not a JSON object');
+    stderrSpy.mockRestore();
+  });
+
+  it('rejects a custom pricing entry that is not an object (string/number/array/null)', () => {
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const customFile = join(tmpDir, 'non-object-entry.json');
+    writeFileSync(
+      customFile,
+      JSON.stringify({
+        'string-entry': 'not-an-object',
+        'number-entry': 42,
+        'array-entry': [1, 2, 3],
+        'null-entry': null,
+        valid: { inputPerMTok: 1, outputPerMTok: 2, contextWindow: 100_000 },
+      }),
+    );
+
+    const result = loadCustomPricing(customFile);
+    expect(result).not.toBeNull();
+    expect(result!['string-entry']).toBeUndefined();
+    expect(result!['number-entry']).toBeUndefined();
+    expect(result!['array-entry']).toBeUndefined();
+    expect(result!['null-entry']).toBeUndefined();
+    expect(result!['valid']).toBeDefined();
+    const output = getLogOutput(stderrSpy);
+    expect(output).toContain('not an object');
+    stderrSpy.mockRestore();
   });
 
   it('skips __proto__ / constructor / prototype keys without polluting Object.prototype', () => {

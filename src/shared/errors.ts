@@ -48,6 +48,20 @@ const TIMEOUT_CODES = new Set([
   'UND_ERR_BODY_TIMEOUT',
 ]);
 
+// Shared shape for casting an arbitrary thrown `error: unknown` at the
+// classification/rate-limit boundaries below. Every field stays `unknown`
+// (not e.g. `status?: number`) because nothing here has actually validated
+// the real value's type yet — callers narrow with `typeof` before use.
+interface ProviderErrorLike {
+  readonly status?: unknown;
+  readonly code?: unknown;
+  readonly name?: unknown;
+  readonly message?: unknown;
+  readonly error?: { readonly type?: unknown; readonly code?: unknown };
+  readonly cause?: unknown;
+  readonly headers?: unknown;
+}
+
 /**
  * Classifications that `isRetryable()` reports as retryable. Exported as a
  * `ReadonlySet` so consumers can build their own retry policy on top of the
@@ -72,12 +86,12 @@ function extractCode(error: unknown): string | undefined {
   let firstFound: string | undefined;
   let cur: unknown = error;
   for (let i = 0; i < 5 && cur != null && typeof cur === 'object'; i++) {
-    const code = (cur as { code?: unknown }).code;
+    const code = (cur as ProviderErrorLike).code;
     if (typeof code === 'string') {
       if (NETWORK_CODES.has(code) || TIMEOUT_CODES.has(code)) return code;
       if (firstFound === undefined) firstFound = code;
     }
-    cur = (cur as { cause?: unknown }).cause;
+    cur = (cur as ProviderErrorLike).cause;
   }
   return firstFound;
 }
@@ -99,13 +113,7 @@ function extractCode(error: unknown): string | undefined {
  *   disambiguation and Anthropic-specific 529 (OVERLOADED) handling.
  */
 export function classifyError(error: unknown, provider: AiProvider): AiErrorClassification {
-  const err = error as {
-    status?: number;
-    code?: string;
-    name?: string;
-    message?: string;
-    error?: { type?: string; code?: string };
-  };
+  const err = error as ProviderErrorLike;
 
   // Modern Node fetch (undici) wraps the underlying syscall code in
   // error.cause.code rather than error.code directly. Walk the cause chain
@@ -166,7 +174,7 @@ export function classifyError(error: unknown, provider: AiProvider): AiErrorClas
     case 404:
       return AiErrorClassification.NOT_FOUND;
     case 408: // Request Timeout (rare from LLM providers but standard HTTP)
-    case 504: // Gateway Timeout
+    case 504:
       return AiErrorClassification.TIMEOUT;
     case 500:
     case 502:
@@ -214,11 +222,13 @@ const CONTEXT_LENGTH_MESSAGE_RE =
 const CONTENT_POLICY_MESSAGE_RE = /content.?polic|content.?filter|content.?moderation/i;
 
 function classify400(
-  err: { message?: string; error?: { type?: string; code?: string } },
+  err: Pick<ProviderErrorLike, 'message' | 'error'>,
   provider: AiProvider,
 ): AiErrorClassification {
   // 1. Typed body-level codes first (most reliable — survive SDK message drift).
-  const typedCode = err.error?.code ?? err.error?.type ?? '';
+  const errCode = typeof err.error?.code === 'string' ? err.error.code : undefined;
+  const errType = typeof err.error?.type === 'string' ? err.error.type : undefined;
+  const typedCode = errCode ?? errType ?? '';
   if (typedCode) {
     if (CONTENT_POLICY_TYPED_CODES.has(typedCode)) return AiErrorClassification.CONTENT_POLICY;
     if (CONTEXT_LENGTH_TYPED_CODES.has(typedCode)) {
@@ -229,7 +239,7 @@ function classify400(
   // 2. Anthropic-specific typed-prefix pattern: SDK uses several `content_*`
   // type variants (`content_policy_violation`, `content_validation_error`,
   // etc.). Match by prefix instead of enumerating every variant.
-  if (provider === 'anthropic' && err.error?.type && /^content[_-]/i.test(err.error.type)) {
+  if (provider === 'anthropic' && errType && /^content[_-]/i.test(errType)) {
     return AiErrorClassification.CONTENT_POLICY;
   }
 
@@ -237,7 +247,7 @@ function classify400(
   // "invalid token in JSON body"). Used both when no typed code is present
   // (e.g. some Anthropic 400s carry only `message`) and when typed code is
   // a generic catch-all (`invalid_request_error`).
-  const msg = err.message ?? '';
+  const msg = typeof err.message === 'string' ? err.message : '';
   if (CONTENT_POLICY_MESSAGE_RE.test(msg)) return AiErrorClassification.CONTENT_POLICY;
   if (CONTEXT_LENGTH_MESSAGE_RE.test(msg)) return AiErrorClassification.CONTEXT_LENGTH_EXCEEDED;
 
@@ -311,17 +321,32 @@ const HEADER_MAP: ReadonlyMap<keyof RateLimitInfo, readonly string[]> = new Map(
   ],
 ]);
 
-function readHeader(headers: unknown, names: readonly string[]): string | null {
-  if (headers == null || typeof headers !== 'object') return null;
+// Duck-typed union covering both real `Headers` (Response.headers) and the
+// plain-object header shapes tests and some SDKs use. Deliberately not
+// `instanceof Headers`-based: errors.test.ts exercises a plain
+// `{ get: (name) => ... }` object that is NOT a real Headers instance.
+type HeaderLike =
+  | { get(name: string): string | number | null | undefined }
+  | Record<string, string | number | null | undefined>;
 
-  const hdr = headers as { get?: unknown; [key: string]: unknown };
-  if (typeof hdr.get === 'function') {
+function isGetterHeaders(
+  headers: HeaderLike,
+): headers is { get(name: string): string | number | null | undefined } {
+  return typeof (headers as { get?: unknown }).get === 'function';
+}
+
+function readHeader(
+  headers: HeaderLike | null | undefined,
+  names: readonly string[],
+): string | null {
+  if (headers == null) return null;
+
+  if (isGetterHeaders(headers)) {
     // Headers API path: use .get() exclusively. A null return from .get()
     // means the header is absent — do NOT fall through to property access,
     // which would read unrelated inherited properties.
-    const getter = hdr.get as (name: string) => string | null;
     for (const name of names) {
-      const val = getter.call(hdr, name);
+      const val = headers.get(name);
       if (typeof val === 'string') return val;
       if (typeof val === 'number') return String(val);
     }
@@ -330,8 +355,10 @@ function readHeader(headers: unknown, names: readonly string[]): string | null {
 
   // Plain object headers — property access.
   // Only accept primitive header values to avoid '[object Object]' bleed.
+  // NOTE: unlike Headers.get() above, this lookup is case-sensitive — a
+  // provider/proxy that preserves different header casing will silently miss.
   for (const name of names) {
-    const val = hdr[name];
+    const val = headers[name];
     if (typeof val === 'string') return val;
     if (typeof val === 'number') return String(val);
   }
@@ -353,7 +380,7 @@ function readHeader(headers: unknown, names: readonly string[]): string | null {
  * documented rate-limit headers for their Chat v2 API.
  */
 export function extractRateLimitHeaders(error: unknown): RateLimitInfo | null {
-  const headers = (error as { headers?: unknown })?.headers;
+  const headers = (error as ProviderErrorLike)?.headers as HeaderLike | null | undefined;
 
   if (headers == null) return null;
 
@@ -432,7 +459,6 @@ export interface ClassifiedError {
   readonly classification: AiErrorClassification;
   readonly originalMessage: string | null;
   readonly status: number | null;
-  /** Node system code (e.g. `'ECONNREFUSED'`), or null. Not the provider body error code. */
   readonly code: string | null;
 }
 
@@ -442,14 +468,9 @@ export interface ClassifiedError {
  * provider error code alongside the enum value. Useful when the caller
  * wants to log a richer line ("Rate limit hit: ...message...") or
  * propagate the original message to a UI surface.
- *
- * The retry path in `http-client.ts` does not currently consume this —
- * its decision is purely "is this retryable?". This is exposed as a
- * separate function so existing callers of `classifyError` continue to
- * work unchanged.
  */
 export function classifyErrorDetailed(error: unknown, provider: AiProvider): ClassifiedError {
-  const err = error as { status?: unknown; message?: unknown };
+  const err = error as ProviderErrorLike;
   const status = typeof err?.status === 'number' ? err.status : null;
   // Use extractCode() to walk the cause chain, matching classifyError().
   const code = extractCode(error) ?? null;

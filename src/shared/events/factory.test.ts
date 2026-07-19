@@ -110,6 +110,14 @@ describe('createAiRequest', () => {
     expect(event.customAttributes).toEqual({});
   });
 
+  it('normalizes an empty-string entityGuid to null, consistent with the missing-entityGuid warning', () => {
+    const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const event = createAiRequest({ ...baseParams, entityGuid: '' });
+    stderrSpy.mockRestore();
+
+    expect(event['nr.entityGuid']).toBeNull();
+  });
+
   it('accepts all optional fields', () => {
     const event = createAiRequest({
       ...baseParams,
@@ -441,6 +449,17 @@ describe('createAiMessage', () => {
     expect(event.customAttributes).toEqual({});
   });
 
+  it('safeInt-coerces NaN/Infinity/negative sequence like contentLength', () => {
+    const nan = createAiMessage({ ...baseParams, sequence: NaN });
+    expect(nan.sequence).toBe(0);
+
+    const inf = createAiMessage({ ...baseParams, sequence: Infinity });
+    expect(inf.sequence).toBe(0);
+
+    const negative = createAiMessage({ ...baseParams, sequence: -3 });
+    expect(negative.sequence).toBe(0);
+  });
+
   it('accepts custom attributes', () => {
     const event = createAiMessage({
       ...baseParams,
@@ -556,6 +575,29 @@ describe('createAiAntiPattern', () => {
     const e = createAiAntiPattern({ ...base, contextPressure: NaN, tokenShare: Infinity });
     expect(e.contextPressure).toBeNull();
     expect(e.tokenShare).toBeNull();
+  });
+
+  it('safeInt-coerces repeatCount, depthIndex, and attemptCount when provided', () => {
+    // These three fields go through safeInt() only when defined, via the
+    // `params.X !== undefined ? safeInt(params.X) : undefined` pattern.
+    // Calling the real factory (not a raw AiAntiPattern object literal) is
+    // what actually exercises that coercion.
+    const e = createAiAntiPattern({
+      ...base,
+      repeatCount: 5.7,
+      depthIndex: 2.9,
+      attemptCount: 3.1,
+    });
+    expect(e.repeatCount).toBe(5);
+    expect(e.depthIndex).toBe(2);
+    expect(e.attemptCount).toBe(3);
+  });
+
+  it('leaves repeatCount, depthIndex, and attemptCount undefined when omitted', () => {
+    const e = createAiAntiPattern(base);
+    expect(e.repeatCount).toBeUndefined();
+    expect(e.depthIndex).toBeUndefined();
+    expect(e.attemptCount).toBeUndefined();
   });
 });
 

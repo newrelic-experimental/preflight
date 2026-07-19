@@ -87,6 +87,17 @@ describe('createLogger', () => {
     expect(parsed.level).toBe('error');
   });
 
+  it('trims surrounding whitespace from NEW_RELIC_AI_LOG_LEVEL, matching config.ts', () => {
+    process.env.NEW_RELIC_AI_LOG_LEVEL = ' debug ';
+    const logger = createLogger('test');
+
+    logger.debug('yes');
+
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse((stderrSpy.mock.calls[0][0] as string).trim());
+    expect(parsed.level).toBe('debug');
+  });
+
   it('defaults to info level when env var is not set', () => {
     const logger = createLogger('test');
 

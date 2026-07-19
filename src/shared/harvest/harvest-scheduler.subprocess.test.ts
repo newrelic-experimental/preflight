@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import type { NrEventData } from '../events/types.js';
+
 // Subprocess smoke test for the `unref()` +
 // `beforeExit` flush. Fake timers and ts-jest cannot simulate Node's real
 // process-exit semantics, so we spawn a real Node process that runs the
@@ -95,7 +97,7 @@ describeIfBuilt('HarvestScheduler subprocess smoke', () => {
     const lines = fileContents.split('\n').filter((l) => l.length > 0);
     expect(lines).toHaveLength(3);
 
-    const events = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const events = lines.map((l) => JSON.parse(l) as NrEventData);
     expect(events).toEqual([
       expect.objectContaining({ eventType: 'AiToolCall', marker: 'a' }),
       expect.objectContaining({ eventType: 'AiAntiPattern', marker: 'b' }),

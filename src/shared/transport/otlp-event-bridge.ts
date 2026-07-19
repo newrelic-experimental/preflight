@@ -62,6 +62,8 @@ export class OtlpEventBridge {
   }
 
   sendEvents(events: NrEventData[]): void {
+    // Warn ONCE — emitting on every sendEvents call would flood stderr in
+    // long-running agents.
     if (!this.hasAuth && !this.hasWarnedNoAuth) {
       this.hasWarnedNoAuth = true;
       logger.warn('OtlpEventBridge sending events with no auth header — collector may reject', {
@@ -70,6 +72,7 @@ export class OtlpEventBridge {
     }
     for (const event of events) {
       this.otelLogger.emit({
+        // NrEventData carries no severity concept — all bridged events map to INFO.
         severityText: 'INFO',
         body: String(event['eventType'] ?? 'AiEvent'),
         // Filter to scalar values only — the OTel SDK's AnyValue type also

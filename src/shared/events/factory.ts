@@ -116,7 +116,10 @@ export function createAiRequest(params: CreateAiRequestParams): AiRequest {
       params.thinkingBudgetTokens != null ? safeInt(params.thinkingBudgetTokens) : null,
     streamingEnabled: params.streamingEnabled,
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }
@@ -174,10 +177,8 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
   //
   // For OpenAI, thinkingTokens (reasoning_tokens from
   // completion_tokens_details) is already a SUBSET of outputTokens
-  // (completion_tokens) — not a separate additive field. The prior code
-  // added it unconditionally, relying on a comment that said "extractors
-  // produce thinkingTokens=0 for OpenAI" — which is false for o1/o3/o4-mini.
-  // Fix: OpenAI totalTokens = inputTokens + outputTokens (no thinking, no cache).
+  // (completion_tokens) — not a separate additive field. Adding it again
+  // double-counts for o1/o3/o4-mini, so totalTokens = inputTokens + outputTokens.
   // For Google, thinkingTokens (thoughtsTokenCount) IS disjoint from
   // outputTokens (candidatesTokenCount) per the Gemini API spec, so it is
   // still added for that provider.
@@ -228,7 +229,10 @@ export function createAiResponse(params: CreateAiResponseParams): AiResponse {
     contentBlockTypes: params.contentBlockTypes ?? [],
     error: params.error ?? null,
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }
@@ -269,19 +273,19 @@ export function createAiMessage(params: CreateAiMessageParams): AiMessage {
     role: params.role,
     content: params.content,
     contentLength: safeInt(params.contentLength),
-    sequence: params.sequence,
+    sequence: safeInt(params.sequence),
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }
 
 // ---------------------------------------------------------------------------
-// Factory functions for the four newer agent-shaped
-// event types. Previously these had serializers but no constructors, so
-// consumers had to hand-build the type-shape and remember to set `id` /
-// `timestamp` defaults themselves. The four factories below mirror the
-// existing `createAiRequest` / `createAiResponse` / `createAiMessage`
+// Factory functions for the four newer agent-shaped event types. These
+// follow the same `createAiRequest` / `createAiResponse` / `createAiMessage`
 // pattern: a `Create<Event>Params` interface, an `id` / `timestamp` default,
 // `safeInt`-coerced numeric fields where appropriate, and a uniform
 // `<EventName> requires a <field>` validation message shape.
@@ -355,7 +359,10 @@ export function createAiAgentTaskSummary(
     delegationOverheadMs:
       params.delegationOverheadMs !== undefined ? safeInt(params.delegationOverheadMs) : undefined,
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }
@@ -414,7 +421,10 @@ export function createAiAntiPattern(params: CreateAiAntiPatternParams): AiAntiPa
     tokenShare: safeFiniteOrNull(params.tokenShare),
     attemptCount: params.attemptCount !== undefined ? safeInt(params.attemptCount) : undefined,
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }
@@ -461,7 +471,10 @@ export function createAiAgentMessage(params: CreateAiAgentMessageParams): AiAgen
     provider: params.provider,
     tokenCount: params.tokenCount === undefined ? undefined : safeInt(params.tokenCount),
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }
@@ -537,7 +550,10 @@ export function createAiContextReset(params: CreateAiContextResetParams): AiCont
     provider: params.provider,
     turnsRemoved: params.turnsRemoved !== undefined ? safeInt(params.turnsRemoved) : undefined,
     'nr.appName': params.appName,
-    'nr.entityGuid': params.entityGuid ?? null,
+    // '' is treated as missing (see warnIfMissingEntityGuid) and must not
+    // be emitted as a routing attribute — normalize it to null like
+    // undefined, rather than storing it verbatim with `?? null`.
+    'nr.entityGuid': params.entityGuid || null,
     customAttributes: params.customAttributes ?? {},
   };
 }

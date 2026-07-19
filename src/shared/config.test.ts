@@ -348,8 +348,8 @@ describe('loadConfig', () => {
     expect(config.collectorHost).toBeNull(); // explicit null wins over env var
   });
 
-  // S-03: accountId format validation (relaxed to
-  // positive integer with no leading zeros; upper bound enforced server-side)
+  // accountId format validation (relaxed to positive integer with no
+  // leading zeros; upper bound enforced server-side)
   it('throws when accountId contains path-traversal characters', () => {
     expect(() =>
       loadConfig({
@@ -471,7 +471,7 @@ describe('loadConfig', () => {
     ).toThrow('NEW_RELIC_ACCOUNT_ID');
   });
 
-  // S-06: envInt bounds clamping
+  // envInt bounds clamping
   it('clamps contentMaxLength to minimum 1 when env var is 0 or negative', () => {
     process.env.NEW_RELIC_AI_CONTENT_MAX_LENGTH = '0';
     const config = loadConfig({ licenseKey: 'us01xxFAKEKEYFORTESTSONLY1234', appName: 'app' });

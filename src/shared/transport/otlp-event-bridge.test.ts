@@ -6,6 +6,20 @@ import { OtlpEventBridge } from './otlp-event-bridge.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
+interface MockLoggerProviderInstance {
+  forceFlush: jest.Mock;
+  shutdown: jest.Mock;
+  getLogger: jest.Mock;
+  _emitMock: jest.Mock;
+}
+
+interface EmittedLogRecord {
+  severityText: string;
+  body: string;
+  attributes: Record<string, string | number | boolean>;
+  timestamp: number;
+}
+
 // Mock OTel SDK modules
 jest.mock('@opentelemetry/exporter-logs-otlp-http', () => ({
   OTLPLogExporter: jest.fn().mockImplementation(() => ({
@@ -14,7 +28,7 @@ jest.mock('@opentelemetry/exporter-logs-otlp-http', () => ({
 }));
 
 jest.mock('@opentelemetry/sdk-logs', () => ({
-  LoggerProvider: jest.fn().mockImplementation(function (this: Record<string, unknown>) {
+  LoggerProvider: jest.fn().mockImplementation(function (this: MockLoggerProviderInstance) {
     this.forceFlush = jest.fn().mockResolvedValue(undefined);
     this.shutdown = jest.fn().mockResolvedValue(undefined);
     const emitMock = jest.fn();
@@ -55,90 +69,37 @@ describe('OtlpEventBridge', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 2. sendEvents() accepts an array of events
-  // ---------------------------------------------------------------------------
-  it('sendEvents() accepts an array of events', () => {
-    const bridge = new OtlpEventBridge({
-      endpoint: 'https://otlp.nr-data.net',
-      appName: 'test-app',
-    });
-
-    const events: NrEventData[] = [
-      { eventType: 'AiToolCall', timestamp: 1000 },
-      { eventType: 'AiAntiPattern', timestamp: 2000 },
-    ];
-
-    expect(() => bridge.sendEvents(events)).not.toThrow();
-  });
-
-  // ---------------------------------------------------------------------------
-  // 3. sendEvents() with empty array does not throw
-  // ---------------------------------------------------------------------------
-  it('sendEvents() with empty array does not throw', () => {
-    const bridge = new OtlpEventBridge({
-      endpoint: 'https://otlp.nr-data.net',
-      appName: 'test-app',
-    });
-
-    expect(() => bridge.sendEvents([])).not.toThrow();
-  });
-
-  // ---------------------------------------------------------------------------
-  // 4. sendEvents() iterates over events
-  // ---------------------------------------------------------------------------
-  it('sendEvents() iterates over events without throwing', () => {
-    const bridge = new OtlpEventBridge({
-      endpoint: 'https://otlp.nr-data.net',
-      appName: 'test-app',
-    });
-
-    const events: NrEventData[] = [
-      { eventType: 'AiToolCall', timestamp: 1000 },
-      { eventType: 'AiAntiPattern', timestamp: 2000 },
-      { eventType: 'AiCodingTask', timestamp: 3000 },
-    ];
-
-    expect(() => bridge.sendEvents(events)).not.toThrow();
-  });
-
-  // ---------------------------------------------------------------------------
   // 5. flush() calls loggerProvider.forceFlush()
   // ---------------------------------------------------------------------------
-  it('flush() does not throw', async () => {
+  it('flush() calls loggerProvider.forceFlush()', async () => {
     const bridge = new OtlpEventBridge({
       endpoint: 'https://otlp.nr-data.net',
       appName: 'test-app',
     });
 
-    await expect(bridge.flush()).resolves.not.toThrow();
+    await bridge.flush();
+
+    // An accidentally-emptied flush() body would still resolve without
+    // throwing — assert the underlying provider method was actually called.
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    expect(providerInstance.forceFlush).toHaveBeenCalledTimes(1);
   });
 
   // ---------------------------------------------------------------------------
   // 6. shutdown() calls loggerProvider.shutdown()
   // ---------------------------------------------------------------------------
-  it('shutdown() does not throw', async () => {
+  it('shutdown() calls loggerProvider.shutdown()', async () => {
     const bridge = new OtlpEventBridge({
       endpoint: 'https://otlp.nr-data.net',
       appName: 'test-app',
     });
 
-    await expect(bridge.shutdown()).resolves.not.toThrow();
-  });
+    await bridge.shutdown();
 
-  // ---------------------------------------------------------------------------
-  // 7. Multiple sendEvents() calls do not throw
-  // ---------------------------------------------------------------------------
-  it('multiple sendEvents() calls do not throw', () => {
-    const bridge = new OtlpEventBridge({
-      endpoint: 'https://otlp.nr-data.net',
-      appName: 'test-app',
-    });
-
-    expect(() => {
-      bridge.sendEvents([{ eventType: 'AiToolCall' }]);
-      bridge.sendEvents([{ eventType: 'AiAntiPattern' }]);
-      bridge.sendEvents([{ eventType: 'AiCodingTask' }]);
-    }).not.toThrow();
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    expect(providerInstance.shutdown).toHaveBeenCalledTimes(1);
   });
 
   // ---------------------------------------------------------------------------
@@ -164,25 +125,6 @@ describe('OtlpEventBridge', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 9. constructor with optional headers
-  // ---------------------------------------------------------------------------
-  it('constructs with optional headers', () => {
-    const bridge1 = new OtlpEventBridge({
-      endpoint: 'https://otlp.nr-data.net',
-      appName: 'test-app',
-    });
-
-    const bridge2 = new OtlpEventBridge({
-      endpoint: 'https://otlp.nr-data.net',
-      headers: { 'api-key': 'test-key' },
-      appName: 'test-app',
-    });
-
-    expect(bridge1).toBeDefined();
-    expect(bridge2).toBeDefined();
-  });
-
-  // ---------------------------------------------------------------------------
   // 10. sendEvents() calls otelLogger.emit() once per event
   // ---------------------------------------------------------------------------
   it('sendEvents() calls otelLogger.emit() once per event', () => {
@@ -199,19 +141,67 @@ describe('OtlpEventBridge', () => {
 
     bridge.sendEvents(events);
 
-    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
-      string,
-      unknown
-    >;
-    const emitMock = providerInstance._emitMock as jest.Mock;
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    const emitMock = providerInstance._emitMock;
     expect(emitMock).toHaveBeenCalledTimes(3);
 
     // Verify LogRecord shape for the first event
-    const firstCall = emitMock.mock.calls[0][0] as Record<string, unknown>;
+    const firstCall = emitMock.mock.calls[0][0] as EmittedLogRecord;
     expect(firstCall.severityText).toBe('INFO');
     expect(firstCall.body).toBe('AiToolCall');
     expect(firstCall.timestamp).toBe(1000);
     expect(firstCall.attributes).toMatchObject({ eventType: 'AiToolCall', timestamp: 1000 });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 10b. sendEvents() drops non-scalar attribute values rather than emitting
+  // a malformed log record. NrEventData is typed as all-scalar, but nothing
+  // enforces that at runtime — a caller (or a future upstream bug) can hand
+  // it an array/object value.
+  // ---------------------------------------------------------------------------
+  it('sendEvents() drops non-scalar attribute values (arrays, objects) from emitted attributes', () => {
+    const bridge = new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+    });
+
+    const events = [
+      {
+        eventType: 'AiToolCall',
+        timestamp: 1000,
+        toolNames: ['read_file', 'write_file'],
+        nested: { a: 1 },
+        validString: 'ok',
+      },
+    ] as unknown as NrEventData[];
+
+    bridge.sendEvents(events);
+
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    const firstCall = providerInstance._emitMock.mock.calls[0][0] as EmittedLogRecord;
+
+    expect(firstCall.attributes).not.toHaveProperty('toolNames');
+    expect(firstCall.attributes).not.toHaveProperty('nested');
+    expect(firstCall.attributes.validString).toBe('ok');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 10c. sendEvents() falls back to body: 'AiEvent' when eventType is missing
+  // ---------------------------------------------------------------------------
+  it("sendEvents() falls back to body: 'AiEvent' when eventType is missing", () => {
+    const bridge = new OtlpEventBridge({
+      endpoint: 'https://otlp.nr-data.net',
+      appName: 'test-app',
+    });
+
+    bridge.sendEvents([{ timestamp: 1000 } as unknown as NrEventData]);
+
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    const firstCall = providerInstance._emitMock.mock.calls[0][0] as EmittedLogRecord;
+    expect(firstCall.body).toBe('AiEvent');
   });
 
   // ---------------------------------------------------------------------------
@@ -239,11 +229,9 @@ describe('OtlpEventBridge', () => {
       clientVersion: '1.2.3',
     });
 
-    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
-      string,
-      unknown
-    >;
-    const getLoggerMock = providerInstance.getLogger as jest.Mock;
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    const getLoggerMock = providerInstance.getLogger;
     expect(getLoggerMock).toHaveBeenCalledWith('preflight', '1.2.3');
   });
 
@@ -255,11 +243,9 @@ describe('OtlpEventBridge', () => {
       clientVersion: '',
     });
 
-    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
-      string,
-      unknown
-    >;
-    const getLoggerMock = providerInstance.getLogger as jest.Mock;
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    const getLoggerMock = providerInstance.getLogger;
     expect(getLoggerMock).toHaveBeenCalledWith('preflight', undefined);
   });
 
@@ -269,11 +255,9 @@ describe('OtlpEventBridge', () => {
       appName: 'test-app',
     });
 
-    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0].value as Record<
-      string,
-      unknown
-    >;
-    const getLoggerMock = providerInstance.getLogger as jest.Mock;
+    const providerInstance = (LoggerProvider as jest.Mock).mock.results[0]
+      .value as MockLoggerProviderInstance;
+    const getLoggerMock = providerInstance.getLogger;
     expect(getLoggerMock).toHaveBeenCalledWith('ai-telemetry', undefined);
   });
 

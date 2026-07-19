@@ -1,6 +1,6 @@
 import { HarvestScheduler } from './harvest-scheduler.js';
 import type { HarvestSchedulerOptions } from './harvest-scheduler.js';
-import type { TransportResult, NrMetric } from '../transport/types.js';
+import type { TransportResult, NrMetric, TransportOptions } from '../transport/types.js';
 import type { NrEventData } from '../events/types.js';
 import type { OtlpEventBridge } from '../transport/otlp-event-bridge.js';
 import type { OtlpTransport } from '../transport/otlp-transport.js';
@@ -22,10 +22,10 @@ function makeScheduler(overrides: Partial<HarvestSchedulerOptions> = {}): {
   sendMetricsFn: jest.Mock;
 } {
   const sendEventsFn = jest
-    .fn<Promise<TransportResult>, unknown[]>()
+    .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
     .mockResolvedValue(successResult);
   const sendMetricsFn = jest
-    .fn<Promise<TransportResult>, unknown[]>()
+    .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
     .mockResolvedValue(successResult);
 
   const scheduler = new HarvestScheduler({
@@ -58,7 +58,7 @@ describe('HarvestScheduler', () => {
   it('stop() flushes buffered events even when start() was never called', async () => {
     jest.useFakeTimers();
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
     const { scheduler } = makeScheduler({ sendEventsFn });
 
@@ -106,6 +106,40 @@ describe('HarvestScheduler', () => {
     expect(
       () => makeScheduler({ eventHarvestIntervalMs: 100, metricHarvestIntervalMs: 100 }).scheduler,
     ).not.toThrow();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 0c. Calling start() a second time while already running is a no-op guard
+  // (distinct from the "start() during in-flight stop()" case tested
+  // elsewhere) — protects against a consumer bug creating duplicate
+  // intervals (leaked timers / double-firing harvests).
+  // ---------------------------------------------------------------------------
+  it('start() called twice while already running warns and does not create a second interval', async () => {
+    const { scheduler, sendEventsFn } = makeScheduler();
+    scheduler.start();
+
+    const eventIntervalAfterFirstStart = (
+      scheduler as unknown as { eventIntervalId: NodeJS.Timeout }
+    ).eventIntervalId;
+
+    scheduler.start();
+
+    const eventIntervalAfterSecondStart = (
+      scheduler as unknown as { eventIntervalId: NodeJS.Timeout }
+    ).eventIntervalId;
+
+    // Same interval object — no second setInterval was created.
+    expect(eventIntervalAfterSecondStart).toBe(eventIntervalAfterFirstStart);
+
+    const logOutput = getLogOutput(stderrSpy);
+    expect(logOutput).toContain('already running');
+
+    // A single interval tick should only fire one harvest, not two.
+    scheduler.addEvent({ eventType: 'Test', value: 1 });
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(sendEventsFn).toHaveBeenCalledTimes(1);
+
+    await scheduler.stop();
   });
 
   // ---------------------------------------------------------------------------
@@ -172,7 +206,7 @@ describe('HarvestScheduler', () => {
     let addDuringSend: (() => void) | null = null;
 
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockImplementation(async () => {
         // Simulate adding an event while the send is in-flight
         if (addDuringSend) {
@@ -220,7 +254,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('re-queues events on send failure and retries on next harvest', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValueOnce(failureResult)
       .mockResolvedValue(successResult);
 
@@ -251,7 +285,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('combines re-queued events with new events on next harvest', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValueOnce(failureResult)
       .mockResolvedValue(successResult);
 
@@ -283,7 +317,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('caps re-queued events to maxEventBufferSize, keeping newest', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(failureResult);
 
     const { scheduler } = makeScheduler({
@@ -336,7 +370,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('re-queues metrics on send failure and retries on next harvest', async () => {
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
       .mockResolvedValueOnce(failureResult)
       .mockResolvedValue(successResult);
 
@@ -361,7 +395,7 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 8. Re-queued metric snapshots are capped to prevent unbounded growth (B-01)
+  // 8. Re-queued metric snapshots are capped to prevent unbounded growth
   // ---------------------------------------------------------------------------
   it('caps re-queued metric snapshots to maxRetryMetricSnapshots (500), keeping newest', async () => {
     // The retry buffer holds pre-explosion bucket snapshots, not the
@@ -385,7 +419,7 @@ describe('HarvestScheduler', () => {
     // — "drops oldest" — will need to be re-evaluated against the new
     // ordering.
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
       .mockResolvedValue(failureResult);
 
     const { scheduler } = makeScheduler({ sendMetricsFn });
@@ -423,16 +457,124 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // 8b. Re-queued OTLP events are capped independently of the NR retry buffer
+  // (mirrors test #6 above, but for the OTLP-side retry path — this buffer
+  // had zero coverage even though the NR-side cap logic is identical).
+  // ---------------------------------------------------------------------------
+  it('caps re-queued OTLP events to maxRetryEvents, keeping newest', async () => {
+    const otlpEventBridge = {
+      sendEvents: jest.fn<void, [NrEventData[]]>().mockImplementation(() => {
+        throw new Error('otlp send failed');
+      }),
+      flush: jest.fn().mockResolvedValue(undefined),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+    } as unknown as OtlpEventBridge;
+
+    const { scheduler } = makeScheduler({
+      otlpEventBridge,
+      transport: 'otlp',
+      maxEventBufferSize: 5,
+    });
+
+    for (let i = 0; i < 5; i++) {
+      scheduler.addEvent({ eventType: 'Test', seq: i });
+    }
+    scheduler.start();
+
+    // First harvest — OTLP send throws, 5 events re-queued (at capacity)
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    for (let i = 10; i < 13; i++) {
+      scheduler.addEvent({ eventType: 'Test', seq: i });
+    }
+
+    // Second harvest — 5 retry + 3 new = 8, throws again, capped to 5
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(otlpEventBridge.sendEvents).toHaveBeenCalledTimes(2);
+    const logOutput = getLogOutput(stderrSpy);
+    expect(logOutput).toContain('OTLP event retry buffer overflow');
+
+    // Third harvest — retry buffer holds the 5 newest (seq 3,4,10,11,12)
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(otlpEventBridge.sendEvents).toHaveBeenCalledTimes(3);
+    const thirdBatch = (otlpEventBridge.sendEvents as jest.Mock).mock.calls[2][0] as Array<
+      NrEventData & { seq: number }
+    >;
+    expect(thirdBatch).toHaveLength(5);
+    const seqs = thirdBatch.map((e) => e.seq);
+    expect(seqs).not.toContain(0);
+    expect(seqs).not.toContain(1);
+    expect(seqs).not.toContain(2);
+    expect(seqs).toContain(10);
+    expect(seqs).toContain(11);
+    expect(seqs).toContain(12);
+
+    await scheduler.stop();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8c. Re-queued OTLP metric snapshots are capped independently of the NR
+  // retry buffer (mirrors test #8 above, but for otlpTransport.exportMetrics
+  // failures rather than sendMetricsFn failures).
+  // ---------------------------------------------------------------------------
+  it('caps re-queued OTLP metric snapshots to maxRetryMetricSnapshots, keeping newest', async () => {
+    const otlpTransport = {
+      exportMetrics: jest
+        .fn<Promise<void>, [NrMetric[]]>()
+        .mockRejectedValue(new Error('otlp export failed')),
+      flush: jest.fn().mockResolvedValue(undefined),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      getTracer: jest.fn(),
+      getMeter: jest.fn(),
+    } as unknown as OtlpTransport;
+
+    const { scheduler } = makeScheduler({
+      otlpTransport,
+      transport: 'otlp',
+      maxRetryMetricSnapshots: 50,
+    });
+    scheduler.start();
+
+    // Record 60 unique metric names → 60 snapshots (exceeds the 50 cap)
+    for (let i = 0; i < 60; i++) {
+      scheduler.recordMetric(`metric.otlp.${i}`, i);
+    }
+
+    // First harvest at 60s — export rejects, retry buffer capped to 50
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(otlpTransport.exportMetrics).toHaveBeenCalledTimes(1);
+    const logOutput = getLogOutput(stderrSpy);
+    expect(logOutput).toContain('OTLP metric retry buffer overflow');
+
+    // Second harvest — retry batch holds only the newest 50 snapshots
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(otlpTransport.exportMetrics).toHaveBeenCalledTimes(2);
+    const retryBatch = (otlpTransport.exportMetrics as jest.Mock).mock.calls[1][0] as Array<{
+      name: string;
+    }>;
+    const retryUserMetrics = retryBatch.filter((m) => m.name !== 'nr.ai.dropped_metrics');
+    expect(retryUserMetrics).toHaveLength(50);
+
+    const retryNames = new Set(retryBatch.map((m) => m.name));
+    expect(retryNames.has('metric.otlp.0')).toBe(false);
+    expect(retryNames.has('metric.otlp.9')).toBe(false);
+    expect(retryNames.has('metric.otlp.10')).toBe(true);
+    expect(retryNames.has('metric.otlp.59')).toBe(true);
+
+    await scheduler.stop();
+  });
+
+  // ---------------------------------------------------------------------------
   // 9. Concurrent stop() calls await the same flush (no short-circuit)
   // ---------------------------------------------------------------------------
   it('concurrent stop() calls share the same flush promise', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockImplementation(
         () => new Promise((resolve) => setTimeout(() => resolve(successResult), 100)),
       );
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
       .mockImplementation(
         () => new Promise((resolve) => setTimeout(() => resolve(successResult), 100)),
       );
@@ -458,6 +600,45 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // 9a. stop() completes cleanly even when an OTLP component's flush() rejects
+  // (every existing OTLP test stubs flush() as always resolving — this proves
+  // shutdown doesn't hang or throw when the SDK's own flush fails).
+  // ---------------------------------------------------------------------------
+  it('stop() resolves and logs a warning when otlpEventBridge.flush() rejects', async () => {
+    const otlpEventBridge = {
+      sendEvents: jest.fn(),
+      flush: jest.fn().mockRejectedValue(new Error('flush failed')),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+    } as unknown as OtlpEventBridge;
+
+    const { scheduler } = makeScheduler({ otlpEventBridge, transport: 'otlp' });
+    scheduler.start();
+
+    await expect(scheduler.stop()).resolves.toBeUndefined();
+
+    const logOutput = getLogOutput(stderrSpy);
+    expect(logOutput).toContain('Error flushing OTLP event bridge');
+  });
+
+  it('stop() resolves and logs a warning when otlpTransport.flush() rejects', async () => {
+    const otlpTransport = {
+      exportMetrics: jest.fn().mockResolvedValue(undefined),
+      flush: jest.fn().mockRejectedValue(new Error('flush failed')),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      getTracer: jest.fn(),
+      getMeter: jest.fn(),
+    } as unknown as OtlpTransport;
+
+    const { scheduler } = makeScheduler({ otlpTransport, transport: 'otlp' });
+    scheduler.start();
+
+    await expect(scheduler.stop()).resolves.toBeUndefined();
+
+    const logOutput = getLogOutput(stderrSpy);
+    expect(logOutput).toContain('Error flushing OTLP transport');
+  });
+
+  // ---------------------------------------------------------------------------
   // 9b. stop() awaits in-flight interval harvest before its own final flush
   // ---------------------------------------------------------------------------
   it('stop() awaits in-flight interval harvest before its own final flush', async () => {
@@ -474,7 +655,7 @@ describe('HarvestScheduler', () => {
     });
 
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockImplementation(async () => {
         if (sendEventsFn.mock.calls.length === 1) {
           // First call (interval-driven) — block until the test releases us
@@ -560,7 +741,7 @@ describe('HarvestScheduler', () => {
   // contract; this test catches it.
   it('stamps harvestId on retry/requeue log lines', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(failureResult);
     const { scheduler } = makeScheduler({ sendEventsFn });
     scheduler.start();
@@ -680,7 +861,7 @@ describe('HarvestScheduler', () => {
   describe('decoupled retry caps', () => {
     it('maxRetryEvents defaults to maxEventBufferSize when not set', async () => {
       const sendEventsFn = jest
-        .fn<Promise<TransportResult>, unknown[]>()
+        .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
         .mockResolvedValue(failureResult);
       const { scheduler } = makeScheduler({ sendEventsFn, maxEventBufferSize: 50 });
       scheduler.start();
@@ -701,7 +882,7 @@ describe('HarvestScheduler', () => {
 
     it('maxRetryEvents can be set independently of maxEventBufferSize', async () => {
       const sendEventsFn = jest
-        .fn<Promise<TransportResult>, unknown[]>()
+        .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
         .mockResolvedValue(failureResult);
       const { scheduler } = makeScheduler({
         sendEventsFn,
@@ -730,7 +911,7 @@ describe('HarvestScheduler', () => {
 
     it('maxRetryMetricSnapshots can be set independently of the 500 default', async () => {
       const sendMetricsFn = jest
-        .fn<Promise<TransportResult>, unknown[]>()
+        .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
         .mockResolvedValue(failureResult);
       const { scheduler } = makeScheduler({
         sendMetricsFn,
@@ -759,12 +940,12 @@ describe('HarvestScheduler', () => {
   // start() refuses while a previous stop() is in flight
   it('start() during in-flight stop() is refused with a warn', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockImplementation(
         () => new Promise((resolve) => setTimeout(() => resolve(successResult), 100)),
       );
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
       .mockImplementation(
         () => new Promise((resolve) => setTimeout(() => resolve(successResult), 100)),
       );
@@ -803,7 +984,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it('re-queues events when sendEventsFn throws', async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockRejectedValueOnce(new Error('network timeout'))
       .mockResolvedValue(successResult);
 
@@ -827,11 +1008,42 @@ describe('HarvestScheduler', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // 10b. Metrics re-queued on thrown exception (mirrors test #10 above — the
+  // events-side "sendEventsFn throws" case is covered, but the metrics-side
+  // retry mechanics differ (snapshots vs raw batch) so this isn't fully
+  // redundant with it).
+  // ---------------------------------------------------------------------------
+  it('re-queues metrics when sendMetricsFn throws', async () => {
+    const sendMetricsFn = jest
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
+      .mockRejectedValueOnce(new Error('network timeout'))
+      .mockResolvedValue(successResult);
+
+    const { scheduler } = makeScheduler({ sendMetricsFn });
+
+    scheduler.recordMetric('ai.duration', 100);
+    scheduler.start();
+
+    // First metric harvest at 60s — throws, snapshot re-queued
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(sendMetricsFn).toHaveBeenCalledTimes(1);
+
+    // Second metric harvest at 120s — retry succeeds with the re-queued snapshot
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(sendMetricsFn).toHaveBeenCalledTimes(2);
+    const retryBatch = sendMetricsFn.mock.calls[1][0] as NrMetric[];
+    expect(retryBatch.length).toBeGreaterThan(0);
+    expect(retryBatch.some((m) => m.name === 'ai.duration')).toBe(true);
+
+    await scheduler.stop();
+  });
+
+  // ---------------------------------------------------------------------------
   // 11. OTLP routing — 'otlp' mode calls otlpEventBridge.sendEvents, not NR API
   // ---------------------------------------------------------------------------
   it("transport: 'otlp' routes events to otlpEventBridge.sendEvents, not NR API", async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
     const otlpEventBridgeSendFn = jest.fn<void, [NrEventData[]]>();
     const otlpEventBridge = {
@@ -869,7 +1081,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it("transport: 'otlp' routes metrics to otlpTransport.exportMetrics, not NR API", async () => {
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
     const otlpTransportExportFn = jest.fn<Promise<void>, [NrMetric[]]>();
     const otlpTransport = {
@@ -908,7 +1120,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it("transport: 'both' calls both NR API and OTLP concurrently for events", async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
     const otlpEventBridgeSendFn = jest.fn<void, [NrEventData[]]>();
     const otlpEventBridge = {
@@ -949,7 +1161,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it("transport: 'both' calls both NR API and OTLP concurrently for metrics", async () => {
     const sendMetricsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrMetric[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
     const otlpTransportExportFn = jest.fn<Promise<void>, [NrMetric[]]>();
     const otlpTransport = {
@@ -993,7 +1205,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it("'both' mode does not duplicate to OTLP when only NR send fails", async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValueOnce(failureResult) // NR fails first attempt
       .mockResolvedValue(successResult); // NR succeeds on retry
 
@@ -1032,7 +1244,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it("'both' mode does not re-send to NR when only OTLP send fails", async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
 
     const otlpEventBridgeSendFn = jest
@@ -1076,7 +1288,7 @@ describe('HarvestScheduler', () => {
   // ---------------------------------------------------------------------------
   it("default transport mode is 'nr-events-api'", async () => {
     const sendEventsFn = jest
-      .fn<Promise<TransportResult>, unknown[]>()
+      .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
       .mockResolvedValue(successResult);
     const otlpEventBridgeSendFn = jest.fn<void, [NrEventData[]]>();
     const otlpEventBridge = {
@@ -1186,6 +1398,38 @@ describe('HarvestScheduler', () => {
 
       onceSpy.mockRestore();
       removeSpy.mockRestore();
+    });
+
+    it('invoking the captured beforeExit callback triggers a final flush', async () => {
+      // The listener-registration tests above only prove process.once() was
+      // called with 'beforeExit' — they never invoke the captured callback.
+      // Capture it and call it directly to prove it actually does what its
+      // name implies (drives a flush via stop()) rather than being a no-op.
+      const onceSpy = jest.spyOn(process, 'once');
+      const sendEventsFn = jest
+        .fn<Promise<TransportResult>, [NrEventData[], string, TransportOptions]>()
+        .mockResolvedValue(successResult);
+
+      const { scheduler } = makeScheduler({ sendEventsFn, allowProcessExit: true });
+      scheduler.addEvent({ eventType: 'Test', value: 1 });
+      scheduler.start();
+
+      const beforeExitCall = onceSpy.mock.calls.find(([event]) => event === 'beforeExit');
+      expect(beforeExitCall).toBeDefined();
+      const beforeExitCallback = beforeExitCall![1] as () => void;
+
+      beforeExitCallback();
+      // The callback fires stop() without awaiting it (fire-and-forget) —
+      // drain microtasks so the final flush has a chance to run.
+      await jest.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(sendEventsFn).toHaveBeenCalledTimes(1);
+      expect((sendEventsFn.mock.calls[0][0] as NrEventData[])[0].eventType).toBe('Test');
+
+      onceSpy.mockRestore();
+      await scheduler.stop();
     });
   });
 
