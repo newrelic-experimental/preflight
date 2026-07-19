@@ -134,11 +134,8 @@ export type BudgetDailyRule = z.infer<typeof budgetDailyRuleSchema>;
 export type BudgetWeeklyRule = z.infer<typeof budgetWeeklyRuleSchema>;
 export type ToolFailureRule = z.infer<typeof toolFailureRuleSchema>;
 
-export type LocalAlertRuleType = LocalAlertRule['type'];
-
 export type AlertSeverity = LocalAlertRule['severity'];
 export type AlertOperator = LocalAlertRule['operator'];
-export type AlertChannel = 'banner' | 'os';
 
 // ---------------------------------------------------------------------------
 // Bulk parser

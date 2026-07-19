@@ -491,13 +491,6 @@ const FeedbackSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /**
- * @deprecated Use `registerTools()` instead. Kept for backward compatibility.
- */
-export function registerSessionTools(server: Server, sessionTracker: SessionTracker): void {
-  registerTools(server, { sessionTracker: sessionTracker });
-}
-
-/**
  * Pre-resolution stand-in: registers `tools/list` with just the health and
  * config tools, and a `tools/call` handler that returns a structured "session
  * not yet resolved" error for everything else. Replaced by `registerTools()`

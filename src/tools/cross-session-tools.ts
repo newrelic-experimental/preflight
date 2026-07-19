@@ -250,22 +250,6 @@ export const PERSONAL_INSIGHTS_TOOL = {
 };
 
 // ---------------------------------------------------------------------------
-// All tool definitions (for conditional registration)
-// ---------------------------------------------------------------------------
-
-export const CROSS_SESSION_TOOLS = [
-  SESSION_HISTORY_TOOL,
-  WEEKLY_SUMMARY_TOOL,
-  TRENDS_TOOL,
-  COLLABORATION_PROFILE_TOOL,
-  CLAUDEMD_IMPACT_TOOL,
-  COST_PER_OUTCOME_TOOL,
-  RECOMMENDATIONS_TOOL,
-  PLATFORM_COMPARISON_TOOL,
-  TEAM_SUMMARY_TOOL,
-];
-
-// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 

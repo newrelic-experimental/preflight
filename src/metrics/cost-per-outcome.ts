@@ -57,15 +57,6 @@ export interface RoiEstimate {
   readonly byOutcome: Record<string, { count: number; hoursSaved: number; valueUsd: number }>;
 }
 
-export interface TaskOutcomeEvent {
-  readonly outcome: OutcomeType;
-  readonly costUsd: number;
-  readonly toolCalls: number;
-  readonly durationMs: number;
-  readonly developer: string;
-  readonly sessionId: string;
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
