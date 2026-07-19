@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { JSX } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { AlertBanner } from './AlertBanner';
 import { useLiveAlerts } from '../hooks/useLiveAlerts';

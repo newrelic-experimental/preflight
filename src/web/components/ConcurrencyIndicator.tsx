@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import type { JSX } from 'react';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from './DiscreteBlockChart';
 
 import { Card, Eyebrow } from './ui';

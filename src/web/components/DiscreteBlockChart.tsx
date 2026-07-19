@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { JSX } from 'react';
 
 /**
  * Shared discrete-block chart used by the Today view's `ConcurrencyIndicator`

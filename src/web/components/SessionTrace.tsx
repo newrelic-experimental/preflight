@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Clock } from 'lucide-react';
 

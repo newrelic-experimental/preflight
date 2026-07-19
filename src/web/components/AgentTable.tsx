@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { JSX } from 'react';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 
 import { formatDuration } from '../lib/format.js';

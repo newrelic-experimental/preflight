@@ -1,3 +1,5 @@
+import type { JSX } from 'react';
+
 import { useAnimatedValue } from '../hooks/useAnimatedValue';
 
 export type KpiTone = 'neutral' | 'good' | 'warn' | 'bad';

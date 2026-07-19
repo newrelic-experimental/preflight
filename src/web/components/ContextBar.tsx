@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
+import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { fetchContext, qk, type ContextResponse } from '../api/client';

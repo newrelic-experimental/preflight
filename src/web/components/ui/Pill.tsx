@@ -1,4 +1,4 @@
-import type { HTMLAttributes, ReactNode } from 'react';
+import type { HTMLAttributes, JSX, ReactNode } from 'react';
 
 export type PillTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 export type PillSize = 'sm' | 'md';

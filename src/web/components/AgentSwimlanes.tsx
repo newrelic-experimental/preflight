@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { JSX } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatNumber, formatDuration, formatUsdOrDash, shortToolName } from '../lib/format.js';
 import {

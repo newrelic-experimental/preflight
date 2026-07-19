@@ -564,10 +564,10 @@ describe('Sessions view — workflow consolidation', () => {
     const original = window.location;
     // @ts-expect-error -- test-only reassignment of a read-only global
     delete window.location;
-    window.location = { ...original, search: '?session=sess-b' } as Location;
+    window.location = { ...original, search: '?session=sess-b' } as unknown as string & Location;
     renderSessionsFull(SESSIONS, RUNS);
     await waitFor(() => expect(screen.getByText(/sess-b/)).toBeInTheDocument());
-    window.location = original;
+    window.location = original as unknown as string & Location;
   });
 });
 

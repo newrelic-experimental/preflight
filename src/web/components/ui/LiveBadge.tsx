@@ -1,3 +1,5 @@
+import type { JSX } from 'react';
+
 export type LiveBadgeSize = 'sm' | 'md';
 
 export interface LiveBadgeProps {

@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import type { JSX } from 'react';
 import { Route, Switch, useLocation } from 'wouter';
 import { Sidebar } from './components/Sidebar';
 import { AlertBannerStack } from './components/AlertBannerStack';

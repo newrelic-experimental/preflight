@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearch } from 'wouter';
 import { ChevronRight, ChevronDown } from 'lucide-react';

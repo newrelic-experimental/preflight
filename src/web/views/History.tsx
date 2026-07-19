@@ -1,3 +1,5 @@
+import type { JSX } from 'react';
+
 import { useQuery } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
@@ -207,7 +209,7 @@ export function History(): JSX.Element {
                     empty days. The tooltip already labels the date. */}
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
-                  labelFormatter={shortMonthDay}
+                  labelFormatter={(label) => shortMonthDay(String(label))}
                   cursor={false}
                 />
                 <Bar dataKey="cost" fill="url(#costGradient)" radius={[3, 3, 0, 0]} />
@@ -366,7 +368,10 @@ export function History(): JSX.Element {
                     stroke={GRID_STROKE}
                     width={120}
                   />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={shortToolName} />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    labelFormatter={(label) => shortToolName(String(label))}
+                  />
                   <Bar dataKey="count" radius={[0, 3, 3, 0]}>
                     {topTools.map((entry) => (
                       <Cell

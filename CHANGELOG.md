@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.4] - 2026-07-19
+
+### Fixed
+
+- Resolved a batch of TypeScript type errors in the web dashboard's source code that weren't being caught by the project's normal build and lint checks. No user-visible behavior change.
+
 ## [1.6.3] - 2026-07-18
 
 ### Changed

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { X, CheckCircle2, XCircle, Clock, Loader2 } from 'lucide-react';
 import {
