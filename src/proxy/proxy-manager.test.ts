@@ -627,6 +627,88 @@ describe('ProxyManager observability', () => {
     const expected = rec.durationMs - rec.upstreamLatencyMs;
     expect(rec.proxyOverheadMs).toBeCloseTo(expected, 1);
   });
+
+  it('uses the mcp-session-id request header as sessionId when present', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_file' },
+      }),
+      headers: { 'content-type': 'application/json', 'mcp-session-id': 'client-session-abc' },
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0].sessionId).toBe('client-session-abc');
+  });
+
+  it('assigns a non-null generated sessionId when no mcp-session-id header is sent', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_file' },
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0].sessionId).toBeTruthy();
+    expect(typeof records[0].sessionId).toBe('string');
+  });
+
+  it('assigns different sessionIds to requests from different connections', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    const makeCall = () =>
+      httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'read_file' },
+        }),
+        // Force a fresh TCP connection per call — Node's default agent pools
+        // keep-alive sockets, which would otherwise make both calls land on
+        // the same socket and defeat the point of this test.
+        headers: { 'content-type': 'application/json', connection: 'close' },
+      });
+
+    await makeCall();
+    await makeCall();
+
+    expect(records).toHaveLength(2);
+    expect(records[0].sessionId).toBeTruthy();
+    expect(records[1].sessionId).toBeTruthy();
+    expect(records[0].sessionId).not.toBe(records[1].sessionId);
+  });
 });
 
 // ---------------------------------------------------------------------------

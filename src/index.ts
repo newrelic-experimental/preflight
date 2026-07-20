@@ -2203,6 +2203,14 @@ async function main(): Promise<void> {
             'Check that mode is not "local" or that cloud credentials are configured.',
         );
       }
+      // Unscoped LocalStore (mirrors --local mode) — proxy mode multiplexes
+      // many concurrent clients, so there's no single session id to scope a
+      // buffer file to. Passing it into NrIngestManager gives AuditTrailManager
+      // a disk backing so the security audit log is actually persisted for
+      // proxied traffic instead of silently living in memory only.
+      const proxyLocalStore = new LocalStore(config.storagePath);
+      proxyLocalStore.initialize();
+
       nrIngest = new NrIngestManager({
         licenseKey: config.licenseKey,
         transportOptions: {
@@ -2215,9 +2223,17 @@ async function main(): Promise<void> {
         projectId: config.projectId,
         orgId: config.orgId,
         sessionTracker: new SessionTracker(sessionTraceId),
+        localStore: proxyLocalStore,
         eventHarvestIntervalMs: config.harvestIntervalMs.events,
         metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
         sessionTraceId,
+        // Proxy mode has no single coherent session — sessionTracker above is
+        // never fed per-client activity, so the ai.session.* gauges would
+        // otherwise report one process-wide fake session (e.g. a week-long
+        // proxy process reporting duration_ms≈604800000 with file-activity
+        // counts stuck at 0). Real per-client attribution instead flows
+        // through ProxyToolCallRecord.sessionId (see ProxyManager.resolveSessionId).
+        trackSessionGauges: false,
       });
       nrIngest.start();
     }

@@ -153,6 +153,15 @@ function writeJsonRpcError(
 // StdioUpstream
 // ---------------------------------------------------------------------------
 
+/**
+ * Bridges the proxy's HTTP layer to a single stdio-based MCP server child
+ * process. One child process is spawned per registered upstream (`connect()`)
+ * and shared across every concurrent proxy client that calls `forward()` —
+ * there is no per-client process pool. This is safe for stateless MCP
+ * servers (the common case). A stateful stdio upstream that keeps per-client
+ * state in memory (rather than deriving it from each request) will leak that
+ * state between unrelated developers sharing this proxy instance.
+ */
 export class StdioUpstream implements ProxyUpstream {
   readonly name: string;
   readonly transportType = 'stdio' as const;

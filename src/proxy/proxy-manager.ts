@@ -4,6 +4,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { createLogger } from '../shared/index.js';
@@ -80,6 +81,7 @@ function peekJsonRpc(body: Buffer): JsonRpcPeek | null {
 
 export class ProxyManager {
   private readonly upstreams = new Map<string, ProxyUpstream>();
+  private readonly connectionSessionIds = new WeakMap<Socket, string>();
   private httpServer: Server | null = null;
   private otlpReceiver: OtlpReceiver | null = null;
   private otlpReceiverStatus: OtlpReceiverStatus = 'disabled';
@@ -236,6 +238,34 @@ export class ProxyManager {
   }
 
   // -------------------------------------------------------------------------
+  // Session identity
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolve a per-client session id for observability attribution. Proxy mode
+   * multiplexes many concurrent developers' MCP clients through one process,
+   * so a single process-level id would collapse them all into one fake
+   * session. Prefers the MCP Streamable HTTP transport's `Mcp-Session-Id`
+   * header (the real per-client session id when the client/upstream sets
+   * one); otherwise falls back to an id generated once per underlying TCP
+   * socket, so repeated requests on the same keep-alive connection share an
+   * id while distinct connections don't. The WeakMap key means no manual
+   * cleanup is needed — entries are collected with the socket.
+   */
+  private resolveSessionId(req: IncomingMessage): string {
+    const header = req.headers['mcp-session-id'];
+    if (typeof header === 'string' && header.length > 0) return header;
+
+    const socket = req.socket;
+    const existing = this.connectionSessionIds.get(socket);
+    if (existing) return existing;
+
+    const generated = `proxy-conn-${randomUUID()}`;
+    this.connectionSessionIds.set(socket, generated);
+    return generated;
+  }
+
+  // -------------------------------------------------------------------------
   // Request handling
   // -------------------------------------------------------------------------
 
@@ -302,7 +332,8 @@ export class ProxyManager {
     }
 
     // Forward with interception
-    await this.forwardWithInterception(upstream, req, res, body);
+    const sessionId = this.resolveSessionId(req);
+    await this.forwardWithInterception(upstream, req, res, body, sessionId);
   }
 
   private async forwardWithInterception(
@@ -310,6 +341,7 @@ export class ProxyManager {
     req: IncomingMessage,
     res: ServerResponse,
     body: Buffer,
+    sessionId: string,
   ): Promise<void> {
     const rpc = peekJsonRpc(body);
     const isTracked = rpc !== null && TRACKED_METHODS.has(rpc.method);
@@ -324,7 +356,15 @@ export class ProxyManager {
     const proxyOverheadMs = Math.max(0, totalDurationMs - result.upstreamLatencyMs);
 
     if (rpc.method === 'tools/call') {
-      this.emitToolCallRecord(upstream, rpc, result, totalDurationMs, proxyOverheadMs, body);
+      this.emitToolCallRecord(
+        upstream,
+        rpc,
+        result,
+        totalDurationMs,
+        proxyOverheadMs,
+        body,
+        sessionId,
+      );
     } else {
       this.emitRequestRecord(upstream, rpc, result, totalDurationMs, proxyOverheadMs);
     }
@@ -337,6 +377,7 @@ export class ProxyManager {
     durationMs: number,
     proxyOverheadMs: number,
     body: Buffer,
+    sessionId: string,
   ): void {
     if (!this.onToolCall) return;
 
@@ -358,7 +399,7 @@ export class ProxyManager {
 
     const record: ProxyToolCallRecord = {
       id: randomUUID(),
-      sessionId: null,
+      sessionId,
       toolName,
       toolUseId: String(rpc.id ?? ''),
       timestamp: Date.now(),

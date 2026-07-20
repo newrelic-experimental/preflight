@@ -112,6 +112,15 @@ export interface NrIngestOptions {
   transport?: 'nr-events-api' | 'otlp' | 'both';
   /** Turn cost attributor for enriching AiToolCall events with cost data. */
   turnCostAttributor?: TurnCostAttributor;
+  /**
+   * Whether `emitSessionGauges()` should emit the `ai.session.duration_ms` /
+   * `unique_files_read` / `unique_files_written` gauges. Default true.
+   * Proxy mode multiplexes many concurrent clients through one process, so
+   * `sessionTracker` reflects no single coherent session — set false there
+   * to avoid emitting a misleading aggregate (e.g. a week-long proxy process
+   * reporting `duration_ms≈604800000` with file-activity counts stuck at 0).
+   */
+  trackSessionGauges?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +268,12 @@ export function proxyToolCallToNrEvent(
   if (attrs.projectId) event.project_id = attrs.projectId;
   if (attrs.orgId) event.org_id = attrs.orgId;
 
-  if (attrs.sessionTraceId != null) event.session_id = attrs.sessionTraceId;
+  // Prefer the record's own per-connection sessionId (the real per-client
+  // identity — see ProxyManager.resolveSessionId) over the process-wide
+  // sessionTraceId, which is a shared fallback that would otherwise collapse
+  // every concurrent proxy client into one fake session.
+  const sessionId = record.sessionId ?? attrs.sessionTraceId;
+  if (sessionId != null) event.session_id = sessionId;
   if (record.proxyOverheadMs != null) event.proxy_overhead_ms = record.proxyOverheadMs;
   if (record.errorType != null) event.error_type = record.errorType;
   if (record.inputSizeBytes != null) event.request_size_bytes = record.inputSizeBytes;
@@ -791,6 +805,7 @@ export class NrIngestManager {
   private readonly turnCostAttributor?: TurnCostAttributor;
   private readonly otlpTransport: OtlpTransport | null;
   private readonly otlpEventBridge: OtlpEventBridge | null;
+  private readonly trackSessionGauges: boolean;
   private sessionGaugeIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -815,6 +830,7 @@ export class NrIngestManager {
         localStore: options.localStore,
       });
     this.metricHarvestIntervalMs = options.metricHarvestIntervalMs ?? 60_000;
+    this.trackSessionGauges = options.trackSessionGauges ?? true;
 
     let otlpTransport: OtlpTransport | null = null;
     let otlpEventBridge: OtlpEventBridge | null = null;
@@ -936,9 +952,15 @@ export class NrIngestManager {
 
     this.scheduler.addEvent(event);
 
-    // Record per-call metrics for NR Metric API
+    // Record per-call metrics for NR Metric API. Proxy calls carry their own
+    // per-connection sessionId (see ProxyManager.resolveSessionId) — prefer
+    // it over the process-wide sessionTraceId so metrics from concurrent
+    // proxy clients don't all collapse onto one fake session. Non-proxy
+    // records keep using sessionTraceId unchanged.
     const tool = record.toolName;
-    const sessionId = this.sessionTraceId;
+    const sessionId = isProxyToolCall(record)
+      ? (record.sessionId ?? this.sessionTraceId)
+      : this.sessionTraceId;
     const teamDims: Record<string, string> = {};
     if (this.teamId) teamDims.team_id = this.teamId;
     if (this.projectId) teamDims.project_id = this.projectId;
@@ -1224,10 +1246,12 @@ export class NrIngestManager {
       );
     };
 
-    const metrics = this.sessionTracker.getMetrics();
-    record('ai.session.duration_ms', metrics.sessionDurationMs, { ...teamAttrs });
-    record('ai.session.unique_files_read', metrics.uniqueFilesRead, { ...teamAttrs });
-    record('ai.session.unique_files_written', metrics.uniqueFilesWritten, { ...teamAttrs });
+    if (this.trackSessionGauges) {
+      const metrics = this.sessionTracker.getMetrics();
+      record('ai.session.duration_ms', metrics.sessionDurationMs, { ...teamAttrs });
+      record('ai.session.unique_files_read', metrics.uniqueFilesRead, { ...teamAttrs });
+      record('ai.session.unique_files_written', metrics.uniqueFilesWritten, { ...teamAttrs });
+    }
 
     // Emit cost and efficiency metrics with developer dimension so Team View
     // FACET developer queries return per-developer breakdowns.

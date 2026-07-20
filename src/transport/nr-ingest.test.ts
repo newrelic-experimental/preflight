@@ -445,6 +445,38 @@ describe('NrIngestManager', () => {
       expect(metricNames).toContain('ai.tool.duration_ms');
       expect(metricNames).toContain('ai.tool.success');
     });
+
+    it("tags proxy tool call metrics with the record's own sessionId, not sessionTraceId", async () => {
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTraceId: 'proxy-trace-id' }));
+
+      manager.ingestToolCall(makeProxyRecord({ sessionId: 'proxy-conn-xyz' }));
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const callCountMetric = sentMetrics.find((m) => m.name === 'ai.tool.call_count')!;
+      const attrs = callCountMetric.attributes as Record<string, unknown>;
+      expect(attrs.session_id).toBe('proxy-conn-xyz');
+    });
+
+    it('still tags non-proxy tool call metrics with sessionTraceId (regression guard)', async () => {
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTraceId: 'proxy-trace-id' }));
+
+      manager.ingestToolCall(makeRecord({ sessionId: 'hook-session-001' }));
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const callCountMetric = sentMetrics.find((m) => m.name === 'ai.tool.call_count')!;
+      const attrs = callCountMetric.attributes as Record<string, unknown>;
+      expect(attrs.session_id).toBe('proxy-trace-id');
+    });
   });
 
   describe('proxyRequestToNrEvent()', () => {
@@ -702,6 +734,30 @@ describe('NrIngestManager', () => {
       expect(metricNames).toContain('ai.session.duration_ms');
       expect(metricNames).toContain('ai.session.unique_files_read');
       expect(metricNames).toContain('ai.session.unique_files_written');
+    });
+
+    it('skips ai.session.* gauges when trackSessionGauges is false (proxy mode)', async () => {
+      const sessionTracker = new SessionTracker('proxy-gauge-session');
+      sessionTracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+
+      const manager = new NrIngestManager(
+        makeIngestOptions({ sessionTracker, trackSessionGauges: false }),
+      );
+
+      manager.start();
+      await manager.stop();
+
+      // Nothing else emits metrics in this scenario, so sendMetrics may not
+      // be called at all — the point is that ai.session.* gauges specifically
+      // never appear, not that some other metric was flushed.
+      const sentMetrics = ((mockSendMetrics.mock.calls[0] as unknown[])?.[0] ?? []) as Array<
+        Record<string, unknown>
+      >;
+      const metricNames = sentMetrics.map((m) => m.name);
+
+      expect(metricNames).not.toContain('ai.session.duration_ms');
+      expect(metricNames).not.toContain('ai.session.unique_files_read');
+      expect(metricNames).not.toContain('ai.session.unique_files_written');
     });
 
     it('emits ai.feedback.count on stop when a feedbackCollector is provided', async () => {
@@ -1372,8 +1428,18 @@ describe('session trace ID propagation', () => {
     expect(isProxyToolCall(record)).toBe(false);
   });
 
-  it('proxyToolCallToNrEvent: uses sessionTraceId when provided', () => {
-    const record = makeProxyRecord({ sessionId: 'old-session-id' });
+  it('proxyToolCallToNrEvent: prefers record.sessionId (the real per-connection id) over sessionTraceId', () => {
+    const record = makeProxyRecord({ sessionId: 'proxy-conn-abc' });
+    const event = proxyToolCallToNrEvent(record, {
+      developer: 'dev',
+      appName: 'app',
+      sessionTraceId: TRACE_ID,
+    });
+    expect(event.session_id).toBe('proxy-conn-abc');
+  });
+
+  it('proxyToolCallToNrEvent: falls back to sessionTraceId when record.sessionId is null', () => {
+    const record = makeProxyRecord({ sessionId: null });
     const event = proxyToolCallToNrEvent(record, {
       developer: 'dev',
       appName: 'app',

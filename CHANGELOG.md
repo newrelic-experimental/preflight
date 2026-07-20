@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.10] - 2026-07-20
+
+### Fixed
+
+- Proxy mode assigned every concurrent client the same fake shared session id (`sessionId: null` on every proxy tool call, one process-level id reused across all developers). Each proxy client's `AiMcpToolCall` events and per-tool metrics now carry a distinct per-connection session id, resolved from the MCP `Mcp-Session-Id` request header when present and otherwise generated per TCP connection.
+- Proxy mode emitted `ai.session.duration_ms`/`unique_files_read`/`unique_files_written` gauges reflecting a single never-populated session tracker (e.g. a week-long proxy process reporting a multi-day session duration with zero file activity). These gauges are no longer emitted in proxy mode.
+- The on-disk security audit log was never populated in proxy mode because no local store was wired up for it; proxied tool calls are now persisted to the audit log like stdio/local traffic.
+- Documented that the proxy's stdio upstream transport shares one child-process connection across all concurrent clients — safe for stateless MCP servers, not for stateful ones.
+
 ## [1.6.9] - 2026-07-20
 
 ### Changed
