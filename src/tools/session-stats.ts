@@ -1,11 +1,11 @@
 /**
- * `registerTools()` — the MCP server's main tool registry. Builds the
- * `tools/list` response and `tools/call` dispatch from whichever trackers
- * were constructed for this session (session stats/timeline, health,
- * config, install-hooks, git efficiency, and every cost/workflow/cross-session/
- * analytics/extended-analytics tool re-exported from the sibling files in
- * this directory) — each tool is only advertised when its backing tracker
- * is present.
+ * `registerTools()` — the MCP server's main tool registry. Composes the
+ * per-file `registerXTools(deps)` sets from `cost-tools.ts`, `workflow-tools.ts`,
+ * `cross-session-tools.ts`, `analytics-tools.ts`, and `extended-analytics-tools.ts`
+ * with this file's own "core" tools (health, config, install-hooks, session
+ * stats/timeline, git efficiency, cost-per-tool, turn analysis) into the
+ * server's single `tools/list`/`tools/call` handler pair — each tool is only
+ * advertised when its backing tracker is present, per `tool-registry.ts`.
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -15,7 +15,6 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
 import { createLogger } from '../shared/index.js';
 import { VERSION } from '../version.js';
 
@@ -33,57 +32,10 @@ import type { CollaborationProfiler } from '../metrics/collaboration-profile.js'
 import type { ClaudeMdTracker } from '../metrics/claudemd-tracker.js';
 import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
-import {
-  REPORT_TOKENS_TOOL,
-  handleReportTokens,
-  COST_BREAKDOWN_TOOL,
-  handleGetCostBreakdown,
-  BUDGET_STATUS_TOOL,
-  COST_FORECAST_TOOL,
-  handleGetBudgetStatus,
-  handleGetCostForecast,
-  PROMPT_CACHE_HEALTH_TOOL,
-  handleGetPromptCacheHealth,
-} from './cost-tools.js';
-import {
-  WORKFLOW_TRACE_TOOL,
-  ANTI_PATTERNS_TOOL,
-  EFFICIENCY_SCORE_TOOL,
-  REPORT_FEEDBACK_TOOL,
-  handleGetWorkflowTrace,
-  handleGetAntiPatterns,
-  handleGetEfficiencyScore,
-  handleReportFeedback,
-} from './workflow-tools.js';
+import { registerCostTools } from './cost-tools.js';
+import { registerWorkflowTools } from './workflow-tools.js';
 import type { FeedbackCollector } from './workflow-tools.js';
-import {
-  SESSION_HISTORY_TOOL,
-  WEEKLY_SUMMARY_TOOL,
-  TRENDS_TOOL,
-  COLLABORATION_PROFILE_TOOL,
-  CLAUDEMD_IMPACT_TOOL,
-  COST_PER_OUTCOME_TOOL,
-  RECOMMENDATIONS_TOOL,
-  PLATFORM_COMPARISON_TOOL,
-  TEAM_SUMMARY_TOOL,
-  SUBSCRIBE_DIGEST_TOOL,
-  UNSUBSCRIBE_DIGEST_TOOL,
-  SEND_DIGEST_TOOL,
-  PERSONAL_INSIGHTS_TOOL,
-  handleGetSessionHistory,
-  handleGetWeeklySummary,
-  handleGetTrends,
-  handleGetCollaborationProfile,
-  handleGetClaudeMdImpact,
-  handleGetCostPerOutcome,
-  handleGetRecommendations,
-  handleGetPlatformComparison,
-  handleGetTeamSummary,
-  handleSubscribeDigest,
-  handleUnsubscribeDigest,
-  handleSendDigest,
-  handleGetPersonalInsights,
-} from './cross-session-tools.js';
+import { registerCrossSessionTools } from './cross-session-tools.js';
 import type { ContextWindowTracker } from '../metrics/context-window-tracker.js';
 import type { ContextTrackerRegistry } from '../metrics/context-tracker.js';
 import type { LatencyTracker } from '../metrics/latency-tracker.js';
@@ -100,36 +52,15 @@ import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TurnTracker } from '../metrics/turn-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
+import { registerAnalyticsTools } from './analytics-tools.js';
+import { registerExtendedAnalyticsTools } from './extended-analytics-tools.js';
 import {
-  CONTEXT_EFFICIENCY_TOOL,
-  CONTEXT_TRACKING_TOOL,
-  LATENCY_PERCENTILES_TOOL,
-  TASK_COMPLETION_TOOL,
-  MODEL_USAGE_TOOL,
-  handleGetContextEfficiency,
-  handleGetContextTracking,
-  handleGetLatencyPercentiles,
-  handleGetTaskCompletionRate,
-  handleGetModelUsage,
-} from './analytics-tools.js';
-import {
-  RETRY_ALERTS_TOOL,
-  CONTEXT_COMPOSITION_TOOL,
-  LATENCY_DECOMPOSITION_TOOL,
-  DECISION_TREE_TOOL,
-  INSTRUCTION_DRIFT_TOOL,
-  TOOL_SELECTION_SCORE_TOOL,
-  QUALITY_PROXY_TOOL,
-  API_FAILURES_TOOL,
-  handleGetRetryAlerts,
-  handleGetContextComposition,
-  handleGetLatencyDecomposition,
-  handleGetDecisionTree,
-  handleGetInstructionDrift,
-  handleGetToolSelectionScore,
-  handleGetQualityProxy,
-  handleGetApiFailures,
-} from './extended-analytics-tools.js';
+  requireTracker,
+  requireAvailable,
+  buildToolSet,
+  mergeToolSets,
+  type RegisteredToolSet,
+} from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
@@ -468,23 +399,112 @@ export interface ToolRegistrationOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Input validation schemas
+// Core tools — no natural sibling file (health, config, install-hooks,
+// session stats/timeline, git efficiency, cost-per-tool, turn analysis)
 // ---------------------------------------------------------------------------
 
-const TokenReportSchema = z.object({
-  model: z.string().min(1),
-  input_tokens: z.number().nonnegative(),
-  output_tokens: z.number().nonnegative(),
-  cache_creation_tokens: z.number().nonnegative().optional(),
-  cache_read_tokens: z.number().nonnegative().optional(),
-  thinking_tokens: z.number().nonnegative().optional(),
-});
-
-const FeedbackSchema = z.object({
-  quality: z.enum(['good', 'bad', 'neutral']),
-  task_id: z.string().optional(),
-  notes: z.string().optional(),
-});
+function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
+  return buildToolSet([
+    {
+      definition: HEALTH_TOOL,
+      available: true,
+      handle: () =>
+        handleHealth({
+          sessionStartMs: deps.sessionStartMs,
+          developer: deps.developer,
+          sessionId: deps.sessionTracker?.getMetrics().sessionId,
+          hooksInstalledFn: deps.hooksInstalledFn,
+        }),
+    },
+    {
+      definition: INSTALL_HOOKS_TOOL,
+      available: true,
+      handle: () => handleInstallHooks(deps.headlessInstaller),
+    },
+    {
+      definition: CONFIG_TOOL,
+      available: !!deps.configSummary,
+      handle: () => {
+        const missing = requireAvailable(!!deps.configSummary, 'Config summary not available');
+        if (missing) return missing;
+        return handleGetConfig(deps.configSummary!);
+      },
+    },
+    {
+      definition: SESSION_STATS_TOOL,
+      available: !!deps.sessionTracker,
+      handle: () => {
+        const check = requireTracker(deps.sessionTracker, 'SessionTracker');
+        if (!check.ok) return check.result;
+        const { _stats: stats } = handleGetSessionStats(check.value, deps.sessionTraceId);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                {
+                  identity: {
+                    developer: deps.developer ?? 'unknown',
+                    teamId: deps.teamId ?? null,
+                    projectId: deps.projectId ?? null,
+                  },
+                  ...stats,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      },
+    },
+    {
+      definition: SESSION_TIMELINE_TOOL,
+      available: !!deps.sessionTracker,
+      handle: (args) => {
+        const check = requireTracker(deps.sessionTracker, 'SessionTracker');
+        if (!check.ok) return check.result;
+        const lastN = args?.last_n;
+        return handleGetSessionTimeline(check.value, typeof lastN === 'number' ? lastN : 20);
+      },
+    },
+    {
+      definition: GIT_EFFICIENCY_TOOL,
+      available: !!deps.gitEfficiencyTracker,
+      handle: () => {
+        const check = requireTracker(deps.gitEfficiencyTracker, 'GitEfficiencyTracker');
+        if (!check.ok) return check.result;
+        return handleGetGitEfficiency(check.value);
+      },
+    },
+    {
+      definition: COST_PER_TOOL_TOOL,
+      available: !!deps.turnCostAttributor,
+      handle: () => {
+        const check = requireTracker(deps.turnCostAttributor, 'TurnCostAttributor');
+        if (!check.ok) return check.result;
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(check.value.getMetrics(), null, 2) },
+          ],
+        };
+      },
+    },
+    {
+      definition: TURN_ANALYSIS_TOOL,
+      available: !!deps.turnTracker,
+      handle: () => {
+        const check = requireTracker(deps.turnTracker, 'TurnTracker');
+        if (!check.ok) return check.result;
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(check.value.getMetrics(), null, 2) },
+          ],
+        };
+      },
+    },
+  ]);
+}
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -545,917 +565,27 @@ export function registerPendingTools(
 }
 
 export function registerTools(server: Server, options: ToolRegistrationOptions): void {
-  const {
-    sessionTracker,
-    costTracker,
-    budgetTracker,
-    taskDetector,
-    antiPatternDetector,
-    efficiencyScorer,
-    feedbackCollector,
-    sessionStore,
-    weeklySummaryGenerator,
-    trendAnalyzer,
-    collaborationProfiler,
-    claudeMdTracker,
-    costPerOutcomeAnalyzer,
-    recommendationEngine,
-    contextWindowTracker,
-    contextTracker,
-    latencyTracker,
-    taskCompletionTracker,
-    modelUsageTracker,
-    retryDetector,
-    contextCompositionTracker,
-    latencyDecompositionTracker,
-    decisionTracker,
-    instructionDriftTracker,
-    toolSelectionScorer,
-    qualityProxyTracker,
-    apiFailureTracker,
-    turnCostAttributor,
-    turnTracker,
-    gitEfficiencyTracker,
-    sessionTraceId,
-    sessionStartMs,
-  } = options;
-
-  // Build combined tool list
-  const tools: (typeof SESSION_STATS_TOOL)[] = [HEALTH_TOOL];
-  tools.push(INSTALL_HOOKS_TOOL);
-  if (options.configSummary) {
-    tools.push(CONFIG_TOOL);
-  }
-  if (sessionTracker) {
-    tools.push(SESSION_STATS_TOOL, SESSION_TIMELINE_TOOL);
-  }
-  if (costTracker) {
-    tools.push(REPORT_TOKENS_TOOL, COST_BREAKDOWN_TOOL, PROMPT_CACHE_HEALTH_TOOL);
-  }
-  if (budgetTracker) {
-    tools.push(BUDGET_STATUS_TOOL);
-  }
-  if (costTracker && sessionStartMs !== undefined) {
-    tools.push(COST_FORECAST_TOOL);
-  }
-  if (taskDetector) {
-    tools.push(WORKFLOW_TRACE_TOOL);
-  }
-  if (antiPatternDetector && taskDetector) {
-    tools.push(ANTI_PATTERNS_TOOL);
-  }
-  if (efficiencyScorer) {
-    tools.push(EFFICIENCY_SCORE_TOOL);
-  }
-  if (feedbackCollector) {
-    tools.push(REPORT_FEEDBACK_TOOL);
-  }
-
-  // Cross-session tools — each registered only when its specific dependencies exist
-  if (sessionStore) {
-    tools.push(SESSION_HISTORY_TOOL, PLATFORM_COMPARISON_TOOL);
-  }
-  if (weeklySummaryGenerator) {
-    tools.push(WEEKLY_SUMMARY_TOOL);
-  }
-  if (trendAnalyzer) {
-    tools.push(TRENDS_TOOL);
-  }
-  if (collaborationProfiler) {
-    tools.push(COLLABORATION_PROFILE_TOOL);
-  }
-  if (claudeMdTracker) {
-    tools.push(CLAUDEMD_IMPACT_TOOL);
-  }
-  if (costPerOutcomeAnalyzer && taskDetector) {
-    tools.push(COST_PER_OUTCOME_TOOL);
-  }
-  if (recommendationEngine) {
-    tools.push(RECOMMENDATIONS_TOOL);
-  }
-  if (options.teamId && options.nrApiKey) {
-    tools.push(TEAM_SUMMARY_TOOL);
-  }
-  if (options.configFilePath) {
-    tools.push(SUBSCRIBE_DIGEST_TOOL, UNSUBSCRIBE_DIGEST_TOOL);
-  }
-  if (options.configFilePath && weeklySummaryGenerator) {
-    tools.push(SEND_DIGEST_TOOL);
-  }
-  if (weeklySummaryGenerator && options.developer) {
-    tools.push(PERSONAL_INSIGHTS_TOOL);
-  }
-
-  if (contextWindowTracker) {
-    tools.push(CONTEXT_EFFICIENCY_TOOL);
-  }
-  if (contextTracker) {
-    tools.push(CONTEXT_TRACKING_TOOL);
-  }
-  if (latencyTracker) {
-    tools.push(LATENCY_PERCENTILES_TOOL);
-  }
-  if (taskCompletionTracker) {
-    tools.push(TASK_COMPLETION_TOOL);
-  }
-  if (modelUsageTracker) {
-    tools.push(MODEL_USAGE_TOOL);
-  }
-  if (retryDetector) {
-    tools.push(RETRY_ALERTS_TOOL);
-  }
-  if (contextCompositionTracker) {
-    tools.push(CONTEXT_COMPOSITION_TOOL);
-  }
-  if (latencyDecompositionTracker) {
-    tools.push(LATENCY_DECOMPOSITION_TOOL);
-  }
-  if (decisionTracker) {
-    tools.push(DECISION_TREE_TOOL);
-  }
-  if (instructionDriftTracker) {
-    tools.push(INSTRUCTION_DRIFT_TOOL);
-  }
-  if (toolSelectionScorer && options.toolCallBuffer) {
-    tools.push(TOOL_SELECTION_SCORE_TOOL);
-  }
-  if (qualityProxyTracker) {
-    tools.push(QUALITY_PROXY_TOOL);
-  }
-  if (apiFailureTracker) {
-    tools.push(API_FAILURES_TOOL);
-  }
-  if (gitEfficiencyTracker) {
-    tools.push(GIT_EFFICIENCY_TOOL);
-  }
-  if (turnCostAttributor) {
-    tools.push(COST_PER_TOOL_TOOL);
-  }
-  if (turnTracker) {
-    tools.push(TURN_ANALYSIS_TOOL);
-  }
+  const { tools, handlers } = mergeToolSets(
+    registerCoreTools(options),
+    registerCostTools(options),
+    registerWorkflowTools(options),
+    registerCrossSessionTools(options),
+    registerAnalyticsTools(options),
+    registerExtendedAnalyticsTools(options),
+  );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
+    const handler = handlers[name];
+    if (!handler) {
+      throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+    }
+
     try {
-      switch (name) {
-        case 'nr_observe_health': {
-          return handleHealth({
-            sessionStartMs,
-            developer: options.developer,
-            sessionId: sessionTracker?.getMetrics().sessionId,
-            hooksInstalledFn: options.hooksInstalledFn,
-          });
-        }
-
-        case 'nr_observe_install_hooks': {
-          return handleInstallHooks(options.headlessInstaller);
-        }
-
-        case 'nr_observe_get_config': {
-          if (!options.configSummary) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'Config summary not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetConfig(options.configSummary);
-        }
-
-        case 'nr_observe_get_session_stats': {
-          if (!sessionTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'SessionTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const result = handleGetSessionStats(sessionTracker, sessionTraceId);
-          // Use the raw stats object directly to avoid a JSON parse/stringify round-trip.
-          const stats = result._stats;
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify(
-                  {
-                    identity: {
-                      developer: options.developer ?? 'unknown',
-                      teamId: options.teamId ?? null,
-                      projectId: options.projectId ?? null,
-                    },
-                    ...stats,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-          };
-        }
-
-        case 'nr_observe_get_session_timeline': {
-          if (!sessionTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'SessionTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const lastN = args?.last_n;
-          return handleGetSessionTimeline(sessionTracker, typeof lastN === 'number' ? lastN : 20);
-        }
-
-        case 'nr_observe_report_tokens': {
-          if (!costTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'CostTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          try {
-            const tokenReport = TokenReportSchema.parse(args);
-            return handleReportTokens(costTracker, tokenReport, modelUsageTracker);
-          } catch (err) {
-            const message =
-              err instanceof z.ZodError
-                ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
-                : String(err);
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: `Invalid token report: ${message}` }),
-                },
-              ],
-              isError: true,
-            };
-          }
-        }
-
-        case 'nr_observe_get_cost_breakdown': {
-          if (!costTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'CostTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetCostBreakdown(costTracker, taskDetector);
-        }
-
-        case 'nr_observe_get_prompt_cache_health': {
-          if (!costTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'CostTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetPromptCacheHealth(costTracker);
-        }
-
-        case 'nr_observe_get_budget_status': {
-          if (!budgetTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'BudgetTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetBudgetStatus(budgetTracker);
-        }
-
-        case 'nr_observe_get_cost_forecast': {
-          if (!costTracker || sessionStartMs === undefined) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'CostTracker or sessionStartMs not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetCostForecast(costTracker, sessionStartMs);
-        }
-
-        case 'nr_observe_get_workflow_trace': {
-          if (!taskDetector) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'TaskDetector not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const taskId = args?.task_id as string | undefined;
-          return handleGetWorkflowTrace(
-            taskDetector,
-            antiPatternDetector,
-            efficiencyScorer,
-            taskId,
-          );
-        }
-
-        case 'nr_observe_get_anti_patterns': {
-          if (!antiPatternDetector || !taskDetector) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    error: 'AntiPatternDetector or TaskDetector not available',
-                  }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetAntiPatterns(taskDetector, antiPatternDetector);
-        }
-
-        case 'nr_observe_get_efficiency_score': {
-          if (!efficiencyScorer) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'EfficiencyScorer not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetEfficiencyScore(efficiencyScorer, taskDetector, antiPatternDetector);
-        }
-
-        case 'nr_observe_report_feedback': {
-          if (!feedbackCollector) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'FeedbackCollector not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          try {
-            const feedbackArgs = FeedbackSchema.parse(args);
-            return handleReportFeedback(feedbackCollector, feedbackArgs);
-          } catch (err) {
-            const message =
-              err instanceof z.ZodError
-                ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
-                : String(err);
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: `Invalid feedback: ${message}` }),
-                },
-              ],
-              isError: true,
-            };
-          }
-        }
-
-        case 'nr_observe_get_session_history': {
-          if (!sessionStore) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'SessionStore not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const historyArgs: Record<string, unknown> = args ?? {};
-          return handleGetSessionHistory(sessionStore, {
-            since: historyArgs.since as string | undefined,
-            developer: historyArgs.developer as string | undefined,
-            limit: historyArgs.limit as number | undefined,
-          });
-        }
-
-        case 'nr_observe_get_weekly_summary': {
-          if (!weeklySummaryGenerator) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'WeeklySummaryGenerator not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const weekArgs: Record<string, unknown> = args ?? {};
-          return handleGetWeeklySummary(weeklySummaryGenerator, {
-            week: weekArgs.week as string | undefined,
-          });
-        }
-
-        case 'nr_observe_get_trends': {
-          if (!trendAnalyzer) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'TrendAnalyzer not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const trendArgs: Record<string, unknown> = args ?? {};
-          return handleGetTrends(trendAnalyzer, {
-            metric: trendArgs.metric as string | undefined,
-            developer: trendArgs.developer as string | undefined,
-            weeks: trendArgs.weeks as number | undefined,
-          });
-        }
-
-        case 'nr_observe_get_collaboration_profile': {
-          if (!collaborationProfiler) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'CollaborationProfiler not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const profileArgs: Record<string, unknown> = args ?? {};
-          return handleGetCollaborationProfile(collaborationProfiler, {
-            developer: profileArgs.developer as string | undefined,
-          });
-        }
-
-        case 'nr_observe_get_claudemd_impact': {
-          if (!claudeMdTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'ClaudeMdTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetClaudeMdImpact(claudeMdTracker);
-        }
-
-        case 'nr_observe_get_cost_per_outcome': {
-          if (!costPerOutcomeAnalyzer || !taskDetector) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    error: 'CostPerOutcomeAnalyzer or TaskDetector not available',
-                  }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const costArgs: Record<string, unknown> = args ?? {};
-          return handleGetCostPerOutcome(costPerOutcomeAnalyzer, taskDetector, {
-            since: costArgs.since as string | undefined,
-          });
-        }
-
-        case 'nr_observe_get_recommendations': {
-          if (!recommendationEngine) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'RecommendationEngine not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const recArgs: Record<string, unknown> = args ?? {};
-          return handleGetRecommendations(recommendationEngine, {
-            developer: recArgs.developer as string | undefined,
-            topN: recArgs.topN as number | undefined,
-          });
-        }
-
-        case 'nr_observe_get_platform_comparison': {
-          if (!sessionStore) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'SessionStore not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const pcArgs: Record<string, unknown> = args ?? {};
-          return handleGetPlatformComparison(sessionStore, {
-            metric: pcArgs.metric as string | undefined,
-            weeks: pcArgs.weeks as number | undefined,
-          });
-        }
-
-        case 'nr_observe_get_team_summary': {
-          if (!options.teamId || !options.nrApiKey) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'teamId or nrApiKey not configured' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const summaryArgs: Record<string, unknown> = args ?? {};
-          return handleGetTeamSummary({
-            teamId: options.teamId,
-            accountId: options.accountId ?? '',
-            nrApiKey: options.nrApiKey,
-            collectorHost: options.collectorHost,
-            since: summaryArgs.since as string | undefined,
-          });
-        }
-
-        case 'nr_observe_subscribe_digest': {
-          if (!options.configFilePath) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'configFilePath not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const digestArgs: Record<string, unknown> = args ?? {};
-          return handleSubscribeDigest(
-            typeof digestArgs.webhookUrl === 'string' ? digestArgs.webhookUrl : '',
-            options.configFilePath,
-          );
-        }
-
-        case 'nr_observe_unsubscribe_digest': {
-          if (!options.configFilePath) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'configFilePath not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleUnsubscribeDigest(options.configFilePath);
-        }
-
-        case 'nr_observe_send_digest': {
-          if (!options.configFilePath || !weeklySummaryGenerator) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    error: 'configFilePath or WeeklySummaryGenerator not available',
-                  }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleSendDigest(weeklySummaryGenerator, options.configFilePath);
-        }
-
-        case 'nr_observe_get_personal_insights': {
-          if (!weeklySummaryGenerator || !options.developer) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    error: 'WeeklySummaryGenerator or developer not available',
-                  }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetPersonalInsights(weeklySummaryGenerator, options.developer);
-        }
-
-        case 'nr_observe_get_context_efficiency': {
-          if (!contextWindowTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'ContextWindowTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetContextEfficiency(contextWindowTracker);
-        }
-
-        case 'nr_observe_get_context_tracking': {
-          if (!contextTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'ContextTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetContextTracking(contextTracker);
-        }
-
-        case 'nr_observe_get_latency_percentiles': {
-          if (!latencyTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'LatencyTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetLatencyPercentiles(latencyTracker);
-        }
-
-        case 'nr_observe_get_task_completion_rate': {
-          if (!taskCompletionTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'TaskCompletionTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetTaskCompletionRate(taskCompletionTracker, taskDetector);
-        }
-
-        case 'nr_observe_get_model_usage': {
-          if (!modelUsageTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'ModelUsageTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetModelUsage(modelUsageTracker);
-        }
-
-        case 'nr_observe_get_retry_alerts': {
-          if (!retryDetector) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'RetryDetector not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetRetryAlerts(retryDetector);
-        }
-
-        case 'nr_observe_get_context_composition': {
-          if (!contextCompositionTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'ContextCompositionTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetContextComposition(contextCompositionTracker);
-        }
-
-        case 'nr_observe_get_latency_decomposition': {
-          if (!latencyDecompositionTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    error: 'nr_observe_get_latency_decomposition is not currently functional',
-                    note: "Preflight cannot observe a true LLM-API-vs-tool-execution split in either stdio or proxy mode -- see the comment above the tracker's instantiation in index.ts for the full explanation. This tool is intentionally not registered in tools/list.",
-                  }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetLatencyDecomposition(latencyDecompositionTracker);
-        }
-
-        case 'nr_observe_get_decision_tree': {
-          if (!decisionTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'DecisionTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const dtArgs: Record<string, unknown> = args ?? {};
-          return handleGetDecisionTree(decisionTracker, dtArgs.post_mortem === true);
-        }
-
-        case 'nr_observe_get_instruction_drift': {
-          if (!instructionDriftTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'InstructionDriftTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetInstructionDrift(instructionDriftTracker);
-        }
-
-        case 'nr_observe_get_tool_selection_score': {
-          if (!toolSelectionScorer || !options.toolCallBuffer) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    error: 'ToolSelectionScorer or toolCallBuffer not available',
-                  }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetToolSelectionScore(
-            toolSelectionScorer,
-            options.toolCallBuffer.getRecords(),
-          );
-        }
-
-        case 'nr_observe_get_quality_proxy': {
-          if (!qualityProxyTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'QualityProxyTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetQualityProxy(qualityProxyTracker);
-        }
-
-        case 'nr_observe_get_api_failures': {
-          if (!apiFailureTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'ApiFailureTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetApiFailures(apiFailureTracker);
-        }
-
-        case 'nr_observe_get_cost_per_tool': {
-          if (!turnCostAttributor) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'TurnCostAttributor not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const costMetrics = turnCostAttributor.getMetrics();
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify(costMetrics, null, 2) }],
-          };
-        }
-
-        case 'nr_observe_get_turn_analysis': {
-          if (!turnTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'TurnTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          const turnMetrics = turnTracker.getMetrics();
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify(turnMetrics, null, 2) }],
-          };
-        }
-
-        case 'nr_observe_get_git_efficiency': {
-          if (!gitEfficiencyTracker) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify({ error: 'GitEfficiencyTracker not available' }),
-                },
-              ],
-              isError: true,
-            };
-          }
-          return handleGetGitEfficiency(gitEfficiencyTracker);
-        }
-
-        default:
-          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-      }
+      return await handler(args);
     } catch (err) {
       if (err instanceof McpError) throw err;
       logger.error('Tool handler threw unexpectedly', {

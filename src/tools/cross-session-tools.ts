@@ -27,6 +27,12 @@ import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 import { PersonalCoach } from '../metrics/personal-coach.js';
+import {
+  requireTracker,
+  requireAvailable,
+  buildToolSet,
+  type RegisteredToolSet,
+} from './tool-registry.js';
 
 function getNerdgraphUrl(collectorHost: string | null): string {
   if (collectorHost === 'eu') return 'https://api.eu.newrelic.com/graphql';
@@ -990,4 +996,186 @@ export function handleGetPersonalInsights(
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+export interface CrossSessionToolsDeps {
+  sessionStore?: SessionStore;
+  weeklySummaryGenerator?: WeeklySummaryGenerator;
+  trendAnalyzer?: TrendAnalyzer;
+  collaborationProfiler?: CollaborationProfiler;
+  claudeMdTracker?: ClaudeMdTracker;
+  costPerOutcomeAnalyzer?: CostPerOutcomeAnalyzer;
+  taskDetector?: TaskDetector;
+  recommendationEngine?: RecommendationEngine;
+  teamId?: string | null;
+  nrApiKey?: string | null;
+  accountId?: string;
+  collectorHost?: string | null;
+  configFilePath?: string;
+  developer?: string;
+}
+
+export function registerCrossSessionTools(deps: CrossSessionToolsDeps): RegisteredToolSet {
+  return buildToolSet([
+    {
+      definition: SESSION_HISTORY_TOOL,
+      available: !!deps.sessionStore,
+      handle: (args) => {
+        const check = requireTracker(deps.sessionStore, 'SessionStore');
+        if (!check.ok) return check.result;
+        return handleGetSessionHistory(check.value, {
+          since: args?.since as string | undefined,
+          developer: args?.developer as string | undefined,
+          limit: args?.limit as number | undefined,
+        });
+      },
+    },
+    {
+      definition: PLATFORM_COMPARISON_TOOL,
+      available: !!deps.sessionStore,
+      handle: (args) => {
+        const check = requireTracker(deps.sessionStore, 'SessionStore');
+        if (!check.ok) return check.result;
+        return handleGetPlatformComparison(check.value, {
+          metric: args?.metric as string | undefined,
+          weeks: args?.weeks as number | undefined,
+        });
+      },
+    },
+    {
+      definition: WEEKLY_SUMMARY_TOOL,
+      available: !!deps.weeklySummaryGenerator,
+      handle: (args) => {
+        const check = requireTracker(deps.weeklySummaryGenerator, 'WeeklySummaryGenerator');
+        if (!check.ok) return check.result;
+        return handleGetWeeklySummary(check.value, { week: args?.week as string | undefined });
+      },
+    },
+    {
+      definition: TRENDS_TOOL,
+      available: !!deps.trendAnalyzer,
+      handle: (args) => {
+        const check = requireTracker(deps.trendAnalyzer, 'TrendAnalyzer');
+        if (!check.ok) return check.result;
+        return handleGetTrends(check.value, {
+          metric: args?.metric as string | undefined,
+          developer: args?.developer as string | undefined,
+          weeks: args?.weeks as number | undefined,
+        });
+      },
+    },
+    {
+      definition: COLLABORATION_PROFILE_TOOL,
+      available: !!deps.collaborationProfiler,
+      handle: (args) => {
+        const check = requireTracker(deps.collaborationProfiler, 'CollaborationProfiler');
+        if (!check.ok) return check.result;
+        return handleGetCollaborationProfile(check.value, {
+          developer: args?.developer as string | undefined,
+        });
+      },
+    },
+    {
+      definition: CLAUDEMD_IMPACT_TOOL,
+      available: !!deps.claudeMdTracker,
+      handle: () => {
+        const check = requireTracker(deps.claudeMdTracker, 'ClaudeMdTracker');
+        if (!check.ok) return check.result;
+        return handleGetClaudeMdImpact(check.value);
+      },
+    },
+    {
+      definition: COST_PER_OUTCOME_TOOL,
+      available: !!deps.costPerOutcomeAnalyzer && !!deps.taskDetector,
+      handle: (args) => {
+        const missing = requireAvailable(
+          !!deps.costPerOutcomeAnalyzer && !!deps.taskDetector,
+          'CostPerOutcomeAnalyzer or TaskDetector not available',
+        );
+        if (missing) return missing;
+        return handleGetCostPerOutcome(deps.costPerOutcomeAnalyzer!, deps.taskDetector!, {
+          since: args?.since as string | undefined,
+        });
+      },
+    },
+    {
+      definition: RECOMMENDATIONS_TOOL,
+      available: !!deps.recommendationEngine,
+      handle: (args) => {
+        const check = requireTracker(deps.recommendationEngine, 'RecommendationEngine');
+        if (!check.ok) return check.result;
+        return handleGetRecommendations(check.value, {
+          developer: args?.developer as string | undefined,
+          topN: args?.topN as number | undefined,
+        });
+      },
+    },
+    {
+      definition: TEAM_SUMMARY_TOOL,
+      available: !!deps.teamId && !!deps.nrApiKey,
+      handle: (args) => {
+        const missing = requireAvailable(
+          !!deps.teamId && !!deps.nrApiKey,
+          'teamId or nrApiKey not configured',
+        );
+        if (missing) return missing;
+        return handleGetTeamSummary({
+          teamId: deps.teamId!,
+          accountId: deps.accountId ?? '',
+          nrApiKey: deps.nrApiKey!,
+          collectorHost: deps.collectorHost,
+          since: args?.since as string | undefined,
+        });
+      },
+    },
+    {
+      definition: SUBSCRIBE_DIGEST_TOOL,
+      available: !!deps.configFilePath,
+      handle: (args) => {
+        const missing = requireAvailable(!!deps.configFilePath, 'configFilePath not available');
+        if (missing) return missing;
+        return handleSubscribeDigest(
+          typeof args?.webhookUrl === 'string' ? args.webhookUrl : '',
+          deps.configFilePath!,
+        );
+      },
+    },
+    {
+      definition: UNSUBSCRIBE_DIGEST_TOOL,
+      available: !!deps.configFilePath,
+      handle: () => {
+        const missing = requireAvailable(!!deps.configFilePath, 'configFilePath not available');
+        if (missing) return missing;
+        return handleUnsubscribeDigest(deps.configFilePath!);
+      },
+    },
+    {
+      definition: SEND_DIGEST_TOOL,
+      available: !!deps.configFilePath && !!deps.weeklySummaryGenerator,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.configFilePath && !!deps.weeklySummaryGenerator,
+          'configFilePath or WeeklySummaryGenerator not available',
+        );
+        if (missing) return missing;
+        return handleSendDigest(deps.weeklySummaryGenerator!, deps.configFilePath!);
+      },
+    },
+    {
+      definition: PERSONAL_INSIGHTS_TOOL,
+      available: !!deps.weeklySummaryGenerator && !!deps.developer,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.weeklySummaryGenerator && !!deps.developer,
+          'WeeklySummaryGenerator or developer not available',
+        );
+        if (missing) return missing;
+        return handleGetPersonalInsights(deps.weeklySummaryGenerator!, deps.developer!);
+      },
+    },
+  ]);
 }

@@ -6,6 +6,7 @@ import { InstructionDriftTracker } from '../metrics/instruction-drift-tracker.js
 import { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import type { ToolCallRecord } from '../storage/types.js';
 import {
   handleGetRetryAlerts,
   handleGetContextComposition,
@@ -15,6 +16,7 @@ import {
   handleGetToolSelectionScore,
   handleGetQualityProxy,
   handleGetApiFailures,
+  registerExtendedAnalyticsTools,
 } from './extended-analytics-tools.js';
 
 jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -101,5 +103,91 @@ describe('extended-analytics-tools handlers', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.totalFailures).toBe(0);
     expect(parsed.totalTokensLost).toBe(0);
+  });
+});
+
+describe('registerExtendedAnalyticsTools()', () => {
+  it('lists no tools and returns explanatory errors when no deps are provided', async () => {
+    const { tools, handlers } = registerExtendedAnalyticsTools({});
+    expect(tools).toEqual([]);
+    expect(Object.keys(handlers).sort()).toEqual([
+      'nr_observe_get_api_failures',
+      'nr_observe_get_context_composition',
+      'nr_observe_get_decision_tree',
+      'nr_observe_get_instruction_drift',
+      'nr_observe_get_latency_decomposition',
+      'nr_observe_get_quality_proxy',
+      'nr_observe_get_retry_alerts',
+      'nr_observe_get_tool_selection_score',
+    ]);
+    const result = await handlers.nr_observe_get_retry_alerts!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'RetryDetector not available',
+    });
+  });
+
+  it('requires both ToolSelectionScorer and toolCallBuffer for nr_observe_get_tool_selection_score', async () => {
+    const { tools, handlers } = registerExtendedAnalyticsTools({
+      toolSelectionScorer: new ToolSelectionScorer(),
+    });
+    expect(tools.map((t: { name: string }) => t.name)).not.toContain(
+      'nr_observe_get_tool_selection_score',
+    );
+    const result = await handlers.nr_observe_get_tool_selection_score!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'ToolSelectionScorer or toolCallBuffer not available',
+    });
+  });
+
+  it('nr_observe_get_latency_decomposition stays unlisted today (index.ts never wires a real tracker) and explains why when dispatched directly', async () => {
+    const { tools, handlers } = registerExtendedAnalyticsTools({});
+    expect(tools.map((t: { name: string }) => t.name)).not.toContain(
+      'nr_observe_get_latency_decomposition',
+    );
+    const result = await handlers.nr_observe_get_latency_decomposition!(undefined);
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0]!.text);
+    expect(body.error).toBe('nr_observe_get_latency_decomposition is not currently functional');
+    expect(body.note).toContain('This tool is intentionally not registered in tools/list.');
+  });
+
+  it('would list nr_observe_get_latency_decomposition and dispatch to the real handler if a tracker were ever wired up', async () => {
+    // Availability tracks the real dependency (not a hardcoded `false`) so
+    // this reactivates automatically if `index.ts` ever stops hardcoding the
+    // tracker to `undefined` — see the comment above the ToolSpec.
+    const { tools, handlers } = registerExtendedAnalyticsTools({
+      latencyDecompositionTracker: new LatencyDecompositionTracker(),
+    });
+    expect(tools.map((t: { name: string }) => t.name)).toContain(
+      'nr_observe_get_latency_decomposition',
+    );
+    const result = await handlers.nr_observe_get_latency_decomposition!(undefined);
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0]!.text).turnCount).toBe(0);
+  });
+
+  it('lists every other tool once its backing tracker is present', () => {
+    const toolCallBuffer = { getRecords: (): readonly ToolCallRecord[] => [] };
+    const { tools } = registerExtendedAnalyticsTools({
+      retryDetector: new RetryDetector(),
+      contextCompositionTracker: new ContextCompositionTracker(),
+      decisionTracker: new DecisionTracker(),
+      instructionDriftTracker: new InstructionDriftTracker(),
+      toolSelectionScorer: new ToolSelectionScorer(),
+      toolCallBuffer,
+      qualityProxyTracker: new QualityProxyTracker(),
+      apiFailureTracker: new ApiFailureTracker(),
+    });
+    expect(tools.map((t: { name: string }) => t.name).sort()).toEqual([
+      'nr_observe_get_api_failures',
+      'nr_observe_get_context_composition',
+      'nr_observe_get_decision_tree',
+      'nr_observe_get_instruction_drift',
+      'nr_observe_get_quality_proxy',
+      'nr_observe_get_retry_alerts',
+      'nr_observe_get_tool_selection_score',
+    ]);
   });
 });

@@ -8,10 +8,19 @@
  *   - `nr_observe_report_feedback`     — record user quality feedback
  */
 
+import { z } from 'zod';
+
 import type { MetricAggregator } from '../shared/index.js';
 import type { TaskDetector, AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import {
+  errorResult,
+  requireTracker,
+  requireAvailable,
+  buildToolSet,
+  type RegisteredToolSet,
+} from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -364,4 +373,80 @@ export function handleReportFeedback(
       },
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+const FeedbackSchema = z.object({
+  quality: z.enum(['good', 'bad', 'neutral']),
+  task_id: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export interface WorkflowToolsDeps {
+  taskDetector?: TaskDetector;
+  antiPatternDetector?: AntiPatternDetector;
+  efficiencyScorer?: EfficiencyScorer;
+  feedbackCollector?: FeedbackCollector;
+}
+
+export function registerWorkflowTools(deps: WorkflowToolsDeps): RegisteredToolSet {
+  return buildToolSet([
+    {
+      definition: WORKFLOW_TRACE_TOOL,
+      available: !!deps.taskDetector,
+      handle: (args) => {
+        const check = requireTracker(deps.taskDetector, 'TaskDetector');
+        if (!check.ok) return check.result;
+        const taskId = args?.task_id as string | undefined;
+        return handleGetWorkflowTrace(
+          check.value,
+          deps.antiPatternDetector,
+          deps.efficiencyScorer,
+          taskId,
+        );
+      },
+    },
+    {
+      definition: ANTI_PATTERNS_TOOL,
+      available: !!deps.antiPatternDetector && !!deps.taskDetector,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.antiPatternDetector && !!deps.taskDetector,
+          'AntiPatternDetector or TaskDetector not available',
+        );
+        if (missing) return missing;
+        return handleGetAntiPatterns(deps.taskDetector!, deps.antiPatternDetector!);
+      },
+    },
+    {
+      definition: EFFICIENCY_SCORE_TOOL,
+      available: !!deps.efficiencyScorer,
+      handle: () => {
+        const check = requireTracker(deps.efficiencyScorer, 'EfficiencyScorer');
+        if (!check.ok) return check.result;
+        return handleGetEfficiencyScore(check.value, deps.taskDetector, deps.antiPatternDetector);
+      },
+    },
+    {
+      definition: REPORT_FEEDBACK_TOOL,
+      available: !!deps.feedbackCollector,
+      handle: (args) => {
+        const check = requireTracker(deps.feedbackCollector, 'FeedbackCollector');
+        if (!check.ok) return check.result;
+        try {
+          const feedbackArgs = FeedbackSchema.parse(args);
+          return handleReportFeedback(check.value, feedbackArgs);
+        } catch (err) {
+          const message =
+            err instanceof z.ZodError
+              ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+              : String(err);
+          return errorResult(`Invalid feedback: ${message}`);
+        }
+      },
+    },
+  ]);
 }

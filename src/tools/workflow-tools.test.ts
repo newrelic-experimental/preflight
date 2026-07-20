@@ -12,6 +12,7 @@ import {
   handleGetAntiPatterns,
   handleGetEfficiencyScore,
   handleReportFeedback,
+  registerWorkflowTools,
 } from './workflow-tools.js';
 import { handleGetCostBreakdown } from './cost-tools.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -764,5 +765,62 @@ describe('MCP protocol integration — workflow tools', () => {
 
     expect(body.recorded).toBe(true);
     expect(body.quality).toBe('good');
+  });
+});
+
+describe('registerWorkflowTools()', () => {
+  it('lists no tools and returns explanatory errors when no deps are provided', async () => {
+    const { tools, handlers } = registerWorkflowTools({});
+    expect(tools).toEqual([]);
+    expect(Object.keys(handlers).sort()).toEqual([
+      'nr_observe_get_anti_patterns',
+      'nr_observe_get_efficiency_score',
+      'nr_observe_get_workflow_trace',
+      'nr_observe_report_feedback',
+    ]);
+    const result = await handlers.nr_observe_get_workflow_trace!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ error: 'TaskDetector not available' });
+  });
+
+  it('requires both AntiPatternDetector and TaskDetector for nr_observe_get_anti_patterns', async () => {
+    const taskDetector = new TaskDetector();
+    const { tools, handlers } = registerWorkflowTools({ taskDetector });
+    expect(tools.map((t: { name: string }) => t.name)).not.toContain(
+      'nr_observe_get_anti_patterns',
+    );
+    const result = await handlers.nr_observe_get_anti_patterns!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'AntiPatternDetector or TaskDetector not available',
+    });
+  });
+
+  it('lists every tool once its backing deps are all present', () => {
+    const taskDetector = new TaskDetector();
+    const antiPatternDetector = new AntiPatternDetector();
+    const efficiencyScorer = new EfficiencyScorer();
+    const feedbackCollector = new FeedbackCollector();
+    const { tools } = registerWorkflowTools({
+      taskDetector,
+      antiPatternDetector,
+      efficiencyScorer,
+      feedbackCollector,
+    });
+    expect(tools.map((t: { name: string }) => t.name).sort()).toEqual([
+      'nr_observe_get_anti_patterns',
+      'nr_observe_get_efficiency_score',
+      'nr_observe_get_workflow_trace',
+      'nr_observe_report_feedback',
+    ]);
+  });
+
+  it('rejects invalid feedback the same way the raw handler does', async () => {
+    const feedbackCollector = new FeedbackCollector();
+    const { handlers } = registerWorkflowTools({ feedbackCollector });
+    const result = await handlers.nr_observe_report_feedback!({ quality: 'terrible' });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0]!.text);
+    expect(body.error).toContain('Invalid feedback');
   });
 });

@@ -15,6 +15,7 @@ import type { LatencyTracker } from '../metrics/latency-tracker.js';
 import type { TaskCompletionTracker } from '../metrics/task-completion-tracker.js';
 import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
+import { requireTracker, buildToolSet, type RegisteredToolSet } from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
@@ -103,4 +104,67 @@ export function handleGetContextTracking(tracker: ContextTrackerRegistry): {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(tracker.getMetrics(), null, 2) }],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+export interface AnalyticsToolsDeps {
+  contextWindowTracker?: ContextWindowTracker;
+  contextTracker?: ContextTrackerRegistry;
+  latencyTracker?: LatencyTracker;
+  taskCompletionTracker?: TaskCompletionTracker;
+  modelUsageTracker?: ModelUsageTracker;
+  taskDetector?: TaskDetector;
+}
+
+export function registerAnalyticsTools(deps: AnalyticsToolsDeps): RegisteredToolSet {
+  return buildToolSet([
+    {
+      definition: CONTEXT_EFFICIENCY_TOOL,
+      available: !!deps.contextWindowTracker,
+      handle: () => {
+        const check = requireTracker(deps.contextWindowTracker, 'ContextWindowTracker');
+        if (!check.ok) return check.result;
+        return handleGetContextEfficiency(check.value);
+      },
+    },
+    {
+      definition: CONTEXT_TRACKING_TOOL,
+      available: !!deps.contextTracker,
+      handle: () => {
+        const check = requireTracker(deps.contextTracker, 'ContextTracker');
+        if (!check.ok) return check.result;
+        return handleGetContextTracking(check.value);
+      },
+    },
+    {
+      definition: LATENCY_PERCENTILES_TOOL,
+      available: !!deps.latencyTracker,
+      handle: () => {
+        const check = requireTracker(deps.latencyTracker, 'LatencyTracker');
+        if (!check.ok) return check.result;
+        return handleGetLatencyPercentiles(check.value);
+      },
+    },
+    {
+      definition: TASK_COMPLETION_TOOL,
+      available: !!deps.taskCompletionTracker,
+      handle: () => {
+        const check = requireTracker(deps.taskCompletionTracker, 'TaskCompletionTracker');
+        if (!check.ok) return check.result;
+        return handleGetTaskCompletionRate(check.value, deps.taskDetector);
+      },
+    },
+    {
+      definition: MODEL_USAGE_TOOL,
+      available: !!deps.modelUsageTracker,
+      handle: () => {
+        const check = requireTracker(deps.modelUsageTracker, 'ModelUsageTracker');
+        if (!check.ok) return check.result;
+        return handleGetModelUsage(check.value);
+      },
+    },
+  ]);
 }

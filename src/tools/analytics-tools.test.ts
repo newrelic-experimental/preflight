@@ -12,6 +12,7 @@ import {
   handleGetTaskCompletionRate,
   handleGetModelUsage,
   handleGetContextTracking,
+  registerAnalyticsTools,
 } from './analytics-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -133,5 +134,41 @@ describe('analytics-tools handlers', () => {
 
     expect(parsed).toEqual(registry.getMetrics());
     expect(parsed.turnCount).toBe(1);
+  });
+});
+
+describe('registerAnalyticsTools()', () => {
+  it('lists no tools and returns explanatory errors when no deps are provided', async () => {
+    const { tools, handlers } = registerAnalyticsTools({});
+    expect(tools).toEqual([]);
+    expect(Object.keys(handlers).sort()).toEqual([
+      'nr_observe_get_context_efficiency',
+      'nr_observe_get_context_tracking',
+      'nr_observe_get_latency_percentiles',
+      'nr_observe_get_model_usage',
+      'nr_observe_get_task_completion_rate',
+    ]);
+    const result = await handlers.nr_observe_get_model_usage!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'ModelUsageTracker not available',
+    });
+  });
+
+  it('lists every tool once its backing tracker is present', () => {
+    const { tools } = registerAnalyticsTools({
+      contextWindowTracker: new ContextWindowTracker(),
+      contextTracker: new ContextTrackerRegistry(),
+      latencyTracker: new LatencyTracker(),
+      taskCompletionTracker: new TaskCompletionTracker(),
+      modelUsageTracker: new ModelUsageTracker(),
+    });
+    expect(tools.map((t: { name: string }) => t.name).sort()).toEqual([
+      'nr_observe_get_context_efficiency',
+      'nr_observe_get_context_tracking',
+      'nr_observe_get_latency_percentiles',
+      'nr_observe_get_model_usage',
+      'nr_observe_get_task_completion_rate',
+    ]);
   });
 });

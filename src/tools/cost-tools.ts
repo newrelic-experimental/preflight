@@ -9,6 +9,8 @@
  *   - `nr_observe_get_prompt_cache_health` — cache hit rate and recommendation
  */
 
+import { z } from 'zod';
+
 import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { BudgetTracker } from '../metrics/budget-tracker.js';
@@ -16,6 +18,13 @@ import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
 import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import { localDateKey } from '../lib/date.js';
 import type { TokenUsage } from '../shared/index.js';
+import {
+  errorResult,
+  requireTracker,
+  requireAvailable,
+  buildToolSet,
+  type RegisteredToolSet,
+} from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -307,4 +316,87 @@ export function handleGetPromptCacheHealth(costTracker: CostTracker): {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+const TokenReportSchema = z.object({
+  model: z.string().min(1),
+  input_tokens: z.number().nonnegative(),
+  output_tokens: z.number().nonnegative(),
+  cache_creation_tokens: z.number().nonnegative().optional(),
+  cache_read_tokens: z.number().nonnegative().optional(),
+  thinking_tokens: z.number().nonnegative().optional(),
+});
+
+export interface CostToolsDeps {
+  costTracker?: CostTracker;
+  budgetTracker?: BudgetTracker;
+  taskDetector?: TaskDetector;
+  modelUsageTracker?: ModelUsageTracker;
+  sessionStartMs?: number;
+}
+
+export function registerCostTools(deps: CostToolsDeps): RegisteredToolSet {
+  return buildToolSet([
+    {
+      definition: REPORT_TOKENS_TOOL,
+      available: !!deps.costTracker,
+      handle: (args) => {
+        const check = requireTracker(deps.costTracker, 'CostTracker');
+        if (!check.ok) return check.result;
+        try {
+          const tokenReport = TokenReportSchema.parse(args);
+          return handleReportTokens(check.value, tokenReport, deps.modelUsageTracker);
+        } catch (err) {
+          const message =
+            err instanceof z.ZodError
+              ? err.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ')
+              : String(err);
+          return errorResult(`Invalid token report: ${message}`);
+        }
+      },
+    },
+    {
+      definition: COST_BREAKDOWN_TOOL,
+      available: !!deps.costTracker,
+      handle: () => {
+        const check = requireTracker(deps.costTracker, 'CostTracker');
+        if (!check.ok) return check.result;
+        return handleGetCostBreakdown(check.value, deps.taskDetector);
+      },
+    },
+    {
+      definition: PROMPT_CACHE_HEALTH_TOOL,
+      available: !!deps.costTracker,
+      handle: () => {
+        const check = requireTracker(deps.costTracker, 'CostTracker');
+        if (!check.ok) return check.result;
+        return handleGetPromptCacheHealth(check.value);
+      },
+    },
+    {
+      definition: BUDGET_STATUS_TOOL,
+      available: !!deps.budgetTracker,
+      handle: () => {
+        const check = requireTracker(deps.budgetTracker, 'BudgetTracker');
+        if (!check.ok) return check.result;
+        return handleGetBudgetStatus(check.value);
+      },
+    },
+    {
+      definition: COST_FORECAST_TOOL,
+      available: !!deps.costTracker && deps.sessionStartMs !== undefined,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.costTracker && deps.sessionStartMs !== undefined,
+          'CostTracker or sessionStartMs not available',
+        );
+        if (missing) return missing;
+        return handleGetCostForecast(deps.costTracker!, deps.sessionStartMs!);
+      },
+    },
+  ]);
 }

@@ -6,6 +6,7 @@ import {
   handleGetBudgetStatus,
   handleGetCostForecast,
   handleGetCostBreakdown,
+  registerCostTools,
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
@@ -411,5 +412,56 @@ describe('handleGetCostForecast()', () => {
     // `body` given the huge backdated "yesterday" spend above.
     expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd ?? 0, 2);
     expect(sessionTotalCostUsd).toBeGreaterThan(tracker.getCostForDay(todayKey));
+  });
+});
+
+describe('registerCostTools()', () => {
+  it('lists no tools and returns explanatory errors when no deps are provided', async () => {
+    const { tools, handlers } = registerCostTools({});
+    expect(tools).toEqual([]);
+    expect(Object.keys(handlers).sort()).toEqual([
+      'nr_observe_get_budget_status',
+      'nr_observe_get_cost_breakdown',
+      'nr_observe_get_cost_forecast',
+      'nr_observe_get_prompt_cache_health',
+      'nr_observe_report_tokens',
+    ]);
+    const result = await handlers.nr_observe_get_budget_status!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ error: 'BudgetTracker not available' });
+  });
+
+  it('lists every tool once its backing deps are all present', () => {
+    const costTracker = new CostTracker();
+    const budgetTracker = new BudgetTracker({
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+    });
+    const { tools } = registerCostTools({
+      costTracker,
+      budgetTracker,
+      sessionStartMs: Date.now(),
+    });
+    expect(tools.map((t: { name: string }) => t.name).sort()).toEqual([
+      'nr_observe_get_budget_status',
+      'nr_observe_get_cost_breakdown',
+      'nr_observe_get_cost_forecast',
+      'nr_observe_get_prompt_cache_health',
+      'nr_observe_report_tokens',
+    ]);
+  });
+
+  it('rejects an invalid token report the same way the raw handler does', async () => {
+    const costTracker = new CostTracker();
+    const { handlers } = registerCostTools({ costTracker });
+    const result = await handlers.nr_observe_report_tokens!({
+      input_tokens: -1,
+      output_tokens: 5,
+      model: 'claude-sonnet-4',
+    });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0]!.text);
+    expect(body.error).toContain('Invalid token report');
   });
 });

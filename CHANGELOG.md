@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.9] - 2026-07-20
+
+### Changed
+
+- The MCP server's tool registration was centralized in one 1476-line file: a single function built the `tools/list` array from a ~30-condition if-chain and dispatched `tools/call` through a ~760-line switch, referencing tool definitions and handlers scattered across five sibling files that had no registration logic of their own. Each sibling file now exports its own `registerXTools()` — a small declarative list of its tools, their availability conditions, and their handlers — and the main registry composes all of them into the server's single `tools/list`/`tools/call` handler pair. No user-visible behavior change.
+- The ~40 near-identical "tracker not available" error blocks in that dispatch switch are now built from two shared helpers (`requireTracker`/`requireAvailable`) instead of being copy-pasted per tool.
+
 ## [1.6.8] - 2026-07-20
 
 ### Fixed
