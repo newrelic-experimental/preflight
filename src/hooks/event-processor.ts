@@ -337,20 +337,24 @@ export class HookEventProcessor {
     if (this.pending.size >= this.maxPendingEvents) {
       // Prefer evicting events that are already past the orphan timeout
       const now = Date.now();
-      let evictedKey: string | undefined;
+      // Named to avoid shared/redact.ts's SECRET_KEY_RE (which matches any key
+      // name containing "key") — that would silently blank this diagnostic value.
+      let evictedPairingId: string | undefined;
       for (const [key, pendingEvent] of this.pending) {
         if (now - pendingEvent.timestamp >= this.orphanTimeoutMs) {
-          evictedKey = key;
+          evictedPairingId = key;
           break;
         }
       }
-      if (evictedKey === undefined) {
-        evictedKey = this.pending.keys().next().value as string | undefined;
-        logger.warn('Evicting non-orphan pre-event due to capacity overflow', { evictedKey });
+      if (evictedPairingId === undefined) {
+        evictedPairingId = this.pending.keys().next().value as string | undefined;
+        logger.warn('Evicting non-orphan pre-event due to capacity overflow', {
+          evictedPairingId,
+        });
       }
-      if (evictedKey) {
-        const evicted = this.pending.get(evictedKey)!;
-        this.pending.delete(evictedKey);
+      if (evictedPairingId) {
+        const evicted = this.pending.get(evictedPairingId)!;
+        this.pending.delete(evictedPairingId);
         // Emit a synthetic timeout record so the eviction is visible in metrics,
         // matching the behavior of sweepOrphans() and flushPending().
         const toolFields = parseToolSpecificFields(evicted.tool, evicted.toolInput, undefined);
@@ -358,7 +362,7 @@ export class HookEventProcessor {
           id: randomUUID(),
           sessionId: evicted.sessionId ?? null,
           toolName: evicted.tool,
-          toolUseId: evicted.toolUseId ?? evictedKey,
+          toolUseId: evicted.toolUseId ?? evictedPairingId,
           timestamp: evicted.timestamp,
           durationMs: null,
           success: false,

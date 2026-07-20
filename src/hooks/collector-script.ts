@@ -26,6 +26,8 @@ import {
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { REDACTION_PATTERNS } from '../redaction-patterns.js';
+import { resolveRecordContent } from '../record-content-gate.js';
 
 import type { RawTranscriptEntry, RawAssistantMessage } from './transcript-types.js';
 
@@ -82,9 +84,10 @@ function getHighSecurity(): boolean {
 }
 
 function getRecordContent(): boolean {
-  const highSecurity = getHighSecurity();
-  if (highSecurity) return false;
-  return process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT === 'true';
+  return resolveRecordContent(
+    getHighSecurity(),
+    process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT === 'true',
+  );
 }
 
 function getMaxContentLength(): number {
@@ -95,19 +98,8 @@ function getMaxContentLength(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Inline redaction (mirrors config.ts DEFAULT_REDACTION_PATTERNS)
+// Inline redaction (patterns shared with config.ts via ../redaction-patterns.js)
 // ---------------------------------------------------------------------------
-
-const REDACTION_PATTERNS: RegExp[] = [
-  /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
-  /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
-  /-----BEGIN[^-\n]{0,100}-----[A-Za-z0-9+/=\r\n. ]{0,65536}-----END[^-\n]{0,100}-----/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-  /\bnpm_[A-Za-z0-9]{36}\b/g,
-  /\bxox[a-z]-[0-9A-Za-z-]+/g,
-];
 
 const MAX_REDACT_BYTES = 1_048_576; // 1 MB
 
