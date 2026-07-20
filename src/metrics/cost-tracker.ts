@@ -12,6 +12,7 @@ import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/inde
 import { calculateCost, createLogger } from '../shared/index.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
+import type { Resettable } from './tracker-contracts.js';
 
 const logger = createLogger('cost-tracker');
 
@@ -99,7 +100,7 @@ export interface SubagentMetrics {
 // CostTracker
 // ---------------------------------------------------------------------------
 
-export class CostTracker {
+export class CostTracker implements Resettable {
   private sessionTracker: SessionTracker | null;
 
   private totalCostUsd = 0;
@@ -142,6 +143,14 @@ export class CostTracker {
   private parentCostUsd = 0;
   private totalLinesChanged = 0;
 
+  /**
+   * @param sessionTracker Optional. When provided, `getMetrics().costPerFileModified`
+   *   and the `ai.cost.cost_per_file_modified` metric are derived from its
+   *   live `uniqueFilesWritten` count. Must track the same session as this
+   *   CostTracker — if the two are reset independently (e.g. one on a
+   *   session boundary and the other not), the ratio silently blends two
+   *   different session histories.
+   */
   constructor(sessionTracker?: SessionTracker) {
     this.sessionTracker = sessionTracker ?? null;
   }
@@ -451,7 +460,7 @@ export class CostTracker {
     aggregator.record('ai.cost.parent_usd', this.parentCostUsd, attrs);
   }
 
-  reset(): void {
+  reset(_sessionId: string): void {
     this.totalCostUsd = 0;
     this.totalInputTokens = 0;
     this.totalOutputTokens = 0;

@@ -465,7 +465,7 @@ describe('Cost tracking integration', () => {
     detector.recordToolCall(makeRecord({ toolName: 'Read' }));
 
     // Reset wipes the cumulative total to 0 while the task is still active
-    costTracker.reset();
+    costTracker.reset('test-session');
 
     // Close task
     jest.advanceTimersByTime(30_000);
@@ -474,6 +474,13 @@ describe('Cost tracking integration', () => {
     // Before fix this would be negative; after fix it must be >= 0
     expect(task!.estimatedCostUsd).toBeGreaterThanOrEqual(0);
     expect(task!.tokensUsed).toBeGreaterThanOrEqual(0);
+
+    // The ordering violation (CostTracker reset mid-task) must be surfaced,
+    // not just silently clamped.
+    const warnLogged = stderrSpy.mock.calls.some((c: unknown[]) =>
+      String(c[0]).includes('negative cost/token delta'),
+    );
+    expect(warnLogged).toBe(true);
 
     detector.dispose();
   });
@@ -657,7 +664,7 @@ describe('reset()', () => {
     expect(detector.getCurrentTask()).not.toBeNull();
 
     // Reset
-    detector.reset();
+    detector.reset('test-session');
 
     expect(detector.getCompletedTasks()).toHaveLength(0);
     expect(detector.getCurrentTask()).toBeNull();
@@ -772,7 +779,7 @@ describe('drainNewlyCompletedTasks()', () => {
     detector.recordToolCall(makeRecord({ toolName: 'Read' }));
     detector.recordToolCall(makeRecord({ toolName: 'AskUserQuestion' }));
 
-    detector.reset();
+    detector.reset('test-session');
 
     expect(detector.drainNewlyCompletedTasks()).toHaveLength(0);
     expect(detector.getCompletedTasks()).toHaveLength(0);

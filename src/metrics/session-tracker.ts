@@ -10,6 +10,7 @@ import { basename } from 'node:path';
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { computePercentile } from './percentile.js';
+import type { Resettable } from './tracker-contracts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,7 +94,7 @@ export function computeDurationStats(durations: number[]): DurationStats {
 // SessionTracker
 // ---------------------------------------------------------------------------
 
-export class SessionTracker {
+export class SessionTracker implements Resettable {
   private sessionId: string;
   private sessionName: string | null = null;
   private sessionStartTime: number;

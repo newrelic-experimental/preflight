@@ -72,7 +72,7 @@ describe('TaskCompletionTracker', () => {
   it('reset clears all state', () => {
     const t = new TaskCompletionTracker();
     t.recordTask(makeTask());
-    t.reset();
+    t.reset('test-session');
     const m = t.getMetrics();
     expect(m.completedTasks).toBe(0);
     expect(m.avgTaskDurationMs).toBeNull();

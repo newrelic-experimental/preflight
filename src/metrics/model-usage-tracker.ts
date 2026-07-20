@@ -28,7 +28,9 @@ interface MutableModelStats {
   totalCostUsd: number;
 }
 
-export class ModelUsageTracker {
+import type { Resettable } from './tracker-contracts.js';
+
+export class ModelUsageTracker implements Resettable {
   private byModel = new Map<string, MutableModelStats>();
 
   recordUsage(model: string, inputTokens: number, outputTokens: number, costUsd: number): void {

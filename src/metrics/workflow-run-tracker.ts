@@ -18,6 +18,7 @@
 
 import { createLogger } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { Resettable } from './tracker-contracts.js';
 
 const logger = createLogger('workflow-run-tracker');
 
@@ -163,7 +164,7 @@ function readBoolean(record: ToolCallRecord, key: string): boolean {
 // WorkflowRunTracker
 // ---------------------------------------------------------------------------
 
-export class WorkflowRunTracker {
+export class WorkflowRunTracker implements Resettable {
   private readonly descriptionMaxLength: number;
   private readonly maxOpenRuns: number;
   private readonly maxCompletedRuns: number;

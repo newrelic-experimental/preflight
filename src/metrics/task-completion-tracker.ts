@@ -1,5 +1,9 @@
+import { createLogger } from '../shared/index.js';
 import type { AiCodingTask } from './task-detector.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { Resettable } from './tracker-contracts.js';
+
+const logger = createLogger('task-completion-tracker');
 
 interface TaskSummary {
   readonly durationMs: number;
@@ -12,12 +16,14 @@ export interface TaskCompletionMetrics {
   readonly avgToolCallsPerTask: number | null;
 }
 
-export class TaskCompletionTracker {
+export class TaskCompletionTracker implements Resettable {
   private completed: TaskSummary[] = [];
 
   // No-op: this tracker is fed via recordTask() called by TaskDetector.
   // recordToolCall exists for compatibility with the standard tracker pattern.
-  recordToolCall(_record: ToolCallRecord): void {}
+  recordToolCall(_record: ToolCallRecord): void {
+    logger.debug('recordToolCall is a no-op on this tracker; fed via recordTask()');
+  }
 
   recordTask(task: AiCodingTask): void {
     this.completed.push({ durationMs: task.durationMs, toolCallCount: task.toolCallCount });
@@ -43,7 +49,7 @@ export class TaskCompletionTracker {
     };
   }
 
-  reset(): void {
+  reset(_sessionId: string): void {
     this.completed = [];
   }
 }

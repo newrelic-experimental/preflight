@@ -13,8 +13,12 @@
 
 import { randomUUID } from 'node:crypto';
 import type { MetricAggregator } from '../shared/index.js';
+import { createLogger } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { CostTracker } from './cost-tracker.js';
+import type { Resettable } from './tracker-contracts.js';
+
+const logger = createLogger('task-detector');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,6 +59,13 @@ export interface TaskMetrics {
 
 export interface TaskDetectorOptions {
   readonly idleTimeoutMs?: number;
+  /**
+   * When provided, TaskDetector reads this tracker's cumulative totals at
+   * task-start and task-close to compute a per-task cost/token delta. Those
+   * totals must only increase between the two reads — calling
+   * `CostTracker.reset()` while a task is active silently zeroes that task's
+   * delta (a warning is logged; see `computeCostDelta()`).
+   */
   readonly costTracker?: CostTracker;
   readonly maxCompletedTasks?: number;
 }
@@ -187,7 +198,7 @@ class ActiveTask {
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_COMPLETED_TASKS = 100;
 
-export class TaskDetector {
+export class TaskDetector implements Resettable {
   private readonly idleTimeoutMs: number;
   private readonly costTracker: CostTracker | null;
   private readonly maxCompletedTasks: number;
@@ -301,7 +312,7 @@ export class TaskDetector {
     }
   }
 
-  reset(): void {
+  reset(_sessionId: string): void {
     this.clearIdleTimer();
     this.activeTask = null;
     this.completedTasks = [];
@@ -374,9 +385,22 @@ export class TaskDetector {
     const currentTokens =
       metrics.totalInputTokens + metrics.totalOutputTokens + metrics.totalThinkingTokens;
 
+    const rawCostDelta = currentCost - this.costAtTaskStart;
+    const rawTokenDelta = currentTokens - this.tokensAtTaskStart;
+
+    if (rawCostDelta < 0 || rawTokenDelta < 0) {
+      // See TaskDetectorOptions.costTracker: this only happens if the
+      // CostTracker was reset (or otherwise had its totals decrease) while
+      // this task was active.
+      logger.warn('TaskDetector: negative cost/token delta clamped to 0', {
+        rawCostDelta,
+        rawTokenDelta,
+      });
+    }
+
     return {
-      costUsd: Math.max(0, currentCost - this.costAtTaskStart),
-      tokens: Math.max(0, currentTokens - this.tokensAtTaskStart),
+      costUsd: Math.max(0, rawCostDelta),
+      tokens: Math.max(0, rawTokenDelta),
     };
   }
 
