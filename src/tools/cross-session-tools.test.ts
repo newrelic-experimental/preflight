@@ -29,6 +29,7 @@ import {
   handleSendDigest,
   handleGetPersonalInsights,
   toFiniteNumber,
+  registerCrossSessionTools,
 } from './cross-session-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -1073,5 +1074,113 @@ describe('Cross-session tool handlers', () => {
       const expected = new PersonalCoach(generator, 'alice').generate();
       expect({ ...body, generatedAt: 0 }).toEqual({ ...expected, generatedAt: 0 });
     });
+  });
+});
+
+describe('registerCrossSessionTools()', () => {
+  it('lists no tools and returns explanatory errors when no deps are provided', async () => {
+    const { tools, handlers } = registerCrossSessionTools({});
+    expect(tools).toEqual([]);
+    expect(Object.keys(handlers).sort()).toEqual([
+      'nr_observe_get_claudemd_impact',
+      'nr_observe_get_collaboration_profile',
+      'nr_observe_get_cost_per_outcome',
+      'nr_observe_get_personal_insights',
+      'nr_observe_get_platform_comparison',
+      'nr_observe_get_recommendations',
+      'nr_observe_get_session_history',
+      'nr_observe_get_team_summary',
+      'nr_observe_get_trends',
+      'nr_observe_get_weekly_summary',
+      'nr_observe_send_digest',
+      'nr_observe_subscribe_digest',
+      'nr_observe_unsubscribe_digest',
+    ]);
+    const result = await handlers.nr_observe_get_session_history!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ error: 'SessionStore not available' });
+  });
+
+  it('gates nr_observe_get_team_summary on both teamId and nrApiKey with the "not configured" wording', async () => {
+    const { tools, handlers } = registerCrossSessionTools({ teamId: 'team-1' });
+    expect(tools.map((t: { name: string }) => t.name)).not.toContain('nr_observe_get_team_summary');
+    const result = await handlers.nr_observe_get_team_summary!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'teamId or nrApiKey not configured',
+    });
+  });
+
+  it('gates nr_observe_send_digest on both configFilePath and weeklySummaryGenerator', async () => {
+    const { tools, handlers } = registerCrossSessionTools({ configFilePath: '/tmp/x.json' });
+    expect(tools.map((t: { name: string }) => t.name)).not.toContain('nr_observe_send_digest');
+    const result = await handlers.nr_observe_send_digest!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'configFilePath or WeeklySummaryGenerator not available',
+    });
+  });
+
+  it('gates nr_observe_get_personal_insights on both weeklySummaryGenerator and developer', async () => {
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const { tools, handlers } = registerCrossSessionTools({ weeklySummaryGenerator: generator });
+    expect(tools.map((t: { name: string }) => t.name)).not.toContain(
+      'nr_observe_get_personal_insights',
+    );
+    const result = await handlers.nr_observe_get_personal_insights!(undefined);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      error: 'WeeklySummaryGenerator or developer not available',
+    });
+  });
+
+  it('lists every tool once its backing deps are all present', () => {
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+    const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
+    const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
+    const claudeMdTracker = new ClaudeMdTracker({ sessionStore: store });
+    const promptFeedbackEngine = new PromptFeedbackEngine({
+      sessionStore: store,
+      collaborationProfiler,
+      claudeMdTracker,
+    });
+    const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
+    const { tools } = registerCrossSessionTools({
+      sessionStore: store,
+      weeklySummaryGenerator: generator,
+      trendAnalyzer,
+      collaborationProfiler,
+      claudeMdTracker,
+      costPerOutcomeAnalyzer,
+      taskDetector: new TaskDetector(),
+      recommendationEngine: new RecommendationEngine({
+        sessionStore: store,
+        trendAnalyzer,
+        collaborationProfiler,
+        claudeMdTracker,
+        promptFeedbackEngine,
+        costPerOutcomeAnalyzer,
+      }),
+      teamId: 'team-1',
+      nrApiKey: 'NRAK-test',
+      accountId: '12345',
+      configFilePath: resolve(tmpDir, 'config.json'),
+      developer: 'alice',
+    });
+    expect(tools.map((t: { name: string }) => t.name).sort()).toEqual([
+      'nr_observe_get_claudemd_impact',
+      'nr_observe_get_collaboration_profile',
+      'nr_observe_get_cost_per_outcome',
+      'nr_observe_get_personal_insights',
+      'nr_observe_get_platform_comparison',
+      'nr_observe_get_recommendations',
+      'nr_observe_get_session_history',
+      'nr_observe_get_team_summary',
+      'nr_observe_get_trends',
+      'nr_observe_get_weekly_summary',
+      'nr_observe_send_digest',
+      'nr_observe_subscribe_digest',
+      'nr_observe_unsubscribe_digest',
+    ]);
   });
 });

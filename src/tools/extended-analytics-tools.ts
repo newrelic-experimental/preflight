@@ -22,6 +22,12 @@ import type { InstructionDriftTracker } from '../metrics/instruction-drift-track
 import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import {
+  requireTracker,
+  requireAvailable,
+  buildToolSet,
+  type RegisteredToolSet,
+} from './tool-registry.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions (for tools/list)
@@ -181,4 +187,124 @@ export function handleGetApiFailures(tracker: ApiFailureTracker): {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(tracker.getMetrics(), null, 2) }],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+export interface ExtendedAnalyticsToolsDeps {
+  retryDetector?: RetryDetector;
+  contextCompositionTracker?: ContextCompositionTracker;
+  latencyDecompositionTracker?: LatencyDecompositionTracker;
+  decisionTracker?: DecisionTracker;
+  instructionDriftTracker?: InstructionDriftTracker;
+  toolSelectionScorer?: ToolSelectionScorer;
+  toolCallBuffer?: { getRecords(): readonly ToolCallRecord[] };
+  qualityProxyTracker?: QualityProxyTracker;
+  apiFailureTracker?: ApiFailureTracker;
+}
+
+export function registerExtendedAnalyticsTools(
+  deps: ExtendedAnalyticsToolsDeps,
+): RegisteredToolSet {
+  return buildToolSet([
+    {
+      definition: RETRY_ALERTS_TOOL,
+      available: !!deps.retryDetector,
+      handle: () => {
+        const check = requireTracker(deps.retryDetector, 'RetryDetector');
+        if (!check.ok) return check.result;
+        return handleGetRetryAlerts(check.value);
+      },
+    },
+    {
+      definition: CONTEXT_COMPOSITION_TOOL,
+      available: !!deps.contextCompositionTracker,
+      handle: () => {
+        const check = requireTracker(deps.contextCompositionTracker, 'ContextCompositionTracker');
+        if (!check.ok) return check.result;
+        return handleGetContextComposition(check.value);
+      },
+    },
+    // Permanently disabled: `index.ts` hardcodes this tracker to `undefined`
+    // (Preflight can't observe a true LLM-API-vs-tool-execution split in
+    // either stdio or proxy mode — see the comment above its instantiation
+    // there). `available` tracks the real dependency rather than a hardcoded
+    // `false` so this starts working automatically if that ever changes, but
+    // today it's never listed; dispatching it directly still explains why,
+    // instead of falling back to a generic "not available" message.
+    {
+      definition: LATENCY_DECOMPOSITION_TOOL,
+      available: !!deps.latencyDecompositionTracker,
+      handle: () => {
+        if (!deps.latencyDecompositionTracker) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  error: 'nr_observe_get_latency_decomposition is not currently functional',
+                  note: "Preflight cannot observe a true LLM-API-vs-tool-execution split in either stdio or proxy mode -- see the comment above the tracker's instantiation in index.ts for the full explanation. This tool is intentionally not registered in tools/list.",
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        return handleGetLatencyDecomposition(deps.latencyDecompositionTracker);
+      },
+    },
+    {
+      definition: DECISION_TREE_TOOL,
+      available: !!deps.decisionTracker,
+      handle: (args) => {
+        const check = requireTracker(deps.decisionTracker, 'DecisionTracker');
+        if (!check.ok) return check.result;
+        return handleGetDecisionTree(check.value, args?.post_mortem === true);
+      },
+    },
+    {
+      definition: INSTRUCTION_DRIFT_TOOL,
+      available: !!deps.instructionDriftTracker,
+      handle: () => {
+        const check = requireTracker(deps.instructionDriftTracker, 'InstructionDriftTracker');
+        if (!check.ok) return check.result;
+        return handleGetInstructionDrift(check.value);
+      },
+    },
+    {
+      definition: TOOL_SELECTION_SCORE_TOOL,
+      available: !!deps.toolSelectionScorer && !!deps.toolCallBuffer,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.toolSelectionScorer && !!deps.toolCallBuffer,
+          'ToolSelectionScorer or toolCallBuffer not available',
+        );
+        if (missing) return missing;
+        return handleGetToolSelectionScore(
+          deps.toolSelectionScorer!,
+          deps.toolCallBuffer!.getRecords(),
+        );
+      },
+    },
+    {
+      definition: QUALITY_PROXY_TOOL,
+      available: !!deps.qualityProxyTracker,
+      handle: () => {
+        const check = requireTracker(deps.qualityProxyTracker, 'QualityProxyTracker');
+        if (!check.ok) return check.result;
+        return handleGetQualityProxy(check.value);
+      },
+    },
+    {
+      definition: API_FAILURES_TOOL,
+      available: !!deps.apiFailureTracker,
+      handle: () => {
+        const check = requireTracker(deps.apiFailureTracker, 'ApiFailureTracker');
+        if (!check.ok) return check.result;
+        return handleGetApiFailures(check.value);
+      },
+    },
+  ]);
 }
