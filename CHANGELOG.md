@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.7] - 2026-07-20
+
+### Security
+
+- The hook collector binary's secret-redaction pattern list had fallen out of sync with the canonical list used elsewhere in the server, missing coverage for database connection strings with embedded credentials, Stripe/PyPI/HuggingFace tokens, Twilio SIDs, and Azure SAS tokens. Both now import from a single shared pattern list, so the two can no longer drift.
+
+### Fixed
+
+- The "Evicting non-orphan pre-event due to capacity overflow" warning was masking the actual pending-event identifier behind `***`, for the same reason as the 1.6.6 fix — the log field's own name was treated as sensitive by the secret-redaction logic. The warning now shows the real identifier.
+- The `recordContent` gate (which `highSecurity` forces off) was implemented independently in two places with duplicated logic. Both now call one shared function so the behavior can't diverge between them.
+
 ## [1.6.6] - 2026-07-19
 
 ### Fixed

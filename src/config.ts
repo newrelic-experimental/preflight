@@ -9,6 +9,8 @@ import type { CliOptions } from './types.js';
 import type { UpstreamConfig } from './proxy/types.js';
 import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
+import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
+import { resolveRecordContent } from './record-content-gate.js';
 
 const logger = createLogger('mcp-config');
 
@@ -85,25 +87,6 @@ export interface McpServerConfig {
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
 
 export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
-
-const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
-  /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
-  /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
-  /-----BEGIN[^-\n]{0,100}-----[A-Za-z0-9+/=\r\n. ]{0,65536}-----END[^-\n]{0,100}-----/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bAIzaSy[0-9A-Za-z_-]{33}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-  /\bnpm_[A-Za-z0-9]{36}\b/g,
-  /\bxox[a-z]-[0-9A-Za-z-]+/g,
-  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g,
-  /\bpypi-[A-Za-z0-9_-]{20,}\b/g,
-  /\bhf_[A-Za-z0-9]{30,}\b/g,
-  /(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis):\/\/[^:\/\s]+:[^\@\/\s]+@[^\s\/]+/gi,
-  /https?:\/\/[^\s:\/]+:[^\s@\/]+@[^\s\/]+/gi,
-  /\b(?:AC|SK)[a-f0-9]{32}\b/g,
-  /(?:[?&])(?:sig|se|sp|srt|ss|sv|st)=[A-Za-z0-9%_-]+/gi,
-  /\b(?:vercel_|heroku_|dd_|pk_)[A-Za-z0-9_-]{20,}\b/gi,
-];
 
 export const ConfigFileSchema = z
   .object({
@@ -608,13 +591,13 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
     highSecurity,
 
-    // highSecurity forces recordContent off regardless of other settings
-    recordContent: highSecurity
-      ? false
-      : envBool(
-          'NEW_RELIC_AI_MCP_RECORD_CONTENT',
-          typeof file.recordContent === 'boolean' ? file.recordContent : false,
-        ),
+    recordContent: resolveRecordContent(
+      highSecurity,
+      envBool(
+        'NEW_RELIC_AI_MCP_RECORD_CONTENT',
+        typeof file.recordContent === 'boolean' ? file.recordContent : false,
+      ),
+    ),
 
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 

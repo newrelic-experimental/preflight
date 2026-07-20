@@ -972,6 +972,17 @@ describe('collector-script', () => {
       expect(redact('function hello() { return 42; }')).toBe('function hello() { return 42; }');
     });
 
+    it('redact() replaces database connection strings with embedded credentials', () => {
+      const connStr = 'postgres://admin:s3cr3tpass@db.internal.example.com:5432/mydb';
+      expect(redact(connStr)).toContain('[REDACTED]');
+      expect(redact(connStr)).not.toContain('s3cr3tpass');
+    });
+
+    it('redact() replaces Stripe live secret keys', () => {
+      const key = 'sk_live_' + 'a'.repeat(24);
+      expect(redact(key)).toBe('[REDACTED]');
+    });
+
     it('hashInput() produces a 16-char hex string', () => {
       const hash = hashInput({ file_path: '/tmp/test' });
       expect(hash).toHaveLength(16);

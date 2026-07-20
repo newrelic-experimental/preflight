@@ -496,6 +496,25 @@ describe('HookEventProcessor', () => {
       expect(output).toContain('Evicting non-orphan pre-event due to capacity overflow');
     });
 
+    it('does not redact the evicted identifier value in the warning output', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        maxPendingEvents: 2,
+        orphanTimeoutMs: 1000,
+      });
+
+      const now = Date.now();
+      // 'a' is the oldest non-orphan pre-event and gets evicted when 'c' arrives.
+      processor.processEvents([makePreEvent({ toolUseId: 'a', timestamp: now })]);
+      processor.processEvents([makePreEvent({ toolUseId: 'b', timestamp: now })]);
+      processor.processEvents([makePreEvent({ toolUseId: 'c', timestamp: now })]);
+
+      const output = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(output).toContain('"a"');
+      expect(output).not.toContain('***');
+    });
+
     it('uses DEFAULT_MAX_PENDING (2000) when maxPendingEvents is not specified', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
