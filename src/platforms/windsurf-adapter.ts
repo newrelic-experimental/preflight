@@ -40,6 +40,7 @@ function isWindsurfToolCallEvent(x: unknown): x is WindsurfToolCallEvent {
 
 export class WindsurfAdapter implements PlatformAdapter {
   readonly platformName = 'windsurf';
+  readonly visibilityLevel = 'full-hooks' as const;
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Windsurf supports MCP natively via its own mcp_config.json. Built-in

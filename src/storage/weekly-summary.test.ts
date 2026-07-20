@@ -223,6 +223,86 @@ describe('WeeklySummaryGenerator', () => {
     expect(bob.totalTasksCompleted).toBe(1);
   });
 
+  it('per-platform breakdown correctly partitions metrics and tags visibility level', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+    const { start } = getWeekDateRange('2026-W16');
+    const baseTime = start.getTime();
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'cc-1',
+        startTime: baseTime + 1000,
+        platform: 'claude-code',
+        estimatedCostUsd: 0.1,
+        toolCallCount: 8,
+      } as Partial<FullSessionSummary>),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: 'cc-2',
+        startTime: baseTime + 2000,
+        platform: 'claude-code',
+        estimatedCostUsd: 0.2,
+        toolCallCount: 12,
+      } as Partial<FullSessionSummary>),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: 'zed-1',
+        startTime: baseTime + 3000,
+        platform: 'zed',
+        estimatedCostUsd: 0.15,
+        toolCallCount: 6,
+      } as Partial<FullSessionSummary>),
+    );
+
+    const summary = generator.generate('2026-W16');
+
+    const claudeCode = summary.perPlatform['claude-code']!;
+    expect(claudeCode.sessionCount).toBe(2);
+    expect(claudeCode.totalCostUsd).toBe(0.3);
+    expect(claudeCode.totalToolCalls).toBe(20);
+    expect(claudeCode.visibilityLevel).toBe('full-hooks');
+
+    const zed = summary.perPlatform['zed']!;
+    expect(zed.sessionCount).toBe(1);
+    expect(zed.totalCostUsd).toBe(0.15);
+    expect(zed.visibilityLevel).toBe('mcp-tools-only');
+  });
+
+  it('defaults sessions without a platform to claude-code in the per-platform breakdown', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(makeSummary({ sessionId: 'no-platform', startTime: start.getTime() + 1000 }));
+
+    const summary = generator.generate('2026-W16');
+
+    expect(summary.perPlatform['claude-code']).toBeDefined();
+    expect(summary.perPlatform['claude-code']!.sessionCount).toBe(1);
+  });
+
+  it('falls back to mcp-tools-only for a session platform not in the known adapter map', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const generator = new WeeklySummaryGenerator({ storagePath: tmpDir, sessionStore: store });
+
+    const { start } = getWeekDateRange('2026-W16');
+    store.saveSession(
+      makeSummary({
+        sessionId: 'unknown-platform',
+        startTime: start.getTime() + 1000,
+        platform: 'some-future-ide',
+      } as Partial<FullSessionSummary>),
+    );
+
+    const summary = generator.generate('2026-W16');
+
+    expect(summary.perPlatform['some-future-ide']!.visibilityLevel).toBe('mcp-tools-only');
+  });
+
   // defense-in-depth validation in generate()
   it('generate() throws for path-traversal weekId', () => {
     const store = new SessionStore({ storagePath: tmpDir });

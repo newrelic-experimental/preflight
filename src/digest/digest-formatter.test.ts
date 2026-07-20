@@ -17,6 +17,7 @@ function makeWeeklySummary(overrides: Partial<WeeklySummary> = {}): WeeklySummar
     taskSuccessRate: null,
     antiPatternCounts: {},
     perDeveloper: {},
+    perPlatform: {},
     ...overrides,
   };
 }
@@ -66,5 +67,127 @@ describe('formatSlackDigest', () => {
     const text = JSON.stringify(payload);
     expect(text).not.toContain('evil`pattern');
     expect(text).toContain('evil_pattern_injected');
+  });
+
+  it('omits the per-platform breakdown when only one platform is present', () => {
+    const payload = formatSlackDigest(
+      makeWeeklySummary({
+        perPlatform: {
+          'claude-code': {
+            sessionCount: 5,
+            totalCostUsd: 1,
+            avgEfficiencyScore: 0.8,
+            totalToolCalls: 10,
+            toolBreakdown: {},
+            totalTasksCompleted: 2,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'full-hooks',
+          },
+        },
+      }),
+    );
+    const text = JSON.stringify(payload);
+    expect(text).not.toContain('claude-code');
+  });
+
+  it('adds a per-platform breakdown section when more than one platform is present', () => {
+    const payload = formatSlackDigest(
+      makeWeeklySummary({
+        perPlatform: {
+          'claude-code': {
+            sessionCount: 5,
+            totalCostUsd: 1,
+            avgEfficiencyScore: 0.8,
+            totalToolCalls: 10,
+            toolBreakdown: {},
+            totalTasksCompleted: 2,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'full-hooks',
+          },
+          cursor: {
+            sessionCount: 3,
+            totalCostUsd: 0.5,
+            avgEfficiencyScore: 0.6,
+            totalToolCalls: 6,
+            toolBreakdown: {},
+            totalTasksCompleted: 1,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'full-hooks',
+          },
+        },
+      }),
+    );
+    const text = JSON.stringify(payload);
+    expect(text).toContain('claude-code');
+    expect(text).toContain('cursor');
+  });
+
+  it('adds a visibility caveat when the compared platforms span more than one visibility level', () => {
+    const payload = formatSlackDigest(
+      makeWeeklySummary({
+        perPlatform: {
+          'claude-code': {
+            sessionCount: 5,
+            totalCostUsd: 1,
+            avgEfficiencyScore: 0.8,
+            totalToolCalls: 10,
+            toolBreakdown: {},
+            totalTasksCompleted: 2,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'full-hooks',
+          },
+          zed: {
+            sessionCount: 2,
+            totalCostUsd: 0.2,
+            avgEfficiencyScore: 0.9,
+            totalToolCalls: 3,
+            toolBreakdown: {},
+            totalTasksCompleted: 1,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'mcp-tools-only',
+          },
+        },
+      }),
+    );
+    const text = JSON.stringify(payload);
+    expect(text.toLowerCase()).toContain('instrumentation');
+  });
+
+  it('omits the visibility caveat when all compared platforms share one visibility level', () => {
+    const payload = formatSlackDigest(
+      makeWeeklySummary({
+        perPlatform: {
+          'claude-code': {
+            sessionCount: 5,
+            totalCostUsd: 1,
+            avgEfficiencyScore: 0.8,
+            totalToolCalls: 10,
+            toolBreakdown: {},
+            totalTasksCompleted: 2,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'full-hooks',
+          },
+          cursor: {
+            sessionCount: 3,
+            totalCostUsd: 0.5,
+            avgEfficiencyScore: 0.6,
+            totalToolCalls: 6,
+            toolBreakdown: {},
+            totalTasksCompleted: 1,
+            taskSuccessRate: 1,
+            antiPatternCounts: {},
+            visibilityLevel: 'full-hooks',
+          },
+        },
+      }),
+    );
+    const text = JSON.stringify(payload).toLowerCase();
+    expect(text).not.toContain('instrumentation');
   });
 });

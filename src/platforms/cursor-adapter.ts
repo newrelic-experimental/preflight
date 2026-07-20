@@ -62,6 +62,7 @@ function isCursorToolCallEvent(x: unknown): x is CursorToolCallEvent {
 
 export class CursorAdapter implements PlatformAdapter {
   readonly platformName = 'cursor';
+  readonly visibilityLevel = 'full-hooks' as const;
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Cursor's built-in tool activity (shell commands, file reads/edits) is

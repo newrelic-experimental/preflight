@@ -629,6 +629,48 @@ describe('Cross-session tool handlers', () => {
     expect(parsed.platforms['windsurf'].average).toBeCloseTo(0.5, 2);
   });
 
+  // -------------------------------------------------------------------------
+  // 12b. get_platform_comparison — visibility level tagging + caveat
+  // -------------------------------------------------------------------------
+
+  it('handleGetPlatformComparison tags each platform bucket with its visibility level', () => {
+    store.saveSession(makeSummary({ sessionId: 'vis-cc', platform: 'claude-code' }));
+
+    const result = handleGetPlatformComparison(store, {});
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.platforms['claude-code'].visibility_level).toBe('full-hooks');
+  });
+
+  it('handleGetPlatformComparison omits the caveat when only one visibility level is present', () => {
+    store.saveSession(
+      makeSummary({ sessionId: 'same-1', platform: 'claude-code' } as Partial<FullSessionSummary>),
+    );
+    store.saveSession(
+      makeSummary({ sessionId: 'same-2', platform: 'cursor' } as Partial<FullSessionSummary>),
+    );
+
+    const result = handleGetPlatformComparison(store, {});
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(parsed.caveat).toBeUndefined();
+  });
+
+  it('handleGetPlatformComparison adds a caveat when compared platforms span different visibility levels', () => {
+    store.saveSession(
+      makeSummary({ sessionId: 'mix-1', platform: 'claude-code' } as Partial<FullSessionSummary>),
+    );
+    store.saveSession(
+      makeSummary({ sessionId: 'mix-2', platform: 'zed' } as Partial<FullSessionSummary>),
+    );
+
+    const result = handleGetPlatformComparison(store, {});
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    expect(typeof parsed.caveat).toBe('string');
+    expect(parsed.caveat.length).toBeGreaterThan(0);
+  });
+
   // unbounded developer / notes inputs
   it('handleGetSessionHistory truncates developer over 256 chars', () => {
     const longDev = 'a'.repeat(300);

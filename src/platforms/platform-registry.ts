@@ -1,5 +1,5 @@
 import { createLogger } from '../shared/index.js';
-import type { PlatformAdapter } from './types.js';
+import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
 import { ClaudeCodeAdapter } from './claude-code-adapter.js';
 import { CursorAdapter } from './cursor-adapter.js';
 import { WindsurfAdapter } from './windsurf-adapter.js';
@@ -63,4 +63,17 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new KiroAdapter());
   registry.register(new GenericMcpAdapter()); // always last
   return registry;
+}
+
+/**
+ * Maps every known platform's `platformName` to its `visibilityLevel`, for
+ * consumers (platform comparison, weekly summary) that need to tag or
+ * caveat metrics blended across platforms with different instrumentation
+ * coverage without instantiating a full registry themselves.
+ */
+export function getPlatformVisibilityMap(): ReadonlyMap<string, PlatformVisibilityLevel> {
+  const registry = createDefaultRegistry();
+  return new Map(
+    registry.getRegistered().map((adapter) => [adapter.platformName, adapter.visibilityLevel]),
+  );
 }

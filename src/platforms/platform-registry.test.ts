@@ -57,6 +57,7 @@ afterEach(() => {
 
 class FakeAdapter implements PlatformAdapter {
   readonly platformName: string;
+  readonly visibilityLevel = 'full-hooks' as const;
   private readonly supported: boolean;
 
   constructor(name: string, supported: boolean) {
@@ -135,6 +136,7 @@ describe('PlatformRegistry', () => {
       let isSupported = true;
       const mutableAdapter: PlatformAdapter = {
         platformName: 'mutable',
+        visibilityLevel: 'full-hooks',
         async initialize() {},
         normalizeToolCall() {
           return {
@@ -339,6 +341,17 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const adapters = registry.getRegistered();
     expect(adapters[adapters.length - 1].platformName).toBe('generic-mcp');
+  });
+});
+
+describe('visibility level', () => {
+  const VALID_LEVELS = new Set(['full-hooks', 'self-reported', 'mcp-tools-only']);
+
+  it('every registered adapter declares a valid visibilityLevel', () => {
+    const registry = createDefaultRegistry();
+    for (const adapter of registry.getRegistered()) {
+      expect(VALID_LEVELS.has(adapter.visibilityLevel)).toBe(true);
+    }
   });
 });
 
