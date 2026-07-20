@@ -176,6 +176,32 @@ describe('SessionTracker', () => {
       expect(metrics.uniqueFilesRead).toBe(0);
       expect(metrics.uniqueFilesWritten).toBe(0);
     });
+
+    it('caps uniqueFilesRead at MAX_UNIQUE_FILES, evicting the earliest-read file first', () => {
+      const tracker = new SessionTracker('test-session');
+
+      for (let i = 0; i < 10_001; i++) {
+        tracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: `/file-${i}.ts` }));
+      }
+      expect(tracker.getMetrics().uniqueFilesRead).toBe(10_000);
+
+      // Re-reading the evicted first file should count as a new entry and
+      // stay within the cap (proves head-drop, not a silent no-op past cap).
+      tracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/file-0.ts' }));
+      expect(tracker.getMetrics().uniqueFilesRead).toBe(10_000);
+    });
+
+    it('caps uniqueFilesWritten at MAX_UNIQUE_FILES, evicting the earliest-written file first', () => {
+      const tracker = new SessionTracker('test-session');
+
+      for (let i = 0; i < 10_001; i++) {
+        tracker.recordToolCall(makeRecord({ toolName: 'Write', filePath: `/file-${i}.ts` }));
+      }
+      expect(tracker.getMetrics().uniqueFilesWritten).toBe(10_000);
+
+      tracker.recordToolCall(makeRecord({ toolName: 'Write', filePath: '/file-0.ts' }));
+      expect(tracker.getMetrics().uniqueFilesWritten).toBe(10_000);
+    });
   });
 
   describe('bash tracking', () => {

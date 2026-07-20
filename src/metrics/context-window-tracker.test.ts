@@ -92,4 +92,21 @@ describe('ContextWindowTracker', () => {
     // file-d has no repeats so it must not appear
     expect(top.find((e) => e.file === '/file-d.ts')).toBeUndefined();
   });
+
+  it('caps fileReadCounts at MAX_UNIQUE_FILES, evicting the earliest-read file first', () => {
+    const t = new ContextWindowTracker();
+    for (let i = 0; i < 10_001; i++) {
+      t.recordToolCall(makeRecord({ filePath: `/file-${i}.ts` }));
+    }
+    expect(t.getMetrics().uniqueFilesRead).toBe(10_000);
+
+    // The very first file read should have been evicted to make room...
+    t.recordToolCall(makeRecord({ filePath: '/file-0.ts' }));
+    expect(t.getMetrics().uniqueFilesRead).toBe(10_000);
+
+    // ...while the most recently read file is still tracked.
+    t.recordToolCall(makeRecord({ filePath: '/file-10000.ts' }));
+    t.recordToolCall(makeRecord({ filePath: '/file-10000.ts' }));
+    expect(t.getMetrics().topRepeatedFiles.some((e) => e.file === '/file-10000.ts')).toBe(true);
+  });
 });

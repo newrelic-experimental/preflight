@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import {
@@ -11,6 +11,8 @@ import {
   setupDashboardPostBind,
   getDashboardRepollIntervalMs,
   DEFAULT_DASHBOARD_REPOLL_MS,
+  startRetentionSweep,
+  startMaintenanceGc,
 } from './index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import type { LocalStore } from './storage/index.js';
@@ -392,6 +394,45 @@ describe('getDashboardRepollIntervalMs()', () => {
 });
 
 describe('setupDashboardPostBind()', () => {
+  function makeLocalStore(): {
+    store: LocalStore;
+    writeLocalDashboardPid: ReturnType<typeof jest.fn>;
+  } {
+    const writeLocalDashboardPid = jest.fn();
+    const store = { writeLocalDashboardPid } as unknown as LocalStore;
+    return { store, writeLocalDashboardPid };
+  }
+
+  it('writes the local-dashboard pid file when isLocalMode is true', () => {
+    const { store, writeLocalDashboardPid } = makeLocalStore();
+    setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, openOnStart: false, isLocalMode: true },
+    );
+    expect(writeLocalDashboardPid).toHaveBeenCalledWith(process.argv.slice(1), process.cwd());
+  });
+
+  it('does not write the local-dashboard pid file when isLocalMode is false (--stdio)', () => {
+    const { store, writeLocalDashboardPid } = makeLocalStore();
+    setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, openOnStart: false, isLocalMode: false },
+    );
+    expect(writeLocalDashboardPid).not.toHaveBeenCalled();
+  });
+
+  it('warns that openOnStart is not implemented when set', () => {
+    const { store } = makeLocalStore();
+    setupDashboardPostBind(
+      { address: '127.0.0.1', port: 7777 },
+      { localStore: store, openOnStart: true, isLocalMode: false },
+    );
+    const logged = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(logged.some((l: string) => l.includes('openOnStart is not implemented'))).toBe(true);
+  });
+});
+
+describe('startMaintenanceGc()', () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -404,19 +445,16 @@ describe('setupDashboardPostBind()', () => {
     gcStaleBreadcrumbs: ReturnType<typeof jest.fn>;
     gcOrphanBuffers: ReturnType<typeof jest.fn>;
     getActiveSessionIdsFromHeartbeats: ReturnType<typeof jest.fn>;
-    writeLocalDashboardPid: ReturnType<typeof jest.fn>;
     gcDeadLocalInstances: ReturnType<typeof jest.fn>;
   } {
     const gcStaleBreadcrumbs = jest.fn();
     const gcOrphanBuffers = jest.fn();
     const getActiveSessionIdsFromHeartbeats = jest.fn(() => new Set<string>());
-    const writeLocalDashboardPid = jest.fn();
     const gcDeadLocalInstances = jest.fn(() => 0);
     const store = {
       gcStaleBreadcrumbs,
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
-      writeLocalDashboardPid,
       gcDeadLocalInstances,
     } as unknown as LocalStore;
     return {
@@ -424,29 +462,22 @@ describe('setupDashboardPostBind()', () => {
       gcStaleBreadcrumbs,
       gcOrphanBuffers,
       getActiveSessionIdsFromHeartbeats,
-      writeLocalDashboardPid,
       gcDeadLocalInstances,
     };
   }
 
-  it('runs a GC pass immediately on bind and returns an unref-able interval', () => {
+  it('runs a GC pass immediately and returns an unref-able interval', () => {
     const { store, gcStaleBreadcrumbs, gcOrphanBuffers } = makeLocalStore();
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
-    );
+    const handle = startMaintenanceGc({ localStore: store, liveSessionRegistry: undefined });
     expect(gcStaleBreadcrumbs).toHaveBeenCalledTimes(1);
     expect(gcOrphanBuffers).toHaveBeenCalledTimes(1);
-    expect(typeof (handle as NodeJS.Timeout).unref).toBe('function');
+    expect(typeof handle.unref).toBe('function');
     clearInterval(handle);
   });
 
   it('schedules subsequent GC passes on the 5-minute interval', () => {
     const { store, gcStaleBreadcrumbs } = makeLocalStore();
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
-    );
+    const handle = startMaintenanceGc({ localStore: store, liveSessionRegistry: undefined });
     expect(gcStaleBreadcrumbs).toHaveBeenCalledTimes(1);
     jest.advanceTimersByTime(5 * 60 * 1000);
     expect(gcStaleBreadcrumbs).toHaveBeenCalledTimes(2);
@@ -460,11 +491,8 @@ describe('setupDashboardPostBind()', () => {
     getActiveSessionIdsFromHeartbeats.mockReturnValue(new Set(['heartbeat-only']));
     const liveSessionRegistry = {
       getLiveSessions: jest.fn(() => new Set(['registry-only'])),
-    } as unknown as Parameters<typeof setupDashboardPostBind>[1]['liveSessionRegistry'];
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry, openOnStart: false, isLocalMode: false },
-    );
+    } as unknown as Parameters<typeof startMaintenanceGc>[0]['liveSessionRegistry'];
+    const handle = startMaintenanceGc({ localStore: store, liveSessionRegistry });
     const liveArg = gcOrphanBuffers.mock.calls[0]?.[0] as Set<string>;
     expect(liveArg.has('heartbeat-only')).toBe(true);
     expect(liveArg.has('registry-only')).toBe(true);
@@ -482,47 +510,72 @@ describe('setupDashboardPostBind()', () => {
     );
     const liveSessionRegistry = {
       getLiveSessions,
-    } as unknown as Parameters<typeof setupDashboardPostBind>[1]['liveSessionRegistry'];
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry, openOnStart: false, isLocalMode: false },
-    );
+    } as unknown as Parameters<typeof startMaintenanceGc>[0]['liveSessionRegistry'];
+    const handle = startMaintenanceGc({ localStore: store, liveSessionRegistry });
     expect(getLiveSessions).toHaveBeenCalledWith({ includeSynthetic: true });
     const liveArg = gcOrphanBuffers.mock.calls[0]?.[0] as Set<string>;
     expect(liveArg.has('proxy-1234567890')).toBe(true);
     clearInterval(handle);
   });
 
-  it('writes the local-dashboard pid file when isLocalMode is true', () => {
-    const { store, writeLocalDashboardPid } = makeLocalStore();
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: true },
-    );
-    expect(writeLocalDashboardPid).toHaveBeenCalledWith(process.argv.slice(1), process.cwd());
-    clearInterval(handle);
-  });
-
-  it('does not write the local-dashboard pid file when isLocalMode is false (--stdio)', () => {
-    const { store, writeLocalDashboardPid } = makeLocalStore();
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
-    );
-    expect(writeLocalDashboardPid).not.toHaveBeenCalled();
-    clearInterval(handle);
-  });
-
   it('runs gcDeadLocalInstances as part of the GC pass', () => {
     const { store, gcDeadLocalInstances } = makeLocalStore();
-    const handle = setupDashboardPostBind(
-      { address: '127.0.0.1', port: 7777 },
-      { localStore: store, liveSessionRegistry: undefined, openOnStart: false, isLocalMode: false },
-    );
+    const handle = startMaintenanceGc({ localStore: store, liveSessionRegistry: undefined });
     expect(gcDeadLocalInstances).toHaveBeenCalledTimes(1);
     jest.advanceTimersByTime(5 * 60 * 1000);
     expect(gcDeadLocalInstances).toHaveBeenCalledTimes(2);
     clearInterval(handle);
+  });
+});
+
+describe('startRetentionSweep()', () => {
+  let storagePath: string;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    storagePath = mkdtempSync(join(tmpdir(), 'nr-retention-sweep-'));
+    mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+    mkdirSync(resolve(storagePath, 'weekly_summaries'), { recursive: true });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    rmSync(storagePath, { recursive: true, force: true });
+  });
+
+  function writeOldFile(subdir: string, name: string): string {
+    const path = resolve(storagePath, subdir, name);
+    writeFileSync(path, '{}', { mode: 0o600 });
+    const oldDate = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000);
+    utimesSync(path, oldDate, oldDate);
+    return path;
+  }
+
+  it('returns null and schedules nothing when retainSessionsDays is null', () => {
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: null });
+    expect(handle).toBeNull();
+  });
+
+  it('purges old session and weekly-summary files immediately on start', () => {
+    const oldSession = writeOldFile('sessions', '2026-01-01_old.json');
+    const oldSummary = writeOldFile('weekly_summaries', '2026-W01.json');
+
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    expect(existsSync(oldSession)).toBe(false);
+    expect(existsSync(oldSummary)).toBe(false);
+    expect(typeof (handle as NodeJS.Timeout).unref).toBe('function');
+    clearInterval(handle as NodeJS.Timeout);
+  });
+
+  it('re-runs the sweep every 6 hours', () => {
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    const secondOldSession = writeOldFile('sessions', '2026-01-02_old2.json');
+    jest.advanceTimersByTime(6 * 60 * 60 * 1000);
+    expect(existsSync(secondOldSession)).toBe(false);
+
+    clearInterval(handle as NodeJS.Timeout);
   });
 });
 
@@ -561,13 +614,10 @@ describe('startDashboardRepoll()', () => {
     clearInterval(handle);
   });
 
-  it('on takeover success: clears the interval, runs postBind, calls onTakeover', async () => {
+  it('on takeover success: clears the interval, runs postBind', async () => {
     const start = jest.fn(() => Promise.resolve({ address: '127.0.0.1', port: 7777 }));
     const server = makeServer(start);
-    const postBindHandle = setInterval(() => undefined, 10_000);
-    postBindHandle.unref?.();
-    const postBind = jest.fn((_addr: { address: string; port: number }) => postBindHandle);
-    const onTakeover = jest.fn((_handle: NodeJS.Timeout) => undefined);
+    const postBind = jest.fn((_addr: { address: string; port: number }) => undefined);
     const log = silentLogger();
 
     const handle = startDashboardRepoll({
@@ -576,7 +626,6 @@ describe('startDashboardRepoll()', () => {
       port: 7777,
       intervalMs: 50,
       postBind: postBind as Parameters<typeof startDashboardRepoll>[0]['postBind'],
-      onTakeover: onTakeover as Parameters<typeof startDashboardRepoll>[0]['onTakeover'],
       logger: log,
     });
 
@@ -587,7 +636,6 @@ describe('startDashboardRepoll()', () => {
 
     expect(start).toHaveBeenCalledTimes(1);
     expect(postBind).toHaveBeenCalledWith({ address: '127.0.0.1', port: 7777 });
-    expect(onTakeover).toHaveBeenCalledWith(postBindHandle);
     expect(log.info).toHaveBeenCalledWith(expect.stringContaining('taken over'));
 
     // After takeover the interval should be cleared — advance time and
@@ -597,7 +645,6 @@ describe('startDashboardRepoll()', () => {
     expect(start).toHaveBeenCalledTimes(1);
 
     clearInterval(handle);
-    clearInterval(postBindHandle);
   });
 
   it('keeps polling silently when the port is still EADDRINUSE', async () => {

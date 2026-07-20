@@ -19,6 +19,7 @@ import {
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
+import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import { HookEventProcessor } from './hooks/index.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { CostTracker } from './metrics/cost-tracker.js';
@@ -244,17 +245,93 @@ export function getDashboardRepollIntervalMs(): number {
   return parsed;
 }
 
+const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export interface RetentionSweepDeps {
+  readonly storagePath: string;
+  readonly retainSessionsDays: number | null;
+}
+
+/** Purge old session and weekly-summary files. No-op when retention is disabled. */
+export function runRetentionSweep(deps: RetentionSweepDeps): void {
+  if (deps.retainSessionsDays === null || deps.retainSessionsDays <= 0) return;
+  const deletedSessionFiles = purgeOldSessions(deps.storagePath, deps.retainSessionsDays);
+  const deletedWeeklySummaryFiles = purgeOldWeeklySummaries(
+    deps.storagePath,
+    deps.retainSessionsDays,
+  );
+  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0) {
+    logger.info('Retention purge complete', { deletedSessionFiles, deletedWeeklySummaryFiles });
+  }
+}
+
+/**
+ * Run the retention sweep once immediately, then every 6 hours. Runs in
+ * every mode (cloud/local/both) — retention isn't gated on the dashboard
+ * binding a port. Returns null (and schedules nothing) when
+ * `retainSessionsDays` is disabled.
+ */
+export function startRetentionSweep(deps: RetentionSweepDeps): NodeJS.Timeout | null {
+  if (deps.retainSessionsDays === null || deps.retainSessionsDays <= 0) return null;
+  runRetentionSweep(deps);
+  const interval = setInterval(() => runRetentionSweep(deps), RETENTION_SWEEP_INTERVAL_MS);
+  interval.unref?.();
+  return interval;
+}
+
+export interface MaintenanceGcDeps {
+  readonly localStore: LocalStore;
+  readonly liveSessionRegistry: LiveSessionRegistry | undefined;
+}
+
+/**
+ * One orphan-buffer/breadcrumb/dead-instance GC pass. `gcOrphanBuffers()` is
+ * rename-based, so concurrent processes each running this independently just
+ * means an occasional benign "already moved" warning — no leader election
+ * needed to call this from every process.
+ */
+export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
+  const log = createLogger('mcp-cli');
+  const { localStore, liveSessionRegistry } = deps;
+  try {
+    localStore.gcStaleBreadcrumbs();
+    localStore.gcDeadLocalInstances();
+    const live = localStore.getActiveSessionIdsFromHeartbeats();
+    if (liveSessionRegistry) {
+      for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
+        live.add(id);
+      }
+    }
+    localStore.gcOrphanBuffers(live);
+  } catch (err) {
+    log.warn('GC pass failed', { error: String(err) });
+  }
+}
+
+/**
+ * Run the maintenance GC pass immediately, then every 5 minutes. Called
+ * unconditionally in every mode (cloud/local/both) — decoupled from whether
+ * the `--local` dashboard wins its port bind.
+ */
+export function startMaintenanceGc(deps: MaintenanceGcDeps): NodeJS.Timeout {
+  runMaintenanceGcPass(deps);
+  const interval = setInterval(() => runMaintenanceGcPass(deps), 5 * 60 * 1000);
+  interval.unref?.();
+  return interval;
+}
+
 /**
  * Side-effects wired up once the dashboard HTTP server has bound the port.
  * Runs on the initial-bind success path and on the re-poll takeover path so
  * a headless MCP that later seizes the dashboard performs the same setup
  * (orphan GC, openOnStart warning) as one that bound on first try.
  *
- * Returns the orphan-GC interval handle so the shutdown path can clear it.
+ * Maintenance GC now runs independently of dashboard-bind status (see
+ * `startMaintenanceGc()`), so this only handles the PID file and the
+ * openOnStart warning.
  */
 export interface DashboardPostBindDeps {
   readonly localStore: LocalStore;
-  readonly liveSessionRegistry: LiveSessionRegistry | undefined;
   readonly openOnStart: boolean;
   /** True for `--local` mode — writes the local-dashboard PID file so `preflight update` can find and restart this process. Never true for `--stdio`. */
   readonly isLocalMode: boolean;
@@ -263,37 +340,13 @@ export interface DashboardPostBindDeps {
 export function setupDashboardPostBind(
   addr: { address: string; port: number },
   deps: DashboardPostBindDeps,
-): NodeJS.Timeout {
+): void {
   const log = createLogger('mcp-cli');
   log.info(`Dashboard ready at http://${addr.address}:${addr.port}`);
 
   if (deps.isLocalMode) {
     deps.localStore.writeLocalDashboardPid(process.argv.slice(1), process.cwd());
   }
-
-  // Only the dashboard owner runs orphan-buffer/breadcrumb GC — running it
-  // from every MCP would race with itself and re-archive files repeatedly.
-  // Run once at startup, then every 5 minutes. The interval is unref'd so
-  // it doesn't keep the event loop alive.
-  const { localStore, liveSessionRegistry } = deps;
-  const runGc = (): void => {
-    try {
-      localStore.gcStaleBreadcrumbs();
-      localStore.gcDeadLocalInstances();
-      const live = localStore.getActiveSessionIdsFromHeartbeats();
-      if (liveSessionRegistry) {
-        for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
-          live.add(id);
-        }
-      }
-      localStore.gcOrphanBuffers(live);
-    } catch (err) {
-      log.warn('GC pass failed', { error: String(err) });
-    }
-  };
-  runGc();
-  const interval = setInterval(runGc, 5 * 60 * 1000);
-  interval.unref?.();
 
   // openOnStart is declared in config but auto-open isn't implemented
   // in v1 — log a warning so a user who set it doesn't assume the feature
@@ -304,8 +357,6 @@ export function setupDashboardPostBind(
         'Open it manually in your browser.',
     );
   }
-
-  return interval;
 }
 
 /**
@@ -327,8 +378,7 @@ export interface DashboardRepollOptions {
   readonly host: string;
   readonly port: number;
   readonly intervalMs?: number;
-  readonly postBind: (addr: { address: string; port: number }) => NodeJS.Timeout;
-  readonly onTakeover?: (gcInterval: NodeJS.Timeout) => void;
+  readonly postBind: (addr: { address: string; port: number }) => void;
   readonly logger?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;
@@ -349,8 +399,7 @@ export function startDashboardRepoll(opts: DashboardRepollOptions): NodeJS.Timeo
         log.info(
           `Dashboard ownership taken over at http://${addr.address}:${addr.port}; previous owner exited.`,
         );
-        const gcInterval = opts.postBind({ address: addr.address, port: addr.port });
-        opts.onTakeover?.(gcInterval);
+        opts.postBind({ address: addr.address, port: addr.port });
       } catch (err) {
         const decision = classifyDashboardStartError(err, opts.host, opts.port);
         if (decision.kind === 'rethrow') {
@@ -597,7 +646,11 @@ async function main(): Promise<void> {
   let alertRulesWatcher: import('node:fs').FSWatcher | undefined;
   let alertRulesWatchTimer: NodeJS.Timeout | undefined;
   let localStoreForShutdown: LocalStore | undefined;
-  let gcInterval: NodeJS.Timeout | undefined;
+  // Maintenance GC (orphan buffers/breadcrumbs/dead instances) and the
+  // retention sweep (sessions/ + weekly_summaries/) both run in every mode,
+  // independent of dashboard-bind status. Cleared in the shutdown handler.
+  let maintenanceGcInterval: NodeJS.Timeout | undefined;
+  let retentionInterval: NodeJS.Timeout | undefined;
   // Periodic local session-JSON flush so a non-clean exit (crash/SIGKILL)
   // loses at most one interval of session data — persistSession otherwise runs
   // only on clean shutdown. Cleared in the shutdown handler. Synthetic /
@@ -632,7 +685,8 @@ async function main(): Promise<void> {
         sessionSpan.end(stats.toolCallCount, taskMetrics.totalTasksCompleted);
       }
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
-      if (gcInterval) clearInterval(gcInterval);
+      if (maintenanceGcInterval) clearInterval(maintenanceGcInterval);
+      if (retentionInterval) clearInterval(retentionInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
       if (sessionPersistInterval) clearInterval(sessionPersistInterval);
       // Remove this MCP's heartbeat so the next dashboard-owner GC pass
@@ -795,13 +849,11 @@ async function main(): Promise<void> {
       logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
     }
 
-    if (config.retainSessionsDays !== null && config.retainSessionsDays > 0) {
-      const { purgeOldSessions } = await import('./storage/retention.js');
-      const purged = purgeOldSessions(config.storagePath, config.retainSessionsDays);
-      if (purged > 0) {
-        logger.info('Retention purge complete', { deletedSessionFiles: purged });
-      }
-    }
+    retentionInterval =
+      startRetentionSweep({
+        storagePath: config.storagePath,
+        retainSessionsDays: config.retainSessionsDays,
+      }) ?? undefined;
 
     sessionTracker = new SessionTracker(sessionTraceId);
     const costTracker = new CostTracker(sessionTracker);
@@ -838,6 +890,9 @@ async function main(): Promise<void> {
     const apiFailureTracker = new ApiFailureTracker();
     liveSessionRegistry = new LiveSessionRegistry();
     liveSessionRegistry.startSampling();
+    // Unconditional in every mode — decoupled from whether the `--local`
+    // dashboard wins its port bind (see startMaintenanceGc()'s doc comment).
+    maintenanceGcInterval = startMaintenanceGc({ localStore, liveSessionRegistry });
     const turnCostAttributor = new TurnCostAttributor();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -1285,19 +1340,19 @@ async function main(): Promise<void> {
 
       // Capture deps for the post-bind helper. Both the initial-bind path
       // and the re-poll takeover path call this; keeping the closure small
-      // ensures the two paths produce identical side effects (GC interval,
-      // openOnStart warning, etc.).
+      // ensures the two paths produce identical side effects (PID file,
+      // openOnStart warning, etc.). Maintenance GC is unconditional and
+      // already running by this point — not part of this helper.
       const postBindDeps: DashboardPostBindDeps = {
         localStore,
-        liveSessionRegistry,
         openOnStart: config.dashboard.openOnStart,
         isLocalMode: options.local,
       };
-      const runPostBind = (boundAddr: { address: string; port: number }): NodeJS.Timeout =>
+      const runPostBind = (boundAddr: { address: string; port: number }): void =>
         setupDashboardPostBind(boundAddr, postBindDeps);
 
       if (addr) {
-        gcInterval = runPostBind(addr);
+        runPostBind(addr);
       } else {
         // This MCP is headless. Schedule periodic re-bind attempts so it can
         // take over if the current dashboard owner exits. The interval is
@@ -1307,9 +1362,6 @@ async function main(): Promise<void> {
           host: config.dashboard.host,
           port: config.dashboard.port,
           postBind: runPostBind,
-          onTakeover: (handle) => {
-            gcInterval = handle;
-          },
           logger,
         });
         // In --local mode the dashboard IS the process — the HTTP listener is

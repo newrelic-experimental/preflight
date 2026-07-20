@@ -4,29 +4,39 @@ import { createLogger } from '../shared/index.js';
 
 const logger = createLogger('retention');
 
-export function purgeOldSessions(storagePath: string, retainDays: number): number {
-  const sessionsDir = resolve(storagePath, 'sessions');
-  // Sessions are deleted if mtime < cutoff. Sessions exactly at the cutoff (rare in practice) are retained.
+/**
+ * Delete every `.json` file in `<storagePath>/<subdir>` whose mtime is older
+ * than `retainDays`. Shared by `purgeOldSessions` and
+ * `purgeOldWeeklySummaries` — only the subdirectory and log label differ.
+ */
+function purgeOldJsonFiles(
+  storagePath: string,
+  subdir: string,
+  retainDays: number,
+  fileKind: string,
+): number {
+  const dir = resolve(storagePath, subdir);
+  // Files are deleted if mtime < cutoff. Files exactly at the cutoff (rare in practice) are retained.
   const cutoffMs = Date.now() - retainDays * 24 * 60 * 60 * 1000;
   let deletedCount = 0;
 
   let files: string[];
   try {
-    files = readdirSync(sessionsDir);
+    files = readdirSync(dir);
   } catch {
-    return 0; // sessions directory doesn't exist yet
+    return 0; // directory doesn't exist yet
   }
 
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
-    const fullPath = resolve(sessionsDir, file);
+    const fullPath = resolve(dir, file);
     try {
       const stat = statSync(fullPath);
       if (stat.mtimeMs < cutoffMs) {
         try {
           unlinkSync(fullPath);
           deletedCount++;
-          logger.debug('Purged old session file', {
+          logger.debug(`Purged old ${fileKind} file`, {
             file,
             ageDays: Math.floor((Date.now() - stat.mtimeMs) / 86_400_000),
           });
@@ -36,18 +46,26 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
             // Already deleted by another process — still count it
             deletedCount++;
           } else {
-            logger.warn('Failed to delete session file', { file, error: String(unlinkErr) });
+            logger.warn(`Failed to delete ${fileKind} file`, { file, error: String(unlinkErr) });
           }
         }
       }
     } catch (err) {
-      logger.warn('Failed to check/delete session file', { file, error: String(err) });
+      logger.warn(`Failed to check/delete ${fileKind} file`, { file, error: String(err) });
     }
   }
 
   if (deletedCount > 0) {
-    logger.info('Purged old session files', { count: deletedCount, retainDays });
+    logger.info(`Purged old ${fileKind} files`, { count: deletedCount, retainDays });
   }
 
   return deletedCount;
+}
+
+export function purgeOldSessions(storagePath: string, retainDays: number): number {
+  return purgeOldJsonFiles(storagePath, 'sessions', retainDays, 'session');
+}
+
+export function purgeOldWeeklySummaries(storagePath: string, retainDays: number): number {
+  return purgeOldJsonFiles(storagePath, 'weekly_summaries', retainDays, 'weekly summary');
 }
