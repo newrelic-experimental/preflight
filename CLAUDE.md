@@ -213,23 +213,26 @@ Logger writes to stderr as JSON. Never write to stdout (reserved for MCP stdio t
 
 ## Metric Tracker Pattern
 
-All metric trackers in `src/metrics/` follow the same shape:
+Trackers in `src/metrics/` do not share one input shape — they fall into four families depending on how data reaches them:
 
-```typescript
-class XxxTracker {
-  constructor(options?: XxxOptions);
-  recordToolCall(record: ToolCallRecord): void; // or similar input method
-  getMetrics(): XxxMetrics; // returns current state
-  reset(sessionId: string): void; // clears state for new session
-}
-```
+- **Streaming push (void)** — `recordToolCall(record: ToolCallRecord): void`. The majority shape: `SessionTracker`, `TaskDetector`, `WorkflowRunTracker`, `ContextTracker`, `GitEfficiencyTracker`, and most others.
+- **Streaming push (signaling)** — `recordToolCall(record: ToolCallRecord): T`, returning a value the caller acts on immediately instead of only accumulating: `TurnTracker` (returns the turn id), `RetryDetector` (returns `ThrashingAlert | null`).
+- **Primitive accumulator** — a domain-named method taking specific values instead of a full `ToolCallRecord`, because the input is self-reported (tokens, cost) rather than a raw tool call: `ModelUsageTracker.recordUsage(model, inputTokens, outputTokens, costUsd)`, `CostTracker.recordTokenUsage(usage, model, ctx?)` / `recordEstimatedTokens(...)`, `BudgetTracker.updateCost(...)`.
+- **Batch/pull analyzer** — invoked periodically over accumulated history rather than per-call: `AntiPatternDetector.analyze(toolCalls: ToolCallRecord[])`, `EfficiencyScorer.computeScore(task, antiPatterns?)` / `updateScore(...)`.
 
-Each tracker:
+Whichever family a tracker belongs to, it still:
 
-- Receives `ToolCallRecord` objects from the event processor
 - Maintains internal state (maps, counters, arrays)
 - Exposes a `getMetrics()` method returning a typed snapshot
 - Has a corresponding `*.test.ts` file with factory helpers
+
+### `reset()` and the `Resettable` interface
+
+`reset(sessionId: string): void` (the `Resettable` interface, `src/metrics/tracker-contracts.ts`) has no production caller today — no dispatch loop currently calls it. It exists so a future session-boundary dispatcher can clear tracker state without type-checking against each tracker individually, and so tests can reset a tracker between cases. Trackers that implement it: `SessionTracker`, `CostTracker`, `TaskDetector`, `ModelUsageTracker`, `WorkflowRunTracker`, `AntiPatternDetector`, `TaskCompletionTracker`, `TurnTracker`, `RetryDetector`, `EfficiencyScorer`.
+
+### Cross-tracker reads require dispatch order
+
+`TaskDetector` reads `CostTracker.getMetrics()` at task-start and task-close to compute a per-task cost/token delta; `CostTracker` reads `SessionTracker.getMetrics().uniqueFilesWritten` for `costPerFileModified`. Both assume the read-from tracker's cumulative totals only move forward between reads — resetting one tracker independently of the other (e.g. `CostTracker.reset()` while a `TaskDetector` task is active) is logged as a warning rather than allowed to fail silently, but the delta is still clamped to 0 in that case. See the JSDoc on `TaskDetectorOptions.costTracker` and `CostTracker`'s constructor.
 
 ## Platform Adapter Pattern
 

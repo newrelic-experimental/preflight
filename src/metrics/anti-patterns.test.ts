@@ -821,4 +821,21 @@ describe('Edge cases', () => {
     expect(patterns2).toEqual(result2.patterns);
     expect(patterns2).toHaveLength(0); // Empty call list produces no patterns
   });
+
+  it('reset() clears patterns accumulated from a prior analyze call', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+    ];
+    detector.analyze(calls);
+    expect(detector.getCurrentPatterns().length).toBeGreaterThan(0);
+
+    detector.reset('sess-001');
+
+    expect(detector.getCurrentPatterns()).toEqual([]);
+  });
 });

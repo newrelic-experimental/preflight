@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.8] - 2026-07-20
+
+### Fixed
+
+- Metric tracker `reset()` signatures had drifted across `src/metrics/`: some took zero arguments, some silently ignored their `sessionId` parameter, and one tracker had no `reset()` at all — a generic session-boundary dispatch loop couldn't type-check across trackers. All ten affected trackers now implement a shared `Resettable` interface with a consistent `reset(sessionId: string): void` signature.
+- `TaskDetector`'s per-task cost/token delta silently clamped to zero when `CostTracker`'s cumulative totals decreased between a task's start and close (e.g. from an out-of-order `reset()`), with no diagnostic trail. That case now logs a warning with the raw delta before clamping.
+- `TaskCompletionTracker.recordToolCall()` was a literal no-op with no visibility into why; it now logs at debug level.
+
 ## [1.6.7] - 2026-07-20
 
 ### Security

@@ -412,7 +412,7 @@ describe('CostTracker', () => {
       );
       tracker.recordLinesChanged(50);
 
-      tracker.reset();
+      tracker.reset('test-session');
 
       const metrics = tracker.getMetrics();
       expect(metrics.sessionTotalCostUsd).toBeNull();
@@ -659,7 +659,7 @@ describe('CostTracker', () => {
         makeUsage({ inputTokens: 1_000, cacheReadTokens: 2_000, totalTokens: 1_000 }),
         'claude-sonnet-4-6',
       );
-      tracker.reset();
+      tracker.reset('test-session');
       expect(tracker.getMetrics().cacheHitRate).toBeNull();
       expect(tracker.getMetrics().totalCacheSavingsUsd).toBe(0);
     });
@@ -772,7 +772,7 @@ describe('CostTracker', () => {
       const dayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
       expect(tracker.getCostForDay(dayKey)).toBeGreaterThan(0);
 
-      tracker.reset();
+      tracker.reset('test-session');
 
       expect(tracker.getCostForDay(dayKey)).toBe(0);
       expect(tracker.getFirstActivityMsForDay(dayKey)).toBeNull();
@@ -891,7 +891,7 @@ describe('CostTracker', () => {
         'claude-sonnet-4',
         { workflowRunId: 'wf_a' },
       );
-      tracker.reset();
+      tracker.reset('test-session');
       expect(tracker.getCostForWorkflowRun('wf_a')).toBe(0);
       expect(tracker.getSubagentMetrics().subagentUsd).toBe(0);
       expect(tracker.getSubagentMetrics().parentUsd).toBe(0);

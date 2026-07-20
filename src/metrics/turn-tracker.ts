@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { Resettable } from './tracker-contracts.js';
 
 export interface ConversationTurn {
   readonly turnId: string;
@@ -50,7 +51,7 @@ export interface TurnTrackerOptions {
   gapThresholdMs?: number;
 }
 
-export class TurnTracker {
+export class TurnTracker implements Resettable {
   private readonly gapThresholdMs: number;
   private turns: ConversationTurn[] = [];
   private turnCounter = 0;

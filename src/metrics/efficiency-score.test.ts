@@ -424,7 +424,7 @@ describe('getScores() and reset()', () => {
     scorer.computeScore(makeTask());
     expect(scorer.getScores()).toHaveLength(1);
 
-    scorer.reset();
+    scorer.reset('test-session');
     expect(scorer.getScores()).toHaveLength(0);
     expect(scorer.getSessionAverage()).toBeNull();
   });
@@ -590,7 +590,7 @@ describe('scores cap (MAX_SCORES = 1000)', () => {
     const agg1 = { record() {} } as unknown as import('../shared/index.js').MetricAggregator;
     scorer.emitMetrics(agg1);
 
-    scorer.reset();
+    scorer.reset('test-session');
 
     scorer.computeScore(makeTask({ taskId: 't2' }));
 

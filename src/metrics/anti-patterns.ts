@@ -9,12 +9,15 @@
  *   4. Blind editing: multiple edits without verification
  *   5. Over-delegation: spawning too many sub-agents
  *
- * The detector is stateless: `analyze(toolCalls)` returns detected patterns
- * for a given sequence (typically one task's worth of tool calls).
+ * `analyze(toolCalls)` is pure — it returns detected patterns for a given
+ * sequence (typically one task's worth of tool calls) without depending on
+ * prior calls. The detector does cache the last result (for
+ * `getCurrentPatterns()`/`reset()`), so the instance itself is not stateless.
  */
 
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { Resettable } from './tracker-contracts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,7 +91,7 @@ function stuckLoopSuggestion(bashCategory: string | undefined): string {
 // AntiPatternDetector
 // ---------------------------------------------------------------------------
 
-export class AntiPatternDetector {
+export class AntiPatternDetector implements Resettable {
   private readonly thrashThreshold: number;
   private readonly reReadThreshold: number;
   private readonly stuckLoopThreshold: number;
@@ -126,6 +129,10 @@ export class AntiPatternDetector {
 
   getCurrentPatterns(): readonly AntiPattern[] {
     return this.lastMetrics?.patterns ?? [];
+  }
+
+  reset(_sessionId: string): void {
+    this.lastMetrics = null;
   }
 
   emitMetrics(aggregator: MetricAggregator, patterns: AntiPattern[]): void {

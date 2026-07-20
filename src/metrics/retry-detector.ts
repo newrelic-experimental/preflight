@@ -9,6 +9,7 @@
 import type { MetricAggregator } from '../shared/index.js';
 import { createLogger } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import type { Resettable } from './tracker-contracts.js';
 
 const logger = createLogger('retry-detector');
 
@@ -99,7 +100,7 @@ function levenshteinDistance(a: string, b: string): number {
 // RetryDetector
 // ---------------------------------------------------------------------------
 
-export class RetryDetector {
+export class RetryDetector implements Resettable {
   private readonly minOccurrences: number;
   private readonly windowSize: number;
   private readonly similarityThreshold: number;

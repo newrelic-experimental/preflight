@@ -13,6 +13,7 @@
 import type { MetricAggregator } from '../shared/index.js';
 import type { AiCodingTask } from './task-detector.js';
 import type { AntiPattern } from './anti-patterns.js';
+import type { Resettable } from './tracker-contracts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,7 +57,7 @@ const MAX_SCORES = 1_000;
 // EfficiencyScorer
 // ---------------------------------------------------------------------------
 
-export class EfficiencyScorer {
+export class EfficiencyScorer implements Resettable {
   private readonly speedWeight: number;
   private readonly correctnessWeight: number;
   private readonly autonomyWeight: number;
@@ -192,7 +193,7 @@ export class EfficiencyScorer {
     this.lastEmittedIndex = this.scores.length;
   }
 
-  reset(): void {
+  reset(_sessionId: string): void {
     this.scores.length = 0;
     this.lastEmittedIndex = 0;
   }
