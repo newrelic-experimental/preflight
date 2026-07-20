@@ -8,13 +8,15 @@ This doc is the canonical reference for what each adapter can and can't observe,
 
 ## Integration mechanisms
 
-| Mechanism                                                                                                      | Platforms                   | What's captured                                                                        |
-| -------------------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------- |
-| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q | All built-in tool calls                                                                |
-| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf            | All built-in tool calls                                                                |
-| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev           | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools |
-| **HTTP push from an extension**                                                                                | GitHub Copilot              | Whatever the (user-supplied) extension forwards                                        |
-| **Self-report via MCP tools**                                                                                  | Generic MCP fallback        | Whatever the caller reports via `nr_observe_report_tool_call`                          |
+| Mechanism                                                                                                      | Platforms                   | What's captured                                                                        | `visibilityLevel` |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
+| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q | All built-in tool calls                                                                | `full-hooks`      |
+| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf            | All built-in tool calls                                                                | `full-hooks`      |
+| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev           | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
+| **HTTP push from an extension**                                                                                | GitHub Copilot              | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
+| **Self-report via MCP tools**                                                                                  | Generic MCP fallback        | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
+
+Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` field encoding this table in code, not just prose — `full-hooks` (automatic, deterministic capture), `self-reported` (built-in-tool-shaped events are observable, but only if an external party — a third-party extension, or the calling MCP client itself — actually reports them), or `mcp-tools-only` (structurally cannot see built-in tool calls at all). Consumers that blend metrics across platforms (`nr_observe_get_platform_comparison`, the weekly digest's per-platform breakdown) use `getPlatformVisibilityMap()` (`src/platforms/platform-registry.ts`) to tag results and caveat comparisons that span more than one level.
 
 Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
@@ -260,7 +262,7 @@ Unlike every other adapter in this document, Copilot has no first-party extensio
 
 ## Adding a new adapter
 
-1. Implement `PlatformAdapter` (`src/platforms/types.ts`) in a new `src/platforms/<name>-adapter.ts`.
+1. Implement `PlatformAdapter` (`src/platforms/types.ts`) in a new `src/platforms/<name>-adapter.ts`, including a `visibilityLevel` (`full-hooks`, `self-reported`, or `mcp-tools-only` — see the table above) — `platform-registry.test.ts` enforces every registered adapter declares one.
 2. Source the tool-name map from the platform's own documentation — never invent entries. Every existing adapter's tool-map comment cites its source; do the same.
 3. If the platform has a real hook/callback mechanism, add its event vocabulary as new branches in `src/hooks/collector-script.ts` (see Cursor's or Windsurf's branches for the pattern) — don't assume the platform matches Claude Code's `tool_name`/`tool_input` shape.
 4. Register the adapter in `createDefaultRegistry()` (`src/platforms/platform-registry.ts`), before the generic MCP fallback.

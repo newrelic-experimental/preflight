@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.11] - 2026-07-20
+
+### Added
+
+- Every platform adapter now declares a `visibilityLevel` (`full-hooks`, `self-reported`, or `mcp-tools-only`) describing how much of a platform's built-in tool activity Preflight can actually observe — previously this distinction lived only in code comments, so a hook-visible platform and an MCP-tools-only platform looked structurally identical to every downstream consumer.
+- Weekly summaries now include a `perPlatform` breakdown (sessions, cost, efficiency, tool calls, anti-patterns, tagged with visibility level), alongside the existing per-developer breakdown.
+
+### Fixed
+
+- `nr_observe_get_platform_comparison` and the weekly Slack digest blended metrics across platforms with different instrumentation coverage with no indication that differences might reflect what each platform lets Preflight observe rather than actual developer behavior. Both now tag results by visibility level and add a caveat when the platforms being compared span more than one level.
+
 ## [1.6.10] - 2026-07-20
 
 ### Fixed

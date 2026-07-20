@@ -21,6 +21,8 @@ import { join } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import type { SessionStore } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
+import { getPlatformVisibilityMap } from '../platforms/platform-registry.js';
+import type { PlatformVisibilityLevel } from '../platforms/types.js';
 
 const logger = createLogger('weekly-summary');
 
@@ -39,6 +41,10 @@ export interface DeveloperWeeklyStats {
   readonly antiPatternCounts: Record<string, number>;
 }
 
+export interface PlatformWeeklyStats extends DeveloperWeeklyStats {
+  readonly visibilityLevel: PlatformVisibilityLevel;
+}
+
 export interface WeeklySummary {
   readonly week: string;
   readonly generatedAt: number;
@@ -53,6 +59,7 @@ export interface WeeklySummary {
   readonly taskSuccessRate: number | null;
   readonly antiPatternCounts: Record<string, number>;
   readonly perDeveloper: Record<string, DeveloperWeeklyStats>;
+  readonly perPlatform: Record<string, PlatformWeeklyStats>;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,11 +251,17 @@ export class WeeklySummaryGenerator {
 
 function aggregateSessions(weekId: string, sessions: FullSessionSummary[]): WeeklySummary {
   const perDeveloper = new Map<string, FullSessionSummary[]>();
+  const perPlatform = new Map<string, FullSessionSummary[]>();
 
   for (const session of sessions) {
     const existing = perDeveloper.get(session.developer) ?? [];
     existing.push(session);
     perDeveloper.set(session.developer, existing);
+
+    const platform = session.platform ?? 'claude-code';
+    const existingPlatform = perPlatform.get(platform) ?? [];
+    existingPlatform.push(session);
+    perPlatform.set(platform, existingPlatform);
   }
 
   let totalCostUsd = 0;
@@ -288,6 +301,19 @@ function aggregateSessions(weekId: string, sessions: FullSessionSummary[]): Week
     devStats[developer] = aggregateDeveloperSessions(devSessions);
   }
 
+  // Conservative fallback for a platform string not among the known adapters
+  // (shouldn't happen in practice — only the 9 registered adapters ever
+  // write session.platform) — assume the least-trusting visibility level
+  // rather than overstating instrumentation coverage.
+  const visibilityMap = getPlatformVisibilityMap();
+  const platformStats: Record<string, PlatformWeeklyStats> = {};
+  for (const [platform, platformSessions] of perPlatform) {
+    platformStats[platform] = {
+      ...aggregateDeveloperSessions(platformSessions),
+      visibilityLevel: visibilityMap.get(platform) ?? 'mcp-tools-only',
+    };
+  }
+
   return {
     week: weekId,
     generatedAt: Date.now(),
@@ -303,6 +329,7 @@ function aggregateSessions(weekId: string, sessions: FullSessionSummary[]): Week
       totalTestsRun > 0 ? round(Math.min(1, totalTestsPassed / totalTestsRun), 3) : null,
     antiPatternCounts,
     perDeveloper: devStats,
+    perPlatform: platformStats,
   };
 }
 

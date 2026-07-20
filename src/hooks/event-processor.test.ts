@@ -1069,6 +1069,7 @@ describe('HookEventProcessor', () => {
     it('maps a non-canonical tool name using the injected platform adapter', () => {
       const fakeAdapter = {
         platformName: 'fake',
+        visibilityLevel: 'full-hooks' as const,
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -1105,6 +1106,7 @@ describe('HookEventProcessor', () => {
     it('activePlatform getter reflects the injected platform adapter', () => {
       const fakeAdapter = {
         platformName: 'fake',
+        visibilityLevel: 'full-hooks' as const,
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -1132,6 +1134,7 @@ describe('HookEventProcessor', () => {
     it('maps tool names correctly when pairing falls back to findOldestPendingKey (no toolUseId)', () => {
       const fakeAdapter = {
         platformName: 'fake',
+        visibilityLevel: 'full-hooks' as const,
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -1163,6 +1166,7 @@ describe('HookEventProcessor', () => {
     it('preserves the original tool name when the platform adapter cannot map it', () => {
       const fakeAdapter = {
         platformName: 'fake',
+        visibilityLevel: 'full-hooks' as const,
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');
@@ -1186,6 +1190,7 @@ describe('HookEventProcessor', () => {
     it('does not cross-pair two different unmapped tools that share no toolUseId', () => {
       const fakeAdapter = {
         platformName: 'fake',
+        visibilityLevel: 'full-hooks' as const,
         initialize: async () => {},
         normalizeToolCall: () => {
           throw new Error('not used by this test');

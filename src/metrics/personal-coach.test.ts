@@ -52,6 +52,7 @@ function makeWeeklySummary(weekId: string, developer: string, statsOverrides = {
     perDeveloper: {
       [developer]: makeWeeklyStats(statsOverrides),
     },
+    perPlatform: {},
   };
 }
 

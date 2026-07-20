@@ -27,6 +27,7 @@ import type { CostPerOutcomeAnalyzer } from '../metrics/cost-per-outcome.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 import { PersonalCoach } from '../metrics/personal-coach.js';
+import { getPlatformVisibilityMap } from '../platforms/platform-registry.js';
 import {
   requireTracker,
   requireAvailable,
@@ -174,7 +175,8 @@ export const RECOMMENDATIONS_TOOL = {
 export const PLATFORM_COMPARISON_TOOL = {
   name: 'nr_observe_get_platform_comparison',
   description:
-    'Compare AI coding assistant platforms side-by-side on a given metric: efficiency, cost, task_success, tool_calls, or error_rate.',
+    'Compare AI coding assistant platforms side-by-side on a given metric: efficiency, cost, task_success, tool_calls, or error_rate. ' +
+    'Each platform bucket is tagged with visibility_level (full-hooks, self-reported, or mcp-tools-only) — platforms differ in how much built-in tool activity Preflight can observe, so a caveat is included when compared platforms span more than one level.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -597,7 +599,11 @@ export function handleGetPlatformComparison(
     byPlatform.set(platform, list);
   }
 
-  const comparison: Record<string, { session_count: number; average: number }> = {};
+  const visibilityMap = getPlatformVisibilityMap();
+  const comparison: Record<
+    string,
+    { session_count: number; average: number; visibility_level: string }
+  > = {};
 
   for (const [platform, platformSessions] of byPlatform) {
     const count = platformSessions.length;
@@ -643,14 +649,27 @@ export function handleGetPlatformComparison(
     comparison[platform] = {
       session_count: count,
       average: value,
+      visibility_level: visibilityMap.get(platform) ?? 'mcp-tools-only',
     };
   }
+
+  const distinctVisibilityLevels = new Set(
+    Object.values(comparison).map((entry) => entry.visibility_level),
+  );
+  const caveat =
+    distinctVisibilityLevels.size > 1
+      ? 'These platforms have different instrumentation coverage (see visibility_level per platform) — differences in the metric above may reflect what each platform lets Preflight observe, not actual developer behavior.'
+      : undefined;
 
   return {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify({ metric, weeks, platforms: comparison }, null, 2),
+        text: JSON.stringify(
+          { metric, weeks, platforms: comparison, ...(caveat !== undefined && { caveat }) },
+          null,
+          2,
+        ),
       },
     ],
   };

@@ -8,6 +8,7 @@ import type {
 
 export class ClaudeCodeAdapter implements PlatformAdapter {
   readonly platformName = 'claude-code';
+  readonly visibilityLevel = 'full-hooks' as const;
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // No-op — Claude Code hooks are configured externally

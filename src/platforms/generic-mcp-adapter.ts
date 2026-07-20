@@ -123,6 +123,7 @@ export function validateReportToolCallInput(raw: unknown): ReportToolCallInput {
 
 export class GenericMcpAdapter implements PlatformAdapter {
   readonly platformName = 'generic-mcp';
+  readonly visibilityLevel = 'self-reported' as const;
 
   private sessionMetadata: PlatformSessionMetadata = { platform: 'generic-mcp' };
 

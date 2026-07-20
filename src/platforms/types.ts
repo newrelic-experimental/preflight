@@ -28,8 +28,26 @@ export interface PlatformSessionMetadata {
   readonly [key: string]: unknown;
 }
 
+/**
+ * How much of a platform's built-in tool activity Preflight can actually see,
+ * independent of whether the platform is otherwise "supported":
+ * - `full-hooks` — a real hook/callback mechanism fires automatically on every
+ *   built-in tool call (Claude Code, Kiro, Amazon Q, Cursor, Windsurf).
+ * - `self-reported` — built-in-tool-shaped events are observable in principle,
+ *   but only when an external party (a third-party extension, or the calling
+ *   MCP client itself) actually reports them; there is no automatic capture
+ *   (Copilot, generic-mcp fallback).
+ * - `mcp-tools-only` — no hook/callback mechanism exists at all; Preflight can
+ *   only see calls made to its own MCP tools, never the platform's built-in
+ *   tools (Zed, Continue.dev).
+ * See docs/ADAPTERS.md's "Integration mechanisms" table for the per-platform
+ * sourcing.
+ */
+export type PlatformVisibilityLevel = 'full-hooks' | 'self-reported' | 'mcp-tools-only';
+
 export interface PlatformAdapter {
   readonly platformName: string;
+  readonly visibilityLevel: PlatformVisibilityLevel;
   initialize(config: PlatformConfig): Promise<void>;
   normalizeToolCall(raw: unknown): NormalizedToolCall;
   /**
