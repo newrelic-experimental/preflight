@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.14] - 2026-07-21
+
+### Fixed
+
+- `SubagentWatcher` decoded each 64KB poll read with a one-shot `toString('utf-8')`; a multi-byte character (emoji, non-ASCII) whose bytes straddled the read boundary was silently replaced with the Unicode replacement character and permanently lost, since the byte cursor had already advanced past those bytes. Decoding now goes through a per-file `StringDecoder`, which buffers an incomplete trailing byte sequence and reconstructs the character correctly on the next poll.
+
+### Added
+
+- Test coverage for `dashboard-health.ts` (`waitForHealthyDashboard()` and `getDashboardAddress()`), which had none despite gating the pass/fail signal shown by `preflight update` and the setup wizard's daemon-install flow.
+
 ## [1.6.13] - 2026-07-20
 
 ### Added
