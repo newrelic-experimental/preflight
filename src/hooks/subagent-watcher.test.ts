@@ -623,6 +623,66 @@ describe('SubagentWatcher', () => {
   });
 
   // -------------------------------------------------------------------------
+  // UTF-8 multi-byte character straddling the 64 KiB poll-boundary read
+  // -------------------------------------------------------------------------
+
+  function makeAssistantLineWithId(messageId: string): string {
+    return JSON.stringify({
+      type: 'assistant',
+      agentId: AGENT_ID,
+      uuid: 'turn-uuid-1',
+      timestamp: '2026-06-15T12:00:00.000Z',
+      sessionId: PARENT_SESSION,
+      message: {
+        id: messageId,
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text' }],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 1000,
+          cache_creation_input_tokens: 200,
+        },
+      },
+    });
+  }
+
+  it('decodes a multi-byte character whose UTF-8 bytes straddle the 64 KiB poll boundary', () => {
+    // Everything in the template up to messageId's value is plain ASCII, so
+    // the marker's string index equals its UTF-8 byte offset.
+    const MARKER = 'MARKERMARKERMARKER';
+    const markerOffset = makeAssistantLineWithId(MARKER).indexOf(MARKER);
+
+    // 💥 (U+1F4A5) is 4 bytes in UTF-8. Pad with ASCII ('a' is 1 byte each) so
+    // the emoji's bytes land at [65534, 65538) — 2 bytes inside the first poll
+    // read ([0, 65536), MAX_BYTES_PER_POLL), 2 bytes in the next.
+    const padLen = 65536 - 2 - markerOffset;
+    const expectedMessageId = 'a'.repeat(padLen) + '💥' + '_tail';
+    const line = makeAssistantLineWithId(expectedMessageId);
+    expect(Buffer.byteLength(line)).toBeGreaterThan(65536);
+    writeFileSync(agentJsonl, line + '\n');
+
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+
+    // First poll reads exactly [0, 65536) — the emoji is split mid-character
+    // and the line has no newline within that window, so nothing emits yet.
+    watcher.poll();
+    expect(countTokens()).toHaveLength(0);
+
+    // Second poll reads the remainder, completing the emoji and the line.
+    watcher.poll();
+    const tokens = countTokens();
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]!.messageId).toBe(expectedMessageId);
+  });
+
+  // -------------------------------------------------------------------------
   // Schema-drift + cost self-check observability health events
   // -------------------------------------------------------------------------
 

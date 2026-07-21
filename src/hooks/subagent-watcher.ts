@@ -40,6 +40,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -227,6 +228,19 @@ export class SubagentWatcher {
   // cursor file. Bounded per-entry by MAX_PARTIAL_LINE_BYTES (see processFile)
   // and per-key by the number of files discovered this poll (see poll()).
   private readonly partialByPath = new Map<string, string>();
+
+  // Per-file UTF-8 decoder state. A 64 KiB poll read can end mid-multi-byte
+  // character; StringDecoder buffers an incomplete trailing sequence
+  // internally and transparently prepends it on the next write() call on the
+  // same instance, so a split character reconstructs correctly across polls
+  // without us tracking raw tail bytes ourselves. This state is in-memory
+  // only, not persisted to the byte cursor: a process restart landing
+  // exactly between the splitting poll and the completing poll still
+  // corrupts that one character, same as before this fix — narrower than
+  // the bug being fixed (a restart is rare; every poll boundary is not).
+  // Evicted alongside
+  // partialByPath in evictStalePartials() — see that method's comment.
+  private readonly decoderByPath = new Map<string, StringDecoder>();
 
   // Health counters
   private filesWatched = 0;
@@ -537,7 +551,12 @@ export class SubagentWatcher {
     }
     if (actuallyRead === 0) return;
 
-    const chunk = buf.subarray(0, actuallyRead).toString('utf-8');
+    let decoder = this.decoderByPath.get(file.path);
+    if (decoder === undefined) {
+      decoder = new StringDecoder('utf-8');
+      this.decoderByPath.set(file.path, decoder);
+    }
+    const chunk = decoder.write(buf.subarray(0, actuallyRead));
     this.bytesRead += actuallyRead;
 
     // Carry over any partial-line content from the previous poll. The in-memory
@@ -646,11 +665,14 @@ export class SubagentWatcher {
    * file reappears, we resume from it.
    */
   private evictStalePartials(files: DiscoveredFile[]): void {
-    if (this.partialByPath.size === 0) return;
+    if (this.partialByPath.size === 0 && this.decoderByPath.size === 0) return;
     const live = new Set<string>();
     for (const f of files) live.add(f.path);
     for (const path of this.partialByPath.keys()) {
       if (!live.has(path)) this.partialByPath.delete(path);
+    }
+    for (const path of this.decoderByPath.keys()) {
+      if (!live.has(path)) this.decoderByPath.delete(path);
     }
   }
 
