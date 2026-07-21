@@ -799,7 +799,8 @@ async function main(): Promise<void> {
       // span is a safe no-op on shutdown.
       if (config.otlp.transport !== 'nr-events-api') {
         initMcpTracer();
-        sessionSpan = new SessionSpan(sessionTraceId, config.developer);
+        const detectedPlatform = createDefaultRegistry().getActive().platformName;
+        sessionSpan = new SessionSpan(sessionTraceId, config.developer, detectedPlatform);
         taskSpanTracker = new TaskSpanTracker();
         if (!sessionTraceId.startsWith('pending-')) {
           sessionSpan.start();
@@ -2042,7 +2043,8 @@ async function main(): Promise<void> {
               // (cross-session events can open them during Phase A) before
               // replacing it with a clean real-session instance.
               taskSpanTracker?.closeAll();
-              sessionSpan = new SessionSpan(realId, config!.developer);
+              const detectedPlatform = createDefaultRegistry().getActive().platformName;
+              sessionSpan = new SessionSpan(realId, config!.developer, detectedPlatform);
               taskSpanTracker = new TaskSpanTracker();
               sessionSpan.start();
             }

@@ -18,20 +18,20 @@ describe('SessionSpan', () => {
   });
 
   test('start creates a span with correct attributes', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'cursor');
     session.start();
 
     expect(mockTracer.startSpan).toHaveBeenCalledWith('ai.coding.session', {
       attributes: {
         'ai.session.id': 'test-session-id',
         'ai.developer': 'test-developer',
-        'ai.platform': 'claude-code',
+        'ai.platform': 'cursor',
       },
     });
   });
 
   test('start is idempotent', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.start();
     session.start();
 
@@ -39,7 +39,7 @@ describe('SessionSpan', () => {
   });
 
   test('end sets attributes and ends the span', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.start();
     session.end(5, 2);
 
@@ -52,7 +52,7 @@ describe('SessionSpan', () => {
   });
 
   test('end clears the internal span reference', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.start();
     session.end(5, 2);
 
@@ -60,12 +60,12 @@ describe('SessionSpan', () => {
   });
 
   test('getSpan returns null when span is not active', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     expect(session.getSpan()).toBeNull();
   });
 
   test('getSpan returns span after start', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.start();
 
     expect(session.getSpan()).not.toBeNull();
@@ -73,7 +73,7 @@ describe('SessionSpan', () => {
 
   test('getContext returns a context containing the span after start', () => {
     const { trace } = jest.requireActual<typeof import('@opentelemetry/api')>('@opentelemetry/api');
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.start();
 
     const ctx = session.getContext();
@@ -83,14 +83,14 @@ describe('SessionSpan', () => {
   test('getContext returns active context when span is not started', () => {
     const { context } =
       jest.requireActual<typeof import('@opentelemetry/api')>('@opentelemetry/api');
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
 
     const ctx = session.getContext();
     expect(ctx).toBe(context.active());
   });
 
   test('end is a no-op when called before start', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.end(0, 0);
 
     expect(mockTracer.startSpan).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe('SessionSpan', () => {
   });
 
   test('end is idempotent when called a second time', () => {
-    const session = new SessionSpan('test-session-id', 'test-developer');
+    const session = new SessionSpan('test-session-id', 'test-developer', 'claude-code');
     session.start();
     session.end(5, 2);
     session.end(5, 2);

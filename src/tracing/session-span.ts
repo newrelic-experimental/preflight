@@ -8,12 +8,14 @@ export class SessionSpan {
   private span: Span | null = null;
   private readonly sessionId: string;
   private readonly developer: string;
+  private readonly platform: string;
   private started = false;
   private ended = false;
 
-  constructor(sessionId: string, developer: string) {
+  constructor(sessionId: string, developer: string, platform: string) {
     this.sessionId = sessionId;
     this.developer = developer;
+    this.platform = platform;
   }
 
   start(): void {
@@ -22,7 +24,7 @@ export class SessionSpan {
       attributes: {
         'ai.session.id': this.sessionId,
         'ai.developer': this.developer,
-        'ai.platform': 'claude-code',
+        'ai.platform': this.platform,
       },
     });
     this.started = true;

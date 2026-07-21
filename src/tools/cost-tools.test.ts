@@ -315,6 +315,22 @@ describe('handleGetPromptCacheHealth()', () => {
     expect(body.status).toBe('can_improve');
   });
 
+  it('recommends a generic "instruction file", not a hardcoded CLAUDE.md reference', () => {
+    const tracker = makeTracker({
+      totalInputTokens: 5_000,
+      totalCacheReadTokens: 3_000,
+      totalCacheCreationTokens: 2_000,
+      cacheHitRate: 0.3,
+      totalCacheSavingsUsd: 0.05,
+      reportCount: 5,
+    });
+    const result = handleGetPromptCacheHealth(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.recommendation).not.toContain('CLAUDE.md');
+    expect(body.recommendation).toContain('instruction file');
+  });
+
   it('includes total_savings_usd and token counts', () => {
     const tracker = makeTracker({
       totalInputTokens: 3_000,
