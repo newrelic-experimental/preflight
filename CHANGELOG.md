@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.13] - 2026-07-20
+
+### Added
+
+- `otlp`-related config fields are now grouped under a nested `otlp: {...}` object on the resolved server config, matching the existing `dashboard`/`alerts` nesting. The legacy flat top-level keys (`otlpEndpoint`, `otlpHeaders`, `otlpReceiverEnabled`, etc.) are still accepted in config.json for backward compatibility; using one now logs a deprecation warning naming the specific legacy keys consulted.
+- Added an optional `configVersion` field to config.json (defaults to 1) establishing a documented convention for versioning non-additive config-shape changes going forward.
+
+### Fixed
+
+- Numeric config values sourced from a config file or CLI flag (harvest intervals, the local OTLP receiver port, the MCP server port, alert evaluation interval/log retention) bypassed the same min/max bounds that were already enforced on the equivalent environment variable — a config-file typo or a stray CLI flag could reach the harvest scheduler or HTTP server completely unclamped.
+- `sessionBudgetUsd`, `dailyBudgetUsd`, `weeklyBudgetUsd`, and `retainSessionsDays` validated positivity only when sourced from an environment variable; a negative or zero value in config.json passed through untouched with no warning, silently disabling the cost guardrail or corrupting the retention window. These fields are now validated and a rejected value logs a warning before falling back to a safe default.
+
 ## [1.6.12] - 2026-07-20
 
 ### Added

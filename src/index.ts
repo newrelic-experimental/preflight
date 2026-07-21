@@ -678,7 +678,12 @@ async function main(): Promise<void> {
     logger.info('Shutting down...');
     try {
       persistSession?.();
-      if (config?.transport !== 'nr-events-api' && sessionTracker && taskDetector && sessionSpan) {
+      if (
+        config?.otlp?.transport !== 'nr-events-api' &&
+        sessionTracker &&
+        taskDetector &&
+        sessionSpan
+      ) {
         taskSpanTracker?.closeAll();
         const stats = sessionTracker.getMetrics();
         const taskMetrics = taskDetector.getMetrics();
@@ -791,7 +796,7 @@ async function main(): Promise<void> {
       // would emit a ghost span with a placeholder ID to the OTLP backend.
       // SessionSpan.end() guards on started=false, so an unstarted provisional
       // span is a safe no-op on shutdown.
-      if (config.transport !== 'nr-events-api') {
+      if (config.otlp.transport !== 'nr-events-api') {
         initMcpTracer();
         sessionSpan = new SessionSpan(sessionTraceId, config.developer);
         taskSpanTracker = new TaskSpanTracker();
@@ -1457,7 +1462,7 @@ async function main(): Promise<void> {
 
         // Capture active task ID before recordToolCall may close the current task
         const taskIdBeforeRecord =
-          config.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
+          config.otlp.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
 
         sessionTracker.recordToolCall(rawRecord);
         taskDetector.recordToolCall(rawRecord);
@@ -1465,7 +1470,7 @@ async function main(): Promise<void> {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
 
-        if (config.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
+        if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
           const activeTaskId = taskDetector.getActiveTaskId();
           const parentCtx = taskIdBeforeRecord
@@ -1580,7 +1585,7 @@ async function main(): Promise<void> {
           capturedNrIngest?.ingestCodingTask(task);
           taskCompletionTracker.recordTask(task);
           // Close the task span — this handles both signal-driven and idle-timer-driven closures
-          if (config.transport !== 'nr-events-api' && taskSpanTracker) {
+          if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker) {
             taskSpanTracker.closeTask(task.taskId, task.toolCallCount);
           }
           const firstRecord = task.toolCalls[0];
@@ -2023,7 +2028,7 @@ async function main(): Promise<void> {
             // Replace the provisional span with a real-ID span. End the
             // provisional one first (end() is a no-op if never started).
             // initMcpTracer() was already called in Phase A — skip it here.
-            if (config!.transport !== 'nr-events-api') {
+            if (config!.otlp.transport !== 'nr-events-api') {
               sessionSpan?.end(0, 0);
               // Close any task spans opened against the provisional tracker
               // (cross-session events can open them during Phase A) before
@@ -2296,11 +2301,11 @@ async function main(): Promise<void> {
       port: config.port,
       onToolCall,
       onRequest,
-      otlpReceiverEnabled: config.otlpReceiverEnabled,
-      otlpReceiverPort: config.otlpReceiverPort,
-      otlpReceiverBindAddress: config.otlpReceiverBindAddress,
-      otlpForwardEndpoint: config.otlpForwardEndpoint,
-      otlpForwardHeaders: config.otlpForwardHeaders,
+      otlpReceiverEnabled: config.otlp.receiverEnabled,
+      otlpReceiverPort: config.otlp.receiverPort,
+      otlpReceiverBindAddress: config.otlp.receiverBindAddress,
+      otlpForwardEndpoint: config.otlp.forwardEndpoint,
+      otlpForwardHeaders: config.otlp.forwardHeaders,
       otlpEnrichmentAttributes: {
         'ai.session.id': sessionTraceId,
         'ai.developer': config.developer,
