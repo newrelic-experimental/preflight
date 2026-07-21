@@ -17,6 +17,8 @@ const logger = createLogger('mcp-config');
 export interface McpServerConfig {
   readonly licenseKey?: string;
   readonly accountId?: string;
+  /** Config-file schema version. Defaults to 1; see CURRENT_CONFIG_VERSION. */
+  readonly configVersion: number;
   readonly appName: string;
   readonly developer: string;
   readonly teamId: string | null;
@@ -43,29 +45,37 @@ export interface McpServerConfig {
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
-  readonly otlpEndpoint: string | null;
-  readonly otlpHeaders: Readonly<Record<string, string>>;
-  readonly transport: 'nr-events-api' | 'otlp' | 'both';
   readonly mode: 'cloud' | 'local' | 'both';
   readonly platformTarget?: PlatformTarget;
-  /** Enable the local OTLP/HTTP receiver. Default: false. */
-  readonly otlpReceiverEnabled: boolean;
-  /** Port for the local OTLP/HTTP receiver. Default: 4318. */
-  readonly otlpReceiverPort: number;
-  /** Bind address for the local OTLP/HTTP receiver. Default: '127.0.0.1'. */
-  readonly otlpReceiverBindAddress: string;
   /**
-   * OTLP forward endpoint — where to relay received spans.
-   * Defaults to New Relic US OTLP endpoint when licenseKey is present.
-   * Set to null to disable forwarding (receive and enrich only, then drop).
+   * OTLP-related config, grouped to match the `dashboard`/`alerts` nesting
+   * precedent. The config-file schema also still accepts the legacy flat
+   * top-level keys (`otlpEndpoint`, `otlpReceiverPort`, etc.) for backward
+   * compatibility — see `pickOtlpValue()` in loadMcpConfig().
    */
-  readonly otlpForwardEndpoint: string | null;
-  /**
-   * HTTP headers added to every OTLP forward request (e.g. `{ 'api-key': licenseKey }`).
-   * Defaults to `{ 'api-key': licenseKey }` when licenseKey is present.
-   * Configurable via NR_AI_OTLP_FORWARD_HEADERS (comma-separated key=value pairs).
-   */
-  readonly otlpForwardHeaders: Readonly<Record<string, string>>;
+  readonly otlp: {
+    readonly endpoint: string | null;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly transport: 'nr-events-api' | 'otlp' | 'both';
+    /** Enable the local OTLP/HTTP receiver. Default: false. */
+    readonly receiverEnabled: boolean;
+    /** Port for the local OTLP/HTTP receiver. Default: 4318. */
+    readonly receiverPort: number;
+    /** Bind address for the local OTLP/HTTP receiver. Default: '127.0.0.1'. */
+    readonly receiverBindAddress: string;
+    /**
+     * OTLP forward endpoint — where to relay received spans.
+     * Defaults to New Relic US OTLP endpoint when licenseKey is present.
+     * Set to null to disable forwarding (receive and enrich only, then drop).
+     */
+    readonly forwardEndpoint: string | null;
+    /**
+     * HTTP headers added to every OTLP forward request (e.g. `{ 'api-key': licenseKey }`).
+     * Defaults to `{ 'api-key': licenseKey }` when licenseKey is present.
+     * Configurable via NR_AI_OTLP_FORWARD_HEADERS (comma-separated key=value pairs).
+     */
+    readonly forwardHeaders: Readonly<Record<string, string>>;
+  };
   readonly dashboard: {
     readonly port: number;
     readonly host: string;
@@ -92,10 +102,20 @@ export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
 // "retention disabled" (see the resolution logic below).
 const DEFAULT_RETAIN_SESSIONS_DAYS = 90;
 
+/**
+ * Bump when a change to config.json's shape is non-additive (a field is
+ * renamed, moved, or removed) so a future migration path has something to
+ * branch on. Every change to date has been additive — including the `otlp`
+ * nested object below, which was introduced as an accept-both addition
+ * rather than a breaking rename — so this has never moved past 1.
+ */
+const CURRENT_CONFIG_VERSION = 1;
+
 export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
 
 export const ConfigFileSchema = z
   .object({
+    configVersion: z.number().int().optional(),
     licenseKey: z.string().optional(),
     accountId: z.string().optional(),
     appName: z.string().optional(),
@@ -122,16 +142,32 @@ export const ConfigFileSchema = z
     digestWebhookUrl: z.string().nullable().optional(),
     digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
+    // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
+    // object below, but still accepted for backward compatibility (using
+    // one logs a deprecation warning; see pickOtlpValue() in loadMcpConfig).
     otlpEndpoint: z.string().nullable().optional(),
     otlpHeaders: z.record(z.string(), z.string()).optional(),
     transport: z.enum(['nr-events-api', 'otlp', 'both']).optional(),
-    mode: z.enum(['cloud', 'local', 'both']).optional(),
-    platformTarget: z.enum(['native', 'wsl-windows-cc', 'wsl-linux-cc']).optional(),
     otlpReceiverEnabled: z.boolean().optional(),
     otlpReceiverPort: z.number().optional(),
     otlpReceiverBindAddress: z.string().optional(),
     otlpForwardEndpoint: z.string().nullable().optional(),
     otlpForwardHeaders: z.record(z.string(), z.string()).optional(),
+    mode: z.enum(['cloud', 'local', 'both']).optional(),
+    platformTarget: z.enum(['native', 'wsl-windows-cc', 'wsl-linux-cc']).optional(),
+    otlp: z
+      .object({
+        endpoint: z.string().nullable().optional(),
+        headers: z.record(z.string(), z.string()).optional(),
+        transport: z.enum(['nr-events-api', 'otlp', 'both']).optional(),
+        receiverEnabled: z.boolean().optional(),
+        receiverPort: z.number().optional(),
+        receiverBindAddress: z.string().optional(),
+        forwardEndpoint: z.string().nullable().optional(),
+        forwardHeaders: z.record(z.string(), z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
     alerts: z
       .object({
         personal: z
@@ -249,18 +285,26 @@ function envBool(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+// Applied to every return path of envInt (not just the parsed-env-var one) so
+// a bounds-checked call site is protected uniformly regardless of whether the
+// value actually came from the env var or from its (often config-file- or
+// CLI-derived) `defaultValue` argument.
+function clampNumber(value: number, bounds?: { min?: number; max?: number }): number {
+  if (bounds?.min !== undefined && value < bounds.min) return bounds.min;
+  if (bounds?.max !== undefined && value > bounds.max) return bounds.max;
+  return value;
+}
+
 function envInt(
   key: string,
   defaultValue: number,
   bounds?: { min?: number; max?: number },
 ): number {
   const val = process.env[key];
-  if (val === undefined) return defaultValue;
+  if (val === undefined) return clampNumber(defaultValue, bounds);
   const parsed = parseInt(val, 10);
-  if (Number.isNaN(parsed)) return defaultValue;
-  if (bounds?.min !== undefined && parsed < bounds.min) return bounds.min;
-  if (bounds?.max !== undefined && parsed > bounds.max) return bounds.max;
-  return parsed;
+  if (Number.isNaN(parsed)) return clampNumber(defaultValue, bounds);
+  return clampNumber(parsed, bounds);
 }
 
 function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
@@ -341,6 +385,25 @@ function parseOtlpHeaders(headerString: string | undefined): Record<string, stri
   return result;
 }
 
+// Resolves a config-file OTLP field: the new nested `otlp.X` value wins when
+// present; otherwise falls back to the legacy flat top-level key, recording
+// its name in `used` so the caller can warn about exactly the legacy keys
+// that were actually consulted (not merely present-but-shadowed by a nested
+// value for the same field).
+function pickOtlpValue<T>(
+  nested: T | undefined,
+  flat: T | undefined,
+  legacyKey: string,
+  used: string[],
+): T | undefined {
+  if (nested !== undefined) return nested;
+  if (flat !== undefined) {
+    used.push(legacyKey);
+    return flat;
+  }
+  return undefined;
+}
+
 /**
  * Validate the alerts.rulesPath value. The path is read from the user's
  * config file or NR_AI_ALERTS_RULES_PATH env var; both are user-controlled
@@ -379,6 +442,21 @@ function validateRulesPath(rawPath: string, storagePath: string): string {
     return fallback;
   }
   return resolved;
+}
+
+// Config-file-sourced numeric fields (budgets, retention) validate positivity
+// only on the env-var path today — a negative/zero value in config.json
+// silently disables the guardrail with no warning, unlike every other
+// malformed-input path in this file (see validateRulesPath, dashboard.host,
+// parseProxyUpstreams). Callers decide their own fallback value; this only
+// validates and logs.
+function validateFilePositiveNumber(value: number, fieldName: string): boolean {
+  if (Number.isFinite(value) && value > 0) return true;
+  logger.warn(`${fieldName} in config file must be a positive number — ignoring value`, {
+    fieldName,
+    value,
+  });
+  return false;
 }
 
 function parseProxyUpstreams(
@@ -459,6 +537,16 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     'antiPatternCountMax',
   ]);
   const knownDashboardKeys = new Set(['port', 'host', 'openOnStart']);
+  const knownOtlpKeys = new Set([
+    'endpoint',
+    'headers',
+    'transport',
+    'receiverEnabled',
+    'receiverPort',
+    'receiverBindAddress',
+    'forwardEndpoint',
+    'forwardHeaders',
+  ]);
   if (file.alerts && typeof file.alerts === 'object') {
     const alerts = file.alerts;
     const unknownAlertsKeys = Object.keys(alerts).filter((k) => !knownAlertsKeys.has(k));
@@ -487,6 +575,15 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     if (unknownDashboardKeys.length > 0) {
       logger.warn('Unknown keys in dashboard config (ignored)', {
         unknownFields: unknownDashboardKeys,
+        path: configFilePath,
+      });
+    }
+  }
+  if (file.otlp && typeof file.otlp === 'object') {
+    const unknownOtlpKeys = Object.keys(file.otlp).filter((k) => !knownOtlpKeys.has(k));
+    if (unknownOtlpKeys.length > 0) {
+      logger.warn('Unknown keys in otlp config (ignored)', {
+        unknownFields: unknownOtlpKeys,
         path: configFilePath,
       });
     }
@@ -564,6 +661,9 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     licenseKey,
     accountId,
 
+    configVersion:
+      typeof file.configVersion === 'number' ? file.configVersion : CURRENT_CONFIG_VERSION,
+
     appName:
       process.env.NEW_RELIC_AI_MCP_APP_NAME ??
       (typeof file.appName === 'string' ? file.appName : 'preflight'),
@@ -634,7 +734,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         const v = parseFloat(raw);
         if (Number.isFinite(v) && v > 0) return v;
       }
-      return typeof file.sessionBudgetUsd === 'number' ? file.sessionBudgetUsd : null;
+      if (typeof file.sessionBudgetUsd !== 'number') return null;
+      return validateFilePositiveNumber(file.sessionBudgetUsd, 'sessionBudgetUsd')
+        ? file.sessionBudgetUsd
+        : null;
     })(),
 
     dailyBudgetUsd: (() => {
@@ -643,7 +746,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         const v = parseFloat(raw);
         if (Number.isFinite(v) && v > 0) return v;
       }
-      return typeof file.dailyBudgetUsd === 'number' ? file.dailyBudgetUsd : null;
+      if (typeof file.dailyBudgetUsd !== 'number') return null;
+      return validateFilePositiveNumber(file.dailyBudgetUsd, 'dailyBudgetUsd')
+        ? file.dailyBudgetUsd
+        : null;
     })(),
 
     weeklyBudgetUsd: (() => {
@@ -652,15 +758,23 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         const v = parseFloat(raw);
         if (Number.isFinite(v) && v > 0) return v;
       }
-      return typeof file.weeklyBudgetUsd === 'number' ? file.weeklyBudgetUsd : null;
+      if (typeof file.weeklyBudgetUsd !== 'number') return null;
+      return validateFilePositiveNumber(file.weeklyBudgetUsd, 'weeklyBudgetUsd')
+        ? file.weeklyBudgetUsd
+        : null;
     })(),
 
-    port:
+    // clampNumber wraps the whole expression, not just envInt's own bounds
+    // param, because cliOptions?.port short-circuits envInt (and its
+    // clamping) entirely when a CLI value is supplied.
+    port: clampNumber(
       cliOptions?.port ??
-      envInt('NEW_RELIC_AI_MCP_PORT', typeof file.port === 'number' ? file.port : 9847, {
-        min: 1,
-        max: 65535,
-      }),
+        envInt('NEW_RELIC_AI_MCP_PORT', typeof file.port === 'number' ? file.port : 9847, {
+          min: 1,
+          max: 65535,
+        }),
+      { min: 1, max: 65535 },
+    ),
 
     logLevel:
       cliOptions?.logLevel ??
@@ -700,101 +814,192 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         const v = parseInt(raw, 10);
         if (Number.isFinite(v) && v > 0) return v;
       }
-      if (typeof file.retainSessionsDays === 'number') return file.retainSessionsDays;
+      if (typeof file.retainSessionsDays === 'number') {
+        // An invalid (non-positive) value falls back to the default rather
+        // than null — null already has a distinct, intentional meaning
+        // (explicit opt-out, handled below); a typo'd negative number is a
+        // mistake, not an opt-out.
+        return validateFilePositiveNumber(file.retainSessionsDays, 'retainSessionsDays')
+          ? file.retainSessionsDays
+          : DEFAULT_RETAIN_SESSIONS_DAYS;
+      }
       // Explicit `null` in the config file is a deliberate opt-out — distinct
       // from the key being absent entirely, which falls through to the default.
       if (file.retainSessionsDays === null) return null;
       return DEFAULT_RETAIN_SESSIONS_DAYS;
     })(),
 
-    otlpEndpoint:
-      process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
-      (typeof file.otlpEndpoint === 'string' ? file.otlpEndpoint : null),
-
-    otlpHeaders: (() => {
-      const envValue = process.env.OTEL_EXPORTER_OTLP_HEADERS;
-      if (envValue) return parseOtlpHeaders(envValue);
-      return typeof file.otlpHeaders === 'object' && file.otlpHeaders !== null
-        ? (file.otlpHeaders as Record<string, string>)
-        : {};
-    })(),
-
-    transport:
-      process.env.NEW_RELIC_AI_TRANSPORT === 'otlp'
-        ? 'otlp'
-        : process.env.NEW_RELIC_AI_TRANSPORT === 'both'
-          ? 'both'
-          : typeof file.transport === 'string' &&
-              (file.transport === 'otlp' || file.transport === 'both')
-            ? file.transport
-            : 'nr-events-api',
-
     mode,
 
-    otlpReceiverEnabled: envBool(
-      'NR_AI_OTLP_RECEIVER_ENABLED',
-      typeof file.otlpReceiverEnabled === 'boolean' ? file.otlpReceiverEnabled : false,
-    ),
+    // The 8 OTLP-related fields are grouped here (matching the dashboard/alerts
+    // nesting precedent). Each still accepts the legacy flat top-level key for
+    // backward compatibility — pickOtlpValue() prefers the nested `otlp.X`
+    // value and records which legacy keys were actually consulted so exactly
+    // those can be named in a single deprecation warning below.
+    otlp: (() => {
+      const fileOtlp = file.otlp ?? {};
+      const usedLegacyOtlpKeys: string[] = [];
 
-    otlpReceiverPort: envInt(
-      'NR_AI_OTLP_RECEIVER_PORT',
-      typeof file.otlpReceiverPort === 'number' ? file.otlpReceiverPort : 4318,
-      { min: 1, max: 65535 },
-    ),
-
-    otlpReceiverBindAddress: (() => {
-      const envVal = process.env.NR_AI_OTLP_RECEIVER_BIND_ADDRESS;
-      if (envVal !== undefined && envVal !== '') return envVal;
-      if (typeof file.otlpReceiverBindAddress === 'string' && file.otlpReceiverBindAddress !== '') {
-        return file.otlpReceiverBindAddress;
-      }
-      return '127.0.0.1';
-    })(),
-
-    otlpForwardEndpoint: (() => {
-      const envVal = process.env.NR_AI_OTLP_FORWARD_ENDPOINT;
-      // Default to the NR OTLP endpoint only when not in local mode. Local users
-      // may still set the value explicitly via env or config file (e.g. to point
-      // at a self-hosted collector); we just don't synthesize a NR default for them.
-      const defaultEndpoint =
-        mode !== 'local' && licenseKey !== undefined ? 'https://otlp.nr-data.net' : null;
       const endpoint =
-        envVal !== undefined
-          ? envVal || null
-          : typeof file.otlpForwardEndpoint === 'string'
-            ? file.otlpForwardEndpoint || null
-            : defaultEndpoint;
-      if (endpoint === null) return null;
-      try {
-        const url = new URL(endpoint);
-        if (url.protocol === 'https:') return endpoint;
-        if (url.protocol === 'http:') {
-          logger.warn('OTLP forward endpoint uses http:// instead of https:// — TLS not enabled', {
+        process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
+        pickOtlpValue(
+          typeof fileOtlp.endpoint === 'string' ? fileOtlp.endpoint : undefined,
+          typeof file.otlpEndpoint === 'string' ? file.otlpEndpoint : undefined,
+          'otlpEndpoint',
+          usedLegacyOtlpKeys,
+        ) ??
+        null;
+
+      const headers = (() => {
+        const envValue = process.env.OTEL_EXPORTER_OTLP_HEADERS;
+        if (envValue) return parseOtlpHeaders(envValue);
+        return (
+          pickOtlpValue(
+            typeof fileOtlp.headers === 'object' && fileOtlp.headers !== null
+              ? (fileOtlp.headers as Record<string, string>)
+              : undefined,
+            typeof file.otlpHeaders === 'object' && file.otlpHeaders !== null
+              ? (file.otlpHeaders as Record<string, string>)
+              : undefined,
+            'otlpHeaders',
+            usedLegacyOtlpKeys,
+          ) ?? {}
+        );
+      })();
+
+      const transportValue =
+        process.env.NEW_RELIC_AI_TRANSPORT === 'otlp'
+          ? 'otlp'
+          : process.env.NEW_RELIC_AI_TRANSPORT === 'both'
+            ? 'both'
+            : (pickOtlpValue(
+                fileOtlp.transport === 'otlp' || fileOtlp.transport === 'both'
+                  ? fileOtlp.transport
+                  : undefined,
+                file.transport === 'otlp' || file.transport === 'both' ? file.transport : undefined,
+                'transport',
+                usedLegacyOtlpKeys,
+              ) ?? 'nr-events-api');
+
+      const receiverEnabled = envBool(
+        'NR_AI_OTLP_RECEIVER_ENABLED',
+        pickOtlpValue(
+          typeof fileOtlp.receiverEnabled === 'boolean' ? fileOtlp.receiverEnabled : undefined,
+          typeof file.otlpReceiverEnabled === 'boolean' ? file.otlpReceiverEnabled : undefined,
+          'otlpReceiverEnabled',
+          usedLegacyOtlpKeys,
+        ) ?? false,
+      );
+
+      const receiverPort = envInt(
+        'NR_AI_OTLP_RECEIVER_PORT',
+        pickOtlpValue(
+          typeof fileOtlp.receiverPort === 'number' ? fileOtlp.receiverPort : undefined,
+          typeof file.otlpReceiverPort === 'number' ? file.otlpReceiverPort : undefined,
+          'otlpReceiverPort',
+          usedLegacyOtlpKeys,
+        ) ?? 4318,
+        { min: 1, max: 65535 },
+      );
+
+      const receiverBindAddress = (() => {
+        const envVal = process.env.NR_AI_OTLP_RECEIVER_BIND_ADDRESS;
+        if (envVal !== undefined && envVal !== '') return envVal;
+        return (
+          pickOtlpValue(
+            typeof fileOtlp.receiverBindAddress === 'string' && fileOtlp.receiverBindAddress !== ''
+              ? fileOtlp.receiverBindAddress
+              : undefined,
+            typeof file.otlpReceiverBindAddress === 'string' && file.otlpReceiverBindAddress !== ''
+              ? file.otlpReceiverBindAddress
+              : undefined,
+            'otlpReceiverBindAddress',
+            usedLegacyOtlpKeys,
+          ) ?? '127.0.0.1'
+        );
+      })();
+
+      const forwardEndpoint = (() => {
+        const envVal = process.env.NR_AI_OTLP_FORWARD_ENDPOINT;
+        // Default to the NR OTLP endpoint only when not in local mode. Local users
+        // may still set the value explicitly via env or config file (e.g. to point
+        // at a self-hosted collector); we just don't synthesize a NR default for them.
+        const defaultEndpoint =
+          mode !== 'local' && licenseKey !== undefined ? 'https://otlp.nr-data.net' : null;
+        const fileValue = pickOtlpValue(
+          typeof fileOtlp.forwardEndpoint === 'string' ? fileOtlp.forwardEndpoint : undefined,
+          typeof file.otlpForwardEndpoint === 'string' ? file.otlpForwardEndpoint : undefined,
+          'otlpForwardEndpoint',
+          usedLegacyOtlpKeys,
+        );
+        const endpoint =
+          envVal !== undefined
+            ? envVal || null
+            : fileValue !== undefined
+              ? fileValue || null
+              : defaultEndpoint;
+        if (endpoint === null) return null;
+        try {
+          const url = new URL(endpoint);
+          if (url.protocol === 'https:') return endpoint;
+          if (url.protocol === 'http:') {
+            logger.warn(
+              'OTLP forward endpoint uses http:// instead of https:// — TLS not enabled',
+              { endpoint },
+            );
+            return endpoint;
+          }
+          logger.warn('OTLP forward endpoint has unexpected protocol', {
             endpoint,
+            protocol: url.protocol,
           });
           return endpoint;
+        } catch (_err) {
+          logger.error('OTLP forward endpoint is not a valid URL', { endpoint });
+          return null;
         }
-        logger.warn('OTLP forward endpoint has unexpected protocol', {
-          endpoint,
-          protocol: url.protocol,
-        });
-        return endpoint;
-      } catch (_err) {
-        logger.error('OTLP forward endpoint is not a valid URL', { endpoint });
-        return null;
-      }
-    })(),
+      })();
 
-    otlpForwardHeaders: (() => {
-      const envValue = process.env.NR_AI_OTLP_FORWARD_HEADERS;
-      if (envValue !== undefined) return parseOtlpHeaders(envValue);
-      if (typeof file.otlpForwardHeaders === 'object' && file.otlpForwardHeaders !== null) {
-        return file.otlpForwardHeaders as Record<string, string>;
+      const forwardHeaders = (() => {
+        const envValue = process.env.NR_AI_OTLP_FORWARD_HEADERS;
+        if (envValue !== undefined) return parseOtlpHeaders(envValue);
+        const fileValue = pickOtlpValue(
+          typeof fileOtlp.forwardHeaders === 'object' && fileOtlp.forwardHeaders !== null
+            ? (fileOtlp.forwardHeaders as Record<string, string>)
+            : undefined,
+          typeof file.otlpForwardHeaders === 'object' && file.otlpForwardHeaders !== null
+            ? (file.otlpForwardHeaders as Record<string, string>)
+            : undefined,
+          'otlpForwardHeaders',
+          usedLegacyOtlpKeys,
+        );
+        if (fileValue !== undefined) return fileValue;
+        // Don't synthesize a NR api-key header default in local mode — the licenseKey
+        // may be present in the env from another tool, and we must not leak it to a
+        // forward target the user didn't explicitly configure.
+        return mode !== 'local' && licenseKey !== undefined ? { 'api-key': licenseKey } : {};
+      })();
+
+      if (usedLegacyOtlpKeys.length > 0) {
+        logger.warn(
+          'Config file uses deprecated flat OTLP fields — move these under a nested "otlp" object',
+          // Field name deliberately avoids "key"/"keys" — the logger's redact()
+          // treats any key-shaped property name as secret-bearing and would
+          // replace the whole array with '***' (see SECRET_KEY_RE).
+          { legacyFieldNames: usedLegacyOtlpKeys, path: configFilePath },
+        );
       }
-      // Don't synthesize a NR api-key header default in local mode — the licenseKey
-      // may be present in the env from another tool, and we must not leak it to a
-      // forward target the user didn't explicitly configure.
-      return mode !== 'local' && licenseKey !== undefined ? { 'api-key': licenseKey } : {};
+
+      return {
+        endpoint,
+        headers,
+        transport: transportValue,
+        receiverEnabled,
+        receiverPort,
+        receiverBindAddress,
+        forwardEndpoint,
+        forwardHeaders,
+      };
     })(),
 
     personalAlertThresholds: (() => {

@@ -978,6 +978,39 @@ describe('budget fields', () => {
     expect(config.dailyBudgetUsd).toBeNull();
     expect(config.weeklyBudgetUsd).toBeNull();
   });
+
+  it('rejects a negative dailyBudgetUsd from the config file and logs a warning', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ dailyBudgetUsd: -5 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.dailyBudgetUsd).toBeNull();
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/dailyBudgetUsd/);
+    expect(stderrOutput).toMatch(/positive number/);
+  });
+
+  it('rejects a zero sessionBudgetUsd from the config file and logs a warning', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ sessionBudgetUsd: 0 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.sessionBudgetUsd).toBeNull();
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/sessionBudgetUsd/);
+    expect(stderrOutput).toMatch(/positive number/);
+  });
+
+  it('rejects a negative weeklyBudgetUsd from the config file and logs a warning', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ weeklyBudgetUsd: -100 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.weeklyBudgetUsd).toBeNull();
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/weeklyBudgetUsd/);
+    expect(stderrOutput).toMatch(/positive number/);
+  });
 });
 
 describe('retainSessionsDays', () => {
@@ -1012,6 +1045,87 @@ describe('retainSessionsDays', () => {
     const configPath = writeConfigFile({ retainSessionsDays: 30 });
     const config = loadMcpConfig({ config: configPath });
     expect(config.retainSessionsDays).toBe(14);
+  });
+
+  it('rejects a negative config-file value, falls back to the default, and logs a warning', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ retainSessionsDays: -30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(90);
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/retainSessionsDays/);
+    expect(stderrOutput).toMatch(/positive number/);
+  });
+
+  it('does NOT warn when explicitly disabled via null', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ retainSessionsDays: null });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBeNull();
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/retainSessionsDays/);
+  });
+});
+
+describe('numeric bounds clamping', () => {
+  it('clamps a config-file harvestEventsMs below the minimum bound', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ harvestEventsMs: 1 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.harvestIntervalMs.events).toBe(100);
+  });
+
+  it('clamps a config-file harvestMetricsMs above the maximum bound', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ harvestMetricsMs: 999_999_999 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.harvestIntervalMs.metrics).toBe(3_600_000);
+  });
+
+  it('clamps a config-file otlpReceiverPort above the maximum bound', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ otlpReceiverPort: 999_999 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.otlp.receiverPort).toBe(65535);
+  });
+
+  it('clamps a CLI port value below the minimum bound', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath, port: -5 });
+    expect(config.port).toBe(1);
+  });
+
+  it('clamps a CLI port value above the maximum bound', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath, port: 999_999 });
+    expect(config.port).toBe(65535);
+  });
+});
+
+describe('configVersion', () => {
+  it('defaults to 1 when not set in the config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.configVersion).toBe(1);
+  });
+
+  it('passes through an explicit config-file value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ configVersion: 2 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.configVersion).toBe(2);
   });
 });
 
@@ -1247,8 +1361,8 @@ describe('OTLP forward gating on mode=local', () => {
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
-    expect(config.otlpForwardEndpoint).toBeNull();
-    expect(config.otlpForwardHeaders).toEqual({});
+    expect(config.otlp.forwardEndpoint).toBeNull();
+    expect(config.otlp.forwardHeaders).toEqual({});
   });
 
   it("DOES synthesize NR OTLP defaults when mode='cloud' and licenseKey is set", () => {
@@ -1256,8 +1370,8 @@ describe('OTLP forward gating on mode=local', () => {
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
-    expect(config.otlpForwardEndpoint).toBe('https://otlp.nr-data.net');
-    expect(config.otlpForwardHeaders).toEqual({ 'api-key': 'test-key-1234567890' });
+    expect(config.otlp.forwardEndpoint).toBe('https://otlp.nr-data.net');
+    expect(config.otlp.forwardHeaders).toEqual({ 'api-key': 'test-key-1234567890' });
   });
 
   it("DOES synthesize NR OTLP defaults when mode='both' and licenseKey is set", () => {
@@ -1266,8 +1380,8 @@ describe('OTLP forward gating on mode=local', () => {
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
-    expect(config.otlpForwardEndpoint).toBe('https://otlp.nr-data.net');
-    expect(config.otlpForwardHeaders).toEqual({ 'api-key': 'test-key-1234567890' });
+    expect(config.otlp.forwardEndpoint).toBe('https://otlp.nr-data.net');
+    expect(config.otlp.forwardHeaders).toEqual({ 'api-key': 'test-key-1234567890' });
   });
 
   it("respects explicit env override even when mode='local'", () => {
@@ -1276,7 +1390,7 @@ describe('OTLP forward gating on mode=local', () => {
     process.env.NR_AI_OTLP_FORWARD_ENDPOINT = 'https://collector.example.com';
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
-    expect(config.otlpForwardEndpoint).toBe('https://collector.example.com');
+    expect(config.otlp.forwardEndpoint).toBe('https://collector.example.com');
   });
 
   it("respects explicit file value even when mode='local'", () => {
@@ -1286,7 +1400,79 @@ describe('OTLP forward gating on mode=local', () => {
       otlpForwardEndpoint: 'https://collector.example.com',
     });
     const config = loadMcpConfig({ config: configPath });
-    expect(config.otlpForwardEndpoint).toBe('https://collector.example.com');
+    expect(config.otlp.forwardEndpoint).toBe('https://collector.example.com');
+  });
+});
+
+describe('nested otlp config object, accept-both', () => {
+  beforeEach(() => {
+    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    delete process.env.OTEL_EXPORTER_OTLP_HEADERS;
+    delete process.env.NEW_RELIC_AI_TRANSPORT;
+    delete process.env.NR_AI_OTLP_RECEIVER_ENABLED;
+    delete process.env.NR_AI_OTLP_RECEIVER_PORT;
+    delete process.env.NR_AI_OTLP_RECEIVER_BIND_ADDRESS;
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+  });
+
+  it('resolves all 8 fields from the new nested otlp object', () => {
+    const configPath = writeConfigFile({
+      otlp: {
+        endpoint: 'https://nested.example.com',
+        headers: { 'x-custom': 'nested-header' },
+        transport: 'both',
+        receiverEnabled: true,
+        receiverPort: 5318,
+        receiverBindAddress: '0.0.0.0',
+        forwardEndpoint: 'https://forward.example.com',
+        forwardHeaders: { 'x-forward': 'nested-forward' },
+      },
+    });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.otlp.endpoint).toBe('https://nested.example.com');
+    expect(config.otlp.headers).toEqual({ 'x-custom': 'nested-header' });
+    expect(config.otlp.transport).toBe('both');
+    expect(config.otlp.receiverEnabled).toBe(true);
+    expect(config.otlp.receiverPort).toBe(5318);
+    expect(config.otlp.receiverBindAddress).toBe('0.0.0.0');
+    expect(config.otlp.forwardEndpoint).toBe('https://forward.example.com');
+    expect(config.otlp.forwardHeaders).toEqual({ 'x-forward': 'nested-forward' });
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/deprecated flat OTLP/);
+  });
+
+  it('still resolves legacy flat fields and logs a deprecation warning naming them', () => {
+    const configPath = writeConfigFile({
+      otlpEndpoint: 'https://legacy.example.com',
+      otlpReceiverPort: 5318,
+    });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.otlp.endpoint).toBe('https://legacy.example.com');
+    expect(config.otlp.receiverPort).toBe(5318);
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/deprecated flat OTLP/);
+    expect(stderrOutput).toMatch(/otlpEndpoint/);
+    expect(stderrOutput).toMatch(/otlpReceiverPort/);
+  });
+
+  it('prefers the nested value over the flat value and does not warn about a shadowed legacy key', () => {
+    const configPath = writeConfigFile({
+      otlp: { endpoint: 'https://nested-wins.example.com' },
+      otlpEndpoint: 'https://legacy-shadowed.example.com',
+    });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.otlp.endpoint).toBe('https://nested-wins.example.com');
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/deprecated flat OTLP/);
+  });
+
+  it('warns about unknown keys inside the nested otlp object', () => {
+    const configPath = writeConfigFile({ otlp: { bogusKey: 'x' } });
+    loadMcpConfig({ config: configPath });
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).toMatch(/Unknown keys in otlp config/);
+    expect(stderrOutput).toContain('bogusKey');
   });
 });
 
