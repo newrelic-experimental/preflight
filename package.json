@@ -1,6 +1,6 @@
 {
   "name": "@newrelic/preflight",
-  "version": "1.6.17",
+  "version": "1.6.18",
   "type": "module",
   "license": "Apache-2.0",
   "private": false,

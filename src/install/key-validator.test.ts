@@ -1,10 +1,21 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
+// As in src/security/ssrf.test.ts and src/proxy/upstream-http.test.ts, the module
+// must be replaced wholesale via jest.mock() before anything else imports it —
+// this ESM/ts-jest setup can't jest.spyOn() a named export directly.
+jest.mock('../security/index.js', () => ({ validateSsrfUrl: jest.fn() }));
+
+import { validateSsrfUrl } from '../security/index.js';
 import {
   validateLicenseKey,
   validateApiKey,
   getEventsApiUrl,
   getNerdgraphUrl,
 } from './key-validator.js';
+
+afterEach(() => {
+  jest.mocked(validateSsrfUrl).mockReset();
+});
 
 // ---------------------------------------------------------------------------
 // URL helper tests
@@ -159,6 +170,20 @@ describe('validateLicenseKey', () => {
     const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect((options.headers as Record<string, string>)['X-Insert-Key']).toBe('MY-KEY');
   });
+
+  it('rejects without calling fetch when SSRF validation fails', async () => {
+    jest.mocked(validateSsrfUrl).mockImplementation(() => {
+      throw new Error('blocked host');
+    });
+    const result = await validateLicenseKey({
+      licenseKey: 'TEST-KEY',
+      accountId: '12345',
+      collectorHost: null,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.valid).toBe(false);
+    expect(result.detail).toContain('blocked host');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -271,5 +296,15 @@ describe('validateApiKey', () => {
     await validateApiKey({ nrApiKey: 'NRAK-MY-KEY', collectorHost: null });
     const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect((options.headers as Record<string, string>)['Api-Key']).toBe('NRAK-MY-KEY');
+  });
+
+  it('rejects without calling fetch when SSRF validation fails', async () => {
+    jest.mocked(validateSsrfUrl).mockImplementation(() => {
+      throw new Error('blocked host');
+    });
+    const result = await validateApiKey({ nrApiKey: 'NRAK-TEST', collectorHost: null });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.valid).toBe(false);
+    expect(result.detail).toContain('blocked host');
   });
 });

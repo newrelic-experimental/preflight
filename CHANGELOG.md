@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.18] - 2026-07-21
+
+### Fixed
+
+- License-key/API-key validation (`install/key-validator.ts`) and the team-summary NerdGraph query (`tools/cross-session-tools.ts`) now run their outbound URL through the same SSRF validation (`validateSsrfUrl`) already applied to the proxy's outbound HTTP dispatch. Both build their URL from a fixed map of real NR hostnames, so this closes a consistency gap rather than a currently exploitable path.
+
 ## [1.6.17] - 2026-07-21
 
 ### Fixed

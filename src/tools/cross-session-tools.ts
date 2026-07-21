@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
+import { validateSsrfUrl } from '../security/index.js';
 import type { SessionStore } from '../storage/session-store.js';
 import { formatSlackDigest } from '../digest/digest-formatter.js';
 import { sendSlackDigest } from '../digest/digest-sender.js';
@@ -791,6 +792,7 @@ export async function handleGetTeamSummary(options: {
   }
 
   async function runNrql<T = Record<string, unknown>>(nrql: string): Promise<T[]> {
+    validateSsrfUrl('handleGetTeamSummary', new URL(nerdgraphUrl));
     const resp = await fetch(nerdgraphUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'API-Key': options.nrApiKey! },

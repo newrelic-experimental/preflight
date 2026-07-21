@@ -1,4 +1,11 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
+// As in src/security/ssrf.test.ts and src/proxy/upstream-http.test.ts, the module
+// must be replaced wholesale via jest.mock() before anything else imports it —
+// this ESM/ts-jest setup can't jest.spyOn() a named export directly.
+jest.mock('../security/index.js', () => ({ validateSsrfUrl: jest.fn() }));
+
+import { validateSsrfUrl } from '../security/index.js';
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -45,6 +52,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
+  jest.mocked(validateSsrfUrl).mockReset();
   if (existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -973,6 +981,26 @@ describe('Cross-session tool handlers', () => {
   // -------------------------------------------------------------------------
 
   describe('handleGetTeamSummary success path', () => {
+    it('rejects without calling fetch when SSRF validation fails', async () => {
+      jest.mocked(validateSsrfUrl).mockImplementation(() => {
+        throw new Error('blocked host');
+      });
+      const fetchSpy = jest.spyOn(global, 'fetch');
+      try {
+        const result = await handleGetTeamSummary({
+          teamId: 'my-team',
+          accountId: '12345',
+          nrApiKey: 'test-key',
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(result.isError).toBe(true);
+        const parsed = JSON.parse(result.content[0]!.text);
+        expect(parsed.error).toContain('blocked host');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it('merges rows from all 3 NRQL queries into developers/totals', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
         const body = typeof init?.body === 'string' ? init.body : '';
