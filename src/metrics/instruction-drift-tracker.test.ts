@@ -355,3 +355,25 @@ describe('InstructionDriftTracker.recordToolCall (content-based hashing)', () =>
     expect(tracker.promptHash).toBeNull();
   });
 });
+
+describe('InstructionDriftTracker — configurable instruction file paths', () => {
+  it('hashes a platform-specific instruction file when configured', () => {
+    const cursorRulesPath = join(tmpDir, '.cursorrules');
+    writeFileSync(cursorRulesPath, 'be terse');
+    const tracker = new InstructionDriftTracker({ instructionFilePaths: ['.cursorrules'] });
+
+    tracker.recordToolCall(makeReadRecord({ filePath: cursorRulesPath }));
+
+    expect(tracker.promptHash).not.toBeNull();
+  });
+
+  it('still hashes CLAUDE.md even when a platform-specific path is configured', () => {
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'be terse');
+    const tracker = new InstructionDriftTracker({ instructionFilePaths: ['.cursorrules'] });
+
+    tracker.recordToolCall(makeReadRecord({ filePath: claudeMdPath }));
+
+    expect(tracker.promptHash).not.toBeNull();
+  });
+});

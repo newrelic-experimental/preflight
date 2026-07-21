@@ -71,6 +71,7 @@ export function parseCopilotUsageResponse(raw: unknown): CopilotUsageRecord[] {
 export class CopilotAdapter implements PlatformAdapter {
   readonly platformName = 'copilot';
   readonly visibilityLevel = 'self-reported' as const;
+  readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Copilot does not use MCP natively. Data arrives from

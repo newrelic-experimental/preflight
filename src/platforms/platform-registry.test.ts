@@ -58,6 +58,7 @@ afterEach(() => {
 class FakeAdapter implements PlatformAdapter {
   readonly platformName: string;
   readonly visibilityLevel = 'full-hooks' as const;
+  readonly capabilities = { instructionFilePaths: [] };
   private readonly supported: boolean;
 
   constructor(name: string, supported: boolean) {
@@ -137,6 +138,7 @@ describe('PlatformRegistry', () => {
       const mutableAdapter: PlatformAdapter = {
         platformName: 'mutable',
         visibilityLevel: 'full-hooks',
+        capabilities: { instructionFilePaths: [] },
         async initialize() {},
         normalizeToolCall() {
           return {
@@ -352,6 +354,34 @@ describe('visibility level', () => {
     for (const adapter of registry.getRegistered()) {
       expect(VALID_LEVELS.has(adapter.visibilityLevel)).toBe(true);
     }
+  });
+});
+
+describe('capabilities', () => {
+  it('every registered adapter declares a capabilities object with an array of instructionFilePaths', () => {
+    const registry = createDefaultRegistry();
+    for (const adapter of registry.getRegistered()) {
+      expect(adapter.capabilities).toBeDefined();
+      expect(Array.isArray(adapter.capabilities.instructionFilePaths)).toBe(true);
+    }
+  });
+
+  it('claude-code declares CLAUDE.md and .claude/ as instruction file paths', () => {
+    const registry = createDefaultRegistry();
+    const claudeCode = registry.getRegistered().find((a) => a.platformName === 'claude-code')!;
+    expect(claudeCode.capabilities.instructionFilePaths).toEqual(['CLAUDE.md', '.claude/']);
+  });
+
+  it('cursor declares .cursorrules as an instruction file path', () => {
+    const registry = createDefaultRegistry();
+    const cursor = registry.getRegistered().find((a) => a.platformName === 'cursor')!;
+    expect(cursor.capabilities.instructionFilePaths).toContain('.cursorrules');
+  });
+
+  it('windsurf declares .windsurfrules as an instruction file path', () => {
+    const registry = createDefaultRegistry();
+    const windsurf = registry.getRegistered().find((a) => a.platformName === 'windsurf')!;
+    expect(windsurf.capabilities.instructionFilePaths).toContain('.windsurfrules');
   });
 });
 

@@ -49,6 +49,7 @@ function isZedToolCallEvent(x: unknown): x is ZedToolCallEvent {
 export class ZedAdapter implements PlatformAdapter {
   readonly platformName = 'zed';
   readonly visibilityLevel = 'mcp-tools-only' as const;
+  readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Zed's native agent has no hook/callback mechanism for tool-call

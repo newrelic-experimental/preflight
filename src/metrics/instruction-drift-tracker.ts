@@ -10,7 +10,7 @@
 
 import { createHash } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
-import { ClaudeMdTracker } from './claudemd-tracker.js';
+import { ClaudeMdTracker, matchesInstructionFile } from './claudemd-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const logger = createLogger('instruction-drift');
@@ -62,6 +62,7 @@ export interface InstructionDriftMetrics {
 export interface InstructionDriftOptions {
   readonly maxRecords?: number;
   readonly minSessionsForComparison?: number;
+  readonly instructionFilePaths?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ const DEFAULT_MIN_SESSIONS = 3;
 export class InstructionDriftTracker {
   private readonly maxRecords: number;
   private readonly minSessionsForComparison: number;
+  private readonly instructionFilePaths: readonly string[];
 
   private currentPromptHash: string | null = null;
   private readonly records: SessionOutcomeRecord[] = [];
@@ -86,6 +88,9 @@ export class InstructionDriftTracker {
   constructor(options?: InstructionDriftOptions) {
     this.maxRecords = options?.maxRecords ?? DEFAULT_MAX_RECORDS;
     this.minSessionsForComparison = options?.minSessionsForComparison ?? DEFAULT_MIN_SESSIONS;
+    this.instructionFilePaths = [
+      ...new Set(['CLAUDE.md', '.claude/', ...(options?.instructionFilePaths ?? [])]),
+    ];
   }
 
   get promptHash(): string | null {
@@ -99,7 +104,7 @@ export class InstructionDriftTracker {
     if (!filePath) return;
 
     // Only track reads of instruction files
-    if (!filePath.includes('CLAUDE.md') && !filePath.includes('.claude/')) return;
+    if (!matchesInstructionFile(filePath, this.instructionFilePaths)) return;
 
     let hash: string;
     try {

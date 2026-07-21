@@ -6,7 +6,7 @@ import type { MetricAggregator } from '../shared/index.js';
 import { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
-import { ClaudeMdTracker } from './claudemd-tracker.js';
+import { ClaudeMdTracker, matchesInstructionFile } from './claudemd-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -728,5 +728,73 @@ describe('ClaudeMdTracker', () => {
     } as unknown as MetricAggregator;
     tracker.emitMetrics(agg);
     expect(recorded.filter((n) => n === 'ai.claudemd.change')).toHaveLength(0);
+  });
+});
+
+describe('matchesInstructionFile', () => {
+  it('matches CLAUDE.md at the root', () => {
+    expect(matchesInstructionFile('CLAUDE.md', ['CLAUDE.md', '.claude/'])).toBe(true);
+  });
+
+  it('matches CLAUDE.md nested in a subdirectory', () => {
+    expect(matchesInstructionFile('/repo/src/CLAUDE.md', ['CLAUDE.md', '.claude/'])).toBe(true);
+  });
+
+  it('matches files inside .claude/', () => {
+    expect(matchesInstructionFile('/repo/.claude/settings.json', ['CLAUDE.md', '.claude/'])).toBe(
+      true,
+    );
+  });
+
+  it('does not match an unrelated file', () => {
+    expect(matchesInstructionFile('/repo/src/index.ts', ['CLAUDE.md', '.claude/'])).toBe(false);
+  });
+
+  it('matches a plain-filename pattern like .cursorrules', () => {
+    expect(matchesInstructionFile('/repo/.cursorrules', ['.cursorrules'])).toBe(true);
+  });
+
+  it('does not match a filename that merely contains the pattern as a substring', () => {
+    expect(matchesInstructionFile('/repo/NOT_CLAUDE.md', ['CLAUDE.md'])).toBe(false);
+  });
+
+  it('does not match a bare directory-pattern name with no trailing slash or path prefix', () => {
+    expect(matchesInstructionFile('.claude', ['CLAUDE.md', '.claude/'])).toBe(false);
+  });
+});
+
+describe('ClaudeMdTracker — configurable instruction file paths', () => {
+  it('detects changes to a platform-specific instruction file when configured', () => {
+    const tracker = new ClaudeMdTracker({
+      sessionStore: store,
+      instructionFilePaths: ['.cursorrules'],
+    });
+
+    const change = tracker.detectChange(
+      makeToolCall({
+        toolName: 'Write',
+        filePath: '/repo/.cursorrules',
+        lineCount: 5,
+      } as Partial<ToolCallRecord>),
+    );
+
+    expect(change).not.toBeNull();
+  });
+
+  it('still detects CLAUDE.md changes even when a platform-specific path is configured', () => {
+    const tracker = new ClaudeMdTracker({
+      sessionStore: store,
+      instructionFilePaths: ['.cursorrules'],
+    });
+
+    const change = tracker.detectChange(
+      makeToolCall({
+        toolName: 'Write',
+        filePath: '/project/CLAUDE.md',
+        lineCount: 5,
+      } as Partial<ToolCallRecord>),
+    );
+
+    expect(change).not.toBeNull();
   });
 });

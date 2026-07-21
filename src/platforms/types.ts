@@ -45,9 +45,30 @@ export interface PlatformSessionMetadata {
  */
 export type PlatformVisibilityLevel = 'full-hooks' | 'self-reported' | 'mcp-tools-only';
 
+/**
+ * Per-platform feature capabilities that go beyond the coarse
+ * `visibilityLevel` — features that assume a specific platform construct
+ * (rather than "hooks vs. no hooks") check these instead of hardcoding
+ * Claude Code's own vocabulary.
+ */
+export interface PlatformCapabilities {
+  /**
+   * File path(s) or path-fragments this platform's own tooling treats as
+   * persistent agent instructions (Preflight calls this "the instruction
+   * file" regardless of platform) — e.g. Cursor's `.cursorrules`. Every
+   * entry must trace to that platform's own documentation, cited in a
+   * comment on the adapter. Leave empty (`[]`) when unconfirmed — do not
+   * guess. `ClaudeMdTracker`/`InstructionDriftTracker` always additionally
+   * watch `CLAUDE.md`/`.claude/` regardless of this list, so an empty
+   * array here does not lose any detection Preflight already has today.
+   */
+  readonly instructionFilePaths: readonly string[];
+}
+
 export interface PlatformAdapter {
   readonly platformName: string;
   readonly visibilityLevel: PlatformVisibilityLevel;
+  readonly capabilities: PlatformCapabilities;
   initialize(config: PlatformConfig): Promise<void>;
   normalizeToolCall(raw: unknown): NormalizedToolCall;
   /**

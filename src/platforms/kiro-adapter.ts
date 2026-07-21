@@ -72,6 +72,7 @@ function isKiroToolCallEvent(x: unknown): x is KiroToolCallEvent {
 export class KiroAdapter implements PlatformAdapter {
   readonly platformName = 'kiro';
   readonly visibilityLevel = 'full-hooks' as const;
+  readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Amazon Kiro connects via the MCP stdio protocol.
