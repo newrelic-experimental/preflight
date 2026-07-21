@@ -1,4 +1,5 @@
 import { createLogger } from '../shared/index.js';
+import { validateSsrfUrl } from '../security/index.js';
 
 const logger = createLogger('key-validator');
 
@@ -42,6 +43,7 @@ export async function validateLicenseKey(params: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    validateSsrfUrl('validateLicenseKey', new URL(url));
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'X-Insert-Key': licenseKey, 'Content-Type': 'application/json' },
@@ -88,6 +90,7 @@ export async function validateApiKey(params: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    validateSsrfUrl('validateApiKey', new URL(url));
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Api-Key': nrApiKey, 'Content-Type': 'application/json' },
