@@ -145,6 +145,22 @@ export const REPORT_FEEDBACK_TOOL = {
   annotations: { readOnlyHint: false },
 };
 
+export const MARK_TASK_BOUNDARY_TOOL = {
+  name: 'nr_observe_mark_task_boundary',
+  description:
+    'Explicitly mark the end of the current task (a discrete unit of work between user ' +
+    'instructions). Call this once you finish responding to a user request. This is the ' +
+    "universal task-boundary signal — call it on any platform, but it's the *only* boundary " +
+    'signal on platforms other than Claude Code (which also infers boundaries from its own ' +
+    'AskUserQuestion/TaskUpdate tool calls). Improves the accuracy of anti-pattern, ' +
+    'efficiency-score, and cost-per-outcome metrics, which all segment activity by task.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+  annotations: { readOnlyHint: false },
+};
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -375,6 +391,26 @@ export function handleReportFeedback(
   };
 }
 
+export function handleMarkTaskBoundary(taskDetector: TaskDetector) {
+  const closed = taskDetector.markBoundary(Date.now());
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          {
+            recorded: true,
+            closed_task_id: closed?.taskId ?? null,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -446,6 +482,15 @@ export function registerWorkflowTools(deps: WorkflowToolsDeps): RegisteredToolSe
               : String(err);
           return errorResult(`Invalid feedback: ${message}`);
         }
+      },
+    },
+    {
+      definition: MARK_TASK_BOUNDARY_TOOL,
+      available: !!deps.taskDetector,
+      handle: () => {
+        const check = requireTracker(deps.taskDetector, 'TaskDetector');
+        if (!check.ok) return check.result;
+        return handleMarkTaskBoundary(check.value);
       },
     },
   ]);

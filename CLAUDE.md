@@ -276,6 +276,7 @@ Tools are conditionally registered based on available dependencies (e.g., cross-
 - `nr_observe_get_anti_patterns` — detected thrashing, re-reads, blind edits, stuck loops
 - `nr_observe_get_workflow_trace` — ordered sequence of recent tool calls
 - `nr_observe_report_feedback` — record user quality feedback (`good`/`bad`/`neutral`) for a task
+- `nr_observe_mark_task_boundary` — explicitly close the current task; the universal (and, outside Claude Code, the only) task-boundary signal
 
 **Analytics Tools:**
 
