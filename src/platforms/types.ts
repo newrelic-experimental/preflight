@@ -49,7 +49,7 @@ export type PlatformVisibilityLevel = 'full-hooks' | 'self-reported' | 'mcp-tool
  * Per-platform feature capabilities that go beyond the coarse
  * `visibilityLevel` — features that assume a specific platform construct
  * (rather than "hooks vs. no hooks") check these instead of hardcoding
- * Claude Code's own vocabulary. See docs/PLATFORM_ABSTRACTION_AUDIT.md.
+ * Claude Code's own vocabulary.
  */
 export interface PlatformCapabilities {
   /**
