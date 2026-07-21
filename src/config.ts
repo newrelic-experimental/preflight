@@ -40,6 +40,7 @@ export interface McpServerConfig {
   readonly nrApiKey: string | null;
   readonly digestWebhookUrl: string | null;
   readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
+  /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
   readonly otlpEndpoint: string | null;
@@ -85,6 +86,11 @@ export interface McpServerConfig {
 }
 
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
+
+// Applied only when neither the env var nor the config file specify
+// retainSessionsDays at all — an explicit `null` in config.json still means
+// "retention disabled" (see the resolution logic below).
+const DEFAULT_RETAIN_SESSIONS_DAYS = 90;
 
 export type PlatformTarget = 'native' | 'wsl-windows-cc' | 'wsl-linux-cc';
 
@@ -694,7 +700,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         const v = parseInt(raw, 10);
         if (Number.isFinite(v) && v > 0) return v;
       }
-      return typeof file.retainSessionsDays === 'number' ? file.retainSessionsDays : null;
+      if (typeof file.retainSessionsDays === 'number') return file.retainSessionsDays;
+      // Explicit `null` in the config file is a deliberate opt-out — distinct
+      // from the key being absent entirely, which falls through to the default.
+      if (file.retainSessionsDays === null) return null;
+      return DEFAULT_RETAIN_SESSIONS_DAYS;
     })(),
 
     otlpEndpoint:

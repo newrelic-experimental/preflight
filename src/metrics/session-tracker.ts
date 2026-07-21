@@ -63,6 +63,20 @@ export interface SessionMetrics {
 
 const MAX_TIMELINE_ENTRIES = 10_000;
 
+// Bounds memory on sessions that touch an unusually large number of distinct
+// files (e.g. a repo-wide codemod or search) — head-drop the oldest-added
+// file once the cap is hit, matching EventBuffer's eviction policy.
+const MAX_UNIQUE_FILES = 10_000;
+
+/** Add to a bounded Set, evicting the oldest entry (insertion order) once `MAX_UNIQUE_FILES` is hit. */
+function addBoundedFile(set: Set<string>, filePath: string): void {
+  if (!set.has(filePath) && set.size >= MAX_UNIQUE_FILES) {
+    const oldest = set.values().next().value;
+    if (oldest !== undefined) set.delete(oldest);
+  }
+  set.add(filePath);
+}
+
 export function computeP95(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -178,9 +192,9 @@ export class SessionTracker implements Resettable {
     const filePath = record.filePath as string | undefined;
     if (filePath) {
       if (tool === 'Read') {
-        this.filesRead.add(filePath);
+        addBoundedFile(this.filesRead, filePath);
       } else if (tool === 'Write' || tool === 'Edit') {
-        this.filesWritten.add(filePath);
+        addBoundedFile(this.filesWritten, filePath);
       }
     }
 

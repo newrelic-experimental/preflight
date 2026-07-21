@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.12] - 2026-07-20
+
+### Added
+
+- `retainSessionsDays` now defaults to 90 days instead of retention being off by default; set it to `null` explicitly in config.json to disable retention.
+- Retention now also sweeps `weekly_summaries/`, not just `sessions/`, and re-runs every 6 hours instead of once at startup.
+- `ContextWindowTracker.fileReadCounts` and `SessionTracker.filesRead`/`filesWritten` are now capped at 10,000 unique file paths per session, evicting the oldest-touched file first — previously unbounded, unlike every sibling capped structure in the same files.
+
+### Fixed
+
+- Orphan-buffer/breadcrumb/dead-instance GC only ran when the `--local` dashboard won its port bind, but the default `mode` is `cloud` (the documented stdio-MCP setup) — a crashed session in the default configuration leaked `buffer-<id>.jsonl` and heartbeat files forever. GC now runs unconditionally in every mode, independent of dashboard-bind status.
+
 ## [1.6.11] - 2026-07-20
 
 ### Added

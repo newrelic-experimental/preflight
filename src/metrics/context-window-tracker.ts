@@ -8,6 +8,11 @@ export interface ContextWindowMetrics {
   readonly topRepeatedFiles: ReadonlyArray<{ file: string; readCount: number }>;
 }
 
+// Bounds memory on sessions that touch an unusually large number of distinct
+// files (e.g. a repo-wide codemod or search) — head-drop the oldest-read
+// file once the cap is hit, matching EventBuffer's eviction policy.
+const MAX_UNIQUE_FILES = 10_000;
+
 export class ContextWindowTracker {
   private fileReadCounts = new Map<string, number>();
 
@@ -16,6 +21,10 @@ export class ContextWindowTracker {
     const filePath = record.filePath as string | undefined;
     if (!filePath) return;
     const count = this.fileReadCounts.get(filePath) ?? 0;
+    if (count === 0 && this.fileReadCounts.size >= MAX_UNIQUE_FILES) {
+      const oldest = this.fileReadCounts.keys().next().value;
+      if (oldest !== undefined) this.fileReadCounts.delete(oldest);
+    }
     this.fileReadCounts.set(filePath, count + 1);
   }
 

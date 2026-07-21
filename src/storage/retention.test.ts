@@ -12,7 +12,7 @@ import {
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { purgeOldSessions } from './retention.js';
+import { purgeOldSessions, purgeOldWeeklySummaries } from './retention.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -97,6 +97,70 @@ describe('purgeOldSessions', () => {
     utimesSync(filePath, recentDate, recentDate);
 
     const deleted = purgeOldSessions(dir, 30);
+    expect(deleted).toBe(0);
+    expect(existsSync(filePath)).toBe(true);
+  });
+});
+
+describe('purgeOldWeeklySummaries', () => {
+  function makeWeeklySummariesDir(dir: string): void {
+    mkdirSync(resolve(dir, 'weekly_summaries'), { recursive: true });
+  }
+
+  function writeWeeklySummaryFile(storagePath: string, name: string): void {
+    const path = resolve(storagePath, 'weekly_summaries', name);
+    writeFileSync(path, JSON.stringify({ week: name }), { mode: 0o600 });
+  }
+
+  it('returns 0 when weekly_summaries directory does not exist', () => {
+    const dir = resolve(tmpdir(), randomUUID()); // never created
+    expect(purgeOldWeeklySummaries(dir, 90)).toBe(0);
+  });
+
+  it('returns 0 for empty weekly_summaries directory', () => {
+    const dir = makeTempDir();
+    makeWeeklySummariesDir(dir);
+    expect(purgeOldWeeklySummaries(dir, 90)).toBe(0);
+  });
+
+  it('does not delete recently-created files', () => {
+    const dir = makeTempDir();
+    makeWeeklySummariesDir(dir);
+    writeWeeklySummaryFile(dir, '2026-W16.json');
+    const deleted = purgeOldWeeklySummaries(dir, 90);
+    expect(deleted).toBe(0);
+    expect(existsSync(resolve(dir, 'weekly_summaries', '2026-W16.json'))).toBe(true);
+  });
+
+  it('ignores non-JSON files', () => {
+    const dir = makeTempDir();
+    makeWeeklySummariesDir(dir);
+    writeFileSync(resolve(dir, 'weekly_summaries', 'readme.txt'), 'ignore me');
+    expect(purgeOldWeeklySummaries(dir, 0)).toBe(0); // 0 day retention: only .json deleted
+  });
+
+  it('deletes JSON files older than retainDays', () => {
+    const dir = makeTempDir();
+    makeWeeklySummariesDir(dir);
+    const filePath = resolve(dir, 'weekly_summaries', '2026-W01.json');
+    writeFileSync(filePath, JSON.stringify({ week: '2026-W01' }), { mode: 0o600 });
+    const oldDate = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000);
+    utimesSync(filePath, oldDate, oldDate);
+
+    const deleted = purgeOldWeeklySummaries(dir, 90);
+    expect(deleted).toBe(1);
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('keeps files younger than retainDays', () => {
+    const dir = makeTempDir();
+    makeWeeklySummariesDir(dir);
+    const filePath = resolve(dir, 'weekly_summaries', '2026-W10.json');
+    writeFileSync(filePath, JSON.stringify({ week: '2026-W10' }), { mode: 0o600 });
+    const recentDate = new Date(Date.now() - 89 * 24 * 60 * 60 * 1000);
+    utimesSync(filePath, recentDate, recentDate);
+
+    const deleted = purgeOldWeeklySummaries(dir, 90);
     expect(deleted).toBe(0);
     expect(existsSync(filePath)).toBe(true);
   });

@@ -48,6 +48,7 @@ beforeEach(() => {
   delete process.env.NR_AI_DASHBOARD_PORT;
   delete process.env.NR_AI_DASHBOARD_HOST;
   delete process.env.NR_AI_DASHBOARD_OPEN;
+  delete process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
 });
 
 afterEach(() => {
@@ -976,6 +977,41 @@ describe('budget fields', () => {
     expect(config.sessionBudgetUsd).toBeNull();
     expect(config.dailyBudgetUsd).toBeNull();
     expect(config.weeklyBudgetUsd).toBeNull();
+  });
+});
+
+describe('retainSessionsDays', () => {
+  it('defaults to 90 when neither env var nor config file key is set', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(90);
+  });
+
+  it('stays disabled (null) when the config file explicitly sets it to null', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ retainSessionsDays: null });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBeNull();
+  });
+
+  it('loads a numeric value from the config file', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+  });
+
+  it('env var overrides the config file value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS = '14';
+    const configPath = writeConfigFile({ retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(14);
   });
 });
 

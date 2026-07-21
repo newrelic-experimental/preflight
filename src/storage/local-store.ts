@@ -274,8 +274,9 @@ export class LocalStore {
 
   /**
    * Write a heartbeat file `active-<sessionId>.pid` containing this process's
-   * PID. Used by the dashboard owner's GC pass to determine which buffer
-   * files still have a live owner. The MCP should call this once after
+   * PID. Used by the maintenance GC pass (see `startMaintenanceGc()` in
+   * index.ts, run by every MCP process) to determine which buffer files
+   * still have a live owner. The MCP should call this once after
    * resolving its session_id, and remove it on graceful shutdown via
    * `removeHeartbeat()`.
    *
@@ -297,7 +298,7 @@ export class LocalStore {
 
   /**
    * Remove this MCP's heartbeat file. Called from the shutdown handler so the
-   * dashboard owner's next GC pass knows the buffer is up for adoption.
+   * next maintenance GC pass knows the buffer is up for adoption.
    *
    * No-op if no heartbeat was ever written or if the file is already gone.
    */
@@ -476,9 +477,9 @@ export class LocalStore {
   /**
    * Garbage-collect instance-registry entries whose PID is no longer alive —
    * mirrors `gcStaleBreadcrumbs()`. Called opportunistically from the
-   * dashboard owner's periodic GC pass (see `setupDashboardPostBind()` in
-   * index.ts), so entries left behind by a process that didn't shut down
-   * cleanly don't accumulate indefinitely.
+   * maintenance GC pass (see `startMaintenanceGc()` in index.ts, run by
+   * every MCP process), so entries left behind by a process that didn't shut
+   * down cleanly don't accumulate indefinitely.
    *
    * @returns the number of entries deleted
    */
