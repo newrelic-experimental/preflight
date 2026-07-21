@@ -272,6 +272,17 @@ export class TaskDetector implements Resettable {
     return this.activeTask?.taskId ?? null;
   }
 
+  /**
+   * Explicitly close the current task, if one is active. This is the
+   * universal task-boundary signal any platform's calling agent can invoke
+   * via `nr_observe_mark_task_boundary` — the only boundary signal available
+   * on platforms that have no equivalent to Claude Code's
+   * `AskUserQuestion`/`TaskUpdate` tools.
+   */
+  markBoundary(timestamp: number): AiCodingTask | null {
+    return this.closeCurrentTask(timestamp);
+  }
+
   getMetrics(): TaskMetrics {
     const completed = this.completedTasks;
 
@@ -338,8 +349,8 @@ export class TaskDetector implements Resettable {
     this.snapshotCostState();
   }
 
-  private closeCurrentTask(endTime: number): void {
-    if (this.activeTask === null) return;
+  private closeCurrentTask(endTime: number): AiCodingTask | null {
+    if (this.activeTask === null) return null;
 
     const { costUsd, tokens } = this.computeCostDelta();
 
@@ -360,6 +371,7 @@ export class TaskDetector implements Resettable {
 
     this.activeTask = null;
     this.clearIdleTimer();
+    return completed;
   }
 
   private snapshotCostState(): void {

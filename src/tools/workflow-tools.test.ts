@@ -12,6 +12,7 @@ import {
   handleGetAntiPatterns,
   handleGetEfficiencyScore,
   handleReportFeedback,
+  handleMarkTaskBoundary,
   registerWorkflowTools,
 } from './workflow-tools.js';
 import { handleGetCostBreakdown } from './cost-tools.js';
@@ -776,6 +777,7 @@ describe('registerWorkflowTools()', () => {
       'nr_observe_get_anti_patterns',
       'nr_observe_get_efficiency_score',
       'nr_observe_get_workflow_trace',
+      'nr_observe_mark_task_boundary',
       'nr_observe_report_feedback',
     ]);
     const result = await handlers.nr_observe_get_workflow_trace!(undefined);
@@ -811,6 +813,7 @@ describe('registerWorkflowTools()', () => {
       'nr_observe_get_anti_patterns',
       'nr_observe_get_efficiency_score',
       'nr_observe_get_workflow_trace',
+      'nr_observe_mark_task_boundary',
       'nr_observe_report_feedback',
     ]);
   });
@@ -822,5 +825,47 @@ describe('registerWorkflowTools()', () => {
     expect(result.isError).toBe(true);
     const body = JSON.parse(result.content[0]!.text);
     expect(body.error).toContain('Invalid feedback');
+  });
+});
+
+describe('handleMarkTaskBoundary()', () => {
+  it('closes the active task and reports its id', () => {
+    const taskDetector = new TaskDetector();
+    taskDetector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+
+    const result = handleMarkTaskBoundary(taskDetector);
+    const body = JSON.parse(result.content[0]!.text) as {
+      recorded: boolean;
+      closed_task_id: string | null;
+    };
+
+    expect(body.recorded).toBe(true);
+    expect(body.closed_task_id).not.toBeNull();
+  });
+
+  it('reports a null closed_task_id when no task was active', () => {
+    const taskDetector = new TaskDetector();
+
+    const result = handleMarkTaskBoundary(taskDetector);
+    const body = JSON.parse(result.content[0]!.text) as {
+      recorded: boolean;
+      closed_task_id: string | null;
+    };
+
+    expect(body.recorded).toBe(true);
+    expect(body.closed_task_id).toBeNull();
+  });
+});
+
+describe('registerWorkflowTools — mark_task_boundary', () => {
+  it('is available whenever taskDetector is provided', () => {
+    const taskDetector = new TaskDetector();
+    const { tools } = registerWorkflowTools({ taskDetector });
+    expect(tools.some((t) => t.name === 'nr_observe_mark_task_boundary')).toBe(true);
+  });
+
+  it('is not listed when taskDetector is absent', () => {
+    const { tools } = registerWorkflowTools({});
+    expect(tools.some((t) => t.name === 'nr_observe_mark_task_boundary')).toBe(false);
   });
 });

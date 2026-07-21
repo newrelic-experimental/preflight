@@ -444,6 +444,33 @@ Source: `src/tools/workflow-tools.ts`
 
 ---
 
+### `nr_observe_mark_task_boundary`
+
+Explicitly mark the end of the current task. This is the universal task-boundary signal — call it on any platform, but it's the only boundary signal on platforms other than Claude Code, which also infers boundaries from its own `AskUserQuestion`/`TaskUpdate` tool calls.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "recorded": true,
+  "closed_task_id": "task-001"
+}
+```
+
+`closed_task_id` is `null` if no task was active.
+
+**Data source:** `TaskDetector`
+
+**How it works:** Calls `TaskDetector.markBoundary()`, which closes the active task (if any) the same way the `AskUserQuestion`/`TaskUpdate` boundary signals do — computing the cost/token delta since task start, appending the completed task to history, and clearing the active task. Improves the accuracy of anti-pattern, efficiency-score, and cost-per-outcome metrics, which all segment activity by task.
+
+**Requires:** `TaskDetector`
+
+Source: `src/tools/workflow-tools.ts`, `src/metrics/task-detector.ts`
+
+---
+
 ## Cross-Session Tools
 
 These tools query persisted session data from disk (`~/.newrelic-preflight/sessions/`). They are only registered when `SessionStore` and related analyzers are available.

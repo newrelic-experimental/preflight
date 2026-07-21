@@ -785,3 +785,33 @@ describe('drainNewlyCompletedTasks()', () => {
     expect(detector.getCompletedTasks()).toHaveLength(0);
   });
 });
+
+describe('markBoundary', () => {
+  it('closes the active task and returns it', () => {
+    const detector = new TaskDetector();
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+
+    const closed = detector.markBoundary(Date.now());
+
+    expect(closed).not.toBeNull();
+    expect(closed!.toolCallCount).toBe(1);
+    expect(detector.getMetrics().currentTaskActive).toBe(false);
+    expect(detector.getMetrics().totalTasksCompleted).toBe(1);
+  });
+
+  it('returns null when no task is active', () => {
+    const detector = new TaskDetector();
+    expect(detector.markBoundary(Date.now())).toBeNull();
+  });
+
+  it('is equivalent to the existing AskUserQuestion boundary signal', () => {
+    const detector = new TaskDetector();
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/b.ts' }));
+
+    const closed = detector.markBoundary(Date.now());
+
+    expect(closed!.filesRead).toEqual(['/a.ts', '/b.ts']);
+    expect(detector.getCurrentTask()).toBeNull();
+  });
+});

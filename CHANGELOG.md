@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.16] - 2026-07-21
+
+### Added
+
+- New MCP tool `nr_observe_mark_task_boundary` lets any AI coding assistant explicitly signal the end of a task. Claude Code already gets this boundary for free from its own `AskUserQuestion`/`TaskUpdate` tool calls, but platforms without an equivalent tool had no way to mark task boundaries, which reduced the accuracy of anti-pattern, efficiency-score, and cost-per-outcome metrics that segment activity by task.
+
 ## [1.6.15] - 2026-07-21
 
 ### Added
