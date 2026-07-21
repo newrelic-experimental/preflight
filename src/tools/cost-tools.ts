@@ -269,7 +269,7 @@ function cacheRecommendation(status: CacheStatus, hitRatePct: number | null): st
   }
   if (status === 'can_improve') {
     return (
-      `Cache hit rate is ${hitRatePct}%. To improve: place stable content (CLAUDE.md rules, recurring file reads) ` +
+      `Cache hit rate is ${hitRatePct}%. To improve: place stable content (instruction file rules, recurring file reads) ` +
       'before variable content (user messages, dynamic tool results) in your prompts.'
     );
   }
