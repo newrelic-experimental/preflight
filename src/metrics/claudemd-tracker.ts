@@ -91,8 +91,24 @@ const DEFAULT_INPUT_COST_PER_MTOK = 3;
 /** Average turns per session — used for per-session cost estimation. */
 const AVG_TURNS_PER_SESSION = 10;
 
-/** Regex matching CLAUDE.md files and .claude/ directory contents. */
-const CLAUDEMD_PATTERN = /(?:^|\/)CLAUDE\.md$|(?:^|\/)\.claude\//;
+/** Always watched regardless of platform — the common-denominator convention. */
+const DEFAULT_INSTRUCTION_FILE_PATHS: readonly string[] = ['CLAUDE.md', '.claude/'];
+
+/**
+ * True if `filePath` matches one of `patterns`. A pattern ending in `/` is
+ * treated as a directory prefix (matches anywhere in the path); otherwise
+ * it's treated as an exact filename (matches at the start of the path or
+ * immediately after a `/`). Mirrors the semantics of the regex this
+ * replaces: `/(?:^|\/)CLAUDE\.md$|(?:^|\/)\.claude\//`.
+ */
+export function matchesInstructionFile(filePath: string, patterns: readonly string[]): boolean {
+  return patterns.some((pattern) => {
+    if (pattern.endsWith('/')) {
+      return filePath.includes(`/${pattern}`) || filePath.startsWith(pattern);
+    }
+    return filePath === pattern || filePath.endsWith(`/${pattern}`);
+  });
+}
 
 const MAX_CHANGES = 1_000;
 
@@ -102,17 +118,28 @@ const MAX_CHANGES = 1_000;
 
 export class ClaudeMdTracker {
   private readonly sessionStore: SessionStore;
+  private readonly instructionFilePaths: readonly string[];
   private readonly changes: ClaudeMdChange[] = [];
   private lastEmittedIndex = 0;
   private cachedImpact: { timestamp: number; report: ClaudeMdImpactReport } | null = null;
 
-  constructor(options: { sessionStore: SessionStore }) {
+  constructor(options: { sessionStore: SessionStore; instructionFilePaths?: readonly string[] }) {
     this.sessionStore = options.sessionStore;
+    this.instructionFilePaths = [
+      ...new Set([...DEFAULT_INSTRUCTION_FILE_PATHS, ...(options.instructionFilePaths ?? [])]),
+    ];
+  }
+
+  /** The file path(s)/patterns this instance watches for instruction-file changes. */
+  getTrackedPaths(): readonly string[] {
+    return this.instructionFilePaths;
   }
 
   /**
-   * Examine a tool call record and detect if it modifies a CLAUDE.md or
-   * `.claude/` file. Returns the change event if detected, null otherwise.
+   * Examine a tool call record and detect if it modifies a tracked
+   * instruction file (CLAUDE.md/.claude/ always; plus whatever
+   * platform-specific paths this instance was configured with). Returns the
+   * change event if detected, null otherwise.
    */
   detectChange(toolCall: ToolCallRecord): ClaudeMdChange | null {
     if (toolCall.toolName !== 'Write' && toolCall.toolName !== 'Edit') {
@@ -120,7 +147,7 @@ export class ClaudeMdTracker {
     }
 
     const filePath = typeof toolCall.filePath === 'string' ? toolCall.filePath : null;
-    if (!filePath || !CLAUDEMD_PATTERN.test(filePath)) {
+    if (!filePath || !matchesInstructionFile(filePath, this.instructionFilePaths)) {
       return null;
     }
 

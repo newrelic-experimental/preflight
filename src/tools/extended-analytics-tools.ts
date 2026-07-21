@@ -76,7 +76,9 @@ export const DECISION_TREE_TOOL = {
 export const INSTRUCTION_DRIFT_TOOL = {
   name: 'nr_observe_get_instruction_drift',
   description:
-    'Get instruction/prompt drift analysis: tracks how CLAUDE.md or system prompt changes correlate with session outcomes (success rate, token usage, thrashing).',
+    "Get instruction/prompt drift analysis: tracks how the project's instruction file (CLAUDE.md, " +
+    "or the active platform's equivalent) or system prompt changes correlate with session outcomes " +
+    '(success rate, token usage, thrashing).',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };

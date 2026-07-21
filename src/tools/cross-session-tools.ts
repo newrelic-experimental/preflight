@@ -128,7 +128,9 @@ export const COLLABORATION_PROFILE_TOOL = {
 export const CLAUDEMD_IMPACT_TOOL = {
   name: 'nr_observe_get_claudemd_impact',
   description:
-    'Get the impact report for the most recent CLAUDE.md change: before/after comparison with deltas and verdict.',
+    "Get the impact report for the most recent change to the project's instruction file " +
+    "(CLAUDE.md, or the active platform's equivalent — e.g. .cursorrules on Cursor): " +
+    'before/after comparison with deltas and verdict.',
   inputSchema: {
     type: 'object' as const,
     properties: {},
@@ -473,7 +475,14 @@ export function handleGetClaudeMdImpact(claudeMdTracker: ClaudeMdTracker) {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ message: 'No CLAUDE.md changes detected' }, null, 2),
+          text: JSON.stringify(
+            {
+              message: 'No instruction-file changes detected',
+              tracked_paths: claudeMdTracker.getTrackedPaths(),
+            },
+            null,
+            2,
+          ),
         },
       ],
     };

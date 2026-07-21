@@ -47,6 +47,7 @@ function isAmazonQToolCallEvent(x: unknown): x is AmazonQToolCallEvent {
 export class AmazonQAdapter implements PlatformAdapter {
   readonly platformName = 'amazon-q';
   readonly visibilityLevel = 'full-hooks' as const;
+  readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Amazon Q Developer CLI supports MCP as a client (preflight can be

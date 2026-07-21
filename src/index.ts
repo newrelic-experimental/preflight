@@ -31,6 +31,7 @@ import { EfficiencyScorer } from './metrics/efficiency-score.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
+import { createDefaultRegistry } from './platforms/index.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
 import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
@@ -884,7 +885,9 @@ async function main(): Promise<void> {
     const latencyDecompositionTracker: LatencyDecompositionTracker | undefined = undefined;
     const decisionTracker = new DecisionTracker({ recordContent: config.recordContent });
     const transcriptMessageTracker = new TranscriptMessageTracker();
-    const instructionDriftTracker = new InstructionDriftTracker();
+    const instructionDriftTracker = new InstructionDriftTracker({
+      instructionFilePaths: createDefaultRegistry().getActive().capabilities.instructionFilePaths,
+    });
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
     // ApiFailureTracker is instantiated but never fed: recordRequest()/recordFailure()
@@ -1077,7 +1080,12 @@ async function main(): Promise<void> {
 
     const trendAnalyzer = new TrendAnalyzer({ sessionStore });
     const collaborationProfiler = new CollaborationProfiler({ sessionStore });
-    const claudeMdTracker = new ClaudeMdTracker({ sessionStore });
+    const activeInstructionFilePaths =
+      createDefaultRegistry().getActive().capabilities.instructionFilePaths;
+    const claudeMdTracker = new ClaudeMdTracker({
+      sessionStore,
+      instructionFilePaths: activeInstructionFilePaths,
+    });
     const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
     const personalCoach = new PersonalCoach(weeklySummaryGenerator, config.developer);
     const promptFeedbackEngine = new PromptFeedbackEngine({

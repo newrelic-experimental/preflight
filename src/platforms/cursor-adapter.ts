@@ -63,6 +63,9 @@ function isCursorToolCallEvent(x: unknown): x is CursorToolCallEvent {
 export class CursorAdapter implements PlatformAdapter {
   readonly platformName = 'cursor';
   readonly visibilityLevel = 'full-hooks' as const;
+  // https://docs.cursor.com/context/rules — project rules live in `.cursorrules`
+  // (legacy, still supported) or `.cursor/rules/*.mdc`.
+  readonly capabilities = { instructionFilePaths: ['.cursorrules', '.cursor/rules/'] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Cursor's built-in tool activity (shell commands, file reads/edits) is

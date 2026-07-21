@@ -46,6 +46,7 @@ function isContinueToolCallEvent(x: unknown): x is ContinueToolCallEvent {
 export class ContinueAdapter implements PlatformAdapter {
   readonly platformName = 'continue';
   readonly visibilityLevel = 'mcp-tools-only' as const;
+  readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
     // Continue's native agent (VS Code/JetBrains extension and CLI) has no

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.15] - 2026-07-21
+
+### Added
+
+- Every platform adapter now declares which file(s) it treats as persistent agent instructions — Cursor's `.cursorrules`, Windsurf's `.windsurfrules` — in addition to the `CLAUDE.md`/`.claude/` convention already watched on every platform.
+
+### Fixed
+
+- `nr_observe_get_claudemd_impact` and `nr_observe_get_instruction_drift` only ever detected changes to a file literally named `CLAUDE.md`, so a Cursor or Windsurf project's real instruction file was invisible to both tools even though both platforms have the same tool-call visibility Claude Code does. Both tools now also watch each detected platform's actual instruction-file convention.
+- `nr_observe_get_instruction_drift` previously matched any file path merely containing the substring `CLAUDE.md` (e.g. `NOT_CLAUDE.md`, `CLAUDE.md.bak`), not just the real instruction file. It now matches only the actual file.
+
 ## [1.6.14] - 2026-07-21
 
 ### Fixed
