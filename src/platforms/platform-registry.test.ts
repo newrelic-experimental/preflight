@@ -9,6 +9,7 @@ import { ZedAdapter } from './zed-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { KiroAdapter } from './kiro-adapter.js';
+import { DroidAdapter } from './droid-adapter.js';
 import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -260,6 +261,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('kiro');
     });
 
+    it('selects Droid adapter when MCP_CLIENT is "droid"', () => {
+      process.env.MCP_CLIENT = 'droid';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('droid');
+    });
+
     it('falls back to generic-mcp when no specific platform detected', () => {
       const registry = createDefaultRegistry();
 
@@ -318,7 +328,7 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(9);
+    expect(registered).toHaveLength(10);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
@@ -327,16 +337,18 @@ describe('createDefaultRegistry', () => {
     expect(registered[5]).toBeInstanceOf(ContinueAdapter);
     expect(registered[6]).toBeInstanceOf(AmazonQAdapter);
     expect(registered[7]).toBeInstanceOf(KiroAdapter);
-    expect(registered[8]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[8]).toBeInstanceOf(DroidAdapter);
+    expect(registered[9]).toBeInstanceOf(GenericMcpAdapter);
   });
 
-  it('includes zed, continue, amazon-q, and kiro adapters', () => {
+  it('includes zed, continue, amazon-q, kiro, and droid adapters', () => {
     const registry = createDefaultRegistry();
     const names = registry.getRegistered().map((a) => a.platformName);
     expect(names).toContain('zed');
     expect(names).toContain('continue');
     expect(names).toContain('amazon-q');
     expect(names).toContain('kiro');
+    expect(names).toContain('droid');
   });
 
   it('ends with generic-mcp as fallback', () => {
@@ -383,6 +395,12 @@ describe('capabilities', () => {
     const windsurf = registry.getRegistered().find((a) => a.platformName === 'windsurf')!;
     expect(windsurf.capabilities.instructionFilePaths).toContain('.windsurfrules');
   });
+
+  it('droid declares AGENTS.md as an instruction file path', () => {
+    const registry = createDefaultRegistry();
+    const droid = registry.getRegistered().find((a) => a.platformName === 'droid')!;
+    expect(droid.capabilities.instructionFilePaths).toContain('AGENTS.md');
+  });
 });
 
 describe('all adapters implement PlatformAdapter interface', () => {
@@ -395,6 +413,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new ContinueAdapter(),
     new AmazonQAdapter(),
     new KiroAdapter(),
+    new DroidAdapter(),
     new GenericMcpAdapter(),
   ];
 
