@@ -16,6 +16,7 @@ export { AmazonQAdapter } from './amazon-q-adapter.js';
 export { KiroAdapter } from './kiro-adapter.js';
 export { DroidAdapter } from './droid-adapter.js';
 export { GeminiCliAdapter } from './gemini-cli-adapter.js';
+export { ClineAdapter } from './cline-adapter.js';
 export { GenericMcpAdapter, validateReportToolCallInput } from './generic-mcp-adapter.js';
 export type {
   ReportToolCallInput,

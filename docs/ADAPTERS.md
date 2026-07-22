@@ -1,6 +1,6 @@
 # Platform Adapters
 
-Preflight supports 10 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
+Preflight supports 11 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
@@ -13,7 +13,7 @@ This doc is the canonical reference for what each adapter can and can't observe,
 | **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid | All built-in tool calls                                                                | `full-hooks`      |
 | **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                         | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
 | **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf                   | All built-in tool calls                                                                | `full-hooks`      |
-| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev                  | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
+| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev, Cline           | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
 | **HTTP push from an extension**                                                                                | GitHub Copilot                     | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
 | **Self-report via MCP tools**                                                                                  | Generic MCP fallback               | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
 
@@ -155,6 +155,38 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 3. Reload Continue.
 
 **Note:** the `continuedev/continue` repository is no longer actively maintained and is read-only as of its final 2.0.0 release, so a deeper hook integration is unlikely to land upstream.
+
+---
+
+## Cline (`cline`)
+
+**Mechanism:** None for built-in tools on Cline's VS Code/JetBrains extension — its own docs state Plugins/Hooks and Custom Tools are "not applicable on VSCode and JetBrains Extension for now" ([docs.cline.bot/customization/plugins](https://docs.cline.bot/customization/plugins), [docs.cline.bot/tools-reference/all-cline-tools](https://docs.cline.bot/tools-reference/all-cline-tools)) — only the Cline SDK, CLI, and Kanban support the `beforeTool`/`afterTool` lifecycle hooks documented at [docs.cline.bot/sdk/plugins](https://docs.cline.bot/sdk/plugins). Cline also does not forward ambient environment variables into an MCP server's subprocess automatically — only vars explicitly listed in that server's own `env` config block reach it. As a Cline MCP server, Preflight can only receive calls Cline's agent makes to Preflight's own exposed tools.
+
+**Detection (`isSupported()`):** `MCP_CLIENT === 'cline'` or `NEW_RELIC_AI_PLATFORM === 'cline'` — explicit opt-in only, since no ambient env var is set on the MCP server process.
+
+**Tool-map status:** `CLINE_TOOL_MAP` covers only `execute_command`, `read_file`, and `replace_in_file` — the three tool names [docs.cline.bot/tools-reference/all-cline-tools](https://docs.cline.bot/tools-reference/all-cline-tools) literally names in its "Legacy Tool Names vs Current Runtime Tools" section. It exists for correctness and any future hook capability — it is currently **unreachable**, since no Cline event reaches it. Other real or reported Cline tool names (`write_to_file`, `search_files`, `list_files`, `browser_action`, `use_mcp_tool`, `ask_followup_question`, `attempt_completion`, `new_task`, `plan_mode_respond`, etc.) are left unmapped rather than guessed at without a documented source.
+
+**Setup:**
+
+1. There is no hook mechanism for tool-call capture in Cline's VS Code/JetBrains extension — Preflight only sees calls made to its own MCP tools.
+2. Extension: open the Cline panel → MCP Servers icon → Configure tab → "Configure MCP Servers", and add to `mcpServers`:
+   ```json
+   {
+     "mcpServers": {
+       "preflight": {
+         "command": "npx",
+         "args": ["preflight", "--stdio"],
+         "env": {
+           "MCP_CLIENT": "cline",
+           "NEW_RELIC_LICENSE_KEY": "<your-key>",
+           "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
+         }
+       }
+     }
+   }
+   ```
+3. CLI: edit `~/.cline/mcp.json` with the same shape, or run `cline mcp`.
+4. Restart Cline / reload the extension.
 
 ---
 
