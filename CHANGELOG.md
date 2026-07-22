@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.19] - 2026-07-21
+
+### Fixed
+
+- `src/web/lib/format.test.ts` and `format.test.tsx` covered disjoint sets of `format.ts` exports with zero overlap, and the `.test.ts` file silently ran under both Jest and Vitest — violating the documented Jest/Vitest routing split (`docs/TEST_PATTERNS.md`), which requires web tests to use `.test.tsx` only. Merged into a single `format.test.tsx`, and added coverage for `scoreColor`, `fmtDateTime`, `fmtTimeOfDay`, `fmtElapsed`, and `formatNumber`, which previously had no tests anywhere.
+
 ## [1.6.18] - 2026-07-21
 
 ### Fixed
