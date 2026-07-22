@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-22
+
+### Added
+
+- **Factory Droid platform adapter** — Preflight now detects and normalizes tool calls from [Factory Droid](https://factory.ai), Factory.ai's agentic CLI and IDE integrations. Droid sessions are detected via `MCP_CLIENT=droid` or `NEW_RELIC_AI_PLATFORM=droid` (Factory's documentation doesn't expose an ambient environment variable for automatic detection, unlike several other platforms). Droid's `PreToolUse`/`PostToolUse` hook events use the same shape Claude Code, Kiro, and Amazon Q already send, so its built-in tool calls (`Task`, `Execute`, `Glob`, `Grep`, `Read`, `Edit`, `Create`, `FetchUrl`, `WebSearch`) are captured and mapped to Preflight's standard vocabulary automatically once hooks are configured. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.6.20] - 2026-07-21
 
 ### Fixed

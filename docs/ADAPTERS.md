@@ -1,6 +1,6 @@
 # Platform Adapters
 
-Preflight supports 8 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
+Preflight supports 9 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
@@ -8,17 +8,17 @@ This doc is the canonical reference for what each adapter can and can't observe,
 
 ## Integration mechanisms
 
-| Mechanism                                                                                                      | Platforms                   | What's captured                                                                        | `visibilityLevel` |
-| -------------------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
-| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q | All built-in tool calls                                                                | `full-hooks`      |
-| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf            | All built-in tool calls                                                                | `full-hooks`      |
-| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev           | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
-| **HTTP push from an extension**                                                                                | GitHub Copilot              | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
-| **Self-report via MCP tools**                                                                                  | Generic MCP fallback        | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
+| Mechanism                                                                                                      | Platforms                          | What's captured                                                                        | `visibilityLevel` |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
+| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid | All built-in tool calls                                                                | `full-hooks`      |
+| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf                   | All built-in tool calls                                                                | `full-hooks`      |
+| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev                  | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
+| **HTTP push from an extension**                                                                                | GitHub Copilot                     | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
+| **Self-report via MCP tools**                                                                                  | Generic MCP fallback               | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
 
 Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` field encoding this table in code, not just prose — `full-hooks` (automatic, deterministic capture), `self-reported` (built-in-tool-shaped events are observable, but only if an external party — a third-party extension, or the calling MCP client itself — actually reports them), or `mcp-tools-only` (structurally cannot see built-in tool calls at all). Consumers that blend metrics across platforms (`nr_observe_get_platform_comparison`, the weekly digest's per-platform breakdown) use `getPlatformVisibilityMap()` (`src/platforms/platform-registry.ts`) to tag results and caveat comparisons that span more than one level.
 
-Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
+Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
 ---
 
@@ -218,6 +218,43 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
    }
    ```
 2. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
+
+---
+
+## Factory Droid (`droid`)
+
+**Mechanism:** Native `hooks.json` hook system (`~/.factory/hooks.json` user scope, `.factory/hooks.json` project scope, or an org-managed policy) — [docs.factory.ai/reference/hooks-reference](https://docs.factory.ai/reference/hooks-reference). Droid's `PreToolUse`/`PostToolUse` events send `hook_event_name`, `tool_name`, `tool_input`/`tool_response` in the same shape Claude Code, Kiro, and Amazon Q use, so they're handled by the same generic branches in `collector-script.ts` — no platform-specific parsing was needed. Also supports MCP as a client independently of the hooks system.
+
+**Detection (`isSupported()`):** `MCP_CLIENT === 'droid'`, or `NEW_RELIC_AI_PLATFORM === 'droid'`. Unlike Cursor/Windsurf/Kiro, Factory's documentation names no ambient environment variable for a Droid-spawned MCP server process (`FACTORY_PROJECT_DIR` is scoped to hook _command_ subprocesses only) — detection is explicit-opt-in only; don't invent one.
+
+**Tool-map:** Droid's documented `PreToolUse`/`PostToolUse` matchers are `Task`, `Execute`, `Glob`, `Grep`, `Read`, `Edit`, `Create`, `FetchUrl`, `WebSearch`. `Read`, `Glob`, `Grep`, `Edit` already match Preflight's canonical vocabulary and are listed as explicit identity entries in `DROID_TOOL_MAP` (there is no pass-through fallback). `Task`→Agent, `Execute`→Bash, `Create`→Write, `FetchUrl`→WebFetch, `WebSearch`→WebSearch.
+
+**Known gap:** `collector-script.ts`'s per-tool metadata extractors (`extractInputMeta`/`extractOutputMeta`) switch on the raw, unmapped tool name written into the buffer — so Droid's `Create`/`Execute`/`Task` calls don't get the extra structured fields (content length, command classification, etc.) that `Write`/`Bash`/`Agent` get for Claude Code. This is the same situation Kiro's `fsWrite`/`fsCreate`/etc. are already in; `Read`/`Glob`/`Grep`/`Edit` (matching exactly) are unaffected.
+
+**Setup:**
+
+1. Add a `PreToolUse`/`PostToolUse` hook pair matching all tools to `hooks.json` (`~/.factory/hooks.json` or `.factory/hooks.json`):
+   ```json
+   {
+     "hooks": {
+       "PreToolUse": [
+         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+       ],
+       "PostToolUse": [
+         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+       ]
+     }
+   }
+   ```
+2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
+3. Register the Preflight MCP server:
+   ```
+   droid mcp add preflight "npx preflight --stdio" \
+     --env MCP_CLIENT=droid \
+     --env NEW_RELIC_LICENSE_KEY=<your-key> \
+     --env NEW_RELIC_ACCOUNT_ID=<your-account-id>
+   ```
+4. Restart Droid
 
 ---
 
