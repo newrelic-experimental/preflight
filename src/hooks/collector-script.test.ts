@@ -23,12 +23,14 @@ import {
 } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
+let stdoutSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
 let bufferPath: string;
 const originalEnv = { ...process.env };
 
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
   tmpDir = resolve(tmpdir(), `nr-hook-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
   bufferPath = resolve(tmpDir, 'buffer.jsonl');
@@ -39,6 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
+  stdoutSpy.mockRestore();
   if (existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -83,6 +86,33 @@ function makePostToolUseFailure(overrides?: Record<string, unknown>): string {
     is_interrupt: false,
     cwd: '/projects/test',
     permission_mode: 'default',
+    ...overrides,
+  });
+}
+
+function makeGeminiBeforeTool(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    hook_event_name: 'BeforeTool',
+    session_id: 'gemini-sess-001',
+    transcript_path: '/tmp/gemini-transcript.json',
+    cwd: '/projects/test',
+    timestamp: '2026-07-22T00:00:00.000Z',
+    tool_name: 'read_file',
+    tool_input: { file_path: '/tmp/test.ts', limit: 100 },
+    ...overrides,
+  });
+}
+
+function makeGeminiAfterTool(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    hook_event_name: 'AfterTool',
+    session_id: 'gemini-sess-001',
+    transcript_path: '/tmp/gemini-transcript.json',
+    cwd: '/projects/test',
+    timestamp: '2026-07-22T00:00:00.000Z',
+    tool_name: 'write_file',
+    tool_input: { file_path: '/tmp/out.ts', content: 'hello' },
+    tool_response: { llmContent: 'Wrote file.', returnDisplay: 'Wrote file.' },
     ...overrides,
   });
 }
@@ -1695,6 +1725,75 @@ describe('collector-script', () => {
       };
       expect(() => readStdinSync()).toThrow('ENOENT');
       expect(calls).toEqual(['/dev/stdin']);
+    });
+  });
+
+  describe('collector-script — Gemini CLI hook event names (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md)', () => {
+    it('writes a pre event when hook_event_name is "BeforeTool"', () => {
+      processHook(makeGeminiBeforeTool());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('pre');
+      expect(events[0].tool).toBe('read_file');
+    });
+
+    it('writes a successful post event when tool_response has no error field', () => {
+      processHook(makeGeminiAfterTool());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('post');
+      expect(events[0].success).toBe(true);
+    });
+
+    it('writes a failed post event when tool_response.error is present', () => {
+      processHook(
+        makeGeminiAfterTool({
+          tool_response: { llmContent: 'boom', returnDisplay: 'boom', error: 'file not found' },
+        }),
+      );
+      const events = readBufferEvents();
+      expect(events[0].success).toBe(false);
+    });
+
+    it('captures session_id the same way Claude Code does', () => {
+      processHook(makeGeminiBeforeTool());
+      const events = readBufferEvents();
+      expect(events[0].sessionId).toBe('gemini-sess-001');
+    });
+
+    it('captures transcript_path as transcriptPath', () => {
+      processHook(makeGeminiBeforeTool());
+      const events = readBufferEvents();
+      expect(events[0].transcriptPath).toBe('/tmp/gemini-transcript.json');
+    });
+
+    it('still ignores a genuinely unknown hook_event_name', () => {
+      processHook(makeGeminiBeforeTool({ hook_event_name: 'SessionStart' }));
+      expect(readBufferEvents()).toHaveLength(0);
+    });
+  });
+
+  describe('collector-script — Gemini CLI stdout contract (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md)', () => {
+    it('writes "{}" to stdout when MCP_CLIENT is "gemini-cli"', () => {
+      process.env.MCP_CLIENT = 'gemini-cli';
+      processHook(makeGeminiAfterTool());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('writes "{}" to stdout when NEW_RELIC_AI_PLATFORM is "gemini-cli"', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'gemini-cli';
+      processHook(makeGeminiBeforeTool());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('does not write to stdout for a Claude Code event', () => {
+      processHook(makePreToolUse());
+      expect(stdoutSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not write to stdout for a Gemini CLI-shaped event when neither env var is set', () => {
+      processHook(makeGeminiBeforeTool());
+      expect(stdoutSpy).not.toHaveBeenCalled();
     });
   });
 });

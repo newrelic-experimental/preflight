@@ -694,6 +694,15 @@ function processHook(raw: string): void {
   const recordContent = getRecordContent();
   const maxContentLen = getMaxContentLength();
 
+  // Gemini CLI (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md,
+  // "Strict JSON requirements") requires hook stdout to be either empty
+  // (treated as a parse failure that falls back to a warning + "Allow") or
+  // valid JSON — every one of its own example hooks prints "{}" even for
+  // pure side-effect hooks. No other platform reads this collector's
+  // stdout, so this check is scoped to Gemini CLI only.
+  const isGeminiCli =
+    process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli';
+
   let event: Record<string, unknown>;
 
   if (eventName === 'pretooluse') {
@@ -769,6 +778,61 @@ function processHook(raw: string): void {
       error: redact(data.error ?? 'unknown error'),
       isInterrupt: data.is_interrupt ?? false,
     };
+  } else if (eventName === 'beforetool') {
+    // Gemini CLI (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md)
+    // sends BeforeTool/AfterTool instead of PreToolUse/PostToolUse, but the
+    // fields inside those events (tool_name, tool_input, tool_response) match
+    // Claude Code's shape exactly — reuse the same field extraction as the
+    // pretooluse branch above.
+    event = {
+      mode: 'pre' as const,
+      tool: toolName,
+      timestamp,
+      inputSize: sizeOf(data.tool_input),
+      inputHash: hashInput(data.tool_input),
+    };
+
+    const inputMeta = extractInputMeta(toolName, data.tool_input);
+    if (inputMeta !== undefined) event.toolInput = inputMeta;
+
+    if (recordContent && data.tool_input !== undefined) {
+      const content =
+        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
+      event.inputContent = redact(truncate(content, maxContentLen));
+    }
+  } else if (eventName === 'aftertool') {
+    // Gemini CLI has no tool_response.success boolean (unlike Kiro/Amazon Q) —
+    // failure is signaled by the presence of tool_response.error instead
+    // (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md,
+    // AfterTool's documented output fields: "tool_response... containing
+    // llmContent, returnDisplay, and optional error").
+    const toolResponse = data.tool_response;
+    const hasError =
+      toolResponse !== null &&
+      typeof toolResponse === 'object' &&
+      !Array.isArray(toolResponse) &&
+      (toolResponse as Record<string, unknown>).error !== undefined;
+    event = {
+      mode: 'post' as const,
+      tool: toolName,
+      timestamp,
+      outputSize: sizeOf(data.tool_response),
+      success: !hasError,
+    };
+
+    const postInputMeta = extractInputMeta(toolName, data.tool_input);
+    if (postInputMeta !== undefined) event.toolInput = postInputMeta;
+
+    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    if (outputMeta !== undefined) event.toolOutput = outputMeta;
+
+    if (recordContent && data.tool_response !== undefined) {
+      const content =
+        typeof data.tool_response === 'string'
+          ? data.tool_response
+          : JSON.stringify(data.tool_response);
+      event.outputContent = redact(truncate(content, maxContentLen));
+    }
   } else if (eventName === 'beforeshellexecution') {
     // Cursor's shell hooks carry no tool_name field — the event name itself
     // identifies the tool. Confirmed payload shape:
@@ -971,9 +1035,23 @@ function processHook(raw: string): void {
     // Silent failure — never block Claude Code
   }
 
+  // Gemini CLI's own hook examples always print "{}" before exiting 0, even
+  // for pure side-effect hooks — see the isGeminiCli comment above. Gated to
+  // Gemini CLI only; no other platform's collector behavior changes.
+  if (isGeminiCli) {
+    try {
+      process.stdout.write('{}\n');
+    } catch {
+      // Silent failure — never block Gemini CLI
+    }
+  }
+
   // After writing the tool event, collect token usage from the transcript.
-  // Only on PostToolUse — each assistant turn produces exactly one usage object.
-  if (eventName === 'posttooluse') {
+  // Only on PostToolUse/AfterTool — each assistant turn produces exactly one
+  // usage object. This is a no-op for Gemini CLI's transcript format (not
+  // Claude Code's Anthropic-shaped JSONL) — same accepted behavior as
+  // Droid/Kiro/Amazon Q, whose transcripts aren't in this format either.
+  if (eventName === 'posttooluse' || eventName === 'aftertool') {
     try {
       collectTranscriptTokens(data);
     } catch {
