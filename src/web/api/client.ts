@@ -612,9 +612,11 @@ export interface CacheHealthResponse {
   readonly week_over_week_delta_pts: number | null;
 }
 
+// Mirrors the shape AlertLog.readRecent actually returns — its
+// AlertEventSchema (src/alerts/alert-log.ts) has no sessionId field, so the
+// live server-side AlertEvent's optional sessionId never reaches this API.
 export interface AlertEvent {
   readonly id: string;
-  readonly sessionId?: string;
   readonly state: 'firing' | 'cleared';
   readonly severity: 'info' | 'warning' | 'critical';
   readonly title: string;
