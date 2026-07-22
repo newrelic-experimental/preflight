@@ -1,6 +1,6 @@
 # Platform Adapters
 
-Preflight supports 9 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
+Preflight supports 10 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
@@ -11,14 +11,17 @@ This doc is the canonical reference for what each adapter can and can't observe,
 | Mechanism                                                                                                      | Platforms                          | What's captured                                                                        | `visibilityLevel` |
 | -------------------------------------------------------------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
 | **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid | All built-in tool calls                                                                | `full-hooks`      |
+| **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                         | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
 | **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf                   | All built-in tool calls                                                                | `full-hooks`      |
 | **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev                  | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
 | **HTTP push from an extension**                                                                                | GitHub Copilot                     | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
 | **Self-report via MCP tools**                                                                                  | Generic MCP fallback               | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
 
+[^gemini-hybrid]: Gemini CLI's hook _event names_ (`BeforeTool`/`AfterTool`) don't match `PreToolUse`/`PostToolUse`, so it needs its own branches in `collector-script.ts` — but the _fields_ inside those events (`tool_name`, `tool_input`, `tool_response`) are shaped exactly like Claude Code's, so those branches reuse the existing field-extraction helpers rather than needing new ones.
+
 Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` field encoding this table in code, not just prose — `full-hooks` (automatic, deterministic capture), `self-reported` (built-in-tool-shaped events are observable, but only if an external party — a third-party extension, or the calling MCP client itself — actually reports them), or `mcp-tools-only` (structurally cannot see built-in tool calls at all). Consumers that blend metrics across platforms (`nr_observe_get_platform_comparison`, the weekly digest's per-platform breakdown) use `getPlatformVisibilityMap()` (`src/platforms/platform-registry.ts`) to tag results and caveat comparisons that span more than one level.
 
-Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
+Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
 ---
 
@@ -255,6 +258,47 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
      --env NEW_RELIC_ACCOUNT_ID=<your-account-id>
    ```
 4. Restart Droid
+
+---
+
+## Google Gemini CLI (`gemini-cli`)
+
+**Mechanism:** Native `BeforeTool`/`AfterTool` hooks configured in `settings.json` (`.gemini/settings.json` project scope, `~/.gemini/settings.json` user scope, or `/etc/gemini-cli/settings.json` system scope) — [github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md). Gemini CLI's event _names_ don't match Claude Code's (`BeforeTool`/`AfterTool`, not `PreToolUse`/`PostToolUse`), so `collector-script.ts` has dedicated branches for them — but the _fields_ inside those events (`tool_name`, `tool_input`, `tool_response`, `session_id`, `transcript_path`, `cwd`) match Claude Code's shape exactly, so those branches reuse the same field-extraction helpers. Also supports MCP as a client independently of the hooks system.
+
+**Detection (`isSupported()`):** `MCP_CLIENT === 'gemini-cli'`, or `NEW_RELIC_AI_PLATFORM === 'gemini-cli'`. Like Droid, Gemini CLI's documentation names real environment variables for hook _command_ subprocesses (`GEMINI_PROJECT_DIR`, `GEMINI_SESSION_ID`, `GEMINI_CWD`, `GEMINI_PLANS_DIR` — [docs/hooks/index.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md)) but none confirmed for the MCP-server subprocess itself ([docs/tools/mcp-server.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)'s environment-sanitization section documents only explicit `env` overrides) — detection is explicit-opt-in only.
+
+**Success/failure signal:** Unlike Kiro/Amazon Q's `tool_response.success` boolean, Gemini CLI's `AfterTool` event has no `success` field at all — failure is signaled by the presence of `tool_response.error`. `collector-script.ts`'s `aftertool` branch derives `success` from that field's presence rather than reusing the `posttooluse` branch's boolean lookup.
+
+**Stdout contract:** Gemini CLI requires hook stdout to be either empty (treated as a parse failure that falls back to "Allow" with a warning) or valid JSON — every one of its own example hooks prints `{}` before exiting 0, even for pure side-effect hooks ([docs/hooks/index.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md)'s "Strict JSON requirements"). `collector-script.ts` writes `{}\n` to stdout after processing a hook, gated to Gemini CLI only (`isSupported()`'s same env check) — no other platform's collector behavior changes.
+
+**Tool-map:** Gemini CLI's documented built-in tools ([docs/tools/file-system.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/file-system.md), [docs/tools/shell.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/shell.md), [docs/tools/web-search.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/web-search.md), [docs/tools/web-fetch.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/web-fetch.md)): `read_file`→Read, `write_file`→Write, `replace`→Edit (Gemini CLI's edit tool is named `replace`, not `edit`), `run_shell_command`→Bash, `glob`→Glob, `grep_search`→Grep, `google_web_search`→WebSearch, `web_fetch`→WebFetch. `list_directory` has no Claude Code equivalent and is deliberately left unmapped, falling through to `'Unknown'` with the original name preserved. There is no Task/Agent-equivalent subagent-dispatch tool anywhere in Gemini CLI's built-in tool set.
+
+**Known gaps:** `collector-script.ts`'s per-tool metadata extractors (`extractInputMeta`/`extractOutputMeta`) switch on the raw, unmapped tool name — so Gemini CLI's `replace`/`run_shell_command`/`read_file` calls don't get the extra structured fields (old/new string lengths, exit codes, etc.) that Edit/Bash/Read get for Claude Code, the same situation Droid and Kiro are already in. In particular, `run_shell_command`'s exit code and output live inside `tool_response.llmContent`, whose internal structure isn't part of Gemini CLI's documented public contract, so no attempt is made to parse it.
+
+**Setup:**
+
+1. Add a `BeforeTool`/`AfterTool` hook pair matching all tools to `settings.json` (`~/.gemini/settings.json` user scope or `.gemini/settings.json` project scope):
+   ```json
+   {
+     "hooks": {
+       "BeforeTool": [
+         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+       ],
+       "AfterTool": [
+         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+       ]
+     }
+   }
+   ```
+2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
+3. Register the Preflight MCP server:
+   ```
+   gemini mcp add preflight "npx preflight --stdio" \
+     -e MCP_CLIENT=gemini-cli \
+     -e NEW_RELIC_LICENSE_KEY=<your-key> \
+     -e NEW_RELIC_ACCOUNT_ID=<your-account-id>
+   ```
+4. Restart Gemini CLI
 
 ---
 

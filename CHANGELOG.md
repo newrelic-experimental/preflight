@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-07-22
+
+### Added
+
+- **Google Gemini CLI platform adapter** — Preflight now detects and normalizes tool calls from [Gemini CLI](https://github.com/google-gemini/gemini-cli), Google's agentic command-line coding assistant. Gemini CLI sessions are detected via `MCP_CLIENT=gemini-cli` or `NEW_RELIC_AI_PLATFORM=gemini-cli` (Gemini CLI's documentation doesn't expose an ambient environment variable for the MCP server process itself, unlike several other platforms). Gemini CLI's hooks use their own event names (`BeforeTool`/`AfterTool` rather than `PreToolUse`/`PostToolUse`) but the same field shapes Claude Code already sends, so its built-in tool calls (`read_file`, `write_file`, `replace`, `run_shell_command`, `glob`, `grep_search`, `google_web_search`, `web_fetch`) are captured and mapped to Preflight's standard vocabulary automatically once hooks are configured. Gemini CLI also requires hook output to be valid JSON, so the collector now writes an empty JSON object to stdout for Gemini CLI invocations specifically, leaving every other platform's behavior unchanged. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.7.0] - 2026-07-22
 
 ### Added

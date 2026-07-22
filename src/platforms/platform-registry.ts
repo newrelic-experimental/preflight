@@ -9,6 +9,7 @@ import { ContinueAdapter } from './continue-adapter.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { KiroAdapter } from './kiro-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
+import { GeminiCliAdapter } from './gemini-cli-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
 
 const logger = createLogger('platform-registry');
@@ -63,6 +64,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new AmazonQAdapter());
   registry.register(new KiroAdapter());
   registry.register(new DroidAdapter());
+  registry.register(new GeminiCliAdapter());
   registry.register(new GenericMcpAdapter()); // always last
   return registry;
 }
