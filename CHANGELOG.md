@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-07-22
+
+### Added
+
+- **Cline platform adapter** — Preflight now detects [Cline](https://cline.bot) (VS Code and JetBrains extension, formerly "Claude Dev"). Cline sessions are detected via `MCP_CLIENT=cline` or `NEW_RELIC_AI_PLATFORM=cline` (Cline doesn't forward ambient environment variables into an MCP server's own subprocess, unlike several other platforms, so there's no ambient variable to detect automatically). Cline's VS Code/JetBrains extension has no hook or callback mechanism for its built-in tool calls — confirmed against Cline's own documentation — so Preflight observes only calls Cline routes to Preflight's own MCP tools, the same visibility level as the existing Zed and Continue.dev adapters. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.8.0] - 2026-07-22
 
 ### Added
