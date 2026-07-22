@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.20] - 2026-07-21
+
+### Fixed
+
+- The client-side `AlertEvent` type in `src/web/api/client.ts` declared an optional `sessionId` field mirroring the server-side `AlertEvent` shape, but `AlertLog`'s runtime schema (`src/alerts/alert-log.ts`) never included `sessionId`, so `/api/alerts/recent` never actually returned it. Removed the dead field; `src/web/store/liveStore.ts` already had its own `AlertEvent` correctly omitting it, with a comment explaining why.
+
 ## [1.6.19] - 2026-07-21
 
 ### Fixed
