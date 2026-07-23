@@ -36,6 +36,14 @@ When `mode` is `cloud` or `both`, the following is transmitted to New Relic as c
 | Collaboration profile | `ai.collaboration.*`                            | Behavioral scores per developer (specificity, autonomy, correction rate, task complexity) and a classification label. Emitted with the `developer` dimension, queryable by any user in the NR account. |
 | Repository identifier | `project_id`                                    | Inferred from `git remote get-url origin` (e.g. `org/repo`) unless set explicitly. May expose internal repository names.                                                                               |
 
+### A note on behavioral classification data
+
+The `ai.collaboration.*` metrics differ from the operational telemetry in the table above. Rather than recording what the AI assistant did, they record an inferred characterization of how a developer works — including a classification label (e.g., "Power User", "Delegator", "Learning") derived from aggregated session history.
+
+Organizations deploying this tool in a workplace context should determine whether applicable law or internal policy governs collection and visibility of this category of data, independently of the guidance in this document.
+
+The configuration controls relevant to this data category are described in the [Privacy-Relevant Configuration Settings](#privacy-relevant-configuration-settings) section below. In particular, `mode: 'local'` prevents this data from leaving the developer's machine entirely.
+
 ---
 
 ## Who Can See This Data in Your New Relic Account
@@ -94,6 +102,18 @@ Local mode disables all cloud transport entirely. The local dashboard and analyt
 
 See [README.md → Local mode](./README.md#local-mode) for the full local-mode setup.
 
+### Behavioral classification visibility
+
+When cloud mode is active, `ai.collaboration.*` metrics — including the classification label — are emitted with the `developer` dimension and are queryable by any user in the NR account with NRQL access. This includes users in manager or team-lead roles who may have access to cross-developer views such as the Manager View dashboard.
+
+Organizations that want to limit visibility of behavioral classification data have the following options:
+
+- **`mode: 'local'`** — prevents `ai.collaboration.*` metrics from being transmitted to New Relic at all. Local session analytics continue to work.
+- **`developer: '<pseudonym>'`** — replaces the real OS username with a pseudonym, reducing linkability between classification data and a specific individual in the NR account.
+- **NR account access controls** — restricting NRQL query access to the account where this data lands limits who can run cross-developer queries. See [docs.newrelic.com → User management](https://docs.newrelic.com/docs/accounts/accounts-billing/new-relic-one-user-management/user-management-ui-and-tasks/).
+
+No configuration in this tool controls what NR account users do with data once it is queryable. Organizations are responsible for any access-control or policy measures applicable to their environment.
+
 ---
 
 ## Data Retention in New Relic
@@ -129,3 +149,5 @@ See [README.md → Key settings](./README.md#key-settings) for configuration. Ne
 - [ ] Reviewed the NR account's data retention settings for the event types this tool emits.
 - [ ] Confirmed the NR account region matches where data should be stored (`eu01` prefix for EU, or set `collectorHost` explicitly).
 - [ ] Shared this document with anyone in your organization whose review is needed before the tool is deployed.
+- [ ] If deploying in a workplace context, determined whether applicable law or internal policy governs automated collection and visibility of per-developer behavioral classification data (`ai.collaboration.*`), and taken whatever action is required.
+- [ ] Decided whether `ai.collaboration.*` metrics (behavioral classification) should reach the NR account at all, or whether `mode: 'local'` is more appropriate for your environment.
