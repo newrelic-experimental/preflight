@@ -11,6 +11,7 @@ import { KiroAdapter } from './kiro-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
 import { GeminiCliAdapter } from './gemini-cli-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
+import { CodexAdapter } from './codex-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
 
 const logger = createLogger('platform-registry');
@@ -67,6 +68,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new DroidAdapter());
   registry.register(new GeminiCliAdapter());
   registry.register(new ClineAdapter());
+  registry.register(new CodexAdapter());
   registry.register(new GenericMcpAdapter()); // always last
   return registry;
 }

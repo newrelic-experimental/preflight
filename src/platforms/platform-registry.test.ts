@@ -12,6 +12,7 @@ import { KiroAdapter } from './kiro-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
 import { GeminiCliAdapter } from './gemini-cli-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
+import { CodexAdapter } from './codex-adapter.js';
 import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -290,6 +291,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('cline');
     });
 
+    it('selects Codex adapter when MCP_CLIENT is "codex"', () => {
+      process.env.MCP_CLIENT = 'codex';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('codex');
+    });
+
     it('falls back to generic-mcp when no specific platform detected', () => {
       const registry = createDefaultRegistry();
 
@@ -348,7 +358,7 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(12);
+    expect(registered).toHaveLength(13);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
@@ -360,10 +370,11 @@ describe('createDefaultRegistry', () => {
     expect(registered[8]).toBeInstanceOf(DroidAdapter);
     expect(registered[9]).toBeInstanceOf(GeminiCliAdapter);
     expect(registered[10]).toBeInstanceOf(ClineAdapter);
-    expect(registered[11]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[11]).toBeInstanceOf(CodexAdapter);
+    expect(registered[12]).toBeInstanceOf(GenericMcpAdapter);
   });
 
-  it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, and cline adapters', () => {
+  it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, and codex adapters', () => {
     const registry = createDefaultRegistry();
     const names = registry.getRegistered().map((a) => a.platformName);
     expect(names).toContain('zed');
@@ -373,6 +384,7 @@ describe('createDefaultRegistry', () => {
     expect(names).toContain('droid');
     expect(names).toContain('gemini-cli');
     expect(names).toContain('cline');
+    expect(names).toContain('codex');
   });
 
   it('ends with generic-mcp as fallback', () => {
@@ -452,6 +464,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new DroidAdapter(),
     new GeminiCliAdapter(),
     new ClineAdapter(),
+    new CodexAdapter(),
     new GenericMcpAdapter(),
   ];
 
