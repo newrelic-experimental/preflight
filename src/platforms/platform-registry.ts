@@ -14,6 +14,7 @@ import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
 import { OpencodeAdapter } from './opencode-adapter.js';
 import { KiloCodeAdapter } from './kilo-code-adapter.js';
+import { PiAdapter } from './pi-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
 
 const logger = createLogger('platform-registry');
@@ -73,6 +74,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new CodexAdapter());
   registry.register(new OpencodeAdapter());
   registry.register(new KiloCodeAdapter());
+  registry.register(new PiAdapter());
   registry.register(new GenericMcpAdapter()); // always last
   return registry;
 }

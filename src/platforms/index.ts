@@ -20,6 +20,7 @@ export { ClineAdapter } from './cline-adapter.js';
 export { CodexAdapter } from './codex-adapter.js';
 export { OpencodeAdapter } from './opencode-adapter.js';
 export { KiloCodeAdapter } from './kilo-code-adapter.js';
+export { PiAdapter } from './pi-adapter.js';
 export { GenericMcpAdapter, validateReportToolCallInput } from './generic-mcp-adapter.js';
 export type {
   ReportToolCallInput,

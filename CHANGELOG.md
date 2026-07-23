@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-07-23
+
+### Added
+
+- **Pi platform adapter** — Preflight now detects and normalizes tool calls from [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Pi sessions are detected via `PI_CODING_AGENT=true`, a real ambient environment variable Pi itself sets for exactly this purpose. Pi has zero MCP client support by deliberate design, so unlike every other `full-hooks` platform this adapter does not register an MCP server — setup instead uses `--local` mode (optionally backed by the existing background dashboard daemon on macOS) since nothing else keeps a Preflight process running for Pi sessions. Preflight ships a documented extension snippet (see `docs/ADAPTERS.md`) that translates Pi's own `tool_call`/`tool_result` extension events into the same shape Claude Code already sends, so built-in tool calls (`bash`, `read`, `write`, `edit`, `grep`, `find`) are captured and mapped to Preflight's standard vocabulary automatically once the extension is installed. Unlike opencode/Kilo Code, Pi's hook payload does carry a real success/failure signal (`event.isError`), so captured tool calls report their actual outcome rather than always reporting success. `ls` and any tool disabled by default have no structured coverage yet. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.12.0] - 2026-07-23
 
 ### Added
