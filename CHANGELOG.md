@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-07-23
+
+### Added
+
+- **Kilo Code platform adapter** — Preflight now detects and normalizes tool calls from [Kilo Code](https://kilocode.ai) (`@kilocode/cli`). Kilo Code sessions are detected via `MCP_CLIENT=kilocode` or `NEW_RELIC_AI_PLATFORM=kilocode` (Kilo's documentation lists no ambient environment variable for the MCP server process itself, unlike several other platforms). Kilo CLI is a confirmed fork of opencode and shares its exact plugin-based interception mechanism — no external hooks.json, only an in-process plugin. Preflight ships a documented plugin snippet (see `docs/ADAPTERS.md`) that translates Kilo's own `tool.execute.before`/`tool.execute.after` plugin events into the same shape Claude Code already sends, so built-in tool calls (`read`, `glob`, `grep`, `edit`, `write`, `apply_patch`, `bash`, `webfetch`, `websearch`, `question`, `todowrite`, `todoread`, `plan`, `task`, `skill`) are captured and mapped to Preflight's standard vocabulary automatically once the plugin is installed. Kilo's hook payload carries no success/failure signal, so every captured tool call is currently reported as successful, and only `bash`/`read`/`edit`/`write` receive structured input metadata. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.11.0] - 2026-07-23
 
 ### Added
