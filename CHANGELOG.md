@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-07-23
+
+### Added
+
+- **opencode platform adapter** — Preflight now detects and normalizes tool calls from [opencode](https://opencode.ai). opencode sessions are detected via `MCP_CLIENT=opencode` or `NEW_RELIC_AI_PLATFORM=opencode` (opencode's documentation lists no ambient environment variable for the MCP server process itself, unlike several other platforms). Unlike Claude Code, Kiro, Amazon Q, Droid, and Codex, which all send `PreToolUse`/`PostToolUse` hooks from an external hooks configuration, opencode has no external hooks file — its only interception point is an in-process plugin. Preflight ships a documented plugin snippet (see `docs/ADAPTERS.md`) that translates opencode's own `tool.execute.before`/`tool.execute.after` plugin events into the same shape Claude Code already sends, so built-in tool calls (`bash`, `read`, `write`, `edit`, `apply_patch`, `grep`, `glob`, `webfetch`, `websearch`, `skill`, `todowrite`, `question`) are captured and mapped to Preflight's standard vocabulary automatically once the plugin is installed. opencode's hook payload carries no success/failure signal, so every captured tool call is currently reported as successful, and only `bash`/`read`/`edit`/`write` receive structured input metadata. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.10.0] - 2026-07-22
 
 ### Added

@@ -18,6 +18,7 @@ export { DroidAdapter } from './droid-adapter.js';
 export { GeminiCliAdapter } from './gemini-cli-adapter.js';
 export { ClineAdapter } from './cline-adapter.js';
 export { CodexAdapter } from './codex-adapter.js';
+export { OpencodeAdapter } from './opencode-adapter.js';
 export { GenericMcpAdapter, validateReportToolCallInput } from './generic-mcp-adapter.js';
 export type {
   ReportToolCallInput,
