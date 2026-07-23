@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-07-22
+
+### Added
+
+- **OpenAI Codex platform adapter** — Preflight now detects and normalizes tool calls from [OpenAI Codex](https://developers.openai.com/codex) (CLI, IDE extension, and desktop app). Codex sessions are detected via `MCP_CLIENT=codex` or `NEW_RELIC_AI_PLATFORM=codex` (Codex's documentation lists no ambient environment variable for the MCP server process itself, unlike several other platforms). Codex's native `PreToolUse`/`PostToolUse` hooks use the same event vocabulary and field shapes Claude Code already sends, so built-in tool calls (shell commands, unified exec, `apply_patch` file edits, MCP tool calls, and subagent spawns) are captured and mapped to Preflight's standard vocabulary automatically once hooks are configured. Hosted tools such as `WebSearch` are not observable — Codex's own documentation confirms these never reach the local function-tool hook path. Setup instructions are included in `docs/ADAPTERS.md`.
+
 ## [1.9.0] - 2026-07-22
 
 ### Added

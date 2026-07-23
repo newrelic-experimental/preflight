@@ -1,6 +1,6 @@
 # Platform Adapters
 
-Preflight supports 11 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
+Preflight supports 12 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
@@ -8,20 +8,20 @@ This doc is the canonical reference for what each adapter can and can't observe,
 
 ## Integration mechanisms
 
-| Mechanism                                                                                                      | Platforms                          | What's captured                                                                        | `visibilityLevel` |
-| -------------------------------------------------------------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
-| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid | All built-in tool calls                                                                | `full-hooks`      |
-| **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                         | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
-| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf                   | All built-in tool calls                                                                | `full-hooks`      |
-| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev, Cline           | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
-| **HTTP push from an extension**                                                                                | GitHub Copilot                     | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
-| **Self-report via MCP tools**                                                                                  | Generic MCP fallback               | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
+| Mechanism                                                                                                      | Platforms                                 | What's captured                                                                        | `visibilityLevel` |
+| -------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
+| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid, Codex | All built-in tool calls                                                                | `full-hooks`      |
+| **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                                | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
+| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf                          | All built-in tool calls                                                                | `full-hooks`      |
+| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev, Cline                  | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
+| **HTTP push from an extension**                                                                                | GitHub Copilot                            | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
+| **Self-report via MCP tools**                                                                                  | Generic MCP fallback                      | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
 
 [^gemini-hybrid]: Gemini CLI's hook _event names_ (`BeforeTool`/`AfterTool`) don't match `PreToolUse`/`PostToolUse`, so it needs its own branches in `collector-script.ts` — but the _fields_ inside those events (`tool_name`, `tool_input`, `tool_response`) are shaped exactly like Claude Code's, so those branches reuse the existing field-extraction helpers rather than needing new ones.
 
 Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` field encoding this table in code, not just prose — `full-hooks` (automatic, deterministic capture), `self-reported` (built-in-tool-shaped events are observable, but only if an external party — a third-party extension, or the calling MCP client itself — actually reports them), or `mcp-tools-only` (structurally cannot see built-in tool calls at all). Consumers that blend metrics across platforms (`nr_observe_get_platform_comparison`, the weekly digest's per-platform breakdown) use `getPlatformVisibilityMap()` (`src/platforms/platform-registry.ts`) to tag results and caveat comparisons that span more than one level.
 
-Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
+Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
 ---
 
@@ -331,6 +331,48 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
      -e NEW_RELIC_ACCOUNT_ID=<your-account-id>
    ```
 4. Restart Gemini CLI
+
+---
+
+## OpenAI Codex (`codex`)
+
+**Mechanism:** Native `hooks.json` lifecycle-hooks system (`~/.codex/hooks.json` user scope, `<repo>/.codex/hooks.json` project scope, or inline `[hooks]` tables in `config.toml`) — [developers.openai.com/codex/hooks](https://developers.openai.com/codex/hooks). Codex's `PreToolUse`/`PostToolUse` events send `hook_event_name`, `tool_name`, `tool_input`/`tool_response`, `session_id`, `cwd`, `transcript_path`, `tool_use_id`, `permission_mode` in the same shape Claude Code, Kiro, Amazon Q, and Droid use, so they're handled by the same generic branches in `collector-script.ts` — no platform-specific parsing was needed. Also supports MCP as a client independently of the hooks system ([developers.openai.com/codex/extend/mcp](https://developers.openai.com/codex/extend/mcp)). Non-managed hooks (anything outside a system/MDM/`requirements.toml`-managed source) require one-time review and trust via `/hooks` in the Codex CLI before they run.
+
+**Detection (`isSupported()`):** `MCP_CLIENT === 'codex'`, or `NEW_RELIC_AI_PLATFORM === 'codex'`. Checked Codex's full documented environment-variable list ([developers.openai.com/codex/config-file/environment-variables](https://developers.openai.com/codex/config-file/environment-variables)) — `CODEX_HOME`, `CODEX_SQLITE_HOME`, `CODEX_NON_INTERACTIVE`, `CODEX_INSTALL_DIR`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `CODEX_CA_CERTIFICATE`, `RUST_LOG` — none are documented as injected into an MCP server subprocess's environment as an ambient "running under Codex" signal. `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` are real but scoped to plugin-bundled hook _command_ subprocesses specifically, not to an MCP server started via `codex mcp add` — detection is explicit-opt-in only, same as Droid/Gemini CLI/Cline.
+
+**Tool coverage, confirmed via Codex's own tool-coverage table:** shell commands and unified exec (`exec_command`) are both fully covered (Yes/Yes for `PreToolUse`/`PostToolUse`), reported with the canonical literal `tool_name` `"Bash"` — no translation needed. `apply_patch` is also fully covered but always reports `tool_name` literally as `"apply_patch"` (never split into `Edit`/`Write`, even though Codex's own hook _matcher_ config lets a user alias-match it as either); `CODEX_TOOL_MAP` collapses it to `'Edit'`, a single value, the same treatment Windsurf gives `pre_write_code`. MCP tool calls and other local function tools (e.g. `spawn_agent`, matched by the coverage table as also aliasable to `Agent`) are fully covered too. `update_plan` has no confirmed Preflight canonical equivalent and is left unmapped.
+
+**Known gaps:**
+
+- **Hosted tools are entirely unobservable.** Codex's own tool-coverage table marks hosted tools such as `WebSearch` as No/No for both `PreToolUse` and `PostToolUse` — "these don't use the local function-tool hook path." Preflight cannot see these calls at all, regardless of hook configuration.
+- **`apply_patch` calls don't get Edit's structured metadata.** `collector-script.ts`'s `extractInputMeta`/`extractOutputMeta` switch on the _raw_ tool name (`"apply_patch"`, not `"Edit"`) before `mapToolName()` ever runs, so Codex's `apply_patch` calls don't get the `oldStringLength`/`newStringLength`/etc. fields Claude Code's `Edit` calls get — the same pre-existing situation Gemini CLI's `replace` and Droid's `Create`/`Execute`/`Task` are already in.
+- **A `write_stdin` poll against an already-open unified-exec session doesn't re-trigger `PreToolUse`.** This is narrower than it may sound: `exec_command` itself is fully covered (Yes/Yes) — only a _follow-up_ poll of a session that already passed `PreToolUse` is exempt from running it again.
+
+**Setup:**
+
+1. Add a `PreToolUse`/`PostToolUse` hook pair matching all tools to `hooks.json` (`~/.codex/hooks.json` user scope or `<repo>/.codex/hooks.json` project scope):
+   ```json
+   {
+     "hooks": {
+       "PreToolUse": [
+         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+       ],
+       "PostToolUse": [
+         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+       ]
+     }
+   }
+   ```
+2. Run `/hooks` in the Codex CLI to review and trust this hook definition — non-managed hooks are skipped until reviewed.
+3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
+4. Register the Preflight MCP server:
+   ```
+   codex mcp add preflight --env MCP_CLIENT=codex \
+     --env NEW_RELIC_LICENSE_KEY=<your-key> \
+     --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
+     -- npx preflight --stdio
+   ```
+5. Restart Codex
 
 ---
 
