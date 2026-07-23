@@ -13,6 +13,7 @@ import { DroidAdapter } from './droid-adapter.js';
 import { GeminiCliAdapter } from './gemini-cli-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
+import { OpencodeAdapter } from './opencode-adapter.js';
 import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -300,6 +301,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('codex');
     });
 
+    it('selects opencode adapter when MCP_CLIENT is "opencode"', () => {
+      process.env.MCP_CLIENT = 'opencode';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('opencode');
+    });
+
     it('falls back to generic-mcp when no specific platform detected', () => {
       const registry = createDefaultRegistry();
 
@@ -358,7 +368,7 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(13);
+    expect(registered).toHaveLength(14);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
@@ -371,10 +381,11 @@ describe('createDefaultRegistry', () => {
     expect(registered[9]).toBeInstanceOf(GeminiCliAdapter);
     expect(registered[10]).toBeInstanceOf(ClineAdapter);
     expect(registered[11]).toBeInstanceOf(CodexAdapter);
-    expect(registered[12]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[12]).toBeInstanceOf(OpencodeAdapter);
+    expect(registered[13]).toBeInstanceOf(GenericMcpAdapter);
   });
 
-  it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, and codex adapters', () => {
+  it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, codex, and opencode adapters', () => {
     const registry = createDefaultRegistry();
     const names = registry.getRegistered().map((a) => a.platformName);
     expect(names).toContain('zed');
@@ -385,6 +396,7 @@ describe('createDefaultRegistry', () => {
     expect(names).toContain('gemini-cli');
     expect(names).toContain('cline');
     expect(names).toContain('codex');
+    expect(names).toContain('opencode');
   });
 
   it('ends with generic-mcp as fallback', () => {
@@ -465,6 +477,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new GeminiCliAdapter(),
     new ClineAdapter(),
     new CodexAdapter(),
+    new OpencodeAdapter(),
     new GenericMcpAdapter(),
   ];
 
