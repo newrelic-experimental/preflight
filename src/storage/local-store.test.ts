@@ -969,6 +969,120 @@ describe('LocalStore', () => {
     });
   });
 
+  describe('gcWatcherCursors()', () => {
+    const PARENT_SESSION = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const AGENT_ID = 'a1234567890abcdef';
+    const OTHER_SESSION = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
+
+    function makeCursorFile(name: string, mtimeMs?: number): string {
+      const path = resolve(tmpDir, name);
+      writeFileSync(path, JSON.stringify({ bytePos: 0, partialLine: '' }));
+      if (mtimeMs !== undefined) {
+        const date = new Date(mtimeMs);
+        utimesSync(path, date, date);
+      }
+      return path;
+    }
+
+    it('preserves a subagent cursor whose parent session is live, regardless of mtime', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(
+        `.subagent-pos-${PARENT_SESSION}-${AGENT_ID}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set([PARENT_SESSION]), 24);
+
+      expect(result.subagentCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('preserves a dead-session subagent cursor with recent mtime', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(`.subagent-pos-${PARENT_SESSION}-${AGENT_ID}`);
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.subagentCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('deletes a dead-session subagent cursor older than the discovery window', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(
+        `.subagent-pos-${PARENT_SESSION}-${AGENT_ID}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.subagentCursors).toBe(1);
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it('preserves a transcript cursor while its companion buffer file exists', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, `buffer-${OTHER_SESSION}.jsonl`), '');
+      const path = makeCursorFile(
+        `.transcript-pos-${OTHER_SESSION}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.transcriptCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('deletes a dead-session transcript cursor once its buffer file is gone', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(`.transcript-pos-${OTHER_SESSION}`);
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.transcriptCursors).toBe(1);
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it('preserves a transcript cursor whose session is live even with no buffer file', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(`.transcript-pos-${OTHER_SESSION}`);
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set([OTHER_SESSION]), 24);
+
+      expect(result.transcriptCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('ignores malformed cursor filenames', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, '.subagent-pos-not-a-valid-agent-id'), '{}');
+      writeFileSync(resolve(tmpDir, '.transcript-pos-'), '{}');
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result).toEqual({ subagentCursors: 0, transcriptCursors: 0 });
+      expect(existsSync(resolve(tmpDir, '.subagent-pos-not-a-valid-agent-id'))).toBe(true);
+      expect(existsSync(resolve(tmpDir, '.transcript-pos-'))).toBe(true);
+    });
+
+    it('returns zeros when storage path does not exist', () => {
+      const missing = resolve(tmpDir, 'nonexistent');
+      const store = new LocalStore(missing);
+      expect(store.gcWatcherCursors(new Set(), 24)).toEqual({
+        subagentCursors: 0,
+        transcriptCursors: 0,
+      });
+    });
+  });
+
   describe('getActiveSessionIdsFromHeartbeats()', () => {
     it('returns sessionIds whose PID is alive and skips dead ones', () => {
       mkdirSync(tmpDir, { recursive: true });

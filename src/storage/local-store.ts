@@ -16,6 +16,8 @@ import type { HookEvent, AuditEntry } from './types.js';
 const logger = createLogger('local-store');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+const SUBAGENT_CURSOR_RE = /^\.subagent-pos-(.+)-(a[a-f0-9]{16})$/;
+const TRANSCRIPT_CURSOR_RE = /^\.transcript-pos-(.+)$/;
 
 /**
  * A buffer file is treated as orphan when its mtime is older than this AND
@@ -642,6 +644,87 @@ export class LocalStore {
     }
 
     return { archived, staleHeartbeats };
+  }
+
+  /**
+   * Garbage-collect SubagentWatcher and transcript-collector cursor files that
+   * can never be revisited:
+   *
+   *   - `.subagent-pos-<parentSessionId>-<agentId>`: removed once its parent
+   *     session is no longer live AND the cursor's mtime is older than
+   *     `discoveryHours` — past that window `SubagentWatcher.discoverFiles()`
+   *     will never cold-scan the corresponding transcript again, so the
+   *     cursor is dead by construction. Losing it costs at most one re-read
+   *     from byte 0 on a transcript that no longer exists, which downstream
+   *     dedupes by (agent_id, message.id).
+   *   - `.transcript-pos-<sessionId>`: removed once its session is no longer
+   *     live AND no `buffer-<sessionId>.jsonl` remains for it.
+   *
+   * @returns counts of each cursor kind removed
+   */
+  gcWatcherCursors(
+    activeSessionIds: ReadonlySet<string>,
+    discoveryHours: number,
+  ): { subagentCursors: number; transcriptCursors: number } {
+    if (!existsSync(this.storagePath)) {
+      return { subagentCursors: 0, transcriptCursors: 0 };
+    }
+    let entries: string[];
+    try {
+      entries = readdirSync(this.storagePath);
+    } catch (err) {
+      logger.warn('Failed to enumerate storage path for gcWatcherCursors', {
+        error: String(err),
+      });
+      return { subagentCursors: 0, transcriptCursors: 0 };
+    }
+
+    const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
+    const bufferNames = new Set(
+      entries.filter((n) => n.startsWith('buffer-') && n.endsWith('.jsonl')),
+    );
+
+    let subagentCursors = 0;
+    let transcriptCursors = 0;
+
+    for (const name of entries) {
+      const subagentMatch = SUBAGENT_CURSOR_RE.exec(name);
+      if (subagentMatch) {
+        const parentSessionId = subagentMatch[1];
+        if (!SESSION_ID_RE.test(parentSessionId)) continue;
+        if (activeSessionIds.has(parentSessionId)) continue;
+        const path = resolve(this.storagePath, name);
+        try {
+          if (statSync(path).mtimeMs >= cutoffMs) continue;
+          unlinkSync(path);
+          subagentCursors++;
+        } catch (err) {
+          logger.debug('Failed to delete stale subagent cursor', { error: String(err) });
+        }
+        continue;
+      }
+
+      const transcriptMatch = TRANSCRIPT_CURSOR_RE.exec(name);
+      if (transcriptMatch) {
+        const sessionId = transcriptMatch[1];
+        if (!SESSION_ID_RE.test(sessionId)) continue;
+        if (activeSessionIds.has(sessionId)) continue;
+        if (bufferNames.has(`buffer-${sessionId}.jsonl`)) continue;
+        const path = resolve(this.storagePath, name);
+        try {
+          unlinkSync(path);
+          transcriptCursors++;
+        } catch (err) {
+          logger.debug('Failed to delete stale transcript cursor', { error: String(err) });
+        }
+      }
+    }
+
+    if (subagentCursors > 0 || transcriptCursors > 0) {
+      logger.info('Cleaned up watcher cursor files', { subagentCursors, transcriptCursors });
+    }
+
+    return { subagentCursors, transcriptCursors };
   }
 
   /**

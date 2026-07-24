@@ -285,11 +285,14 @@ export interface MaintenanceGcDeps {
   readonly liveSessionRegistry: LiveSessionRegistry | undefined;
 }
 
+/** Default cold-scan window for SubagentWatcher/WorkflowWatcher — mirrors DEFAULT_DISCOVERY_HOURS in subagent-watcher.ts. */
+const WATCHER_DISCOVERY_HOURS_DEFAULT = 24;
+
 /**
- * One orphan-buffer/breadcrumb/dead-instance GC pass. `gcOrphanBuffers()` is
- * rename-based, so concurrent processes each running this independently just
- * means an occasional benign "already moved" warning — no leader election
- * needed to call this from every process.
+ * One orphan-buffer/breadcrumb/dead-instance/cursor-file GC pass.
+ * `gcOrphanBuffers()` is rename-based, so concurrent processes each running
+ * this independently just means an occasional benign "already moved"
+ * warning — no leader election needed to call this from every process.
  */
 export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
   const log = createLogger('mcp-cli');
@@ -304,6 +307,10 @@ export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
       }
     }
     localStore.gcOrphanBuffers(live);
+    const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);
+    const discoveryHours =
+      Number.isFinite(envHours) && envHours > 0 ? envHours : WATCHER_DISCOVERY_HOURS_DEFAULT;
+    localStore.gcWatcherCursors(live, discoveryHours);
   } catch (err) {
     log.warn('GC pass failed', { error: String(err) });
   }
