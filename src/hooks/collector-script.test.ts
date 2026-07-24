@@ -16,6 +16,7 @@ import {
   translateWslPath,
   getBufferPath,
   writePpidBreadcrumb,
+  writeCwdBreadcrumb,
   getLinuxAncestorPids,
   _procFs,
   readStdinSync,
@@ -1576,6 +1577,64 @@ describe('collector-script', () => {
       const ancestorCrumb = resolve(breadcrumbDir, `${fakeGrandpid}.txt`);
       expect(existsSync(ancestorCrumb)).toBe(true);
       expect(readFileSync(ancestorCrumb, 'utf-8')).toBe('sess-ancestor');
+    });
+  });
+
+  describe('writeCwdBreadcrumb()', () => {
+    beforeEach(() => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+    });
+
+    it('writes <storage>/session-by-cwd/<sanitized-cwd>.txt with the sessionId', () => {
+      writeCwdBreadcrumb('sess-bread', '/projects/test');
+      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(existsSync(breadcrumbPath)).toBe(true);
+      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bread');
+    });
+
+    it('sanitizes a backslash-separated (Windows) cwd, stripping the drive-letter colon too', () => {
+      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject');
+      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt');
+      expect(existsSync(breadcrumbPath)).toBe(true);
+      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-win');
+    });
+
+    it('strips the drive-letter colon so the breadcrumb filename has no embedded colon', () => {
+      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject');
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt'))).toBe(
+        true,
+      );
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd', 'C:-Users-test-myproject.txt'))).toBe(
+        false,
+      );
+    });
+
+    it('no-ops when cwd is missing or empty', () => {
+      writeCwdBreadcrumb('sess-nocwd', undefined);
+      writeCwdBreadcrumb('sess-nocwd', '');
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it('rejects malformed sessionIds without writing', () => {
+      writeCwdBreadcrumb('../../escape', '/projects/test');
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(false);
+    });
+
+    it('short-circuits when content already matches', () => {
+      writeCwdBreadcrumb('sess-stable', '/projects/test');
+      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test');
+      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
+    });
+
+    it('processHook() drops the cwd breadcrumb on every fire', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+
+      processHook(makePreToolUse({ session_id: 'sess-bc', cwd: '/projects/test' }));
+      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
     });
   });
 

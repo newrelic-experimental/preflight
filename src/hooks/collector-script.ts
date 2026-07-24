@@ -350,15 +350,22 @@ function collectTranscriptTokens(data: {
 }
 
 // ---------------------------------------------------------------------------
-// PPID breadcrumb — lets the MCP server learn the Claude Code session_id
+// PPID + cwd breadcrumbs — let the MCP server learn the Claude Code session_id
 //
 // Claude Code spawns its MCP server and hook collector scripts as children of
 // the same process; they share a PPID. The MCP can read its own process.ppid
 // (= Claude Code's PID) and look up the matching session_id here.
 //
+// Some platforms interpose a shell between Claude Code and the hook collector
+// that the ancestor-PID walk below doesn't reach (native Windows via Git
+// Bash, for one) — there, the collector's ppid never matches the MCP's own
+// process.ppid. writeCwdBreadcrumb() writes a second breadcrumb keyed by the
+// sanitized project cwd instead, which the MCP server falls back to (via
+// resolveFromCwd() in session-resolver.ts) only when the PPID lookup misses.
+//
 // Hot-path: every PreToolUse / PostToolUse hook runs this. The
 // existsSync + content-equality short-circuit makes the steady state a single
-// stat() and one read — well under the <5ms budget.
+// stat() and one read per breadcrumb — well under the <5ms budget.
 // ---------------------------------------------------------------------------
 
 /**
@@ -453,6 +460,49 @@ function writePpidBreadcrumb(sessionId: string): void {
         `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
       );
       _breadcrumbWriteFailed = true;
+    }
+  }
+}
+
+let _cwdBreadcrumbWriteFailed = false;
+
+function writeCwdBreadcrumb(sessionId: string, cwd: string | undefined): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  if (typeof cwd !== 'string' || cwd.length === 0) return;
+
+  try {
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    const breadcrumbDir = resolve(storageDir, 'session-by-cwd');
+    mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+
+    // Same sanitization scheme as getTranscriptPath() above, so the MCP
+    // server's resolveFromCwd() can derive an identical filename from its
+    // own process.cwd() without any shared state beyond this convention.
+    // Colons are also stripped (unlike getTranscriptPath) — a Windows drive
+    // letter like "C:" left in the filename gets misinterpreted by
+    // path.resolve() on win32 as a drive-relative path component rather than
+    // a literal character, which can write/read outside this storage dir.
+    const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
+    const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
+
+    if (existsSync(breadcrumbPath)) {
+      try {
+        if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+          _cwdBreadcrumbWriteFailed = false;
+          return;
+        }
+      } catch {
+        // Fall through to rewrite if the read failed.
+      }
+    }
+    writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
+    _cwdBreadcrumbWriteFailed = false;
+  } catch (err) {
+    if (!_cwdBreadcrumbWriteFailed) {
+      process.stderr.write(
+        `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}\n`,
+      );
+      _cwdBreadcrumbWriteFailed = true;
     }
   }
 }
@@ -690,6 +740,7 @@ function processHook(raw: string): void {
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
     writePpidBreadcrumb(data.session_id);
+    writeCwdBreadcrumb(data.session_id, data.cwd);
   }
 
   // Claude Code sends PascalCase hook names ('PreToolUse'); Kiro sends
@@ -1158,6 +1209,7 @@ export {
   translateWslPath,
   getBufferPath,
   writePpidBreadcrumb,
+  writeCwdBreadcrumb,
   readStdinSync,
 };
 

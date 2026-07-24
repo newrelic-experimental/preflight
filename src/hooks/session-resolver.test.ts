@@ -6,6 +6,7 @@ import {
   resolveSessionId,
   resolveFromJobDir,
   resolveFromBreadcrumb,
+  resolveFromCwd,
   nextDelayMs,
   isSyntheticSessionId,
 } from './session-resolver.js';
@@ -105,6 +106,41 @@ describe('session-resolver', () => {
     });
   });
 
+  describe('resolveFromCwd()', () => {
+    it('returns null when cwd is missing or empty', () => {
+      expect(resolveFromCwd(tmpDir, undefined)).toBeNull();
+      expect(resolveFromCwd(tmpDir, '')).toBeNull();
+    });
+
+    it('returns null when breadcrumb file is missing', () => {
+      expect(resolveFromCwd(tmpDir, '/projects/missing')).toBeNull();
+    });
+
+    it('returns the trimmed sessionId from <storage>/session-by-cwd/<sanitized-cwd>.txt', () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'), 'sess-from-cwd\n');
+      expect(resolveFromCwd(tmpDir, '/projects/test')).toBe('sess-from-cwd');
+    });
+
+    it('sanitizes a backslash-separated (Windows) cwd the same way as the collector', () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt'), 'sess-win');
+      expect(resolveFromCwd(tmpDir, 'C:\\Users\\test\\myproject')).toBe('sess-win');
+    });
+
+    it('resolves correctly when cwd contains a Windows drive letter with colon', () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt'), 'sess-drive');
+      expect(resolveFromCwd(tmpDir, 'C:\\Users\\test\\myproject')).toBe('sess-drive');
+    });
+
+    it('returns null when breadcrumb content fails the regex', () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'), 'has spaces');
+      expect(resolveFromCwd(tmpDir, '/projects/test')).toBeNull();
+    });
+  });
+
   describe('nextDelayMs()', () => {
     it('follows the exp-backoff schedule and saturates at 2s', () => {
       expect(nextDelayMs(0)).toBe(100);
@@ -139,6 +175,36 @@ describe('session-resolver', () => {
         storagePath: tmpDir,
       });
       expect(sid).toBe('sess-immediate');
+    });
+
+    it('falls back to the cwd breadcrumb when the ppid breadcrumb is missing (immediate)', async () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(
+        resolve(tmpDir, 'session-by-cwd', '-projects-winrepo.txt'),
+        'sess-cwd-fallback',
+      );
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 424242, // never has a matching breadcrumb
+        cwd: '/projects/winrepo',
+        storagePath: tmpDir,
+      });
+      expect(sid).toBe('sess-cwd-fallback');
+    });
+
+    it('prefers the ppid breadcrumb over the cwd breadcrumb when both are present', async () => {
+      const ppid = 111222;
+      mkdirSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`), 'sess-from-ppid');
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-both.txt'), 'sess-from-cwd');
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid,
+        cwd: '/projects/both',
+        storagePath: tmpDir,
+      });
+      expect(sid).toBe('sess-from-ppid');
     });
   });
 
@@ -176,6 +242,29 @@ describe('session-resolver', () => {
           signal: ac.signal,
         }),
       ).rejects.toThrow(/aborted/);
+    });
+
+    it('resolves via the cwd fallback once it appears, when the ppid breadcrumb never does (native-Windows Git-Bash-interposition scenario)', async () => {
+      const breadcrumbCwdDir = resolve(tmpDir, 'session-by-cwd');
+      mkdirSync(breadcrumbCwdDir, { recursive: true });
+
+      // The ppid the resolver looks for (the MCP's own process.ppid, i.e.
+      // claude.exe's pid) never gets a breadcrumb — only a transient,
+      // unrelated interposed-shell pid would have one, which this resolver
+      // call never sees. The cwd breadcrumb appears after a delay instead,
+      // exactly like the real collector writing it on the next hook fire.
+      setTimeout(() => {
+        writeFileSync(resolve(breadcrumbCwdDir, '-projects-native-win.txt'), 'sess-win-regression');
+      }, 150);
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 333444, // never resolves
+        cwd: '/projects/native-win',
+        storagePath: tmpDir,
+        suppressWarn: true,
+      });
+      expect(sid).toBe('sess-win-regression');
     });
   });
 });
