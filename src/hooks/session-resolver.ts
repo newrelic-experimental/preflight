@@ -1,16 +1,25 @@
 /**
  * Resolve the Claude Code session_id for the running MCP process.
  *
- * Two sources, in order:
+ * Three sources, in order:
  *   1. `CLAUDE_JOB_DIR` env var → read `<dir>/state.json`, regex-extract the
  *      session UUID from the `linkScanPath` field's filename. Instant; used
  *      by background-job MCPs.
  *   2. PPID breadcrumb at `<storage>/session-by-ppid/<process.ppid>.txt` —
- *      written by the hook collector on every tool call. Polled at exponential
- *      backoff: 100ms, 200ms, 500ms, 1s, 2s, then steady at 2s. No hard
- *      timeout; logs a single WARN at 60s if still unresolved.
+ *      written by the hook collector on every tool call. Precise: no
+ *      cross-session collision risk when it resolves.
+ *   3. cwd breadcrumb at `<storage>/session-by-cwd/<sanitized-cwd>.txt` —
+ *      also written by the hook collector on every tool call, keyed by the
+ *      project directory instead of a PID. Fallback for platforms where the
+ *      PPID bridge never reaches the MCP's own `process.ppid` (e.g. native
+ *      Windows, where Claude Code interposes Git Bash between itself and the
+ *      hook collector but launches the MCP server directly). Only consulted
+ *      when #2 misses.
+ *   Both breadcrumb sources are polled together at exponential backoff:
+ *   100ms, 200ms, 500ms, 1s, 2s, then steady at 2s. No hard timeout; logs a
+ *   single WARN at 60s if still unresolved.
  *
- * The MCP must never fabricate its own session_id. If neither path resolves,
+ * The MCP must never fabricate its own session_id. If none of these resolve,
  * tool handlers should report "session_id not yet resolved" rather than make
  * one up.
  */
@@ -33,6 +42,8 @@ export interface SessionResolverOptions {
   readonly storagePath?: string;
   /** Override `process.ppid` (test seam). */
   readonly ppid?: number;
+  /** Override `process.cwd()` (test seam). */
+  readonly cwd?: string;
   /** Override `process.env.CLAUDE_JOB_DIR` (test seam). */
   readonly claudeJobDir?: string | null;
   /** When true, skip the WARN log (test seam). */
@@ -104,6 +115,33 @@ export function resolveFromBreadcrumb(
 }
 
 /**
+ * Try to resolve the session_id synchronously from the cwd breadcrumb file.
+ * Fallback for platforms where the PPID breadcrumb never matches (see the
+ * module doc comment above). Returns the validated session_id or null.
+ */
+export function resolveFromCwd(storagePath: string, cwd: string | undefined): string | null {
+  if (typeof cwd !== 'string' || cwd.length === 0) return null;
+  // Same sanitization scheme as the collector's writeCwdBreadcrumb() /
+  // getTranscriptPath() — must stay identical so both sides derive the same
+  // filename independently. Colons are stripped too (unlike
+  // getTranscriptPath) so a Windows drive letter never survives into the
+  // filename — see the matching comment in writeCwdBreadcrumb().
+  const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
+  const breadcrumbPath = resolve(storagePath, 'session-by-cwd', `${sanitizedCwd}.txt`);
+  if (!existsSync(breadcrumbPath)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(breadcrumbPath, 'utf-8');
+  } catch (err) {
+    logger.debug('cwd breadcrumb file unreadable', { error: String(err) });
+    return null;
+  }
+  const sid = raw.trim();
+  if (!SESSION_ID_RE.test(sid)) return null;
+  return sid;
+}
+
+/**
  * Returns the next poll delay for attempt index `i` (0-based).
  * Schedule: 100ms, 200ms, 500ms, 1s, 2s, then steady 2s.
  */
@@ -132,6 +170,7 @@ export async function resolveSessionId(
       ? options.claudeJobDir
       : (process.env.CLAUDE_JOB_DIR ?? null);
   const ppid = options.ppid ?? process.ppid;
+  const cwd = options.cwd ?? process.cwd();
   const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
 
   // Fast path: CLAUDE_JOB_DIR is set and contains a usable state.json. Used
@@ -142,12 +181,20 @@ export async function resolveSessionId(
     return fromJobDir;
   }
 
-  // Synchronous attempt before we wait — common case is the breadcrumb is
+  // Synchronous attempts before we wait — common case is a breadcrumb is
   // already on disk because the user already typed at least one message.
+  // PPID lookup is precise and tried first; cwd is only a fallback.
   const immediate = resolveFromBreadcrumb(storagePath, ppid);
   if (immediate) {
     logger.info('Resolved session_id from breadcrumb (immediate)', { sessionId: immediate });
     return immediate;
+  }
+  const immediateCwd = resolveFromCwd(storagePath, cwd);
+  if (immediateCwd) {
+    logger.info('Resolved session_id from cwd breadcrumb (ppid fallback, immediate)', {
+      sessionId: immediateCwd,
+    });
+    return immediateCwd;
   }
 
   const startTime = Date.now();
@@ -183,6 +230,17 @@ export async function resolveSessionId(
         logger.info('Resolved session_id from breadcrumb', { sessionId: sid, elapsedMs: elapsed });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(sid);
+        return;
+      }
+      const sidFromCwd = resolveFromCwd(storagePath, cwd);
+      if (sidFromCwd) {
+        const elapsed = Date.now() - startTime;
+        logger.info('Resolved session_id from cwd breadcrumb (ppid fallback)', {
+          sessionId: sidFromCwd,
+          elapsedMs: elapsed,
+        });
+        if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        resolvePromise(sidFromCwd);
         return;
       }
       const elapsed = Date.now() - startTime;

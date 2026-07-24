@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1] - 2026-07-24
+
+### Fixed
+
+- **Native Windows session resolution** — the `--stdio` MCP server now resolves its Claude Code `session_id` on native Windows, where Claude Code interposes Git Bash between itself and the hook collector but launches the MCP server directly. The hook collector writes an additional breadcrumb keyed by the project's working directory (alongside the existing PID-keyed breadcrumb); the MCP server falls back to it, on any platform, whenever the PID-based lookup misses. Previously, affected sessions never resolved a real session ID, so dashboard History, weekly summaries, and model-performance metrics never populated for them.
+
 ## [1.14.0] - 2026-07-23
 
 ### Added
