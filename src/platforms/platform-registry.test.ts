@@ -16,6 +16,7 @@ import { CodexAdapter } from './codex-adapter.js';
 import { OpencodeAdapter } from './opencode-adapter.js';
 import { KiloCodeAdapter } from './kilo-code-adapter.js';
 import { PiAdapter } from './pi-adapter.js';
+import { AntigravityAdapter } from './antigravity-adapter.js';
 import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -331,6 +332,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('pi');
     });
 
+    it('selects Antigravity adapter when MCP_CLIENT is "antigravity"', () => {
+      process.env.MCP_CLIENT = 'antigravity';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('antigravity');
+    });
+
     it('falls back to generic-mcp when no specific platform detected', () => {
       const registry = createDefaultRegistry();
 
@@ -389,7 +399,7 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(16);
+    expect(registered).toHaveLength(17);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
@@ -405,10 +415,11 @@ describe('createDefaultRegistry', () => {
     expect(registered[12]).toBeInstanceOf(OpencodeAdapter);
     expect(registered[13]).toBeInstanceOf(KiloCodeAdapter);
     expect(registered[14]).toBeInstanceOf(PiAdapter);
-    expect(registered[15]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[15]).toBeInstanceOf(AntigravityAdapter);
+    expect(registered[16]).toBeInstanceOf(GenericMcpAdapter);
   });
 
-  it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, codex, opencode, kilocode, and pi adapters', () => {
+  it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, codex, opencode, kilocode, pi, and antigravity adapters', () => {
     const registry = createDefaultRegistry();
     const names = registry.getRegistered().map((a) => a.platformName);
     expect(names).toContain('zed');
@@ -422,6 +433,7 @@ describe('createDefaultRegistry', () => {
     expect(names).toContain('opencode');
     expect(names).toContain('kilocode');
     expect(names).toContain('pi');
+    expect(names).toContain('antigravity');
   });
 
   it('ends with generic-mcp as fallback', () => {
@@ -505,6 +517,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new OpencodeAdapter(),
     new KiloCodeAdapter(),
     new PiAdapter(),
+    new AntigravityAdapter(),
     new GenericMcpAdapter(),
   ];
 

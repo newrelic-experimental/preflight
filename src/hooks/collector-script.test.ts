@@ -117,6 +117,30 @@ function makeGeminiAfterTool(overrides?: Record<string, unknown>): string {
   });
 }
 
+function makeAntigravityPreToolUse(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    toolCall: { name: 'run_command', args: { CommandLine: 'npm test', Cwd: '/workspace/project' } },
+    stepIdx: 19,
+    conversationId: 'agy-conv-001',
+    workspacePaths: ['/workspace/project'],
+    transcriptPath: '/tmp/agy-transcript.jsonl',
+    artifactDirectoryPath: '/tmp/agy-artifacts',
+    ...overrides,
+  });
+}
+
+function makeAntigravityPostToolUse(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    stepIdx: 19,
+    error: '',
+    conversationId: 'agy-conv-001',
+    workspacePaths: ['/workspace/project'],
+    transcriptPath: '/tmp/agy-transcript.jsonl',
+    artifactDirectoryPath: '/tmp/agy-artifacts',
+    ...overrides,
+  });
+}
+
 function readBufferEvents(): Record<string, unknown>[] {
   if (!existsSync(bufferPath)) return [];
   const raw = readFileSync(bufferPath, 'utf-8').trim();
@@ -1794,6 +1818,66 @@ describe('collector-script', () => {
     it('does not write to stdout for a Gemini CLI-shaped event when neither env var is set', () => {
       processHook(makeGeminiBeforeTool());
       expect(stdoutSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('collector-script — Antigravity hook events (https://antigravity.google/docs/hooks)', () => {
+    it('writes a pre event with tool from toolCall.name and toolUseId from stepIdx', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPreToolUse());
+
+      const events = readBufferLines('agy-conv-001');
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('pre');
+      expect(event.tool).toBe('run_command');
+      expect(event.toolUseId).toBe('19');
+      expect(event.sessionId).toBe('agy-conv-001');
+    });
+
+    it('replies with {"decision":"allow"} on stdout for PreToolUse', () => {
+      processHook(makeAntigravityPreToolUse());
+      expect(stdoutSpy).toHaveBeenCalledWith('{"decision":"allow"}\n');
+    });
+
+    it('writes a post event with tool "unknown" and toolUseId from stepIdx', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPostToolUse());
+
+      const events = readBufferLines('agy-conv-001');
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('post');
+      expect(event.tool).toBe('unknown');
+      expect(event.toolUseId).toBe('19');
+      expect(event.success).toBe(true);
+    });
+
+    it('reports success: false when PostToolUse carries a non-empty error', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPostToolUse({ error: 'exit status 1' }));
+
+      const events = readBufferLines('agy-conv-001');
+      const event = events[0]!;
+      expect(event.success).toBe(false);
+      expect(event.error).toBe('exit status 1');
+    });
+
+    it('replies with {} on stdout for PostToolUse', () => {
+      processHook(makeAntigravityPostToolUse());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
+    it('does not misfire on a Claude Code PreToolUse payload (no toolCall key)', () => {
+      processHook(makePreToolUse());
+      // Claude Code's own pretooluse branch should still handle this, not the
+      // Antigravity one — same buffer file (no conversationId), tool preserved.
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.tool).toBe('Read');
     });
   });
 });

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
+import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import type { HookEvent, PreHookEvent, PostHookEvent, ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -187,6 +188,28 @@ describe('HookEventProcessor', () => {
       expect(record.durationMs).toBeNull();
       expect(record.success).toBe(true);
       expect(record.outputSizeBytes).toBe(512);
+    });
+  });
+
+  describe('processEvents() — Antigravity pairing (raw tool name only on pre-event)', () => {
+    it('resolves toolName from the pre-event even though the post-event carries "unknown"', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        platformAdapter: new AntigravityAdapter(),
+      });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'run_command', toolUseId: '19', timestamp: 1000 }),
+        makePostEvent({ tool: 'unknown', toolUseId: '19', timestamp: 1200 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record.toolName).toBe('Bash');
+      expect(record.toolUseId).toBe('19');
+      expect(record.durationMs).toBe(200);
+      expect(record.success).toBe(true);
     });
   });
 
