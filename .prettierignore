@@ -6,3 +6,4 @@ package-lock.json
 *.tsbuildinfo
 *_IDEATION.md
 *_PLAN.md
+site/.astro/
