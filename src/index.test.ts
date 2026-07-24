@@ -758,6 +758,10 @@ describe('stdio integration', () => {
       JSON.stringify({ linkScanPath: '/tmp/stdio-test-session.jsonl' }),
     );
 
+    // Isolate storage to a temp directory to prevent GC operations from
+    // affecting the real ~/.newrelic-preflight storage.
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-stdio-storage-'));
+
     const transport = new StdioClientTransport({
       command: 'node',
       args: [binPath, '--stdio'],
@@ -771,6 +775,7 @@ describe('stdio integration', () => {
         NR_AI_DASHBOARD_PORT: '0',
         CLAUDE_JOB_DIR: tmpJobDir,
         NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
       },
     });
 
@@ -792,6 +797,7 @@ describe('stdio integration', () => {
       await client.close();
     } finally {
       rmSync(tmpJobDir, { recursive: true, force: true });
+      rmSync(tmpStoragePath, { recursive: true, force: true });
     }
   }, 30000);
 

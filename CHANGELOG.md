@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.3] - 2026-07-24
+
+### Fixed
+
+- **Subagent and transcript cursor files were never garbage-collected** — `.subagent-pos-<sessionId>-<agentId>` (written once per spawned subagent, including workflow-spawned agents) and `.transcript-pos-<sessionId>` files in the storage root accumulated indefinitely; heavy subagent or workflow usage could leave thousands of small files behind with no cleanup path. The periodic maintenance sweep now removes a subagent cursor once its parent session is no longer active and the cursor is older than the watcher's cold-scan window, and removes a transcript cursor once its session is no longer active and no companion buffer file remains for it.
+
 ## [1.14.2] - 2026-07-24
 
 ### Fixed
