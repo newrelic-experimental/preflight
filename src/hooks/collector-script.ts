@@ -494,6 +494,15 @@ interface HookInput {
   agent_action_name?: string;
   trajectory_id?: string;
   tool_info?: Record<string, unknown>;
+  // Antigravity (https://antigravity.google/docs/hooks, identical on
+  // /docs/ide/hooks) sends no field naming which event fired at all —
+  // PreToolUse payloads carry `toolCall`/`stepIdx`; PostToolUse payloads
+  // carry only `stepIdx`/`error`. `conversationId` is Antigravity's closest
+  // analog to session_id (never sends session_id, same situation as
+  // Cursor's conversation_id and Windsurf's trajectory_id).
+  toolCall?: { name?: string; args?: Record<string, unknown> };
+  stepIdx?: number;
+  conversationId?: string;
   [key: string]: unknown;
 }
 
@@ -665,7 +674,11 @@ function processHook(raw: string): void {
   // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) never sends
   // session_id either — trajectory_id is its closest analog, the same role
   // conversation_id plays for Cursor.
-  const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id;
+  // Antigravity (https://antigravity.google/docs/hooks) never sends
+  // session_id either — conversationId (camelCase, Antigravity's own field
+  // name) is its closest analog, same role trajectory_id plays for Windsurf.
+  const sessionId =
+    data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
 
   // Drop a PPID breadcrumb at the very top so the MCP server can resolve its
   // Claude Code session_id without an env-var or initialize-payload extension.
@@ -702,6 +715,18 @@ function processHook(raw: string): void {
   // stdout, so this check is scoped to Gemini CLI only.
   const isGeminiCli =
     process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli';
+
+  // Antigravity (https://antigravity.google/docs/hooks) sends no field
+  // naming which event fired — payload shape is the only signal. Hoisted
+  // once so the dispatch branch below and the required-stdout-reply block
+  // further down can never diverge on which event they think this is, same
+  // precedent as isGeminiCli above.
+  const isAntigravityPre = data.toolCall !== undefined;
+  const isAntigravityPost =
+    !isAntigravityPre &&
+    typeof data.stepIdx === 'number' &&
+    data.hook_event_name === undefined &&
+    data.agent_action_name === undefined;
 
   let event: Record<string, unknown>;
 
@@ -999,6 +1024,47 @@ function processHook(raw: string): void {
       timestamp,
       success: true,
     };
+  } else if (isAntigravityPre) {
+    // Antigravity PreToolUse — no self-describing event-name field exists
+    // (see HookInput's comment above); presence of `toolCall` is
+    // Antigravity's own signal that this is PreToolUse, since PostToolUse
+    // never carries that key.
+    const agyToolName = data.toolCall?.name ?? 'unknown';
+    event = {
+      mode: 'pre' as const,
+      tool: agyToolName,
+      timestamp,
+      inputSize: sizeOf(data.toolCall?.args),
+      inputHash: hashInput(data.toolCall?.args),
+      ...(typeof data.stepIdx === 'number' && { toolUseId: String(data.stepIdx) }),
+    };
+
+    // Raw Antigravity argument names (CommandLine, TargetFile, etc.) don't
+    // match any canonical-name case in extractInputMeta()'s switch, so this
+    // currently always returns undefined — a known, documented gap (see
+    // docs/ADAPTERS.md's Antigravity section), not a guess at field names.
+    const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
+    if (inputMeta !== undefined) event.toolInput = inputMeta;
+
+    if (recordContent && data.toolCall?.args !== undefined) {
+      event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
+    }
+  } else if (isAntigravityPost) {
+    // Antigravity PostToolUse — carries no tool-name field at all, only
+    // stepIdx/error. toolUseId-based pairing in event-processor.ts recovers
+    // the real tool name from the matched pre-event (confirmed by reading
+    // HookEventProcessor.handlePostEvent(): the merged record's toolName
+    // always comes from the pre-event, never the post-event's own tool
+    // field) — 'unknown' here is a safe placeholder, not a broken mapping.
+    const hasError = typeof data.error === 'string' && data.error !== '';
+    event = {
+      mode: 'post' as const,
+      tool: 'unknown',
+      timestamp,
+      success: !hasError,
+      toolUseId: String(data.stepIdx),
+      ...(typeof data.error === 'string' && data.error !== '' && { error: redact(data.error) }),
+    };
   } else {
     // Unknown hook event — ignore silently
     return;
@@ -1043,6 +1109,24 @@ function processHook(raw: string): void {
       process.stdout.write('{}\n');
     } catch {
       // Silent failure — never block Gemini CLI
+    }
+  }
+
+  // Antigravity requires a stdout reply on every PreToolUse/PostToolUse hook
+  // invocation (https://antigravity.google/docs/hooks) — a required
+  // `decision` field for PreToolUse, an empty object for PostToolUse.
+  // Preflight is observation-only, so this always allows.
+  if (isAntigravityPre) {
+    try {
+      process.stdout.write('{"decision":"allow"}\n');
+    } catch {
+      // Silent failure — never block Antigravity
+    }
+  } else if (isAntigravityPost) {
+    try {
+      process.stdout.write('{}\n');
+    } catch {
+      // Silent failure — never block Antigravity
     }
   }
 

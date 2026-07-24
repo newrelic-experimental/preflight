@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-07-23
+
+### Added
+
+- **Google Antigravity platform adapter** — Preflight now detects and normalizes tool calls from Google Antigravity (2.0 / IDE / CLI) as a full `full-hooks` platform. Antigravity ships a real, first-party, documented `hooks.json` mechanism (`PreToolUse`/`PostToolUse`) covering every built-in tool call (`run_command`, `view_file`, `write_to_file`, `grep_search`, and more — see `docs/ADAPTERS.md` for the full map). Antigravity's hook payloads carry no field naming which event fired at all, so Preflight dispatches on payload shape instead (presence of a `toolCall` key means `PreToolUse`); because `PostToolUse` carries no tool name either, pairing is done by a `stepIdx`-derived ID rather than by tool name. Detection is explicit opt-in (`MCP_CLIENT=antigravity`) — no ambient environment variable is exposed for this purpose. Setup instructions (both MCP registration and the `hooks.json` entries) are in `docs/ADAPTERS.md`.
+
 ## [1.13.0] - 2026-07-23
 
 ### Added

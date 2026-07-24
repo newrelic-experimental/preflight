@@ -1,6 +1,6 @@
 # Platform Adapters
 
-Preflight supports 15 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
+Preflight supports 16 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
@@ -12,7 +12,7 @@ This doc is the canonical reference for what each adapter can and can't observe,
 | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- | ----------------- |
 | **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid, Codex, opencode, Kilo Code, Pi[^pi-no-mcp] | All built-in tool calls                                                                | `full-hooks`      |
 | **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                                                                     | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
-| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf                                                               | All built-in tool calls                                                                | `full-hooks`      |
+| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf, Antigravity[^agy-shape-only]                                 | All built-in tool calls                                                                | `full-hooks`      |
 | **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev, Cline                                                       | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
 | **HTTP push from an extension**                                                                                | GitHub Copilot                                                                 | Whatever the (user-supplied) extension forwards                                        | `self-reported`   |
 | **Self-report via MCP tools**                                                                                  | Generic MCP fallback                                                           | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
@@ -21,9 +21,11 @@ This doc is the canonical reference for what each adapter can and can't observe,
 
 [^pi-no-mcp]: Pi has no MCP client support at all, by its own explicit design choice — unlike every other `full-hooks` platform in this row, its setup does not register an MCP server. See the Pi section below for its `--local`-mode-only setup path.
 
+[^agy-shape-only]: Antigravity's hook payloads have no field whose _value_ names the event (unlike every other row in this table) — `collector-script.ts` dispatches on payload _shape_ instead (presence of a `toolCall` key means `PreToolUse`). See the Antigravity section below.
+
 Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` field encoding this table in code, not just prose — `full-hooks` (automatic, deterministic capture), `self-reported` (built-in-tool-shaped events are observable, but only if an external party — a third-party extension, or the calling MCP client itself — actually reports them), or `mcp-tools-only` (structurally cannot see built-in tool calls at all). Consumers that blend metrics across platforms (`nr_observe_get_platform_comparison`, the weekly digest's per-platform breakdown) use `getPlatformVisibilityMap()` (`src/platforms/platform-registry.ts`) to tag results and caveat comparisons that span more than one level.
 
-Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, opencode, Kilo Code, Pi, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
+Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, opencode, Kilo Code, Pi, Antigravity, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
 ---
 
@@ -482,6 +484,55 @@ Pi has **no MCP client support at all**, confirmed as deliberate, stated philoso
 3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`).
 4. Create `~/.pi/agent/extensions/preflight.ts` (global) or `.pi/extensions/preflight.ts` (project) with the snippet in `PiAdapter.getHookInstallInstructions()` (`src/platforms/pi-adapter.ts`) — reproduced there in full.
 5. Restart Pi (or run `/reload` in an active session).
+
+---
+
+## Google Antigravity (`antigravity`)
+
+**Mechanism:** Google Antigravity (2.0 / IDE / CLI — the Python SDK is out of scope, see Known gaps) ships a real, first-party, documented `hooks.json` mechanism: [antigravity.google/docs/hooks](https://antigravity.google/docs/hooks) (identical content on [/docs/ide/hooks](https://antigravity.google/docs/ide/hooks)). `PreToolUse`/`PostToolUse` fire around every built-in tool call, matched by regex against tool name; handlers receive JSON on stdin and must reply with JSON on stdout. This is a `full-hooks` mechanism, not the `mcp-tools-only` tier a platform lacking any hook mechanism would get — Antigravity's `hooks.json` is real, first-party, and documented, confirmed by fetching Google's own docs directly. Antigravity also supports MCP separately and natively — [/docs/mcp](https://antigravity.google/docs/mcp) — via `mcp_config.json`.
+
+Antigravity's hook payloads have **no field naming the event type at all** — `PreToolUse`'s payload is `{ toolCall: { name, args }, stepIdx, conversationId, ... }`; `PostToolUse`'s is `{ stepIdx, error, conversationId, ... }`, with no tool-name field whatsoever. `collector-script.ts` dispatches on the presence of `toolCall` instead. Because `PostToolUse` never carries a tool name, both events set `toolUseId` from `stepIdx` so `HookEventProcessor` pairs them by ID rather than its tool-name-FIFO fallback — the merged record's `toolName` comes from the matched pre-event (confirmed by reading `HookEventProcessor.handlePostEvent()` directly), so the post-event's placeholder `'unknown'` tool name is never surfaced for a successfully-paired call.
+
+**Detection (`isSupported()`):** `MCP_CLIENT === 'antigravity'`. No ambient environment variable is confirmed to exist for Antigravity (checked `/docs/cli/reference`, `/docs/cli/settings`, `/docs/ide/settings`, `/docs/cli/sandbox`, `/docs/sidecars`) — explicit opt-in only, same as opencode/Kilo Code/Codex.
+
+**Tool coverage, confirmed from the Hooks page's "Supported Tools" section:** `view_file`→`Read`, `write_to_file`→`Write`, `replace_file_content`→`Edit`, `multi_replace_file_content`→`MultiEdit`, `list_dir`/`find_by_name`→`Glob`, `grep_search`→`Grep`, `search_web`→`WebSearch`, `read_url_content`→`WebFetch`, `run_command`→`Bash`, `invoke_subagent`→`Agent`. `manage_task`, `schedule`, `list_permissions`, `ask_permission`, `define_subagent`, `send_message`, `manage_subagents`, `ask_question`, and `generate_image` are real Antigravity built-ins with no canonical Preflight equivalent, deliberately left unmapped.
+
+**Known gaps:**
+
+- **`PreToolUse`'s `toolCall.args` field names** (`CommandLine`, `TargetFile`, `ReplacementChunks`, etc.) **are not remapped through `extractInputMeta()`'s tool-specific extractors** — `toolInput` metadata is absent for Antigravity calls until that mapping is added; an honest gap, not a guess.
+- **`PostToolUse` carries no output content/exit-code field at all** (only `stepIdx`/`error`) — `toolOutput` metadata (e.g. Bash exit codes) can never be populated for Antigravity, a platform limitation, not an implementation gap.
+- **The Antigravity SDK (Python, for building custom agents on Antigravity's own runtime) is out of scope** — it documents MCP support but no interactive hooks surface of its own.
+- **No confirmed ambient env var** — detection is explicit-opt-in only (`MCP_CLIENT=antigravity`).
+
+**Setup:**
+
+1. Register Preflight as an MCP server for its own `nr_observe_*` tools — add to `mcp_config.json` (global `~/.gemini/config/mcp_config.json`, or per-workspace `.agents/mcp_config.json`):
+   ```json
+   {
+     "mcpServers": {
+       "preflight": {
+         "command": "npx",
+         "args": ["preflight", "--stdio"],
+         "env": {
+           "MCP_CLIENT": "antigravity",
+           "NEW_RELIC_LICENSE_KEY": "<your-key>",
+           "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
+         }
+       }
+     }
+   }
+   ```
+2. Capture built-in tool calls via `hooks.json` (same global/workspace locations):
+   ```json
+   {
+     "preflight": {
+       "PreToolUse": [{ "matcher": "*", "hooks": [{ "command": "preflight-collector" }] }],
+       "PostToolUse": [{ "matcher": "*", "hooks": [{ "command": "preflight-collector" }] }]
+     }
+   }
+   ```
+3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`).
+4. Restart Antigravity (or reload the workspace).
 
 ---
 
