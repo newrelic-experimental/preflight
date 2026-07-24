@@ -12,6 +12,7 @@ import { BudgetTracker } from '../metrics/budget-tracker.js';
 import { ContextWindowTracker } from '../metrics/context-window-tracker.js';
 import { TaskDetector } from '../metrics/task-detector.js';
 import { SessionStore } from '../storage/session-store.js';
+import { GenericMcpAdapter } from '../platforms/generic-mcp-adapter.js';
 import { FeedbackCollector } from './workflow-tools.js';
 import {
   handleGetSessionStats,
@@ -1044,5 +1045,83 @@ describe('MCP protocol integration — direct registerTools() dispatch', () => {
     const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(body).toEqual(contextWindowTracker.getMetrics());
     expect(body.repeatedReadCount).toBe(1);
+  });
+
+  it('tools/list omits generic-mcp report tools when genericMcpAdapter is absent', async () => {
+    await connectDirect({});
+    const result = await client.listTools();
+    const names = result.tools.map((t) => t.name);
+    expect(names).not.toContain('nr_observe_report_tool_call');
+    expect(names).not.toContain('nr_observe_report_session_start');
+    expect(names).not.toContain('nr_observe_report_session_end');
+  });
+
+  it('tools/list includes generic-mcp report tools when genericMcpAdapter is provided', async () => {
+    await connectDirect({ genericMcpAdapter: new GenericMcpAdapter() });
+    const result = await client.listTools();
+    const names = result.tools.map((t) => t.name);
+    expect(names).toContain('nr_observe_report_tool_call');
+    expect(names).toContain('nr_observe_report_session_start');
+    expect(names).toContain('nr_observe_report_session_end');
+  });
+
+  it('calling nr_observe_report_tool_call records to SessionTracker and NrIngestManager', async () => {
+    const sessionTracker = new SessionTracker('gm-sess');
+    const ingestToolCall = jest.fn();
+    await connectDirect({
+      genericMcpAdapter: new GenericMcpAdapter(),
+      sessionTracker,
+      nrIngestManager: { ingestToolCall },
+      sessionTraceId: 'gm-sess',
+    });
+
+    const result = await client.callTool({
+      name: 'nr_observe_report_tool_call',
+      arguments: { tool: 'Read', success: true, duration_ms: 12 },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.recorded).toBe(true);
+    expect(body.tool).toBe('Read');
+    expect(sessionTracker.getMetrics().toolCallCount).toBe(1);
+    expect(ingestToolCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('calling nr_observe_report_tool_call with invalid input returns an error, not a thrown exception', async () => {
+    await connectDirect({ genericMcpAdapter: new GenericMcpAdapter() });
+    const result = await client.callTool({
+      name: 'nr_observe_report_tool_call',
+      arguments: { success: true },
+    });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.error).toBe('Missing required field: tool');
+  });
+
+  it('calling nr_observe_report_session_start updates adapter session metadata', async () => {
+    const adapter = new GenericMcpAdapter();
+    await connectDirect({ genericMcpAdapter: adapter });
+
+    const result = await client.callTool({
+      name: 'nr_observe_report_session_start',
+      arguments: { platform: 'my-custom-ide', model: 'gpt-4o' },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.platform).toBe('my-custom-ide');
+    expect(adapter.getSessionMetadata().model).toBe('gpt-4o');
+  });
+
+  it('calling nr_observe_report_session_end acknowledges without requiring arguments', async () => {
+    await connectDirect({ genericMcpAdapter: new GenericMcpAdapter() });
+    const result = await client.callTool({
+      name: 'nr_observe_report_session_end',
+      arguments: {},
+    });
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.recorded).toBe(true);
   });
 });

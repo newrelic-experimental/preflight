@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.2] - 2026-07-24
+
+### Fixed
+
+- **Generic-MCP self-report tools were never reachable** — `nr_observe_report_tool_call`, `nr_observe_report_session_start`, and `nr_observe_report_session_end` were fully implemented on `GenericMcpAdapter` but never registered on the running MCP server, so any client following the generic-MCP setup instructions in `docs/ADAPTERS.md` found no such tools on `tools/list`. They're now registered whenever the server starts in `--stdio` mode, with `nr_observe_report_tool_call` feeding into the same `SessionTracker`/ingest pipeline hook-driven platforms use.
+
 ## [1.14.1] - 2026-07-24
 
 ### Fixed

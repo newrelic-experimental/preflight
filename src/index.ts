@@ -31,7 +31,7 @@ import { EfficiencyScorer } from './metrics/efficiency-score.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
-import { createDefaultRegistry } from './platforms/index.js';
+import { createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
 import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
@@ -906,6 +906,11 @@ async function main(): Promise<void> {
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     const workflowRunTracker = new WorkflowRunTracker();
+    // Always constructed (cheap, stateless until a client calls one of its
+    // report_* tools) so nr_observe_report_tool_call/_session_start/_session_end
+    // are available on every --stdio connection, matching docs/ADAPTERS.md's
+    // generic-mcp setup instructions.
+    const genericMcpAdapter = new GenericMcpAdapter();
 
     // Read-only filesystem reader for `/api/workflows` routes.
     // Constructed eagerly (not just inside the dashboard block) so when only
@@ -2140,6 +2145,8 @@ async function main(): Promise<void> {
               turnCostAttributor,
               turnTracker,
               gitEfficiencyTracker,
+              genericMcpAdapter,
+              nrIngestManager: nrIngest,
               sessionTraceId: realId,
               sessionStartMs,
               accountId: config!.accountId,
@@ -2212,6 +2219,8 @@ async function main(): Promise<void> {
           turnCostAttributor,
           turnTracker,
           gitEfficiencyTracker,
+          genericMcpAdapter,
+          nrIngestManager: nrIngest,
           sessionTraceId,
           sessionStartMs,
           accountId: config.accountId,

@@ -2,6 +2,8 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import {
   GenericMcpAdapter,
   validateReportToolCallInput,
+  validateReportSessionStartInput,
+  validateReportSessionEndInput,
   REPORT_TOOL_CALL_TOOL,
   REPORT_SESSION_START_TOOL,
   REPORT_SESSION_END_TOOL,
@@ -304,6 +306,81 @@ describe('validateReportToolCallInput', () => {
     expect(result.timestamp).toBe(1000);
     expect(result.error).toBe('timeout');
     expect(result.input).toEqual({ file_path: '/test' });
+  });
+});
+
+describe('validateReportSessionStartInput', () => {
+  it('passes valid input through', () => {
+    const result = validateReportSessionStartInput({
+      platform: 'my-ide',
+      model: 'gpt-4o',
+      developer: 'alice',
+    });
+    expect(result).toEqual({ platform: 'my-ide', model: 'gpt-4o', developer: 'alice' });
+  });
+
+  it('accepts platform alone', () => {
+    const result = validateReportSessionStartInput({ platform: 'my-ide' });
+    expect(result).toEqual({ platform: 'my-ide' });
+  });
+
+  it('rejects null', () => {
+    expect(() => validateReportSessionStartInput(null)).toThrow('Input must be an object');
+  });
+
+  it('rejects non-object', () => {
+    expect(() => validateReportSessionStartInput('string')).toThrow('Input must be an object');
+  });
+
+  it('rejects missing platform', () => {
+    expect(() => validateReportSessionStartInput({})).toThrow('Missing required field: platform');
+  });
+
+  it('rejects empty platform', () => {
+    expect(() => validateReportSessionStartInput({ platform: '' })).toThrow(
+      'Missing required field: platform',
+    );
+  });
+
+  it('rejects non-string model', () => {
+    expect(() => validateReportSessionStartInput({ platform: 'x', model: 42 })).toThrow(
+      'Field model must be a string when present',
+    );
+  });
+
+  it('rejects non-string developer', () => {
+    expect(() => validateReportSessionStartInput({ platform: 'x', developer: 42 })).toThrow(
+      'Field developer must be a string when present',
+    );
+  });
+});
+
+describe('validateReportSessionEndInput', () => {
+  it('passes valid input through', () => {
+    const result = validateReportSessionEndInput({ summary: 'Refactored auth module' });
+    expect(result).toEqual({ summary: 'Refactored auth module' });
+  });
+
+  it('accepts undefined input', () => {
+    expect(validateReportSessionEndInput(undefined)).toEqual({});
+  });
+
+  it('accepts empty object', () => {
+    expect(validateReportSessionEndInput({})).toEqual({});
+  });
+
+  it('rejects null', () => {
+    expect(() => validateReportSessionEndInput(null)).toThrow('Input must be an object');
+  });
+
+  it('rejects non-object', () => {
+    expect(() => validateReportSessionEndInput('string')).toThrow('Input must be an object');
+  });
+
+  it('rejects non-string summary', () => {
+    expect(() => validateReportSessionEndInput({ summary: 42 })).toThrow(
+      'Field summary must be a string when present',
+    );
   });
 });
 
