@@ -9,7 +9,12 @@ export default defineConfig({
       title: 'Preflight',
       description: 'Observability for AI coding assistants',
       customCss: ['./src/styles/custom.css'],
-      sidebar: [],
+      sidebar: [
+        {
+          label: 'Getting Started',
+          items: [{ label: 'Getting Started', slug: 'getting-started' }],
+        },
+      ],
     }),
   ],
 });

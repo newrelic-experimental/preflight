@@ -1,0 +1,58 @@
+---
+title: Getting Started
+slug: getting-started
+description: Install Preflight, run setup, and start capturing your AI coding sessions in under a minute.
+---
+
+## Install
+
+```bash
+npm install -g @newrelic/preflight
+```
+
+:::note[Using Smithery?]
+Installing Preflight from the Smithery MCP registry wires up the MCP server for you, but Smithery has no mechanism to write Claude Code hooks. After install, ask Claude Code to call the `nr_observe_install_hooks` MCP tool (it offers to do this automatically once `nr_observe_health` reports `setup_required: true`), then restart Claude Code to activate monitoring.
+:::
+
+## Run Setup
+
+```bash
+preflight setup
+```
+
+The wizard defaults to **local mode** — press Enter through the prompts and you're set. It wires Preflight into your AI tool (hooks + MCP server) and writes config to `~/.newrelic-preflight/`. Takes under a minute, no account required.
+
+When prompted, pick a mode:
+
+| Mode                  | What it does                                                         | New Relic account? |
+| --------------------- | -------------------------------------------------------------------- | ------------------ |
+| **local** _(default)_ | Everything stays on your machine; live dashboard at `localhost:7777` | Not needed         |
+| **cloud**             | Ships telemetry to New Relic                                         | Required           |
+| **both**              | Local dashboard **and** New Relic                                    | Required           |
+
+## Start Coding
+
+Restart your AI tool — hooks and the MCP server load at session start. Every tool call is captured automatically. Open [http://localhost:7777](http://localhost:7777) to watch your session live.
+
+## Connect New Relic (optional)
+
+Local mode is fully featured on its own. Connect a New Relic account to unlock team & manager dashboards, alerting, cross-session history, and weekly coaching reports.
+
+Re-run `preflight setup` and choose **cloud** or **both**, or configure it non-interactively:
+
+```bash
+preflight install \
+  --mode cloud \
+  --license-key YOUR_LICENSE_KEY \
+  --account-id YOUR_ACCOUNT_ID
+```
+
+EU accounts add `--eu`. FedRAMP accounts add `--fedramp`.
+
+See the [Advanced Configuration](/advanced/) page for alerts, OTLP export, and Terraform deployment.
+
+## Requirements
+
+- **Node.js v22 or higher**
+- **An AI coding tool** (Claude Code recommended for deepest integration)
+- **New Relic account** — only for `cloud`/`both` mode
