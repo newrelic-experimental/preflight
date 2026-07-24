@@ -121,6 +121,40 @@ export function validateReportToolCallInput(raw: unknown): ReportToolCallInput {
   };
 }
 
+export function validateReportSessionStartInput(raw: unknown): ReportSessionStartInput {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('Input must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.platform !== 'string' || obj.platform.length === 0) {
+    throw new Error('Missing required field: platform');
+  }
+  if (obj.model !== undefined && typeof obj.model !== 'string') {
+    throw new Error('Field model must be a string when present');
+  }
+  if (obj.developer !== undefined && typeof obj.developer !== 'string') {
+    throw new Error('Field developer must be a string when present');
+  }
+  return {
+    platform: obj.platform,
+    ...(obj.model !== undefined && { model: obj.model }),
+    ...(obj.developer !== undefined && { developer: obj.developer }),
+  };
+}
+
+export function validateReportSessionEndInput(raw: unknown): ReportSessionEndInput {
+  if (raw !== undefined && (typeof raw !== 'object' || raw === null)) {
+    throw new Error('Input must be an object');
+  }
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  if (obj.summary !== undefined && typeof obj.summary !== 'string') {
+    throw new Error('Field summary must be a string when present');
+  }
+  return {
+    ...(obj.summary !== undefined && { summary: obj.summary }),
+  };
+}
+
 export class GenericMcpAdapter implements PlatformAdapter {
   readonly platformName = 'generic-mcp';
   readonly visibilityLevel = 'self-reported' as const;

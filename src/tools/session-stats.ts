@@ -54,6 +54,8 @@ import type { TurnTracker } from '../metrics/turn-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import { registerAnalyticsTools } from './analytics-tools.js';
 import { registerExtendedAnalyticsTools } from './extended-analytics-tools.js';
+import { registerGenericMcpTools } from './generic-mcp-tools.js';
+import type { GenericMcpAdapter } from '../platforms/generic-mcp-adapter.js';
 import {
   requireTracker,
   requireAvailable,
@@ -384,6 +386,8 @@ export interface ToolRegistrationOptions {
   turnCostAttributor?: TurnCostAttributor;
   turnTracker?: TurnTracker;
   gitEfficiencyTracker?: GitEfficiencyTracker;
+  genericMcpAdapter?: GenericMcpAdapter;
+  nrIngestManager?: { ingestToolCall(record: import('../storage/types.js').ToolCallRecord): void };
   sessionTraceId?: string;
   sessionStartMs?: number;
   accountId?: string;
@@ -572,6 +576,7 @@ export function registerTools(server: Server, options: ToolRegistrationOptions):
     registerCrossSessionTools(options),
     registerAnalyticsTools(options),
     registerExtendedAnalyticsTools(options),
+    registerGenericMcpTools(options),
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
