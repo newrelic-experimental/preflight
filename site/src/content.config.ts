@@ -16,9 +16,9 @@ export const collections = {
   docs: defineCollection({
     loader: glob({
       base: '..',
-      // Named explicitly, not a 'docs/*.md' wildcard — the internal repo this
-      // content mirrors from also holds internal-only files (PRODUCT_BRIEF.md,
-      // ROADMAP.md, etc.) that must never be built into site pages, even unlinked.
+      // Named explicitly, not a 'docs/*.md' wildcard — the internal repo's docs/
+      // also holds internal-only files (PRODUCT_BRIEF.md, ROADMAP.md, etc.) that
+      // must never be built into site pages, even unlinked.
       pattern: [
         'site/src/content/docs/**/*.mdx',
         'docs/ADAPTERS.md',
