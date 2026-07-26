@@ -1,3 +1,8 @@
+---
+title: Contributing
+description: Environment setup, architecture, code conventions, testing, and how to verify changes end-to-end.
+---
+
 # Contributing to NR AI Coding Observability: Preflight
 
 This guide covers everything you need to get productive in this repo: environment setup, project architecture, code conventions, testing, and how to verify your changes end-to-end.

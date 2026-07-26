@@ -1,3 +1,8 @@
+---
+title: Platform Adapters
+description: Per-platform reference for what each Preflight adapter can and can't observe, detection, setup, and known gaps.
+---
+
 # Platform Adapters
 
 Preflight supports 16 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).

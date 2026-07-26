@@ -1,3 +1,8 @@
+---
+title: Metrics Reference
+description: Every metric and event Preflight sends to New Relic, organized by delivery API and source package.
+---
+
 # NR AI Coding Observability: Preflight — Metrics Reference
 
 Every metric and event that this project sends to New Relic, organized by delivery API and source package.

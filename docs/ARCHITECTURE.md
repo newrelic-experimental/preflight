@@ -1,3 +1,8 @@
+---
+title: Architecture
+description: How Preflight collects, processes, and ships telemetry as a sidecar to your AI coding session.
+---
+
 # Preflight Architecture
 
 Preflight runs as a sidecar to your AI coding session. It collects hook events from the AI client, processes them into structured records, feeds metric trackers, and flushes telemetry to New Relic — all without interfering with the AI client itself.

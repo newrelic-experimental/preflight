@@ -1,3 +1,8 @@
+---
+title: Advanced Configuration
+description: Power-user features — OTLP export, proxy mode, local alerts, per-developer alerts, session backfill, and Terraform deployment.
+---
+
 # NR AI Coding Observability: Preflight — Advanced Configuration
 
 Power-user features: OTLP export, proxy mode, local alerts, per-developer alerts, session backfill, and Terraform deployment.

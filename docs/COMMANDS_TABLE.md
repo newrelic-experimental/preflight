@@ -1,3 +1,8 @@
+---
+title: MCP Commands Reference
+description: Every MCP tool Preflight exposes, what it returns, and which trackers it queries.
+---
+
 # NR AI Coding Observability: Preflight — MCP Commands Reference
 
 Every MCP tool exposed by the `preflight`, what it returns, how it computes each finding, and which trackers it queries.
