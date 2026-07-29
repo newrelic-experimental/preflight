@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.4] - 2026-07-29
+
+### Security
+
+- Updated `js-yaml`, `body-parser`, `fast-uri`, and `@hono/node-server` to their patched versions, closing the remaining `npm audit` findings across the dependency tree.
+
+### Changed
+
+- Updated `@modelcontextprotocol/sdk`, OpenTelemetry's `resources`, `sdk-metrics`, and `sdk-trace-node` packages, `jsdom`, `@testing-library/jest-dom`, and the build/lint/test toolchain to their latest compatible versions. No user-visible behavior change.
+
 ## [1.14.3] - 2026-07-24
 
 ### Fixed
