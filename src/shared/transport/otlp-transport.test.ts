@@ -890,12 +890,10 @@ describe('OtlpTransport', () => {
       expect(stderrText).toMatch(/internal-collector\.example\.com/);
     });
 
-    it('emits a cleartext warning for http://0.0.0.0 — wildcard, not loopback', () => {
+    it('throws for http://0.0.0.0 — wildcard bind address, not a legitimate collector target', () => {
       expect(
         () => new OtlpTransport({ endpoint: 'http://0.0.0.0:4318', appName: 'test-app' }),
-      ).not.toThrow();
-      const stderrText = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0] ?? '')).join('\n');
-      expect(stderrText).toMatch(/plain http:\/\//);
+      ).toThrow(/private-network host/);
     });
 
     it('throws on a non-http(s) scheme', () => {

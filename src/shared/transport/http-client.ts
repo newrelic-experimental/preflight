@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createLogger } from '../logger.js';
 import type { HttpSendOptions, TransportResult } from './types.js';
 import { buildUserAgent } from './otlp-shared.js';
+import { validateSsrfUrl } from '../security/ssrf.js';
 
 const gzipAsync = promisify(gzip);
 const logger = createLogger('transport');
@@ -259,6 +260,14 @@ export async function sendWithRetry(options: HttpSendOptions): Promise<Transport
   const { url, body, licenseKey, maxRetries, baseDelayMs, maxDelayMs, requestTimeoutMs } = options;
 
   const requestId = newRequestId();
+
+  try {
+    validateSsrfUrl('sendWithRetry', new URL(url));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Blocked outbound request to disallowed host', { requestId, error: message });
+    return { success: false, statusCode: null, retryCount: 0, error: message };
+  }
 
   let compressed: Buffer;
   try {

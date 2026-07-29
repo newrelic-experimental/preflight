@@ -55,7 +55,7 @@ export class OtlpEventBridge {
 
     this.loggerProvider = new LoggerProvider({
       resource: resourceFromAttributes({ 'service.name': options.appName }),
-      processors: [new BatchLogRecordProcessor(exporter)],
+      processors: [new BatchLogRecordProcessor({ exporter })],
     });
 
     this.otelLogger = this.loggerProvider.getLogger(clientName, clientVersion || undefined);

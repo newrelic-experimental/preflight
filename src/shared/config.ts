@@ -2,6 +2,7 @@ import type { LogLevel } from './logger.js';
 import { createLogger } from './logger.js';
 import type { TransportMode } from './transport/types.js';
 import { DEFAULT_CLIENT_NAME, sanitizeClientString } from './transport/otlp-shared.js';
+import { resolveRecordContent } from './record-content-gate.js';
 
 const ENV_TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const ENV_FALSY = new Set(['false', '0', 'no', 'off']);
@@ -333,11 +334,15 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
 
   const highSecurity = overrides?.highSecurity ?? envBool('NEW_RELIC_AI_HIGH_SECURITY', false);
 
-  // highSecurity forcibly disables content recording, silently overriding any
-  // explicit recordContent override.
-  const recordContent = highSecurity
-    ? false
-    : (overrides?.recordContent ?? envBool('NEW_RELIC_AI_RECORD_CONTENT', false));
+  // NEW_RELIC_AI_RECORD_CONTENT is this package's own namespaced env var for
+  // the recordContent override; other consumers of the same gate rule read
+  // their own namespaced env var into their own explicitValue before calling
+  // resolveRecordContent() — the shared piece is the gate application, not
+  // the env var name.
+  const recordContent = resolveRecordContent(
+    highSecurity,
+    overrides?.recordContent ?? envBool('NEW_RELIC_AI_RECORD_CONTENT', false),
+  );
 
   const attributionDefaults = buildAttributionDefaults(overrides?.attributionDefaults);
 

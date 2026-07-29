@@ -4,6 +4,7 @@ import {
   redact,
   safeForLog,
   loadConfig,
+  resolveRecordContent,
   createAiRequest,
   createAiResponse,
   createAiMessage,
@@ -65,6 +66,7 @@ describe('shared package', () => {
     // Type-only exports are checked by the TypeScript build.
     const symbols = [
       createLogger,
+      resolveRecordContent,
       redact,
       safeForLog,
       loadConfig,

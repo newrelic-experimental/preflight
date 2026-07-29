@@ -258,6 +258,41 @@ describe('sendWithRetry', () => {
     fetchSpy.mockRestore();
   });
 
+  // SSRF guard — blocks a private/loopback/metadata collectorHost override
+  // before any request is attempted. statusCode: null (like the gzip-failure
+  // path above) distinguishes this from an HTTP-level failure so callers
+  // don't retry it as if the network request itself failed.
+  it('returns statusCode: null and does not call fetch when the URL targets a private host', async () => {
+    const result = await sendWithRetry(
+      baseOptions({ url: 'https://127.0.0.1/v1/accounts/1/events' }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBeNull();
+    expect(result.error).toContain('private or loopback address');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns statusCode: null and does not call fetch when the URL targets a cloud metadata host', async () => {
+    const result = await sendWithRetry(
+      baseOptions({ url: 'http://metadata.google.internal/latest/meta-data/' }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBeNull();
+    expect(result.error).toContain('cloud metadata service endpoint');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still sends normally for an ordinary NR ingest URL', async () => {
+    fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
+
+    const result = await sendWithRetry(baseOptions());
+
+    expect(result.success).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   // 4. Verifies gzip headers
   it('sends gzip-compressed body with correct headers', async () => {
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));

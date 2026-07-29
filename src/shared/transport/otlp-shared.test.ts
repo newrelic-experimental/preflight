@@ -3,6 +3,7 @@ import {
   sanitizeClientString,
   buildUserAgent,
   hasOtlpAuthHeader,
+  validateOtlpEndpoint,
 } from './otlp-shared.js';
 
 describe('hasOtlpAuthHeader', () => {
@@ -77,5 +78,60 @@ describe('buildUserAgent', () => {
 
   it('falls back to DEFAULT_CLIENT_NAME when name is empty', () => {
     expect(buildUserAgent('', '1.0.0')).toBe(`${DEFAULT_CLIENT_NAME}/1.0.0`);
+  });
+});
+
+describe('validateOtlpEndpoint', () => {
+  it('throws for an invalid URL', () => {
+    expect(() => validateOtlpEndpoint('not a url', 'Test')).toThrow('invalid OTLP endpoint URL');
+  });
+
+  it('throws for a non-http(s) scheme', () => {
+    expect(() => validateOtlpEndpoint('ftp://example.com', 'Test')).toThrow('must use http(s)');
+  });
+
+  it('allows https to an ordinary public host', () => {
+    expect(() => validateOtlpEndpoint('https://otlp.nr-data.net', 'Test')).not.toThrow();
+  });
+
+  it('allows http to loopback', () => {
+    expect(() => validateOtlpEndpoint('http://localhost:4318', 'Test')).not.toThrow();
+    expect(() => validateOtlpEndpoint('http://127.0.0.1:4318', 'Test')).not.toThrow();
+  });
+
+  it('allows https to a private-range address (internal-VPC collector topology)', () => {
+    expect(() => validateOtlpEndpoint('https://10.0.0.5:4318', 'Test')).not.toThrow();
+    expect(() => validateOtlpEndpoint('https://192.168.1.10:4318', 'Test')).not.toThrow();
+  });
+
+  it('blocks plain http to a private-range, non-loopback address', () => {
+    expect(() => validateOtlpEndpoint('http://10.0.0.5:4318', 'Test')).toThrow(
+      'private-network host',
+    );
+    expect(() => validateOtlpEndpoint('http://192.168.1.10:4318', 'Test')).toThrow(
+      'private-network host',
+    );
+  });
+
+  it('blocks a cloud metadata host regardless of scheme', () => {
+    expect(() => validateOtlpEndpoint('http://metadata.google.internal', 'Test')).toThrow(
+      'cloud metadata service',
+    );
+    expect(() => validateOtlpEndpoint('https://metadata.google.internal', 'Test')).toThrow(
+      'cloud metadata service',
+    );
+    expect(() => validateOtlpEndpoint('http://169.254.169.254', 'Test')).toThrow(
+      'cloud metadata service',
+    );
+    expect(() => validateOtlpEndpoint('https://169.254.169.254', 'Test')).toThrow(
+      'cloud metadata service',
+    );
+  });
+
+  it('still only warns for plain http to an ordinary public non-loopback host', () => {
+    const warnSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => validateOtlpEndpoint('http://example.com', 'Test')).not.toThrow();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.5] - 2026-07-29
+
+### Security
+
+- Outbound HTTP requests to the configured New Relic ingest endpoint are now validated against the same SSRF guard used for OTLP endpoints, rejecting cloud-metadata and private/loopback hosts before sending.
+- OTLP endpoint validation now rejects cloud-metadata hosts under any scheme, and rejects plaintext `http://` to private-network hosts (previously only logged a warning) — use `https://` for a non-loopback collector.
+
+### Changed
+
+- Unified the `highSecurity` → `recordContent` gate behind a single helper function; no behavior change.
+- Updated `BatchLogRecordProcessor` construction for the current OpenTelemetry Logs SDK API, and bumped the OpenTelemetry logs/exporter family (`sdk-logs`, `exporter-logs-otlp-http`, `exporter-metrics-otlp-http`, `exporter-trace-otlp-http`) from 0.219.0 to 0.221.0 to match.
+
 ## [1.14.4] - 2026-07-29
 
 ### Security

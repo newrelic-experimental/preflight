@@ -1,6 +1,7 @@
 export { createLogger } from './logger.js';
 export type { Logger, LogLevel } from './logger.js';
 export { redact, safeForLog } from './redact.js';
+export { resolveRecordContent } from './record-content-gate.js';
 export { loadConfig } from './config.js';
 export type { AgentConfig, AgentConfigInput } from './config.js';
 export {
