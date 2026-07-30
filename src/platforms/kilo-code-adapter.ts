@@ -193,7 +193,7 @@ export class KiloCodeAdapter implements PlatformAdapter {
       'metadata (exit codes, match counts, etc.) is captured. kilo-playwright_*',
       "(Kilo's built-in Playwright MCP) tool calls are observable through this",
       'same plugin mechanism but report as Unknown, same as any unrecognized',
-      'MCP tool call — see docs/ADAPTERS.md for details.',
+      'MCP tool call — see https://newrelic-experimental.github.io/preflight/adapters/ for details.',
     ].join('\n');
   }
 

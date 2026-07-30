@@ -305,7 +305,7 @@ The MCP server registers an adapter per AI coding platform and auto-detects the 
 
 Platform capabilities vary: some platforms expose a real hook mechanism that captures every built-in tool call, others only support MCP as a client (so Preflight can only see calls routed to its own MCP tools, not the platform's built-in file/shell tools).
 
-See **[docs/ADAPTERS.md](./docs/ADAPTERS.md)** for the full per-platform reference — integration mechanism, detection env vars, tool-name mapping, known gaps, and setup steps.
+See **[docs/ADAPTERS.md](https://newrelic-experimental.github.io/preflight/adapters/)** for the full per-platform reference — integration mechanism, detection env vars, tool-name mapping, known gaps, and setup steps.
 
 ---
 

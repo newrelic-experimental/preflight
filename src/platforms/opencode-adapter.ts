@@ -171,7 +171,7 @@ export class OpencodeAdapter implements PlatformAdapter {
       'tool call reports success unconditionally. Only bash/read/edit/write',
       "get structured input metadata; other tools' arg shapes (including apply_patch)",
       'are undocumented and forwarded as-is. No output-side metadata (exit codes,',
-      'match counts, etc.) is captured — see docs/ADAPTERS.md for details.',
+      'match counts, etc.) is captured — see https://newrelic-experimental.github.io/preflight/adapters/ for details.',
     ].join('\n');
   }
 

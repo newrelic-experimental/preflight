@@ -127,7 +127,9 @@ preflight/
     policy.json                     # Policy metadata (name, incident preference)
     conditions/                     # NRQL alert condition JSON files
   dashboards/                       # Pre-built NR dashboard JSON files (data, not source)
+  docs/                             # Markdown reference docs (architecture, adapters, advanced config, etc.)
   scripts/                          # backfill-sessions.ts, check-bundle-size.ts
+  site/                             # Astro Starlight docs site (newrelic-experimental.github.io/preflight) — mirrors docs/ at build time via an explicit glob allowlist in site/src/content.config.ts, not a copy
 ```
 
 ## Architecture

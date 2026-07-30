@@ -153,7 +153,7 @@ export class PiAdapter implements PlatformAdapter {
       'explicitly enable them via --tools. event.input is forwarded as-is for',
       "every tool rather than remapped to Claude Code's own field names, so",
       "collector-script.ts's tool-specific input extractors (file_path, etc.)",
-      'will not populate for Pi calls. See docs/ADAPTERS.md for details.',
+      'will not populate for Pi calls. See https://newrelic-experimental.github.io/preflight/adapters/ for details.',
     ].join('\n');
   }
 
