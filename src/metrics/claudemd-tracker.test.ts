@@ -52,6 +52,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     buildRunCount: 1,
     buildPassCount: 1,
     estimatedCostUsd: 0.05,
+    subagentCostUsd: 0,
     tokensInput: 5000,
     tokensOutput: 2000,
     tokensThinking: 1000,

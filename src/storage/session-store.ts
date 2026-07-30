@@ -47,6 +47,12 @@ export interface FullSessionSummary extends SessionSummary {
   readonly buildRunCount: number;
   readonly buildPassCount: number;
   readonly estimatedCostUsd: number | null;
+  /**
+   * Portion of estimatedCostUsd attributed to subagent (ctx.agentId) calls —
+   * see CostMetrics.subagentCostUsd. 0 for pre-fix session files (subagent
+   * cost was never tracked) and for sessions with no subagent activity.
+   */
+  readonly subagentCostUsd: number;
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
@@ -403,6 +409,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     buildRunCount: totalBuildsRun,
     buildPassCount: totalBuildsPassed,
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
+    subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
     tokensInput: costMetrics?.totalInputTokens ?? 0,
     tokensOutput: costMetrics?.totalOutputTokens ?? 0,
     tokensThinking: costMetrics?.totalThinkingTokens ?? 0,
@@ -490,6 +497,7 @@ interface SerializedFullSessionSummary {
   readonly buildRunCount?: unknown;
   readonly buildPassCount?: unknown;
   readonly estimatedCostUsd?: unknown;
+  readonly subagentCostUsd?: unknown;
   readonly tokensInput?: unknown;
   readonly tokensOutput?: unknown;
   readonly tokensThinking?: unknown;
@@ -565,6 +573,7 @@ export function deserializeFullSessionSummary(
     buildRunCount: typeof obj.buildRunCount === 'number' ? obj.buildRunCount : 0,
     buildPassCount: typeof obj.buildPassCount === 'number' ? obj.buildPassCount : 0,
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
+    subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,

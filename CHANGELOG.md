@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.6] - 2026-07-30
+
+### Fixed
+
+- **Subagent spend on the Today dashboard only reflected whichever session happened to be serving the dashboard** — with multiple Claude Code sessions running concurrently (a common pattern with subagents and workflows), only one process's own in-memory tracker ever backed the "subagent spend" figure, silently excluding subagent activity from every other session. It's now aggregated from each session's persisted totals, the same way overall spend already was.
+- **The "subagent cost tracking is disabled" banner named the wrong cause for background dashboard processes** — a dashboard running in standalone/background mode doesn't run its own subagent watcher by default (by design), which the banner incorrectly attributed to the `NR_AI_ENABLE_SUBAGENT_WATCHER` environment variable even when that variable was never set. The banner now distinguishes the two cases and gives accurate guidance for each.
+- **Closed a related double-counting risk**: opting a background dashboard process into its own subagent tracking (`NR_AI_WATCHER_MODE=local`) could have caused subagent spend it discovered to be counted twice — once via the originating session's own persisted total, and again via the background process's own unscoped watcher. That process's own live total is no longer added on top of already-persisted sessions' totals.
+
 ## [1.14.5] - 2026-07-29
 
 ### Security

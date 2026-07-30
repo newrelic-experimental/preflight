@@ -3,6 +3,7 @@ import {
   localDateKey,
   localStartOfDay,
   todayPortionOfSessionCost,
+  todayPortionRatio,
 } from './date.js';
 
 describe('localStartOfDay', () => {
@@ -139,5 +140,74 @@ describe('todayPortionOfSessionCost', () => {
     expect(todayPortionOfSessionCost({ ...base, estimatedCostUsd: null }, refTs)).toBe(0);
     expect(todayPortionOfSessionCost({ ...base, estimatedCostUsd: 0 }, refTs)).toBe(0);
     expect(todayPortionOfSessionCost({ ...base, estimatedCostUsd: -1 }, refTs)).toBe(0);
+  });
+});
+
+describe('todayPortionRatio', () => {
+  // Same reference instant and fixtures as todayPortionOfSessionCost above,
+  // so the ratio can be cross-checked against that function's known-good
+  // outputs (ratio * cost === todayPortionOfSessionCost's result).
+  const refTs = new Date(2026, 5, 10, 14, 0).getTime();
+  const startOfToday = new Date(2026, 5, 10, 0, 0).getTime();
+  const startOfYesterday = new Date(2026, 5, 9, 0, 0).getTime();
+  const endOfToday = startOfToday + 86_400_000;
+
+  it('returns 0 for sessions entirely before today', () => {
+    const session = {
+      startTime: startOfYesterday + 9 * 3_600_000,
+      endTime: startOfYesterday + 11 * 3_600_000,
+    };
+    expect(todayPortionRatio(session, refTs)).toBe(0);
+  });
+
+  it('returns 0 for sessions in the future relative to refTs', () => {
+    const session = {
+      startTime: endOfToday + 1_000,
+      endTime: endOfToday + 60_000,
+    };
+    expect(todayPortionRatio(session, refTs)).toBe(0);
+  });
+
+  it('returns 1 for sessions entirely within today', () => {
+    const session = {
+      startTime: startOfToday + 9 * 3_600_000,
+      endTime: startOfToday + 11 * 3_600_000,
+    };
+    expect(todayPortionRatio(session, refTs)).toBe(1);
+  });
+
+  it('pro-rates by timeline tool-call count when timeline is present', () => {
+    // Same shape as the todayPortionOfSessionCost timeline test: 4 entries,
+    // 1 of them today → ratio 0.25.
+    const session = {
+      startTime: startOfYesterday + 22 * 3_600_000,
+      endTime: startOfToday + 2 * 3_600_000,
+      timeline: [
+        { timestamp: startOfYesterday + 22 * 3_600_000 + 1_000 },
+        { timestamp: startOfYesterday + 22 * 3_600_000 + 30 * 60_000 },
+        { timestamp: startOfYesterday + 23 * 3_600_000 },
+        { timestamp: startOfToday + 60_000 },
+      ],
+    };
+    expect(todayPortionRatio(session, refTs)).toBe(0.25);
+  });
+
+  it('pro-rates by elapsed-time overlap when no timeline is present', () => {
+    // 22:00 yesterday → 02:00 today = 4h total, 2h within today → ratio 0.5.
+    const session = {
+      startTime: startOfYesterday + 22 * 3_600_000,
+      endTime: startOfToday + 2 * 3_600_000,
+    };
+    expect(todayPortionRatio(session, refTs)).toBe(0.5);
+  });
+
+  it('agrees with todayPortionOfSessionCost when multiplied by cost', () => {
+    const session = {
+      startTime: startOfYesterday + 22 * 3_600_000,
+      endTime: startOfToday + 2 * 3_600_000,
+      estimatedCostUsd: 8,
+    };
+    const ratio = todayPortionRatio(session, refTs);
+    expect(ratio * session.estimatedCostUsd).toBe(todayPortionOfSessionCost(session, refTs));
   });
 });

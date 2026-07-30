@@ -241,23 +241,59 @@ describe('Today view', () => {
     expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
   });
 
-  it('shows the subagent-tracking-disabled banner when watcherActive is false', async () => {
+  function stubObservabilityHealth(body: Record<string, unknown>): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/observability-health')) {
-        return new Response(
-          JSON.stringify({ watcherActive: false, watcherDisabledByLock: false }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       return new Response(JSON.stringify([]), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
     }) as typeof fetch;
+  }
+
+  it('shows the env-var-disabled banner when watcherDisabledReason is env_var', async () => {
+    stubObservabilityHealth({
+      watcherActive: false,
+      watcherDisabledByLock: false,
+      watcherDisabledReason: 'env_var',
+    });
 
     renderToday();
     expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
+    expect(screen.getByText(/NR_AI_ENABLE_SUBAGENT_WATCHER=0/)).toBeInTheDocument();
+  });
+
+  it('falls back to the env-var-disabled banner when watcherDisabledReason is absent (older server)', async () => {
+    // No watcherDisabledReason field at all — simulates a dashboard daemon
+    // running an older build that predates this field. Must not silently
+    // hide the (still broadly correct) message in that case.
+    stubObservabilityHealth({ watcherActive: false, watcherDisabledByLock: false });
+
+    renderToday();
+    expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
+  });
+
+  it('shows a mode-mismatch banner (not the env-var message) when watcherDisabledReason is mode_mismatch', async () => {
+    // This is the --local dashboard daemon's default state: the watcher only
+    // auto-starts in --stdio mode, so watcherActive is false here by design,
+    // NOT because NR_AI_ENABLE_SUBAGENT_WATCHER is set to 0. Telling the user
+    // to unset a variable that was never set would be actively misleading.
+    stubObservabilityHealth({
+      watcherActive: false,
+      watcherDisabledByLock: false,
+      watcherDisabledReason: 'mode_mismatch',
+    });
+
+    renderToday();
+    expect(await screen.findByText(/subagent activity from other sessions/i)).toBeInTheDocument();
+    expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
+    expect(screen.queryByText(/NR_AI_ENABLE_SUBAGENT_WATCHER=0/)).toBeNull();
   });
 });
 

@@ -1324,12 +1324,26 @@ async function main(): Promise<void> {
               // => a zeroed "disabled" snapshot. costSelfCheckDeltaPct stays
               // null until the 1h self-check is wired.
               const stats = activeSubagentWatcher?.getHealthStats();
+              const watcherActive = activeSubagentWatcher !== null;
+              // Re-derive which of the two independent conditions caused a
+              // null binding, rather than reading the `subagentWatcherEnabled`/
+              // `watcherShouldRun` consts from the outer closure — this way
+              // the reason is always self-consistent with the actual env var
+              // at snapshot time, with no scope-ordering dependency on where
+              // those consts are declared in this large startup function.
+              const watcherDisabledReason: ObservabilityHealthSnapshot['watcherDisabledReason'] =
+                watcherActive
+                  ? null
+                  : process.env['NR_AI_ENABLE_SUBAGENT_WATCHER'] === '0'
+                    ? 'env_var'
+                    : 'mode_mismatch';
               return {
-                watcherActive: activeSubagentWatcher !== null,
+                watcherActive,
                 filesWatched: stats?.filesWatched ?? 0,
                 parseErrors: stats?.parseErrors ?? 0,
                 watcherDisabledByLock: stats?.watcherDisabledByLock ?? false,
                 costSelfCheckDeltaPct: null,
+                watcherDisabledReason,
               };
             },
           },

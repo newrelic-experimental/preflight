@@ -825,6 +825,9 @@ export interface ObservabilityHealthResponse {
   readonly watcherDisabledByLock?: boolean;
   readonly filesWatched?: number;
   readonly parseErrors?: number;
+  // Absent on older server builds — treat as equivalent to 'env_var' (the
+  // banner's original, pre-fix behavior) rather than hiding the message.
+  readonly watcherDisabledReason?: 'env_var' | 'mode_mismatch' | null;
 }
 
 export const fetchObservabilityHealth = (): Promise<ObservabilityHealthResponse> =>

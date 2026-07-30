@@ -53,17 +53,54 @@ export function localDateKey(ts?: number): string {
 }
 
 /**
- * How much of `session.estimatedCostUsd` was spent during today's local day,
- * given the session's start, end, and timeline. Fixes the cross-midnight bug
- * where whole-session cost was attributed to the day a session started.
+ * What fraction of a session's activity fell within today's local day, given
+ * its start, end, and timeline. Shared by every "how much of this session's
+ * X counts toward today" calculation (currently cost, via
+ * `todayPortionOfSessionCost`) so each new per-session metric that needs the
+ * same cross-midnight pro-rating doesn't reimplement it.
  *
  * Strategy:
  *  - Session entirely before today's local day: return 0.
  *  - Session entirely after today's local day: return 0.
- *  - Session entirely within today: return total cost.
+ *  - Session entirely within today: return 1.
  *  - Session straddling midnight: pro-rate by tool-call count when a timeline
- *    is available (better correlated with cost than wall time, which can
- *    include long idle stretches), else by elapsed-time overlap.
+ *    is available (better correlated with per-event metrics than wall time,
+ *    which can include long idle stretches), else by elapsed-time overlap.
+ */
+export function todayPortionRatio(
+  session: {
+    startTime: number;
+    endTime: number;
+    timeline?: ReadonlyArray<{ timestamp: number }>;
+  },
+  refTs?: number,
+): number {
+  const dayStart = localStartOfDay(refTs);
+  const dayEnd = dayStart + 86_400_000;
+
+  if (session.endTime < dayStart) return 0;
+  if (session.startTime >= dayEnd) return 0;
+
+  const entirelyToday = session.startTime >= dayStart && session.endTime < dayEnd;
+  if (entirelyToday) return 1;
+
+  if (session.timeline && session.timeline.length > 0) {
+    const total = session.timeline.length;
+    const todayCount = session.timeline.filter(
+      (t) => t.timestamp >= dayStart && t.timestamp < dayEnd,
+    ).length;
+    if (total > 0) return todayCount / total;
+  }
+
+  const overlapMs = Math.min(session.endTime, dayEnd) - Math.max(session.startTime, dayStart);
+  const totalMs = Math.max(1, session.endTime - session.startTime);
+  return overlapMs / totalMs;
+}
+
+/**
+ * How much of `session.estimatedCostUsd` was spent during today's local day.
+ * Fixes the cross-midnight bug where whole-session cost was attributed to the
+ * day a session started. See `todayPortionRatio` for the pro-rating strategy.
  */
 export function todayPortionOfSessionCost(
   session: {
@@ -76,25 +113,5 @@ export function todayPortionOfSessionCost(
 ): number {
   const cost = session.estimatedCostUsd;
   if (cost == null || cost <= 0) return 0;
-
-  const dayStart = localStartOfDay(refTs);
-  const dayEnd = dayStart + 86_400_000;
-
-  if (session.endTime < dayStart) return 0;
-  if (session.startTime >= dayEnd) return 0;
-
-  const entirelyToday = session.startTime >= dayStart && session.endTime < dayEnd;
-  if (entirelyToday) return cost;
-
-  if (session.timeline && session.timeline.length > 0) {
-    const total = session.timeline.length;
-    const todayCount = session.timeline.filter(
-      (t) => t.timestamp >= dayStart && t.timestamp < dayEnd,
-    ).length;
-    if (total > 0) return cost * (todayCount / total);
-  }
-
-  const overlapMs = Math.min(session.endTime, dayEnd) - Math.max(session.startTime, dayStart);
-  const totalMs = Math.max(1, session.endTime - session.startTime);
-  return cost * (overlapMs / totalMs);
+  return cost * todayPortionRatio(session, refTs);
 }

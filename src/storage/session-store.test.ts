@@ -59,6 +59,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     buildRunCount: 1,
     buildPassCount: 1,
     estimatedCostUsd: 0.05,
+    subagentCostUsd: 0,
     tokensInput: 5000,
     tokensOutput: 2000,
     tokensThinking: 1000,
@@ -970,8 +971,8 @@ describe('buildSessionSummary', () => {
       reportCount: 2,
       estimationCount: 0,
       latestCostBreakdown: null,
-      subagentCostUsd: 0,
-      parentCostUsd: 0.05,
+      subagentCostUsd: 0.021,
+      parentCostUsd: 0.029,
       costByWorkflowRunId: {},
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
@@ -982,6 +983,15 @@ describe('buildSessionSummary', () => {
     expect(summary.tokensCacheRead).toBe(5_000);
     expect(summary.tokensCacheCreation).toBe(1_500);
     expect(summary.cacheSavingsUsd).toBe(0.018);
+    expect(summary.subagentCostUsd).toBe(0.021);
+  });
+
+  it('defaults subagentCostUsd to 0 when no CostTracker is provided', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      developer: 'dev',
+    });
+    expect(summary.subagentCostUsd).toBe(0);
   });
 
   it('threads the platform field through when provided', () => {
@@ -1060,6 +1070,33 @@ describe('buildSessionSummary', () => {
     expect(result.tokensCacheRead).toBe(0);
     expect(result.tokensCacheCreation).toBe(0);
     expect(result.cacheSavingsUsd).toBe(0);
+  });
+
+  it('deserializeFullSessionSummary round-trips subagentCostUsd', () => {
+    const raw = {
+      sessionId: 'sess-subagent',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      subagentCostUsd: 0.0345,
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.subagentCostUsd).toBe(0.0345);
+  });
+
+  it('deserializeFullSessionSummary defaults subagentCostUsd to 0 for pre-fix session files', () => {
+    const raw = {
+      sessionId: 'sess-old',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.subagentCostUsd).toBe(0);
   });
 
   it('handles missing optional trackers gracefully', () => {

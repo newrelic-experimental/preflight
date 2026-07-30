@@ -1,7 +1,13 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { localDateKey, localStartOfDay, todayPortionOfSessionCost } from '../../lib/date.js';
+import {
+  localDateKey,
+  localStartOfDay,
+  todayPortionOfSessionCost,
+  todayPortionRatio,
+} from '../../lib/date.js';
 import { redactSensitive, normalizeDeveloperName } from '../../config.js';
+import { isUnscopedAggregatorSessionId } from '../../hooks/session-resolver.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import type { McpServerConfig } from '../../config.js';
@@ -337,6 +343,18 @@ export interface ObservabilityHealthSnapshot {
   readonly parseErrors: number;
   readonly watcherDisabledByLock: boolean;
   readonly costSelfCheckDeltaPct: number | null;
+  /**
+   * Why `watcherActive` is false; null when it's true. `activeSubagentWatcher`
+   * (src/index.ts) is only non-null when BOTH `subagentWatcherEnabled` (the
+   * `NR_AI_ENABLE_SUBAGENT_WATCHER` flag) AND `watcherShouldRun` (this
+   * process's mode matches `NR_AI_WATCHER_MODE`, default 'stdio') hold — two
+   * unrelated conditions collapsed into one boolean. `'mode_mismatch'` is the
+   * common, by-design case for a `--local` dashboard daemon; `'env_var'` is
+   * the explicit opt-out. Distinguishing them matters because the UI's
+   * `'env_var'` messaging tells the user to unset a variable — which is
+   * actively wrong advice when the real cause is `'mode_mismatch'`.
+   */
+  readonly watcherDisabledReason: 'env_var' | 'mode_mismatch' | null;
 }
 
 export interface ApiHandlerDeps {
@@ -1102,6 +1120,12 @@ export function createApiHandler(
     let totalDurationMs = 0;
     let durationSamples = 0;
     let totalCostUsd = 0;
+    // Summed across every today session's PERSISTED subagentCostUsd (see (2b)
+    // below), not read from this one process's live CostTracker. A session
+    // watched by a different concurrent `--stdio` process never touches this
+    // process's in-memory tracker, so reading only the live tracker silently
+    // dropped subagent spend from every other concurrently-running session.
+    let subagentUsd = 0;
     let antiPatternCount = 0;
     const sessionsSeen = new Set<string>();
 
@@ -1211,14 +1235,22 @@ export function createApiHandler(
         startTime: number;
         endTime: number;
         estimatedCostUsd: number | null;
+        subagentCostUsd?: number;
         antiPatterns?: ReadonlyArray<unknown>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
       // Skip the live session here — its today-portion is added below from
-      // costTracker.getCostForDay(), which is more accurate (per-token-event)
-      // than pro-rating from a periodically-persisted snapshot.
+      // costTracker.getCostForDay()/getSubagentCostForDay(), which is more
+      // accurate (per-token-event) than pro-rating from a periodically-
+      // persisted snapshot.
       if (s.sessionId === liveSid) continue;
       totalCostUsd += todayPortionOfSessionCost(s, now);
+      // (2b) subagent-only portion of the same session, same pro-rating.
+      // This is what makes the "subagent spend" KPI cross-session: each
+      // `--stdio` process persists its own subagentCostUsd, so summing it
+      // here (rather than reading only THIS process's live CostTracker)
+      // picks up subagent activity that happened in any concurrent session.
+      subagentUsd += (s.subagentCostUsd ?? 0) * todayPortionRatio(s, now);
       // Count anti-patterns and session for cross-midnight sessions not already
       // captured by the todaySessions loop (which filtered by start-date).
       if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
@@ -1235,7 +1267,17 @@ export function createApiHandler(
       (s) => (s as { sessionId?: string }).sessionId === liveSid,
     );
 
-    if (!liveAlreadyPersisted) {
+    // An unscoped aggregator (--local/proxy session id) runs its
+    // SubagentWatcher unscoped — its own live CostTracker may already hold
+    // cost belonging to OTHER, already-separately-persisted sessions (see
+    // isUnscopedAggregatorSessionId's docstring). Adding it here on top of
+    // the persisted-sessions sum above would double-count that cost, so skip
+    // the live top-up entirely for such a process — unlike a genuine
+    // `--stdio` session (including one still on a pending-* provisional id),
+    // whose live cost really is exclusively its own.
+    const liveIsUnscopedAggregator = isUnscopedAggregatorSessionId(liveSid);
+
+    if (!liveAlreadyPersisted && !liveIsUnscopedAggregator) {
       const todayKey = localDateKey(now);
       const liveTodayUsd = deps.costTracker?.getCostForDay?.(todayKey) ?? null;
       if (typeof liveTodayUsd === 'number') {
@@ -1254,6 +1296,12 @@ export function createApiHandler(
           totalCostUsd += sessionCost;
         }
       }
+      // This MCP's own live subagent-for-day figure — the (2b) loop above
+      // already summed every OTHER today session's persisted subagentCostUsd;
+      // this process's own session isn't in that persisted set yet, so its
+      // contribution comes from the live, per-day-bucketed CostTracker value
+      // instead (same reasoning as liveTodayUsd above).
+      subagentUsd += deps.costTracker?.getSubagentCostForDay?.(todayKey) ?? 0;
     }
 
     // Live session anti-patterns (in-memory, not yet persisted).
@@ -1267,15 +1315,13 @@ export function createApiHandler(
 
     const avgDurationMs = durationSamples > 0 ? totalDurationMs / durationSamples : 0;
 
-    // Subagent breakdown for the Today KPI strip. Read directly
-    // off the in-memory tracker; if the workflow store is wired, also count
-    // workflow runs that started today.
-    // Today-scoped subagent spend so the "subagent spend" KPI lines up with the
-    // day-bucketed "spend today" (totalCostUsd) above — both are today-only.
+    // Subagent breakdown for the Today KPI strip; if the workflow store is
+    // wired, also count workflow runs that started today. `subagentUsd` was
+    // already accumulated above — summed across every today session's
+    // persisted subagentCostUsd, plus this MCP's own live today-portion.
     // IMPORTANT: getCostForDay and persisted estimatedCostUsd are already all-in
     // (parent + subagent), so totalCostUsd ALREADY includes subagent cost. This
     // is the breakdown, NOT an addend — do not add it to totalCostUsd.
-    const subagentUsd = deps.costTracker?.getSubagentCostForDay?.(localDateKey(now)) ?? 0;
     let subagentTurnCount = 0;
     let workflowRunCount = 0;
     if (deps.workflowStore) {

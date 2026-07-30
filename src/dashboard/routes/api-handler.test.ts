@@ -1445,6 +1445,115 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.subagentUsd).toBeCloseTo(6, 3);
   });
 
+  it('does not add its own live today-portion when the live session id is an unscoped aggregator (--local/proxy)', async () => {
+    // A `--local` process's SubagentWatcher runs unscoped (parentSessionId:
+    // undefined) — if NR_AI_WATCHER_MODE=local is set, its own live
+    // CostTracker may hold cost that belongs to OTHER, already-separately-
+    // persisted sessions. Adding it on top of the (empty, here) persisted-
+    // sessions sum would double-count. Session id prefix 'local-' signals
+    // this process is such an unscoped aggregator, not a single real session.
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'local-1785400000000', sessionStartTime: Date.now() }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0 }),
+        getCostForDay: () => 9,
+        getSubagentCostForDay: () => 6,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number; subagentUsd: number };
+    expect(parsed.totalCostUsd).toBe(0);
+    expect(parsed.subagentUsd).toBe(0);
+  });
+
+  it('still adds its own live today-portion for a pending-* provisional stdio session', async () => {
+    // A pending-<ts> id is still exactly one real --stdio session mid
+    // session-ID-resolution, not an unscoped aggregator — its live cost is
+    // genuinely its own and must still be added.
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'pending-1785400000000', sessionStartTime: Date.now() }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0 }),
+        getCostForDay: () => 9,
+        getSubagentCostForDay: () => 6,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number; subagentUsd: number };
+    expect(parsed.totalCostUsd).toBeCloseTo(9, 3);
+    expect(parsed.subagentUsd).toBeCloseTo(6, 3);
+  });
+
+  it('sums subagentCostUsd across every persisted session today, not just the live process', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        // Two sessions persisted by OTHER Claude Code processes — their
+        // subagent activity was never seen by this process's own live
+        // CostTracker/SubagentWatcher.
+        loadTodaySessions: () => [
+          {
+            sessionId: 'other-session-A',
+            startTime: startMs + 10_000,
+            endTime: startMs + 20_000,
+            estimatedCostUsd: 5,
+            subagentCostUsd: 1.5,
+          },
+          {
+            sessionId: 'other-session-B',
+            startTime: startMs + 30_000,
+            endTime: startMs + 40_000,
+            estimatedCostUsd: 3,
+            subagentCostUsd: 2.25,
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      // This process's own live tracker never saw any subagent turns.
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0 }),
+        getCostForDay: () => 0,
+        getSubagentCostForDay: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { subagentUsd: number };
+    // 1.5 + 2.25 — summed across both other sessions, not read from the
+    // (empty) live process tracker.
+    expect(parsed.subagentUsd).toBeCloseTo(3.75, 3);
+  });
+
   it('skips events older than the start of today', async () => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -1658,6 +1767,7 @@ describe('api-handler GET /api/observability-health', () => {
       parseErrors: 0,
       watcherDisabledByLock: false,
       costSelfCheckDeltaPct: null,
+      watcherDisabledReason: null,
     };
     const handler = createApiHandler({
       observabilityHealth: { getSnapshot: () => snapshot },

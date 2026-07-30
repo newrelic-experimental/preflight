@@ -9,6 +9,7 @@ import {
   resolveFromCwd,
   nextDelayMs,
   isSyntheticSessionId,
+  isUnscopedAggregatorSessionId,
 } from './session-resolver.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -292,5 +293,41 @@ describe('isSyntheticSessionId', () => {
 
   it('returns false for undefined', () => {
     expect(isSyntheticSessionId(undefined)).toBe(false);
+  });
+});
+
+describe('isUnscopedAggregatorSessionId', () => {
+  it('returns true for local- prefix', () => {
+    // A --local process's SubagentWatcher runs unscoped (parentSessionId:
+    // undefined) — it may have parsed transcripts belonging to other real
+    // sessions, so its own live cost is not exclusively-its-own.
+    expect(isUnscopedAggregatorSessionId('local-1234567890')).toBe(true);
+  });
+
+  it('returns true for proxy- prefix', () => {
+    expect(isUnscopedAggregatorSessionId('proxy-1234567890')).toBe(true);
+  });
+
+  it('returns false for pending- prefix', () => {
+    // A pending-<ts> id is still exactly one real --stdio session mid-
+    // resolution — its live cost genuinely is exclusively its own, so it
+    // must NOT be treated the same as an unscoped aggregator.
+    expect(isUnscopedAggregatorSessionId('pending-1234567890')).toBe(false);
+  });
+
+  it('returns false for a real session ID', () => {
+    expect(isUnscopedAggregatorSessionId('abc-123-real-session')).toBe(false);
+  });
+
+  it('returns false for empty string', () => {
+    expect(isUnscopedAggregatorSessionId('')).toBe(false);
+  });
+
+  it('returns false for null', () => {
+    expect(isUnscopedAggregatorSessionId(null)).toBe(false);
+  });
+
+  it('returns false for undefined', () => {
+    expect(isUnscopedAggregatorSessionId(undefined)).toBe(false);
   });
 });

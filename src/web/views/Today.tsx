@@ -321,14 +321,28 @@ export function Today(): JSX.Element {
               Check Settings &rarr; Observability health.
             </div>
           )}
-          {healthApi?.watcherActive === false && subagentStats.turns === 0 && (
-            <div className="rounded-lg border border-border-subtle bg-surface-5 px-4 py-3 text-sm text-ink-muted mb-4">
-              Subagent cost tracking is disabled (
-              <code className="font-mono text-xs">NR_AI_ENABLE_SUBAGENT_WATCHER=0</code>), so spend
-              shown here excludes subagents. Unset that variable (it is on by default) and restart
-              to see full spend.
-            </div>
-          )}
+          {healthApi?.watcherActive === false &&
+            subagentStats.turns === 0 &&
+            healthApi?.watcherDisabledReason !== 'mode_mismatch' && (
+              <div className="rounded-lg border border-border-subtle bg-surface-5 px-4 py-3 text-sm text-ink-muted mb-4">
+                Subagent cost tracking is disabled (
+                <code className="font-mono text-xs">NR_AI_ENABLE_SUBAGENT_WATCHER=0</code>), so
+                spend shown here excludes subagents. Unset that variable (it is on by default) and
+                restart to see full spend.
+              </div>
+            )}
+          {healthApi?.watcherActive === false &&
+            subagentStats.turns === 0 &&
+            healthApi?.watcherDisabledReason === 'mode_mismatch' && (
+              <div className="rounded-lg border border-border-subtle bg-surface-5 px-4 py-3 text-sm text-ink-muted mb-4">
+                This dashboard process isn&rsquo;t running its own subagent watcher — expected for a
+                background <code className="font-mono text-xs">--local</code> dashboard (the watcher
+                only auto-starts in <code className="font-mono text-xs">--stdio</code> mode). Spend
+                shown here still includes subagent activity from other sessions, read from their
+                persisted totals. To track subagents live from this process too, set{' '}
+                <code className="font-mono text-xs">NR_AI_WATCHER_MODE=local</code> and restart.
+              </div>
+            )}
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
               <div className="grid grid-cols-5 gap-4">

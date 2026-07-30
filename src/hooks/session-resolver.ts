@@ -276,3 +276,22 @@ export function isSyntheticSessionId(id: string | null | undefined): boolean {
   if (!id) return false;
   return id.startsWith('local-') || id.startsWith('proxy-') || id.startsWith('pending-');
 }
+
+/**
+ * Returns true for session IDs whose owning process's SubagentWatcher (if
+ * any) runs unscoped — `--local`/proxy processes discover subagent
+ * transcripts across every session, not just their own. Their own live
+ * CostTracker therefore is NOT exclusively their own cost: some of it may
+ * belong to other, already-separately-persisted sessions.
+ *
+ * Deliberately narrower than `isSyntheticSessionId`: a `pending-*` id is
+ * still exactly one real `--stdio` session (mid session-ID resolution), so
+ * its live cost genuinely is exclusively its own and must NOT be excluded
+ * the same way. Callers deciding whether to add a process's own live
+ * today-portion on top of an already-persisted-sessions sum (to avoid
+ * double-counting) should check this, not `isSyntheticSessionId`.
+ */
+export function isUnscopedAggregatorSessionId(id: string | null | undefined): boolean {
+  if (!id) return false;
+  return id.startsWith('local-') || id.startsWith('proxy-');
+}
