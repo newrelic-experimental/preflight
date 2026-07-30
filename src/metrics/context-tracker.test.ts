@@ -1,4 +1,9 @@
-import { ContextTracker, ContextTrackerRegistry } from './context-tracker.js';
+import {
+  ContextTracker,
+  ContextTrackerRegistry,
+  computeContextMetricsFromEvents,
+} from './context-tracker.js';
+import type { ContextReplayEvent } from './context-tracker.js';
 import type { TokenEvent, ToolCallRecord } from '../storage/types.js';
 
 function makeTokenEvent(overrides: Partial<TokenEvent> = {}): TokenEvent {
@@ -376,5 +381,80 @@ describe('ContextTrackerRegistry', () => {
 
     expect(snapshot).toBeNull();
     expect(registry.getSessionIds()).toHaveLength(0);
+  });
+});
+
+describe('computeContextMetricsFromEvents', () => {
+  it('replays tool and token events into the same metrics as incremental recording', () => {
+    const events: ContextReplayEvent[] = [
+      { kind: 'tool', timestamp: 1_000, toolName: 'Read', outputSizeBytes: 40_000 },
+      {
+        kind: 'token',
+        timestamp: 2_000,
+        inputTokens: 10_000,
+        outputTokens: 5_000,
+        cacheReadTokens: 50_000,
+        cacheCreationTokens: 20_000,
+        model: 'claude-opus-4-6',
+      },
+    ];
+
+    const replayed = computeContextMetricsFromEvents(events, { modelContextWindow: 200_000 });
+
+    const direct = new ContextTracker({ modelContextWindow: 200_000 });
+    direct.recordToolCall(makeRecord({ toolName: 'Read', outputSizeBytes: 40_000 }));
+    direct.recordTurn(
+      makeTokenEvent({
+        timestamp: 2_000,
+        inputTokens: 10_000,
+        outputTokens: 5_000,
+        cacheReadTokens: 50_000,
+        cacheCreationTokens: 20_000,
+      }),
+    );
+
+    expect(replayed).toEqual(direct.getMetrics());
+    expect(replayed.turnCount).toBe(1);
+    expect(replayed.currentBreakdown.tools).toBe(10_000);
+    expect(replayed.currentBreakdown.system).toBe(20_000);
+  });
+
+  it('sorts events by timestamp before replaying, independent of input order', () => {
+    const events: ContextReplayEvent[] = [
+      {
+        kind: 'token',
+        timestamp: 5_000,
+        inputTokens: 60_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        model: 'claude-opus-4-6',
+      },
+      {
+        kind: 'token',
+        timestamp: 1_000,
+        inputTokens: 40_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 10_000,
+        model: 'claude-opus-4-6',
+      },
+    ];
+
+    const metrics = computeContextMetricsFromEvents(events);
+
+    // Turn 1 (timestamp 1000) sets the baseline; turn 2 (timestamp 5000) is current —
+    // this only holds if the events were sorted before replay, since they were passed
+    // in reverse-chronological order above.
+    expect(metrics.turnCount).toBe(2);
+    expect(metrics.growth.startTokens).toBe(50_000); // 40000 + 10000
+    expect(metrics.growth.currentTokens).toBe(60_000);
+  });
+
+  it('returns zeroed metrics for an empty events array', () => {
+    const metrics = computeContextMetricsFromEvents([]);
+    expect(metrics.turnCount).toBe(0);
+    expect(metrics.growth).toEqual({ startTokens: 0, currentTokens: 0, deltaTokens: 0 });
+    expect(metrics.currentBreakdown).toEqual({ system: 0, tools: 0, user: 0, assistant: 0 });
   });
 });

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.11] - 2026-07-30
+
+### Fixed
+
+- **The context-window bar could go blank for a session that was live only in a different process than the one serving the dashboard** — it read only that one process's own in-memory tracker, so any session running elsewhere had no context-window data to show even while active. It now recomputes the same metrics on demand from that session's pending activity, the same way the other cross-process Today dashboard fixes already do.
+
 ## [1.14.10] - 2026-07-30
 
 ### Fixed

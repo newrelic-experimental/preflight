@@ -52,6 +52,12 @@ export interface ContextTrackerOptions {
   readonly bytesPerToken?: number;
 }
 
+// Narrower input for recordToolCall: only the two fields it actually reads.
+// A full ToolCallRecord still satisfies this structurally (every existing
+// caller passes one), but it also lets a replayed/reconstructed event that
+// only has these two fields flow through the same method.
+export type ContextToolCallInput = Pick<ToolCallRecord, 'toolName' | 'outputSizeBytes'>;
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -90,7 +96,7 @@ export class ContextTracker {
     this.bytesPerToken = options?.bytesPerToken ?? DEFAULT_BYTES_PER_TOKEN;
   }
 
-  recordToolCall(record: ToolCallRecord): void {
+  recordToolCall(record: ContextToolCallInput): void {
     const bytes = record.outputSizeBytes;
     if (bytes == null || bytes <= 0) return;
     const current = this.toolOutputBytes.get(record.toolName) ?? 0;
@@ -232,6 +238,57 @@ export class ContextTracker {
 
     return { system, tools, user, assistant };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pure replay — computes the same metrics as incremental recording, from a
+// snapshot of events instead of a live, continuously-fed tracker. Lets a
+// caller who only has a point-in-time batch of events (e.g. a buffer-file
+// snapshot from a different process's session) get identical output to what
+// that process's own live ContextTracker would have produced.
+// ---------------------------------------------------------------------------
+
+export interface ContextReplayToolEvent {
+  readonly kind: 'tool';
+  readonly timestamp: number;
+  readonly toolName: string;
+  readonly outputSizeBytes?: number;
+}
+
+export interface ContextReplayTokenEvent {
+  readonly kind: 'token';
+  readonly timestamp: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly model: string;
+}
+
+export type ContextReplayEvent = ContextReplayToolEvent | ContextReplayTokenEvent;
+
+export function computeContextMetricsFromEvents(
+  events: readonly ContextReplayEvent[],
+  options?: ContextTrackerOptions,
+): ContextTrackerMetrics {
+  const tracker = new ContextTracker(options);
+  const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
+  for (const ev of sorted) {
+    if (ev.kind === 'tool') {
+      tracker.recordToolCall({ toolName: ev.toolName, outputSizeBytes: ev.outputSizeBytes });
+    } else {
+      tracker.recordTurn({
+        mode: 'token',
+        timestamp: ev.timestamp,
+        inputTokens: ev.inputTokens,
+        outputTokens: ev.outputTokens,
+        cacheReadTokens: ev.cacheReadTokens,
+        cacheCreationTokens: ev.cacheCreationTokens,
+        model: ev.model,
+      });
+    }
+  }
+  return tracker.getMetrics();
 }
 
 // ---------------------------------------------------------------------------

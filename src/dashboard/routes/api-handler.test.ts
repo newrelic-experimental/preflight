@@ -1,5 +1,9 @@
 import { jest } from '@jest/globals';
-import { createApiHandler, computeCrossProcessLiveSessionIds } from './api-handler.js';
+import {
+  createApiHandler,
+  computeCrossProcessLiveSessionIds,
+  buildContextReplayEvents,
+} from './api-handler.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
@@ -3749,6 +3753,127 @@ describe('api-handler GET /api/context', () => {
     expect(status()).toBe(200);
     expect(JSON.parse(body())).toEqual(fakeMetrics);
     expect(getMetrics).toHaveBeenCalledWith('sess-abc');
+  });
+
+  it("recomputes metrics from peekAllBuffers when this process's own registry has zero turns for the session", async () => {
+    const emptyMetrics = {
+      turnCount: 0,
+      growth: { startTokens: 0, currentTokens: 0, deltaTokens: 0 },
+      currentBreakdown: { system: 0, tools: 0, user: 0, assistant: 0 },
+      fillPercent: 0,
+      contextWindow: 200_000,
+      toolContributions: [],
+      history: [],
+    };
+    const handler = createApiHandler({
+      contextTracker: { getMetrics: () => emptyMetrics },
+      localStore: {
+        peekAllBuffers: () => [
+          {
+            mode: 'post',
+            sessionId: 'sess-other-process',
+            timestamp: 1_000,
+            tool: 'Read',
+            outputSize: 40_000,
+          },
+          {
+            mode: 'token',
+            sessionId: 'sess-other-process',
+            timestamp: 2_000,
+            inputTokens: 10_000,
+            outputTokens: 5_000,
+            cacheReadTokens: 50_000,
+            cacheCreationTokens: 20_000,
+            model: 'claude-opus-4-6',
+          },
+        ],
+      },
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/context?sessionId=sess-other-process',
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as { turnCount: number; fillPercent: number };
+    expect(result.turnCount).toBe(1);
+    expect(result.fillPercent).toBe(40);
+  });
+
+  it('falls back to the empty local default when no buffer events match the session either', async () => {
+    const emptyMetrics = {
+      turnCount: 0,
+      growth: { startTokens: 0, currentTokens: 0, deltaTokens: 0 },
+      currentBreakdown: { system: 0, tools: 0, user: 0, assistant: 0 },
+      fillPercent: 0,
+      contextWindow: 200_000,
+      toolContributions: [],
+      history: [],
+    };
+    const handler = createApiHandler({
+      contextTracker: { getMetrics: () => emptyMetrics },
+      localStore: {
+        peekAllBuffers: () => [{ mode: 'token', sessionId: 'unrelated-session', timestamp: 2_000 }],
+      },
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/context?sessionId=sess-with-no-data',
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(emptyMetrics);
+  });
+});
+
+describe('buildContextReplayEvents', () => {
+  it('maps a post event to a tool replay event using tool/outputSize fields', () => {
+    const events = buildContextReplayEvents(
+      [{ mode: 'post', sessionId: 'sess-1', timestamp: 1_000, tool: 'Bash', outputSize: 500 }],
+      'sess-1',
+    );
+    expect(events).toEqual([
+      { kind: 'tool', timestamp: 1_000, toolName: 'Bash', outputSizeBytes: 500 },
+    ]);
+  });
+
+  it('maps a token event to a token replay event, defaulting missing numeric fields to 0', () => {
+    const events = buildContextReplayEvents(
+      [{ mode: 'token', sessionId: 'sess-1', timestamp: 2_000, inputTokens: 100 }],
+      'sess-1',
+    );
+    expect(events).toEqual([
+      {
+        kind: 'token',
+        timestamp: 2_000,
+        inputTokens: 100,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        model: 'unknown',
+      },
+    ]);
+  });
+
+  it('ignores pre events and events belonging to a different session', () => {
+    const events = buildContextReplayEvents(
+      [
+        { mode: 'pre', sessionId: 'sess-1', timestamp: 1_000, tool: 'Bash' },
+        { mode: 'post', sessionId: 'sess-2', timestamp: 1_000, tool: 'Bash', outputSize: 500 },
+      ],
+      'sess-1',
+    );
+    expect(events).toEqual([]);
+  });
+
+  it('skips events with a non-numeric timestamp', () => {
+    const events = buildContextReplayEvents(
+      [{ mode: 'token', sessionId: 'sess-1', timestamp: 'not-a-number', inputTokens: 100 }],
+      'sess-1',
+    );
+    expect(events).toEqual([]);
   });
 });
 

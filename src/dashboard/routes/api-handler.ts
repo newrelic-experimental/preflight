@@ -39,7 +39,8 @@ import type { QualityProxyMetrics } from '../../metrics/quality-proxy-tracker.js
 import type { ToolSelectionMetrics } from '../../metrics/tool-selection-scorer.js';
 import type { ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
-import type { ContextTrackerMetrics } from '../../metrics/context-tracker.js';
+import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
+import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 // ---------------------------------------------------------------------------
@@ -930,6 +931,44 @@ export function computeCrossProcessLiveSessionIds(deps: ApiHandlerDeps): string[
   return Array.from(ids);
 }
 
+// Narrows this MCP's own peekAllBuffers() rows (raw buffer-file lines from
+// EVERY --stdio process, read-only) into the two event kinds
+// computeContextMetricsFromEvents() understands, scoped to one session.
+// Mirrors the mode-based narrowing computeCrossProcessLiveSessionIds() above
+// already does — 'post' is a completed tool call, 'token' is a cost/context
+// event with no tool-call semantics, 'pre' has neither and is ignored.
+export function buildContextReplayEvents(
+  peeked: readonly { readonly [key: string]: unknown }[],
+  sessionId: string,
+): ContextReplayEvent[] {
+  const events: ContextReplayEvent[] = [];
+  for (const ev of peeked) {
+    if (ev.sessionId !== sessionId) continue;
+    const timestamp = typeof ev.timestamp === 'number' ? ev.timestamp : null;
+    if (timestamp === null) continue;
+    if (ev.mode === 'post' && typeof ev.tool === 'string') {
+      events.push({
+        kind: 'tool',
+        timestamp,
+        toolName: ev.tool,
+        outputSizeBytes: typeof ev.outputSize === 'number' ? ev.outputSize : undefined,
+      });
+    } else if (ev.mode === 'token') {
+      events.push({
+        kind: 'token',
+        timestamp,
+        inputTokens: typeof ev.inputTokens === 'number' ? ev.inputTokens : 0,
+        outputTokens: typeof ev.outputTokens === 'number' ? ev.outputTokens : 0,
+        cacheReadTokens: typeof ev.cacheReadTokens === 'number' ? ev.cacheReadTokens : 0,
+        cacheCreationTokens:
+          typeof ev.cacheCreationTokens === 'number' ? ev.cacheCreationTokens : 0,
+        model: typeof ev.model === 'string' ? ev.model : 'unknown',
+      });
+    }
+  }
+  return events;
+}
+
 export function createApiHandler(
   deps: ApiHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -1608,7 +1647,20 @@ export function createApiHandler(
     if (!deps.contextTracker) return unavailable(res, 'contextTracker');
     const url = new URL(req.url ?? '/', 'http://localhost');
     const sessionId = url.searchParams.get('sessionId') ?? undefined;
-    jsonOk(res, deps.contextTracker.getMetrics(sessionId));
+    const local = deps.contextTracker.getMetrics(sessionId);
+    // A session live only in a different --stdio process never touches this
+    // process's own ContextTrackerRegistry, so local.turnCount stays 0 even
+    // when the session has real activity elsewhere. Recompute from any
+    // process's undrained buffer before falling back to the (correctly)
+    // empty default.
+    if (local.turnCount === 0 && sessionId && deps.localStore) {
+      const events = buildContextReplayEvents(deps.localStore.peekAllBuffers(), sessionId);
+      if (events.length > 0) {
+        jsonOk(res, computeContextMetricsFromEvents(events));
+        return;
+      }
+    }
+    jsonOk(res, local);
   });
 
   routes.set('GET /api/concurrency', (req, res) => {
