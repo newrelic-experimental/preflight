@@ -136,6 +136,44 @@ describe('Today view', () => {
     expect(screen.queryByText(/\?× on/)).toBeNull();
   });
 
+  it('renders anti-pattern detail from a persisted session when no live/API detail exists', async () => {
+    useLiveStore.setState({ antiPatterns: [] });
+    const startOfToday = new Date();
+    startOfToday.setHours(1, 0, 0, 0);
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/anti-patterns') {
+        // This process's own live detector saw nothing.
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.startsWith('/api/sessions?')) {
+        // A persisted session from a DIFFERENT process already has a flagged pattern.
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 'other-process-session',
+              startTime: startOfToday.getTime(),
+              toolCallCount: 12,
+              antiPatterns: [{ type: 'stuck_loop', command: 'npm run build', repeatCount: 6 }],
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    await waitFor(() => expect(screen.getByText(/6× on/)).toBeInTheDocument());
+    expect(screen.getByText(/npm run build/)).toBeInTheDocument();
+  });
+
   it('does not show the empty state while concurrency/heatmap/liveSessions are still pending', async () => {
     // Zero out the cost/antiPatterns/tool-call state that resetStore() (in
     // the outer beforeEach) set to non-zero values, so calls === 0,
@@ -447,6 +485,41 @@ describe('Today view — aggregate endpoint', () => {
     expect(await screen.findByText('42')).toBeInTheDocument();
     expect(screen.getByText('$7.75')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders the efficiency KPI from the aggregate endpoint, not session/current', async () => {
+    globalThis.fetch = vi.fn(async (input: string | RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/session/current')) {
+        // This process's own live score is null — it must NOT be what renders.
+        return new Response(JSON.stringify({ efficiencyScore: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 1,
+            totalCostUsd: 0.01,
+            antiPatternCount: 0,
+            avgDurationMs: 100,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [1] },
+            avgEfficiencyScore: 0.85,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    await waitFor(() => expect(screen.getByText('85%')).toBeInTheDocument());
   });
 });
 

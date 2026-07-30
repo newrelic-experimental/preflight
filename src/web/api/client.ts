@@ -144,6 +144,7 @@ export interface TodayAggregateResponse {
   readonly subagentUsd?: number;
   readonly subagentTurnCount?: number;
   readonly workflowRunCount?: number;
+  readonly avgEfficiencyScore?: number | null;
 }
 
 // /api/sessions returns a heterogeneous mix of full persisted session

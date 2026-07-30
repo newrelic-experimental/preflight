@@ -1313,6 +1313,27 @@ export function createApiHandler(
       antiPatternCount += live.length;
     }
 
+    // Efficiency KPI: average `efficiencyScore` across today's persisted sessions, plus
+    // this process's own live score when its own session isn't in that persisted set yet
+    // (same liveAlreadyPersisted guard already used for cost/anti-patterns above).
+    let efficiencyScoreSum = 0;
+    let efficiencyScoreCount = 0;
+    for (const s of todaySessions) {
+      if (typeof s.efficiencyScore === 'number') {
+        efficiencyScoreSum += s.efficiencyScore;
+        efficiencyScoreCount++;
+      }
+    }
+    if (!liveAlreadyPersisted) {
+      const liveScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;
+      if (typeof liveScore === 'number') {
+        efficiencyScoreSum += liveScore;
+        efficiencyScoreCount++;
+      }
+    }
+    const avgEfficiencyScore =
+      efficiencyScoreCount > 0 ? efficiencyScoreSum / efficiencyScoreCount : null;
+
     const avgDurationMs = durationSamples > 0 ? totalDurationMs / durationSamples : 0;
 
     // Subagent breakdown for the Today KPI strip; if the workflow store is
@@ -1342,6 +1363,7 @@ export function createApiHandler(
       subagentUsd: Math.round(subagentUsd * 1000) / 1000,
       subagentTurnCount,
       workflowRunCount,
+      avgEfficiencyScore,
     };
     aggregateCache = { bucket: currentBucket, payload };
     jsonOk(res, payload);

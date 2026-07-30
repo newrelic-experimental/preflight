@@ -1686,6 +1686,91 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       Date.now = realNow;
     }
   });
+
+  it('averages efficiencyScore across today persisted sessions', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          { sessionId: 'a', efficiencyScore: 0.8 },
+          { sessionId: 'b', efficiencyScore: 0.6 },
+          // null efficiencyScore must be excluded from the average, not treated as 0.
+          { sessionId: 'c', efficiencyScore: null },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { avgEfficiencyScore: number | null };
+    // (0.8 + 0.6) / 2 = 0.7
+    expect(parsed.avgEfficiencyScore).toBeCloseTo(0.7);
+  });
+
+  it('folds in this process own live efficiency score when its session is not yet persisted', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [{ sessionId: 'other', efficiencyScore: 0.5 }],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: { getMetrics: () => ({ sessionId: 'live-1' }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['sessionTracker'],
+      efficiencyScorer: { getSessionAverage: () => ({ score: 0.9 }) },
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { avgEfficiencyScore: number | null };
+    // (0.5 + 0.9) / 2 = 0.7 — 'live-1' isn't in loadTodaySessions(), so its live score is added.
+    expect(parsed.avgEfficiencyScore).toBeCloseTo(0.7);
+  });
+
+  it('does not double-count the live score when its session is already persisted', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [{ sessionId: 'live-1', efficiencyScore: 0.5 }],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: { getMetrics: () => ({ sessionId: 'live-1' }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['sessionTracker'],
+      efficiencyScorer: { getSessionAverage: () => ({ score: 0.9 }) },
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { avgEfficiencyScore: number | null };
+    // Only the persisted 0.5 counts — 'live-1' is already in loadTodaySessions(), so its
+    // live 0.9 must NOT be added again.
+    expect(parsed.avgEfficiencyScore).toBeCloseTo(0.5);
+  });
+
+  it('returns null avgEfficiencyScore when no session has a score yet', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { avgEfficiencyScore: number | null };
+    expect(parsed.avgEfficiencyScore).toBeNull();
+  });
 });
 
 describe('api-handler GET /api/workflows', () => {

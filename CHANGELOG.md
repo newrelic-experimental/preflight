@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.9] - 2026-07-30
+
+### Fixed
+
+- **The Today dashboard's efficiency KPI only reflected whichever process happened to be serving the dashboard** — with multiple Claude Code sessions running concurrently, only one process's own in-memory efficiency tracker ever backed the "efficiency" figure, silently excluding coding productivity data from every other session. It's now aggregated across today's sessions, the same way the other Today KPIs (activity, concurrency, spend) already were.
+- **The anti-pattern detail banner could show a blank pattern name and file even when the flags count above it was non-zero** — the banner only checked the dashboard-serving process's own live anti-pattern detections, so when a pattern was detected in a different session that persisted its own state to disk, the banner had no way to retrieve it and remained blank. It now falls back to already-persisted anti-pattern data from each session, the same way the efficiency KPI now does.
+
 ## [1.14.8] - 2026-07-30
 
 ### Fixed

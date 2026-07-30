@@ -82,13 +82,6 @@ interface CostApiResponse {
 }
 
 // Minimal view of the /api/session/current payload.
-interface SessionCurrentApiResponse {
-  readonly efficiencyScore?: number | null;
-  readonly toolSuccessRate?: number | null;
-  readonly toolErrorCount?: number;
-  readonly toolCallCount?: number;
-}
-
 interface SessionAntiPattern {
   readonly type: string;
   readonly count?: number;
@@ -157,16 +150,6 @@ export function Today(): JSX.Element {
     queryKey: qk.cost,
     queryFn: fetchCost,
   });
-  // The dashboard owner's session_current is arbitrary across
-  // N concurrent sessions, so we keep the call only for the efficiencyScore
-  // KPI (which is local to whichever MCP holds the dashboard). All other
-  // KPIs now derive from the aggregate endpoint, which fans out across every
-  // per-session buffer + persisted session.
-  const { data: sessionCurrent } = useQuery<SessionCurrentApiResponse>({
-    queryKey: qk.sessionCurrent,
-    queryFn: fetchSessionCurrent,
-    refetchInterval: 10_000,
-  });
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: fetchTodayAggregate,
@@ -213,6 +196,15 @@ export function Today(): JSX.Element {
     [todaySessions],
   );
   const hourlySpend = useMemo(() => buildHourlySpend(todaySessions ?? []), [todaySessions]);
+
+  // Fallback source for the anti-pattern detail banner when neither the live
+  // SSE store nor this process's own /api/anti-patterns has anything — the
+  // pattern may have been detected by a different process, but its persisted
+  // session record (already fetched for the KPI strip) still has it.
+  const persistedAntiPatterns = useMemo(
+    () => (todaySessions ?? []).flatMap((s) => s.antiPatterns ?? []),
+    [todaySessions],
+  );
 
   // Prefer the cross-session aggregate when present; fall
   // back to the legacy persisted-sessions math during the loading window so
@@ -266,7 +258,7 @@ export function Today(): JSX.Element {
     return () => clearInterval(id);
   }, []);
 
-  const effScore = sessionCurrent?.efficiencyScore ?? null;
+  const effScore = aggregate?.avgEfficiencyScore ?? null;
   const effDisplay =
     effScore !== null && Number.isFinite(effScore) ? `${Math.round(effScore * 100)}%` : '—';
   const effSub =
@@ -412,7 +404,9 @@ export function Today(): JSX.Element {
           </AnimatedCard>
 
           {flagsCount > 0 &&
-            (antiPatterns.length > 0 || (apiAntiPatterns && apiAntiPatterns.length > 0)) && (
+            (antiPatterns.length > 0 ||
+              (apiAntiPatterns && apiAntiPatterns.length > 0) ||
+              persistedAntiPatterns.length > 0) && (
               <AnimatedCard index={2} className="mb-3">
                 <Card padding="sm" tone="warning" className="text-xs">
                   {antiPatterns.length > 0 ? (
@@ -449,6 +443,28 @@ export function Today(): JSX.Element {
                       </span>
                       <code className="bg-surface-5 px-1 rounded">
                         {apiAntiPatterns[0].file ?? apiAntiPatterns[0].command ?? 'unknown'}
+                      </code>
+                    </>
+                  ) : persistedAntiPatterns.length > 0 ? (
+                    <>
+                      <Pill tone="warning" size="sm" className="mr-2">
+                        {persistedAntiPatterns[0].type}
+                      </Pill>
+                      <span className="text-ink-muted">— </span>
+                      <span>
+                        {persistedAntiPatterns[0].count ??
+                          persistedAntiPatterns[0].iterations ??
+                          persistedAntiPatterns[0].readCount ??
+                          persistedAntiPatterns[0].repeatCount ??
+                          persistedAntiPatterns[0].editCount ??
+                          persistedAntiPatterns[0].agentCount ??
+                          '?'}
+                        × on{' '}
+                      </span>
+                      <code className="bg-surface-5 px-1 rounded">
+                        {persistedAntiPatterns[0].file ??
+                          persistedAntiPatterns[0].command ??
+                          'unknown'}
                       </code>
                     </>
                   ) : null}
