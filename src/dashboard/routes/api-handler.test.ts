@@ -2020,6 +2020,34 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     for (const c of counts) expect(c).toBeLessThanOrEqual(bucketMax);
   });
 
+  it('includes a cross-midnight session (started yesterday, still active) via loadSessionsOverlappingToday', async () => {
+    // Session started 10min before local midnight and is still active 5min
+    // after — loadTodaySessions() would exclude it (filename date = yesterday),
+    // but loadSessionsOverlappingToday() must pick it up so its today-portion
+    // still counts toward concurrency.
+    const crossMidnightSessions = [{ sessionId: 'cross-midnight', timeline: makeTimeline(-10, 5) }];
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => crossMidnightSessions,
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // The session is active at 00:00 (bucket 0) regardless of its 00:00-before start.
+    expect(result.buckets[0].count).toBe(1);
+    const maxBucket = Math.max(...result.buckets.map((b: { count: number }) => b.count));
+    expect(maxBucket).toBe(1);
+  });
+
   it("counts a live session's buffered activity as discrete 3-minute windows, not a continuous span to now", async () => {
     // A live session's not-yet-persisted activity comes from the tool-call
     // buffer. Each cluster of activity is a 3-minute window — an idle gap
@@ -3664,6 +3692,42 @@ describe('api-handler GET /api/activity-heatmap', () => {
     const result = JSON.parse(body());
     // Both events land in bucket 0 (00:00-00:15) → count 2.
     expect(result.buckets[0]).toBe(2);
+  });
+
+  it('includes a cross-midnight session (started yesterday, still active) via loadSessionsOverlappingToday', async () => {
+    const now = Date.now();
+    const startMs = new Date(now);
+    startMs.setHours(0, 0, 0, 0);
+    const start = startMs.getTime();
+    const handler = createApiHandler({
+      toolCallBuffer: { getRecords: () => [] },
+      sessionStore: {
+        // Excluded by loadTodaySessions() — its filename date is yesterday's.
+        loadTodaySessions: () => [],
+        // loadSessionsOverlappingToday() must supply it instead. Its timeline
+        // has one entry before local midnight (must be excluded from the
+        // bucket count) and one entry after (must be included).
+        loadSessionsOverlappingToday: () => [
+          {
+            sessionId: 'cross-midnight',
+            timeline: [
+              { timestamp: start - 60_000, toolName: 'Read', success: true },
+              { timestamp: start + 61_000, toolName: 'Edit', success: true },
+            ],
+          },
+        ],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/activity-heatmap?view=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Only the post-midnight entry counts.
+    expect(result.buckets[0]).toBe(1);
   });
 
   it('returns view=history days aggregated by UTC date, respecting the weeks param', async () => {

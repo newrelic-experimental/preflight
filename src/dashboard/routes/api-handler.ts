@@ -1605,10 +1605,19 @@ export function createApiHandler(
         allSessions as readonly SessionActivityLike[],
       );
 
-      // loadTodaySessions() already excludes synthetic session ids, so the
-      // chart buckets below agree with the session list shown alongside the
-      // chart without re-filtering here.
-      const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
+      // Prefer loadSessionsOverlappingToday() so a session that started
+      // yesterday and is still running isn't invisible to the chart —
+      // loadTodaySessions() filters by filename date (= start date) and
+      // would otherwise silently drop it. Downstream window-building already
+      // clamps each session's activity to [startTimestamp, dayEnd], so widening
+      // the input set here can't leak yesterday's activity into today's buckets.
+      // loadAllSessions()/loadTodaySessions() already exclude synthetic session
+      // ids, so the chart buckets below agree with the session list shown
+      // alongside the chart without re-filtering here.
+      const todaySessions =
+        deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+        deps.sessionStore?.loadTodaySessions() ??
+        [];
 
       // 96 × 15-minute fixed-grid buckets covering today (local midnight →
       // local midnight + 24h). Each bucket holds the peak concurrent
@@ -1674,7 +1683,16 @@ export function createApiHandler(
           }
         }
 
-        const todaySessions = deps.sessionStore?.loadTodaySessions() ?? [];
+        // Prefer loadSessionsOverlappingToday() so a session that started
+        // yesterday and is still running isn't invisible here —
+        // loadTodaySessions() filters by filename date (= start date) and
+        // would otherwise silently drop it. The `entry.timestamp >= startMs`
+        // check just below already excludes that session's yesterday-side
+        // entries, so widening the input set can't double-count anything.
+        const todaySessions =
+          deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+          deps.sessionStore?.loadTodaySessions() ??
+          [];
         for (const s of todaySessions) {
           const session = s as { timeline?: readonly { timestamp: number }[] };
           if (session.timeline) {
