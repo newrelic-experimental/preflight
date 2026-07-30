@@ -7,7 +7,10 @@ import {
   todayPortionRatio,
 } from '../../lib/date.js';
 import { redactSensitive, normalizeDeveloperName } from '../../config.js';
-import { isUnscopedAggregatorSessionId } from '../../hooks/session-resolver.js';
+import {
+  isSyntheticSessionId,
+  isUnscopedAggregatorSessionId,
+} from '../../hooks/session-resolver.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import type { McpServerConfig } from '../../config.js';
@@ -35,10 +38,10 @@ import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.
 import type { QualityProxyMetrics } from '../../metrics/quality-proxy-tracker.js';
 import type { ToolSelectionMetrics } from '../../metrics/tool-selection-scorer.js';
 import type { ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
+import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ContextTrackerMetrics } from '../../metrics/context-tracker.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
-import { isSyntheticSessionId } from '../../hooks/session-resolver.js';
 // ---------------------------------------------------------------------------
 // Aggregate quality-proxy metrics from today's persisted sessions so the
 // panel isn't empty on page refresh (when the live tracker has no signals).
@@ -906,6 +909,27 @@ function buildReplayResponse(
   return null;
 }
 
+// Unions this process's own LiveSessionRegistry with session IDs seen recently in any
+// process's undrained buffer (peekAllBuffers() is read-only and covers every --stdio
+// process, not just this one). A session actively running in a different process never
+// touches this process's LiveSessionRegistry, so without this union it never shows up as
+// "live" to a dashboard served by a different process. "Recently" uses the registry's own
+// staleness window so both sources agree on what counts as live.
+export function computeCrossProcessLiveSessionIds(deps: ApiHandlerDeps): string[] {
+  const ids = new Set<string>(deps.liveSessionRegistry?.getLiveSessions() ?? []);
+  const now = Date.now();
+  const peeked = deps.localStore?.peekAllBuffers() ?? [];
+  for (const ev of peeked) {
+    const sid = (ev as { sessionId?: unknown }).sessionId;
+    if (typeof sid !== 'string' || sid.length === 0) continue;
+    if (isSyntheticSessionId(sid)) continue;
+    const ts = (ev as { timestamp?: unknown }).timestamp;
+    if (typeof ts !== 'number') continue;
+    if (now - ts <= DEFAULT_STALE_THRESHOLD_MS) ids.add(sid);
+  }
+  return Array.from(ids);
+}
+
 export function createApiHandler(
   deps: ApiHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -1045,12 +1069,12 @@ export function createApiHandler(
   // yet, startTime defaults to lastActivity (or now() if both are missing).
   routes.set('GET /api/sessions/live', (_req, res) => {
     if (!deps.liveSessionRegistry) return unavailable(res, 'liveSessionRegistry');
-    // getLiveSessions() already excludes synthetic session identities used by
-    // --local / proxy modes (`local-<ts>`, `proxy-<ts>`, `pending-<ts>`) —
-    // MCP-internal bookkeeping IDs, not real Claude Code sessions, so they
-    // shouldn't appear as clickable rows in the dashboard's live-sessions
-    // selector.
-    const ids = deps.liveSessionRegistry.getLiveSessions();
+    // computeCrossProcessLiveSessionIds() unions the registry and buffer-derived
+    // session IDs, filtering out synthetic session identities (`local-<ts>`,
+    // `proxy-<ts>`, `pending-<ts>`) — MCP-internal bookkeeping IDs, not real
+    // Claude Code sessions, so they shouldn't appear as clickable rows in the
+    // dashboard's live-sessions selector.
+    const ids = computeCrossProcessLiveSessionIds(deps);
     const records = deps.toolCallBuffer?.getRecords() ?? [];
     const perSession = new Map<string, { firstTs: number; lastTs: number }>();
     for (const r of records) {
@@ -1670,7 +1694,7 @@ export function createApiHandler(
       const historicalPeak = buckets.reduce((max, b) => Math.max(max, b.count), 0);
 
       jsonOk(res, {
-        current: deps.concurrencyTracker.getConcurrentCount(),
+        current: computeCrossProcessLiveSessionIds(deps).length,
         peak: historicalPeak,
         allTimePeak: Math.max(livePeak, historicalPeak, allTimePeak),
         bucketSizeMs: CONCURRENCY_BUCKET_SIZE_MS,

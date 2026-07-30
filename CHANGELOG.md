@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.10] - 2026-07-30
+
+### Fixed
+
+- **The live-sessions list and the "current concurrency" count only saw sessions that the dashboard-serving process itself had handled** — with multiple Claude Code sessions running against different concurrent processes, a session live in another process never appeared in the Today selector or counted toward current concurrency, even though its activity was visible on disk. Both now also check every process's pending activity buffer, so a session shows up as live regardless of which process is serving the dashboard.
+
 ## [1.14.9] - 2026-07-30
 
 ### Fixed

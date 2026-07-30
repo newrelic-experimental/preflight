@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { createApiHandler } from './api-handler.js';
+import { createApiHandler, computeCrossProcessLiveSessionIds } from './api-handler.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
@@ -1316,6 +1316,32 @@ describe('api-handler GET /api/sessions/live', () => {
     expect(parsed[0]!.lastActivity).toBe(9_000_000);
   });
 
+  it('includes a session seen only via peekAllBuffers, not touched by this process', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      liveSessionRegistry: {
+        getLiveSessions: () => ['owned-by-this-process'],
+        getSessionName: () => null,
+        getLastActivity: () => now,
+      },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'owned-by-other-process', timestamp: now - 1_000 },
+        ],
+      },
+      toolCallBuffer: { getRecords: () => [] },
+    });
+    const req = { method: 'GET', url: '/api/sessions/live' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<{ sessionId: string }>;
+    expect(parsed.map((p) => p.sessionId).sort()).toEqual([
+      'owned-by-other-process',
+      'owned-by-this-process',
+    ]);
+  });
+
   it('returns 503 when liveSessionRegistry is missing', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/sessions/live' } as IncomingMessage;
@@ -2482,6 +2508,35 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     const result = JSON.parse(body());
     expect(result.dailyPeaks).toHaveLength(3);
     expect(result.dailyPeaks[2].peak).toBe(2);
+  });
+
+  it('counts a session seen only via peekAllBuffers in the current field', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: {
+        getLiveSessions: () => ['owned-by-this-process'],
+        getSessionName: () => null,
+        getLastActivity: () => now,
+      },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'owned-by-other-process', timestamp: now - 1_000 },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as { current: number };
+    expect(result.current).toBe(2);
   });
 });
 
@@ -4049,5 +4104,64 @@ describe('api-handler GET /api/workflows/:runId', () => {
     const { res, status } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(404);
+  });
+});
+
+describe('computeCrossProcessLiveSessionIds', () => {
+  it('unions registry-live ids with recent buffer-only ids', () => {
+    const now = Date.now();
+    const ids = computeCrossProcessLiveSessionIds({
+      liveSessionRegistry: { getLiveSessions: () => ['from-registry'], getSessionName: () => null },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'from-buffer-only', timestamp: now - 1_000 },
+        ],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids.sort()).toEqual(['from-buffer-only', 'from-registry']);
+  });
+
+  it('excludes buffer ids older than the staleness threshold', () => {
+    const now = Date.now();
+    const ids = computeCrossProcessLiveSessionIds({
+      liveSessionRegistry: { getLiveSessions: () => [], getSessionName: () => null },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'stale', timestamp: now - 200_000 },
+          { mode: 'post', sessionId: 'fresh', timestamp: now - 1_000 },
+        ],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual(['fresh']);
+  });
+
+  it('excludes synthetic session ids seen only via the buffer', () => {
+    const now = Date.now();
+    const ids = computeCrossProcessLiveSessionIds({
+      liveSessionRegistry: { getLiveSessions: () => [], getSessionName: () => null },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'local-1730000000000', timestamp: now - 1_000 },
+          { mode: 'post', sessionId: 'real-session', timestamp: now - 1_000 },
+        ],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual(['real-session']);
+  });
+
+  it('dedups an id present in both the registry and the buffer', () => {
+    const now = Date.now();
+    const ids = computeCrossProcessLiveSessionIds({
+      liveSessionRegistry: { getLiveSessions: () => ['shared'], getSessionName: () => null },
+      localStore: {
+        peekAllBuffers: () => [{ mode: 'post', sessionId: 'shared', timestamp: now - 1_000 }],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual(['shared']);
+  });
+
+  it('returns an empty array when neither dependency is available', () => {
+    const ids = computeCrossProcessLiveSessionIds({} as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual([]);
   });
 });

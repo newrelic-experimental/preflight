@@ -1,4 +1,4 @@
-import { LiveSessionRegistry } from './live-session-registry.js';
+import { LiveSessionRegistry, DEFAULT_STALE_THRESHOLD_MS } from './live-session-registry.js';
 
 describe('LiveSessionRegistry', () => {
   beforeEach(() => {
@@ -101,6 +101,10 @@ describe('LiveSessionRegistry', () => {
     reg.reset();
     expect(reg.getLiveSessions()).toEqual([]);
     expect(reg.isLive('sess-a')).toBe(false);
+  });
+
+  it('exports DEFAULT_STALE_THRESHOLD_MS matching the constructor default', () => {
+    expect(DEFAULT_STALE_THRESHOLD_MS).toBe(180_000);
   });
 
   describe('concurrency tracking', () => {

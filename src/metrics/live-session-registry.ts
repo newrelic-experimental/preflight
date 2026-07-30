@@ -6,7 +6,7 @@
 import { basename } from 'node:path';
 import { isSyntheticSessionId } from '../hooks/session-resolver.js';
 
-const DEFAULT_STALE_THRESHOLD_MS = 180_000; // 3 minutes
+export const DEFAULT_STALE_THRESHOLD_MS = 180_000; // 3 minutes
 const MAX_CONCURRENCY_SAMPLES = 2880; // 24h at 30s intervals
 const SAMPLE_INTERVAL_MS = 30_000;
 
