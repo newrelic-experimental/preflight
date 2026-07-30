@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.7] - 2026-07-30
+
+### Fixed
+
+- **A `--local` dashboard process running alongside active `--stdio` sessions could silently steal a portion of a session's tool-call and token events.** Both processes poll for new events on the same per-session buffer file; `--local`'s cross-session drain had no way to tell that a `--stdio` process already owned and was draining that exact file itself. Whichever side won a given poll cycle kept the events, and the other side saw nothing, with no error on either side — silently undercounting that session's own stats and cost tracking, and, for a session configured for cloud telemetry, dropping those events from New Relic entirely. `--local` now skips any per-session buffer that has a live `--stdio` owner.
+- **Opting a `--local` process into its own subagent watcher (`NR_AI_WATCHER_MODE=local`) while a `--stdio` sibling was also running caused both processes to redundantly tail the same subagent transcripts and race over the same cursor files.** The unfiltered watcher now skips any session that already has a live `--stdio` owner, the same way the buffer-drain fix above does.
+
 ## [1.14.6] - 2026-07-30
 
 ### Fixed

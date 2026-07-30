@@ -551,6 +551,37 @@ describe('LocalStore', () => {
       const all = drainAll.drainAllBuffers();
       expect(all.map((e) => e.tool)).toEqual(['real']);
     });
+
+    // Same DEAD_PID rationale as the gcOrphanBuffers() describe block below:
+    // 9_999_999 is above both Linux's and macOS's pid_max ceilings.
+    const DEAD_PID = 9_999_999;
+
+    it("skips a per-session buffer whose owner heartbeat is alive, so it does not race that --stdio process's own scoped drainBuffer()", () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const owned = new LocalStore(tmpDir, 'sess-owned');
+      owned.appendToBuffer(makeEvent({ tool: 'owned-event' }));
+      owned.writeHeartbeat(process.pid);
+      new LocalStore(tmpDir, 'sess-orphan').appendToBuffer(makeEvent({ tool: 'orphan-event' }));
+
+      const drainAll = new LocalStore(tmpDir);
+      const all = drainAll.drainAllBuffers();
+
+      // Only the orphaned session's event comes back — the live-owned
+      // session's buffer is left untouched for its own process to drain.
+      expect(all.map((e) => e.tool)).toEqual(['orphan-event']);
+      expect(existsSync(resolve(tmpDir, 'buffer-sess-owned.jsonl'))).toBe(true);
+      expect(owned.drainBuffer().map((e) => e.tool)).toEqual(['owned-event']);
+    });
+
+    it('still drains a per-session buffer whose heartbeat PID is dead', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      new LocalStore(tmpDir, 'sess-dead-owner').appendToBuffer(makeEvent({ tool: 'dead-owner' }));
+      writeFileSync(resolve(tmpDir, 'active-sess-dead-owner.pid'), String(DEAD_PID));
+
+      const drainAll = new LocalStore(tmpDir);
+      const all = drainAll.drainAllBuffers();
+      expect(all.map((e) => e.tool)).toEqual(['dead-owner']);
+    });
   });
 
   describe('migrateLegacyBuffer()', () => {

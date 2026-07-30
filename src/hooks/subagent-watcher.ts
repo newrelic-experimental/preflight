@@ -216,6 +216,7 @@ export class SubagentWatcher {
   private readonly discoveryHours: number;
   private readonly parentSessionFilter: string | null;
   private readonly costSelfCheck: SubagentWatcherOptions['costSelfCheck'];
+  private readonly localStore: LocalStore | undefined;
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private healthIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -271,6 +272,7 @@ export class SubagentWatcher {
       (Number.isFinite(envHours) && envHours > 0 ? envHours : DEFAULT_DISCOVERY_HOURS);
     this.parentSessionFilter = options.parentSessionId ?? null;
     this.costSelfCheck = options.costSelfCheck;
+    this.localStore = options.localStore;
     this.loadFingerprints();
   }
 
@@ -358,6 +360,17 @@ export class SubagentWatcher {
     if (!existsSync(this.projectsDir)) return out;
     const cutoffMs = Date.now() - this.discoveryHours * 60 * 60 * 1000;
 
+    // Unfiltered (--local) mode discovers every session on disk. A session
+    // with a live --stdio heartbeat already has its own scoped SubagentWatcher
+    // tailing these exact files — discovering it here too would race that
+    // watcher's cursor reads/writes over the same `.subagent-pos-*` files with
+    // no coordination between the two processes. --stdio's own heartbeat is
+    // never written until its watcher is about to start (see index.ts), so
+    // this only ever excludes sessions that already have their own owner.
+    const liveOwnedSessionIds = this.parentSessionFilter
+      ? null
+      : (this.localStore?.getActiveSessionIdsFromHeartbeats() ?? null);
+
     let projectEntries: string[];
     try {
       projectEntries = readdirSync(this.projectsDir);
@@ -390,6 +403,7 @@ export class SubagentWatcher {
       for (const sessionId of sessionEntries) {
         if (!SESSION_ID_RE.test(sessionId)) continue;
         if (this.parentSessionFilter && sessionId !== this.parentSessionFilter) continue;
+        if (liveOwnedSessionIds?.has(sessionId)) continue;
         const sessionDir = join(projectPath, sessionId);
         const subDir = join(sessionDir, 'subagents');
         if (!existsSync(subDir)) continue;

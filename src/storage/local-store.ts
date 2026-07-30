@@ -177,6 +177,15 @@ export class LocalStore {
    * sessions' events. Each file is drained atomically (rename-then-read) so a
    * concurrent writer for that session can't lose events; orphan files (whose
    * MCP isn't running) are picked up too.
+   *
+   * A per-session buffer whose `active-<sessionId>.pid` heartbeat names a
+   * live PID is skipped: that session's own `--stdio` process is already
+   * polling and draining that exact file via its own scoped drainBuffer() on
+   * the same cadence. Draining it here too would race that rename-then-read
+   * against the owner's — whichever process wins a given poll cycle silently
+   * keeps the batch, and the loser sees nothing, with no error on either
+   * side. The owner's copy always wins fairly since this call skips the file
+   * outright rather than racing it.
    */
   drainAllBuffers(): HookEvent[] {
     const all: HookEvent[] = [];
@@ -193,12 +202,36 @@ export class LocalStore {
       // buffer.jsonl so a freshly-upgraded user's pre-existing events still flow.
       if (!name.endsWith('.jsonl')) continue;
       if (name !== 'buffer.jsonl' && !name.startsWith('buffer-')) continue;
+
+      if (name !== 'buffer.jsonl' && this.hasLiveOwner(name)) continue;
+
       const drained = this.drainPath(resolve(this.storagePath, name));
       if (drained.length > 0) {
         for (const event of drained) all.push(event);
       }
     }
     return all;
+  }
+
+  /**
+   * True when `buffer-<sessionId>.jsonl`'s matching `active-<sessionId>.pid`
+   * heartbeat names a currently-alive PID. `bufferFileName` must already be
+   * confirmed to start with `buffer-` and end with `.jsonl` (checked by the
+   * caller) and not be the legacy shared `buffer.jsonl`.
+   */
+  private hasLiveOwner(bufferFileName: string): boolean {
+    const sessionId = bufferFileName.slice('buffer-'.length, -'.jsonl'.length);
+    if (!SESSION_ID_RE.test(sessionId)) return false;
+    const heartbeatPath = resolve(this.storagePath, `active-${sessionId}.pid`);
+    if (!existsSync(heartbeatPath)) return false;
+    try {
+      const pid = Number.parseInt(readFileSync(heartbeatPath, 'utf-8').trim(), 10);
+      return isPidAlive(pid);
+    } catch {
+      // Unreadable heartbeat — treat as not-live; gcOrphanBuffers() cleans up
+      // a genuinely dead/corrupt heartbeat file separately.
+      return false;
+    }
   }
 
   /**

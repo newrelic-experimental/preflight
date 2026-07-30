@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SubagentWatcher, buildSubagentCursorPath } from './subagent-watcher.js';
+import { LocalStore } from '../storage/local-store.js';
 
 const STDERR_WRITE = process.stderr.write;
 
@@ -207,6 +208,78 @@ describe('SubagentWatcher', () => {
           .map((l) => JSON.parse(l))
           .filter((l) => l.mode === 'subagent_token');
     expect(tokenLines).toHaveLength(0);
+  });
+
+  describe('unfiltered discovery (--local mode, no parentSessionId)', () => {
+    // High PID sentinel — see local-store.test.ts's gcOrphanBuffers() block
+    // for the same rationale (well above Linux/macOS pid_max ceilings).
+    const DEAD_PID = 9_999_999;
+
+    it('discovers files across every session when no parentSessionId filter is set', () => {
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      const watcher = new SubagentWatcher({ storagePath, projectsDir });
+      watcher.poll();
+      const buf = readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8');
+      const tokenLines = buf
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.mode === 'subagent_token');
+      expect(tokenLines).toHaveLength(1);
+    });
+
+    it("skips a session whose --stdio owner is alive, so it doesn't race that session's own scoped watcher over the same cursor file", () => {
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      // A live heartbeat means a --stdio process already owns and tails this
+      // session's subagent transcripts with its own scoped SubagentWatcher.
+      writeFileSync(join(storagePath, `active-${PARENT_SESSION}.pid`), String(process.pid));
+
+      const watcher = new SubagentWatcher({
+        storagePath,
+        projectsDir,
+        localStore: new LocalStore(storagePath),
+      });
+      watcher.poll();
+
+      const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+      expect(existsSync(bufPath)).toBe(false);
+    });
+
+    it('still discovers a session whose heartbeat PID is dead (orphaned session)', () => {
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      writeFileSync(join(storagePath, `active-${PARENT_SESSION}.pid`), String(DEAD_PID));
+
+      const watcher = new SubagentWatcher({
+        storagePath,
+        projectsDir,
+        localStore: new LocalStore(storagePath),
+      });
+      watcher.poll();
+
+      const buf = readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8');
+      const tokenLines = buf
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.mode === 'subagent_token');
+      expect(tokenLines).toHaveLength(1);
+    });
+
+    it('discovers every session when no localStore is provided (no regression for callers that omit it)', () => {
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      writeFileSync(join(storagePath, `active-${PARENT_SESSION}.pid`), String(process.pid));
+
+      const watcher = new SubagentWatcher({ storagePath, projectsDir });
+      watcher.poll();
+
+      const buf = readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8');
+      const tokenLines = buf
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.mode === 'subagent_token');
+      expect(tokenLines).toHaveLength(1);
+    });
   });
 
   it('rejects synthetic models', () => {

@@ -87,6 +87,22 @@ If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are s
 
 ---
 
+## Running `--local` Standalone (No `--stdio` Session)
+
+The subagent/workflow transcript watchers only auto-start under `--stdio` by default (`NR_AI_WATCHER_MODE=stdio`) — a `--local` dashboard process doesn't run its own copy, since a `--stdio` session normally already covers the same data, scoped to itself, and the Today view's spend figures already aggregate every session's _persisted_ totals regardless of which process is currently serving the dashboard. If `watcherActive` is `false` for this reason, the dashboard shows a banner explaining it (distinct from the `NR_AI_ENABLE_SUBAGENT_WATCHER=0` banner, which is an explicit opt-out rather than this mode default).
+
+| Setting                         | What it does                                                                                             | Default  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- | -------- |
+| `NR_AI_WATCHER_MODE`            | Which side runs the subagent/workflow transcript watchers — `"stdio"` or `"local"`.                      | `stdio`  |
+| `NR_AI_ENABLE_SUBAGENT_WATCHER` | Set to `0` to disable subagent cost tracking entirely (whichever side owns it per `NR_AI_WATCHER_MODE`). | enabled  |
+| `NR_AI_ENABLE_WORKFLOW_WATCHER` | Set to `1` to enable script-workflow tracking (whichever side owns it per `NR_AI_WATCHER_MODE`).         | disabled |
+
+**When to set `NR_AI_WATCHER_MODE=local` yourself:** if your `--local` process never has a `--stdio` sibling to defer to — a fully standalone deployment (container, systemd unit, or any platform with no MCP client to auto-launch `--stdio`) — nothing else will ever track subagent cost for it. Setting this makes the `--local` process discover and tail every session's subagent transcripts itself.
+
+This is safe to combine with concurrently-running `--stdio` sessions: a `--local` process running with `NR_AI_WATCHER_MODE=local` skips any session that already has a live `--stdio` heartbeat, so it only picks up sessions with no other owner rather than redundantly re-tailing (and racing over the same cursor files as) a session's own scoped watcher.
+
+---
+
 ## Local Alerts
 
 Local-mode users get threshold alerting evaluated in-process, with no New Relic dependency. The engine reads rules from `~/.newrelic-preflight/alerts/rules.json`, evaluates them on a fixed cadence (default 30s), and surfaces firing/clearing events through the embedded dashboard.

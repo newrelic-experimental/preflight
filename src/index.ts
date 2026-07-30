@@ -1925,6 +1925,9 @@ async function main(): Promise<void> {
         activeSubagentWatcher = new SubagentWatcher({
           storagePath: config!.storagePath,
           parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          // Only meaningful when unfiltered (--local) — lets discoverFiles()
+          // skip sessions that already have a live --stdio owner tailing them.
+          localStore,
           // Runtime cost-self-check: a drift > 5% surfaces as an
           // `AiObservabilityHealth { event: 'cost_self_check' }` event. We
           // compare like-with-like from two INDEPENDENT code paths so a
