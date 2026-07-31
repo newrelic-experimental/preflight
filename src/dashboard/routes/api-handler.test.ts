@@ -2118,6 +2118,135 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.cacheHealth.totalCacheReadTokens).toBe(400);
     expect(parsed.cacheHealth.totalSavingsUsd).toBeCloseTo(0.02);
   });
+
+  it('sets forecastEndOfDayUsd (not null) from a live buffer timestamp when no session has been persisted yet', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'live-1', timestamp: startMs + 5_000, durationMs: 10 },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      totalCostUsd: number;
+      forecastEndOfDayUsd: number | null;
+    };
+    // No cost anywhere yet, so totalCostUsd is 0 and buildCostForecastFromInputs
+    // takes its deterministic "nothing spent yet" branch (forecastEndOfDayUsd: 0,
+    // not null). Asserting it's 0 rather than null proves a `dailyFirstActivityMs`
+    // anchor WAS established from the buffer event — if it hadn't been, the whole
+    // forecast computation would have been skipped and this would be null.
+    expect(parsed.totalCostUsd).toBe(0);
+    expect(parsed.forecastEndOfDayUsd).toBe(0);
+  });
+
+  it("anchors the forecast to a cross-midnight session's first TODAY-scoped timeline entry, not its startTime", async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    // Started 1h before midnight, still active. loadTodaySessions() (file-date
+    // = start date = yesterday) excludes it entirely; only
+    // loadSessionsOverlappingToday() sees it. 1 of its 4 timeline entries is
+    // before midnight, 3 are after -> todayPortionRatio = 0.75 -> today's cost
+    // contribution is 10 * 0.75 = 7.5.
+    const crossMidnightSession = {
+      sessionId: 'cross-midnight-1',
+      startTime: startMs - 60 * 60 * 1000,
+      endTime: startMs + 10_000,
+      estimatedCostUsd: 10,
+      timeline: [
+        { timestamp: startMs - 30 * 60 * 1000 },
+        { timestamp: startMs + 1_000 },
+        { timestamp: startMs + 2_000 },
+        { timestamp: startMs + 3_000 },
+      ],
+    };
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [crossMidnightSession],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      totalCostUsd: number;
+      forecastEndOfDayUsd: number | null;
+    };
+    expect(parsed.totalCostUsd).toBeCloseTo(7.5, 3);
+    // Must not be null: the session has real spend today, so a null forecast
+    // here means dailyFirstActivityMs was never anchored for it.
+    expect(parsed.forecastEndOfDayUsd).not.toBeNull();
+    // effectiveBaseUsd is totalCostUsd and the rate is >= 0, so the forecast
+    // can never be less than the amount already spent today.
+    expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+  });
+
+  it('returns forecastEndOfDayUsd null when there is no activity today from any source', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { forecastEndOfDayUsd: number | null };
+    expect(parsed.forecastEndOfDayUsd).toBeNull();
+  });
+
+  it("tops up dailyFirstActivityMs from this process's own CostTracker when neither the buffer nor persisted sessions have it", async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0 }),
+        getCostForDay: () => 9,
+        getFirstActivityMsForDay: () => Date.now() - 60_000,
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      totalCostUsd: number;
+      forecastEndOfDayUsd: number | null;
+    };
+    expect(parsed.totalCostUsd).toBeCloseTo(9, 3);
+    expect(parsed.forecastEndOfDayUsd).not.toBeNull();
+    expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+  });
 });
 
 describe('api-handler GET /api/workflows', () => {

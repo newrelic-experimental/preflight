@@ -145,7 +145,7 @@ export function Today(): JSX.Element {
     refetchInterval: 30_000,
   });
 
-  const { data: costApi, isPending: costPending } = useQuery<CostApiResponse>({
+  const { isPending: costPending } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
     queryFn: fetchCost,
   });
@@ -380,12 +380,7 @@ export function Today(): JSX.Element {
               forecastEod={
                 spendLoading
                   ? null
-                  : (cost?.forecastEodUsd ??
-                    (costApi?.forecast?.forecastEndOfDayUsd != null
-                      ? todayTotal +
-                        costApi.forecast.forecastEndOfDayUsd -
-                        (costApi.sessionTodayUsd ?? 0)
-                      : null))
+                  : (cost?.forecastEodUsd ?? aggregate?.forecastEndOfDayUsd ?? null)
               }
               hourlySpend={hourlySpend}
               subagentUsd={subagentUsd}

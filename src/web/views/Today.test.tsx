@@ -279,6 +279,28 @@ describe('Today view', () => {
     expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
   });
 
+  it('falls back to the cross-process aggregate forecast when the SSE cost push is unavailable', async () => {
+    useLiveStore.setState({ cost: null });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ totalCostUsd: 5, forecastEndOfDayUsd: 8 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('$8.00')).toBeInTheDocument());
+    // delta = 8 - 5 = 3
+    expect(screen.getByText(/\+\$3\.00/)).toBeInTheDocument();
+  });
+
   function stubObservabilityHealth(body: Record<string, unknown>): void {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.15] - 2026-07-31
+
+### Fixed
+
+- **The Today dashboard's "Forecast · End of Day" card only projected spend from whichever process happened to be serving the dashboard** — its burn-rate calculation came from that one process's own in-memory cost tracker, which is empty on a dashboard-only process with no coding activity of its own, so the forecast silently failed to account for spend happening in other concurrently running sessions. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are.
+
 ## [1.14.14] - 2026-07-31
 
 ### Fixed

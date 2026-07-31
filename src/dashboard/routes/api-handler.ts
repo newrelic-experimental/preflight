@@ -35,6 +35,7 @@ import type {
   LiveWorkflowRunDetail,
 } from '../subagent-timeline-store.js';
 import type { CostForecast } from '../../metrics/cost-forecast.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type { BudgetStatus } from '../../metrics/budget-tracker.js';
 import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
@@ -403,6 +404,11 @@ export interface ApiHandlerDeps {
     // Today-scoped subagent spend (matches the day-bucketed "spend today"),
     // distinct from getSubagentMetrics().subagentUsd which is session-cumulative.
     getSubagentCostForDay?: (dayKey: string) => number;
+    // Per-day first-activity timestamp — mirrors getCostForDay's per-day
+    // bucketing. Used by the aggregate route to anchor the cross-process
+    // EoD forecast's burn rate without diluting it across idle overnight
+    // hours (see CostForecastInputs.dailyFirstActivityMs's docstring).
+    getFirstActivityMsForDay?: (dayKey: string) => number | null;
     // Subagent (workflow-attributed) spend share, used for the Today
     // KPI + reconciliation banner.
     getSubagentMetrics?: () => {
@@ -616,6 +622,7 @@ interface TodayAggregatePayload {
   readonly workflowRunCount: number;
   readonly latency: AggregateLatencyMetrics;
   readonly cacheHealth: AggregateCacheHealth;
+  readonly forecastEndOfDayUsd: number | null;
 }
 
 // Build activity windows for every session with activity today, using the SAME
@@ -1216,6 +1223,10 @@ export function createApiHandler(
     let cacheCreationTokensSum = 0;
     let cacheInputTokensSum = 0;
     let cacheSavingsUsdSum = 0;
+    // Earliest today-scoped activity across every process/session, used to
+    // anchor the cross-process EoD forecast's burn rate. null means no
+    // activity has been observed today from any source below.
+    let dailyFirstActivityMs: number | null = null;
 
     // (1) live, undrained per-session buffer events
     const peeked = deps.localStore?.peekAllBuffers() ?? [];
@@ -1233,6 +1244,7 @@ export function createApiHandler(
     for (const ev of peeked) {
       const ts = typeof ev.timestamp === 'number' ? ev.timestamp : 0;
       if (ts < startMs) continue;
+      if (dailyFirstActivityMs === null || ts < dailyFirstActivityMs) dailyFirstActivityMs = ts;
       const sid = ev.sessionId;
       if (typeof sid === 'string' && sid.length > 0) {
         sessionsSeen.add(sid);
@@ -1302,6 +1314,9 @@ export function createApiHandler(
         for (const entry of session.timeline) {
           if (entry.timestamp < startMs) continue;
           if (bufferCutoff !== undefined && entry.timestamp >= bufferCutoff) continue;
+          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
+            dailyFirstActivityMs = entry.timestamp;
+          }
           toolCallCount++;
           const idx = Math.floor((entry.timestamp - startMs) / 60_000);
           if (idx >= 0 && idx < sparkline.length) sparkline[idx]++;
@@ -1350,6 +1365,20 @@ export function createApiHandler(
       // accurate (per-token-event) than pro-rating from a periodically-
       // persisted snapshot.
       if (s.sessionId === liveSid) continue;
+      // Cross-midnight sessions that started before today aren't covered by
+      // the todaySessions timeline walk above (loadTodaySessions() filters
+      // by file-date = start date, so a session that started yesterday never
+      // appears there). Derive its first-today activity from its OWN
+      // timeline, not `s.startTime` — using startTime here would reintroduce
+      // the exact dilution bug dailyFirstActivityMs exists to avoid.
+      if (s.startTime < startMs && Array.isArray(s.timeline)) {
+        for (const entry of s.timeline) {
+          if (entry.timestamp < startMs) continue;
+          if (dailyFirstActivityMs === null || entry.timestamp < dailyFirstActivityMs) {
+            dailyFirstActivityMs = entry.timestamp;
+          }
+        }
+      }
       totalCostUsd += todayPortionOfSessionCost(s, now);
       // (2b) subagent-only portion of the same session, same pro-rating.
       // This is what makes the "subagent spend" KPI cross-session: each
@@ -1419,6 +1448,15 @@ export function createApiHandler(
         const startedToday = typeof startedTs === 'number' && localDateKey(startedTs) === todayKey;
         if (typeof sessionCost === 'number' && startedToday) {
           totalCostUsd += sessionCost;
+        }
+      }
+      // This process's own first-activity-today, covering the gap between
+      // "drained from the buffer" and "persisted to a session file" — the
+      // same gap liveTodayUsd above already covers for cost.
+      const liveFirstActivityMs = deps.costTracker?.getFirstActivityMsForDay?.(todayKey) ?? null;
+      if (typeof liveFirstActivityMs === 'number') {
+        if (dailyFirstActivityMs === null || liveFirstActivityMs < dailyFirstActivityMs) {
+          dailyFirstActivityMs = liveFirstActivityMs;
         }
       }
       // This MCP's own live subagent-for-day figure — the (2b) loop above
@@ -1505,6 +1543,19 @@ export function createApiHandler(
       savingsUsd: cacheSavingsUsdSum,
     } satisfies CacheHealthTotals);
 
+    const forecast =
+      dailyFirstActivityMs !== null
+        ? buildCostForecastFromInputs(
+            {
+              sessionSpentUsd: totalCostUsd,
+              sessionStartMs: dailyFirstActivityMs,
+              dailySpentUsd: totalCostUsd,
+              dailyFirstActivityMs,
+            },
+            now,
+          )
+        : null;
+
     const payload = {
       toolCallCount,
       totalCostUsd: Math.round(totalCostUsd * 1000) / 1000,
@@ -1518,6 +1569,10 @@ export function createApiHandler(
       avgEfficiencyScore,
       latency: computeLatencyPercentiles(latencySamples),
       cacheHealth,
+      forecastEndOfDayUsd:
+        forecast?.forecastEndOfDayUsd != null
+          ? Math.round(forecast.forecastEndOfDayUsd * 1000) / 1000
+          : null,
     };
     aggregateCache = { bucket: currentBucket, payload };
     jsonOk(res, payload);

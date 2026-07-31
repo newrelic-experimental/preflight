@@ -145,6 +145,7 @@ export interface TodayAggregateResponse {
   readonly subagentTurnCount?: number;
   readonly workflowRunCount?: number;
   readonly avgEfficiencyScore?: number | null;
+  readonly forecastEndOfDayUsd?: number | null;
   readonly latency?: {
     readonly overall: LatencyPercentiles | null;
     readonly byTool: Readonly<Record<string, LatencyPercentiles | null>>;
