@@ -1423,6 +1423,101 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.sparkline.points.length).toBeGreaterThan(0);
   });
 
+  it('includes cross-session latency percentiles in the aggregate payload', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: {
+        peekAllBuffers: () => [
+          {
+            mode: 'post',
+            sessionId: 's1',
+            timestamp: startMs + 10_000,
+            durationMs: 100,
+            tool: 'Read',
+          },
+          {
+            mode: 'post',
+            sessionId: 's1',
+            timestamp: startMs + 20_000,
+            durationMs: 200,
+            tool: 'Edit',
+          },
+          {
+            mode: 'post',
+            sessionId: 's1',
+            timestamp: startMs + 30_000,
+            durationMs: 300,
+            tool: 'Read',
+          },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'persisted-1',
+            timeline: [
+              { timestamp: startMs + 40_000, durationMs: 400, toolName: 'Edit', success: true },
+              { timestamp: startMs + 50_000, durationMs: 500, toolName: 'Read', success: true },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      latency: {
+        overall: {
+          p50: number;
+          p95: number;
+          p99: number;
+          min: number;
+          max: number;
+          count: number;
+        } | null;
+        byTool: Record<
+          string,
+          { p50: number; p95: number; p99: number; min: number; max: number; count: number } | null
+        >;
+      };
+    };
+    // Overall sorted durations: [100, 200, 300, 400, 500], n=5
+    expect(parsed.latency.overall).toEqual({
+      p50: 300,
+      p95: 400,
+      p99: 400,
+      min: 100,
+      max: 500,
+      count: 5,
+    });
+    // Read: [100, 300, 500], n=3
+    expect(parsed.latency.byTool.Read).toEqual({
+      p50: 300,
+      p95: 300,
+      p99: 300,
+      min: 100,
+      max: 500,
+      count: 3,
+    });
+    // Edit: [200, 400], n=2
+    expect(parsed.latency.byTool.Edit).toEqual({
+      p50: 200,
+      p95: 200,
+      p99: 200,
+      min: 200,
+      max: 400,
+      count: 2,
+    });
+  });
+
   it('returns zeros when no data is present', async () => {
     const handler = createApiHandler({
       localStore: { peekAllBuffers: () => [] },

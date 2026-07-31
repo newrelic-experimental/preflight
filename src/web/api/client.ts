@@ -145,6 +145,10 @@ export interface TodayAggregateResponse {
   readonly subagentTurnCount?: number;
   readonly workflowRunCount?: number;
   readonly avgEfficiencyScore?: number | null;
+  readonly latency?: {
+    readonly overall: LatencyPercentiles | null;
+    readonly byTool: Readonly<Record<string, LatencyPercentiles | null>>;
+  };
 }
 
 // /api/sessions returns a heterogeneous mix of full persisted session

@@ -34,7 +34,6 @@ import {
   fetchToolSelectionScore,
   fetchConcurrency,
   fetchActivityHeatmap,
-  fetchLatency,
   fetchModelUsage,
   fetchLiveSessions,
   fetchTodayAggregate,
@@ -475,7 +474,7 @@ export function Today(): JSX.Element {
           <AnimatedCard index={3} className="grid grid-cols-3 gap-3 mb-3">
             <QualityProxyPanel />
             <ToolSelectionPanel />
-            <LatencyPanel />
+            <LatencyPanel aggregate={aggregate} />
             <ModelUsagePanel />
             <CacheHealthPanel />
           </AnimatedCard>
@@ -617,18 +616,12 @@ interface LatencyPercentiles {
   readonly count: number;
 }
 
-interface LatencyMetrics {
-  readonly overall: LatencyPercentiles | null;
-  readonly byTool: Readonly<Record<string, LatencyPercentiles | null>>;
-  readonly slowestCalls: ReadonlyArray<{ toolName: string; durationMs: number }>;
-}
-
-function LatencyPanel(): JSX.Element {
-  const { data } = useQuery<LatencyMetrics>({
-    queryKey: qk.latency,
-    queryFn: fetchLatency,
-    refetchInterval: QUALITY_REFETCH_MS,
-  });
+function LatencyPanel({
+  aggregate,
+}: {
+  aggregate: TodayAggregateResponse | undefined;
+}): JSX.Element {
+  const data = aggregate?.latency;
 
   // Guard `data.byTool` separately — the API can return `data` with `byTool`
   // missing (or `null`) when no tool calls have been recorded yet, and

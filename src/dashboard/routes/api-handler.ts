@@ -21,6 +21,8 @@ import {
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
+import { computeLatencyPercentiles } from './latency-percentiles.js';
+import type { LatencySample, AggregateLatencyMetrics } from './latency-percentiles.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
 import type { FullSessionSummary, SessionFileInfo } from '../../storage/session-store.js';
 import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
@@ -603,6 +605,7 @@ interface TodayAggregatePayload {
   readonly subagentUsd: number;
   readonly subagentTurnCount: number;
   readonly workflowRunCount: number;
+  readonly latency: AggregateLatencyMetrics;
 }
 
 // Build activity windows for every session with activity today, using the SAME
@@ -1165,6 +1168,10 @@ export function createApiHandler(
   // computation per bucket. TTL is short enough that the live-feel KPI
   // (sparkline tail, tool-call count) lags by at most ~5s.
   const AGGREGATE_TTL_MS = 5_000;
+  // Cap on latency samples collected per aggregate computation — bounds
+  // response size and per-request CPU on a very busy day. Matches the
+  // MAX_OVERALL_SAMPLES cap LatencyTracker itself already uses per-process.
+  const MAX_AGGREGATE_LATENCY_SAMPLES = 5_000;
   let aggregateCache: { bucket: number; payload: TodayAggregatePayload } | null = null;
 
   routes.set('GET /api/sessions/today/aggregate', (_req, res) => {
@@ -1191,6 +1198,10 @@ export function createApiHandler(
     let subagentUsd = 0;
     let antiPatternCount = 0;
     const sessionsSeen = new Set<string>();
+    const latencySamples: LatencySample[] = [];
+    const pushLatencySample = (sample: LatencySample): void => {
+      if (latencySamples.length < MAX_AGGREGATE_LATENCY_SAMPLES) latencySamples.push(sample);
+    };
 
     // (1) live, undrained per-session buffer events
     const peeked = deps.localStore?.peekAllBuffers() ?? [];
@@ -1225,6 +1236,10 @@ export function createApiHandler(
         if (dur !== null) {
           totalDurationMs += dur;
           durationSamples++;
+          pushLatencySample({
+            durationMs: dur,
+            toolName: typeof ev.tool === 'string' ? ev.tool : 'Unknown',
+          });
         }
       }
     }
@@ -1241,7 +1256,11 @@ export function createApiHandler(
         toolCallCount?: number;
         estimatedCostUsd?: number | null;
         antiPatterns?: ReadonlyArray<unknown>;
-        timeline?: ReadonlyArray<{ timestamp: number; durationMs: number | null }>;
+        timeline?: ReadonlyArray<{
+          timestamp: number;
+          durationMs: number | null;
+          toolName: string;
+        }>;
       };
       if (typeof session.sessionId === 'string') sessionsSeen.add(session.sessionId);
       // Cost is summed in a separate pass below so cross-midnight sessions
@@ -1270,6 +1289,7 @@ export function createApiHandler(
           if (entry.durationMs !== null) {
             totalDurationMs += entry.durationMs;
             durationSamples++;
+            pushLatencySample({ durationMs: entry.durationMs, toolName: entry.toolName });
           }
         }
       }
@@ -1427,6 +1447,7 @@ export function createApiHandler(
       subagentTurnCount,
       workflowRunCount,
       avgEfficiencyScore,
+      latency: computeLatencyPercentiles(latencySamples),
     };
     aggregateCache = { bucket: currentBucket, payload };
     jsonOk(res, payload);

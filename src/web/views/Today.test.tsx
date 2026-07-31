@@ -521,6 +521,49 @@ describe('Today view — aggregate endpoint', () => {
 
     await waitFor(() => expect(screen.getByText('85%')).toBeInTheDocument());
   });
+
+  it("renders the Latency panel from the aggregate endpoint's latency field, not /api/latency", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 1,
+            totalCostUsd: 0.01,
+            antiPatternCount: 0,
+            avgDurationMs: 100,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [1] },
+            latency: {
+              overall: { p50: 111, p95: 222, p99: 333, min: 50, max: 400, count: 5 },
+              byTool: {
+                Read: { p50: 90, p95: 444, p99: 444, min: 50, max: 444, count: 3 },
+                Edit: { p50: 130, p95: 555, p99: 555, min: 100, max: 555, count: 2 },
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/latency')) {
+        throw new Error(
+          'LatencyPanel must read latency from the aggregate endpoint, not /api/latency',
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText('111')).toBeInTheDocument();
+    expect(screen.getByText('222')).toBeInTheDocument();
+    expect(screen.getByText('333')).toBeInTheDocument();
+    expect(screen.getByText('444ms p95')).toBeInTheDocument();
+    expect(screen.getByText('555ms p95')).toBeInTheDocument();
+  });
 });
 
 describe('Today view — selector default + Session ended badge', () => {
