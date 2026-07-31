@@ -23,6 +23,8 @@ import { analyzeReplayTimeline } from './replay-analyzer.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
 import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { LatencySample, AggregateLatencyMetrics } from './latency-percentiles.js';
+import { computeCacheHealth } from './cache-health-aggregate.js';
+import type { CacheHealthTotals, AggregateCacheHealth } from './cache-health-aggregate.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
 import type { FullSessionSummary, SessionFileInfo } from '../../storage/session-store.js';
 import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
@@ -387,6 +389,7 @@ export interface ApiHandlerDeps {
       totalCacheReadTokens?: number;
       totalCacheCreationTokens?: number;
       totalCacheSavingsUsd?: number;
+      totalInputTokens?: number;
     };
     // Optional: per-day cost attribution. Fixes the cross-midnight bug where
     // a session that started yesterday counted its full cost as today's. When
@@ -606,6 +609,7 @@ interface TodayAggregatePayload {
   readonly subagentTurnCount: number;
   readonly workflowRunCount: number;
   readonly latency: AggregateLatencyMetrics;
+  readonly cacheHealth: AggregateCacheHealth;
 }
 
 // Build activity windows for every session with activity today, using the SAME
@@ -1202,6 +1206,10 @@ export function createApiHandler(
     const pushLatencySample = (sample: LatencySample): void => {
       if (latencySamples.length < MAX_AGGREGATE_LATENCY_SAMPLES) latencySamples.push(sample);
     };
+    let cacheReadTokensSum = 0;
+    let cacheCreationTokensSum = 0;
+    let cacheInputTokensSum = 0;
+    let cacheSavingsUsdSum = 0;
 
     // (1) live, undrained per-session buffer events
     const peeked = deps.localStore?.peekAllBuffers() ?? [];
@@ -1241,6 +1249,11 @@ export function createApiHandler(
             toolName: typeof ev.tool === 'string' ? ev.tool : 'Unknown',
           });
         }
+      } else if (ev.mode === 'token') {
+        cacheReadTokensSum += typeof ev.cacheReadTokens === 'number' ? ev.cacheReadTokens : 0;
+        cacheCreationTokensSum +=
+          typeof ev.cacheCreationTokens === 'number' ? ev.cacheCreationTokens : 0;
+        cacheInputTokensSum += typeof ev.inputTokens === 'number' ? ev.inputTokens : 0;
       }
     }
 
@@ -1319,6 +1332,10 @@ export function createApiHandler(
         endTime: number;
         estimatedCostUsd: number | null;
         subagentCostUsd?: number;
+        tokensInput?: number;
+        tokensCacheRead?: number;
+        tokensCacheCreation?: number;
+        cacheSavingsUsd?: number;
         antiPatterns?: ReadonlyArray<unknown>;
         timeline?: ReadonlyArray<{ timestamp: number }>;
       };
@@ -1333,7 +1350,26 @@ export function createApiHandler(
       // `--stdio` process persists its own subagentCostUsd, so summing it
       // here (rather than reading only THIS process's live CostTracker)
       // picks up subagent activity that happened in any concurrent session.
-      subagentUsd += (s.subagentCostUsd ?? 0) * todayPortionRatio(s, now);
+      const ratio = todayPortionRatio(s, now);
+      subagentUsd += (s.subagentCostUsd ?? 0) * ratio;
+      // Cache token/dollar sums below carry the same unguarded overlap
+      // characteristic subagentUsd/totalCostUsd already have on this line:
+      // a session that's concurrently live in ANOTHER process (so
+      // peekAllBuffers() — which spans every process's buffer files, not
+      // just this one — sees its undrained 'token' tail in step (1)) AND
+      // has a periodic persisted checkpoint picked up here has no
+      // timestamp-based cutoff between the two sources, unlike the
+      // toolCallCount/latency path above (which has bufferStartBySession
+      // for exactly this reason). Adding one here would fix cache alone
+      // while leaving the pre-existing cost/subagentUsd sums on this same
+      // line unprotected — an inconsistent, ticket-scope-creeping fix — so
+      // this intentionally matches the accepted risk already present for
+      // cost/subagentUsd rather than introducing a new, metric-specific
+      // guard.
+      cacheReadTokensSum += (s.tokensCacheRead ?? 0) * ratio;
+      cacheCreationTokensSum += (s.tokensCacheCreation ?? 0) * ratio;
+      cacheInputTokensSum += (s.tokensInput ?? 0) * ratio;
+      cacheSavingsUsdSum += (s.cacheSavingsUsd ?? 0) * ratio;
       // Count anti-patterns and session for cross-midnight sessions not already
       // captured by the todaySessions loop (which filtered by start-date).
       if (typeof s.sessionId === 'string' && !sessionsSeen.has(s.sessionId)) {
@@ -1385,6 +1421,26 @@ export function createApiHandler(
       // contribution comes from the live, per-day-bucketed CostTracker value
       // instead (same reasoning as liveTodayUsd above).
       subagentUsd += deps.costTracker?.getSubagentCostForDay?.(todayKey) ?? 0;
+      // Cache top-up (dollars AND token counts) for this process's own live,
+      // not-yet-persisted session. These are session-cumulative totals with
+      // no per-day equivalent (unlike getCostForDay above), so — mirroring
+      // the startedToday guard the cost fallback above needs for the exact
+      // same reason — only add them when this live session actually started
+      // today; a cross-midnight live session's cumulative totals would
+      // otherwise leak yesterday's activity in too. Token counts must be
+      // topped up alongside the dollar figure: step (1)'s buffer union only
+      // sees the last undrained tail since the previous periodic checkpoint,
+      // so without this, totalSavingsUsd could reflect a session's full
+      // accumulated savings while totalCacheReadTokens/cacheHitRatePct/status
+      // reflected almost none of the activity that produced them.
+      const liveStartedTs = deps.sessionTracker?.getMetrics().sessionStartTime ?? null;
+      if (typeof liveStartedTs === 'number' && localDateKey(liveStartedTs) === todayKey) {
+        const liveCostMetrics = deps.costTracker?.getMetrics();
+        cacheSavingsUsdSum += liveCostMetrics?.totalCacheSavingsUsd ?? 0;
+        cacheReadTokensSum += liveCostMetrics?.totalCacheReadTokens ?? 0;
+        cacheCreationTokensSum += liveCostMetrics?.totalCacheCreationTokens ?? 0;
+        cacheInputTokensSum += liveCostMetrics?.totalInputTokens ?? 0;
+      }
     }
 
     // Live session anti-patterns (in-memory, not yet persisted).
@@ -1436,6 +1492,13 @@ export function createApiHandler(
       }
     }
 
+    const cacheHealth = computeCacheHealth({
+      cacheReadTokens: cacheReadTokensSum,
+      cacheCreationTokens: cacheCreationTokensSum,
+      inputTokens: cacheInputTokensSum,
+      savingsUsd: cacheSavingsUsdSum,
+    } satisfies CacheHealthTotals);
+
     const payload = {
       toolCallCount,
       totalCostUsd: Math.round(totalCostUsd * 1000) / 1000,
@@ -1448,6 +1511,7 @@ export function createApiHandler(
       workflowRunCount,
       avgEfficiencyScore,
       latency: computeLatencyPercentiles(latencySamples),
+      cacheHealth,
     };
     aggregateCache = { bucket: currentBucket, payload };
     jsonOk(res, payload);

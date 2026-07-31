@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.13] - 2026-07-30
+
+### Fixed
+
+- **The Today dashboard's Cache Health panel only reflected token usage seen by whichever process happened to be serving the dashboard** — its hit-rate percentage and dollar savings came from that one process's own in-memory tracker, silently excluding cache activity from every other concurrently running session. It's now computed from every today session's token usage, the same way the other cross-process Today dashboard fixes already are.
+
 ## [1.14.12] - 2026-07-31
 
 ### Fixed

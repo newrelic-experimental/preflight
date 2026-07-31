@@ -779,6 +779,26 @@ describe('Today view — Cache Health panel', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'can_improve',
+              cacheHitRatePct: 48,
+              totalCacheReadTokens: 10000,
+              totalCacheCreationTokens: 2000,
+              totalSavingsUsd: 0.0012,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       return new Response(JSON.stringify([]), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -806,6 +826,26 @@ describe('Today view — Cache Health panel', () => {
             total_cache_creation_tokens: 1000,
             total_savings_usd: 0,
             week_over_week_delta_pts: -3,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'needs_attention',
+              cacheHitRatePct: 18,
+              totalCacheReadTokens: 5000,
+              totalCacheCreationTokens: 1000,
+              totalSavingsUsd: 0,
+            },
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
@@ -841,6 +881,26 @@ describe('Today view — Cache Health panel', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'needs_attention',
+              cacheHitRatePct: 12,
+              totalCacheReadTokens: 3000,
+              totalCacheCreationTokens: 500,
+              totalSavingsUsd: 0,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       return new Response(JSON.stringify([]), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -855,6 +915,59 @@ describe('Today view — Cache Health panel', () => {
     );
     expect(await screen.findByText(/Cache hit rate is 12%/)).toBeInTheDocument();
     expect(await screen.findByText(/above 60%/)).toBeInTheDocument();
+  });
+
+  it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/cache-health')) {
+        // This process's own live tracker has zero cache activity — it must
+        // NOT be what renders the headline percentage.
+        return new Response(
+          JSON.stringify({
+            status: 'no_cache_activity',
+            cache_hit_rate_pct: null,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_savings_usd: 0,
+            week_over_week_delta_pts: null,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            cacheHealth: {
+              status: 'excellent',
+              cacheHitRatePct: 72,
+              totalCacheReadTokens: 700,
+              totalCacheCreationTokens: 100,
+              totalSavingsUsd: 0.5,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('72%')).toBeInTheDocument();
   });
 });
 

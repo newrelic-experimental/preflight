@@ -476,7 +476,7 @@ export function Today(): JSX.Element {
             <ToolSelectionPanel />
             <LatencyPanel aggregate={aggregate} />
             <ModelUsagePanel />
-            <CacheHealthPanel />
+            <CacheHealthPanel aggregate={aggregate} />
           </AnimatedCard>
 
           <AnimatedCard index={4}>
@@ -745,7 +745,7 @@ function ModelUsagePanel(): JSX.Element {
 }
 
 function cacheRecommendationText(
-  status: CacheHealthResponse['status'],
+  status: 'no_cache_activity' | 'needs_attention' | 'can_improve' | 'excellent',
   hitRatePct: number | null,
 ): string {
   const pct = hitRatePct !== null ? `${hitRatePct}%` : null;
@@ -762,15 +762,19 @@ function cacheRecommendationText(
     : 'Restructure your system prompt so stable context appears at the top.';
 }
 
-function CacheHealthPanel(): JSX.Element {
-  const { data } = useQuery<CacheHealthResponse>({
+function CacheHealthPanel({
+  aggregate,
+}: {
+  aggregate: TodayAggregateResponse | undefined;
+}): JSX.Element {
+  const { data: trendData } = useQuery<CacheHealthResponse>({
     queryKey: qk.cacheHealth,
     queryFn: fetchCacheHealth,
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
-  const noActivity =
-    !data || data.status === 'no_cache_activity' || data.cache_hit_rate_pct == null;
+  const data = aggregate?.cacheHealth;
+  const noActivity = !data || data.status === 'no_cache_activity' || data.cacheHitRatePct == null;
 
   return (
     <Card padding="sm" className="h-full">
@@ -793,29 +797,30 @@ function CacheHealthPanel(): JSX.Element {
                     : 'text-ink-base'
               }`}
             >
-              {data.cache_hit_rate_pct}%
+              {data.cacheHitRatePct}%
             </span>
             <Pill tone={data.status === 'needs_attention' ? 'warning' : 'neutral'} size="sm">
               {data.status === 'excellent' ? 'excellent' : data.status.replace('_', ' ')}
             </Pill>
           </div>
-          {data.total_savings_usd > 0 && (
+          {data.totalSavingsUsd > 0 && (
             <div className="text-xs text-accent-green mb-1">
-              ${data.total_savings_usd.toFixed(4)} saved
+              ${data.totalSavingsUsd.toFixed(4)} saved
             </div>
           )}
-          {data.week_over_week_delta_pts !== null && data.week_over_week_delta_pts !== 0 && (
-            <div
-              className={`text-[10px] font-medium mb-1 ${
-                data.week_over_week_delta_pts > 0 ? 'text-accent-green' : 'text-accent-amber'
-              }`}
-            >
-              {data.week_over_week_delta_pts > 0 ? '↑' : '↓'}
-              {Math.abs(data.week_over_week_delta_pts)}pts vs last week
-            </div>
-          )}
+          {trendData?.week_over_week_delta_pts != null &&
+            trendData.week_over_week_delta_pts !== 0 && (
+              <div
+                className={`text-[10px] font-medium mb-1 ${
+                  trendData.week_over_week_delta_pts > 0 ? 'text-accent-green' : 'text-accent-amber'
+                }`}
+              >
+                {trendData.week_over_week_delta_pts > 0 ? '↑' : '↓'}
+                {Math.abs(trendData.week_over_week_delta_pts)}pts vs last week
+              </div>
+            )}
           <div className="text-[10px] text-ink-subtle/70 leading-snug">
-            {cacheRecommendationText(data.status, data.cache_hit_rate_pct)}
+            {cacheRecommendationText(data.status, data.cacheHitRatePct)}
           </div>
         </>
       )}

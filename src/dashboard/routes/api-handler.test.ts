@@ -1896,6 +1896,223 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     const parsed = JSON.parse(body()) as { avgEfficiencyScore: number | null };
     expect(parsed.avgEfficiencyScore).toBeNull();
   });
+
+  it('blends cache tokens from live buffer events and persisted sessions into cacheHealth', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: {
+        peekAllBuffers: () => [
+          // Live, undrained token event for a session not yet persisted.
+          {
+            mode: 'token',
+            sessionId: 'live-1',
+            timestamp: startMs + 10_000,
+            inputTokens: 100,
+            cacheReadTokens: 300,
+            cacheCreationTokens: 0,
+          },
+          // Yesterday — must be ignored.
+          {
+            mode: 'token',
+            sessionId: 'live-1',
+            timestamp: startMs - 1,
+            inputTokens: 9_999,
+            cacheReadTokens: 9_999,
+            cacheCreationTokens: 0,
+          },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [
+          {
+            sessionId: 'persisted-1',
+            startTime: startMs + 1_000,
+            endTime: startMs + 2_000,
+            estimatedCostUsd: 0,
+            tokensInput: 100,
+            tokensCacheRead: 100,
+            tokensCacheCreation: 0,
+            cacheSavingsUsd: 0.01,
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      cacheHealth: {
+        status: string;
+        cacheHitRatePct: number | null;
+        totalCacheReadTokens: number;
+        totalCacheCreationTokens: number;
+        totalSavingsUsd: number;
+      };
+    };
+    // read: 300 (live) + 100 (persisted) = 400; input: 100 (live) + 100 (persisted) = 200
+    // hit rate = 400 / (200 + 400 + 0) = 0.6667 -> 67%
+    expect(parsed.cacheHealth.totalCacheReadTokens).toBe(400);
+    expect(parsed.cacheHealth.totalCacheCreationTokens).toBe(0);
+    expect(parsed.cacheHealth.cacheHitRatePct).toBe(67);
+    expect(parsed.cacheHealth.totalSavingsUsd).toBeCloseTo(0.01);
+    // 67% >= the 60% "excellent" threshold.
+    expect(parsed.cacheHealth.status).toBe('excellent');
+  });
+
+  it("pro-rates a cross-midnight persisted session's cache tokens by todayPortionRatio", async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [
+          {
+            sessionId: 'cross-midnight-1',
+            // Started 2h before midnight, ended 2h after — no timeline, so
+            // todayPortionRatio falls back to elapsed-time overlap: 2h of 4h = 0.5.
+            startTime: startMs - 2 * 60 * 60 * 1000,
+            endTime: startMs + 2 * 60 * 60 * 1000,
+            estimatedCostUsd: 0,
+            tokensInput: 1000,
+            tokensCacheRead: 1000,
+            tokensCacheCreation: 0,
+            cacheSavingsUsd: 1.0,
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      cacheHealth: { totalCacheReadTokens: number; totalSavingsUsd: number };
+    };
+    expect(parsed.cacheHealth.totalCacheReadTokens).toBe(500);
+    expect(parsed.cacheHealth.totalSavingsUsd).toBeCloseTo(0.5);
+  });
+
+  it('tops up cacheHealth savings AND token counts with this process own live session when not yet persisted', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'live-1', sessionStartTime: startMs + 5_000 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      costTracker: {
+        getMetrics: () => ({
+          totalCacheSavingsUsd: 0.25,
+          totalCacheReadTokens: 800,
+          totalCacheCreationTokens: 0,
+          totalInputTokens: 200,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      cacheHealth: {
+        totalSavingsUsd: number;
+        totalCacheReadTokens: number;
+        cacheHitRatePct: number | null;
+      };
+    };
+    // Without this top-up, totalSavingsUsd would show 0.25 while
+    // totalCacheReadTokens/cacheHitRatePct stayed at 0 — an inconsistent
+    // panel for the session someone is actively watching. Both must move
+    // together: read tokens = 800, hit rate = 800 / (200 + 800 + 0) = 80%.
+    expect(parsed.cacheHealth.totalSavingsUsd).toBeCloseTo(0.25);
+    expect(parsed.cacheHealth.totalCacheReadTokens).toBe(800);
+    expect(parsed.cacheHealth.cacheHitRatePct).toBe(80);
+  });
+
+  it('sums cache tokens from both the buffer and a persisted checkpoint for a session live in another process (documents the accepted no-cutoff overlap risk shared with cost/subagentUsd)', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: {
+        peekAllBuffers: () => [
+          // peekAllBuffers() spans every process's buffer files, so this
+          // shows up even though it belongs to a session this process
+          // isn't running.
+          {
+            mode: 'token',
+            sessionId: 'other-live-1',
+            timestamp: startMs + 10_000,
+            inputTokens: 50,
+            cacheReadTokens: 200,
+            cacheCreationTokens: 0,
+          },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [
+          {
+            sessionId: 'other-live-1',
+            startTime: startMs + 1_000,
+            endTime: startMs + 5_000,
+            estimatedCostUsd: 0,
+            tokensInput: 50,
+            tokensCacheRead: 200,
+            tokensCacheCreation: 0,
+            cacheSavingsUsd: 0.02,
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'this-process-1' }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      cacheHealth: { totalCacheReadTokens: number; totalSavingsUsd: number };
+    };
+    // Both sources are summed with no cross-source cutoff for a session
+    // live in ANOTHER process: 200 (buffer) + 200 (persisted, ratio 1.0
+    // since fully within today) = 400 read tokens. This mirrors the
+    // pre-existing, equally-unguarded totalCostUsd/subagentUsd overlap in
+    // the same (2b) loop — see the comment above cacheReadTokensSum's
+    // accumulation in api-handler.ts. Not asserting this is "correct",
+    // only that it's the known, accepted current behavior. Dollar savings
+    // only comes from the persisted checkpoint (buffer 'token' events
+    // carry no savings field), so it's unaffected: 0.02.
+    expect(parsed.cacheHealth.totalCacheReadTokens).toBe(400);
+    expect(parsed.cacheHealth.totalSavingsUsd).toBeCloseTo(0.02);
+  });
 });
 
 describe('api-handler GET /api/workflows', () => {

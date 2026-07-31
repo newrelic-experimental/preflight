@@ -149,6 +149,13 @@ export interface TodayAggregateResponse {
     readonly overall: LatencyPercentiles | null;
     readonly byTool: Readonly<Record<string, LatencyPercentiles | null>>;
   };
+  readonly cacheHealth?: {
+    readonly status: 'no_cache_activity' | 'needs_attention' | 'can_improve' | 'excellent';
+    readonly cacheHitRatePct: number | null;
+    readonly totalCacheReadTokens: number;
+    readonly totalCacheCreationTokens: number;
+    readonly totalSavingsUsd: number;
+  };
 }
 
 // /api/sessions returns a heterogeneous mix of full persisted session
