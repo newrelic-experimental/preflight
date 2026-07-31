@@ -25,7 +25,8 @@ import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { LatencySample, AggregateLatencyMetrics } from './latency-percentiles.js';
 import { computeCacheHealth } from './cache-health-aggregate.js';
 import type { CacheHealthTotals, AggregateCacheHealth } from './cache-health-aggregate.js';
-import type { ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
+import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
 import type { FullSessionSummary, SessionFileInfo } from '../../storage/session-store.js';
 import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
 import type {
@@ -40,7 +41,11 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import type { QualityProxyMetrics } from '../../metrics/quality-proxy-tracker.js';
-import type { ToolSelectionMetrics } from '../../metrics/tool-selection-scorer.js';
+import type {
+  ToolSelectionMetrics,
+  ToolSelectionSummary,
+} from '../../metrics/tool-selection-scorer.js';
+import { toToolSelectionSummary } from '../../metrics/tool-selection-scorer.js';
 import type { ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
@@ -473,6 +478,7 @@ export interface ApiHandlerDeps {
   readonly qualityProxyTracker?: { getMetrics: () => QualityProxyMetrics };
   readonly toolSelectionScorer?: {
     scoreSession: (calls: readonly ToolCallRecord[]) => ToolSelectionMetrics;
+    combineSummaries: (summaries: readonly ToolSelectionSummary[]) => ToolSelectionMetrics;
   };
   readonly modelUsageTracker?: { getMetrics: () => ModelUsageMetrics };
   readonly toolCallBuffer?: { getRecords: () => readonly ToolCallRecord[] };
@@ -1719,8 +1725,47 @@ export function createApiHandler(
 
   routes.set('GET /api/tool-selection-score', (_req, res) => {
     if (!deps.toolSelectionScorer) return unavailable(res, 'toolSelectionScorer');
-    const calls = deps.toolCallBuffer?.getRecords() ?? [];
-    jsonOk(res, deps.toolSelectionScorer.scoreSession(calls));
+    const startMs = localStartOfDay(Date.now());
+
+    // (1) this process's own already-paired, already-parsed live records —
+    // full fidelity, same source the old code used.
+    const ownRecords = (deps.toolCallBuffer?.getRecords() ?? []).filter(
+      (r) => r.timestamp >= startMs,
+    );
+
+    // (2) every OTHER process's still-undrained buffer, paired into full
+    // ToolCallRecords (see tool-selection-aggregate.ts). This process's own
+    // buffer file is typically already drained into (1) by the time it's
+    // peeked, but exclude its sessionId defensively so a change in drain
+    // timing can never double-count.
+    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const peeked = deps.localStore?.peekAllBuffers() ?? [];
+    const crossProcessRecords = pairToolCallsFromBufferEvents(
+      peeked as unknown as readonly HookEvent[],
+    ).filter((r) => r.timestamp >= startMs && r.sessionId !== ownSessionId);
+
+    // Score all of today's live, not-yet-persisted activity together so
+    // redundant-read/repeated-failure detection sees real cross-call
+    // sequencing (not just independently-summed per-session counts).
+    const liveMetrics = deps.toolSelectionScorer.scoreSession([
+      ...ownRecords,
+      ...crossProcessRecords,
+    ]);
+
+    // (3) sessions already completed and persisted today — each carries its
+    // own toolSelectionMetrics summary computed at save time (see
+    // buildSessionSummary in session-store.ts), before outputSizeBytes was
+    // gone for good.
+    const persistedSummaries = (deps.sessionStore?.loadTodaySessions() ?? [])
+      .filter((s) => s.sessionId !== ownSessionId)
+      .map((s) => s.toolSelectionMetrics)
+      .filter((m): m is ToolSelectionSummary => m != null);
+
+    const combined = deps.toolSelectionScorer.combineSummaries([
+      toToolSelectionSummary(liveMetrics),
+      ...persistedSummaries,
+    ]);
+    jsonOk(res, combined);
   });
 
   routes.set('GET /api/git-efficiency', (_req, res) => {

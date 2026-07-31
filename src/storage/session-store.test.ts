@@ -16,6 +16,7 @@ import type { TaskDetector } from '../metrics/task-detector.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
+import { ToolSelectionScorer, toToolSelectionSummary } from '../metrics/tool-selection-scorer.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -67,6 +68,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     tokensCacheCreation: 0,
     cacheSavingsUsd: 0,
     efficiencyScore: 0.75,
+    toolSelectionMetrics: null,
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
@@ -1139,6 +1141,165 @@ describe('buildSessionSummary', () => {
     expect(summary.antiPatterns).toEqual([]);
     expect(summary.filesRead).toEqual([]);
     expect(summary.filesModified).toEqual([]);
+  });
+
+  it('computes toolSelectionMetrics from the full in-memory tool calls when a scorer is provided', () => {
+    const toolCalls = [
+      {
+        id: 'c1',
+        sessionId: 'test-session',
+        toolName: 'Read',
+        toolUseId: 'c1',
+        timestamp: 1,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+      {
+        id: 'c2',
+        sessionId: 'test-session',
+        toolName: 'Read',
+        toolUseId: 'c2',
+        timestamp: 2,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+      {
+        id: 'c3',
+        sessionId: 'test-session',
+        toolName: 'Read',
+        toolUseId: 'c3',
+        timestamp: 3,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+    ];
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 3,
+        toolCallCountByTool: { Read: 3 },
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 1,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const mockTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        totalTasksCompleted: 1,
+        currentTaskActive: false,
+        currentTaskToolCalls: 0,
+        averageTaskDurationMs: 1000,
+        averageToolCallsPerTask: 3,
+        completedTasks: [
+          {
+            taskId: 't1',
+            startTime: 1,
+            endTime: 3,
+            durationMs: 2,
+            toolCallCount: 3,
+            toolCallsByType: { Read: 3 },
+            filesRead: ['/f.ts'],
+            filesModified: [],
+            linesChanged: 0,
+            linesAdded: 0,
+            linesRemoved: 0,
+            bashCommandsRun: 0,
+            testsRun: 0,
+            testsPassed: 0,
+            buildRun: 0,
+            buildPassed: 0,
+            estimatedCostUsd: 0,
+            tokensUsed: 0,
+            askedUserQuestions: 0,
+            subAgentsSpawned: 0,
+            toolCalls,
+          },
+        ],
+      }),
+    };
+    const scorer = new ToolSelectionScorer();
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      toolSelectionScorer: scorer,
+      developer: 'alice',
+    });
+
+    expect(summary.toolSelectionMetrics).toEqual(
+      toToolSelectionSummary(scorer.scoreSession(toolCalls)),
+    );
+    expect(summary.toolSelectionMetrics?.redundantReadCount).toBe(1);
+  });
+
+  it('leaves toolSelectionMetrics null when no scorer is provided', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+    expect(summary.toolSelectionMetrics).toBeNull();
+  });
+
+  it('round-trips toolSelectionMetrics through JSON serialization', () => {
+    const original = makeSummary({
+      toolSelectionMetrics: {
+        score: 0.91,
+        totalCalls: 20,
+        penalizedCalls: 2,
+        redundantReadCount: 1,
+        repeatedFailureCount: 0,
+        unusedOutputCount: 1,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.toolSelectionMetrics).toEqual(original.toolSelectionMetrics);
+  });
+
+  it('defaults toolSelectionMetrics to null for legacy session files missing the field', () => {
+    const legacy = makeSummary();
+    const { toolSelectionMetrics: _toolSelectionMetrics, ...withoutField } = legacy;
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(withoutField)) as Parameters<
+        typeof deserializeFullSessionSummary
+      >[0],
+    );
+    expect(roundTripped.toolSelectionMetrics).toBeNull();
   });
 });
 

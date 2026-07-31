@@ -23,6 +23,34 @@ export interface ToolSelectionMetrics {
   readonly unusedOutputCount: number;
 }
 
+// Trimmed projection of ToolSelectionMetrics with no per-call detail —
+// persisted per session on FullSessionSummary (src/storage/session-store.ts)
+// and used to recombine multiple sessions' scores via combineSummaries()
+// below. Dropping `penalties`/`worstOffenders` avoids needing to redact
+// their `detail` strings (which interpolate raw file paths) before
+// persisting, mirroring how the cross-session cache-health/latency
+// aggregates (src/dashboard/routes/cache-health-aggregate.ts,
+// latency-percentiles.ts) also only carry summary numbers, not per-item detail.
+export interface ToolSelectionSummary {
+  readonly score: number;
+  readonly totalCalls: number;
+  readonly penalizedCalls: number;
+  readonly redundantReadCount: number;
+  readonly repeatedFailureCount: number;
+  readonly unusedOutputCount: number;
+}
+
+export function toToolSelectionSummary(metrics: ToolSelectionMetrics): ToolSelectionSummary {
+  return {
+    score: metrics.score,
+    totalCalls: metrics.totalCalls,
+    penalizedCalls: metrics.penalizedCalls,
+    redundantReadCount: metrics.redundantReadCount,
+    repeatedFailureCount: metrics.repeatedFailureCount,
+    unusedOutputCount: metrics.unusedOutputCount,
+  };
+}
+
 export interface ToolSelectionScorerOptions {
   readonly redundantReadPenalty?: number;
   readonly repeatedFailurePenalty?: number;
@@ -121,6 +149,60 @@ export class ToolSelectionScorer {
       redundantReadCount: penalties.filter((p) => p.reason === 'redundant_read').length,
       repeatedFailureCount: penalties.filter((p) => p.reason === 'repeated_failure').length,
       unusedOutputCount: penalties.filter((p) => p.reason === 'unused_output').length,
+    };
+  }
+
+  /**
+   * Recombines per-session summaries (each already scored independently —
+   * e.g. one per session completed today) into one aggregate
+   * ToolSelectionMetrics, reapplying this instance's own configured penalty
+   * weights to the summed counts. Per-call detail (`penalties`/
+   * `worstOffenders`) isn't reconstructable from summaries alone, so both
+   * come back empty — see the ToolSelectionSummary doc comment above.
+   */
+  combineSummaries(summaries: readonly ToolSelectionSummary[]): ToolSelectionMetrics {
+    let totalCalls = 0;
+    let penalizedCalls = 0;
+    let redundantReadCount = 0;
+    let repeatedFailureCount = 0;
+    let unusedOutputCount = 0;
+    for (const s of summaries) {
+      totalCalls += s.totalCalls;
+      penalizedCalls += s.penalizedCalls;
+      redundantReadCount += s.redundantReadCount;
+      repeatedFailureCount += s.repeatedFailureCount;
+      unusedOutputCount += s.unusedOutputCount;
+    }
+
+    if (totalCalls === 0) {
+      return {
+        score: 1,
+        totalCalls: 0,
+        penalizedCalls: 0,
+        penalties: [],
+        worstOffenders: [],
+        redundantReadCount: 0,
+        repeatedFailureCount: 0,
+        unusedOutputCount: 0,
+      };
+    }
+
+    const rawPenalty =
+      redundantReadCount * this.redundantReadPenalty +
+      repeatedFailureCount * this.repeatedFailurePenalty +
+      unusedOutputCount * this.unusedOutputPenalty;
+    const totalPenalty = Math.min(rawPenalty, 0.7);
+    const score = Math.max(0, Math.round((1 - totalPenalty) * 1000) / 1000);
+
+    return {
+      score,
+      totalCalls,
+      penalizedCalls,
+      penalties: [],
+      worstOffenders: [],
+      redundantReadCount,
+      repeatedFailureCount,
+      unusedOutputCount,
     };
   }
 

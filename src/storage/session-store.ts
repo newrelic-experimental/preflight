@@ -25,6 +25,11 @@ import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
+import {
+  ToolSelectionScorer,
+  toToolSelectionSummary,
+  type ToolSelectionSummary,
+} from '../metrics/tool-selection-scorer.js';
 
 const logger = createLogger('session-store');
 
@@ -73,6 +78,14 @@ export interface FullSessionSummary extends SessionSummary {
   readonly platform?: string;
   readonly instructionPromptHash?: string | null;
   readonly timeline?: ReplayTimelineEntry[];
+  /**
+   * Tool-selection quality summary for this session, computed once at save
+   * time from the full in-memory ToolCallRecord[] — the only point where
+   * outputSizeBytes (needed for unused-output detection) is still available;
+   * it is never persisted anywhere else, including `timeline` above. null
+   * for pre-fix session files and for sessions with no tool calls.
+   */
+  readonly toolSelectionMetrics: ToolSelectionSummary | null;
 }
 
 export interface SessionFileInfo {
@@ -286,6 +299,7 @@ export interface BuildSessionSummarySources {
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
   transcriptMessageTracker?: TranscriptMessageTracker;
+  toolSelectionScorer?: ToolSelectionScorer;
   developer: string;
   repoName?: string | null;
   /**
@@ -363,6 +377,15 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     }
   }
 
+  // Tool-selection quality: same allToolCalls used for anti-pattern analysis
+  // above, still holding real outputSizeBytes at this point — see the
+  // ToolSelectionSummary doc comment on FullSessionSummary for why this is
+  // the only place that's true.
+  const toolSelectionResult =
+    sources.toolSelectionScorer && allToolCalls.length > 0
+      ? toToolSelectionSummary(sources.toolSelectionScorer.scoreSession(allToolCalls))
+      : null;
+
   // Efficiency score
   const efficiencyAvg = efficiencyScorer?.getSessionAverage() ?? null;
 
@@ -430,6 +453,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     platform: sources.platform,
     instructionPromptHash: sources.instructionPromptHash ?? null,
     timeline: timeline.length > 0 ? timeline : undefined,
+    toolSelectionMetrics: toolSelectionResult,
   };
 }
 
@@ -518,6 +542,7 @@ interface SerializedFullSessionSummary {
   readonly platform?: unknown;
   readonly instructionPromptHash?: unknown;
   readonly timeline?: Array<Record<string, unknown>>;
+  readonly toolSelectionMetrics?: unknown;
 }
 
 /**
@@ -546,6 +571,30 @@ export function deserializeFullSessionSummary(
       }
     }
   }
+
+  const toolSelectionMetrics: ToolSelectionSummary | null = (() => {
+    const t = obj.toolSelectionMetrics;
+    if (typeof t !== 'object' || t === null) return null;
+    const r = t as Record<string, unknown>;
+    if (
+      typeof r.score !== 'number' ||
+      typeof r.totalCalls !== 'number' ||
+      typeof r.penalizedCalls !== 'number' ||
+      typeof r.redundantReadCount !== 'number' ||
+      typeof r.repeatedFailureCount !== 'number' ||
+      typeof r.unusedOutputCount !== 'number'
+    ) {
+      return null;
+    }
+    return {
+      score: r.score,
+      totalCalls: r.totalCalls,
+      penalizedCalls: r.penalizedCalls,
+      redundantReadCount: r.redundantReadCount,
+      repeatedFailureCount: r.repeatedFailureCount,
+      unusedOutputCount: r.unusedOutputCount,
+    };
+  })();
 
   return {
     sessionId:
@@ -616,6 +665,7 @@ export function deserializeFullSessionSummary(
             errorType: typeof e.errorType === 'string' ? e.errorType : undefined,
           }))
       : undefined,
+    toolSelectionMetrics,
   };
 }
 

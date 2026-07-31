@@ -573,7 +573,7 @@ function ToolSelectionPanel(): JSX.Element {
         <EmptyState
           icon="radar"
           title="Waiting for tool calls"
-          subtitle="Start a Claude Code session to begin scoring. Resets when the process restarts."
+          subtitle="Start a Claude Code session to begin scoring. Reflects today's activity across all sessions."
         />
       ) : (
         <>

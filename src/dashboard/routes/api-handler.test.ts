@@ -10,6 +10,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
+import {
+  ToolSelectionScorer,
+  toToolSelectionSummary,
+} from '../../metrics/tool-selection-scorer.js';
+import { localStartOfDay } from '../../lib/date.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
 
@@ -3722,12 +3727,42 @@ describe('api-handler GET /api/tool-selection-score', () => {
     expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'toolSelectionScorer' });
   });
 
-  it('scores the current toolCallBuffer records', async () => {
-    const fakeCalls = [{ id: 'c1' }, { id: 'c2' }] as unknown as ReturnType<
+  it('scores only this process live records when nothing else is wired in (no cross-process, no persisted)', async () => {
+    const now = Date.now();
+    const ownRecords = [
+      {
+        id: 'o1',
+        sessionId: 'sess-own',
+        toolName: 'Read',
+        toolUseId: 'o1',
+        timestamp: now,
+        durationMs: 5,
+        success: true,
+        filePath: '/a.ts',
+      },
+      {
+        id: 'o2',
+        sessionId: 'sess-own',
+        toolName: 'Read',
+        toolUseId: 'o2',
+        timestamp: now,
+        durationMs: 5,
+        success: true,
+        filePath: '/b.ts',
+      },
+    ] as unknown as ReturnType<
       NonNullable<Parameters<typeof createApiHandler>[0]['toolCallBuffer']>['getRecords']
     >;
-    const fakeScore = {
-      score: 0.9,
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      toolCallBuffer: { getRecords: () => ownRecords },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({
+      score: 1,
       totalCalls: 2,
       penalizedCalls: 0,
       penalties: [],
@@ -3735,22 +3770,16 @@ describe('api-handler GET /api/tool-selection-score', () => {
       redundantReadCount: 0,
       repeatedFailureCount: 0,
       unusedOutputCount: 0,
-    };
-    const scoreSession = jest.fn(() => fakeScore);
-    const handler = createApiHandler({
-      toolSelectionScorer: { scoreSession },
-      toolCallBuffer: { getRecords: () => fakeCalls },
     });
+  });
+
+  it('returns the trivial empty result when nothing is wired in at all', async () => {
+    const handler = createApiHandler({ toolSelectionScorer: new ToolSelectionScorer() });
     const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(JSON.parse(body())).toEqual(fakeScore);
-    expect(scoreSession).toHaveBeenCalledWith(fakeCalls);
-  });
-
-  it('scores an empty session (score with []) when toolCallBuffer is absent', async () => {
-    const fakeScore = {
+    expect(JSON.parse(body())).toEqual({
       score: 1,
       totalCalls: 0,
       penalizedCalls: 0,
@@ -3759,15 +3788,305 @@ describe('api-handler GET /api/tool-selection-score', () => {
       redundantReadCount: 0,
       repeatedFailureCount: 0,
       unusedOutputCount: 0,
-    };
-    const scoreSession = jest.fn(() => fakeScore);
-    const handler = createApiHandler({ toolSelectionScorer: { scoreSession } });
+    });
+  });
+
+  it('blends another process live activity (via peekAllBuffers pairing) into the score', async () => {
+    const now = Date.now();
+    // Three reads of the same file from a DIFFERENT process's live session —
+    // the 3rd read (index 2, 0-based) is the first one past the "one
+    // re-read is normal" allowance, so it's the one penalized.
+    const peekedEvents = [
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'x1',
+        sessionId: 'sess-other',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'x1',
+        sessionId: 'sess-other',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: now + 1,
+        toolUseId: 'x2',
+        sessionId: 'sess-other',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: now + 1,
+        toolUseId: 'x2',
+        sessionId: 'sess-other',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: now + 2,
+        toolUseId: 'x3',
+        sessionId: 'sess-other',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: now + 2,
+        toolUseId: 'x3',
+        sessionId: 'sess-other',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['localStore']>['peekAllBuffers']
+    >;
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      localStore: { peekAllBuffers: () => peekedEvents },
+    });
     const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(JSON.parse(body())).toEqual(fakeScore);
-    expect(scoreSession).toHaveBeenCalledWith([]);
+    const parsed = JSON.parse(body());
+    expect(parsed.totalCalls).toBe(3);
+    expect(parsed.redundantReadCount).toBe(1);
+    expect(parsed.penalizedCalls).toBe(1);
+    expect(parsed.score).toBe(0.97); // 1 - (1 * DEFAULT_REDUNDANT_READ_PENALTY of 0.03)
+  });
+
+  it('excludes cross-process buffer events from before today', async () => {
+    const beforeToday = localStartOfDay(Date.now()) - 60_000;
+    const peekedEvents = [
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: beforeToday,
+        toolUseId: 'y1',
+        sessionId: 'sess-other',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: beforeToday,
+        toolUseId: 'y1',
+        sessionId: 'sess-other',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['localStore']>['peekAllBuffers']
+    >;
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      localStore: { peekAllBuffers: () => peekedEvents },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).totalCalls).toBe(0);
+  });
+
+  it('excludes this own live session id from cross-process reconstruction (no double count)', async () => {
+    const now = Date.now();
+    const peekedEvents = [
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'z1',
+        sessionId: 'sess-own',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'z1',
+        sessionId: 'sess-own',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['localStore']>['peekAllBuffers']
+    >;
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      localStore: { peekAllBuffers: () => peekedEvents },
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'sess-own' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).totalCalls).toBe(0);
+  });
+
+  it('blends a persisted today session summary into the combined score', async () => {
+    const persistedToday = [
+      {
+        // Real FullSessionSummary rows always carry a sessionId; give this
+        // fixture a distinct one so it isn't coincidentally treated as the
+        // (unset, i.e. undefined) live session in this test.
+        sessionId: 'sess-other-persisted',
+        toolSelectionMetrics: {
+          score: 0.5,
+          totalCalls: 5,
+          penalizedCalls: 3,
+          redundantReadCount: 0,
+          repeatedFailureCount: 3,
+          unusedOutputCount: 0,
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // Combining {score:1, totalCalls:0, ...} (live, empty) with the persisted
+    // summary above: repeatedFailureCount=3 * DEFAULT_REPEATED_FAILURE_PENALTY
+    // of 0.08 = 0.24 raw penalty -> score = 1 - 0.24 = 0.76.
+    expect(parsed.totalCalls).toBe(5);
+    expect(parsed.penalizedCalls).toBe(3);
+    expect(parsed.repeatedFailureCount).toBe(3);
+    expect(parsed.score).toBe(0.76);
+  });
+
+  it('does not double-count this own live session when its own in-progress checkpoint is also persisted today', async () => {
+    // Regression test for the bug where index.ts's periodic 30s checkpoint
+    // writes THIS process's own in-progress session to disk (outcome:
+    // 'in progress') with a toolSelectionMetrics summary computed from the
+    // exact same in-memory tool calls toolCallBuffer.getRecords() also
+    // exposes. loadTodaySessions() returns that checkpoint with no
+    // exclusion, so before the fix the route summed the own session's
+    // contribution twice: once via ownRecords -> liveMetrics, and again via
+    // its own persisted checkpoint inside persistedSummaries.
+    const now = Date.now();
+    const ownSessionId = 'sess-own';
+    // 3 reads of the same file: the 3rd is the first past the "one re-read
+    // is normal" allowance, so it draws exactly one redundant-read penalty —
+    // enough to make a doubled penalty (2x) diverge in score from the
+    // correct single application.
+    const ownRecords = [
+      {
+        id: 'r1',
+        sessionId: ownSessionId,
+        toolName: 'Read',
+        toolUseId: 'r1',
+        timestamp: now,
+        durationMs: 5,
+        success: true,
+        filePath: '/dup.ts',
+      },
+      {
+        id: 'r2',
+        sessionId: ownSessionId,
+        toolName: 'Read',
+        toolUseId: 'r2',
+        timestamp: now + 1,
+        durationMs: 5,
+        success: true,
+        filePath: '/dup.ts',
+      },
+      {
+        id: 'r3',
+        sessionId: ownSessionId,
+        toolName: 'Read',
+        toolUseId: 'r3',
+        timestamp: now + 2,
+        durationMs: 5,
+        success: true,
+        filePath: '/dup.ts',
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['toolCallBuffer']>['getRecords']
+    >;
+
+    // Score the own records once with a real scorer, exactly as the
+    // periodic checkpoint (buildSessionSummary in session-store.ts) would
+    // have when it persisted this same session's in-progress state today.
+    const scorer = new ToolSelectionScorer();
+    const expectedOwnMetrics = scorer.scoreSession(
+      ownRecords as unknown as Parameters<typeof scorer.scoreSession>[0],
+    );
+    const expectedOwnSummary = toToolSelectionSummary(expectedOwnMetrics);
+    // Sanity: this fixture must actually exercise a penalty, or a doubling
+    // bug wouldn't move the score and the test would pass vacuously.
+    expect(expectedOwnSummary.redundantReadCount).toBe(1);
+    expect(expectedOwnSummary.totalCalls).toBe(3);
+
+    const persistedToday = [
+      {
+        sessionId: ownSessionId,
+        toolSelectionMetrics: expectedOwnSummary,
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      toolCallBuffer: { getRecords: () => ownRecords },
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: ownSessionId }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+
+    // The own session's 3 calls must be counted exactly once, not twice
+    // (6) via the undeduplicated own-checkpoint-in-persistedSummaries path.
+    expect(parsed.totalCalls).toBe(expectedOwnSummary.totalCalls);
+    expect(parsed.penalizedCalls).toBe(expectedOwnSummary.penalizedCalls);
+    expect(parsed.redundantReadCount).toBe(expectedOwnSummary.redundantReadCount);
+    expect(parsed.repeatedFailureCount).toBe(expectedOwnSummary.repeatedFailureCount);
+    expect(parsed.unusedOutputCount).toBe(expectedOwnSummary.unusedOutputCount);
+    // Score must match the single (correct) application of penalties, not
+    // the deflated score a doubled penalty would produce.
+    expect(parsed.score).toBe(expectedOwnSummary.score);
   });
 });
 

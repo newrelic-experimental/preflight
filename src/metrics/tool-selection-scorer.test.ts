@@ -1,4 +1,4 @@
-import { ToolSelectionScorer } from './tool-selection-scorer.js';
+import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -206,5 +206,133 @@ describe('ToolSelectionScorer', () => {
 
     const metrics = scorer.scoreSession(calls);
     expect(metrics.unusedOutputCount).toBe(0);
+  });
+});
+
+describe('toToolSelectionSummary', () => {
+  it('drops penalties and worstOffenders, keeps the 6 scalar fields', () => {
+    const scorer = new ToolSelectionScorer();
+    const metrics = scorer.scoreSession([]);
+    const summary = toToolSelectionSummary({
+      ...metrics,
+      penalties: [
+        {
+          callId: 'x',
+          toolName: 'Read',
+          reason: 'redundant_read',
+          penaltyScore: 0.03,
+          detail: 'd',
+        },
+      ],
+      worstOffenders: [],
+    });
+    expect(summary).toEqual({
+      score: 1,
+      totalCalls: 0,
+      penalizedCalls: 0,
+      redundantReadCount: 0,
+      repeatedFailureCount: 0,
+      unusedOutputCount: 0,
+    });
+    expect(summary).not.toHaveProperty('penalties');
+    expect(summary).not.toHaveProperty('worstOffenders');
+  });
+});
+
+describe('ToolSelectionScorer.combineSummaries', () => {
+  it('returns the trivial empty result for an empty summary list', () => {
+    const scorer = new ToolSelectionScorer();
+    expect(scorer.combineSummaries([])).toEqual({
+      score: 1,
+      totalCalls: 0,
+      penalizedCalls: 0,
+      penalties: [],
+      worstOffenders: [],
+      redundantReadCount: 0,
+      repeatedFailureCount: 0,
+      unusedOutputCount: 0,
+    });
+  });
+
+  it('matches scoring the concatenated call list directly (below the 0.7 penalty cap)', () => {
+    const scorer = new ToolSelectionScorer();
+    // Session A: 2 redundant reads of the same file (3rd+ read, no edit between).
+    const callsA = [
+      {
+        id: 'a1',
+        sessionId: 's-a',
+        toolName: 'Read',
+        toolUseId: 'a1',
+        timestamp: 1,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+      {
+        id: 'a2',
+        sessionId: 's-a',
+        toolName: 'Read',
+        toolUseId: 'a2',
+        timestamp: 2,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+      {
+        id: 'a3',
+        sessionId: 's-a',
+        toolName: 'Read',
+        toolUseId: 'a3',
+        timestamp: 3,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+      {
+        id: 'a4',
+        sessionId: 's-a',
+        toolName: 'Read',
+        toolUseId: 'a4',
+        timestamp: 4,
+        durationMs: 5,
+        success: true,
+        filePath: '/f.ts',
+      },
+    ];
+    // Session B: one repeated Bash failure.
+    const callsB = [
+      {
+        id: 'b1',
+        sessionId: 's-b',
+        toolName: 'Bash',
+        toolUseId: 'b1',
+        timestamp: 10,
+        durationMs: 5,
+        success: false,
+      },
+      {
+        id: 'b2',
+        sessionId: 's-b',
+        toolName: 'Bash',
+        toolUseId: 'b2',
+        timestamp: 11,
+        durationMs: 5,
+        success: false,
+      },
+    ];
+
+    const summaryA = toToolSelectionSummary(scorer.scoreSession(callsA));
+    const summaryB = toToolSelectionSummary(scorer.scoreSession(callsB));
+    const combined = scorer.combineSummaries([summaryA, summaryB]);
+    const direct = scorer.scoreSession([...callsA, ...callsB]);
+
+    expect(combined.score).toBe(direct.score);
+    expect(combined.totalCalls).toBe(direct.totalCalls);
+    expect(combined.penalizedCalls).toBe(direct.penalizedCalls);
+    expect(combined.redundantReadCount).toBe(direct.redundantReadCount);
+    expect(combined.repeatedFailureCount).toBe(direct.repeatedFailureCount);
+    expect(combined.unusedOutputCount).toBe(direct.unusedOutputCount);
+    expect(combined.penalties).toEqual([]);
+    expect(combined.worstOffenders).toEqual([]);
   });
 });

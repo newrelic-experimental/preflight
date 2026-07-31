@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.14] - 2026-07-31
+
+### Fixed
+
+- **The Today dashboard's Tool Selection panel only reflected tool calls handled by whichever process happened to be serving the dashboard** — its score and redundant-read/repeated-failure/unused-output counts came from that one process's own in-memory buffer, silently excluding activity from every other concurrently running session and resetting whenever that process restarted. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are.
+
 ## [1.14.13] - 2026-07-30
 
 ### Fixed

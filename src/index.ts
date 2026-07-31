@@ -1828,6 +1828,7 @@ async function main(): Promise<void> {
           taskDetector,
           antiPatternDetector,
           efficiencyScorer,
+          toolSelectionScorer,
           transcriptMessageTracker,
           developer: config.developer ?? 'unknown',
           repoName: currentRepoName,
