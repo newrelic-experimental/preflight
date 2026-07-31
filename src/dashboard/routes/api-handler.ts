@@ -47,7 +47,7 @@ import type {
   ToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { toToolSelectionSummary } from '../../metrics/tool-selection-scorer.js';
-import type { ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
+import type { ModelUsageMetrics, ModelBreakdownEntry } from '../../metrics/model-usage-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
@@ -486,7 +486,13 @@ export interface ApiHandlerDeps {
     scoreSession: (calls: readonly ToolCallRecord[]) => ToolSelectionMetrics;
     combineSummaries: (summaries: readonly ToolSelectionSummary[]) => ToolSelectionMetrics;
   };
-  readonly modelUsageTracker?: { getMetrics: () => ModelUsageMetrics };
+  readonly modelUsageTracker?: {
+    getMetrics: () => ModelUsageMetrics;
+    getRawBreakdown: () => Readonly<Record<string, ModelBreakdownEntry>>;
+    combineBreakdowns: (
+      breakdowns: ReadonlyArray<Readonly<Record<string, ModelBreakdownEntry>>>,
+    ) => ModelUsageMetrics;
+  };
   readonly toolCallBuffer?: { getRecords: () => readonly ToolCallRecord[] };
   readonly liveSessionRegistry?: {
     getLiveSessions: () => string[];
@@ -1684,7 +1690,21 @@ export function createApiHandler(
 
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
-    jsonOk(res, deps.modelUsageTracker.getMetrics());
+    // Same own-live + persisted-today, excluding-own-already-persisted-session
+    // pattern as GET /api/tool-selection-score below: this process's live
+    // breakdown is always included, and every OTHER today session's persisted
+    // breakdown is added on top — never this process's own persisted entry,
+    // which would double-count activity already reflected in the live
+    // tracker.
+    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const persistedBreakdowns = (deps.sessionStore?.loadTodaySessions() ?? [])
+      .filter((s) => s.sessionId !== ownSessionId)
+      .map((s) => s.modelBreakdown ?? {});
+    const combined = deps.modelUsageTracker.combineBreakdowns([
+      deps.modelUsageTracker.getRawBreakdown(),
+      ...persistedBreakdowns,
+    ]);
+    jsonOk(res, combined);
   });
 
   routes.set('GET /api/cache-health', (_req, res) => {

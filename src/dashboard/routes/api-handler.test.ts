@@ -14,6 +14,7 @@ import {
   ToolSelectionScorer,
   toToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
+import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { localStartOfDay } from '../../lib/date.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
@@ -4229,31 +4230,98 @@ describe('api-handler GET /api/model-usage', () => {
     expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'modelUsageTracker' });
   });
 
-  it('returns modelUsageTracker.getMetrics() as JSON', async () => {
-    const fakeMetrics = {
-      byModel: {
-        'claude-sonnet-5': {
-          requestCount: 40,
-          totalInputTokens: 1000,
-          totalOutputTokens: 500,
-          totalCostUsd: 3.2,
-          costPerOutputToken: 0.0064,
-          costPerMillionTokens: 2133.33,
-          avgOutputTokensPerRequest: 12.5,
+  it('returns just this process live breakdown when no persisted-today sessions exist', async () => {
+    const tracker = new ModelUsageTracker();
+    tracker.recordUsage('claude-sonnet-5', 1000, 500, 3.2);
+    const handler = createApiHandler({ modelUsageTracker: tracker });
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(tracker.getMetrics());
+  });
+
+  it('combines this process live breakdown with every other persisted-today session, excluding its own already-persisted entry', async () => {
+    const tracker = new ModelUsageTracker();
+    // Live, not-yet-persisted: $1 / 100 output tokens.
+    tracker.recordUsage('model-a', 0, 100, 1);
+    const persistedToday = [
+      {
+        // Same session as the live tracker above — must NOT be double
+        // counted on top of the live breakdown.
+        sessionId: 'sess-own',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 1,
+            totalInputTokens: 0,
+            totalOutputTokens: 100,
+            totalCostUsd: 1,
+          },
         },
       },
-      mostUsedModel: 'claude-sonnet-5',
-      mostEfficientModel: 'claude-sonnet-5',
-      totalModelsUsed: 1,
-    };
+      {
+        sessionId: 'sess-other',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 9,
+            totalInputTokens: 0,
+            totalOutputTokens: 900,
+            totalCostUsd: 1,
+          },
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
     const handler = createApiHandler({
-      modelUsageTracker: { getMetrics: () => fakeMetrics },
+      modelUsageTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'sess-own' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
     });
     const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(JSON.parse(body())).toEqual(fakeMetrics);
+    const parsed = JSON.parse(body());
+    // Own live ($1/100tok) is not double-counted with its own persisted entry
+    // (also $1/100tok) — only sess-other's persisted entry is added on top:
+    // 100 (live) + 900 (other) = 1000 output tokens, $1 + $1 = $2 total.
+    // Weighted: $2 / 1000 = $0.002/token — not the naive average of $0.01 and
+    // ~$0.00111 (~$0.0056), which would be wrong.
+    expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
+    expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
+    expect(parsed.byModel['model-a'].costPerOutputToken).toBeCloseTo(0.002);
+    expect(parsed.byModel['model-a'].requestCount).toBe(10);
+  });
+
+  it('ignores persisted-today sessions with no modelBreakdown field (legacy files)', async () => {
+    const tracker = new ModelUsageTracker();
+    tracker.recordUsage('model-a', 100, 50, 0.5);
+    const persistedToday = [{ sessionId: 'sess-legacy' }] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      modelUsageTracker: tracker,
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(tracker.getMetrics());
   });
 });
 

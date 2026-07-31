@@ -17,6 +17,7 @@ import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from '../metrics/tool-selection-scorer.js';
+import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -69,6 +70,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     cacheSavingsUsd: 0,
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
+    modelBreakdown: {},
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
@@ -1633,5 +1635,137 @@ describe('SessionStore deserialization', () => {
     expect(session!.antiPatterns).toEqual([]);
     expect(session!.filesRead).toEqual([]);
     expect(session!.outcome).toBe('unknown');
+  });
+});
+
+describe('modelBreakdown field', () => {
+  it('buildSessionSummary populates modelBreakdown from modelUsageTracker.getRawBreakdown()', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const modelUsageTracker = {
+      getRawBreakdown: () => ({
+        'claude-sonnet-5': {
+          requestCount: 3,
+          totalInputTokens: 900,
+          totalOutputTokens: 400,
+          totalCostUsd: 0.12,
+        },
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      modelUsageTracker: modelUsageTracker as unknown as ModelUsageTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.modelBreakdown).toEqual({
+      'claude-sonnet-5': {
+        requestCount: 3,
+        totalInputTokens: 900,
+        totalOutputTokens: 400,
+        totalCostUsd: 0.12,
+      },
+    });
+  });
+
+  it('defaults modelBreakdown to {} when no modelUsageTracker is provided', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+    expect(summary.modelBreakdown).toEqual({});
+  });
+
+  it('round-trips modelBreakdown through JSON serialization', () => {
+    const original = makeSummary({
+      modelBreakdown: {
+        'claude-sonnet-5': {
+          requestCount: 3,
+          totalInputTokens: 900,
+          totalOutputTokens: 400,
+          totalCostUsd: 0.12,
+        },
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.modelBreakdown).toEqual(original.modelBreakdown);
+  });
+
+  it('defaults modelBreakdown to {} for legacy session files missing the field', () => {
+    const legacy = makeSummary();
+    const { modelBreakdown: _modelBreakdown, ...withoutField } = legacy;
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(withoutField)) as Parameters<
+        typeof deserializeFullSessionSummary
+      >[0],
+    );
+    expect(roundTripped.modelBreakdown).toEqual({});
+  });
+
+  it('drops malformed entries (missing numeric fields) rather than throwing', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      modelBreakdown: {
+        'good-model': {
+          requestCount: 1,
+          totalInputTokens: 10,
+          totalOutputTokens: 10,
+          totalCostUsd: 0.1,
+        },
+        'bad-model': { requestCount: 1 },
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.modelBreakdown).toEqual({
+      'good-model': {
+        requestCount: 1,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0.1,
+      },
+    });
   });
 });

@@ -58,6 +58,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     cacheSavingsUsd: 0,
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
+    modelBreakdown: {},
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,

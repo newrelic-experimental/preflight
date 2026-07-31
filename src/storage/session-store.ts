@@ -30,6 +30,7 @@ import {
   toToolSelectionSummary,
   type ToolSelectionSummary,
 } from '../metrics/tool-selection-scorer.js';
+import type { ModelUsageTracker, ModelBreakdownEntry } from '../metrics/model-usage-tracker.js';
 
 const logger = createLogger('session-store');
 
@@ -86,6 +87,14 @@ export interface FullSessionSummary extends SessionSummary {
    * for pre-fix session files and for sessions with no tool calls.
    */
   readonly toolSelectionMetrics: ToolSelectionSummary | null;
+  /**
+   * Raw per-model token/cost counters for this session, keyed by model name.
+   * Captured once at save time from ModelUsageTracker.getRawBreakdown(). Raw
+   * counters only, no derived ratios — see ModelUsageTracker.combineBreakdowns
+   * for why ratios are always recomputed at read time instead of persisted.
+   * `{}` for pre-fix session files and for sessions with no token events.
+   */
+  readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
 }
 
 export interface SessionFileInfo {
@@ -300,6 +309,7 @@ export interface BuildSessionSummarySources {
   efficiencyScorer?: EfficiencyScorer;
   transcriptMessageTracker?: TranscriptMessageTracker;
   toolSelectionScorer?: ToolSelectionScorer;
+  modelUsageTracker?: ModelUsageTracker;
   developer: string;
   repoName?: string | null;
   /**
@@ -454,6 +464,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     instructionPromptHash: sources.instructionPromptHash ?? null,
     timeline: timeline.length > 0 ? timeline : undefined,
     toolSelectionMetrics: toolSelectionResult,
+    modelBreakdown: sources.modelUsageTracker?.getRawBreakdown() ?? {},
   };
 }
 
@@ -543,6 +554,7 @@ interface SerializedFullSessionSummary {
   readonly instructionPromptHash?: unknown;
   readonly timeline?: Array<Record<string, unknown>>;
   readonly toolSelectionMetrics?: unknown;
+  readonly modelBreakdown?: Record<string, unknown>;
 }
 
 /**
@@ -595,6 +607,27 @@ export function deserializeFullSessionSummary(
       unusedOutputCount: r.unusedOutputCount,
     };
   })();
+
+  const modelBreakdown: Record<string, ModelBreakdownEntry> = {};
+  if (typeof obj.modelBreakdown === 'object' && obj.modelBreakdown !== null) {
+    for (const [model, entry] of Object.entries(obj.modelBreakdown)) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const e = entry as Record<string, unknown>;
+      if (
+        typeof e.requestCount === 'number' &&
+        typeof e.totalInputTokens === 'number' &&
+        typeof e.totalOutputTokens === 'number' &&
+        typeof e.totalCostUsd === 'number'
+      ) {
+        modelBreakdown[model] = {
+          requestCount: e.requestCount,
+          totalInputTokens: e.totalInputTokens,
+          totalOutputTokens: e.totalOutputTokens,
+          totalCostUsd: e.totalCostUsd,
+        };
+      }
+    }
+  }
 
   return {
     sessionId:
@@ -666,6 +699,7 @@ export function deserializeFullSessionSummary(
           }))
       : undefined,
     toolSelectionMetrics,
+    modelBreakdown,
   };
 }
 

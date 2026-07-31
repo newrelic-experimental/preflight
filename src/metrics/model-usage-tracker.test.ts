@@ -117,3 +117,116 @@ describe('ModelUsageTracker', () => {
     expect(m.byModel).toEqual({});
   });
 });
+
+describe('ModelUsageTracker.getRawBreakdown', () => {
+  it('returns raw counters with no derived fields for a new tracker', () => {
+    const t = new ModelUsageTracker();
+    expect(t.getRawBreakdown()).toEqual({});
+  });
+
+  it('returns raw counters matching what was recorded, without derived ratios', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('model-a', 1000, 500, 0.01);
+    expect(t.getRawBreakdown()).toEqual({
+      'model-a': {
+        requestCount: 1,
+        totalInputTokens: 1000,
+        totalOutputTokens: 500,
+        totalCostUsd: 0.01,
+      },
+    });
+  });
+
+  it('accumulates across multiple recordUsage calls for the same model', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('model-a', 1000, 500, 0.01);
+    t.recordUsage('model-a', 2000, 800, 0.02);
+    expect(t.getRawBreakdown()['model-a']).toEqual({
+      requestCount: 2,
+      totalInputTokens: 3000,
+      totalOutputTokens: 1300,
+      totalCostUsd: 0.03,
+    });
+  });
+});
+
+describe('ModelUsageTracker.combineBreakdowns', () => {
+  it('returns empty metrics for an empty array', () => {
+    const t = new ModelUsageTracker();
+    const combined = t.combineBreakdowns([]);
+    expect(combined).toEqual({
+      byModel: {},
+      mostUsedModel: null,
+      mostEfficientModel: null,
+      totalModelsUsed: 0,
+    });
+  });
+
+  it('sums raw counters across breakdowns before deriving ratios, rather than averaging per-source ratios', () => {
+    const t = new ModelUsageTracker();
+    // Source A alone: $1 / 100 output tokens = $0.01/token.
+    const sourceA = {
+      'model-a': { requestCount: 1, totalInputTokens: 0, totalOutputTokens: 100, totalCostUsd: 1 },
+    };
+    // Source B alone: $1 / 900 output tokens ≈ $0.00111/token.
+    const sourceB = {
+      'model-a': { requestCount: 9, totalInputTokens: 0, totalOutputTokens: 900, totalCostUsd: 1 },
+    };
+    const combined = t.combineBreakdowns([sourceA, sourceB]);
+    // Correct: sum first ($2 / 1000 tokens = $0.002/token). A naive average of
+    // the two per-source ratios ($0.01 and ~$0.00111) would give ~$0.0056/token,
+    // which is wrong — it treats both sources as equally weighted regardless
+    // of how much volume each actually contributed.
+    expect(combined.byModel['model-a']?.requestCount).toBe(10);
+    expect(combined.byModel['model-a']?.totalOutputTokens).toBe(1000);
+    expect(combined.byModel['model-a']?.totalCostUsd).toBeCloseTo(2);
+    expect(combined.byModel['model-a']?.costPerOutputToken).toBeCloseTo(0.002);
+  });
+
+  it('sums distinct models independently', () => {
+    const t = new ModelUsageTracker();
+    const a = {
+      'model-a': {
+        requestCount: 1,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0.1,
+      },
+    };
+    const b = {
+      'model-b': {
+        requestCount: 2,
+        totalInputTokens: 20,
+        totalOutputTokens: 20,
+        totalCostUsd: 0.2,
+      },
+    };
+    const combined = t.combineBreakdowns([a, b]);
+    expect(combined.totalModelsUsed).toBe(2);
+    expect(combined.byModel['model-a']?.requestCount).toBe(1);
+    expect(combined.byModel['model-b']?.requestCount).toBe(2);
+  });
+
+  it('recomputes mostUsedModel and mostEfficientModel from the combined totals', () => {
+    const t = new ModelUsageTracker();
+    const a = {
+      cheap: { requestCount: 1, totalInputTokens: 0, totalOutputTokens: 100, totalCostUsd: 0.05 },
+    };
+    const b = {
+      cheap: { requestCount: 5, totalInputTokens: 0, totalOutputTokens: 500, totalCostUsd: 0.25 },
+    };
+    const c = {
+      pricey: { requestCount: 1, totalInputTokens: 0, totalOutputTokens: 100, totalCostUsd: 1 },
+    };
+    const combined = t.combineBreakdowns([a, b, c]);
+    expect(combined.mostUsedModel).toBe('cheap');
+    expect(combined.mostEfficientModel).toBe('cheap');
+  });
+
+  it('is consistent with getMetrics() when combining a single source equal to this tracker own raw breakdown', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('model-a', 1000, 500, 0.01);
+    t.recordUsage('model-b', 2000, 800, 0.02);
+    expect(t.combineBreakdowns([t.getRawBreakdown()])).toEqual(t.getMetrics());
+  });
+});
