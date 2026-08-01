@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.20] - 2026-08-01
+
+### Fixed
+
+- **`ParentTranscriptWatcher` (added in 1.14.19) attributed every parent-session token event to "today," regardless of the turn's real timestamp** — the day-bucketed cost total is keyed by arrival time unless an explicit timestamp is passed in, and the parent-token wiring never passed one (unlike the sibling subagent-token path, which already did). This was latent and harmless while nothing replayed history, but became a real bug the moment the watcher started backfilling up to 24h of transcript history in `--local` mode: every replayed historical turn got counted as today's spend, inflating and destabilizing the "Spend Today" figure while the backlog was being processed. Parent token events are now stamped with their actual transcript timestamp before being recorded, so historical turns land in their real day's bucket instead of today's.
+
 ## [1.14.19] - 2026-08-01
 
 ### Fixed

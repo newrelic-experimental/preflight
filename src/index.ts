@@ -1687,7 +1687,9 @@ async function main(): Promise<void> {
           cacheCreationTokens: tokenEvent.cacheCreationTokens,
           totalTokens: tokenEvent.inputTokens + tokenEvent.outputTokens,
         };
-        const breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model);
+        const breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
+          timestampMs: tokenEvent.timestamp,
+        });
         modelUsageTracker.recordUsage(
           tokenEvent.model,
           tokenEvent.inputTokens,
