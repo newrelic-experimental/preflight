@@ -166,6 +166,16 @@ export class HookEventProcessor {
    */
   private readonly workflowRunDedup = new Set<string>();
   private readonly workflowRunDedupOrder: string[] = [];
+  /**
+   * Dedup ring of `sessionId|messageId` for recent parent-transcript token
+   * events, mirroring subagentDedup above. `ParentTranscriptWatcher` tails the
+   * main transcript via a durable byte cursor and can re-deliver a line after
+   * a crash mid-emit; without this, that redelivery double-counts cost. Only
+   * applied when messageId is present — events without one (defensive; any
+   * other/future producer) pass through unchanged, unaffected by this ring.
+   */
+  private readonly tokenDedup = new Set<string>();
+  private readonly tokenDedupOrder: string[] = [];
 
   private readonly pending: Map<string, PreHookEvent> = new Map();
   private readonly maxPendingEvents: number;
@@ -439,6 +449,18 @@ export class HookEventProcessor {
 
   private handleTokenEvent(event: TokenHookEvent): void {
     if (!this.onTokenEvent) return;
+
+    if (typeof event.messageId === 'string' && event.messageId.length > 0) {
+      const dedupKey = `${event.sessionId ?? ''}|${event.messageId}`;
+      if (this.tokenDedup.has(dedupKey)) return;
+      this.tokenDedup.add(dedupKey);
+      this.tokenDedupOrder.push(dedupKey);
+      if (this.tokenDedupOrder.length > 4096) {
+        const evicted = this.tokenDedupOrder.shift();
+        if (evicted) this.tokenDedup.delete(evicted);
+      }
+    }
+
     const tokenEvent: TokenEvent = {
       mode: 'token',
       timestamp: event.timestamp,

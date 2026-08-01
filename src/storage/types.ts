@@ -44,6 +44,8 @@ export interface TokenHookEvent extends HookEventBase {
   readonly cacheCreationTokens?: number;
   readonly model?: string;
   readonly sessionId?: string;
+  /** Anthropic message id (msg_...) — used to dedupe replayed turns after a cursor-based re-read. */
+  readonly messageId?: string;
 }
 
 /** Emitted by the SubagentWatcher for each subagent assistant turn. */

@@ -1054,6 +1054,45 @@ describe('LocalStore', () => {
       expect(existsSync(path)).toBe(false);
     });
 
+    it('preserves a parent-transcript cursor whose session is live, regardless of mtime', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(
+        `.parent-transcript-pos-${PARENT_SESSION}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set([PARENT_SESSION]), 24);
+
+      expect(result.parentTranscriptCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('preserves a dead-session parent-transcript cursor with recent mtime', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(`.parent-transcript-pos-${PARENT_SESSION}`);
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.parentTranscriptCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('deletes a dead-session parent-transcript cursor older than the discovery window', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const path = makeCursorFile(
+        `.parent-transcript-pos-${PARENT_SESSION}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.parentTranscriptCursors).toBe(1);
+      expect(existsSync(path)).toBe(false);
+    });
+
     it('preserves a transcript cursor while its companion buffer file exists', () => {
       mkdirSync(tmpDir, { recursive: true });
       writeFileSync(resolve(tmpDir, `buffer-${OTHER_SESSION}.jsonl`), '');
@@ -1095,13 +1134,19 @@ describe('LocalStore', () => {
       mkdirSync(tmpDir, { recursive: true });
       writeFileSync(resolve(tmpDir, '.subagent-pos-not-a-valid-agent-id'), '{}');
       writeFileSync(resolve(tmpDir, '.transcript-pos-'), '{}');
+      writeFileSync(resolve(tmpDir, '.parent-transcript-pos-'), '{}');
 
       const store = new LocalStore(tmpDir);
       const result = store.gcWatcherCursors(new Set(), 24);
 
-      expect(result).toEqual({ subagentCursors: 0, transcriptCursors: 0 });
+      expect(result).toEqual({
+        subagentCursors: 0,
+        transcriptCursors: 0,
+        parentTranscriptCursors: 0,
+      });
       expect(existsSync(resolve(tmpDir, '.subagent-pos-not-a-valid-agent-id'))).toBe(true);
       expect(existsSync(resolve(tmpDir, '.transcript-pos-'))).toBe(true);
+      expect(existsSync(resolve(tmpDir, '.parent-transcript-pos-'))).toBe(true);
     });
 
     it('returns zeros when storage path does not exist', () => {
@@ -1110,6 +1155,7 @@ describe('LocalStore', () => {
       expect(store.gcWatcherCursors(new Set(), 24)).toEqual({
         subagentCursors: 0,
         transcriptCursors: 0,
+        parentTranscriptCursors: 0,
       });
     });
   });

@@ -61,6 +61,7 @@ import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.j
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
 import { SubagentWatcher } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
+import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import { WorkflowStore } from './dashboard/workflow-store.js';
 import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
@@ -673,6 +674,7 @@ async function main(): Promise<void> {
   // regardless of which mode (stdio vs. local) is active.
   let activeSubagentWatcher: SubagentWatcher | null = null;
   let activeWorkflowWatcher: WorkflowWatcher | null = null;
+  let activeParentTranscriptWatcher: ParentTranscriptWatcher | null = null;
   // Aborts the async resolveSessionId polling loop when shutdown fires so
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
@@ -725,6 +727,7 @@ async function main(): Promise<void> {
       eventProcessor?.stop();
       activeSubagentWatcher?.stop();
       activeWorkflowWatcher?.stop();
+      activeParentTranscriptWatcher?.stop();
       liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
@@ -1930,6 +1933,12 @@ async function main(): Promise<void> {
     // double count. The WorkflowWatcher stays opt-in (NR_AI_ENABLE_WORKFLOW_WATCHER=1).
     const subagentWatcherEnabled = process.env['NR_AI_ENABLE_SUBAGENT_WATCHER'] !== '0';
     const workflowWatcherEnabled = process.env['NR_AI_ENABLE_WORKFLOW_WATCHER'] === '1';
+    // Unlike subagent/workflow watchers, ParentTranscriptWatcher is NOT gated
+    // by watcherShouldRun/NR_AI_WATCHER_MODE — see startWatchers() below for
+    // why. Do not "fix" this to match the other two; that would reintroduce
+    // the exact regression this divergence avoids.
+    const parentTranscriptWatcherEnabled =
+      process.env['NR_AI_ENABLE_PARENT_TRANSCRIPT_WATCHER'] !== '0';
 
     // Construct + start the watchers for a given session id. In `--stdio` mode
     // the watchers filter discovered transcript dirs by `parentSessionId`; in
@@ -1938,6 +1947,30 @@ async function main(): Promise<void> {
     // provisional-session path so both produce identical wiring — see
     // repointWatchersToRealSession below.
     const startWatchers = (watcherSessionId: string): void => {
+      // ParentTranscriptWatcher feeds parent-session token/cost tracking —
+      // the primary cost signal, not a secondary one like subagent/workflow
+      // cost. The old per-hook transcript scanner it replaces ran
+      // unconditionally in every mode with zero coupling to
+      // NR_AI_WATCHER_MODE; gating this behind watcherShouldRun the same way
+      // SubagentWatcher/WorkflowWatcher are gated would mean a standalone
+      // `--local` deployment (no --stdio sibling, NR_AI_WATCHER_MODE unset)
+      // goes from "buggy but nonzero" parent-cost tracking to "exactly zero"
+      // by default — a real regression. So it always runs, gated only by its
+      // own opt-out flag. Race-safety for "--stdio and --local both alive for
+      // the same session" comes for free from the same
+      // getActiveSessionIdsFromHeartbeats() exclusion SubagentWatcher's
+      // unscoped discovery already uses.
+      if (parentTranscriptWatcherEnabled) {
+        activeParentTranscriptWatcher = new ParentTranscriptWatcher({
+          storagePath: config!.storagePath,
+          parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          localStore,
+        });
+        activeParentTranscriptWatcher.start();
+        logger.info('ParentTranscriptWatcher started', {
+          parentSessionId: isStdioWatcher ? watcherSessionId : null,
+        });
+      }
       if (watcherShouldRun && subagentWatcherEnabled) {
         activeSubagentWatcher = new SubagentWatcher({
           storagePath: config!.storagePath,
@@ -2004,6 +2037,10 @@ async function main(): Promise<void> {
     // real id — mirroring the eventProcessor.replaceStore() hot-swap. Only the
     // watchers that were actually started get rebuilt.
     const repointWatchersToRealSession = (realSessionId: string): void => {
+      if (activeParentTranscriptWatcher) {
+        activeParentTranscriptWatcher.stop();
+        activeParentTranscriptWatcher = null;
+      }
       if (activeSubagentWatcher) {
         activeSubagentWatcher.stop();
         activeSubagentWatcher = null;

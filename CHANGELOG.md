@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.19] - 2026-08-01
+
+### Fixed
+
+- **Parent-session cost tracking only ever captured the single most recent assistant turn each time a tool-call hook fired, silently dropping every other turn that happened in between** — since a turn with no tool call never triggers a hook at all, any conversational reply sandwiched between tool calls (or a stretch of replies at the end of a session) was permanently lost from cost tracking, undercounting real spend by roughly half in a mostly-conversational session. Token capture is now handled by a `ParentTranscriptWatcher` that tails each session's own transcript independently of tool-call timing, via the same durable byte-cursor approach already used for subagent cost tracking, so every real turn is captured regardless of whether it called a tool.
+
 ## [1.14.18] - 2026-08-01
 
 ### Fixed

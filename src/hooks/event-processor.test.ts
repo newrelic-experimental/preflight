@@ -745,6 +745,59 @@ describe('HookEventProcessor', () => {
       expect(() => processor.processEvents([tokenEvent])).not.toThrow();
       expect(records).toHaveLength(0);
     });
+
+    it('deduplicates two token events sharing the same sessionId + messageId', () => {
+      const tokenEvents: unknown[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onTokenEvent: (event) => {
+          tokenEvents.push(event);
+        },
+      });
+
+      const tokenEvent: HookEvent = {
+        mode: 'token',
+        tool: '',
+        timestamp: 5000,
+        inputTokens: 1000,
+        outputTokens: 200,
+        model: 'claude-opus-4-6',
+        sessionId: 'sess-001',
+        messageId: 'msg_abc123',
+      };
+
+      // Simulates a cursor replay after a crash mid-emit re-delivering the
+      // same transcript turn a second time.
+      processor.processEvents([tokenEvent, { ...tokenEvent }]);
+
+      expect(tokenEvents).toHaveLength(1);
+    });
+
+    it('does not dedupe token events that have no messageId', () => {
+      const tokenEvents: unknown[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onTokenEvent: (event) => {
+          tokenEvents.push(event);
+        },
+      });
+
+      const tokenEvent: HookEvent = {
+        mode: 'token',
+        tool: '',
+        timestamp: 5000,
+        inputTokens: 1000,
+        outputTokens: 200,
+        model: 'claude-opus-4-6',
+        sessionId: 'sess-001',
+      };
+
+      processor.processEvents([tokenEvent, { ...tokenEvent }]);
+
+      expect(tokenEvents).toHaveLength(2);
+    });
   });
 
   describe('replaceStore()', () => {

@@ -14,22 +14,18 @@
 
 import {
   readFileSync,
-  readSync,
   writeFileSync,
   openSync,
   closeSync,
   mkdirSync,
   existsSync,
   constants as fsConstants,
-  statSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-
-import type { RawTranscriptEntry, RawAssistantMessage } from './transcript-types.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -147,21 +143,6 @@ function countLines(text: string): number {
   return (text.match(/\n/g) || []).length + 1;
 }
 
-// ---------------------------------------------------------------------------
-// Transcript token collection
-// ---------------------------------------------------------------------------
-
-const TRANSCRIPT_TAIL_BYTES = 16_384;
-const DEFAULT_MODEL = 'claude-opus-4-6';
-
-interface TranscriptUsage {
-  input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
-  output_tokens?: number;
-  model?: string;
-}
-
 /** A content block carrying a `text` field — narrows before reading `.text`. */
 function hasStringText(block: unknown): block is { text: string } {
   return (
@@ -170,183 +151,6 @@ function hasStringText(block: unknown): block is { text: string } {
     'text' in block &&
     typeof (block as { text?: unknown }).text === 'string'
   );
-}
-
-function getClaudeHome(): string {
-  return process.env.NR_AI_OBSERVE_CLAUDE_HOME ?? resolve(homedir(), '.claude');
-}
-
-function getTranscriptPath(cwd: string | undefined, sessionId: string | undefined): string | null {
-  if (!sessionId) return null;
-  const projectDir = cwd ? cwd.replace(/[\\/]/g, '-') : process.env.PWD?.replace(/[\\/]/g, '-');
-  if (!projectDir) return null;
-  return resolve(getClaudeHome(), 'projects', projectDir, `${sessionId}.jsonl`);
-}
-
-const WINDOWS_DRIVE_PATH_RE = /^([A-Za-z]):[\\/](.*)$/;
-
-// Windows Claude Code sends Windows-style paths (C:\Users\...) even when this
-// collector runs inside WSL; translate to the WSL mount so statSync can read it.
-function translateWslPath(path: string): string {
-  if (process.platform !== 'linux') return path;
-  const match = WINDOWS_DRIVE_PATH_RE.exec(path);
-  if (!match) return path;
-  const [, drive, rest] = match;
-  return `/mnt/${drive.toLowerCase()}/${rest.replace(/\\/g, '/')}`;
-}
-
-function readLastAssistantUsage(transcriptPath: string): TranscriptUsage | null {
-  try {
-    const stat = statSync(transcriptPath);
-    if (stat.size === 0) return null;
-
-    const fd = openSync(transcriptPath, fsConstants.O_RDONLY);
-    try {
-      const readSize = Math.min(stat.size, TRANSCRIPT_TAIL_BYTES);
-      const buffer = Buffer.alloc(readSize);
-      const bytesRead = readSync(fd, buffer, 0, readSize, stat.size - readSize);
-      const tail = buffer.toString('utf-8', 0, bytesRead);
-
-      const lines = tail.split('\n').filter(Boolean);
-      for (let i = lines.length - 1; i >= 0; i--) {
-        try {
-          const entry = JSON.parse(lines[i]) as RawTranscriptEntry;
-          if (entry.type === 'assistant' && entry.message && typeof entry.message === 'object') {
-            const msg = entry.message as RawAssistantMessage;
-            // Skip synthetic entries (Claude Code's internal injections —
-            // compaction summaries, system messages). They carry model:
-            // '<synthetic>' which doesn't match any pricing table entry.
-            if (msg.model === '<synthetic>') continue;
-            if (msg.usage && typeof msg.usage === 'object') {
-              const usage = { ...(msg.usage as TranscriptUsage) };
-              if (typeof msg.model === 'string' && msg.model.length > 0) {
-                usage.model = msg.model;
-              }
-              return usage;
-            }
-          }
-        } catch {
-          continue;
-        }
-      }
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // Silently ignore — transcript may not exist yet
-  }
-  return null;
-}
-
-function getLastTranscriptSize(sessionId: string): number {
-  if (!SESSION_ID_RE.test(sessionId)) return 0;
-  try {
-    const bufferDir = dirname(getBufferPath(sessionId));
-    const statePath = resolve(bufferDir, `.transcript-pos-${sessionId}`);
-    if (existsSync(statePath)) {
-      return parseInt(readFileSync(statePath, 'utf-8').trim(), 10) || 0;
-    }
-  } catch {
-    // Ignore
-  }
-  return 0;
-}
-
-let _transcriptSizeWriteFailed = false;
-
-function setLastTranscriptSize(sessionId: string, size: number): void {
-  if (!SESSION_ID_RE.test(sessionId)) return;
-  try {
-    const bufferDir = dirname(getBufferPath(sessionId));
-    if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
-    }
-    const statePath = resolve(bufferDir, `.transcript-pos-${sessionId}`);
-    writeFileSync(statePath, String(size), { mode: 0o600 });
-    _transcriptSizeWriteFailed = false;
-  } catch (err) {
-    if (!_transcriptSizeWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot persist transcript size: ${String(err)}\n`,
-      );
-      _transcriptSizeWriteFailed = true;
-    }
-  }
-}
-
-function collectTranscriptTokens(data: {
-  cwd?: string;
-  session_id?: string;
-  transcript_path?: string;
-}): void {
-  const sessionId = data.session_id;
-  // Prefer Claude Code's own transcript_path field — it's authoritative and
-  // works under git worktrees, where deriving the path from cwd produces a
-  // dashed directory that doesn't match the parent project's transcript dir.
-  const rawTranscriptPath =
-    typeof data.transcript_path === 'string' && data.transcript_path.length > 0
-      ? data.transcript_path
-      : getTranscriptPath(data.cwd, sessionId);
-  const transcriptPath = rawTranscriptPath ? translateWslPath(rawTranscriptPath) : null;
-  if (!transcriptPath || !sessionId) return;
-
-  let currentSize: number;
-  try {
-    currentSize = statSync(transcriptPath).size;
-  } catch {
-    return;
-  }
-
-  let lastSize = getLastTranscriptSize(sessionId);
-  if (currentSize < lastSize) {
-    // Transcript file was rotated — reset tracking so we read from offset 0
-    setLastTranscriptSize(sessionId, 0);
-    lastSize = 0;
-  }
-  if (currentSize <= lastSize) return;
-
-  const usage = readLastAssistantUsage(transcriptPath);
-  if (!usage) return;
-
-  const inputTokens = usage.input_tokens ?? 0;
-  const outputTokens = usage.output_tokens ?? 0;
-  if (inputTokens === 0 && outputTokens === 0) return;
-
-  const tokenEvent: Record<string, unknown> = {
-    mode: 'token',
-    timestamp: Date.now(),
-    inputTokens,
-    outputTokens,
-    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-    cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
-    model: usage.model ?? DEFAULT_MODEL,
-  };
-  tokenEvent.sessionId = sessionId;
-
-  try {
-    const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname(bufferPath);
-    if (!existsSync(bufferDir)) {
-      mkdirSync(bufferDir, { recursive: true, mode: 0o700 });
-    }
-
-    const line = JSON.stringify(tokenEvent) + '\n';
-    const fd = openSync(
-      bufferPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND,
-      0o600,
-    );
-    try {
-      writeFileSync(fd, line);
-    } finally {
-      closeSync(fd);
-    }
-    // Persist the new size only after a successful buffer write so that a
-    // write failure doesn't silently drop the token event on the next invocation.
-    setLastTranscriptSize(sessionId, currentSize);
-  } catch {
-    // Silent failure — never block Claude Code
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,19 +984,6 @@ function processHook(raw: string): void {
       // Silent failure — never block Antigravity
     }
   }
-
-  // After writing the tool event, collect token usage from the transcript.
-  // Only on PostToolUse/AfterTool — each assistant turn produces exactly one
-  // usage object. This is a no-op for Gemini CLI's transcript format (not
-  // Claude Code's Anthropic-shaped JSONL) — same accepted behavior as
-  // Droid/Kiro/Amazon Q, whose transcripts aren't in this format either.
-  if (eventName === 'posttooluse' || eventName === 'aftertool') {
-    try {
-      collectTranscriptTokens(data);
-    } catch {
-      // Silent failure — transcript reading is best-effort
-    }
-  }
 }
 
 // Exported for testing
@@ -1203,10 +994,6 @@ export {
   sizeOf,
   truncate,
   getRecordContent,
-  collectTranscriptTokens,
-  readLastAssistantUsage,
-  getTranscriptPath,
-  translateWslPath,
   getBufferPath,
   writePpidBreadcrumb,
   writeCwdBreadcrumb,

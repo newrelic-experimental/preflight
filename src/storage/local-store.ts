@@ -18,6 +18,7 @@ const logger = createLogger('local-store');
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const SUBAGENT_CURSOR_RE = /^\.subagent-pos-(.+)-(a[a-f0-9]{16})$/;
 const TRANSCRIPT_CURSOR_RE = /^\.transcript-pos-(.+)$/;
+const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
 
 /**
  * A buffer file is treated as orphan when its mtime is older than this AND
@@ -698,9 +699,9 @@ export class LocalStore {
   gcWatcherCursors(
     activeSessionIds: ReadonlySet<string>,
     discoveryHours: number,
-  ): { subagentCursors: number; transcriptCursors: number } {
+  ): { subagentCursors: number; transcriptCursors: number; parentTranscriptCursors: number } {
     if (!existsSync(this.storagePath)) {
-      return { subagentCursors: 0, transcriptCursors: 0 };
+      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
     }
     let entries: string[];
     try {
@@ -709,7 +710,7 @@ export class LocalStore {
       logger.warn('Failed to enumerate storage path for gcWatcherCursors', {
         error: String(err),
       });
-      return { subagentCursors: 0, transcriptCursors: 0 };
+      return { subagentCursors: 0, transcriptCursors: 0, parentTranscriptCursors: 0 };
     }
 
     const cutoffMs = Date.now() - discoveryHours * 60 * 60 * 1000;
@@ -719,6 +720,7 @@ export class LocalStore {
 
     let subagentCursors = 0;
     let transcriptCursors = 0;
+    let parentTranscriptCursors = 0;
 
     for (const name of entries) {
       const subagentMatch = SUBAGENT_CURSOR_RE.exec(name);
@@ -750,14 +752,38 @@ export class LocalStore {
         } catch (err) {
           logger.debug('Failed to delete stale transcript cursor', { error: String(err) });
         }
+        continue;
+      }
+
+      // ParentTranscriptWatcher tails its session's own main transcript
+      // continuously (unlike the retired per-hook scanner the legacy
+      // .transcript-pos- rule above was written for), so it uses the same
+      // not-live + mtime rule as subagent cursors, not the buffer-file rule.
+      const parentTranscriptMatch = PARENT_TRANSCRIPT_CURSOR_RE.exec(name);
+      if (parentTranscriptMatch) {
+        const sessionId = parentTranscriptMatch[1];
+        if (!SESSION_ID_RE.test(sessionId)) continue;
+        if (activeSessionIds.has(sessionId)) continue;
+        const path = resolve(this.storagePath, name);
+        try {
+          if (statSync(path).mtimeMs >= cutoffMs) continue;
+          unlinkSync(path);
+          parentTranscriptCursors++;
+        } catch (err) {
+          logger.debug('Failed to delete stale parent-transcript cursor', { error: String(err) });
+        }
       }
     }
 
-    if (subagentCursors > 0 || transcriptCursors > 0) {
-      logger.info('Cleaned up watcher cursor files', { subagentCursors, transcriptCursors });
+    if (subagentCursors > 0 || transcriptCursors > 0 || parentTranscriptCursors > 0) {
+      logger.info('Cleaned up watcher cursor files', {
+        subagentCursors,
+        transcriptCursors,
+        parentTranscriptCursors,
+      });
     }
 
-    return { subagentCursors, transcriptCursors };
+    return { subagentCursors, transcriptCursors, parentTranscriptCursors };
   }
 
   /**
