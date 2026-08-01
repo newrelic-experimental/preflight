@@ -81,6 +81,16 @@ Point your application's OTel SDK at `http://localhost:4318`. JSON OTLP payloads
 
 ---
 
+## OTLP Config Field Names and Legacy Compatibility
+
+The fields above (`otlpEndpoint`, `otlpHeaders`, `transport`, `otlpReceiverEnabled`, `otlpReceiverPort`, `otlpReceiverBindAddress`, `otlpForwardEndpoint`, `otlpForwardHeaders`) are the legacy flat top-level keys. On the resolved `McpServerConfig` (in code), all 8 live nested under an `otlp: {...}` object instead — matching the `dashboard`/`alerts` nesting precedent (e.g. `otlp.endpoint`, `otlp.receiverEnabled`).
+
+The config-file schema (`ConfigFileSchema`) still accepts the flat legacy keys shown above for backward compatibility — using one logs a deprecation warning naming the specific legacy keys consulted (`pickOtlpValue()` in `loadMcpConfig()`). Env var names are unchanged either way.
+
+`configVersion` (optional, defaults to `1`) is a config-file-only field with no env var or CLI flag — it exists purely as a documented convention (`CURRENT_CONFIG_VERSION` in `src/config.ts`) to bump when a future change to `config.json`'s shape is non-additive (a field renamed, moved, or removed), so a migration path has something to branch on. Every change to date, including the `otlp` nesting above, has been additive.
+
+---
+
 ## Setup Wizard — Environment Variable Pre-Fill
 
 If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are set in the environment when `preflight setup` is run, the wizard pre-fills those prompts and shows the env var name as the hint (`$NEW_RELIC_LICENSE_KEY`). Pressing Enter accepts the value — no copy-paste needed. This makes the wizard scriptable in CI pipelines or Docker-based dev environments where credentials are already injected as environment variables.
