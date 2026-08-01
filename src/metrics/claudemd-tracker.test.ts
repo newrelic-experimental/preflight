@@ -7,6 +7,7 @@ import { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { ClaudeMdTracker, matchesInstructionFile } from './claudemd-tracker.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -62,6 +63,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
     modelBreakdown: {},
+    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,

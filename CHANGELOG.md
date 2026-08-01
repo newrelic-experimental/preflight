@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.17] - 2026-07-31
+
+### Fixed
+
+- **The Today dashboard's Quality panel only reflected diff-apply/test-pass/backtrack/self-correction signals from whichever process happened to be serving the dashboard, and only when that process had recorded zero signals of its own** — as soon as this process recorded even one signal, every other today session's activity was ignored outright. It's now computed from every today session's activity, the same way the other cross-process Today dashboard fixes already are. A persisted session's own detail view was also simplified to read its quality signals directly instead of re-deriving them from its recorded timeline.
+
 ## [1.14.16] - 2026-07-31
 
 ### Fixed

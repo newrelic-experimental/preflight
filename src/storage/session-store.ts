@@ -31,6 +31,11 @@ import {
   type ToolSelectionSummary,
 } from '../metrics/tool-selection-scorer.js';
 import type { ModelUsageTracker, ModelBreakdownEntry } from '../metrics/model-usage-tracker.js';
+import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
+import {
+  type QualityProxyRawCounts,
+  ZERO_QUALITY_PROXY_COUNTS,
+} from '../metrics/quality-proxy-tracker.js';
 
 const logger = createLogger('session-store');
 
@@ -95,6 +100,17 @@ export interface FullSessionSummary extends SessionSummary {
    * `{}` for pre-fix session files and for sessions with no token events.
    */
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
+  /**
+   * Raw quality-proxy signal counts for this session, captured once at save
+   * time from QualityProxyTracker.getRawCounts(). Raw counts only, no derived
+   * rates — see combineQualityProxyRawCounts for why rates are always
+   * recomputed at read time instead of persisted. All-zero
+   * (ZERO_QUALITY_PROXY_COUNTS) for pre-fix session files and for sessions
+   * with no quality signals. Nested (not top-level) specifically to avoid
+   * colliding with the unrelated top-level testPassCount/testRunCount fields
+   * above (total task test runs, not quality-proxy test signals).
+   */
+  readonly qualityProxy: QualityProxyRawCounts;
 }
 
 export interface SessionFileInfo {
@@ -310,6 +326,7 @@ export interface BuildSessionSummarySources {
   transcriptMessageTracker?: TranscriptMessageTracker;
   toolSelectionScorer?: ToolSelectionScorer;
   modelUsageTracker?: ModelUsageTracker;
+  qualityProxyTracker?: QualityProxyTracker;
   developer: string;
   repoName?: string | null;
   /**
@@ -465,6 +482,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     timeline: timeline.length > 0 ? timeline : undefined,
     toolSelectionMetrics: toolSelectionResult,
     modelBreakdown: sources.modelUsageTracker?.getRawBreakdown() ?? {},
+    qualityProxy: sources.qualityProxyTracker?.getRawCounts() ?? ZERO_QUALITY_PROXY_COUNTS,
   };
 }
 
@@ -555,6 +573,7 @@ interface SerializedFullSessionSummary {
   readonly timeline?: Array<Record<string, unknown>>;
   readonly toolSelectionMetrics?: unknown;
   readonly modelBreakdown?: Record<string, unknown>;
+  readonly qualityProxy?: Record<string, unknown>;
 }
 
 /**
@@ -629,6 +648,32 @@ export function deserializeFullSessionSummary(
     }
   }
 
+  const qualityProxy: QualityProxyRawCounts = (() => {
+    const q = obj.qualityProxy;
+    if (typeof q !== 'object' || q === null) return ZERO_QUALITY_PROXY_COUNTS;
+    const r = q as Record<string, unknown>;
+    if (
+      typeof r.totalSignals !== 'number' ||
+      typeof r.diffApplyCleanCount !== 'number' ||
+      typeof r.diffFailCount !== 'number' ||
+      typeof r.testPassCount !== 'number' ||
+      typeof r.testFailCount !== 'number' ||
+      typeof r.backtrackCount !== 'number' ||
+      typeof r.selfCorrectionCount !== 'number'
+    ) {
+      return ZERO_QUALITY_PROXY_COUNTS;
+    }
+    return {
+      totalSignals: r.totalSignals,
+      diffApplyCleanCount: r.diffApplyCleanCount,
+      diffFailCount: r.diffFailCount,
+      testPassCount: r.testPassCount,
+      testFailCount: r.testFailCount,
+      backtrackCount: r.backtrackCount,
+      selfCorrectionCount: r.selfCorrectionCount,
+    };
+  })();
+
   return {
     sessionId:
       typeof obj.sessionId === 'string' && obj.sessionId.length > 0 ? obj.sessionId : 'unknown',
@@ -700,6 +745,7 @@ export function deserializeFullSessionSummary(
       : undefined,
     toolSelectionMetrics,
     modelBreakdown,
+    qualityProxy,
   };
 }
 

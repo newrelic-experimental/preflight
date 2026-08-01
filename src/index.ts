@@ -1830,6 +1830,7 @@ async function main(): Promise<void> {
           efficiencyScorer,
           toolSelectionScorer,
           modelUsageTracker,
+          qualityProxyTracker,
           transcriptMessageTracker,
           developer: config.developer ?? 'unknown',
           repoName: currentRepoName,

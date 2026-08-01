@@ -20,6 +20,7 @@ import { TaskDetector } from '../metrics/task-detector.js';
 import { PromptFeedbackEngine } from '../metrics/prompt-feedback.js';
 import { RecommendationEngine } from '../metrics/recommendation-engine.js';
 import { PersonalCoach } from '../metrics/personal-coach.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   handleGetSessionHistory,
@@ -91,6 +92,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
     modelBreakdown: {},
+    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,

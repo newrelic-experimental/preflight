@@ -41,7 +41,14 @@ import type { BudgetStatus } from '../../metrics/budget-tracker.js';
 import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
-import type { QualityProxyMetrics } from '../../metrics/quality-proxy-tracker.js';
+import type {
+  QualityProxyMetrics,
+  QualityProxyRawCounts,
+} from '../../metrics/quality-proxy-tracker.js';
+import {
+  combineQualityProxyRawCounts,
+  ZERO_QUALITY_PROXY_COUNTS,
+} from '../../metrics/quality-proxy-tracker.js';
 import type {
   ToolSelectionMetrics,
   ToolSelectionSummary,
@@ -53,99 +60,6 @@ import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.j
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
-// ---------------------------------------------------------------------------
-// Aggregate quality-proxy metrics from today's persisted sessions so the
-// panel isn't empty on page refresh (when the live tracker has no signals).
-// ---------------------------------------------------------------------------
-
-interface HistoricalSession {
-  readonly testRunCount?: number;
-  readonly testPassCount?: number;
-  readonly timeline?: readonly ReplayTimelineEntry[];
-}
-
-function aggregateQualityFromHistory(sessions: unknown[]): {
-  totalSignals: number;
-  diffApplyRate: number | null;
-  testPassRate: number | null;
-  backtrackCount: number;
-  selfCorrectionCount: number;
-  qualityByTurnBucket: never[];
-  degradationDetected: boolean;
-  events: never[];
-} {
-  let diffApplied = 0;
-  let diffFailed = 0;
-  let testPass = 0;
-  let testFail = 0;
-  let backtrackCount = 0;
-  let selfCorrectionCount = 0;
-
-  for (const raw of sessions) {
-    const session = raw as HistoricalSession;
-    const testRuns = session.testRunCount ?? 0;
-    const testPasses = session.testPassCount ?? 0;
-
-    // Derive diff success/failure from timeline when available
-    if (session.timeline && session.timeline.length > 0) {
-      let lastEditFile: string | null = null;
-      let lastEditIdx = -1;
-      for (let i = 0; i < session.timeline.length; i++) {
-        const entry = session.timeline[i]!;
-        if (entry.toolName === 'Edit' || entry.toolName === 'Write') {
-          if (entry.success) diffApplied++;
-          else diffFailed++;
-
-          // Detect self-correction: re-edit same file within 3 turns after a test failure
-          if (lastEditFile && entry.filePath === lastEditFile && i - lastEditIdx <= 3) {
-            const recentFail = session.timeline
-              .slice(lastEditIdx + 1, i)
-              .some((e) => e.isTestCommand && !e.success);
-            if (recentFail) selfCorrectionCount++;
-          }
-
-          lastEditFile = entry.filePath ?? null;
-          lastEditIdx = i;
-        }
-        // Detect backtrack: Read of a recently edited file
-        if (
-          entry.toolName === 'Read' &&
-          lastEditFile &&
-          entry.filePath === lastEditFile &&
-          i - lastEditIdx <= 2
-        ) {
-          backtrackCount++;
-        }
-        if (entry.isTestCommand) {
-          if (entry.success) testPass++;
-          else testFail++;
-        }
-      }
-    } else {
-      // No timeline — use summary counts for test pass/fail only.
-      // Edit/Write counts from toolBreakdown have no success/failure split,
-      // so including them would always produce 100% diffApplyRate; skip them.
-      testPass += testPasses;
-      testFail += Math.max(0, testRuns - testPasses);
-    }
-  }
-
-  const totalDiffs = diffApplied + diffFailed;
-  const totalTests = testPass + testFail;
-  const totalSignals = totalDiffs + totalTests + backtrackCount + selfCorrectionCount;
-
-  return {
-    totalSignals,
-    diffApplyRate: totalDiffs > 0 ? Math.round((diffApplied / totalDiffs) * 1000) / 1000 : null,
-    testPassRate: totalTests > 0 ? Math.round((testPass / totalTests) * 1000) / 1000 : null,
-    backtrackCount,
-    selfCorrectionCount,
-    qualityByTurnBucket: [],
-    degradationDetected: false,
-    events: [],
-  };
-}
-
 interface RawAuditRecord {
   readonly timestamp: number;
   readonly sessionId: string | null;
@@ -481,7 +395,10 @@ export interface ApiHandlerDeps {
   // Today KPI; richer per-task breakdowns ship via the existing MCP tool path.
   readonly efficiencyScorer?: { getSessionAverage: () => { score: number } | null };
   readonly gitEfficiencyTracker?: { getMetrics: () => GitEfficiencyMetrics };
-  readonly qualityProxyTracker?: { getMetrics: () => QualityProxyMetrics };
+  readonly qualityProxyTracker?: {
+    getMetrics: () => QualityProxyMetrics;
+    getRawCounts: () => QualityProxyRawCounts;
+  };
   readonly toolSelectionScorer?: {
     scoreSession: (calls: readonly ToolCallRecord[]) => ToolSelectionMetrics;
     combineSummaries: (summaries: readonly ToolSelectionSummary[]) => ToolSelectionMetrics;
@@ -1790,12 +1707,29 @@ export function createApiHandler(
 
   routes.set('GET /api/quality-proxy', (_req, res) => {
     if (!deps.qualityProxyTracker) return unavailable(res, 'qualityProxyTracker');
-    const live = deps.qualityProxyTracker.getMetrics() as { totalSignals: number };
-    if (live.totalSignals > 0 || !deps.sessionStore) {
-      jsonOk(res, live);
-      return;
-    }
-    jsonOk(res, aggregateQualityFromHistory(deps.sessionStore.loadTodaySessions()));
+    // Same own-live + persisted-today, excluding-own-already-persisted-session
+    // pattern as GET /api/model-usage: this process's live raw counts are
+    // always included, and every OTHER today session's persisted raw counts
+    // are summed on top — rates are derived exactly once from the summed
+    // totals, never averaged per-session. qualityByTurnBucket/
+    // degradationDetected/events are inherently within-session signals with
+    // no persisted cross-session equivalent, so they're sourced from the
+    // live tracker only.
+    const live = deps.qualityProxyTracker.getMetrics();
+    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const persistedCounts = (deps.sessionStore?.loadTodaySessions() ?? [])
+      .filter((s) => s.sessionId !== ownSessionId)
+      .map((s) => s.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS);
+    const combined = combineQualityProxyRawCounts([
+      deps.qualityProxyTracker.getRawCounts(),
+      ...persistedCounts,
+    ]);
+    jsonOk(res, {
+      ...combined,
+      qualityByTurnBucket: live.qualityByTurnBucket,
+      degradationDetected: live.degradationDetected,
+      events: live.events,
+    });
   });
 
   routes.set('GET /api/tool-selection-score', (_req, res) => {
@@ -2456,7 +2390,12 @@ export function createApiHandler(
         if (!deps.sessionStore) return unavailable(res, 'sessionStore');
         const session = deps.sessionStore.loadSession(sessionId);
         if (session != null) {
-          const quality = aggregateQualityFromHistory([session]);
+          // Read the session's own persisted raw counts directly and derive
+          // its rates — no more re-deriving signals from `timeline`, now that
+          // QualityProxyTracker.getRawCounts() is captured at save time.
+          const quality = combineQualityProxyRawCounts([
+            session.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS,
+          ]);
           const responseBody: Record<string, unknown> = { ...session };
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
           jsonOk(res, responseBody);

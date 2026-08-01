@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { SessionStore } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 import { WeeklySummaryGenerator, getIsoWeekId, getWeekDateRange } from './weekly-summary.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -64,6 +65,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
     modelBreakdown: {},
+    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,

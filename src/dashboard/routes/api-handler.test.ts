@@ -15,6 +15,7 @@ import {
   toToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
+import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay } from '../../lib/date.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
@@ -328,15 +329,18 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(status()).toBe(404);
   });
 
-  it('attaches qualityProxy (derived from timeline) to a persisted session with real signals', async () => {
+  it('attaches qualityProxy (derived from persisted raw counts) to a persisted session with real signals', async () => {
     const fakeSession = {
       sessionId: 'sess-quality-1',
-      testRunCount: 4,
-      testPassCount: 3,
-      timeline: [
-        { timestamp: 1, toolName: 'Edit', durationMs: 10, success: true, filePath: 'a.ts' },
-        { timestamp: 2, toolName: 'Edit', durationMs: 10, success: false, filePath: 'b.ts' },
-      ],
+      qualityProxy: {
+        totalSignals: 2,
+        diffApplyCleanCount: 1,
+        diffFailCount: 1,
+        testPassCount: 0,
+        testFailCount: 0,
+        backtrackCount: 0,
+        selfCorrectionCount: 0,
+      },
     };
     const handler = createApiHandler({
       sessionStore: {
@@ -404,6 +408,15 @@ describe('api-handler GET /api/sessions/:id', () => {
           qualityByTurnBucket: [],
           degradationDetected: false,
           events: [],
+        }),
+        getRawCounts: () => ({
+          totalSignals: 3,
+          diffApplyCleanCount: 3,
+          diffFailCount: 0,
+          testPassCount: 0,
+          testFailCount: 0,
+          backtrackCount: 0,
+          selfCorrectionCount: 0,
         }),
       },
       toolSelectionScorer: {
@@ -3774,76 +3787,131 @@ describe('api-handler GET /api/quality-proxy', () => {
     expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'qualityProxyTracker' });
   });
 
-  it('returns the live tracker metrics directly when totalSignals > 0', async () => {
-    const liveMetrics = {
-      totalSignals: 5,
-      diffApplyRate: 0.8,
-      testPassRate: null,
-      backtrackCount: 0,
-      selfCorrectionCount: 0,
-      qualityByTurnBucket: [],
-      degradationDetected: false,
-      events: [],
-    };
-    const handler = createApiHandler({
-      qualityProxyTracker: { getMetrics: () => liveMetrics },
+  it('returns just this process live counts (as derived rates) when no persisted-today sessions exist', async () => {
+    const tracker = new QualityProxyTracker();
+    const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
+      id: `id-${Math.random()}`,
+      sessionId: 'live1',
+      toolName: 'Edit',
+      toolUseId: `tu-${Math.random()}`,
+      timestamp: 1,
+      durationMs: 1,
+      success: true,
+      ...overrides,
     });
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/a.ts', success: true }));
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/b.ts', success: false }));
+    const handler = createApiHandler({ qualityProxyTracker: tracker });
     const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(JSON.parse(body())).toEqual(liveMetrics);
+    const parsed = JSON.parse(body());
+    expect(parsed.totalSignals).toBe(2);
+    expect(parsed.diffApplyRate).toBeCloseTo(0.5);
+    // qualityByTurnBucket/degradationDetected/events come straight from the
+    // live tracker's own getMetrics(), unchanged by aggregation.
+    expect(parsed.qualityByTurnBucket).toEqual(tracker.getMetrics().qualityByTurnBucket);
+    expect(parsed.degradationDetected).toBe(false);
   });
 
-  it('falls back to history aggregation when totalSignals is 0 and sessionStore is present', async () => {
-    const handler = createApiHandler({
-      qualityProxyTracker: {
-        getMetrics: () => ({
-          totalSignals: 0,
-          diffApplyRate: null,
-          testPassRate: null,
+  it('combines this process live counts with every other persisted-today session, excluding its own already-persisted entry', async () => {
+    const tracker = new QualityProxyTracker();
+    const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
+      id: `id-${Math.random()}`,
+      sessionId: 'sess-own',
+      toolName: 'Edit',
+      toolUseId: `tu-${Math.random()}`,
+      timestamp: 1,
+      durationMs: 1,
+      success: true,
+      ...overrides,
+    });
+    // Live, not-yet-persisted: 1 applied / 1 failed = 50% apply rate.
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/a.ts', success: true }));
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/c.ts', success: false }));
+    const ownRawCounts = tracker.getRawCounts();
+    const persistedToday = [
+      {
+        // Same session as the live tracker above — must NOT be double
+        // counted on top of the live counts.
+        sessionId: 'sess-own',
+        qualityProxy: ownRawCounts,
+      },
+      {
+        sessionId: 'sess-other',
+        qualityProxy: {
+          totalSignals: 8,
+          diffApplyCleanCount: 8,
+          diffFailCount: 0,
+          testPassCount: 0,
+          testFailCount: 0,
           backtrackCount: 0,
           selfCorrectionCount: 0,
-          qualityByTurnBucket: [],
-          degradationDetected: false,
-          events: [],
-        }),
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      qualityProxyTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'sess-own' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
       },
       sessionStore: {
-        loadTodaySessions: () => [{ testRunCount: 4, testPassCount: 3 }],
-        loadAllSessions: () => [],
+        loadTodaySessions: () => persistedToday,
         listSessions: () => [],
         loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      },
     });
     const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.testPassRate).toBe(0.75);
-    expect(result.totalSignals).toBe(4);
+    const parsed = JSON.parse(body());
+    // Own live (1 applied / 1 failed) is not double-counted with its own
+    // persisted entry (identical) — only sess-other's 8 applies are added on
+    // top: 1 (live applied) + 8 (other) = 9 applied, 1 failed => 10 total,
+    // diffApplyRate = 9/10 = 0.9. A naive average of 50% and 100% would give
+    // 75%, which is wrong.
+    expect(parsed.totalSignals).toBe(10);
+    expect(parsed.diffApplyRate).toBeCloseTo(0.9);
   });
 
-  it('returns the live (zero-signal) metrics as-is when totalSignals is 0 and sessionStore is absent', async () => {
-    const liveMetrics = {
-      totalSignals: 0,
-      diffApplyRate: null,
-      testPassRate: null,
-      backtrackCount: 0,
-      selfCorrectionCount: 0,
-      qualityByTurnBucket: [],
-      degradationDetected: false,
-      events: [],
-    };
+  it('ignores persisted-today sessions with no qualityProxy field (legacy files)', async () => {
+    const tracker = new QualityProxyTracker();
+    const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
+      id: `id-${Math.random()}`,
+      sessionId: 'live1',
+      toolName: 'Edit',
+      toolUseId: `tu-${Math.random()}`,
+      timestamp: 1,
+      durationMs: 1,
+      success: true,
+      ...overrides,
+    });
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/a.ts', success: true }));
+    const persistedToday = [{ sessionId: 'sess-legacy' }] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
     const handler = createApiHandler({
-      qualityProxyTracker: { getMetrics: () => liveMetrics },
+      qualityProxyTracker: tracker,
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
     });
     const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(JSON.parse(body())).toEqual(liveMetrics);
+    const parsed = JSON.parse(body());
+    expect(parsed.totalSignals).toBe(1);
+    expect(parsed.diffApplyRate).toBe(1);
   });
 });
 

@@ -18,6 +18,8 @@ import type { TranscriptMessageTracker } from '../metrics/transcript-message-tra
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from '../metrics/tool-selection-scorer.js';
 import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
+import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -71,6 +73,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
     modelBreakdown: {},
+    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
     antiPatterns: [],
     taskCount: 1,
     taskSuccessRate: 1,
@@ -1767,5 +1770,125 @@ describe('modelBreakdown field', () => {
         totalCostUsd: 0.1,
       },
     });
+  });
+});
+
+describe('qualityProxy field', () => {
+  it('buildSessionSummary populates qualityProxy from qualityProxyTracker.getRawCounts()', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const qualityProxyTracker = {
+      getRawCounts: () => ({
+        totalSignals: 4,
+        diffApplyCleanCount: 2,
+        diffFailCount: 1,
+        testPassCount: 1,
+        testFailCount: 0,
+        backtrackCount: 0,
+        selfCorrectionCount: 0,
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      qualityProxyTracker: qualityProxyTracker as unknown as QualityProxyTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.qualityProxy).toEqual({
+      totalSignals: 4,
+      diffApplyCleanCount: 2,
+      diffFailCount: 1,
+      testPassCount: 1,
+      testFailCount: 0,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+    });
+  });
+
+  it('defaults qualityProxy to all-zero counts when no qualityProxyTracker is provided', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: null,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+    expect(summary.qualityProxy).toEqual(ZERO_QUALITY_PROXY_COUNTS);
+  });
+
+  it('round-trips qualityProxy through JSON serialization', () => {
+    const original = makeSummary({
+      qualityProxy: {
+        totalSignals: 4,
+        diffApplyCleanCount: 2,
+        diffFailCount: 1,
+        testPassCount: 1,
+        testFailCount: 0,
+        backtrackCount: 0,
+        selfCorrectionCount: 0,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.qualityProxy).toEqual(original.qualityProxy);
+  });
+
+  it('defaults qualityProxy to all-zero counts for legacy session files missing the field', () => {
+    const legacy = makeSummary();
+    const { qualityProxy: _qualityProxy, ...withoutField } = legacy;
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(withoutField)) as Parameters<
+        typeof deserializeFullSessionSummary
+      >[0],
+    );
+    expect(roundTripped.qualityProxy).toEqual(ZERO_QUALITY_PROXY_COUNTS);
+  });
+
+  it('defaults qualityProxy to all-zero counts when a field is malformed (missing a numeric key)', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      qualityProxy: { totalSignals: 4 }, // missing the other required numeric fields
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.qualityProxy).toEqual(ZERO_QUALITY_PROXY_COUNTS);
   });
 });
