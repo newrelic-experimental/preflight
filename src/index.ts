@@ -85,6 +85,7 @@ import {
   resolveFromBreadcrumb,
   resolveFromCwd,
   isSyntheticSessionId,
+  watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
@@ -678,6 +679,10 @@ async function main(): Promise<void> {
   // Aborts the async resolveSessionId polling loop when shutdown fires so
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
+  // Aborts the background watchPpidBreadcrumb() correction watch (armed
+  // only when the initial resolution came from the collision-prone cwd
+  // fallback — see resolvedViaCwdOnly) when shutdown fires.
+  let ppidCorrectionAbort: AbortController | undefined;
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -686,6 +691,7 @@ async function main(): Promise<void> {
     // Abort any in-progress session resolution so its polling loop exits
     // cleanly rather than continuing after process.exit() is called.
     sessionResolutionAbort?.abort();
+    ppidCorrectionAbort?.abort();
     logger.info('Shutting down...');
     try {
       persistSession?.();
@@ -759,6 +765,14 @@ async function main(): Promise<void> {
 
   if (options.stdio || options.local) {
     let sessionTraceId: string;
+    // True when the synchronous resolution chain below succeeded ONLY via
+    // the cwd fallback — the collision-prone source (shared by every
+    // session that ever ran in this directory), unlike the ppid breadcrumb
+    // (precise, keyed to this MCP's own parent process). Set inside the
+    // `options.stdio` branch below; read much later, after the eager
+    // synchronous setup completes, to decide whether to arm a background
+    // correction watch (see `startPpidCorrectionWatch` below).
+    let resolvedViaCwdOnly = false;
     if (options.stdio) {
       // Connect stdio FIRST so the MCP handshake can complete immediately.
       // Tools are registered after initialization; tool calls before that
@@ -786,10 +800,12 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      const synchronouslyResolved =
-        resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null) ??
-        resolveFromBreadcrumb(config.storagePath, process.ppid) ??
-        resolveFromCwd(config.storagePath, process.cwd());
+      const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
+      const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
+      const fromCwd =
+        fromJobDir || fromPpid ? null : resolveFromCwd(config.storagePath, process.cwd());
+      const synchronouslyResolved = fromJobDir ?? fromPpid ?? fromCwd;
+      resolvedViaCwdOnly = !!fromCwd && !fromJobDir && !fromPpid;
       if (synchronouslyResolved) {
         sessionTraceId = synchronouslyResolved;
         logger.info('Session ID resolved synchronously', { sessionTraceId });
@@ -2054,6 +2070,186 @@ async function main(): Promise<void> {
       startWatchers(realSessionId);
     };
 
+    // Adopts `realId` as the live session id: swaps LocalStore, hot-swaps
+    // the event processor's store, replaces the session span/task-span-
+    // tracker, (re)constructs NrIngestManager, repoints the watchers, and
+    // re-registers the full tool set. Used both for the initial pending ->
+    // real transition and for a later correction (see
+    // startPpidCorrectionWatch below) — safe to call more than once:
+    // accumulated tracker metrics are preserved (adoptSessionId() only
+    // reassigns the id field), and any already-live NrIngestManager is
+    // stopped first so its harvest interval never leaks on a second call.
+    const adoptRealSessionId = async (realId: string): Promise<void> => {
+      sessionTraceId = realId;
+      sessionTracker!.adoptSessionId(realId);
+
+      // Replace the current LocalStore with one scoped to the real id.
+      const realLocalStore = new LocalStore(config!.storagePath, realId);
+      realLocalStore.initialize();
+      realLocalStore.writeHeartbeat();
+      localStoreForShutdown = realLocalStore;
+      try {
+        realLocalStore.migrateLegacyBuffer();
+      } catch (err) {
+        logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
+      }
+
+      // Hot-swap the event processor to the scoped store so it only drains
+      // this session's events going forward.
+      eventProcessor!.replaceStore(realLocalStore, false);
+
+      // Replace the span with a real-ID span. End the previous one first
+      // (end() is a no-op if never started).
+      if (config!.otlp.transport !== 'nr-events-api') {
+        sessionSpan?.end(0, 0);
+        taskSpanTracker?.closeAll();
+        const detectedPlatform = createDefaultRegistry().getActive().platformName;
+        sessionSpan = new SessionSpan(realId, config!.developer, detectedPlatform);
+        taskSpanTracker = new TaskSpanTracker();
+        sessionSpan.start();
+      }
+
+      // Stop whatever NrIngestManager is already live before replacing it —
+      // load-bearing on a second (correction) call; a no-op the first time,
+      // since nrIngest is still undefined then.
+      if (nrIngest) {
+        await nrIngest.stop().catch((err) => {
+          logger.warn('Failed to stop previous NrIngestManager during session id correction', {
+            error: String(err),
+          });
+        });
+      }
+
+      if (config!.mode !== 'local') {
+        if (!config!.licenseKey || !config!.accountId) {
+          throw new Error(
+            'licenseKey and accountId must be defined for non-local mode. ' +
+              'This should have been caught by config validation.',
+          );
+        }
+        nrIngest = new NrIngestManager({
+          licenseKey: config!.licenseKey,
+          transportOptions: {
+            accountId: config!.accountId,
+            collectorHost: config!.collectorHost,
+          },
+          developer: config!.developer,
+          appName: config!.appName,
+          teamId: config!.teamId,
+          projectId: config!.projectId,
+          orgId: config!.orgId,
+          sessionTracker: sessionTracker!,
+          localStore: realLocalStore,
+          auditTrail,
+          eventHarvestIntervalMs: config!.harvestIntervalMs.events,
+          metricHarvestIntervalMs: config!.harvestIntervalMs.metrics,
+          costTracker,
+          efficiencyScorer,
+          feedbackCollector,
+          turnCostAttributor,
+          sessionTraceId: realId,
+        });
+        capturedNrIngest = nrIngest;
+        nrIngest.start();
+      }
+
+      // Re-point the subagent/workflow watchers to the real session id. See
+      // repointWatchersToRealSession's own comment above for why this is
+      // necessary; a no-op if no watcher actually started.
+      repointWatchersToRealSession(realId);
+
+      // (Re-)register the full tool set — the second (correction) call
+      // replaces the closures registered by the first, so every tool
+      // handler observes the corrected sessionTraceId/nrIngestManager going
+      // forward.
+      const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
+      const configSummary: ConfigSummary = {
+        mode: config!.mode,
+        developer: config!.developer,
+        accountId: config!.accountId ?? null,
+        licenseKeyMasked: config!.licenseKey ? maskCredential(config!.licenseKey) : null,
+        nrApiKeyMasked: config!.nrApiKey ? maskCredential(config!.nrApiKey) : null,
+        region: config!.collectorHost ?? 'us',
+        storagePath: config!.storagePath,
+        dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
+        configFilePath,
+      };
+      registerTools(mcpServer!.server, {
+        sessionTracker: sessionTracker!,
+        costTracker,
+        budgetTracker,
+        taskDetector: taskDetector!,
+        antiPatternDetector,
+        efficiencyScorer,
+        feedbackCollector,
+        sessionStore,
+        weeklySummaryGenerator,
+        trendAnalyzer,
+        collaborationProfiler,
+        claudeMdTracker,
+        costPerOutcomeAnalyzer,
+        recommendationEngine,
+        contextWindowTracker,
+        contextTracker,
+        latencyTracker,
+        taskCompletionTracker,
+        modelUsageTracker,
+        retryDetector,
+        contextCompositionTracker,
+        latencyDecompositionTracker,
+        decisionTracker,
+        instructionDriftTracker,
+        toolSelectionScorer,
+        toolCallBuffer: toolCallBufferAccessor,
+        qualityProxyTracker,
+        apiFailureTracker,
+        turnCostAttributor,
+        turnTracker,
+        gitEfficiencyTracker,
+        genericMcpAdapter,
+        nrIngestManager: nrIngest,
+        sessionTraceId: realId,
+        sessionStartMs,
+        accountId: config!.accountId,
+        teamId: config!.teamId,
+        projectId: config!.projectId,
+        developer: config!.developer,
+        nrApiKey: config!.nrApiKey,
+        collectorHost: config!.collectorHost,
+        configFilePath,
+        configSummary,
+      });
+    };
+
+    // Arms a background watch for the ppid breadcrumb after an initial
+    // resolution came from the collision-prone cwd fallback (see
+    // resolvedViaCwdOnly). If/when the ppid breadcrumb later reports a
+    // DIFFERENT, more precise session id, corrects the adoption via the
+    // same adoptRealSessionId() used for the pending -> real transition.
+    // A no-op-forever if the ppid breadcrumb never appears or always
+    // matches — never trusts cwd itself, so it can't be fooled twice.
+    const startPpidCorrectionWatch = (staleId: string): void => {
+      ppidCorrectionAbort = new AbortController();
+      void watchPpidBreadcrumb({
+        storagePath: config!.storagePath,
+        signal: ppidCorrectionAbort.signal,
+      })
+        .then(async (ppidId) => {
+          if (ppidCorrectionAbort?.signal.aborted) return;
+          if (ppidId === staleId) return;
+          logger.info('Correcting cwd-sourced session id from PPID breadcrumb', {
+            staleId,
+            correctedId: ppidId,
+          });
+          await adoptRealSessionId(ppidId);
+        })
+        .catch((err) => {
+          if (!ppidCorrectionAbort?.signal.aborted) {
+            logger.warn('PPID correction watch failed', { error: String(err) });
+          }
+        });
+    };
+
     startWatchers(sessionTraceId);
 
     if (options.stdio) {
@@ -2085,11 +2281,15 @@ async function main(): Promise<void> {
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 
         sessionResolutionAbort = new AbortController();
+        let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
         void (async () => {
           try {
             const realId = await resolveSessionId({
               storagePath: config!.storagePath,
               signal: sessionResolutionAbort!.signal,
+              onResolutionSource: (info) => {
+                resolvedSource = info.source;
+              },
             });
 
             // Guard against a shutdown that fired while we were awaiting —
@@ -2100,148 +2300,21 @@ async function main(): Promise<void> {
               return;
             }
 
-            // Adopt the real session ID without clearing accumulated metrics.
-            sessionTraceId = realId;
-            sessionTracker!.adoptSessionId(realId);
-
-            // Replace the provisional unscoped LocalStore with the session-scoped one.
-            const realLocalStore = new LocalStore(config!.storagePath, realId);
-            realLocalStore.initialize();
-            realLocalStore.writeHeartbeat();
-            localStoreForShutdown = realLocalStore;
-            try {
-              realLocalStore.migrateLegacyBuffer();
-            } catch (err) {
-              logger.warn('Legacy buffer migration failed (continuing)', { error: String(err) });
-            }
-
-            // Hot-swap the event processor to the scoped store so it only
-            // drains this session's events going forward.
-            eventProcessor!.replaceStore(realLocalStore, false);
-
-            // Replace the provisional span with a real-ID span. End the
-            // provisional one first (end() is a no-op if never started).
-            // initMcpTracer() was already called in Phase A — skip it here.
-            if (config!.otlp.transport !== 'nr-events-api') {
-              sessionSpan?.end(0, 0);
-              // Close any task spans opened against the provisional tracker
-              // (cross-session events can open them during Phase A) before
-              // replacing it with a clean real-session instance.
-              taskSpanTracker?.closeAll();
-              const detectedPlatform = createDefaultRegistry().getActive().platformName;
-              sessionSpan = new SessionSpan(realId, config!.developer, detectedPlatform);
-              taskSpanTracker = new TaskSpanTracker();
-              sessionSpan.start();
-            }
-
-            // Complete NrIngest setup.
-            if (config!.mode !== 'local') {
-              if (!config!.licenseKey || !config!.accountId) {
-                throw new Error(
-                  'licenseKey and accountId must be defined for non-local mode. ' +
-                    'This should have been caught by config validation.',
-                );
-              }
-              nrIngest = new NrIngestManager({
-                licenseKey: config!.licenseKey,
-                transportOptions: {
-                  accountId: config!.accountId,
-                  collectorHost: config!.collectorHost,
-                },
-                developer: config!.developer,
-                appName: config!.appName,
-                teamId: config!.teamId,
-                projectId: config!.projectId,
-                orgId: config!.orgId,
-                sessionTracker: sessionTracker!,
-                localStore: realLocalStore,
-                auditTrail,
-                eventHarvestIntervalMs: config!.harvestIntervalMs.events,
-                metricHarvestIntervalMs: config!.harvestIntervalMs.metrics,
-                costTracker,
-                efficiencyScorer,
-                feedbackCollector,
-                turnCostAttributor,
-                sessionTraceId: realId,
-              });
-              capturedNrIngest = nrIngest;
-              nrIngest.start();
-            }
-
-            // Re-point the subagent/workflow watchers from the provisional
-            // `pending-<ts>` id to the resolved real session id. The watchers
-            // were constructed in the startup block with the provisional id and
-            // filter discovered transcript dirs by it; a `pending-*` id never
-            // matches a real UUID session dir, so without this re-point they
-            // capture nothing for the life of the process. Done after the
-            // NrIngest reassignment above so the rebuilt WorkflowWatcher's
-            // onRun/onHealth closures observe the live `capturedNrIngest`.
-            // Guarded inside repoint: only watchers that were actually started
-            // are stopped + reconstructed; if none ran this is a no-op.
-            repointWatchersToRealSession(realId);
-
-            // Register full tools, replacing the pending handlers.
-            const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-            const configSummary: ConfigSummary = {
-              mode: config!.mode,
-              developer: config!.developer,
-              accountId: config!.accountId ?? null,
-              licenseKeyMasked: config!.licenseKey ? maskCredential(config!.licenseKey) : null,
-              nrApiKeyMasked: config!.nrApiKey ? maskCredential(config!.nrApiKey) : null,
-              region: config!.collectorHost ?? 'us',
-              storagePath: config!.storagePath,
-              dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
-              configFilePath,
-            };
-            registerTools(mcpServer!.server, {
-              sessionTracker: sessionTracker!,
-              costTracker,
-              budgetTracker,
-              taskDetector: taskDetector!,
-              antiPatternDetector,
-              efficiencyScorer,
-              feedbackCollector,
-              sessionStore,
-              weeklySummaryGenerator,
-              trendAnalyzer,
-              collaborationProfiler,
-              claudeMdTracker,
-              costPerOutcomeAnalyzer,
-              recommendationEngine,
-              contextWindowTracker,
-              contextTracker,
-              latencyTracker,
-              taskCompletionTracker,
-              modelUsageTracker,
-              retryDetector,
-              contextCompositionTracker,
-              latencyDecompositionTracker,
-              decisionTracker,
-              instructionDriftTracker,
-              toolSelectionScorer,
-              toolCallBuffer: toolCallBufferAccessor,
-              qualityProxyTracker,
-              apiFailureTracker,
-              turnCostAttributor,
-              turnTracker,
-              gitEfficiencyTracker,
-              genericMcpAdapter,
-              nrIngestManager: nrIngest,
-              sessionTraceId: realId,
-              sessionStartMs,
-              accountId: config!.accountId,
-              teamId: config!.teamId,
-              projectId: config!.projectId,
-              developer: config!.developer,
-              nrApiKey: config!.nrApiKey,
-              collectorHost: config!.collectorHost,
-              configFilePath,
-              configSummary,
-            });
+            // Adopt the real session ID without clearing accumulated
+            // metrics — see adoptRealSessionId's own comment above.
+            await adoptRealSessionId(realId);
 
             logger.info('Session ID resolved, full initialization complete', {
               sessionTraceId: realId,
             });
+
+            // The ppid breadcrumb is precise (no cross-session collision);
+            // the cwd fallback is not, since it's shared by every session
+            // that ever ran in this directory. Only a cwd-sourced
+            // resolution needs the background correction watch.
+            if (resolvedSource === 'cwd') {
+              startPpidCorrectionWatch(realId);
+            }
           } catch (err) {
             // Use the signal's own aborted flag rather than matching the error
             // message string — robust against future changes to the throw site.
@@ -2317,6 +2390,15 @@ async function main(): Promise<void> {
         logger.info('Server running on stdio transport');
         // stdin 'end' and 'error' handlers are registered immediately after
         // connectStdio() above so shutdown fires even during session-ID resolution.
+
+        // resolvedViaCwdOnly means the eager setup above adopted a session
+        // id from the collision-prone cwd fallback (see its declaration).
+        // Arm the same background correction watch used on the pending
+        // path — this eager path otherwise has no correction mechanism at
+        // all once initialization completes.
+        if (resolvedViaCwdOnly) {
+          startPpidCorrectionWatch(sessionTraceId);
+        }
       }
     } else {
       logger.info('Server running in local dashboard mode (Ctrl+C to stop)');

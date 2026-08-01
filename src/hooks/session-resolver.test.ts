@@ -10,6 +10,7 @@ import {
   nextDelayMs,
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
+  watchPpidBreadcrumb,
 } from './session-resolver.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -178,7 +179,7 @@ describe('session-resolver', () => {
       expect(sid).toBe('sess-immediate');
     });
 
-    it('falls back to the cwd breadcrumb when the ppid breadcrumb is missing (immediate)', async () => {
+    it('falls back to the cwd breadcrumb when the ppid breadcrumb never appears (via the poll loop, not trusted at t=0)', async () => {
       mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
       writeFileSync(
         resolve(tmpDir, 'session-by-cwd', '-projects-winrepo.txt'),
@@ -189,8 +190,36 @@ describe('session-resolver', () => {
         ppid: 424242, // never has a matching breadcrumb
         cwd: '/projects/winrepo',
         storagePath: tmpDir,
+        suppressWarn: true,
       });
       expect(sid).toBe('sess-cwd-fallback');
+    });
+
+    it('prefers a ppid breadcrumb that appears just after startup over an already-present, possibly-stale cwd breadcrumb', async () => {
+      // A cwd breadcrumb left over from an unrelated prior session in the
+      // same directory must not win the race just because it already
+      // exists at t=0 — a ppid breadcrumb that shows up moments later (the
+      // real signal for THIS process) must still be preferred.
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(
+        resolve(tmpDir, 'session-by-cwd', '-projects-race.txt'),
+        'sess-stale-from-other-session',
+      );
+      const ppid = 424243;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      setTimeout(() => {
+        writeFileSync(resolve(breadcrumbDir, `${ppid}.txt`), 'sess-real-for-this-process');
+      }, 10);
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid,
+        cwd: '/projects/race',
+        storagePath: tmpDir,
+        suppressWarn: true,
+      });
+      expect(sid).toBe('sess-real-for-this-process');
     });
 
     it('prefers the ppid breadcrumb over the cwd breadcrumb when both are present', async () => {
@@ -206,6 +235,66 @@ describe('session-resolver', () => {
         storagePath: tmpDir,
       });
       expect(sid).toBe('sess-from-ppid');
+    });
+
+    it('reports source "jobdir" via onResolutionSource when CLAUDE_JOB_DIR resolves', async () => {
+      const jobDir = resolve(tmpDir, 'job-src');
+      mkdirSync(jobDir, { recursive: true });
+      writeFileSync(
+        resolve(jobDir, 'state.json'),
+        JSON.stringify({ linkScanPath: '/whatever/job-src-uuid.jsonl' }),
+      );
+      const onResolutionSource = jest.fn();
+      const sid = await resolveSessionId({
+        claudeJobDir: jobDir,
+        ppid: 1,
+        storagePath: tmpDir,
+        onResolutionSource,
+      });
+      expect(sid).toBe('job-src-uuid');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'jobdir',
+        sessionId: 'job-src-uuid',
+      });
+    });
+
+    it('reports source "ppid" via onResolutionSource when the ppid breadcrumb resolves immediately', async () => {
+      const ppid = 99001;
+      mkdirSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`), 'sess-ppid-source');
+      const onResolutionSource = jest.fn();
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid,
+        storagePath: tmpDir,
+        onResolutionSource,
+      });
+      expect(sid).toBe('sess-ppid-source');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'ppid',
+        sessionId: 'sess-ppid-source',
+      });
+    });
+
+    it('reports source "cwd" via onResolutionSource when only the cwd fallback resolves', async () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(
+        resolve(tmpDir, 'session-by-cwd', '-projects-cwd-source.txt'),
+        'sess-cwd-source',
+      );
+      const onResolutionSource = jest.fn();
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 424243, // never has a matching breadcrumb
+        cwd: '/projects/cwd-source',
+        storagePath: tmpDir,
+        onResolutionSource,
+      });
+      expect(sid).toBe('sess-cwd-source');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'cwd',
+        sessionId: 'sess-cwd-source',
+      });
     });
   });
 
@@ -266,6 +355,58 @@ describe('session-resolver', () => {
         suppressWarn: true,
       });
       expect(sid).toBe('sess-win-regression');
+    });
+  });
+
+  describe('watchPpidBreadcrumb()', () => {
+    it('resolves once a ppid breadcrumb appears', async () => {
+      const ppid = 88001;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+
+      setTimeout(() => {
+        writeFileSync(resolve(breadcrumbDir, `${ppid}.txt`), 'sess-ppid-correction');
+      }, 150);
+
+      const sid = await watchPpidBreadcrumb({ ppid, storagePath: tmpDir, suppressWarn: true });
+      expect(sid).toBe('sess-ppid-correction');
+    });
+
+    it('never resolves via a cwd breadcrumb, even if one appears first', async () => {
+      const ppid = 88002;
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(
+        resolve(tmpDir, 'session-by-cwd', '-projects-watch-cwd.txt'),
+        'sess-cwd-should-be-ignored',
+      );
+
+      const ppidBreadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      setTimeout(() => {
+        writeFileSync(resolve(ppidBreadcrumbDir, `${ppid}.txt`), 'sess-ppid-wins');
+      }, 150);
+
+      const sid = await watchPpidBreadcrumb({
+        ppid,
+        cwd: '/projects/watch-cwd',
+        storagePath: tmpDir,
+        suppressWarn: true,
+      });
+      expect(sid).toBe('sess-ppid-wins');
+    });
+
+    it('aborts via signal', async () => {
+      const ppid = 88003;
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 50);
+      await expect(
+        watchPpidBreadcrumb({
+          ppid,
+          storagePath: tmpDir,
+          suppressWarn: true,
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
     });
   });
 });

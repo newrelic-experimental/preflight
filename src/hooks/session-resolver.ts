@@ -37,6 +37,9 @@ const POLL_SCHEDULE_MS = [100, 200, 500, 1000, 2000];
 const STEADY_POLL_MS = 2000;
 const WARN_AFTER_MS = 60_000;
 
+/** Which of the three sources produced a resolveSessionId() result. */
+export type SessionIdSource = 'jobdir' | 'ppid' | 'cwd';
+
 export interface SessionResolverOptions {
   /** Override the storage path used to find the breadcrumb directory. */
   readonly storagePath?: string;
@@ -48,6 +51,14 @@ export interface SessionResolverOptions {
   readonly claudeJobDir?: string | null;
   /** When true, skip the WARN log (test seam). */
   readonly suppressWarn?: boolean;
+  /**
+   * Invoked once, synchronously, right before resolveSessionId's promise
+   * settles, reporting which source produced the winning value. Purely
+   * additive — omitting it changes no behavior. Lets callers detect a
+   * cwd-sourced (lower-confidence) resolution without changing the
+   * `Promise<string>` contract existing callers rely on.
+   */
+  readonly onResolutionSource?: (info: { source: SessionIdSource; sessionId: string }) => void;
 }
 
 /** The one field `resolveFromJobDir` reads out of `CLAUDE_JOB_DIR/state.json`. */
@@ -178,23 +189,26 @@ export async function resolveSessionId(
   const fromJobDir = resolveFromJobDir(claudeJobDir);
   if (fromJobDir) {
     logger.info('Resolved session_id from CLAUDE_JOB_DIR', { sessionId: fromJobDir });
+    options.onResolutionSource?.({ source: 'jobdir', sessionId: fromJobDir });
     return fromJobDir;
   }
 
-  // Synchronous attempts before we wait — common case is a breadcrumb is
-  // already on disk because the user already typed at least one message.
-  // PPID lookup is precise and tried first; cwd is only a fallback.
+  // Synchronous attempt before we wait — common case is the ppid breadcrumb
+  // is already on disk because the user already typed at least one message.
+  // The cwd breadcrumb is NOT checked synchronously here: unlike the ppid
+  // breadcrumb (written per-process, no cross-session collision), a cwd
+  // breadcrumb can already exist at t=0 as a stale leftover from an
+  // unrelated prior session that ran in the same directory. Trusting it
+  // immediately would let that stale value win a race against THIS
+  // process's own ppid breadcrumb, which may simply not have been written
+  // yet. Routing cwd through the poll loop below — where ppid is always
+  // checked first, every tick — gives the precise signal a real chance
+  // before falling back to the collision-prone one.
   const immediate = resolveFromBreadcrumb(storagePath, ppid);
   if (immediate) {
     logger.info('Resolved session_id from breadcrumb (immediate)', { sessionId: immediate });
+    options.onResolutionSource?.({ source: 'ppid', sessionId: immediate });
     return immediate;
-  }
-  const immediateCwd = resolveFromCwd(storagePath, cwd);
-  if (immediateCwd) {
-    logger.info('Resolved session_id from cwd breadcrumb (ppid fallback, immediate)', {
-      sessionId: immediateCwd,
-    });
-    return immediateCwd;
   }
 
   const startTime = Date.now();
@@ -228,6 +242,7 @@ export async function resolveSessionId(
       if (sid) {
         const elapsed = Date.now() - startTime;
         logger.info('Resolved session_id from breadcrumb', { sessionId: sid, elapsedMs: elapsed });
+        options.onResolutionSource?.({ source: 'ppid', sessionId: sid });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(sid);
         return;
@@ -239,6 +254,7 @@ export async function resolveSessionId(
           sessionId: sidFromCwd,
           elapsedMs: elapsed,
         });
+        options.onResolutionSource?.({ source: 'cwd', sessionId: sidFromCwd });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(sidFromCwd);
         return;
@@ -255,6 +271,63 @@ export async function resolveSessionId(
       // Don't keep the event loop alive on this timer alone — Ctrl+C / stdin
       // close should be able to terminate the MCP without explicitly
       // cancelling resolution.
+      handle.unref?.();
+    };
+
+    const delay = nextDelayMs(attempt++);
+    const handle = setTimeout(tick, delay);
+    handle.unref?.();
+  });
+}
+
+/**
+ * Keep watching the PPID breadcrumb only (never cwd, never CLAUDE_JOB_DIR) —
+ * used as a corrective safety net after an initial resolution came from the
+ * cwd fallback. Same exponential-backoff schedule as resolveSessionId
+ * (reuses nextDelayMs). Resolves on the first valid ppid hit; never resolves
+ * null. The caller decides whether the resolved id differs from what's
+ * already adopted and is worth acting on — this function doesn't know or
+ * care. No 60s WARN log: a cwd-sourced session working fine while the ppid
+ * breadcrumb stays silent is expected, not alarming.
+ */
+export async function watchPpidBreadcrumb(
+  options: SessionResolverOptions & { signal?: AbortSignal } = {},
+): Promise<string> {
+  const ppid = options.ppid ?? process.ppid;
+  const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
+
+  let attempt = 0;
+
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    const onAbort = () => {
+      rejectPromise(new Error('session resolution aborted'));
+    };
+    if (options.signal) {
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+    }
+
+    const tick = () => {
+      if (options.signal?.aborted) {
+        options.signal.removeEventListener('abort', onAbort);
+        return;
+      }
+      const sid = resolveFromBreadcrumb(storagePath, ppid);
+      if (sid) {
+        logger.debug('Resolved corrected session_id from ppid breadcrumb', { sessionId: sid });
+        if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        resolvePromise(sid);
+        return;
+      }
+      const delay = nextDelayMs(attempt++);
+      const handle = setTimeout(tick, delay);
       handle.unref?.();
     };
 

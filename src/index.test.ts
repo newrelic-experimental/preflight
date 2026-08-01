@@ -871,6 +871,89 @@ describe('stdio integration', () => {
     }
   }, 30000);
 
+  it('self-corrects a synchronously-resolved cwd session id once the real PPID breadcrumb appears', async () => {
+    // A stale cwd breadcrumb (leftover from an unrelated prior session in
+    // the same directory) can win the synchronous resolution race at
+    // startup; it must self-correct once the real, precise ppid breadcrumb
+    // shows up moments later.
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-cwd-correction-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cwd-correction-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    // Pre-write only a cwd breadcrumb — deliberately a value that looks
+    // like it belongs to a different, unrelated session — and no
+    // CLAUDE_JOB_DIR or ppid breadcrumb, so only the synchronous cwd
+    // fallback can resolve at startup.
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cwd-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+
+      // Full tool set immediately — confirms this is the synchronous cwd
+      // entry point (isProvisional === false), not the pending/async one.
+      const tools = await client.listTools();
+      expect(tools.tools.map((t) => t.name)).toContain('nr_observe_get_session_stats');
+
+      const readSessionId = async (): Promise<string> => {
+        const result = await client.callTool({
+          name: 'nr_observe_get_session_stats',
+          arguments: {},
+        });
+        const content = result.content as Array<{ type: string; text: string }>;
+        const text = content[0]?.text ?? '{}';
+        return (JSON.parse(text) as { session_id: string }).session_id;
+      };
+
+      // Confirms the stale cwd value really was adopted before correction.
+      expect(await readSessionId()).toBe('stale-cwd-session-id');
+
+      // The spawned child sees this test process as its ppid, matching
+      // resolveSessionId()'s default `options.ppid ?? process.ppid` inside
+      // the child — same convention as the existing pending-tools test.
+      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'corrected-ppid-session-id');
+
+      let corrected = false;
+      for (let i = 0; i < 20; i++) {
+        if ((await readSessionId()) === 'corrected-ppid-session-id') {
+          corrected = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(corrected).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('serves the pending tool set immediately when session_id cannot resolve synchronously, then swaps to the full set once the breadcrumb resolves', async () => {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -932,6 +1015,96 @@ describe('stdio integration', () => {
       await client.close();
     } finally {
       rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
+    // The pending -> async poller flow (not the eager synchronous one) can
+    // also resolve via cwd instead of ppid. Mirrors the provisional-path
+    // test above, but supplies only a cwd breadcrumb first — the poller can
+    // only resolve via the fallback — then a *different* ppid breadcrumb
+    // later, and expects a correction.
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-cwd-correction-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-pending-cwd-correction-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+
+      // Neither CLAUDE_JOB_DIR nor any breadcrumb exists yet — the pending
+      // tool set is served immediately (isProvisional === true).
+      const pendingTools = await client.listTools();
+      expect(pendingTools.tools.map((t) => t.name)).not.toContain('nr_observe_get_session_stats');
+
+      const readSessionId = async (): Promise<string | null> => {
+        const tools = await client.listTools();
+        if (!tools.tools.map((t) => t.name).includes('nr_observe_get_session_stats')) return null;
+        const result = await client.callTool({
+          name: 'nr_observe_get_session_stats',
+          arguments: {},
+        });
+        const content = result.content as Array<{ type: string; text: string }>;
+        const text = content[0]?.text ?? '{}';
+        return (JSON.parse(text) as { session_id: string }).session_id;
+      };
+
+      // Supply only the cwd breadcrumb — the poller's ppid check keeps
+      // missing, so it must fall back to this.
+      const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+      mkdirSync(cwdBreadcrumbDir, { recursive: true });
+      const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+      writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cwd-via-pending');
+
+      let sawStale = false;
+      for (let i = 0; i < 20; i++) {
+        if ((await readSessionId()) === 'stale-cwd-via-pending') {
+          sawStale = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(sawStale).toBe(true);
+
+      // Now supply a *different* ppid breadcrumb — the correction watch
+      // should pick it up and re-adopt.
+      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'corrected-ppid-via-pending');
+
+      let corrected = false;
+      for (let i = 0; i < 20; i++) {
+        if ((await readSessionId()) === 'corrected-ppid-via-pending') {
+          corrected = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(corrected).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
     }
   }, 30000);
 });

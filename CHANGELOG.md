@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.21] - 2026-08-01
+
+### Fixed
+
+- **A `--stdio` MCP process could permanently adopt the wrong session identity when startup resolution fell back to the cwd-keyed breadcrumb before the precise PPID-keyed one was available** — the cwd breadcrumb is shared by every session that has ever run in that directory, so a stale value left over from an unrelated prior session could win the race and be adopted for the life of the process, with no way to self-correct once the real PPID breadcrumb appeared moments later. Every metric, checkpoint, and tool call for that session would then be misattributed to the wrong session ID. The MCP now watches for a PPID-breadcrumb resolution in the background whenever it had to fall back to the cwd breadcrumb, and re-adopts the correct session identity the moment one appears, preserving all metrics already recorded under the earlier one.
+
 ## [1.14.20] - 2026-08-01
 
 ### Fixed
