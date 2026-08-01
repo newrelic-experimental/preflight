@@ -5,6 +5,7 @@ import {
   writeFileSync,
   rmSync,
   existsSync,
+  readdirSync,
   utimesSync,
   realpathSync,
 } from 'node:fs';
@@ -19,6 +20,10 @@ import {
   setupDashboardPostBind,
   getDashboardRepollIntervalMs,
   DEFAULT_DASHBOARD_REPOLL_MS,
+  getSessionPersistIntervalMs,
+  DEFAULT_SESSION_PERSIST_INTERVAL_MS,
+  getPendingConfirmationCapMs,
+  DEFAULT_PENDING_CONFIRMATION_CAP_MS,
   startRetentionSweep,
   startMaintenanceGc,
 } from './index.js';
@@ -398,6 +403,70 @@ describe('getDashboardRepollIntervalMs()', () => {
     expect(getDashboardRepollIntervalMs()).toBe(DEFAULT_DASHBOARD_REPOLL_MS);
     process.env.NR_AI_DASHBOARD_REPOLL_MS = '-100';
     expect(getDashboardRepollIntervalMs()).toBe(DEFAULT_DASHBOARD_REPOLL_MS);
+  });
+});
+
+describe('getSessionPersistIntervalMs()', () => {
+  const ORIGINAL = process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS;
+    } else {
+      process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS = ORIGINAL;
+    }
+  });
+
+  it('returns DEFAULT_SESSION_PERSIST_INTERVAL_MS (30s) when env is unset', () => {
+    delete process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS;
+    expect(getSessionPersistIntervalMs()).toBe(DEFAULT_SESSION_PERSIST_INTERVAL_MS);
+    expect(DEFAULT_SESSION_PERSIST_INTERVAL_MS).toBe(30_000);
+  });
+
+  it('parses a numeric override from NR_AI_SESSION_PERSIST_INTERVAL_MS', () => {
+    process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS = '50';
+    expect(getSessionPersistIntervalMs()).toBe(50);
+  });
+
+  it('falls back to default for non-numeric / non-positive overrides', () => {
+    process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS = 'abc';
+    expect(getSessionPersistIntervalMs()).toBe(DEFAULT_SESSION_PERSIST_INTERVAL_MS);
+    process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS = '0';
+    expect(getSessionPersistIntervalMs()).toBe(DEFAULT_SESSION_PERSIST_INTERVAL_MS);
+    process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS = '-100';
+    expect(getSessionPersistIntervalMs()).toBe(DEFAULT_SESSION_PERSIST_INTERVAL_MS);
+  });
+});
+
+describe('getPendingConfirmationCapMs()', () => {
+  const ORIGINAL = process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS;
+    } else {
+      process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS = ORIGINAL;
+    }
+  });
+
+  it('returns DEFAULT_PENDING_CONFIRMATION_CAP_MS (2 minutes) when env is unset', () => {
+    delete process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS;
+    expect(getPendingConfirmationCapMs()).toBe(DEFAULT_PENDING_CONFIRMATION_CAP_MS);
+    expect(DEFAULT_PENDING_CONFIRMATION_CAP_MS).toBe(120_000);
+  });
+
+  it('parses a numeric override from NR_AI_PENDING_CONFIRMATION_CAP_MS', () => {
+    process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS = '50';
+    expect(getPendingConfirmationCapMs()).toBe(50);
+  });
+
+  it('falls back to default for non-numeric / non-positive overrides', () => {
+    process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS = 'abc';
+    expect(getPendingConfirmationCapMs()).toBe(DEFAULT_PENDING_CONFIRMATION_CAP_MS);
+    process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS = '0';
+    expect(getPendingConfirmationCapMs()).toBe(DEFAULT_PENDING_CONFIRMATION_CAP_MS);
+    process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS = '-100';
+    expect(getPendingConfirmationCapMs()).toBe(DEFAULT_PENDING_CONFIRMATION_CAP_MS);
   });
 });
 
@@ -1102,6 +1171,403 @@ describe('stdio integration', () => {
       expect(corrected).toBe(true);
 
       await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('suppresses the periodic checkpoint while a cwd-resolved session id is unconfirmed', async () => {
+    // No ppid breadcrumb is ever supplied in this test, so the session stays
+    // in the "pending confirmation" state for its whole lifetime — proving
+    // the periodic checkpoint interval skips writing under the stale id.
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-suppress-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-pending-suppress-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'unconfirmed-cwd-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      // Let several 200ms persist ticks elapse while unconfirmed.
+      await new Promise((r) => setTimeout(r, 900));
+
+      const sessionsDir = resolve(tmpStoragePath, 'sessions');
+      const files = existsSync(sessionsDir) ? readdirSync(sessionsDir) : [];
+      expect(files.some((f) => f.includes('unconfirmed-cwd-session-id'))).toBe(false);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('resumes periodic checkpointing after the pending-confirmation cap elapses with no correction', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-cap-timeout-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cap-timeout-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'cap-timeout-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        NR_AI_PENDING_CONFIRMATION_CAP_MS: '500',
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const expectedFile = resolve(
+        tmpStoragePath,
+        'sessions',
+        `${dateStr}_cap-timeout-session-id.json`,
+      );
+
+      let appeared = false;
+      for (let i = 0; i < 20; i++) {
+        if (existsSync(expectedFile)) {
+          appeared = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(appeared).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('clears pending confirmation immediately when the PPID breadcrumb confirms the same id as the cwd guess', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-confirmed-same-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-confirmed-same-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'confirmed-same-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        // Deliberately left at the (2-minute) default: if pendingConfirmation
+        // only cleared via the cap, the checkpoint below could not appear
+        // within this test's short poll window.
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      // The spawned child sees this test process as its ppid — same
+      // convention as the existing correction tests.
+      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'confirmed-same-session-id');
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const expectedFile = resolve(
+        tmpStoragePath,
+        'sessions',
+        `${dateStr}_confirmed-same-session-id.json`,
+      );
+
+      let appeared = false;
+      for (let i = 0; i < 20; i++) {
+        if (existsSync(expectedFile)) {
+          appeared = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(appeared).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('resets accumulated cost when the PPID breadcrumb corrects to a different session id', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-cost-reset-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cost-reset-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-cost-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      // Simulate the wrong-identity backfill: while still on the stale cwd
+      // id, real cost gets recorded through the same shared CostTracker the
+      // parent-transcript watcher would feed.
+      await client.callTool({
+        name: 'nr_observe_report_tokens',
+        arguments: { input_tokens: 10000, output_tokens: 2000, model: 'claude-sonnet-5' },
+      });
+
+      const readTotalUsd = async (): Promise<number> => {
+        const result = await client.callTool({
+          name: 'nr_observe_get_cost_breakdown',
+          arguments: {},
+        });
+        const content = result.content as Array<{ type: string; text: string }>;
+        const text = content[0]?.text ?? '{}';
+        return (JSON.parse(text) as { total_usd: number }).total_usd;
+      };
+
+      expect(await readTotalUsd()).toBeGreaterThan(0);
+
+      // Now correct to a different ppid-derived id.
+      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      writeFileSync(resolve(ppidBreadcrumbDir, `${process.pid}.txt`), 'corrected-cost-session-id');
+
+      const readSessionId = async (): Promise<string> => {
+        const result = await client.callTool({
+          name: 'nr_observe_get_session_stats',
+          arguments: {},
+        });
+        const content = result.content as Array<{ type: string; text: string }>;
+        const text = content[0]?.text ?? '{}';
+        return (JSON.parse(text) as { session_id: string }).session_id;
+      };
+
+      let corrected = false;
+      for (let i = 0; i < 20; i++) {
+        if ((await readSessionId()) === 'corrected-cost-session-id') {
+          corrected = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(corrected).toBe(true);
+      expect(await readTotalUsd()).toBe(0);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('resumes checkpointing promptly after a real correction, not after the full pending-confirmation cap', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-correction-resume-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-correction-resume-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'stale-resume-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        // Left at the 2-minute default deliberately — see the sibling
+        // "confirmed same id" test's identical rationale.
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      const ppidBreadcrumbDir = resolve(tmpStoragePath, 'session-by-ppid');
+      mkdirSync(ppidBreadcrumbDir, { recursive: true });
+      writeFileSync(
+        resolve(ppidBreadcrumbDir, `${process.pid}.txt`),
+        'corrected-resume-session-id',
+      );
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const expectedFile = resolve(
+        tmpStoragePath,
+        'sessions',
+        `${dateStr}_corrected-resume-session-id.json`,
+      );
+
+      let appeared = false;
+      for (let i = 0; i < 20; i++) {
+        if (existsSync(expectedFile)) {
+          appeared = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(appeared).toBe(true);
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('still writes the terminal session save on shutdown even while pending confirmation', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-shutdown-pending-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-shutdown-pending-project-'));
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    const cwdBreadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(cwdBreadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'shutdown-pending-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        // No ppid breadcrumb is ever supplied, and the cap is left at its
+        // 2-minute default, so the session is still pendingConfirmation when
+        // we close the client below (which ends the child's stdin and
+        // triggers its shutdown handler).
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+
+      await client.close();
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const expectedFile = resolve(
+        tmpStoragePath,
+        'sessions',
+        `${dateStr}_shutdown-pending-session-id.json`,
+      );
+
+      let appeared = false;
+      for (let i = 0; i < 20; i++) {
+        if (existsSync(expectedFile)) {
+          appeared = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(appeared).toBe(true);
     } finally {
       rmSync(tmpStoragePath, { recursive: true, force: true });
       rmSync(tmpProjectCwd, { recursive: true, force: true });

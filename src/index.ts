@@ -249,6 +249,38 @@ export function getDashboardRepollIntervalMs(): number {
   return parsed;
 }
 
+/**
+ * Interval (ms) between periodic session-JSON checkpoints. Overridable via
+ * NR_AI_SESSION_PERSIST_INTERVAL_MS — kept simple to avoid threading a new
+ * config field through the loader for what is essentially a knob for tests.
+ */
+export const DEFAULT_SESSION_PERSIST_INTERVAL_MS = 30_000;
+
+export function getSessionPersistIntervalMs(): number {
+  const raw = process.env.NR_AI_SESSION_PERSIST_INTERVAL_MS;
+  if (raw === undefined || raw === '') return DEFAULT_SESSION_PERSIST_INTERVAL_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SESSION_PERSIST_INTERVAL_MS;
+  return parsed;
+}
+
+/**
+ * Cap (ms) on how long a cwd-fallback-resolved session id is treated as
+ * "pending confirmation" before periodic checkpointing resumes
+ * unconditionally. Overridable via NR_AI_PENDING_CONFIRMATION_CAP_MS — kept
+ * simple to avoid threading a new config field through the loader for what
+ * is essentially a knob for tests.
+ */
+export const DEFAULT_PENDING_CONFIRMATION_CAP_MS = 120_000;
+
+export function getPendingConfirmationCapMs(): number {
+  const raw = process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS;
+  if (raw === undefined || raw === '') return DEFAULT_PENDING_CONFIRMATION_CAP_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PENDING_CONFIRMATION_CAP_MS;
+  return parsed;
+}
+
 const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export interface RetentionSweepDeps {
@@ -684,6 +716,34 @@ async function main(): Promise<void> {
   // fallback — see resolvedViaCwdOnly) when shutdown fires.
   let ppidCorrectionAbort: AbortController | undefined;
 
+  // True whenever the live sessionTraceId came from the collision-prone cwd
+  // fallback and hasn't yet been ppid-confirmed. While true, the periodic
+  // session-JSON checkpoint below is suppressed so a stale identity never
+  // gets written to disk as an orphaned, zero-activity session file. Cleared
+  // either by a real ppid confirmation/correction or by the cap timer in
+  // armPendingConfirmation below.
+  let pendingConfirmation = false;
+  let pendingConfirmationCapTimer: NodeJS.Timeout | undefined;
+
+  const clearPendingConfirmation = (): void => {
+    pendingConfirmation = false;
+    if (pendingConfirmationCapTimer) {
+      clearTimeout(pendingConfirmationCapTimer);
+      pendingConfirmationCapTimer = undefined;
+    }
+  };
+
+  const armPendingConfirmation = (): void => {
+    pendingConfirmation = true;
+    pendingConfirmationCapTimer = setTimeout(() => {
+      logger.warn(
+        'Session id confirmation cap elapsed with no PPID correction; resuming periodic checkpointing',
+      );
+      clearPendingConfirmation();
+    }, getPendingConfirmationCapMs());
+    pendingConfirmationCapTimer.unref?.();
+  };
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
@@ -711,6 +771,7 @@ async function main(): Promise<void> {
       if (retentionInterval) clearInterval(retentionInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
       if (sessionPersistInterval) clearInterval(sessionPersistInterval);
+      if (pendingConfirmationCapTimer) clearTimeout(pendingConfirmationCapTimer);
       // Remove this MCP's heartbeat so the next dashboard-owner GC pass
       // doesn't have to mtime-archive our buffer file.
       localStoreForShutdown?.removeHeartbeat();
@@ -1920,8 +1981,13 @@ async function main(): Promise<void> {
     // exit (crash / SIGKILL) loses at most ~30s of data instead of the whole
     // session. persistSession() no-ops for synthetic / provisional ids, so this
     // is safe to arm immediately. unref'd so it never keeps the process alive.
-    const SESSION_PERSIST_INTERVAL_MS = 30_000;
+    const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
+      // Skip while the live session id is an unconfirmed cwd-fallback guess —
+      // see armPendingConfirmation's own comment. Persisting here would write
+      // a real, non-synthetic checkpoint file under an identity that might
+      // be corrected away moments later, orphaning the file on disk.
+      if (pendingConfirmation) return;
       try {
         persistSession?.({ periodic: true });
       } catch (err) {
@@ -2079,7 +2145,25 @@ async function main(): Promise<void> {
     // accumulated tracker metrics are preserved (adoptSessionId() only
     // reassigns the id field), and any already-live NrIngestManager is
     // stopped first so its harvest interval never leaks on a second call.
-    const adoptRealSessionId = async (realId: string): Promise<void> => {
+    const adoptRealSessionId = async (
+      realId: string,
+      opts?: { isCorrection?: boolean },
+    ): Promise<void> => {
+      if (opts?.isCorrection) {
+        // A real correction means the previously-adopted id was wrong, and
+        // anything these four trackers accumulated since startWatchers()
+        // scoped them to that wrong id (chiefly ParentTranscriptWatcher
+        // backfill from an unrelated old transcript) belongs to nobody.
+        // SessionTracker itself needs no reset here: real tool-call events
+        // only ever reach it via the per-session LocalStore/HookEventProcessor
+        // path, which is keyed by whatever id the hook collector script
+        // wrote — never the wrong guess — so toolCallCount/timeline stay
+        // clean through the whole unconfirmed window regardless.
+        costTracker.reset(realId);
+        modelUsageTracker.reset(realId);
+        contextCompositionTracker.reset(realId);
+        turnCostAttributor.reset(realId);
+      }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);
 
@@ -2229,6 +2313,7 @@ async function main(): Promise<void> {
     // A no-op-forever if the ppid breadcrumb never appears or always
     // matches — never trusts cwd itself, so it can't be fooled twice.
     const startPpidCorrectionWatch = (staleId: string): void => {
+      armPendingConfirmation();
       ppidCorrectionAbort = new AbortController();
       void watchPpidBreadcrumb({
         storagePath: config!.storagePath,
@@ -2236,17 +2321,25 @@ async function main(): Promise<void> {
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted) return;
-          if (ppidId === staleId) return;
+          if (ppidId === staleId) {
+            // The cwd guess turned out to be correct — no correction needed,
+            // so no reason to keep suppressing checkpoints for the rest of
+            // the cap window.
+            clearPendingConfirmation();
+            return;
+          }
           logger.info('Correcting cwd-sourced session id from PPID breadcrumb', {
             staleId,
             correctedId: ppidId,
           });
-          await adoptRealSessionId(ppidId);
+          await adoptRealSessionId(ppidId, { isCorrection: true });
+          clearPendingConfirmation();
         })
         .catch((err) => {
           if (!ppidCorrectionAbort?.signal.aborted) {
             logger.warn('PPID correction watch failed', { error: String(err) });
           }
+          clearPendingConfirmation();
         });
     };
 
