@@ -82,6 +82,7 @@ import {
   resolveSessionId,
   resolveFromJobDir,
   resolveFromBreadcrumb,
+  resolveFromCwd,
   isSyntheticSessionId,
 } from './hooks/session-resolver.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
@@ -784,7 +785,8 @@ async function main(): Promise<void> {
 
       const synchronouslyResolved =
         resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null) ??
-        resolveFromBreadcrumb(config.storagePath, process.ppid);
+        resolveFromBreadcrumb(config.storagePath, process.ppid) ??
+        resolveFromCwd(config.storagePath, process.cwd());
       if (synchronouslyResolved) {
         sessionTraceId = synchronouslyResolved;
         logger.info('Session ID resolved synchronously', { sessionTraceId });
@@ -1416,6 +1418,12 @@ async function main(): Promise<void> {
     }
 
     let capturedNrIngest: NrIngestManager | undefined;
+    // Set once the first tool record arrives while cloud ingest is expected but
+    // not yet wired up (still-provisional session, or the async resolver hasn't
+    // finished). Without this, a session that never leaves the provisional
+    // window sends metrics normally (a separate path) while every AiToolCall/
+    // AiMcpToolCall/etc. event is silently dropped — see issue #320.
+    let warnedMissingIngest = false;
     if (config.mode !== 'local' && !isProvisional) {
       if (!config.licenseKey || !config.accountId) {
         throw new Error(
@@ -1542,6 +1550,12 @@ async function main(): Promise<void> {
         // populates regardless of mode. NrIngestManager (when present) reuses the
         // returned AuditRecord rather than recording a second time.
         const auditRecord = auditTrail.recordToolCall(record);
+        if (!capturedNrIngest && config.mode !== 'local' && !warnedMissingIngest) {
+          warnedMissingIngest = true;
+          logger.warn(
+            'Tool record arrived with cloud ingest not yet initialized — AiToolCall/AiMcpToolCall events are being dropped until session ID resolution completes',
+          );
+        }
         capturedNrIngest?.ingestToolCall(record, auditRecord);
 
         // SSE consumers filter by sessionId for the per-session live tail.

@@ -1,5 +1,13 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  utimesSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import {
@@ -798,6 +806,68 @@ describe('stdio integration', () => {
     } finally {
       rmSync(tmpJobDir, { recursive: true, force: true });
       rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('resolves session_id synchronously from the cwd breadcrumb when no CLAUDE_JOB_DIR or PPID breadcrumb is available', async () => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const { resolveFromCwd } = await import('./hooks/session-resolver.js');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-cwd-sync-storage-'));
+    const tmpProjectCwd = mkdtempSync(join(tmpdir(), 'nr-cwd-sync-project-'));
+    // The spawned child's process.cwd() returns the *canonicalized* path
+    // (e.g. macOS resolves /var/folders/... to /private/var/folders/...) —
+    // resolve that here too so the breadcrumb filename matches what the
+    // child's own resolveFromCwd() call derives, not the raw temp path.
+    const realProjectCwd = realpathSync(tmpProjectCwd);
+
+    // Pre-write a cwd breadcrumb (as the hook collector would, via
+    // writeCwdBreadcrumb()) for the spawned MCP's own working directory —
+    // this is the platform-independent equivalent of "native Windows, where
+    // the PPID breadcrumb never matches, but the cwd one does". Deliberately
+    // omit CLAUDE_JOB_DIR and any PPID breadcrumb so only the cwd fallback in
+    // the *synchronous* resolution chain can succeed.
+    const breadcrumbDir = resolve(tmpStoragePath, 'session-by-cwd');
+    mkdirSync(breadcrumbDir, { recursive: true });
+    const sanitizedCwd = realProjectCwd.replace(/[\\/:]/g, '-');
+    writeFileSync(resolve(breadcrumbDir, `${sanitizedCwd}.txt`), 'resolved-via-cwd-session-id');
+
+    // Sanity check against the real resolver so this test fails loudly (not
+    // mysteriously) if the sanitization scheme ever drifts between the
+    // collector's write side and resolveFromCwd()'s read side.
+    expect(resolveFromCwd(tmpStoragePath, realProjectCwd)).toBe('resolved-via-cwd-session-id');
+
+    const env = { ...process.env };
+    delete env.CLAUDE_JOB_DIR;
+
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [binPath, '--stdio'],
+      cwd: tmpProjectCwd,
+      env: {
+        ...env,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      },
+    });
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+
+      // If the cwd fallback resolved synchronously, the full tool set is
+      // registered immediately — no pending-tools window to poll through.
+      const tools = await client.listTools();
+      const toolNames = tools.tools.map((t) => t.name);
+      expect(toolNames).toContain('nr_observe_get_session_stats');
+
+      await client.close();
+    } finally {
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpProjectCwd, { recursive: true, force: true });
     }
   }, 30000);
 

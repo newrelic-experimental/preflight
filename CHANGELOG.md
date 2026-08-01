@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.18] - 2026-08-01
+
+### Fixed
+
+- **The `--stdio` MCP's synchronous session-ID resolution at startup only tried the job-dir and PPID-keyed breadcrumb, skipping the cwd-keyed breadcrumb that the async resolver already falls back to** — on setups where the PPID breadcrumb never matches (e.g. native Windows, where the hook collector's PPID is a transient shell process rather than the real parent), this meant every session started in the provisional window and paid an avoidable delay before cloud ingest wired up. Synchronous resolution now tries the cwd breadcrumb too, matching the async resolver's fallback order. Also added a one-time warning log when a tool record arrives while cloud mode is configured but ingest hasn't initialized yet, so a stuck provisional window is now visible in the logs instead of silently dropping events.
+
 ## [1.14.17] - 2026-07-31
 
 ### Fixed
