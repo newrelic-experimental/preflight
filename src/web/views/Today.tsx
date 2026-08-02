@@ -30,6 +30,8 @@ import {
   fetchSessionSubagents,
   fetchWorkflows,
   fetchAntiPatterns,
+  fetchRetryAlerts,
+  type RetryAlertsResponse,
   fetchQualityProxy,
   fetchToolSelectionScore,
   fetchConcurrency,
@@ -162,6 +164,11 @@ export function Today(): JSX.Element {
   const { data: apiAntiPatterns, isPending: antiPatternsPending } = useQuery<SessionAntiPattern[]>({
     queryKey: qk.antiPatterns,
     queryFn: fetchAntiPatterns,
+  });
+  const { data: retryAlerts } = useQuery<RetryAlertsResponse>({
+    queryKey: ['retry-alerts'],
+    queryFn: fetchRetryAlerts,
+    refetchInterval: 10_000,
   });
   const { data: concurrency, isPending: concurrencyPending } = useQuery<ConcurrencyData>({
     queryKey: qk.concurrency,
@@ -418,6 +425,18 @@ export function Today(): JSX.Element {
                           Session: {sessionPillLabel(antiPatterns[0].sessionId, liveSessions ?? [])}
                         </Pill>
                       )}
+                      {antiPatterns[0].type === 'thrashing' &&
+                        retryAlerts?.alerts?.find((a) => a.toolName === antiPatterns[0].target)
+                          ?.tokensWastedEstimate !== undefined && (
+                          <span className="text-ink-muted ml-2">
+                            ~
+                            {
+                              retryAlerts.alerts.find((a) => a.toolName === antiPatterns[0].target)!
+                                .tokensWastedEstimate
+                            }{' '}
+                            tokens wasted
+                          </span>
+                        )}
                     </>
                   ) : apiAntiPatterns && apiAntiPatterns.length > 0 ? (
                     <>

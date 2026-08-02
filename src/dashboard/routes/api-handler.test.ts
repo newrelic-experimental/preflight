@@ -791,6 +791,44 @@ describe('api-handler GET /api/anti-patterns', () => {
   });
 });
 
+describe('api-handler GET /api/retry-alerts', () => {
+  it('returns 503 when retryDetector is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/retry-alerts' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns retry detector metrics as JSON', async () => {
+    const fakeMetrics = {
+      alerts: [
+        {
+          toolName: 'Read',
+          occurrences: 4,
+          windowSize: 5,
+          similarity: 0.9,
+          tokensWastedEstimate: 750,
+          timestamp: 1700000000000,
+        },
+      ],
+      totalTokensWasted: 750,
+      totalAlertsEmitted: 1,
+    };
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+    });
+    const req = { method: 'GET', url: '/api/retry-alerts' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
 describe('api-handler GET /api/audit', () => {
   it('returns audit log mapped to SPA AuditEntry shape', async () => {
     const ts1 = Date.now() - 5000;

@@ -79,6 +79,37 @@ describe('Today view', () => {
     expect(screen.queryByText(/thrashing/i)).toBeNull();
   });
 
+  it('shows retry-detector detail on the thrashing banner when a matching alert exists', async () => {
+    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'Read', count: 4 }] });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/retry-alerts') {
+        return new Response(
+          JSON.stringify({
+            alerts: [
+              {
+                toolName: 'Read',
+                occurrences: 4,
+                windowSize: 5,
+                similarity: 0.9,
+                tokensWastedEstimate: 750,
+                timestamp: Date.now(),
+              },
+            ],
+            totalTokensWasted: 750,
+            totalAlertsEmitted: 1,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    expect(await screen.findByText(/~750 tokens wasted/i)).toBeInTheDocument();
+  });
+
   it('renders a real count for stuck_loop via the API-fallback path, not "?"', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {

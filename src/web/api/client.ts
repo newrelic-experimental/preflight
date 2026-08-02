@@ -280,6 +280,25 @@ export const fetchSessionDetail = (id: string): Promise<SessionDetail> =>
 export const fetchCost = (): Promise<CostResponse> => getJson<CostResponse>('/api/cost');
 export const fetchAntiPatterns = (): Promise<AntiPattern[]> =>
   getJson<AntiPattern[]>('/api/anti-patterns');
+
+export interface ThrashingAlertEntry {
+  readonly toolName: string;
+  readonly occurrences: number;
+  readonly windowSize: number;
+  readonly similarity: number;
+  readonly tokensWastedEstimate: number;
+  readonly timestamp: number;
+}
+
+export interface RetryAlertsResponse {
+  readonly alerts: readonly ThrashingAlertEntry[];
+  readonly totalTokensWasted: number;
+  readonly totalAlertsEmitted: number;
+}
+
+export const fetchRetryAlerts = (): Promise<RetryAlertsResponse> =>
+  getJson<RetryAlertsResponse>('/api/retry-alerts');
+
 export interface QualityEvent {
   readonly signal:
     | 'diff_applied_clean'

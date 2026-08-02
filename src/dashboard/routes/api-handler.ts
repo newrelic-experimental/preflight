@@ -59,6 +59,7 @@ import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.
 import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
+import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 interface RawAuditRecord {
   readonly timestamp: number;
@@ -376,6 +377,7 @@ export interface ApiHandlerDeps {
   };
   readonly costForecast?: () => CostForecast;
   readonly antiPatternDetector?: { getCurrentPatterns: () => readonly AntiPattern[] };
+  readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
   readonly auditTrailManager?: { getAuditLog: () => readonly AuditRecord[] };
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
@@ -1569,6 +1571,11 @@ export function createApiHandler(
   routes.set('GET /api/anti-patterns', (_req, res) => {
     if (!deps.antiPatternDetector) return unavailable(res, 'antiPatternDetector');
     jsonOk(res, deps.antiPatternDetector.getCurrentPatterns());
+  });
+
+  routes.set('GET /api/retry-alerts', (_req, res) => {
+    if (!deps.retryDetector) return unavailable(res, 'retryDetector');
+    jsonOk(res, deps.retryDetector.getMetrics());
   });
 
   routes.set('GET /api/audit', (_req, res) => {

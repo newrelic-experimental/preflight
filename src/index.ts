@@ -1337,6 +1337,7 @@ async function main(): Promise<void> {
             });
           },
           antiPatternDetector,
+          retryDetector,
           weeklySummaryGenerator,
           budgetTracker,
           latencyTracker,

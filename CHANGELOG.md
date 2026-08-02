@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.24] - 2026-08-02
+
+### Added
+
+- **The Today dashboard's thrashing anti-pattern banner now shows an estimated wasted-token count when one is available** — when the retry detector has flagged the same repeated tool call behind the banner's alert, the banner appends a rough token-waste estimate next to the existing pattern type and file/command target, rather than requiring a separate lookup.
+
 ## [1.14.23] - 2026-08-02
 
 ### Added
