@@ -829,6 +829,47 @@ describe('api-handler GET /api/retry-alerts', () => {
   });
 });
 
+describe('api-handler GET /api/instruction-drift', () => {
+  it('returns 503 when instructionDriftTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/instruction-drift' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns instruction drift metrics as JSON', async () => {
+    const fakeMetrics = {
+      currentPromptHash: 'abc123',
+      uniquePromptVariants: 2,
+      variantStats: [],
+      recentCorrelations: [
+        {
+          fromHash: 'aaa',
+          toHash: 'bbb',
+          successRateDelta: -0.15,
+          tokensDelta: 6000,
+          thrashingDelta: 0.6,
+          efficiencyDelta: -0.1,
+          verdict: 'degraded',
+        },
+      ],
+      currentVariantSessionCount: 3,
+    };
+    const handler = createApiHandler({
+      instructionDriftTracker: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['instructionDriftTracker'],
+    });
+    const req = { method: 'GET', url: '/api/instruction-drift' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
 describe('api-handler GET /api/audit', () => {
   it('returns audit log mapped to SPA AuditEntry shape', async () => {
     const ts1 = Date.now() - 5000;

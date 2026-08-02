@@ -343,6 +343,167 @@ describe('History view', () => {
       expect(screen.getAllByText(/no anti-patterns detected/i).length).toBeGreaterThanOrEqual(1),
     );
   });
+
+  it('shows the most recent drift verdict with deltas', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/instruction-drift')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              currentPromptHash: 'abc123',
+              uniquePromptVariants: 2,
+              variantStats: [],
+              recentCorrelations: [
+                {
+                  fromHash: 'aaa',
+                  toHash: 'bbb',
+                  successRateDelta: -0.15,
+                  tokensDelta: 6000,
+                  thrashingDelta: 0.6,
+                  efficiencyDelta: -0.1,
+                  verdict: 'degraded',
+                },
+              ],
+              currentVariantSessionCount: 3,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      if (url.startsWith('/api/weekly')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_WEEKLY), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/cost-per-outcome')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_OUTCOME), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/personal-coach')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_COACH_OK), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_SESSIONS), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/activity-heatmap')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/concurrency')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(new Response('null', { status: 200 }));
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/degraded/i)).toBeInTheDocument();
+    expect(screen.getByText(/-15%/)).toBeInTheDocument();
+  });
+
+  it('shows a neutral empty state with no correlations yet', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/instruction-drift')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              currentPromptHash: null,
+              uniquePromptVariants: 0,
+              variantStats: [],
+              recentCorrelations: [],
+              currentVariantSessionCount: 0,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      if (url.startsWith('/api/weekly')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_WEEKLY), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/cost-per-outcome')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_OUTCOME), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/personal-coach')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_COACH_OK), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_SESSIONS), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/activity-heatmap')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/concurrency')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(new Response('null', { status: 200 }));
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/no instruction file changes tracked yet/i)).toBeInTheDocument();
+  });
 });
 
 describe('History — error handling', () => {

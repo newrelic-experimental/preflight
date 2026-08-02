@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.25] - 2026-08-02
+
+### Added
+
+- **The History dashboard now shows how your last instruction file change affected your sessions** — a new "Instruction Drift" panel compares session outcomes before and after your most recent edit to CLAUDE.md (or the active platform's equivalent, e.g. Cursor's `.cursorrules`), showing an improved/degraded/neutral verdict alongside the success-rate, token-usage, and thrashing deltas behind it.
+
 ## [1.14.24] - 2026-08-02
 
 ### Added

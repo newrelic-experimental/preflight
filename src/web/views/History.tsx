@@ -18,7 +18,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
-import { Card, Eyebrow } from '../components/ui';
+import { Card, Eyebrow, InfoTooltip, Pill, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
   fetchSessionsList,
@@ -26,12 +26,15 @@ import {
   fetchPersonalCoach,
   fetchActivityHeatmap,
   fetchConcurrencyHistory,
+  fetchInstructionDrift,
   qk,
   type WeeklyRow,
   type CostPerOutcomeResponse,
   type PersonalCoachResult,
   type ConcurrencyHistoryResponse,
   type ActivityHeatmapHistoryResponse,
+  type InstructionDriftResponse,
+  type DriftCorrelationEntry,
 } from '../api/client';
 import { formatUsdOrDash, shortToolName } from '../lib/format';
 
@@ -90,6 +93,72 @@ function shortMonthDay(value: string): string {
   return typeof value === 'string' && value.length >= 10 ? value.slice(5, 10) : value;
 }
 
+const INSTRUCTION_DRIFT_TOOLTIP =
+  "Compares session outcomes before and after your most recent change to an instruction file (CLAUDE.md, or the active platform's equivalent) — success rate, token usage, and thrashing incidents. A degraded verdict means sessions got worse after the edit, not better.";
+
+function DriftStat({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div>
+      <div className="text-[10px] text-ink-muted uppercase tracking-wider">{label}</div>
+      <div className="text-sm font-bold tabular-nums mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function InstructionDriftCard({
+  data,
+}: {
+  data: InstructionDriftResponse | undefined;
+}): JSX.Element {
+  if (!data) {
+    return (
+      <Panel title="Instruction Drift" tooltip={INSTRUCTION_DRIFT_TOOLTIP}>
+        <EmptyState variant="loading" title="Loading drift data…" />
+      </Panel>
+    );
+  }
+  const latest = data.recentCorrelations[data.recentCorrelations.length - 1];
+  if (!latest) {
+    return (
+      <Panel title="Instruction Drift" tooltip={INSTRUCTION_DRIFT_TOOLTIP}>
+        <div className="text-ink-muted text-xs">No instruction file changes tracked yet.</div>
+      </Panel>
+    );
+  }
+  const verdictTone: Record<DriftCorrelationEntry['verdict'], PillTone> = {
+    improved: 'success',
+    degraded: 'danger',
+    neutral: 'neutral',
+    insufficient_data: 'neutral',
+  };
+  return (
+    <Panel
+      title="Instruction Drift — most recent instruction file change"
+      tooltip={INSTRUCTION_DRIFT_TOOLTIP}
+    >
+      <div className="flex items-center gap-6">
+        <Pill tone={verdictTone[latest.verdict]}>{latest.verdict}</Pill>
+        <DriftStat
+          label="Success"
+          value={
+            latest.successRateDelta !== null
+              ? `${latest.successRateDelta > 0 ? '+' : ''}${Math.round(latest.successRateDelta * 100)}%`
+              : '—'
+          }
+        />
+        <DriftStat
+          label="Tokens"
+          value={`${latest.tokensDelta > 0 ? '+' : ''}${latest.tokensDelta}`}
+        />
+        <DriftStat
+          label="Thrashing"
+          value={`${latest.thrashingDelta > 0 ? '+' : ''}${latest.thrashingDelta}`}
+        />
+      </div>
+    </Panel>
+  );
+}
+
 export function History(): JSX.Element {
   const weekly = useQuery<WeeklyRow[]>({
     queryKey: qk.weekly,
@@ -119,6 +188,11 @@ export function History(): JSX.Element {
   const concurrencyHistory = useQuery<ConcurrencyHistoryResponse>({
     queryKey: qk.concurrencyHistory(30),
     queryFn: () => fetchConcurrencyHistory(30),
+  });
+
+  const drift = useQuery<InstructionDriftResponse>({
+    queryKey: qk.instructionDrift,
+    queryFn: fetchInstructionDrift,
   });
 
   const hasLoadError =
@@ -425,16 +499,31 @@ export function History(): JSX.Element {
       </div>
 
       <div className="mt-3">
+        <InstructionDriftCard data={drift.data} />
+      </div>
+
+      <div className="mt-3">
         <CoachCard data={coach.data} />
       </div>
     </section>
   );
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }): JSX.Element {
+function Panel({
+  title,
+  tooltip,
+  children,
+}: {
+  title: string;
+  tooltip?: string;
+  children: React.ReactNode;
+}): JSX.Element {
   return (
     <Card padding="md">
-      <Eyebrow>{title}</Eyebrow>
+      <div className="flex items-center gap-1.5">
+        <Eyebrow>{title}</Eyebrow>
+        {tooltip && <InfoTooltip text={tooltip} />}
+      </div>
       <div className="mt-3">{children}</div>
     </Card>
   );

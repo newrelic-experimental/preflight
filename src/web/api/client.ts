@@ -933,6 +933,38 @@ export const fetchWorkflows = (): Promise<ReadonlyArray<WorkflowRunInfo>> =>
 export const fetchWorkflowDetail = (runId: string): Promise<WorkflowRunDetailResponse> =>
   getJson<WorkflowRunDetailResponse>(`/api/workflows/${encodeURIComponent(runId)}`);
 
+export interface DriftCorrelationEntry {
+  readonly fromHash: string;
+  readonly toHash: string;
+  readonly successRateDelta: number | null;
+  readonly tokensDelta: number;
+  readonly thrashingDelta: number;
+  readonly efficiencyDelta: number | null;
+  readonly verdict: 'improved' | 'degraded' | 'neutral' | 'insufficient_data';
+}
+
+export interface PromptVariantStatsEntry {
+  readonly promptHash: string;
+  readonly sessionCount: number;
+  readonly avgSuccessRate: number | null;
+  readonly avgTokensPerSession: number;
+  readonly avgThrashingIncidents: number;
+  readonly avgEfficiency: number | null;
+  readonly firstSeen: number;
+  readonly lastSeen: number;
+}
+
+export interface InstructionDriftResponse {
+  readonly currentPromptHash: string | null;
+  readonly uniquePromptVariants: number;
+  readonly variantStats: readonly PromptVariantStatsEntry[];
+  readonly recentCorrelations: readonly DriftCorrelationEntry[];
+  readonly currentVariantSessionCount: number;
+}
+
+export const fetchInstructionDrift = (): Promise<InstructionDriftResponse> =>
+  getJson<InstructionDriftResponse>('/api/instruction-drift');
+
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
@@ -945,6 +977,7 @@ export const qk = {
   latency: ['latency'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   personalCoach: ['personal-coach'] as const,
+  instructionDrift: ['instruction-drift'] as const,
   alertsRecent: ['alerts', 'recent'] as const,
   sessionReplay: (id: string) => ['session', id, 'replay'] as const,
   sessionSubagents: (id: string) => ['session', id, 'subagents'] as const,
