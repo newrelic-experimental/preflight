@@ -18,3 +18,6 @@ export type { EyebrowProps, EyebrowAs } from './Eyebrow';
 
 export { SectionHeader } from './SectionHeader';
 export type { SectionHeaderProps } from './SectionHeader';
+
+export { InfoTooltip } from './InfoTooltip';
+export type { InfoTooltipProps } from './InfoTooltip';

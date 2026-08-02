@@ -19,7 +19,7 @@ import { ConcurrencyIndicator, type ConcurrencyData } from '../components/Concur
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { ContextBar } from '../components/ContextBar';
-import { Card, Eyebrow, LiveBadge, Pill } from '../components/ui';
+import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
   fetchCacheHealth,
@@ -481,7 +481,10 @@ export function Today(): JSX.Element {
           {todayHeatmap && todayHeatmap.buckets?.length > 0 && (
             <AnimatedCard index={5} className="mb-3">
               <Card padding="sm">
-                <Eyebrow className="mb-2">Activity Today</Eyebrow>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Eyebrow>Activity Today</Eyebrow>
+                  <InfoTooltip text="Tool-call activity in 15-minute blocks across today. Darker blocks mean more calls in that window." />
+                </div>
                 <ActivityHeatmap
                   variant="strip"
                   buckets={todayHeatmap.buckets}
@@ -512,7 +515,10 @@ function QualityProxyPanel(): JSX.Element {
 
   return (
     <Card padding="sm" className="h-full">
-      <Eyebrow className="mb-2">Quality</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Quality</Eyebrow>
+        <InfoTooltip text="Diff apply rate and test pass rate across today's sessions, plus how often you backtracked or self-corrected. Watch for the degrading flag if quality drops mid-session." />
+      </div>
       {!data || data.totalSignals === 0 ? (
         <EmptyState
           icon="checkmark"
@@ -563,7 +569,10 @@ function ToolSelectionPanel(): JSX.Element {
 
   return (
     <Card padding="sm" className="h-full">
-      <Eyebrow className="mb-2">Tool Selection</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Tool Selection</Eyebrow>
+        <InfoTooltip text="Scores how efficiently tools were chosen today: penalizes re-reading a file without editing it, retrying a failing call, or fetching output that's never used." />
+      </div>
       {!data || Array.isArray(data) || data.totalCalls === 0 ? (
         <EmptyState
           icon="radar"
@@ -633,7 +642,10 @@ function LatencyPanel({
 
   return (
     <Card padding="sm" className="h-full">
-      <Eyebrow className="mb-2">Latency (ms)</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Latency (ms)</Eyebrow>
+        <InfoTooltip text="How long tool calls took today — p50/p95/p99 across all calls, plus the slowest tools by p95." />
+      </div>
       {!data || !data.overall ? (
         <EmptyState
           icon="clock"
@@ -707,7 +719,10 @@ function ModelUsagePanel(): JSX.Element {
 
   return (
     <Card padding="sm" className="h-full">
-      <Eyebrow className="mb-2">Model Usage</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Model Usage</Eyebrow>
+        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. The live slice resets if the server process restarts." />
+      </div>
       {!data || models.length === 0 ? (
         <EmptyState
           icon="radar"
@@ -773,7 +788,10 @@ function CacheHealthPanel({
 
   return (
     <Card padding="sm" className="h-full">
-      <Eyebrow className="mb-2">Cache Health</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Cache Health</Eyebrow>
+        <InfoTooltip text="Prompt cache hit rate today, with a suggestion for improving it — usually by moving stable context earlier in the prompt." />
+      </div>
       {noActivity ? (
         <EmptyState
           icon="radar"
@@ -1059,53 +1077,58 @@ function LiveSessionPane({
         style={{ height: '320px' }}
       >
         {/* Session list */}
-        <div className="border-r border-border-subtle overflow-auto">
-          <Eyebrow className="p-2 border-b border-border-subtle">Session Live Tail</Eyebrow>
-          {todaySessions.map((s) => {
-            const isSessionLive = liveSessionIds.has(s.sessionId);
-            return (
-              <button
-                key={s.sessionId}
-                type="button"
-                onClick={() => setSelectedId(s.sessionId)}
-                className={
-                  'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
-                  (activeId === s.sessionId ? 'bg-surface-5' : '')
-                }
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-ink-base">
-                    {s.sessionName || s.sessionId.slice(0, 8)}
-                  </span>
-                  {isSessionLive ? (
-                    <LiveBadge label="live" size="sm" />
-                  ) : (
-                    <span
-                      className="text-[10px] text-ink-muted"
-                      title={s.startTime ? `Started ${fmtTimeOfDay(s.startTime)}` : undefined}
-                    >
-                      {s.startTime ? fmtTimeOfDay(s.startTime + (s.durationMs ?? 0)) : ''}
+        <div className="border-r border-border-subtle flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between gap-1.5 p-2 border-b border-border-subtle shrink-0">
+            <Eyebrow>Session Live Tail</Eyebrow>
+            <InfoTooltip text="Today's sessions on the left; select one to stream its live tool-call trace on the right." />
+          </div>
+          <div className="overflow-auto flex-1">
+            {todaySessions.map((s) => {
+              const isSessionLive = liveSessionIds.has(s.sessionId);
+              return (
+                <button
+                  key={s.sessionId}
+                  type="button"
+                  onClick={() => setSelectedId(s.sessionId)}
+                  className={
+                    'block w-full text-left p-2 border-b border-border-subtle text-xs transition-colors duration-150 hover:bg-surface-5 ' +
+                    (activeId === s.sessionId ? 'bg-surface-5' : '')
+                  }
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-ink-base">
+                      {s.sessionName || s.sessionId.slice(0, 8)}
                     </span>
-                  )}
-                </div>
-                <div className="flex gap-2 mt-0.5 text-[10px] text-ink-subtle">
-                  <span>{s.toolCallCount ?? 0} calls</span>
-                  {s.estimatedCostUsd != null && s.estimatedCostUsd > 0 ? (
-                    <span>{formatUsd(s.estimatedCostUsd)}</span>
-                  ) : (
-                    <span>—</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-          {liveSessionIds.size === 0 && todaySessions.length === 0 && (
-            <EmptyState
-              icon="code"
-              title="No sessions today"
-              subtitle="Start coding with Claude to see sessions here."
-            />
-          )}
+                    {isSessionLive ? (
+                      <LiveBadge label="live" size="sm" />
+                    ) : (
+                      <span
+                        className="text-[10px] text-ink-muted"
+                        title={s.startTime ? `Started ${fmtTimeOfDay(s.startTime)}` : undefined}
+                      >
+                        {s.startTime ? fmtTimeOfDay(s.startTime + (s.durationMs ?? 0)) : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2 mt-0.5 text-[10px] text-ink-subtle">
+                    <span>{s.toolCallCount ?? 0} calls</span>
+                    {s.estimatedCostUsd != null && s.estimatedCostUsd > 0 ? (
+                      <span>{formatUsd(s.estimatedCostUsd)}</span>
+                    ) : (
+                      <span>—</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+            {liveSessionIds.size === 0 && todaySessions.length === 0 && (
+              <EmptyState
+                icon="code"
+                title="No sessions today"
+                subtitle="Start coding with Claude to see sessions here."
+              />
+            )}
+          </div>
         </div>
 
         {/* Live tail */}
@@ -1224,7 +1247,10 @@ function RecentAlertsPanel(): JSX.Element | null {
 
   return (
     <Card padding="sm">
-      <Eyebrow className="mb-2">Recent Alerts</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Recent Alerts</Eyebrow>
+        <InfoTooltip text="The most recent alert firings and resolutions from your configured alert rules, newest first." />
+      </div>
       {isLoading && <EmptyState variant="loading" title="Loading..." />}
       {error && <div className="text-accent-red text-xs">Error loading recent alerts.</div>}
       {!isLoading && !error && sortedEntries.length === 0 && (
@@ -1394,7 +1420,10 @@ function ForecastEodCard({
 
   return (
     <Card padding="sm" className="mb-3 h-full">
-      <Eyebrow className="mb-1.5">Forecast · End of Day</Eyebrow>
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <Eyebrow>Forecast · End of Day</Eyebrow>
+        <InfoTooltip text="Projects today's total spend by midnight, based on the spending trend so far this hour-by-hour." />
+      </div>
       {hasForecast ? (
         <>
           <div className="flex items-baseline gap-3">

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.23] - 2026-08-02
+
+### Added
+
+- **Each panel on the Today dashboard now has an info icon next to its header explaining what it measures** — hover or keyboard-focus the icon for a short explanation of what's shown and how it's computed (covers Quality, Tool Selection, Latency, Model Usage, Cache Health, Session Live Tail, Recent Alerts, Activity Today, and the End-of-Day forecast). The tooltip always renders in full, even next to a panel with its own scrollable area.
+
 ## [1.14.22] - 2026-08-01
 
 ### Fixed
