@@ -14,6 +14,7 @@ import { HourlyCostBlocks, type HourlyCostEntry } from '../components/HourlyCost
 import { EmptyState } from '../components/EmptyState';
 import { SessionTrace } from '../components/SessionTrace';
 import { WorkflowRunDetail } from '../components/WorkflowRunDetail';
+import { SessionDetailDialog } from '../components/SessionDetailDialog';
 import type { AgentSpan } from '../components/AgentSwimlanes';
 import { ConcurrencyIndicator, type ConcurrencyData } from '../components/ConcurrencyIndicator';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
@@ -32,6 +33,10 @@ import {
   fetchAntiPatterns,
   fetchRetryAlerts,
   type RetryAlertsResponse,
+  fetchTurnCosts,
+  type TurnCostsResponse,
+  fetchDecisionTree,
+  type DecisionTreeResponse,
   fetchQualityProxy,
   fetchToolSelectionScore,
   fetchConcurrency,
@@ -897,6 +902,10 @@ function LiveSessionPane({
   // In-place workflow-run drawer (same pattern as the Sessions view) — opening
   // a run from the trace overlays the detail rather than navigating away.
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  // Decision-tree + turn-cost detail drawer — kept out of the fixed-height
+  // trace pane itself so a busy session's failure/turn count never eats into
+  // the trace's available vertical space.
+  const [showDetail, setShowDetail] = useState(false);
   const [, navigate] = useLocation();
   const setActiveSession = useLiveStore((s) => s.setActiveSession);
 
@@ -970,6 +979,21 @@ function LiveSessionPane({
     queryKey: qk.workflows,
     queryFn: fetchWorkflows,
     refetchInterval: isLive ? 10_000 : false,
+  });
+
+  // Decision-tree + per-turn cost detail — both trackers are live,
+  // in-memory, current-process-only accumulators (no persistence), so this
+  // always reflects this dashboard process's own current session, not
+  // necessarily the session selected in the list on the left.
+  const { data: turnCosts } = useQuery<TurnCostsResponse>({
+    queryKey: ['turn-costs'],
+    queryFn: fetchTurnCosts,
+    refetchInterval: 10_000,
+  });
+  const { data: decisionTree } = useQuery<DecisionTreeResponse>({
+    queryKey: ['decision-tree'],
+    queryFn: fetchDecisionTree,
+    refetchInterval: 10_000,
   });
 
   const tailRef = useRef<HTMLDivElement>(null);
@@ -1215,10 +1239,39 @@ function LiveSessionPane({
               <ContextBar sessionId={activeId} />
             </div>
           )}
+          {/* `turnCosts?.turns?.length` (not `turnCosts && turnCosts.turns.length`)
+            because unrelated tests' default fetch mocks resolve every
+            unmatched endpoint (including this one) to `[]`, which has no
+            `.turns` field — the plain-object shape only holds under the
+            dedicated /api/turn-costs mock. */}
+          {((decisionTree?.totalBranches ?? 0) > 0 || (turnCosts?.turns?.length ?? 0) > 0) && (
+            <div className="border-t border-bg-line px-3 py-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowDetail(true)}
+                className="text-[10px] text-accent-cyan hover:underline transition-colors duration-150 text-left"
+              >
+                {decisionTree && decisionTree.totalBranches > 0
+                  ? `${decisionTree.longestFailureStreak} failure streak`
+                  : null}
+                {turnCosts?.turns && turnCosts.turns.length > 0
+                  ? ` · ${turnCosts.turns.length} turns · $${turnCosts.totalAttributedCost.toFixed(2)}`
+                  : null}
+                {' — session detail →'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {openRunId != null && (
         <WorkflowRunDetail runId={openRunId} onClose={() => setOpenRunId(null)} />
+      )}
+      {showDetail && (
+        <SessionDetailDialog
+          decisionTree={decisionTree}
+          turnCosts={turnCosts}
+          onClose={() => setShowDetail(false)}
+        />
       )}
     </>
   );

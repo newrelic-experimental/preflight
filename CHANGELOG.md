@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.26] - 2026-08-03
+
+### Added
+
+- **The Today dashboard's live session pane now shows decision-tree and per-turn cost detail** — a "session detail" link opens a drawer with the current session's longest failure streak, success rate, and recovery reasoning, alongside a full breakdown of recent turns by cost, tokens, and model.
+
 ## [1.14.25] - 2026-08-02
 
 ### Added

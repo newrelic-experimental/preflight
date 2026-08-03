@@ -61,6 +61,8 @@ import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/co
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
 import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
+import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
+import type { CostAttributionMetrics } from '../../metrics/turn-cost-attributor.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 interface RawAuditRecord {
   readonly timestamp: number;
@@ -380,6 +382,8 @@ export interface ApiHandlerDeps {
   readonly antiPatternDetector?: { getCurrentPatterns: () => readonly AntiPattern[] };
   readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
   readonly instructionDriftTracker?: { getMetrics: () => InstructionDriftMetrics };
+  readonly decisionTracker?: { getMetrics: () => DecisionTreeMetrics };
+  readonly turnCostAttributor?: { getMetrics: () => CostAttributionMetrics };
   readonly auditTrailManager?: { getAuditLog: () => readonly AuditRecord[] };
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
@@ -1583,6 +1587,16 @@ export function createApiHandler(
   routes.set('GET /api/instruction-drift', (_req, res) => {
     if (!deps.instructionDriftTracker) return unavailable(res, 'instructionDriftTracker');
     jsonOk(res, deps.instructionDriftTracker.getMetrics());
+  });
+
+  routes.set('GET /api/decision-tree', (_req, res) => {
+    if (!deps.decisionTracker) return unavailable(res, 'decisionTracker');
+    jsonOk(res, deps.decisionTracker.getMetrics());
+  });
+
+  routes.set('GET /api/turn-costs', (_req, res) => {
+    if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
+    jsonOk(res, deps.turnCostAttributor.getMetrics());
   });
 
   routes.set('GET /api/audit', (_req, res) => {

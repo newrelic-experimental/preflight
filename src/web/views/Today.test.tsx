@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Today } from './Today';
 import { useLiveStore } from '../store/liveStore';
@@ -108,6 +108,97 @@ describe('Today view', () => {
     }) as typeof fetch;
     renderToday();
     expect(await screen.findByText(/~750 tokens wasted/i)).toBeInTheDocument();
+  });
+
+  function stubTurnCostsAndDecisionTree(turnCount = 1): void {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/api/turn-costs')) {
+        return new Response(
+          JSON.stringify({
+            turns: Array.from({ length: turnCount }, (_, i) => ({
+              turnId: `t${i + 1}`,
+              startTime: i,
+              endTime: i + 1,
+              toolCalls: [`toolu_00${i + 1}`],
+              toolNames: [i === turnCount - 1 ? 'Bash' : 'Read'],
+              inputTokens: 500,
+              outputTokens: 200,
+              cacheReadTokens: 0,
+              model: 'claude-sonnet-5',
+              estimatedCostUsd: (i + 1) / 100,
+              costPerToolCall: (i + 1) / 100,
+            })),
+            costByToolType: {},
+            totalAttributedCost: (turnCount * (turnCount + 1)) / 2 / 100,
+            attributionRate: 1,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.startsWith('/api/decision-tree')) {
+        return new Response(
+          JSON.stringify({
+            totalBranches: 4,
+            successRate: 0.5,
+            failurePoints: [],
+            longestFailureStreak: 2,
+            firstFailureIndex: 1,
+            note: '',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('null', { status: 200 });
+    }) as typeof globalThis.fetch;
+  }
+
+  it('shows a one-line trigger (not the full detail) in LiveSessionPane when data exists', async () => {
+    stubTurnCostsAndDecisionTree(1);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    expect(
+      await screen.findByText(/2 failure streak.*1 turns.*\$0\.01.*session detail/i),
+    ).toBeInTheDocument();
+    // The full breakdown must NOT be inline — that's the whole point of the dialog.
+    expect(screen.queryByText('Recent turns')).toBeNull();
+  });
+
+  it('opens the session detail dialog with every turn (not sliced to the last 5) on click', async () => {
+    stubTurnCostsAndDecisionTree(6);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    const trigger = await screen.findByText(/session detail/i);
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    // 6th turn's cost ($0.06) would have been sliced off by the old `.slice(-5)`.
+    expect(screen.getByText('$0.06')).toBeInTheDocument();
+    expect(screen.getByText(/longest failure streak/i)).toBeInTheDocument();
+  });
+
+  it('hides the trigger when neither tracker has data', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText(/session detail/i)).toBeNull());
   });
 
   it('renders a real count for stuck_loop via the API-fallback path, not "?"', async () => {

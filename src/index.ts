@@ -1339,6 +1339,8 @@ async function main(): Promise<void> {
           antiPatternDetector,
           retryDetector,
           instructionDriftTracker,
+          decisionTracker,
+          turnCostAttributor,
           weeklySummaryGenerator,
           budgetTracker,
           latencyTracker,

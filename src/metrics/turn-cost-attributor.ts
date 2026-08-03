@@ -13,6 +13,7 @@ export interface TurnCostAttribution {
   readonly startTime: number;
   readonly endTime: number;
   readonly toolCalls: string[];
+  readonly toolNames: string[];
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
@@ -123,6 +124,7 @@ export class TurnCostAttributor {
       startTime: this.pendingTurn.startTime,
       endTime: this.pendingTurn.endTime,
       toolCalls: this.pendingTurn.toolCalls.map((tc) => tc.toolUseId),
+      toolNames: this.pendingTurn.toolCalls.map((tc) => tc.toolName),
       inputTokens: event.inputTokens,
       outputTokens: event.outputTokens,
       cacheReadTokens: event.cacheReadTokens,

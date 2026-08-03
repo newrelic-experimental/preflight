@@ -870,6 +870,82 @@ describe('api-handler GET /api/instruction-drift', () => {
   });
 });
 
+describe('api-handler GET /api/decision-tree', () => {
+  it('returns 503 when decisionTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/decision-tree' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns decision tree metrics as JSON', async () => {
+    const fakeMetrics = {
+      totalBranches: 4,
+      successRate: 0.5,
+      failurePoints: [],
+      longestFailureStreak: 2,
+      firstFailureIndex: 1,
+      note: '',
+    };
+    const handler = createApiHandler({
+      decisionTracker: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['decisionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/decision-tree' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
+describe('api-handler GET /api/turn-costs', () => {
+  it('returns 503 when turnCostAttributor is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/turn-costs' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns turn cost metrics as JSON', async () => {
+    const fakeMetrics = {
+      turns: [
+        {
+          turnId: 't1',
+          startTime: 1,
+          endTime: 2,
+          toolCalls: ['toolu_001', 'toolu_002'],
+          toolNames: ['Read', 'Edit'],
+          inputTokens: 500,
+          outputTokens: 200,
+          cacheReadTokens: 0,
+          model: 'claude-sonnet-5',
+          estimatedCostUsd: 0.02,
+          costPerToolCall: 0.01,
+        },
+      ],
+      costByToolType: {},
+      totalAttributedCost: 0.02,
+      attributionRate: 1,
+    };
+    const handler = createApiHandler({
+      turnCostAttributor: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['turnCostAttributor'],
+    });
+    const req = { method: 'GET', url: '/api/turn-costs' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
 describe('api-handler GET /api/audit', () => {
   it('returns audit log mapped to SPA AuditEntry shape', async () => {
     const ts1 = Date.now() - 5000;

@@ -57,6 +57,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(1);
       expect(metrics.turns[0].toolCalls).toEqual(['toolu_001']);
+      expect(metrics.turns[0].toolNames).toEqual(['Read']);
       expect(metrics.turns[0].estimatedCostUsd).toBeGreaterThan(0);
       expect(metrics.turns[0].costPerToolCall).toBe(metrics.turns[0].estimatedCostUsd);
     });
@@ -73,6 +74,7 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(1);
       expect(metrics.turns[0].toolCalls).toEqual(['toolu_001', 'toolu_002']);
+      expect(metrics.turns[0].toolNames).toEqual(['Read', 'Edit']);
       expect(metrics.turns[0].costPerToolCall).toBeCloseTo(
         metrics.turns[0].estimatedCostUsd / 2,
         10,
@@ -90,7 +92,9 @@ describe('TurnCostAttributor', () => {
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(2);
       expect(metrics.turns[0].toolCalls).toEqual(['toolu_001']);
+      expect(metrics.turns[0].toolNames).toEqual(['Read']);
       expect(metrics.turns[1].toolCalls).toEqual(['toolu_002']);
+      expect(metrics.turns[1].toolNames).toEqual(['Read']);
     });
 
     it('ignores token events that arrive too late (>5s after turn end)', () => {

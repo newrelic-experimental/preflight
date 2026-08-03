@@ -299,6 +299,55 @@ export interface RetryAlertsResponse {
 export const fetchRetryAlerts = (): Promise<RetryAlertsResponse> =>
   getJson<RetryAlertsResponse>('/api/retry-alerts');
 
+export interface DecisionBranchEntry {
+  readonly turnNumber: number;
+  readonly timestamp: number;
+  readonly reasoning: string;
+  readonly chosenAction: string;
+  readonly toolName: string | null;
+  readonly outcome: 'unknown' | 'success' | 'failure';
+  readonly nextToolSuccess: boolean | null;
+  readonly sessionSucceeded: boolean | null;
+}
+
+export interface DecisionTreeResponse {
+  readonly totalBranches: number;
+  readonly successRate: number | null;
+  readonly failurePoints: readonly DecisionBranchEntry[];
+  readonly longestFailureStreak: number;
+  readonly firstFailureIndex: number | null;
+  readonly note: string;
+}
+
+export interface TurnCostEntry {
+  readonly turnId: string;
+  readonly startTime: number;
+  readonly endTime: number;
+  readonly toolCalls: readonly string[];
+  readonly toolNames: readonly string[];
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly model: string;
+  readonly estimatedCostUsd: number;
+  readonly costPerToolCall: number;
+}
+
+export interface TurnCostsResponse {
+  readonly turns: readonly TurnCostEntry[];
+  readonly costByToolType: Record<
+    string,
+    { totalCost: number; callCount: number; avgCost: number }
+  >;
+  readonly totalAttributedCost: number;
+  readonly attributionRate: number;
+}
+
+export const fetchDecisionTree = (): Promise<DecisionTreeResponse> =>
+  getJson<DecisionTreeResponse>('/api/decision-tree');
+export const fetchTurnCosts = (): Promise<TurnCostsResponse> =>
+  getJson<TurnCostsResponse>('/api/turn-costs');
+
 export interface QualityEvent {
   readonly signal:
     | 'diff_applied_clean'
