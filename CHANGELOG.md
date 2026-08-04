@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.29] - 2026-08-04
+
+### Added
+
+- **The context bar and session detail drawer now show what's driving context usage** — expanding a session's context bar (Sessions page) or opening the "session detail" drawer (Today's live pane) surfaces the dominant content category for the current turn and the files being re-read most often, alongside the existing token breakdown.
+
 ## [1.14.28] - 2026-08-04
 
 ### Fixed

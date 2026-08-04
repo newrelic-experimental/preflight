@@ -120,6 +120,57 @@ describe('ContextBar — timeline expand/collapse', () => {
   });
 });
 
+describe('ContextBar — composition/efficiency drill-down', () => {
+  beforeEach(resetStore);
+  afterEach(resetStore);
+
+  it('shows the top re-read file and dominant category once expanded', async () => {
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/context-efficiency')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              uniqueFilesRead: 12,
+              totalReadOperations: 20,
+              repeatedReadCount: 8,
+              repeatedReadRatio: 0.4,
+              topRepeatedFiles: [{ file: 'src/index.ts', readCount: 4 }],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      if (url.startsWith('/api/context-composition')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              currentFillPercent: 62,
+              currentBreakdown: {
+                system_prompt: 1000,
+                conversation_history: 3000,
+                tool_results: 5000,
+                injected_file_content: 500,
+                other: 100,
+              },
+              turnCount: 5,
+              thresholdAlerts: [],
+              dominanceAlerts: [],
+              history: [],
+              note: '',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response('null', { status: 200 }));
+    }) as typeof globalThis.fetch;
+    renderContextBar({ data: makeContext({ history: makeHistory(3) }) });
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle context timeline' }));
+    expect(await screen.findByText(/src\/index\.ts/)).toBeInTheDocument();
+    expect(screen.getByText(/40%/)).toBeInTheDocument();
+  });
+});
+
 describe('ContextBar', () => {
   it('flags the compacting state when currentTokens drops more than 30% from the previous render', () => {
     const { container, rerender } = renderContextBar({ data: makeContext() });

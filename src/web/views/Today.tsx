@@ -39,6 +39,10 @@ import {
   type DecisionTreeResponse,
   fetchContext,
   type ContextResponse,
+  fetchContextComposition,
+  type ContextCompositionResponse,
+  fetchContextEfficiency,
+  type ContextEfficiencyResponse,
   fetchQualityProxy,
   fetchToolSelectionScore,
   fetchConcurrency,
@@ -1006,6 +1010,16 @@ function LiveSessionPane({
     refetchInterval: 10_000,
     enabled: isLive && Boolean(activeId),
   });
+  const { data: contextComposition } = useQuery<ContextCompositionResponse>({
+    queryKey: ['context-composition'],
+    queryFn: fetchContextComposition,
+    refetchInterval: 10_000,
+  });
+  const { data: contextEfficiency } = useQuery<ContextEfficiencyResponse>({
+    queryKey: ['context-efficiency'],
+    queryFn: fetchContextEfficiency,
+    refetchInterval: 10_000,
+  });
 
   const tailRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1292,6 +1306,8 @@ function LiveSessionPane({
           turnCosts={turnCosts}
           contextHistory={contextData?.history}
           contextWindow={contextData?.contextWindow}
+          contextComposition={contextComposition}
+          contextEfficiency={contextEfficiency}
           onClose={() => setShowDetail(false)}
         />
       )}

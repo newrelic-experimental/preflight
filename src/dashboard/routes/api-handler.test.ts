@@ -4879,6 +4879,76 @@ describe('api-handler GET /api/context', () => {
   });
 });
 
+describe('api-handler GET /api/context-composition', () => {
+  it('returns 503 when contextCompositionTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/context-composition' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns context composition metrics as JSON', async () => {
+    const fakeMetrics = {
+      currentFillPercent: 62,
+      currentBreakdown: {
+        system_prompt: 1000,
+        conversation_history: 3000,
+        tool_results: 5000,
+        injected_file_content: 500,
+        other: 100,
+      },
+      turnCount: 5,
+      thresholdAlerts: [],
+      dominanceAlerts: [],
+      history: [],
+      note: '',
+    };
+    const handler = createApiHandler({
+      contextCompositionTracker: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['contextCompositionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/context-composition' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
+describe('api-handler GET /api/context-efficiency', () => {
+  it('returns 503 when contextEfficiencyTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/context-efficiency' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns context efficiency metrics as JSON', async () => {
+    const fakeMetrics = {
+      uniqueFilesRead: 12,
+      totalReadOperations: 20,
+      repeatedReadCount: 8,
+      repeatedReadRatio: 0.4,
+      topRepeatedFiles: [{ file: 'src/index.ts', readCount: 4 }],
+    };
+    const handler = createApiHandler({
+      contextEfficiencyTracker: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['contextEfficiencyTracker'],
+    });
+    const req = { method: 'GET', url: '/api/context-efficiency' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
 describe('buildContextReplayEvents', () => {
   it('maps a post event to a tool replay event using tool/outputSize fields', () => {
     const events = buildContextReplayEvents(

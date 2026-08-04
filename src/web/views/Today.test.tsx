@@ -149,6 +149,38 @@ describe('Today view', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
+      if (url.startsWith('/api/context-composition')) {
+        return new Response(
+          JSON.stringify({
+            currentFillPercent: 62,
+            currentBreakdown: {
+              system_prompt: 1000,
+              conversation_history: 3000,
+              tool_results: 5000,
+              injected_file_content: 500,
+              other: 100,
+            },
+            turnCount: 5,
+            thresholdAlerts: [],
+            dominanceAlerts: [],
+            history: [],
+            note: '',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.startsWith('/api/context-efficiency')) {
+        return new Response(
+          JSON.stringify({
+            uniqueFilesRead: 12,
+            totalReadOperations: 20,
+            repeatedReadCount: 8,
+            repeatedReadRatio: 0.4,
+            topRepeatedFiles: [{ file: 'src/index.ts', readCount: 4 }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       return new Response('null', { status: 200 });
     }) as typeof globalThis.fetch;
   }
@@ -182,6 +214,7 @@ describe('Today view', () => {
     // 6th turn's cost ($0.06) would have been sliced off by the old `.slice(-5)`.
     expect(screen.getByText('$0.06')).toBeInTheDocument();
     expect(screen.getByText(/longest failure streak/i)).toBeInTheDocument();
+    expect(await screen.findByText('tool_results')).toBeInTheDocument();
   });
 
   it('hides the trigger when neither tracker has data', async () => {

@@ -12,7 +12,15 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 
-import { fetchContext, qk, type ContextResponse } from '../api/client';
+import {
+  fetchContext,
+  fetchContextComposition,
+  fetchContextEfficiency,
+  qk,
+  type ContextResponse,
+  type ContextCompositionResponse,
+  type ContextEfficiencyResponse,
+} from '../api/client';
 import { useLiveStore, type ContextUpdateEvent } from '../store/liveStore';
 import { Eyebrow, Pill } from './ui';
 
@@ -177,6 +185,17 @@ export function ContextBar({
     enabled: !data,
   });
 
+  const { data: composition } = useQuery<ContextCompositionResponse>({
+    queryKey: ['context-composition', sessionId],
+    queryFn: fetchContextComposition,
+    enabled: showTimeline,
+  });
+  const { data: efficiency } = useQuery<ContextEfficiencyResponse>({
+    queryKey: ['context-efficiency', sessionId],
+    queryFn: fetchContextEfficiency,
+    enabled: showTimeline,
+  });
+
   const source = data ?? apiContext;
   const sid = sessionId ?? '';
   const ctx: ContextUpdateEvent | null = data
@@ -313,10 +332,30 @@ export function ContextBar({
 
       {expandable && (
         <div
-          className={`overflow-hidden transition-all duration-300 ${showTimeline ? 'max-h-40' : 'max-h-0'}`}
+          className={`overflow-hidden transition-all duration-300 ${showTimeline ? 'max-h-56' : 'max-h-0'}`}
         >
           {timelineHistory && (
             <ContextTimeline history={timelineHistory} contextWindow={contextWindow} />
+          )}
+          {showTimeline && efficiency && efficiency.repeatedReadRatio !== null && (
+            <div className="mt-2 text-xs text-ink-muted">
+              <span>Repeated reads: {Math.round(efficiency.repeatedReadRatio * 100)}%</span>
+              {efficiency.topRepeatedFiles[0] && (
+                <span className="ml-2">
+                  top:{' '}
+                  <code className="bg-surface-5 px-1 rounded">
+                    {efficiency.topRepeatedFiles[0].file}
+                  </code>{' '}
+                  ({efficiency.topRepeatedFiles[0].readCount}x)
+                </span>
+              )}
+            </div>
+          )}
+          {showTimeline && composition && (
+            <div className="mt-1 text-xs text-ink-muted">
+              Dominant this turn:{' '}
+              {Object.entries(composition.currentBreakdown).sort((a, b) => b[1] - a[1])[0]?.[0]}
+            </div>
           )}
         </div>
       )}

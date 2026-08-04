@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { SessionDetailDialog } from './SessionDetailDialog';
-import type { DecisionTreeResponse, TurnCostsResponse, ContextResponse } from '../api/client';
+import type {
+  DecisionTreeResponse,
+  TurnCostsResponse,
+  ContextResponse,
+  ContextCompositionResponse,
+  ContextEfficiencyResponse,
+} from '../api/client';
 
 function makeDecisionTree(overrides: Partial<DecisionTreeResponse> = {}): DecisionTreeResponse {
   return {
@@ -53,6 +59,40 @@ function makeSixTurns(): TurnCostsResponse['turns'] {
     estimatedCostUsd: (i + 1) / 100,
     costPerToolCall: (i + 1) / 100,
   }));
+}
+
+function makeContextComposition(
+  overrides: Partial<ContextCompositionResponse> = {},
+): ContextCompositionResponse {
+  return {
+    currentFillPercent: 62,
+    currentBreakdown: {
+      system_prompt: 1000,
+      conversation_history: 3000,
+      tool_results: 5000,
+      injected_file_content: 500,
+      other: 100,
+    },
+    turnCount: 5,
+    thresholdAlerts: [],
+    dominanceAlerts: [],
+    history: [],
+    note: '',
+    ...overrides,
+  };
+}
+
+function makeContextEfficiency(
+  overrides: Partial<ContextEfficiencyResponse> = {},
+): ContextEfficiencyResponse {
+  return {
+    uniqueFilesRead: 12,
+    totalReadOperations: 20,
+    repeatedReadCount: 8,
+    repeatedReadRatio: 0.4,
+    topRepeatedFiles: [{ file: 'src/index.ts', readCount: 4 }],
+    ...overrides,
+  };
 }
 
 function makeContextHistory(count: number): ContextResponse['history'] {
@@ -191,5 +231,38 @@ describe('SessionDetailDialog — context timeline section', () => {
     );
     expect(screen.getByText('Context Timeline')).toBeInTheDocument();
     expect(screen.queryByText('No context timeline data yet.')).toBeNull();
+  });
+});
+
+describe('SessionDetailDialog — context composition/efficiency section', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the dominant category and repeated-read percentage', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        contextComposition={makeContextComposition()}
+        contextEfficiency={makeContextEfficiency()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('tool_results')).toBeInTheDocument();
+    expect(screen.getByText(/40%/)).toBeInTheDocument();
+    expect(screen.getByText(/src\/index\.ts/)).toBeInTheDocument();
+    expect(screen.getByText(/4x/)).toBeInTheDocument();
+  });
+
+  it('shows the empty state when both props are omitted', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('No composition/efficiency data yet.')).toBeInTheDocument();
   });
 });

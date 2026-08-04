@@ -804,6 +804,51 @@ export const fetchContext = (sessionId?: string): Promise<ContextResponse> =>
     sessionId ? `/api/context?sessionId=${encodeURIComponent(sessionId)}` : '/api/context',
   );
 
+export type ContextCategory =
+  'system_prompt' | 'conversation_history' | 'tool_results' | 'injected_file_content' | 'other';
+
+export interface ContextCompositionResponse {
+  readonly currentFillPercent: number;
+  readonly currentBreakdown: Record<ContextCategory, number>;
+  readonly turnCount: number;
+  readonly thresholdAlerts: ReadonlyArray<{
+    readonly threshold: number;
+    readonly fillPercent: number;
+    readonly timestamp: number;
+    readonly turnNumber: number;
+    readonly dominantCategory: ContextCategory;
+    readonly dominantPercent: number;
+  }>;
+  readonly dominanceAlerts: ReadonlyArray<{
+    readonly category: ContextCategory;
+    readonly percent: number;
+    readonly timestamp: number;
+    readonly turnNumber: number;
+  }>;
+  readonly history: ReadonlyArray<{
+    readonly turnNumber: number;
+    readonly timestamp: number;
+    readonly totalTokens: number;
+    readonly breakdown: Record<ContextCategory, number>;
+    readonly fillPercent: number;
+    readonly dominantCategory: ContextCategory | null;
+  }>;
+  readonly note: string;
+}
+
+export interface ContextEfficiencyResponse {
+  readonly uniqueFilesRead: number;
+  readonly totalReadOperations: number;
+  readonly repeatedReadCount: number;
+  readonly repeatedReadRatio: number | null;
+  readonly topRepeatedFiles: ReadonlyArray<{ readonly file: string; readonly readCount: number }>;
+}
+
+export const fetchContextComposition = (): Promise<ContextCompositionResponse> =>
+  getJson<ContextCompositionResponse>('/api/context-composition');
+export const fetchContextEfficiency = (): Promise<ContextEfficiencyResponse> =>
+  getJson<ContextEfficiencyResponse>('/api/context-efficiency');
+
 export interface SettingsPatch {
   developer?: string;
   teamId?: string | null;

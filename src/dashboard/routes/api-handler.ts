@@ -58,6 +58,8 @@ import type { ModelUsageMetrics, ModelBreakdownEntry } from '../../metrics/model
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
+import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
+import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
 import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
@@ -433,6 +435,8 @@ export interface ApiHandlerDeps {
     getConcurrencyTimeSeries: () => readonly { timestamp: number; count: number }[];
   };
   readonly contextTracker?: { getMetrics: (sessionId?: string) => ContextTrackerMetrics };
+  readonly contextCompositionTracker?: { getMetrics: () => ContextCompositionMetrics };
+  readonly contextEfficiencyTracker?: { getMetrics: () => ContextWindowMetrics };
   readonly config?: McpServerConfig;
   readonly configFilePath?: string;
   // Resolved lazily (not captured as a plain value) because the platform
@@ -1828,6 +1832,16 @@ export function createApiHandler(
       }
     }
     jsonOk(res, local);
+  });
+
+  routes.set('GET /api/context-composition', (_req, res) => {
+    if (!deps.contextCompositionTracker) return unavailable(res, 'contextCompositionTracker');
+    jsonOk(res, deps.contextCompositionTracker.getMetrics());
+  });
+
+  routes.set('GET /api/context-efficiency', (_req, res) => {
+    if (!deps.contextEfficiencyTracker) return unavailable(res, 'contextEfficiencyTracker');
+    jsonOk(res, deps.contextEfficiencyTracker.getMetrics());
   });
 
   routes.set('GET /api/concurrency', (req, res) => {

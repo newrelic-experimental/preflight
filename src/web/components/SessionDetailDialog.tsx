@@ -3,7 +3,13 @@ import type { JSX } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
-import type { DecisionTreeResponse, TurnCostsResponse, ContextResponse } from '../api/client';
+import type {
+  DecisionTreeResponse,
+  TurnCostsResponse,
+  ContextResponse,
+  ContextCompositionResponse,
+  ContextEfficiencyResponse,
+} from '../api/client';
 import { Card, Eyebrow, Pill, type PillTone } from './ui';
 import { formatTokensCompact } from '../lib/format.js';
 import { ContextTimeline } from './ContextBar';
@@ -13,6 +19,8 @@ export interface SessionDetailDialogProps {
   readonly turnCosts: TurnCostsResponse | undefined;
   readonly contextHistory?: ContextResponse['history'];
   readonly contextWindow?: number;
+  readonly contextComposition?: ContextCompositionResponse;
+  readonly contextEfficiency?: ContextEfficiencyResponse;
   readonly onClose: () => void;
 }
 
@@ -29,6 +37,8 @@ export function SessionDetailDialog({
   turnCosts,
   contextHistory,
   contextWindow,
+  contextComposition,
+  contextEfficiency,
   onClose,
 }: SessionDetailDialogProps): JSX.Element {
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -222,6 +232,50 @@ export function SessionDetailDialog({
               ) : (
                 <div className="py-2 text-center text-xs text-ink-muted">
                   No context timeline data yet.
+                </div>
+              )}
+            </Card>
+          </section>
+
+          <section aria-label="Context composition and efficiency">
+            <Eyebrow className="mb-3">Context Composition &amp; Efficiency</Eyebrow>
+            <Card tone="static" padding="sm">
+              {!contextComposition && !contextEfficiency ? (
+                <div className="py-2 text-center text-xs text-ink-muted">
+                  No composition/efficiency data yet.
+                </div>
+              ) : (
+                <div className="space-y-2 text-xs">
+                  {contextComposition && (
+                    <div className="text-ink-muted">
+                      Dominant this turn:{' '}
+                      <span className="text-ink-base">
+                        {
+                          Object.entries(contextComposition.currentBreakdown).sort(
+                            (a, b) => b[1] - a[1],
+                          )[0]?.[0]
+                        }
+                      </span>
+                    </div>
+                  )}
+                  {contextEfficiency && contextEfficiency.repeatedReadRatio !== null && (
+                    <div className="text-ink-muted">
+                      Repeated reads:{' '}
+                      <span className="text-ink-base">
+                        {Math.round(contextEfficiency.repeatedReadRatio * 100)}%
+                      </span>
+                      {contextEfficiency.topRepeatedFiles[0] && (
+                        <>
+                          {' '}
+                          — top:{' '}
+                          <code className="bg-surface-5 px-1 rounded">
+                            {contextEfficiency.topRepeatedFiles[0].file}
+                          </code>{' '}
+                          ({contextEfficiency.topRepeatedFiles[0].readCount}x)
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </Card>

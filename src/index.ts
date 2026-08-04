@@ -1361,6 +1361,8 @@ async function main(): Promise<void> {
           gitEfficiencyTracker,
           concurrencyTracker: liveSessionRegistry,
           contextTracker,
+          contextCompositionTracker,
+          contextEfficiencyTracker: contextWindowTracker,
           config,
           configFilePath: options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'),
           // eventProcessor isn't assigned until after this object is built —
