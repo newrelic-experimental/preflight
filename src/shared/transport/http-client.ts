@@ -25,18 +25,25 @@ function newRequestId(): string {
  * - `us` — default/global region (insights-collector.newrelic.com)
  * - `eu` — EU data center (insights-collector.eu01.nr-data.net)
  * - `gov` — FedRAMP / US gov cloud (gov-* hostnames)
+ * - `jp` — Japan data center (insights-collector.jp.nr-data.net)
  *
- * License-key prefix mapping: `us01` → us, `eu01` → eu, `gov01` → gov.
+ * License-key prefix mapping: `us01` → us, `eu01` → eu, `gov01` → gov, `jp` → jp.
  * Legacy keys (no recognizable region prefix) default to `us`.
  */
-export type Region = 'us' | 'eu' | 'gov';
+export type Region = 'us' | 'eu' | 'gov' | 'jp';
 
 // Exact license-key prefixes we recognize, plus the region they map to.
 // Prefixes are matched case-insensitively.
+//
+// `jp` is deliberately bare (no digit suffix) — unlike us01/eu01/gov01, real
+// NR Japan license keys have the shape 'jpxxxx...' (region ends right where
+// the 'x' padding starts, per NR's other language agents). It can't collide
+// with a legacy 40-char hex key since 'j'/'p' aren't valid hex digits.
 const LICENSE_KEY_REGION_PREFIXES = {
   us01: 'us',
   eu01: 'eu',
   gov01: 'gov',
+  jp: 'jp',
 } as const satisfies Record<string, Region>;
 
 // Pattern for *any* string that looks like a region prefix (2-4 letters then
@@ -62,6 +69,7 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
     if (host === 'gov') return 'gov';
     if (host === 'eu') return 'eu';
     if (host === 'us') return 'us';
+    if (host === 'jp') return 'jp';
   }
 
   const lowerKey = licenseKey.toLowerCase();
@@ -94,7 +102,7 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
  * remains per-API since the user's proxy must route by path.
  *
  * Without a dot or colon, `collectorHost` is treated as an exact region keyword
- * (one of 'us', 'eu', 'gov') — `resolveRegion` maps it to the
+ * (one of 'us', 'eu', 'gov', 'jp') — `resolveRegion` maps it to the
  * appropriate NR hostnames for all three APIs (no substring matching).
  *
  */
@@ -142,6 +150,11 @@ const NR_INGEST_HOSTS: Readonly<
     events: 'gov-insights-collector.newrelic.com',
     metric: 'gov-metric-api.newrelic.com',
     log: 'gov-log-api.newrelic.com',
+  },
+  jp: {
+    events: 'insights-collector.jp.nr-data.net',
+    metric: 'metric-api.jp.nr-data.net',
+    log: 'log-api.jp.nr-data.net',
   },
 });
 

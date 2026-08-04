@@ -155,6 +155,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: true,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -173,6 +174,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -192,6 +194,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -211,6 +214,27 @@ describe('runDeployDashboards', () => {
       teardown: true,
       print: false,
       eu: false,
+      jp: false,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      stdout: out,
+    });
+    expect(code).toBe(1);
+    expect(out.text()).toContain('mutually exclusive');
+  });
+
+  it('rejects --eu + --jp', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const out = new CapturedStdout();
+    const code = await runDeployDashboards({
+      all: false,
+      update: false,
+      teardown: false,
+      print: false,
+      eu: true,
+      jp: true,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -240,6 +264,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -251,6 +276,36 @@ describe('runDeployDashboards', () => {
     expect(calls[0].url).toBe('https://api.newrelic.com/graphql');
     expect(calls[0].body.query).toContain('dashboardCreate');
     expect(out.text()).toContain('GUID: GUID-1');
+  });
+
+  it('--jp targets Japan API URL', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const { fetch: fetchImpl, calls } = makeFetchMock([
+      {
+        data: {
+          dashboardCreate: {
+            entityResult: { guid: 'GUID-JP', name: 'Test Dashboard' },
+            errors: null,
+          },
+        },
+      },
+    ]);
+    const out = new CapturedStdout();
+    await runDeployDashboards({
+      all: false,
+      update: false,
+      teardown: false,
+      print: false,
+      eu: false,
+      jp: true,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      fetchImpl,
+      stdout: out,
+    });
+    expect(calls[0].url).toBe('https://api.jp.newrelic.com/graphql');
   });
 
   it('--all reads every JSON file in the data dir', async () => {
@@ -271,6 +326,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: null,
       dataDir,
@@ -312,6 +368,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -349,6 +406,7 @@ describe('runDeployDashboards', () => {
       teardown: true,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -374,6 +432,7 @@ describe('runDeployDashboards', () => {
       teardown: true,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -397,6 +456,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -425,6 +485,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -445,6 +506,7 @@ describe('runDeployDashboards', () => {
       teardown: false,
       print: false,
       eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir: join(tmpdir(), 'definitely-does-not-exist-xyz'),
@@ -469,6 +531,7 @@ describe('resolveDataDir (via runDeployDashboards default path)', () => {
       teardown: false,
       print: true,
       eu: false,
+      jp: false,
       developer: null,
       file: 'ai-coding-assistant-overview.json',
       // No dataDir override — exercises the resolver.

@@ -38,6 +38,7 @@ import {
   handleGetPersonalInsights,
   toFiniteNumber,
   registerCrossSessionTools,
+  getNerdgraphUrl,
 } from './cross-session-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -119,6 +120,20 @@ function makeToolCall(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
     ...overrides,
   } as ToolCallRecord;
 }
+
+describe('getNerdgraphUrl', () => {
+  it('returns US endpoint by default', () => {
+    expect(getNerdgraphUrl(null)).toBe('https://api.newrelic.com/graphql');
+  });
+
+  it('returns EU endpoint', () => {
+    expect(getNerdgraphUrl('eu')).toBe('https://api.eu.newrelic.com/graphql');
+  });
+
+  it('returns JP endpoint', () => {
+    expect(getNerdgraphUrl('jp')).toBe('https://api.jp.newrelic.com/graphql');
+  });
+});
 
 describe('Cross-session tool handlers', () => {
   // -------------------------------------------------------------------------

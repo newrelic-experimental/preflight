@@ -112,7 +112,7 @@ Local data retention is controlled by `retainSessionsDays` in the config file. S
 
 ## NR Account Region
 
-Data routes to New Relic's US region by default. A license key beginning with `eu01` routes to the EU region automatically. This can also be set explicitly via `collectorHost`.
+Data routes to New Relic's US region by default. A license key beginning with `eu01` routes to the EU region automatically, and a `jp`-prefixed key routes to the Japan region. This can also be set explicitly via `collectorHost`.
 
 See [README.md → Key settings](./README.md#key-settings) for configuration. New Relic's regional data center documentation:
 

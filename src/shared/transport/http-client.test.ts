@@ -67,6 +67,13 @@ describe('resolveRegion', () => {
     expect(resolveRegion('GOV01xxSOMEKEY123456', null)).toBe('gov');
   });
 
+  // Japan license keys use a bare 'jp' prefix (no digit suffix, unlike
+  // us01/eu01/gov01) — real NR JP keys look like 'jpxxxx...'.
+  it('returns jp for Japan license key (bare jp prefix, no digit suffix)', () => {
+    expect(resolveRegion('jpxxSOMEKEY123456', null)).toBe('jp');
+    expect(resolveRegion('JPXXSOMEKEY123456', null)).toBe('jp');
+  });
+
   // legacy keys without a region-prefix shape default to US
   it('returns us for legacy keys without a region prefix', () => {
     // Real NR legacy license keys are 40-char hex strings — they don't start
@@ -118,10 +125,11 @@ describe('resolveRegion', () => {
   // ---------------------------------------------------------------------------
   // 2. resolveRegion — collectorHost override (keyword-only form)
   // ---------------------------------------------------------------------------
-  it('bare keyword collectorHost values are recognized (eu, gov, us)', () => {
+  it('bare keyword collectorHost values are recognized (eu, gov, us, jp)', () => {
     expect(resolveRegion('us01xxSOMEKEY', 'eu')).toBe('eu');
     expect(resolveRegion('us01xxSOMEKEY', 'gov')).toBe('gov');
     expect(resolveRegion('eu01xxSOMEKEY', 'us')).toBe('us');
+    expect(resolveRegion('us01xxSOMEKEY', 'jp')).toBe('jp');
   });
 
   it('FQDN collectorHost returns us (region is irrelevant — URL builders use the FQDN directly)', () => {
@@ -170,6 +178,12 @@ describe('getEventsApiUrl', () => {
     );
   });
 
+  it('returns JP endpoint for jp region', () => {
+    expect(getEventsApiUrl('12345', 'jp')).toBe(
+      'https://insights-collector.jp.nr-data.net/v1/accounts/12345/events',
+    );
+  });
+
   // literal-hostname override
   it('uses collectorHost as literal URL host when it contains a dot', () => {
     expect(getEventsApiUrl('12345', 'us', 'collector.example.com')).toBe(
@@ -209,6 +223,10 @@ describe('getMetricApiUrl', () => {
     expect(getMetricApiUrl('gov')).toBe('https://gov-metric-api.newrelic.com/metric/v1');
   });
 
+  it('returns JP endpoint for jp region', () => {
+    expect(getMetricApiUrl('jp')).toBe('https://metric-api.jp.nr-data.net/metric/v1');
+  });
+
   it('uses collectorHost as literal URL host when it contains a dot', () => {
     expect(getMetricApiUrl('us', 'collector.example.com')).toBe(
       'https://collector.example.com/metric/v1',
@@ -219,6 +237,10 @@ describe('getMetricApiUrl', () => {
 describe('getLogsApiUrl', () => {
   it('returns FedRAMP endpoint for gov region', () => {
     expect(getLogsApiUrl('gov')).toBe('https://gov-log-api.newrelic.com/log/v1');
+  });
+
+  it('returns JP endpoint for jp region', () => {
+    expect(getLogsApiUrl('jp')).toBe('https://log-api.jp.nr-data.net/log/v1');
   });
 
   it('uses collectorHost as literal URL host when it contains a dot', () => {

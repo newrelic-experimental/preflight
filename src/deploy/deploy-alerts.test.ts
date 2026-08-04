@@ -199,6 +199,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -219,6 +220,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -236,6 +238,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -253,6 +256,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -271,6 +275,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -289,6 +294,26 @@ describe('runDeployAlerts', () => {
       teardown: true,
       update: false,
       eu: false,
+      jp: false,
+      developer: null,
+      dataDir,
+      personalThresholdsOverride: PERSONAL_THRESHOLDS,
+      stdout: out,
+    });
+    expect(code).toBe(1);
+    expect(out.text()).toContain('mutually exclusive');
+  });
+
+  it('rejects --eu + --jp', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const out = new CapturedStdout();
+    const code = await runDeployAlerts({
+      dryRun: false,
+      teardown: false,
+      update: false,
+      eu: true,
+      jp: true,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -329,6 +354,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -367,6 +393,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -403,6 +430,7 @@ describe('runDeployAlerts', () => {
       teardown: true,
       update: false,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -450,6 +478,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: false,
+      jp: false,
       developer: 'alice',
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -479,6 +508,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: true,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -538,6 +568,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: true,
       eu: false,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -578,6 +609,7 @@ describe('runDeployAlerts', () => {
       teardown: false,
       update: false,
       eu: true,
+      jp: false,
       developer: null,
       dataDir,
       personalThresholdsOverride: PERSONAL_THRESHOLDS,
@@ -585,6 +617,44 @@ describe('runDeployAlerts', () => {
       stdout: out,
     });
     expect(calls[0].url).toBe('https://api.eu.newrelic.com/graphql');
+  });
+
+  it('--jp targets Japan API URL', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const { fetch: fetchImpl, calls } = makeFetchMock([
+      {
+        data: {
+          actor: {
+            account: { alerts: { policiesSearch: { policies: [] } } },
+          },
+        },
+      },
+      { data: { alertsPolicyCreate: { id: 'POL-1', name: 'Test Alerts' } } },
+      {
+        data: {
+          alertsNrqlConditionStaticCreate: {
+            id: 'C',
+            name: 'Test Condition',
+            enabled: true,
+          },
+        },
+      },
+    ]);
+    const out = new CapturedStdout();
+    await runDeployAlerts({
+      dryRun: false,
+      teardown: false,
+      update: false,
+      eu: false,
+      jp: true,
+      developer: null,
+      dataDir,
+      personalThresholdsOverride: PERSONAL_THRESHOLDS,
+      fetchImpl,
+      stdout: out,
+    });
+    expect(calls[0].url).toBe('https://api.jp.newrelic.com/graphql');
   });
 });
 

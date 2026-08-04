@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.28] - 2026-08-04
+
+### Fixed
+
+- **Model pricing lookups now strip trailing bracketed context/variant tags** (e.g. `claude-sonnet-5[1m]`) before resolving against the pricing table, so tagged model ids no longer fall through to zero-cost defaults.
+
+### Added
+
+- **Transport region resolution now recognizes the Japan (`jp`) data center** — license keys and collector hosts for New Relic's Japan region resolve to the correct events/metric/log ingest hostnames. The setup wizard, license/API-key validator, and `deploy-dashboards`/`deploy-alerts` CLI commands recognize the region too: a `jp`-prefixed license key is auto-detected during setup, and `--jp` targets NR's Japan NerdGraph endpoint (`https://api.jp.newrelic.com/graphql`) for dashboard/alert deployment.
+
 ## [1.14.27] - 2026-08-04
 
 ### Added

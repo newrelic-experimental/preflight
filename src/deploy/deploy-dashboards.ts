@@ -100,6 +100,7 @@ export interface DashboardDeployOptions {
   readonly teardown: boolean;
   readonly print: boolean;
   readonly eu: boolean;
+  readonly jp: boolean;
   readonly developer: string | null;
   readonly file: string | null;
   /**
@@ -350,6 +351,7 @@ async function teardownDashboard(
 function pickNerdgraphUrl(opts: DashboardDeployOptions): string {
   if (opts.nerdgraphUrlOverride) return opts.nerdgraphUrlOverride;
   if (opts.eu) return 'https://api.eu.newrelic.com/graphql';
+  if (opts.jp) return 'https://api.jp.newrelic.com/graphql';
   return 'https://api.newrelic.com/graphql';
 }
 
@@ -373,9 +375,15 @@ export async function runDeployDashboards(opts: DashboardDeployOptions): Promise
     out.write('Error: --print is mutually exclusive with --update.\n');
     return 1;
   }
+  if (opts.eu && opts.jp) {
+    out.write('Error: --eu and --jp are mutually exclusive.\n');
+    return 1;
+  }
 
   if (opts.eu) {
     out.write('Targeting EU API: https://api.eu.newrelic.com/graphql\n');
+  } else if (opts.jp) {
+    out.write('Targeting Japan API: https://api.jp.newrelic.com/graphql\n');
   }
 
   const accountIdStr = process.env.NEW_RELIC_ACCOUNT_ID;

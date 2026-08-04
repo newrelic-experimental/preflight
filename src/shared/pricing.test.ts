@@ -116,6 +116,19 @@ describe('calculateCost', () => {
     stderrSpy.mockRestore();
   });
 
+  // A trailing bracketed context-window tag (e.g. "[1m]", as Claude Code
+  // sometimes appends to a model id) must not defeat resolution and
+  // silently produce a $0 cost.
+  it('strips a trailing context-suffix tag so cost matches the untagged model', () => {
+    const tokenUsage = usage({ inputTokens: 1000, outputTokens: 1000 });
+
+    const tagged = calculateCost('claude-sonnet-5[1m]', tokenUsage);
+    const untagged = calculateCost('claude-sonnet-5', tokenUsage);
+
+    expect(tagged.totalUsd).toBeGreaterThan(0);
+    expect(tagged).toEqual(untagged);
+  });
+
   // ---------------------------------------------------------------------------
   // 10. All costs non-negative, totalUsd equals sum of components
   // ---------------------------------------------------------------------------
@@ -456,6 +469,38 @@ describe('resolveModelPricing', () => {
     // flash = $0.30/MTok input; flash-lite = $0.10/MTok input
     expect(flash!.inputPerMTok).toBe(0.3);
     expect(flashLite!.inputPerMTok).toBe(0.1);
+  });
+
+  // A trailing bracketed context-window tag (e.g. "[1m]") must be stripped
+  // before exact/alias/reverse-prefix matching.
+  describe('trailing context-suffix tags (e.g. "[1m]")', () => {
+    it('resolves via exact match after stripping the tag', () => {
+      const tagged = resolveModelPricing('claude-sonnet-5[1m]');
+      const untagged = resolveModelPricing('claude-sonnet-5');
+      expect(tagged).not.toBeNull();
+      expect(tagged).toEqual(untagged);
+    });
+
+    it('resolves via alias after stripping the tag', () => {
+      const tagged = resolveModelPricing('claude-opus-4[1m]');
+      const untagged = resolveModelPricing('claude-opus-4');
+      expect(tagged).not.toBeNull();
+      expect(tagged).toEqual(untagged);
+    });
+
+    it('resolves via reverse-prefix+alias after stripping the tag', () => {
+      const tagged = resolveModelPricing('claude-opus-4-99[1m]');
+      const untagged = resolveModelPricing('claude-opus-4-99');
+      expect(tagged).not.toBeNull();
+      expect(tagged).toEqual(untagged);
+    });
+
+    it('strips consecutive trailing tags (e.g. "[1m][queue]")', () => {
+      const tagged = resolveModelPricing('claude-sonnet-5[1m][queue]');
+      const untagged = resolveModelPricing('claude-sonnet-5');
+      expect(tagged).not.toBeNull();
+      expect(tagged).toEqual(untagged);
+    });
   });
 });
 

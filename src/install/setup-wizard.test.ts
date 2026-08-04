@@ -1191,6 +1191,16 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('eu');
   });
 
+  it('defaults to jp when license key starts with jp', async () => {
+    answers('cloud', '12345', 'jpxx-license', '', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
+    const written = JSON.parse(writtenJson) as Record<string, unknown>;
+    expect(written.collectorHost).toBe('jp');
+  });
+
   it('writes collectorHost gov when FedRAMP selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'gov', '', 'tester', '', '', '', 'n');
 
@@ -1199,6 +1209,16 @@ describe('setupWizard environment and nrApiKey steps', () => {
     const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
     const written = JSON.parse(writtenJson) as Record<string, unknown>;
     expect(written.collectorHost).toBe('gov');
+  });
+
+  it('writes collectorHost jp when Japan environment selected', async () => {
+    answers('cloud', '12345', 'NRLIC-test', 'jp', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
+    const written = JSON.parse(writtenJson) as Record<string, unknown>;
+    expect(written.collectorHost).toBe('jp');
   });
 
   it('includes --eu in deploy commands when EU is selected', async () => {
@@ -1210,13 +1230,23 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(output).toContain('--eu');
   });
 
-  it('does not include --eu in deploy commands when US is selected', async () => {
+  it('includes --jp in deploy commands when Japan is selected', async () => {
+    answers('cloud', '12345', 'NRLIC-test', 'jp', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--jp');
+  });
+
+  it('does not include --eu or --jp in deploy commands when US is selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'us', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).not.toContain('--eu');
+    expect(output).not.toContain('--jp');
   });
 
   it('falls back to default env on unrecognized input', async () => {
@@ -1284,6 +1314,16 @@ describe('setupWizard environment and nrApiKey steps', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('US key');
     expect(output).toContain('EU');
+  });
+
+  it('warns when jp license key is used with a non-JP environment', async () => {
+    answers('cloud', '12345', 'jpxx-license', 'us', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('JP key');
+    expect(output).toContain('US');
   });
 
   it('does not warn when license key prefix matches selected environment', async () => {

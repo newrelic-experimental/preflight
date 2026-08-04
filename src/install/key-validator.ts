@@ -6,12 +6,14 @@ const logger = createLogger('key-validator');
 const EVENTS_API_HOSTS: Record<string, string> = {
   eu: 'insights-collector.eu01.nr-data.net',
   gov: 'gov-insights-collector.newrelic.com',
+  jp: 'insights-collector.jp.nr-data.net',
   us: 'insights-collector.newrelic.com',
 };
 
 const NERDGRAPH_URLS: Record<string, string> = {
   eu: 'https://api.eu.newrelic.com/graphql',
   gov: 'https://api.newrelic.com/graphql',
+  jp: 'https://api.jp.newrelic.com/graphql',
   us: 'https://api.newrelic.com/graphql',
 };
 

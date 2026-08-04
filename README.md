@@ -125,7 +125,7 @@ preflight install \
   --account-id YOUR_ACCOUNT_ID
 ```
 
-EU accounts add `--eu`. FedRAMP accounts add `--fedramp`.
+EU accounts add `--eu`. FedRAMP accounts add `--fedramp`. Japan accounts add `--jp`.
 
 Then deploy the prebuilt dashboards:
 

@@ -86,7 +86,7 @@ export interface TransportOptions {
   /** NR account ID — required for Events API URL path. */
   readonly accountId: string;
   /**
-   * Override collector host — either a region keyword ('us'|'eu'|'gov')
+   * Override collector host — either a region keyword ('us'|'eu'|'gov'|'jp')
    * or a literal hostname for custom endpoints.
    */
   readonly collectorHost?: string | null;

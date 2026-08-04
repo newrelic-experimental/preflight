@@ -36,8 +36,9 @@ import {
   type RegisteredToolSet,
 } from './tool-registry.js';
 
-function getNerdgraphUrl(collectorHost: string | null): string {
+export function getNerdgraphUrl(collectorHost: string | null): string {
   if (collectorHost === 'eu') return 'https://api.eu.newrelic.com/graphql';
+  if (collectorHost === 'jp') return 'https://api.jp.newrelic.com/graphql';
   return 'https://api.newrelic.com/graphql';
 }
 

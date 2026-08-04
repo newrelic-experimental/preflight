@@ -63,6 +63,12 @@ const ZERO_COST: CostBreakdown = Object.freeze({
 // Strip a trailing dated suffix (-YYYYMMDD) to get the model family base name.
 const DATED_SUFFIX_RE = /-\d{8}$/;
 
+// Strip trailing bracketed context/variant tags (e.g. "[1m]"), which Claude
+// Code sometimes appends to a model id (e.g. "claude-sonnet-5[1m]",
+// "sonnet[1m]"). The `+$` (rather than a single bracket group) also strips
+// consecutive trailing tags like "sonnet[1m][queue]" in one pass.
+const CONTEXT_SUFFIX_RE = /(\[[^\]]*\])+$/;
+
 // ---------------------------------------------------------------------------
 // Custom pricing file
 // ---------------------------------------------------------------------------
@@ -421,15 +427,20 @@ export class PricingTable {
    * `resolveModelPricing` for the resolution algorithm.
    */
   resolve(modelName: string): ModelPricing | null {
+    // Strip a trailing bracketed context/variant tag (e.g. "[1m]") before
+    // running the resolution chain below — table keys and aliases are never
+    // tagged, so an unstripped tag would defeat every branch.
+    const normalizedName = modelName.replace(CONTEXT_SUFFIX_RE, '');
+
     // Returns shallow copies so caller mutation cannot corrupt the instance
     // table — resolved entries are values, not live references.
     // 1. Exact match — Object.hasOwn guards against inherited prototype values
     // for non-null-prototype tables and makes intent explicit.
-    if (Object.hasOwn(this.table, modelName)) {
-      return { ...this.table[modelName] };
+    if (Object.hasOwn(this.table, normalizedName)) {
+      return { ...this.table[normalizedName] };
     }
 
-    const aliasTarget = MODEL_ALIASES[modelName];
+    const aliasTarget = MODEL_ALIASES[normalizedName];
     if (aliasTarget && Object.hasOwn(this.table, aliasTarget)) {
       return { ...this.table[aliasTarget] };
     }
@@ -441,8 +452,8 @@ export class PricingTable {
     let bestKey: string | null = null;
     let ambiguous = false;
     for (const key of Object.keys(this.table)) {
-      const suffix = key.slice(modelName.length);
-      if (key.startsWith(modelName) && /^-\d/.test(suffix)) {
+      const suffix = key.slice(normalizedName.length);
+      if (key.startsWith(normalizedName) && /^-\d/.test(suffix)) {
         if (bestKey === null || key.length > bestKey.length) {
           bestKey = key;
           ambiguous = false;
@@ -470,15 +481,15 @@ export class PricingTable {
       return { ...this.table[bestKey] };
     }
 
-    // Reverse prefix: strip date suffix from table keys and check if modelName
-    // starts with the resulting base. When the matched base has an alias,
-    // route through the alias to the *current-generation* entry rather than
-    // the legacy dated key.
+    // Reverse prefix: strip date suffix from table keys and check if
+    // normalizedName starts with the resulting base. When the matched base
+    // has an alias, route through the alias to the *current-generation*
+    // entry rather than the legacy dated key.
     let bestBase: string | null = null;
     let bestBaseKey: string | null = null;
     for (const key of Object.keys(this.table)) {
       const base = key.replace(DATED_SUFFIX_RE, '');
-      if (base !== key && modelName.startsWith(base)) {
+      if (base !== key && normalizedName.startsWith(base)) {
         if (bestBase === null || base.length > bestBase.length) {
           bestBase = base;
           bestBaseKey = key;
@@ -539,6 +550,8 @@ export function initPricing(customFilePath?: string | null): void {
 /**
  * Resolve a model name against the default singleton pricing table.
  *
+ * 0. Strip a trailing bracketed context/variant tag (e.g. `claude-sonnet-5[1m]`
+ *    → `claude-sonnet-5`) before any of the steps below — see CONTEXT_SUFFIX_RE.
  * 1. Exact match (e.g. `claude-sonnet-4-20250514`)
  * 2. Family-name alias (e.g. `claude-opus-4` → `claude-opus-4-8`) — see
  *    MODEL_ALIASES in pricing-data.ts. Aliases are the *primary* mechanism

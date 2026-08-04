@@ -1,6 +1,6 @@
 {
   "name": "@newrelic/preflight",
-  "version": "1.14.27",
+  "version": "1.14.28",
   "type": "module",
   "license": "Apache-2.0",
   "private": false,
@@ -90,8 +90,9 @@
     "eslint-plugin-react": {
       "eslint": "$eslint"
     },
-    "fast-uri": "^3.1.4",
-    "hono": "^4.12.25",
+    "fast-uri": "^3.1.5",
+    "hono": "^4.12.34",
+    "ip-address": "^10.3.1",
     "js-yaml": "^4.3.0",
     "undici": "^7.29.0"
   },
