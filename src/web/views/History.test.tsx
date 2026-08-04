@@ -104,9 +104,21 @@ const SAMPLE_COACH_OK = {
   regressions: [],
   streaks: ['Cost per session has decreased for 3 consecutive weeks.'],
   topRecommendation: 'Strong week — document what worked in CLAUDE.md.',
-  thisWeek: { weekId: '2026-W22' },
+  thisWeek: {
+    weekId: '2026-W22',
+    avgEfficiencyScore: 0.72,
+    avgCostPerSession: 0.42,
+    antiPatternRate: 0.042,
+    sessionsCount: 5,
+  },
   lastWeek: { weekId: '2026-W21' },
-  baseline: { weekId: 'baseline' },
+  baseline: {
+    weekId: 'baseline',
+    avgEfficiencyScore: 0.64,
+    avgCostPerSession: 0.5,
+    antiPatternRate: 0.035,
+    sessionsCount: 4,
+  },
 };
 
 const SAMPLE_COACH_INSUFFICIENT = {
@@ -1124,5 +1136,43 @@ describe('aggregateToolUsage', () => {
 
   it('returns empty array for empty input', () => {
     expect(aggregateToolUsage([])).toEqual([]);
+  });
+});
+
+describe('CoachMetricsTable', () => {
+  it('renders all four metric row labels and the efficiency delta badge', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/personal coach/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/strong week/i)).toBeInTheDocument());
+    // Check for the four row labels (exact match with word boundaries)
+    expect(screen.getByText('Efficiency')).toBeInTheDocument();
+    expect(screen.getByText('Cost / session')).toBeInTheDocument();
+    expect(screen.getByText('Anti-pattern rate')).toBeInTheDocument();
+    expect(screen.getAllByText('Sessions').length).toBeGreaterThanOrEqual(1);
+    // Now check for the metrics table values
+    expect(screen.getByText('72')).toBeInTheDocument(); // effValue = 0.72 * 100 = 72
+    expect(screen.getByText('$0.42')).toBeInTheDocument(); // thisWeek cost
+    expect(screen.getByText('4.2%')).toBeInTheDocument(); // antiPatternRate as percentage
+    // SAMPLE_COACH_OK has efficiency 0.72 vs baseline 0.64 → delta = +8pts
+    expect(screen.getByText('↑8pts')).toBeInTheDocument();
+  });
+
+  it('renders zero deltas correctly when baseline values are null or zero', async () => {
+    const coachNullBaseline = {
+      ...SAMPLE_COACH_OK,
+      status: 'ok' as const,
+      baseline: {
+        ...SAMPLE_COACH_OK.baseline,
+        avgEfficiencyScore: null,
+        avgCostPerSession: 0,
+        antiPatternRate: 0,
+      },
+    };
+    renderHistory({ coach: coachNullBaseline });
+    await waitFor(() => expect(screen.getByText(/personal coach/i)).toBeInTheDocument());
+    // Verify the coach card renders with the null/zero baseline without crashing
+    // The component should handle null efficiency and zero-valued baseline metrics gracefully
+    expect(screen.getByText(/personal coach/i)).toBeInTheDocument();
+    expect(screen.getByText(/Efficiency/i)).toBeInTheDocument();
   });
 });

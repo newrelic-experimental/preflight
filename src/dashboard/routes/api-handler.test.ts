@@ -1452,6 +1452,42 @@ describe('api-handler GET /api/personal-coach', () => {
     await handler(req, res);
     expect(status()).toBe(503);
   });
+
+  it('regenerates the current week summary before reading, so "this week" is never stale', async () => {
+    const generatedWeekIds: string[] = [];
+    const handler = createApiHandler({
+      personalCoach: { generate: () => ({ status: 'insufficient_data' }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['personalCoach'],
+      weeklySummaryGenerator: {
+        generate: (weekId: string) => generatedWeekIds.push(weekId),
+      } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'],
+    });
+    const req = { method: 'GET', url: '/api/personal-coach' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(generatedWeekIds).toEqual([getIsoWeekId(new Date())]);
+  });
+
+  it('still returns personalCoach.generate() when the regeneration throws', async () => {
+    const fake = { status: 'insufficient_data' };
+    const handler = createApiHandler({
+      personalCoach: { generate: () => fake } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['personalCoach'],
+      weeklySummaryGenerator: {
+        generate: () => {
+          throw new Error('disk full');
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'],
+    });
+    const req = { method: 'GET', url: '/api/personal-coach' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual(fake);
+  });
 });
 
 // ---------------------------------------------------------------------------

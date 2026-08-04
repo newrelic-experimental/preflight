@@ -1711,6 +1711,12 @@ export function createApiHandler(
 
   routes.set('GET /api/personal-coach', (_req, res) => {
     if (!deps.personalCoach) return unavailable(res, 'personalCoach');
+    try {
+      deps.weeklySummaryGenerator?.generate(getIsoWeekId(new Date()));
+    } catch (err) {
+      // best-effort — failure here means "this week" reflects a stale cache, not a 500
+      console.error('Weekly summary generation failed', err);
+    }
     jsonOk(res, deps.personalCoach.generate());
   });
 

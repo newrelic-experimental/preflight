@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.30] - 2026-08-04
+
+### Added
+
+- **The History dashboard's Personal Coach panel now shows the numbers behind its recommendations** — a compact table of this week's efficiency, cost per session, anti-pattern rate, and session count sits above the existing highlights and top recommendation, each metric paired with a delta badge against your rolling baseline.
+
 ## [1.14.29] - 2026-08-04
 
 ### Added

@@ -470,6 +470,15 @@ export interface CostPerOutcomeResponse {
 export const fetchCostPerOutcome = (days = 30): Promise<CostPerOutcomeResponse> =>
   getJson<CostPerOutcomeResponse>(`/api/cost-per-outcome?days=${days}`);
 
+// Mirrors the subset of PersonalWeekMetrics (src/metrics/personal-coach.ts,
+// not importable) actually rendered by CoachMetricsTable.
+export interface PersonalWeekMetrics {
+  readonly avgEfficiencyScore: number | null;
+  readonly avgCostPerSession: number;
+  readonly antiPatternRate: number;
+  readonly sessionsCount: number;
+}
+
 // Mirrors the 'ok'/'insufficient_data' union returned by PersonalCoach.generate()
 // in src/metrics/personal-coach.ts (not importable).
 export interface PersonalCoachReport {
@@ -478,6 +487,9 @@ export interface PersonalCoachReport {
   readonly regressions: readonly string[];
   readonly streaks: readonly string[];
   readonly topRecommendation: string;
+  readonly thisWeek: PersonalWeekMetrics;
+  readonly baseline: PersonalWeekMetrics;
+  readonly weeksAnalyzed: number;
 }
 
 export interface PersonalCoachInsufficientData {

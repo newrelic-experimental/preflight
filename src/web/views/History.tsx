@@ -31,6 +31,7 @@ import {
   type WeeklyRow,
   type CostPerOutcomeResponse,
   type PersonalCoachResult,
+  type PersonalWeekMetrics,
   type ConcurrencyHistoryResponse,
   type ActivityHeatmapHistoryResponse,
   type InstructionDriftResponse,
@@ -529,6 +530,98 @@ function Panel({
   );
 }
 
+function CoachMetricsTable({
+  thisWeek,
+  baseline,
+}: {
+  thisWeek: PersonalWeekMetrics;
+  baseline: PersonalWeekMetrics;
+}): JSX.Element {
+  const effDelta =
+    thisWeek.avgEfficiencyScore !== null && baseline.avgEfficiencyScore !== null
+      ? Math.round((thisWeek.avgEfficiencyScore - baseline.avgEfficiencyScore) * 100)
+      : null;
+
+  const costDelta =
+    baseline.avgCostPerSession > 0
+      ? (thisWeek.avgCostPerSession - baseline.avgCostPerSession) / baseline.avgCostPerSession
+      : null;
+
+  const apDelta =
+    baseline.antiPatternRate > 0
+      ? (thisWeek.antiPatternRate - baseline.antiPatternRate) / baseline.antiPatternRate
+      : null;
+
+  const sessionsDelta = Math.round(thisWeek.sessionsCount - baseline.sessionsCount);
+
+  function effColor(delta: number | null): string {
+    if (delta === null) return 'text-ink-muted';
+    if (delta >= 5) return 'text-accent-green';
+    if (delta <= -5) return 'text-accent-amber';
+    return 'text-ink-muted';
+  }
+
+  function costColor(delta: number | null): string {
+    if (delta === null) return 'text-ink-muted';
+    if (delta <= -0.15) return 'text-accent-green';
+    if (delta >= 0.25) return 'text-accent-amber';
+    return 'text-ink-muted';
+  }
+
+  function apColor(delta: number | null): string {
+    if (delta === null) return 'text-ink-muted';
+    if (delta <= -0.2) return 'text-accent-green';
+    if (delta >= 0.25) return 'text-accent-amber';
+    return 'text-ink-muted';
+  }
+
+  function effDeltaText(delta: number | null): string {
+    if (delta === null) return '—';
+    if (delta === 0) return '0pts';
+    return `${delta > 0 ? '↑' : '↓'}${Math.abs(delta)}pts`;
+  }
+
+  function pctDeltaText(delta: number | null): string {
+    if (delta === null) return '—';
+    if (delta === 0) return '0%';
+    return `${delta > 0 ? '↑' : '↓'}${Math.abs(Math.round(delta * 100))}%`;
+  }
+
+  function sessionsDeltaText(delta: number): string {
+    if (delta === 0) return '0';
+    return delta > 0 ? `+${delta}` : `${delta}`;
+  }
+
+  const effValue =
+    thisWeek.avgEfficiencyScore !== null
+      ? Math.round(thisWeek.avgEfficiencyScore * 100).toString()
+      : '—';
+
+  return (
+    <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-xs mb-3">
+      <span className="text-ink-muted" />
+      <span className="text-ink-muted">This wk</span>
+      <span className="text-ink-muted">vs baseline</span>
+
+      <span className="text-ink-muted">Efficiency</span>
+      <span className="font-mono">{effValue}</span>
+      <span className={effColor(effDelta)}>{effDeltaText(effDelta)}</span>
+
+      <span className="text-ink-muted">Cost / session</span>
+      <span className="font-mono">${thisWeek.avgCostPerSession.toFixed(2)}</span>
+      <span className={costColor(costDelta)}>{pctDeltaText(costDelta)}</span>
+
+      <span className="text-ink-muted">Anti-pattern rate</span>
+      <span className="font-mono">{(thisWeek.antiPatternRate * 100).toFixed(1)}%</span>
+      <span className={apColor(apDelta)}>{pctDeltaText(apDelta)}</span>
+
+      <span className="text-ink-muted">Sessions</span>
+      <span className="font-mono">{Math.round(thisWeek.sessionsCount)}</span>
+      <span className="text-ink-muted">{sessionsDeltaText(sessionsDelta)}</span>
+    </div>
+  );
+}
+
 function CoachCard({ data }: { data: PersonalCoachResult | undefined }): JSX.Element {
   if (!data) {
     return (
@@ -547,6 +640,7 @@ function CoachCard({ data }: { data: PersonalCoachResult | undefined }): JSX.Ele
   return (
     <Panel title="Personal coach">
       <div className="text-xs space-y-2">
+        <CoachMetricsTable thisWeek={data.thisWeek} baseline={data.baseline} />
         <div>
           <span className="text-accent-cyan font-semibold">Top recommendation: </span>
           {data.topRecommendation}
