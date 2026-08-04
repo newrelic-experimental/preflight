@@ -107,7 +107,7 @@ export default {
   // ── Connectivity ──────────────────────────────────────────────────────────
 
   // New Relic region. Auto-detected from license key prefix; override only if needed.
-  // Env: NEW_RELIC_HOST  (null = US default, "eu" = EU, "gov" = FedRAMP)
+  // Env: NEW_RELIC_HOST  (null = US default, "eu" = EU, "jp" = Japan, "gov" = FedRAMP)
   // Default: null (US)
   collectorHost: null,
 
@@ -127,6 +127,7 @@ export default {
   // For New Relic OTLP endpoints:
   //   US: https://otlp.nr-data.net
   //   EU: https://otlp.eu01.nr-data.net
+  //   Japan: https://otlp.jp.nr-data.net
   // For other backends (Datadog, Grafana Cloud, Honeycomb), use their OTLP endpoint.
   // Env: OTEL_EXPORTER_OTLP_ENDPOINT
   // Default: null (disabled)

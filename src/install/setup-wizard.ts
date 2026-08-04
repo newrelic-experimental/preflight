@@ -269,12 +269,15 @@ export async function runSetupWizard(): Promise<void> {
         ? 'eu'
         : keyLower.startsWith('gov01')
           ? 'gov'
-          : 'us';
+          : keyLower.startsWith('jp')
+            ? 'jp'
+            : 'us';
       const defaultEnv = existingCollectorHost ?? autoEnv;
       print('Environment:');
       print('  1) US      — api.newrelic.com');
       print('  2) EU      — api.eu.newrelic.com');
       print('  3) FedRAMP — api.newrelic.com (FedRAMP/GovCloud)');
+      print('  4) Japan   — api.jp.newrelic.com');
       const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
         .trim()
         .toLowerCase();
@@ -287,7 +290,9 @@ export async function runSetupWizard(): Promise<void> {
               ? 'eu'
               : envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov'
                 ? 'gov'
-                : defaultEnv;
+                : envRaw === '4' || envRaw === 'jp' || envRaw === 'japan'
+                  ? 'jp'
+                  : defaultEnv;
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
       // Warn if license key prefix contradicts selected environment.
@@ -295,9 +300,11 @@ export async function runSetupWizard(): Promise<void> {
         ? 'eu'
         : keyLower.startsWith('gov01')
           ? 'gov'
-          : keyLower.startsWith('us01')
-            ? 'us'
-            : null;
+          : keyLower.startsWith('jp')
+            ? 'jp'
+            : keyLower.startsWith('us01')
+              ? 'us'
+              : null;
       if (keyRegion && keyRegion !== resolvedEnv) {
         print(
           `  ⚠ Your license key looks like a ${keyRegion.toUpperCase()} key but you selected ${resolvedEnv.toUpperCase()}. Verify this is intentional.`,
@@ -680,7 +687,8 @@ export async function runSetupWizard(): Promise<void> {
 
     // Step 8: Dashboard deploy — show manual command
     if (mode !== 'local') {
-      const regionFlag = collectorHost === 'eu' ? ' --eu' : '';
+      const regionFlag =
+        collectorHost === 'eu' ? ' --eu' : collectorHost === 'jp' ? ' --jp' : '';
       // Mask the API key in printed commands — users copy these snippets to
       // terminals, docs, and chat messages, and the raw key could be captured.
       const apiKeyVar = nrApiKey

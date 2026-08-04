@@ -139,6 +139,7 @@ export interface AlertsDeployOptions {
   readonly teardown: boolean;
   readonly update: boolean;
   readonly eu: boolean;
+  readonly jp: boolean;
   readonly developer: string | null;
   /**
    * Override the alerts data dir. Used by tests so they can point at a fixture
@@ -410,6 +411,7 @@ async function syncConditions(
 function pickNerdgraphUrl(opts: AlertsDeployOptions): string {
   if (opts.nerdgraphUrlOverride) return opts.nerdgraphUrlOverride;
   if (opts.eu) return 'https://api.eu.newrelic.com/graphql';
+  if (opts.jp) return 'https://api.jp.newrelic.com/graphql';
   return 'https://api.newrelic.com/graphql';
 }
 
@@ -428,6 +430,9 @@ export async function runDeployAlerts(opts: AlertsDeployOptions): Promise<number
 
   if (opts.eu) {
     out.write('Targeting EU API: https://api.eu.newrelic.com/graphql\n');
+  }
+  if (opts.jp) {
+    out.write('Targeting Japan (JP) API: https://api.jp.newrelic.com/graphql\n');
   }
 
   const developer: string | null = opts.developer ? normalizeDeveloperName(opts.developer) : null;

@@ -11,6 +11,12 @@ import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
 import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
+import {
+  JP_OTLP_ENDPOINT,
+  JP_REGION,
+  isJapanLicenseKey,
+  isJapanRegion,
+} from './transport/jp-region.js';
 
 const logger = createLogger('mcp-config');
 
@@ -356,6 +362,9 @@ function resolveCollectorHost(
   if (licenseKey?.toLowerCase().startsWith('eu01')) {
     return 'eu';
   }
+  if (isJapanLicenseKey(licenseKey)) {
+    return JP_REGION;
+  }
   return null;
 }
 
@@ -657,6 +666,15 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
   );
 
+  // Resolve the collector host / region once so both the transport config
+  // (collectorHost, below) and the OTLP forward-endpoint default key off the
+  // same value.
+  const resolvedCollectorHost = resolveCollectorHost(
+    licenseKey,
+    process.env.NEW_RELIC_HOST ??
+      (typeof file.collectorHost === 'string' ? file.collectorHost : null),
+  );
+
   const config: McpServerConfig = {
     licenseKey,
     accountId,
@@ -786,11 +804,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
           : 'info',
       ),
 
-    collectorHost: resolveCollectorHost(
-      licenseKey,
-      process.env.NEW_RELIC_HOST ??
-        (typeof file.collectorHost === 'string' ? file.collectorHost : null),
-    ),
+    collectorHost: resolvedCollectorHost,
 
     proxyUpstreams: parseProxyUpstreams(
       process.env.NEW_RELIC_AI_MCP_PROXY_UPSTREAMS,
@@ -925,7 +939,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
         // may still set the value explicitly via env or config file (e.g. to point
         // at a self-hosted collector); we just don't synthesize a NR default for them.
         const defaultEndpoint =
-          mode !== 'local' && licenseKey !== undefined ? 'https://otlp.nr-data.net' : null;
+          mode !== 'local' && licenseKey !== undefined
+            ? isJapanRegion(resolvedCollectorHost)
+              ? JP_OTLP_ENDPOINT
+              : 'https://otlp.nr-data.net'
+            : null;
         const fileValue = pickOtlpValue(
           typeof fileOtlp.forwardEndpoint === 'string' ? fileOtlp.forwardEndpoint : undefined,
           typeof file.otlpForwardEndpoint === 'string' ? file.otlpForwardEndpoint : undefined,

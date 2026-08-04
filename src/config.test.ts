@@ -284,6 +284,14 @@ describe('loadMcpConfig()', () => {
     expect(config.collectorHost).toBe('eu');
   });
 
+  it('JP license key sets collectorHost to jp', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'jp01xx-key-123456';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.collectorHost).toBe('jp');
+  });
+
   it('US license key leaves collectorHost null', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'us-key-123456';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';

@@ -46,6 +46,12 @@ describe('getEventsApiUrl', () => {
     );
   });
 
+  it('returns JP endpoint', () => {
+    expect(getEventsApiUrl('12345', 'jp')).toBe(
+      'https://insights-collector.jp.nr-data.net/v1/accounts/12345/events',
+    );
+  });
+
   it('falls back to US for unknown collectorHost', () => {
     expect(getEventsApiUrl('12345', 'unknown-region')).toBe(
       'https://insights-collector.newrelic.com/v1/accounts/12345/events',
@@ -64,6 +70,10 @@ describe('getNerdgraphUrl', () => {
 
   it('returns US endpoint for gov (no distinct gov NerdGraph URL)', () => {
     expect(getNerdgraphUrl('gov')).toBe('https://api.newrelic.com/graphql');
+  });
+
+  it('returns JP endpoint', () => {
+    expect(getNerdgraphUrl('jp')).toBe('https://api.jp.newrelic.com/graphql');
   });
 });
 

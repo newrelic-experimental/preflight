@@ -14,6 +14,7 @@ import {
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
+import { JP_INGEST_HOSTS, isJapanLicenseKey } from '../transport/jp-region.js';
 
 const logger = createLogger('diagnostics');
 
@@ -31,7 +32,30 @@ type DiagnosticsContext = {
   // used verbatim as the skip detail so the message is accurate for each cause
   // (absent file, config errors, local mode, missing licenseKey).
   readonly nrSkipReason: string | null;
+  // Region-aware Events API host to probe for reachability, so a JP/EU/gov
+  // user isn't told the (US) endpoint is unreachable when they never use it.
+  readonly nrEventsHost: string;
 };
+
+// Best-effort resolution of the Events API host for the reachability probe,
+// keyed off the same env signals the running server would use. `NEW_RELIC_HOST`
+// wins (region keyword or literal FQDN), then the license-key region prefix.
+function resolveDiagnosticsEventsHost(licenseKeyEnv: string | undefined): string {
+  const explicitHost = process.env.NEW_RELIC_HOST?.trim();
+  if (explicitHost) {
+    const kw = explicitHost.toLowerCase();
+    if (kw === 'jp') return JP_INGEST_HOSTS.events;
+    if (kw === 'eu') return 'insights-collector.eu01.nr-data.net';
+    if (kw === 'gov') return 'gov-insights-collector.newrelic.com';
+    if (kw === 'us') return 'insights-collector.newrelic.com';
+    if (explicitHost.includes('.') || explicitHost.includes(':')) return explicitHost;
+  }
+  const key = licenseKeyEnv?.trim().toLowerCase() ?? '';
+  if (isJapanLicenseKey(key)) return JP_INGEST_HOSTS.events;
+  if (key.startsWith('eu01')) return 'insights-collector.eu01.nr-data.net';
+  if (key.startsWith('gov01')) return 'gov-insights-collector.newrelic.com';
+  return 'insights-collector.newrelic.com';
+}
 
 function checkConfigValid(
   configPath: string,
@@ -96,7 +120,11 @@ function checkConfigValid(
 
   return {
     check,
-    context: { storagePath, nrSkipReason },
+    context: {
+      storagePath,
+      nrSkipReason,
+      nrEventsHost: resolveDiagnosticsEventsHost(licenseKeyEnv),
+    },
   };
 }
 
@@ -356,7 +384,10 @@ function checkStorageWritable(storagePath: string): DiagnosticCheck {
   }
 }
 
-async function checkNrReachable(skipReason: string | null): Promise<DiagnosticCheck> {
+async function checkNrReachable(
+  skipReason: string | null,
+  eventsHost: string,
+): Promise<DiagnosticCheck> {
   if (skipReason !== null) {
     return { check: 'NR reachable', status: 'skip', detail: skipReason };
   }
@@ -364,7 +395,7 @@ async function checkNrReachable(skipReason: string | null): Promise<DiagnosticCh
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch('https://insights-collector.newrelic.com', {
+    const response = await fetch(`https://${eventsHost}`, {
       method: 'HEAD',
       signal: controller.signal,
     });
@@ -375,14 +406,14 @@ async function checkNrReachable(skipReason: string | null): Promise<DiagnosticCh
       return {
         check: 'NR reachable',
         status: 'warn',
-        detail: `insights-collector.newrelic.com replied with HTTP ${response.status} — endpoint is reachable but rejected the request`,
+        detail: `${eventsHost} replied with HTTP ${response.status} — endpoint is reachable but rejected the request`,
         fix: 'Verify that licenseKey is correct and has Ingest permissions.',
       };
     }
     return {
       check: 'NR reachable',
       status: 'ok',
-      detail: 'insights-collector.newrelic.com reachable',
+      detail: `${eventsHost} reachable`,
     };
   } catch (err) {
     const isTimeout = err instanceof Error && err.name === 'AbortError';
@@ -391,7 +422,7 @@ async function checkNrReachable(skipReason: string | null): Promise<DiagnosticCh
       status: 'fail',
       detail: isTimeout
         ? 'Request timed out after 5 s — endpoint may be reachable but slow'
-        : 'Could not reach insights-collector.newrelic.com',
+        : `Could not reach ${eventsHost}`,
       fix: isTimeout
         ? 'Check for a slow proxy or firewall blocking HTTPS.'
         : 'Check network connectivity and that licenseKey is valid.',
@@ -456,6 +487,6 @@ export async function runDiagnostics(opts?: {
     checkHooksWired(settingsPaths, opts?.platform),
     checkStorageWritable(context.storagePath),
     checkLocalInstances(context.storagePath),
-    await checkNrReachable(context.nrSkipReason),
+    await checkNrReachable(context.nrSkipReason, context.nrEventsHost),
   ];
 }

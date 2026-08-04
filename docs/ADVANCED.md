@@ -33,7 +33,7 @@ export NEW_RELIC_AI_TRANSPORT=both
 
 | Setting        | What it does                          | Options                                                                                                                                             |
 | -------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `otlpEndpoint` | OTLP/HTTP endpoint URL                | **New Relic US:** `https://otlp.nr-data.net` · **NR EU:** `https://otlp.eu01.nr-data.net` · Or any backend's OTLP URL (Datadog, Grafana, Honeycomb) |
+| `otlpEndpoint` | OTLP/HTTP endpoint URL                | **New Relic US:** `https://otlp.nr-data.net` · **NR EU:** `https://otlp.eu01.nr-data.net` · **NR Japan:** `https://otlp.jp.nr-data.net` · Or any backend's OTLP URL (Datadog, Grafana, Honeycomb) |
 | `otlpHeaders`  | Extra HTTP headers for authentication | **New Relic:** `{ "api-key": "YOUR_LICENSE_KEY" }` · **Datadog:** `{ "dd-api-key": "YOUR_DATADOG_API_KEY" }`                                        |
 | `transport`    | How to send telemetry                 | `"nr-events-api"` (default, NR only) · `"otlp"` (OTLP only) · `"both"` (simultaneous export to NR and OTLP)                                         |
 

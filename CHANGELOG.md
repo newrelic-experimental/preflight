@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **New Relic Japan (JP) data center support** — Preflight can now send telemetry to New Relic's Japan region. The region is auto-detected from a `jp`-prefixed license key (or set explicitly via `NEW_RELIC_HOST=jp` / `collectorHost: "jp"`), routing events, metrics, and logs to `insights-collector.jp.nr-data.net`, `metric-api.jp.nr-data.net`, and `log-api.jp.nr-data.net` respectively. OTLP export defaults to `https://otlp.jp.nr-data.net`, and the `deploy-dashboards` / `deploy-alerts` commands accept a `--jp` flag to target the Japan NerdGraph endpoint (`https://api.jp.newrelic.com/graphql`). The setup wizard, key validator, and `preflight diagnostics` reachability check are all JP-aware.
+
 ## [1.14.26] - 2026-08-03
 
 ### Added

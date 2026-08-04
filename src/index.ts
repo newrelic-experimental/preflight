@@ -65,6 +65,7 @@ import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import { WorkflowStore } from './dashboard/workflow-store.js';
 import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
+import { jpSenderOverrides } from './transport/jp-region.js';
 import type { TokenUsage } from './shared/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 import { LiveEventBus } from './dashboard/index.js';
@@ -528,6 +529,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--teardown', 'delete deployed dashboards (matched by name)')
       .option('--print', 'print dashboard JSON with accountIds filled in (no API key required)')
       .option('--eu', 'target the New Relic EU API')
+      .option('--jp', 'target the New Relic Japan (JP) API')
       .option(
         '--developer <name>',
         'inject developer name into the dashboard "developer" variable default',
@@ -544,6 +546,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           teardown: opts.teardown === true,
           print: opts.print === true,
           eu: opts.eu === true,
+          jp: opts.jp === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
           file: file ?? null,
         });
@@ -557,6 +560,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--teardown', 'delete the alert policy and all its conditions')
       .option('--update', 'sync conditions on an existing policy in place (matched by name)')
       .option('--eu', 'target the New Relic EU API')
+      .option('--jp', 'target the New Relic Japan (JP) API')
       .option('--developer <name>', 'deploy a personal alert policy scoped to <name>')
       .action(async (opts: Record<string, unknown>) => {
         const { runDeployAlerts } = await import('./deploy/deploy-alerts.js');
@@ -565,6 +569,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           teardown: opts.teardown === true,
           update: opts.update === true,
           eu: opts.eu === true,
+          jp: opts.jp === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
         });
         process.exitCode = code;
@@ -1522,6 +1527,9 @@ async function main(): Promise<void> {
           accountId: config.accountId,
           collectorHost: config.collectorHost,
         },
+        // JP region: route events/metrics/logs to the Japan data center
+        // subdomains. No-op for other regions. See src/transport/jp-region.ts.
+        ...jpSenderOverrides(config.collectorHost),
         developer: config.developer,
         appName: config.appName,
         teamId: config.teamId,
@@ -2221,6 +2229,9 @@ async function main(): Promise<void> {
             accountId: config!.accountId,
             collectorHost: config!.collectorHost,
           },
+          // JP region: route telemetry to the Japan data center subdomains.
+          // No-op for other regions. See src/transport/jp-region.ts.
+          ...jpSenderOverrides(config!.collectorHost),
           developer: config!.developer,
           appName: config!.appName,
           teamId: config!.teamId,
@@ -2552,6 +2563,9 @@ async function main(): Promise<void> {
           accountId: config.accountId,
           collectorHost: config.collectorHost,
         },
+        // JP region: route telemetry to the Japan data center subdomains.
+        // No-op for other regions. See src/transport/jp-region.ts.
+        ...jpSenderOverrides(config.collectorHost),
         developer: config.developer,
         appName: config.appName,
         teamId: config.teamId,

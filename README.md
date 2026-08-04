@@ -125,7 +125,7 @@ preflight install \
   --account-id YOUR_ACCOUNT_ID
 ```
 
-EU accounts add `--eu`. FedRAMP accounts add `--fedramp`.
+EU accounts add `--eu`. Japan accounts add `--jp`. FedRAMP accounts add `--fedramp`. (The region is also auto-detected from the license-key prefix — `eu01`, `jp`, `gov01`.)
 
 Then deploy the prebuilt dashboards:
 
