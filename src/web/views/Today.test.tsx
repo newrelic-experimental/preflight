@@ -201,6 +201,96 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.queryByText(/session detail/i)).toBeNull());
   });
 
+  it('shows the session detail trigger from context-history data alone, with no decision/cost data', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/api/context')) {
+        return new Response(
+          JSON.stringify({
+            turnCount: 3,
+            growth: { startTokens: 10_000, currentTokens: 30_000, deltaTokens: 20_000 },
+            currentBreakdown: { system: 10_000, tools: 10_000, user: 5_000, assistant: 5_000 },
+            fillPercent: 15,
+            contextWindow: 200_000,
+            toolContributions: [],
+            history: [
+              {
+                turnNumber: 1,
+                timestamp: 0,
+                inputTokens: 10_000,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                fillPercent: 5,
+                breakdown: { system: 5_000, tools: 3_000, user: 1_500, assistant: 500 },
+              },
+              {
+                turnNumber: 2,
+                timestamp: 1,
+                inputTokens: 20_000,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                fillPercent: 10,
+                breakdown: { system: 5_000, tools: 6_000, user: 3_000, assistant: 1_000 },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      // Exact match (not `startsWith`) — the session id below starts with
+      // "live", so a prefix match would also swallow its own
+      // `/api/sessions/live-context-only/replay` request.
+      if (url === '/api/sessions/live') {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 'live-context-only',
+              sessionName: 'live-context-only',
+              startTime: 1,
+              lastActivity: 1_000,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      // Selecting the live session re-keys the liveStore's cost/antiPatterns
+      // (liveStore.ts's setActiveSession filters out entries whose sessionId
+      // doesn't match), zeroing the `resetStore()`-seeded values. Stub a
+      // nonzero aggregate — as the other live-session tests in this file do
+      // (e.g. 'defaults to most-recently-active live session') — so
+      // `noActivityToday` stays false and the pane actually renders.
+      if (url.startsWith('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 1,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      // decision-tree/turn-costs deliberately absent (resolve to `null`) so the
+      // trigger can only be showing because of context-history data.
+      return new Response('null', { status: 200 });
+    }) as typeof globalThis.fetch;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+    const trigger = await screen.findByText(/session detail/i);
+    // Neither decision-tree nor turn-costs data is present, so there's no
+    // fragment for the em-dash separator to attach to — the button text
+    // must not start with an orphaned " — ".
+    expect(trigger.textContent).toBe('session detail →');
+  });
+
   it('renders a real count for stuck_loop via the API-fallback path, not "?"', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {

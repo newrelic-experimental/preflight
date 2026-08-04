@@ -37,6 +37,8 @@ import {
   type TurnCostsResponse,
   fetchDecisionTree,
   type DecisionTreeResponse,
+  fetchContext,
+  type ContextResponse,
   fetchQualityProxy,
   fetchToolSelectionScore,
   fetchConcurrency,
@@ -995,6 +997,15 @@ function LiveSessionPane({
     queryFn: fetchDecisionTree,
     refetchInterval: 10_000,
   });
+  // Mirrors ContextBar's own internal query for the same sessionId — using
+  // the identical key (`['context', activeId]`) means TanStack Query dedupes
+  // this to a single network request/shared cache entry, not a second fetch.
+  const { data: contextData } = useQuery<ContextResponse>({
+    queryKey: activeId ? ['context', activeId] : qk.context,
+    queryFn: () => fetchContext(activeId ?? undefined),
+    refetchInterval: 10_000,
+    enabled: isLive && Boolean(activeId),
+  });
 
   const tailRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1236,7 +1247,7 @@ function LiveSessionPane({
             numbers would be stale and the SSE feed won't be updating). */}
           {isLive && activeId && (
             <div className="border-t border-bg-line px-3 py-2 shrink-0">
-              <ContextBar sessionId={activeId} />
+              <ContextBar sessionId={activeId} expandable={false} />
             </div>
           )}
           {/* `turnCosts?.turns?.length` (not `turnCosts && turnCosts.turns.length`)
@@ -1244,20 +1255,29 @@ function LiveSessionPane({
             unmatched endpoint (including this one) to `[]`, which has no
             `.turns` field — the plain-object shape only holds under the
             dedicated /api/turn-costs mock. */}
-          {((decisionTree?.totalBranches ?? 0) > 0 || (turnCosts?.turns?.length ?? 0) > 0) && (
+          {((decisionTree?.totalBranches ?? 0) > 0 ||
+            (turnCosts?.turns?.length ?? 0) > 0 ||
+            (contextData?.history?.length ?? 0) >= 2) && (
             <div className="border-t border-bg-line px-3 py-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setShowDetail(true)}
                 className="text-[10px] text-accent-cyan hover:underline transition-colors duration-150 text-left"
               >
-                {decisionTree && decisionTree.totalBranches > 0
-                  ? `${decisionTree.longestFailureStreak} failure streak`
-                  : null}
-                {turnCosts?.turns && turnCosts.turns.length > 0
-                  ? ` · ${turnCosts.turns.length} turns · $${turnCosts.totalAttributedCost.toFixed(2)}`
-                  : null}
-                {' — session detail →'}
+                {(() => {
+                  const parts: string[] = [];
+                  if (decisionTree && decisionTree.totalBranches > 0) {
+                    parts.push(`${decisionTree.longestFailureStreak} failure streak`);
+                  }
+                  if (turnCosts?.turns && turnCosts.turns.length > 0) {
+                    parts.push(
+                      `${turnCosts.turns.length} turns · $${turnCosts.totalAttributedCost.toFixed(2)}`,
+                    );
+                  }
+                  return parts.length > 0
+                    ? `${parts.join(' · ')} — session detail →`
+                    : 'session detail →';
+                })()}
               </button>
             </div>
           )}
@@ -1270,6 +1290,8 @@ function LiveSessionPane({
         <SessionDetailDialog
           decisionTree={decisionTree}
           turnCosts={turnCosts}
+          contextHistory={contextData?.history}
+          contextWindow={contextData?.contextWindow}
           onClose={() => setShowDetail(false)}
         />
       )}

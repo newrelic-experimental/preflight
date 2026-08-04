@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { SessionDetailDialog } from './SessionDetailDialog';
-import type { DecisionTreeResponse, TurnCostsResponse } from '../api/client';
+import type { DecisionTreeResponse, TurnCostsResponse, ContextResponse } from '../api/client';
 
 function makeDecisionTree(overrides: Partial<DecisionTreeResponse> = {}): DecisionTreeResponse {
   return {
@@ -52,6 +52,19 @@ function makeSixTurns(): TurnCostsResponse['turns'] {
     model: 'claude-sonnet-5',
     estimatedCostUsd: (i + 1) / 100,
     costPerToolCall: (i + 1) / 100,
+  }));
+}
+
+function makeContextHistory(count: number): ContextResponse['history'] {
+  return Array.from({ length: count }, (_, i) => ({
+    turnNumber: i + 1,
+    timestamp: i,
+    inputTokens: (i + 1) * 10_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    fillPercent: (((i + 1) * 10_000) / 200_000) * 100,
+    breakdown: { system: 5_000, tools: 3_000, user: 1_500, assistant: 500 },
   }));
 }
 
@@ -134,5 +147,49 @@ describe('SessionDetailDialog', () => {
       />,
     );
     expect(screen.getByRole('button', { name: /close session detail/i })).toHaveFocus();
+  });
+});
+
+describe('SessionDetailDialog — context timeline section', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows the empty state when contextHistory has fewer than 2 turns', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        contextHistory={makeContextHistory(1)}
+        contextWindow={200_000}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('No context timeline data yet.')).toBeInTheDocument();
+  });
+
+  it('shows the empty state when contextHistory is undefined', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('No context timeline data yet.')).toBeInTheDocument();
+  });
+
+  it('renders the Context Timeline section label when 2+ turns are present', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        contextHistory={makeContextHistory(3)}
+        contextWindow={200_000}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Context Timeline')).toBeInTheDocument();
+    expect(screen.queryByText('No context timeline data yet.')).toBeNull();
   });
 });

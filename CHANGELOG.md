@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.27] - 2026-08-04
+
+### Added
+
+- **The Today dashboard's live session pane now shows a context-window fill timeline** — the "session detail" drawer gains a stacked-area chart of context fill per turn, so you can see how the context window filled up over the course of a session, not just its current snapshot. On the full Sessions page, the same chart still expands inline from the context bar's own chevron, unchanged.
+
 ## [1.14.26] - 2026-08-03
 
 ### Added

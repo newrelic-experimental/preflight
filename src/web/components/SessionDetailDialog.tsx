@@ -3,13 +3,16 @@ import type { JSX } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
-import type { DecisionTreeResponse, TurnCostsResponse } from '../api/client';
+import type { DecisionTreeResponse, TurnCostsResponse, ContextResponse } from '../api/client';
 import { Card, Eyebrow, Pill, type PillTone } from './ui';
 import { formatTokensCompact } from '../lib/format.js';
+import { ContextTimeline } from './ContextBar';
 
 export interface SessionDetailDialogProps {
   readonly decisionTree: DecisionTreeResponse | undefined;
   readonly turnCosts: TurnCostsResponse | undefined;
+  readonly contextHistory?: ContextResponse['history'];
+  readonly contextWindow?: number;
   readonly onClose: () => void;
 }
 
@@ -24,6 +27,8 @@ const OUTCOME_TONE: Record<'unknown' | 'success' | 'failure', PillTone> = {
 export function SessionDetailDialog({
   decisionTree,
   turnCosts,
+  contextHistory,
+  contextWindow,
   onClose,
 }: SessionDetailDialogProps): JSX.Element {
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -57,6 +62,7 @@ export function SessionDetailDialog({
 
   const hasDecisionData = decisionTree != null && decisionTree.totalBranches > 0;
   const hasTurnData = turnCosts?.turns != null && turnCosts.turns.length > 0;
+  const hasContextTimeline = (contextHistory?.length ?? 0) >= 2;
 
   // Portaled to document.body: LiveSessionPane's `.animate-card-enter`
   // ancestor keeps a non-`none` `transform` after its entrance animation
@@ -201,6 +207,22 @@ export function SessionDetailDialog({
                     ))}
                   </div>
                 </>
+              )}
+            </Card>
+          </section>
+
+          <section aria-label="Context timeline">
+            <Eyebrow className="mb-3">Context Timeline</Eyebrow>
+            <Card tone="static" padding="sm">
+              {hasContextTimeline ? (
+                <ContextTimeline
+                  history={contextHistory ?? []}
+                  contextWindow={contextWindow ?? 0}
+                />
+              ) : (
+                <div className="py-2 text-center text-xs text-ink-muted">
+                  No context timeline data yet.
+                </div>
               )}
             </Card>
           </section>
