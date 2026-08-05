@@ -10,7 +10,7 @@ import { existsSync, copyFileSync, realpathSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
 import { createLogger } from '../shared/index.js';
 import {
@@ -24,6 +24,7 @@ import {
 } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateConfigFile, DEFAULT_STORAGE_PATH, ConfigFileSchema } from '../config.js';
+import { VALID_MODES, type Mode } from '../config.js';
 import type { PlatformTarget } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import {
@@ -582,6 +583,7 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
 function handleInstall(options: {
   licenseKey?: string;
   accountId?: string;
+  mode?: Mode;
   project?: boolean;
   windowsCc?: boolean;
   linuxCc?: boolean;
@@ -658,6 +660,9 @@ function handleInstall(options: {
           nrConfig,
           generateNrConfig(options.licenseKey as string, options.accountId as string),
         );
+      }
+      if (options.mode) {
+        nrConfig.mode = options.mode;
       }
       writeJsonFile(NR_CONFIG_PATH, nrConfig, DEFAULT_STORAGE_PATH);
       nrConfigWritten = credentialsProvided;
@@ -1227,6 +1232,11 @@ export function createInstallProgram(): Command {
     .description('Configure Claude Code hooks and MCP server for AI observability')
     .option('--license-key <key>', 'New Relic license key')
     .option('--account-id <id>', 'New Relic account ID')
+    .addOption(
+      new Option('--mode <mode>', 'Telemetry mode: cloud, local, or both (default: local)').choices(
+        [...VALID_MODES],
+      ),
+    )
     .option('--project', 'Write to project-level .claude/settings.json instead of user-level')
     .option('--windows-cc', 'Target Windows Claude Code (desktop app) when running inside WSL')
     .option('--linux-cc', 'Target Linux Claude Code (npm in WSL) when running inside WSL')

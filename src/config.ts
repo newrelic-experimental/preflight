@@ -14,6 +14,9 @@ import { resolveRecordContent } from './record-content-gate.js';
 
 const logger = createLogger('mcp-config');
 
+export const VALID_MODES = ['cloud', 'local', 'both'] as const;
+export type Mode = (typeof VALID_MODES)[number];
+
 export interface McpServerConfig {
   readonly licenseKey?: string;
   readonly accountId?: string;
@@ -45,7 +48,7 @@ export interface McpServerConfig {
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
-  readonly mode: 'cloud' | 'local' | 'both';
+  readonly mode: Mode;
   readonly platformTarget?: PlatformTarget;
   /**
    * OTLP-related config, grouped to match the `dashboard`/`alerts` nesting
@@ -153,7 +156,7 @@ export const ConfigFileSchema = z
     otlpReceiverBindAddress: z.string().optional(),
     otlpForwardEndpoint: z.string().nullable().optional(),
     otlpForwardHeaders: z.record(z.string(), z.string()).optional(),
-    mode: z.enum(['cloud', 'local', 'both']).optional(),
+    mode: z.enum(VALID_MODES).optional(),
     platformTarget: z.enum(['native', 'wsl-windows-cc', 'wsl-linux-cc']).optional(),
     otlp: z
       .object({
@@ -591,8 +594,6 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
   // --- Resolve mode early so we can gate licenseKey/accountId requirements ---
   // File mode is already validated by the zod schema in loadConfigFile.
-  const VALID_MODES = ['cloud', 'local', 'both'] as const;
-  type Mode = (typeof VALID_MODES)[number];
   const isValidMode = (v: string | undefined): v is Mode =>
     v !== undefined && (VALID_MODES as readonly string[]).includes(v);
   const envMode = process.env.NR_AI_MODE;

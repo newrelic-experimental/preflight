@@ -11,6 +11,7 @@ import { resolve, dirname } from 'node:path';
 import { z } from 'zod';
 
 import { normalizeDeveloperName, ConfigFileSchema, DEFAULT_STORAGE_PATH } from '../config.js';
+import type { Mode } from '../config.js';
 import { migrateStoragePath } from './migrate.js';
 import { runInstallCli, verifyBinaryOnPath, findRepoRoot } from './cli.js';
 import { writeJsonFile } from './json-utils.js';
@@ -138,7 +139,7 @@ function loadExisting(): Partial<z.infer<typeof ConfigFileSchema>> {
   return filtered;
 }
 
-export type WizardMode = 'cloud' | 'local' | 'both';
+export type WizardMode = Mode;
 
 export function buildConfig(
   existing: Partial<z.infer<typeof ConfigFileSchema>>,
