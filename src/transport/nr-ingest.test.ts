@@ -983,6 +983,98 @@ describe('NrIngestManager', () => {
   });
 });
 
+describe('getEventSendHealth()', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('starts with zero failures and no timestamps', () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+    expect(manager.getEventSendHealth()).toEqual({
+      consecutiveFailures: 0,
+      lastFailureAt: null,
+      lastSuccessAt: null,
+    });
+  });
+
+  it('resets to 0 and stamps lastSuccessAt after a successful send', async () => {
+    const localSendEvents = jest
+      .fn<() => Promise<{ success: boolean; statusCode: number; retryCount: number }>>()
+      .mockResolvedValue({ success: true, statusCode: 200, retryCount: 0 });
+
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        sendEventsFn: localSendEvents,
+        eventHarvestIntervalMs: 5_000,
+        logHarvestIntervalMs: 100_000,
+      }),
+    );
+    manager.ingestToolCall(makeRecord());
+    manager.start();
+
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    const health = manager.getEventSendHealth();
+    expect(health.consecutiveFailures).toBe(0);
+    expect(health.lastSuccessAt).not.toBeNull();
+
+    await manager.stop();
+  });
+
+  it('increments consecutiveFailures on a retryable failure (e.g. 503)', async () => {
+    const localSendEvents = jest
+      .fn<() => Promise<{ success: boolean; statusCode: number; retryCount: number }>>()
+      .mockResolvedValueOnce({ success: false, statusCode: 503, retryCount: 3 })
+      .mockResolvedValue({ success: true, statusCode: 200, retryCount: 0 });
+
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        sendEventsFn: localSendEvents,
+        eventHarvestIntervalMs: 5_000,
+        logHarvestIntervalMs: 100_000,
+      }),
+    );
+    manager.ingestToolCall(makeRecord());
+    manager.start();
+
+    await jest.advanceTimersByTimeAsync(5_000);
+    const health = manager.getEventSendHealth();
+    expect(health.consecutiveFailures).toBe(1);
+    expect(health.lastFailureAt).not.toBeNull();
+
+    await manager.stop();
+  });
+
+  it('increments consecutiveFailures on a masked non-retryable failure (e.g. 403 cross-account mismatch)', async () => {
+    const localSendEvents = jest
+      .fn<() => Promise<{ success: boolean; statusCode: number; retryCount: number }>>()
+      .mockResolvedValue({ success: false, statusCode: 403, retryCount: 0 });
+
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        sendEventsFn: localSendEvents,
+        eventHarvestIntervalMs: 5_000,
+        logHarvestIntervalMs: 100_000,
+      }),
+    );
+    manager.ingestToolCall(makeRecord());
+    manager.start();
+
+    // HarvestScheduler itself sees success=true (masked) and does NOT re-queue —
+    // but getEventSendHealth() must still reflect the real underlying failure.
+    await jest.advanceTimersByTimeAsync(5_000);
+    const health = manager.getEventSendHealth();
+    expect(health.consecutiveFailures).toBe(1);
+    expect(health.lastFailureAt).not.toBeNull();
+
+    await manager.stop();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // codingTaskToNrEvent()
 // ---------------------------------------------------------------------------

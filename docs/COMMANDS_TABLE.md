@@ -30,13 +30,15 @@ Check server health and connection status.
   "connected_at": "2026-06-03T10:00:00.000Z",
   "uptime_seconds": 3600,
   "hooks_installed": true,
-  "setup_required": false
+  "setup_required": false,
+  "event_send_status": "ok",
+  "consecutive_event_send_failures": 0
 }
 ```
 
 **Data source:** Server startup metadata
 
-**How it works:** Returns the current server version, the resolved developer name, how long the server has been running (`uptime_seconds`), the current session ID, and the ISO timestamp of when the MCP connection was established. Use this to confirm the MCP server is responsive and to verify the expected developer identity is being used. When a hook-detection function is available (e.g. in a Claude Code environment), also reports `hooks_installed` and `setup_required` so the caller can detect an incomplete setup — for example, right after a Smithery-driven install that only wired up the MCP server — and prompt to call `nr_observe_install_hooks`. Both fields are omitted when hook detection isn't wired up for the current server mode.
+**How it works:** Returns the current server version, the resolved developer name, how long the server has been running (`uptime_seconds`), the current session ID, and the ISO timestamp of when the MCP connection was established. Use this to confirm the MCP server is responsive and to verify the expected developer identity is being used. When a hook-detection function is available (e.g. in a Claude Code environment), also reports `hooks_installed` and `setup_required` so the caller can detect an incomplete setup — for example, right after a Smithery-driven install that only wired up the MCP server — and prompt to call `nr_observe_install_hooks`. Both fields are omitted when hook detection isn't wired up for the current server mode. When event-send health tracking is available, also reports `event_send_status` (`'ok'` or `'failing'`) and `consecutive_event_send_failures` — the number of consecutive failed attempts to send telemetry events to New Relic — so the caller can detect a broken ingest path. Both fields are omitted when event-send health tracking isn't wired up for the current server mode.
 
 **Requires:** Always available
 

@@ -808,6 +808,9 @@ export class NrIngestManager {
   private readonly trackSessionGauges: boolean;
   private sessionGaugeIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private consecutiveEventSendFailures = 0;
+  private lastEventSendFailureAt: number | null = null;
+  private lastEventSendSuccessAt: number | null = null;
 
   constructor(options: NrIngestOptions) {
     this.developer = options.developer;
@@ -861,6 +864,13 @@ export class NrIngestManager {
     const rawSendEventsFn = options.sendEventsFn ?? sendEvents;
     const classifyingEventsFn: SendEventsFn = async (events, licenseKey, opts) => {
       const result = await rawSendEventsFn(events, licenseKey, opts);
+      if (result.success) {
+        this.consecutiveEventSendFailures = 0;
+        this.lastEventSendSuccessAt = Date.now();
+      } else {
+        this.consecutiveEventSendFailures += 1;
+        this.lastEventSendFailureAt = Date.now();
+      }
       if (!result.success && result.statusCode !== null && isNonRetryable4xx(result.statusCode)) {
         logger.warn('Dropping non-retryable event batch', {
           statusCode: result.statusCode,
@@ -911,6 +921,18 @@ export class NrIngestManager {
       logHarvestIntervalMs: options.logHarvestIntervalMs,
       sendLogsFn: options.sendLogsFn,
     });
+  }
+
+  getEventSendHealth(): {
+    consecutiveFailures: number;
+    lastFailureAt: number | null;
+    lastSuccessAt: number | null;
+  } {
+    return {
+      consecutiveFailures: this.consecutiveEventSendFailures,
+      lastFailureAt: this.lastEventSendFailureAt,
+      lastSuccessAt: this.lastEventSendSuccessAt,
+    };
   }
 
   ingestProxyRequest(record: ProxyRequestRecord): void {

@@ -82,15 +82,15 @@ export class BudgetTracker {
       return 'session:infinite';
     }
     if (period === 'daily') {
-      const year = now.getFullYear();
-      const month = String(now.getMonth() + 1).padStart(2, '0');
-      const day = String(now.getDate()).padStart(2, '0');
+      const year = now.getUTCFullYear();
+      const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(now.getUTCDate()).padStart(2, '0');
       return `day:${year}-${month}-${day}`;
     }
     if (period === 'weekly') {
       // ISO 8601 week number — correct across year boundaries.
       // The ISO week year can differ from the calendar year in early Jan / late Dec.
-      const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       const dayOfWeek = d.getUTCDay() || 7; // 1=Mon … 7=Sun
       d.setUTCDate(d.getUTCDate() + 4 - dayOfWeek); // nearest Thursday
       const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));

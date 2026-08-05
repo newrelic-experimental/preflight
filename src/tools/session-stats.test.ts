@@ -266,6 +266,31 @@ describe('handleHealth()', () => {
     expect(data.hooks_installed).toBe(false);
     expect(data.setup_required).toBe(true);
   });
+
+  it('omits event_send_status when eventSendHealth is not provided', () => {
+    const result = handleHealth({});
+    const data = JSON.parse(result.content[0].text);
+    expect('event_send_status' in data).toBe(false);
+    expect('consecutive_event_send_failures' in data).toBe(false);
+  });
+
+  it('reports event_send_status "ok" when there are no consecutive failures', () => {
+    const result = handleHealth({
+      eventSendHealth: { consecutiveFailures: 0, lastFailureAt: null, lastSuccessAt: Date.now() },
+    });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.event_send_status).toBe('ok');
+    expect(data.consecutive_event_send_failures).toBe(0);
+  });
+
+  it('reports event_send_status "failing" when there are consecutive failures', () => {
+    const result = handleHealth({
+      eventSendHealth: { consecutiveFailures: 3, lastFailureAt: Date.now(), lastSuccessAt: null },
+    });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.event_send_status).toBe('failing');
+    expect(data.consecutive_event_send_failures).toBe(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

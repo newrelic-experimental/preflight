@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.33] - 2026-08-05
+
+### Added
+
+- **`nr_observe_health` now reports whether telemetry event sends are succeeding** — new `event_send_status` (`ok`/`failing`) and `consecutive_event_send_failures` fields surface consecutive failures sending events to New Relic (for example, from a misconfigured or cross-account license key), which previously had no visible signal — metrics could keep flowing successfully over a different transport while events silently failed. Both fields are omitted when event-send health tracking isn't wired up for the current server mode.
+- **The MCP server now checks the running Node.js version at startup** and exits with a clear diagnostic instead of failing deep in the stack when a too-old Node binary is resolved — most commonly seen when an MCP client resolves a stale `nvm` default.
+
+### Fixed
+
+- **`BudgetTracker`'s daily and weekly period keys now use UTC consistently** — both previously read local-time date components before computing their period identifier, so in UTC+ timezones a budget threshold could re-arm a full day (or, for the weekly key, a full ISO week) early.
+
+### Changed
+
+- **README now explains what happens after enabling cloud mode** — cloud mode ships telemetry immediately, but no dashboard exists until `deploy-dashboards` is run separately with a different credential (a user API key, not the license key). The README now calls this out explicitly and shows how to query the raw data via NRQL in the meantime.
+
 ## [1.14.32] - 2026-08-05
 
 ### Added

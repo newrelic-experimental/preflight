@@ -82,7 +82,7 @@ const SESSION_STATS_TOOL = {
 const HEALTH_TOOL = {
   name: 'nr_observe_health',
   description:
-    'Check server health: version, uptime, session ID, and connection timestamp. Use when the MCP connection feels stale or tools are behaving unexpectedly.',
+    'Check server health: version, uptime, session ID, and connection timestamp. Also reports whether telemetry event sends are succeeding. Use when the MCP connection feels stale or tools are behaving unexpectedly.',
   inputSchema: {
     type: 'object' as const,
     properties: {},
@@ -211,6 +211,11 @@ export function handleHealth(options: {
   developer?: string;
   sessionId?: string;
   hooksInstalledFn?: () => boolean;
+  eventSendHealth?: {
+    consecutiveFailures: number;
+    lastFailureAt: number | null;
+    lastSuccessAt: number | null;
+  };
 }): { content: [{ type: 'text'; text: string }] } {
   const nowMs = Date.now();
   const startMs = options.sessionStartMs ?? nowMs;
@@ -230,6 +235,11 @@ export function handleHealth(options: {
   if (hooksInstalled !== undefined) {
     payload.hooks_installed = hooksInstalled;
     payload.setup_required = !hooksInstalled;
+  }
+
+  if (options.eventSendHealth !== undefined) {
+    payload.event_send_status = options.eventSendHealth.consecutiveFailures > 0 ? 'failing' : 'ok';
+    payload.consecutive_event_send_failures = options.eventSendHealth.consecutiveFailures;
   }
 
   return {
@@ -387,7 +397,14 @@ export interface ToolRegistrationOptions {
   turnTracker?: TurnTracker;
   gitEfficiencyTracker?: GitEfficiencyTracker;
   genericMcpAdapter?: GenericMcpAdapter;
-  nrIngestManager?: { ingestToolCall(record: import('../storage/types.js').ToolCallRecord): void };
+  nrIngestManager?: {
+    ingestToolCall(record: import('../storage/types.js').ToolCallRecord): void;
+    getEventSendHealth?(): {
+      consecutiveFailures: number;
+      lastFailureAt: number | null;
+      lastSuccessAt: number | null;
+    };
+  };
   sessionTraceId?: string;
   sessionStartMs?: number;
   accountId?: string;
@@ -418,6 +435,7 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
           developer: deps.developer,
           sessionId: deps.sessionTracker?.getMetrics().sessionId,
           hooksInstalledFn: deps.hooksInstalledFn,
+          eventSendHealth: deps.nrIngestManager?.getEventSendHealth?.(),
         }),
     },
     {

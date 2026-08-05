@@ -136,6 +136,14 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
 
 You'll need a **license key** (telemetry ingest) and your **account ID**, plus a **user API key** (`NRAK-…`) to deploy dashboards and alerts. See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
 
+> **No dashboard until you run `deploy-dashboards`.** Cloud mode ships telemetry to New Relic as soon as it's configured, but nothing creates a dashboard automatically — that's the separate step above, and it needs a **different** credential (a user API key, not your license key). Until you run it, there's no UI to look at. In the meantime, query the raw events directly in New Relic's **Query Builder**, e.g.:
+>
+> ```sql
+> SELECT * FROM AiToolCall SINCE 1 hour ago
+> ```
+>
+> Once `deploy-dashboards` succeeds, find the dashboards under your New Relic account's **Dashboards** section.
+
 > **Data ingest note:** Telemetry sent to New Relic counts against your account's data ingest. On paid plans, standard ingest rates apply. Monitor your usage under **NR One → Data Management → Data Ingestion**.
 
 ---
