@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.32] - 2026-08-05
+
+### Added
+
+- **`preflight install` now accepts `--mode <cloud|local|both>`** — sets the telemetry mode non-interactively, matching what the interactive setup wizard already offers. Defaults to `local` for fresh installs; an install that already has a saved mode is never overwritten by omitting the flag.
+
+### Fixed
+
+- **`preflight install --mode`'s "default: local" help text is now accurate** — omitting `--mode` previously left the mode unresolved until the server's own fallback resolved it to `cloud`. Installs without a saved mode now get `local` written explicitly.
+
 ## [1.14.31] - 2026-08-05
 
 ### Added

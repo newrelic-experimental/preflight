@@ -663,6 +663,8 @@ function handleInstall(options: {
       }
       if (options.mode) {
         nrConfig.mode = options.mode;
+      } else if (nrConfig.mode === undefined && existingNrConfig.licenseKey === undefined) {
+        nrConfig.mode = 'local';
       }
       writeJsonFile(NR_CONFIG_PATH, nrConfig, DEFAULT_STORAGE_PATH);
       nrConfigWritten = credentialsProvided;

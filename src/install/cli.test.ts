@@ -1227,6 +1227,58 @@ describe('platform transition matrix', () => {
     expect(stderr).toContain('invalid JSON');
     stderrSpy.mockRestore();
   });
+
+  // The --mode option's help text claims "default: local", but nothing
+  // enforced that — omitting --mode meant no mode was written, and
+  // loadMcpConfig's own fallback resolves that to 'cloud'. Defaulting to
+  // 'local' only when no mode is already saved makes the help text true
+  // without disturbing existing users.
+  it('bare install with no existing config and no --mode defaults mode to local', async () => {
+    mFs.readFileSync.mockReturnValue('{}');
+
+    await runInstallCli(['install']);
+
+    const written = findConfigWrite(mFs);
+    expect(written?.mode).toBe('local');
+  });
+
+  it('install without --mode preserves an existing saved mode (no silent overwrite)', async () => {
+    mFs.readFileSync.mockReturnValue(JSON.stringify({ mode: 'cloud' }));
+
+    await runInstallCli(['install', '--windows-cc']);
+
+    const written = findConfigWrite(mFs);
+    expect(written?.mode).toBe('cloud');
+  });
+
+  it('install --mode local overrides an existing saved cloud mode', async () => {
+    mFs.readFileSync.mockReturnValue(JSON.stringify({ mode: 'cloud' }));
+
+    await runInstallCli(['install', '--mode', 'local']);
+
+    const written = findConfigWrite(mFs);
+    expect(written?.mode).toBe('local');
+  });
+
+  it('install --mode both persists mode both on a fresh config', async () => {
+    mFs.readFileSync.mockReturnValue('{}');
+
+    await runInstallCli(['install', '--mode', 'both']);
+
+    const written = findConfigWrite(mFs);
+    expect(written?.mode).toBe('both');
+  });
+
+  it('install without --mode on an existing credentialed config with no mode key does not write one (protects pre-existing cloud users)', async () => {
+    mFs.readFileSync.mockReturnValue(
+      JSON.stringify({ licenseKey: 'NRLIC-existing', accountId: '12345' }),
+    );
+
+    await runInstallCli(['install']);
+
+    const written = findConfigWrite(mFs);
+    expect(written?.mode).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
