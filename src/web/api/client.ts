@@ -501,6 +501,26 @@ export type PersonalCoachResult = PersonalCoachReport | PersonalCoachInsufficien
 
 export const fetchPersonalCoach = (): Promise<PersonalCoachResult> =>
   getJson<PersonalCoachResult>('/api/personal-coach');
+
+// Mirrors Recommendation in src/metrics/recommendation-engine.ts (not importable).
+export interface RecommendationItem {
+  readonly id: string;
+  readonly category: string;
+  readonly priority: 'high' | 'medium' | 'low';
+  readonly title: string;
+  readonly detail: string;
+  readonly evidence: string;
+  readonly estimatedSavings?: string;
+}
+
+export interface RecommendationsApiResponse {
+  readonly recommendations: readonly RecommendationItem[];
+  readonly count: number;
+}
+
+export const fetchRecommendations = (): Promise<RecommendationsApiResponse> =>
+  getJson<RecommendationsApiResponse>('/api/recommendations');
+
 export const fetchRecentAlerts = (): Promise<AlertEvent[]> =>
   getJson<AlertEvent[]>('/api/alerts/recent');
 export const fetchSessionReplay = (id: string): Promise<SessionReplayResponse> =>
@@ -1084,6 +1104,7 @@ export const qk = {
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
+  recommendations: ['recommendations'] as const,
   alertsRecent: ['alerts', 'recent'] as const,
   sessionReplay: (id: string) => ['session', id, 'replay'] as const,
   sessionSubagents: (id: string) => ['session', id, 'subagents'] as const,

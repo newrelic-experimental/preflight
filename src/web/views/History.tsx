@@ -24,6 +24,7 @@ import {
   fetchSessionsList,
   fetchCostPerOutcome,
   fetchPersonalCoach,
+  fetchRecommendations,
   fetchActivityHeatmap,
   fetchConcurrencyHistory,
   fetchInstructionDrift,
@@ -36,6 +37,7 @@ import {
   type ActivityHeatmapHistoryResponse,
   type InstructionDriftResponse,
   type DriftCorrelationEntry,
+  type RecommendationsApiResponse,
 } from '../api/client';
 import { formatUsdOrDash, shortToolName } from '../lib/format';
 
@@ -179,6 +181,12 @@ export function History(): JSX.Element {
   const coach = useQuery<PersonalCoachResult>({
     queryKey: qk.personalCoach,
     queryFn: fetchPersonalCoach,
+  });
+
+  const recommendations = useQuery<RecommendationsApiResponse>({
+    queryKey: qk.recommendations,
+    queryFn: fetchRecommendations,
+    retry: false,
   });
 
   const activityGrid = useQuery<ActivityHeatmapHistoryResponse>({
@@ -506,6 +514,10 @@ export function History(): JSX.Element {
       <div className="mt-3">
         <CoachCard data={coach.data} />
       </div>
+
+      <div className="mt-3">
+        <RecommendationsPanel data={recommendations.data} isError={recommendations.isError} />
+      </div>
     </section>
   );
 }
@@ -619,6 +631,107 @@ function CoachMetricsTable({
       <span className="font-mono">{Math.round(thisWeek.sessionsCount)}</span>
       <span className="text-ink-muted">{sessionsDeltaText(sessionsDelta)}</span>
     </div>
+  );
+}
+
+function categoryBorderColor(category: string): string {
+  if (category === 'cost_optimization') return 'var(--color-accent-amber)';
+  if (category === 'efficiency') return 'var(--color-accent-red)';
+  if (category === 'prompt_engineering') return 'var(--color-accent-blue)';
+  if (category === 'claudemd') return 'var(--color-accent-purple)';
+  if (category === 'model_selection') return 'var(--color-accent-teal)';
+  return 'var(--color-ink-muted)';
+}
+
+function priorityDotColor(priority: 'high' | 'medium' | 'low'): string {
+  if (priority === 'high') return 'var(--color-accent-amber)';
+  if (priority === 'medium') return 'var(--color-accent-blue)';
+  return 'var(--color-ink-muted)';
+}
+
+function RecommendationsPanel({
+  data,
+  isError,
+}: {
+  data: RecommendationsApiResponse | undefined;
+  isError: boolean;
+}): JSX.Element {
+  if (isError) {
+    return (
+      <Panel title="Recommendations">
+        <EmptyState
+          icon="radar"
+          title="Recommendations unavailable"
+          subtitle="Connect a full Preflight session to enable recommendations."
+        />
+      </Panel>
+    );
+  }
+
+  if (!data) {
+    return (
+      <Panel title="Recommendations">
+        <EmptyState variant="loading" title="Loading recommendations…" />
+      </Panel>
+    );
+  }
+
+  if (data.recommendations.length === 0) {
+    return (
+      <Panel title="Recommendations">
+        <EmptyState
+          icon="radar"
+          title="No recommendations yet"
+          subtitle="Keep using Preflight — recommendations appear after a few sessions of data."
+        />
+      </Panel>
+    );
+  }
+
+  const highItems = data.recommendations.filter((r) => r.priority === 'high');
+  const otherItems = data.recommendations.filter((r) => r.priority !== 'high');
+
+  return (
+    <Panel title="Recommendations">
+      <div className="space-y-3">
+        {highItems.map((rec) => (
+          <div
+            key={rec.id}
+            className="border-l-2 pl-3"
+            style={{ borderColor: categoryBorderColor(rec.category) }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span className="text-sm font-medium text-ink-base">{rec.title}</span>
+              {rec.estimatedSavings && (
+                <span className="text-[10px] text-accent-green shrink-0">
+                  {rec.estimatedSavings}
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-ink-muted mt-0.5">{rec.detail}</div>
+            <div className="text-[10px] text-ink-muted italic mt-0.5">{rec.evidence}</div>
+          </div>
+        ))}
+        {otherItems.length > 0 && (
+          <div className={highItems.length > 0 ? 'border-t border-border-subtle pt-3' : ''}>
+            <div className="space-y-2">
+              {otherItems.map((rec) => (
+                <div key={rec.id} className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: priorityDotColor(rec.priority) }}
+                    />
+                    <span className="text-xs text-ink-base">{rec.title}</span>
+                  </div>
+                  <div className="text-[10px] text-ink-muted mt-0.5 pl-3.5">{rec.detail}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }
 

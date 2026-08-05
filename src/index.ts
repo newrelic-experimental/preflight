@@ -1350,6 +1350,7 @@ async function main(): Promise<void> {
           latencyTracker,
           personalCoach,
           trendAnalyzer,
+          recommendationEngine,
           alertLog,
           taskDetector,
           efficiencyScorer,

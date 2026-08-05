@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.31] - 2026-08-05
+
+### Added
+
+- **The History dashboard now surfaces personalized optimization recommendations** — a new panel synthesizes cost, prompt-engineering, and model-selection signals into a prioritized list, with high-priority items expanded and the rest shown as a compact list.
+
 ## [1.14.30] - 2026-08-04
 
 ### Added

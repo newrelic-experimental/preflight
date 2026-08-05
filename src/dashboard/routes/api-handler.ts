@@ -40,6 +40,7 @@ import type { AlertEvent } from '../live-event-bus.js';
 import type { BudgetStatus } from '../../metrics/budget-tracker.js';
 import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { Recommendation } from '../../metrics/recommendation-engine.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import type {
   QualityProxyMetrics,
@@ -395,6 +396,9 @@ export interface ApiHandlerDeps {
     computeTrends: () => {
       weeklyCacheHitRateTrend: ReadonlyArray<{ readonly week: string; readonly value: number }>;
     };
+  };
+  readonly recommendationEngine?: {
+    generateAllRecommendations: (developer: string) => readonly Recommendation[];
   };
   readonly alertLog?: { readRecent: (limit: number) => Promise<AlertEvent[]> };
   readonly taskDetector?: {
@@ -1718,6 +1722,31 @@ export function createApiHandler(
       console.error('Weekly summary generation failed', err);
     }
     jsonOk(res, deps.personalCoach.generate());
+  });
+
+  routes.set('GET /api/recommendations', (_req, res) => {
+    if (!deps.recommendationEngine) return unavailable(res, 'recommendationEngine');
+    const developer = deps.config?.developer ?? 'unknown';
+    const recs = deps.recommendationEngine
+      .generateAllRecommendations(developer)
+      // The History dashboard already renders 'efficiency' (CoachCard's
+      // regressions, vs. a multi-week baseline) and 'claudemd' (InstructionDriftCard,
+      // a differently-computed before/after verdict) via their own panels —
+      // surfacing them again here would just restate the same signal with
+      // different numbers. 'claudemd_impact' is a prompt_engineering
+      // sub-category (see PROMPT_RECOMMENDATION_TITLES) that restates the
+      // same "instruction-file change hurt metrics" signal as 'claudemd' under a
+      // different top-level category, so it's excluded too. All exclusions
+      // are for this dashboard route only; the nr_observe_get_recommendations
+      // MCP tool still returns every category, since it has no adjacent
+      // panels to duplicate.
+      .filter(
+        (rec) =>
+          rec.category !== 'efficiency' &&
+          rec.category !== 'claudemd' &&
+          rec.subCategory !== 'claudemd_impact',
+      );
+    jsonOk(res, { recommendations: recs, count: recs.length });
   });
 
   routes.set('GET /api/alerts/recent', async (_req, res) => {

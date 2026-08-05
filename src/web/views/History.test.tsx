@@ -129,9 +129,29 @@ const SAMPLE_COACH_INSUFFICIENT = {
   message: 'Need at least 2 weeks of session history.',
 };
 
+const SAMPLE_RECOMMENDATIONS_OK = {
+  recommendations: [
+    {
+      id: 'r1',
+      category: 'cost_optimization',
+      priority: 'high',
+      title: 'High failed attempt ratio',
+      detail: 'Failed attempts represent a significant portion of spend.',
+      evidence: 'Failed attempts: 32% of total cost',
+    },
+  ],
+  count: 1,
+};
+
+const SAMPLE_RECOMMENDATIONS_EMPTY = {
+  recommendations: [],
+  count: 0,
+};
+
 interface FetchOverrides {
   outcome?: unknown;
   coach?: unknown;
+  recommendations?: unknown;
 }
 
 function renderHistory(overrides: FetchOverrides = {}) {
@@ -156,6 +176,14 @@ function renderHistory(overrides: FetchOverrides = {}) {
     if (url.startsWith('/api/personal-coach')) {
       return Promise.resolve(
         new Response(JSON.stringify(overrides.coach ?? SAMPLE_COACH_OK), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    if (url.startsWith('/api/recommendations')) {
+      return Promise.resolve(
+        new Response(JSON.stringify(overrides.recommendations ?? SAMPLE_RECOMMENDATIONS_OK), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -295,6 +323,74 @@ describe('History view', () => {
     }
     const svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('renders RecommendationsPanel with a high-priority item title and detail', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText('High failed attempt ratio')).toBeInTheDocument());
+    expect(
+      screen.getByText('Failed attempts represent a significant portion of spend.'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders no recommendations empty state when list is empty', async () => {
+    renderHistory({ recommendations: SAMPLE_RECOMMENDATIONS_EMPTY });
+    await waitFor(() => expect(screen.getByText('No recommendations yet')).toBeInTheDocument());
+  });
+
+  it('renders unavailable state when /api/recommendations returns 503', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/weekly')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_WEEKLY), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/cost-per-outcome')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_OUTCOME), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/personal-coach')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_COACH_OK), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/recommendations')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: 'unavailable' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_SESSIONS), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(new Response('null', { status: 200 }));
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Recommendations unavailable')).toBeInTheDocument(),
+    );
   });
 
   it('skips the anti-pattern panel chart when no weeks have anti-patterns', async () => {

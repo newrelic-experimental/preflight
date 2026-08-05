@@ -35,6 +35,12 @@ export interface Recommendation {
   readonly detail: string;
   readonly evidence: string;
   readonly estimatedSavings?: string;
+  // Only set for 'prompt_engineering' recommendations — identifies which of
+  // PromptFeedbackEngine's own sub-categories (prompt_context/plan_mode/
+  // file_paths/claudemd_impact) produced this item. Lets callers dedupe
+  // against other categories (e.g. 'claudemd_impact' restates the same
+  // signal as the top-level 'claudemd' category) without parsing title text.
+  readonly subCategory?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +48,16 @@ export interface Recommendation {
 // ---------------------------------------------------------------------------
 
 const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+// Human-readable titles for PromptFeedbackEngine's sub-categories — its
+// `category` field is a slug (e.g. 'plan_mode'), not display text. Falls
+// back to the raw slug for any future category this map hasn't caught up to.
+const PROMPT_RECOMMENDATION_TITLES: Record<string, string> = {
+  prompt_context: 'High correction rate',
+  plan_mode: 'Low autonomy on complex tasks',
+  file_paths: 'Frequent file re-reads',
+  claudemd_impact: 'Negative instruction-file impact',
+};
 
 // ---------------------------------------------------------------------------
 // RecommendationEngine
@@ -271,10 +287,11 @@ export class RecommendationEngine {
       makeRec(
         'prompt_engineering',
         pr.priority,
-        pr.category,
+        PROMPT_RECOMMENDATION_TITLES[pr.category] ?? pr.category,
         pr.message,
         pr.evidence,
         pr.estimatedImpact,
+        pr.category,
       ),
     );
   }
@@ -367,6 +384,7 @@ function makeRec(
   detail: string,
   evidence: string,
   estimatedSavings?: string,
+  subCategory?: string,
 ): Recommendation {
   const hash = createHash('sha256').update(`${category}:${title}`).digest('hex').slice(0, 12);
 
@@ -378,6 +396,7 @@ function makeRec(
     detail,
     evidence,
     ...(estimatedSavings != null && { estimatedSavings }),
+    ...(subCategory != null && { subCategory }),
   };
 }
 
