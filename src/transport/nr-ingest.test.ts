@@ -95,6 +95,7 @@ function makeToolContribution(
 function makePattern(overrides?: Partial<AntiPattern>): AntiPattern {
   return {
     type: 'thrashing',
+    tokensWasted: 0,
     suggestion: 'Consider reviewing your approach before retrying',
     ...overrides,
   };

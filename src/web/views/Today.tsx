@@ -43,6 +43,7 @@ import {
   type ContextCompositionResponse,
   fetchContextEfficiency,
   type ContextEfficiencyResponse,
+  fetchComputeWaste,
   fetchQualityProxy,
   fetchToolSelectionScore,
   fetchConcurrency,
@@ -104,6 +105,36 @@ interface SessionAntiPattern {
   readonly repeatCount?: number;
   readonly editCount?: number;
   readonly agentCount?: number;
+}
+
+interface ComputeWasteApiResponse {
+  readonly total_tokens_wasted: number;
+  readonly retry_tokens_wasted: number;
+  readonly anti_pattern_tokens_wasted: number;
+  readonly breakdown: ReadonlyArray<{
+    readonly type: string;
+    readonly tokens_wasted: number;
+    readonly instances: number;
+  }>;
+  readonly status: 'clean' | 'moderate' | 'needs_attention';
+}
+
+function computeWasteRecommendationText(
+  status: ComputeWasteApiResponse['status'],
+  topPatternType: string | null,
+): string {
+  if (status === 'clean') return 'No compute waste detected this session.';
+
+  const patternAdvice: Record<string, string> = {
+    stuck_loop: 'Address the command output before re-running the same command.',
+    re_reading: 'Read each file once and keep relevant sections in mind.',
+    thrashing: 'Read the test failure output carefully before editing again.',
+    blind_editing: 'Verify changes with tests between edit batches.',
+    over_delegation: 'Handle more work directly instead of spawning sub-agents.',
+  };
+
+  const advice = topPatternType !== null ? (patternAdvice[topPatternType] ?? null) : null;
+  return advice ?? 'Review anti-patterns to reduce repeated tool calls.';
 }
 
 interface SessionSummary {
@@ -502,6 +533,7 @@ export function Today(): JSX.Element {
             <LatencyPanel aggregate={aggregate} />
             <ModelUsagePanel />
             <CacheHealthPanel aggregate={aggregate} />
+            <ComputeWastePanel />
           </AnimatedCard>
 
           <AnimatedCard index={4}>
@@ -867,6 +899,62 @@ function CacheHealthPanel({
           </div>
         </>
       )}
+    </Card>
+  );
+}
+
+function ComputeWastePanel(): JSX.Element | null {
+  const { data, isPending } = useQuery<ComputeWasteApiResponse>({
+    queryKey: qk.computeWaste,
+    queryFn: fetchComputeWaste as () => Promise<ComputeWasteApiResponse>,
+    retry: false,
+  });
+
+  if (isPending || !data || typeof data.total_tokens_wasted !== 'number') return null;
+
+  const statusColor =
+    data.status === 'clean'
+      ? 'text-accent-green'
+      : data.status === 'moderate'
+        ? 'text-accent-amber'
+        : 'text-accent-red';
+
+  const statusLabel =
+    data.status === 'clean' ? 'clean' : data.status === 'moderate' ? 'moderate' : 'needs attention';
+
+  const topOffender = data.breakdown[0] ?? null;
+
+  return (
+    <Card padding="sm" className="h-full">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>Compute Waste</Eyebrow>
+        <InfoTooltip text="Tokens wasted today on retried tool calls and anti-pattern activity (stuck loops, redundant reads, thrashing)." />
+      </div>
+      <div className={`text-lg font-semibold tabular-nums ${statusColor}`}>
+        ~{data.total_tokens_wasted.toLocaleString()} wasted tokens
+      </div>
+      <Pill
+        tone={
+          data.status === 'clean' ? 'success' : data.status === 'moderate' ? 'warning' : 'danger'
+        }
+        size="sm"
+        className="mt-1"
+      >
+        {statusLabel}
+      </Pill>
+      <div className="text-xs text-ink-muted mt-1">
+        retry: ~{data.retry_tokens_wasted.toLocaleString()} · anti-pattern: ~
+        {data.anti_pattern_tokens_wasted.toLocaleString()}
+      </div>
+      {topOffender !== null && (
+        <div className="text-[10px] font-medium text-accent-amber mb-1">
+          {topOffender.type.replace(/_/g, ' ')} · ~{topOffender.tokens_wasted.toLocaleString()}{' '}
+          tokens
+        </div>
+      )}
+      <div className="text-[10px] text-ink-subtle/70 leading-snug">
+        {computeWasteRecommendationText(data.status, topOffender?.type ?? null)}
+      </div>
     </Card>
   );
 }

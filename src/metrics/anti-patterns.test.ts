@@ -839,3 +839,52 @@ describe('Edge cases', () => {
     expect(detector.getCurrentPatterns()).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Token waste annotation
+// ---------------------------------------------------------------------------
+
+describe('Token waste annotation', () => {
+  it('estimates tokensWasted for stuck_loop (skips first occurrence)', () => {
+    const detector = new AntiPatternDetector({ stuckLoopThreshold: 3 });
+    const calls = [
+      makeRecord({ toolName: 'Bash', command: 'npm test', inputTokens: 100, outputTokens: 50 }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', inputTokens: 110, outputTokens: 60 }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', inputTokens: 120, outputTokens: 70 }),
+    ];
+    const { patterns } = detector.analyze(calls);
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].type).toBe('stuck_loop');
+    // calls[0] is the first occurrence (not waste); calls[1] + calls[2] are waste
+    expect(patterns[0].tokensWasted).toBe(110 + 60 + (120 + 70)); // 360
+  });
+
+  it('estimates tokensWasted for re_reading (skips first read)', () => {
+    const detector = new AntiPatternDetector({ reReadThreshold: 3 });
+    const calls = [
+      makeRecord({ toolName: 'Read', filePath: '/src/foo.ts', inputTokens: 200, outputTokens: 0 }),
+      makeRecord({ toolName: 'Read', filePath: '/src/foo.ts', inputTokens: 210, outputTokens: 0 }),
+      makeRecord({ toolName: 'Read', filePath: '/src/foo.ts', inputTokens: 220, outputTokens: 0 }),
+      makeRecord({ toolName: 'Read', filePath: '/src/foo.ts', inputTokens: 230, outputTokens: 0 }),
+    ];
+    const { patterns } = detector.analyze(calls);
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].type).toBe('re_reading');
+    // calls[0] is the first (necessary) read; calls[1-3] are waste
+    expect(patterns[0].tokensWasted).toBe(210 + 220 + 230); // 660
+  });
+
+  it('getTotalAntiPatternWaste() sums tokensWasted across all patterns', () => {
+    const detector = new AntiPatternDetector({ stuckLoopThreshold: 2, reReadThreshold: 2 });
+    const calls = [
+      // stuck_loop on 'npm test' — calls[0] necessary, calls[1] waste (80 + 40 = 120)
+      makeRecord({ toolName: 'Bash', command: 'npm test', inputTokens: 50, outputTokens: 30 }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', inputTokens: 80, outputTokens: 40 }),
+      // re_reading on '/a.ts' — calls[2] necessary, calls[3] waste (200 + 0 = 200)
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', inputTokens: 150, outputTokens: 0 }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', inputTokens: 200, outputTokens: 0 }),
+    ];
+    detector.analyze(calls);
+    expect(detector.getTotalAntiPatternWaste()).toBe(120 + 200); // 320
+  });
+});

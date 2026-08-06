@@ -22,6 +22,7 @@ import type { InstructionDriftTracker } from '../metrics/instruction-drift-track
 import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import {
   requireTracker,
   requireAvailable,
@@ -103,6 +104,14 @@ export const API_FAILURES_TOOL = {
   name: 'nr_observe_get_api_failures',
   description:
     "Get API failure tracking: per-model reliability scorecards, tokens lost, cost impact, throttle alerts, and mean time to recovery. LIMITATION: model-API-level failure data is not observable in Preflight's current architecture (see the note field in the response) — this tool currently always returns empty/zero metrics.",
+  inputSchema: { type: 'object' as const, properties: {} },
+  annotations: { readOnlyHint: true },
+};
+
+export const COMPUTE_WASTE_TOOL = {
+  name: 'nr_observe_get_compute_waste',
+  description:
+    'Get compute waste summary: total tokens wasted on retried tool calls and anti-pattern activity (stuck loops, redundant reads, thrashing). Includes per-pattern breakdown and a status assessment (clean / moderate / needs_attention).',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };
@@ -205,6 +214,7 @@ export interface ExtendedAnalyticsToolsDeps {
   toolCallBuffer?: { getRecords(): readonly ToolCallRecord[] };
   qualityProxyTracker?: QualityProxyTracker;
   apiFailureTracker?: ApiFailureTracker;
+  antiPatternDetector?: AntiPatternDetector;
 }
 
 export function registerExtendedAnalyticsTools(
@@ -308,5 +318,65 @@ export function registerExtendedAnalyticsTools(
         return handleGetApiFailures(check.value);
       },
     },
+    {
+      definition: COMPUTE_WASTE_TOOL,
+      available: !!deps.retryDetector && !!deps.antiPatternDetector,
+      handle: () => {
+        const missing = requireAvailable(
+          !!deps.retryDetector && !!deps.antiPatternDetector,
+          'RetryDetector or AntiPatternDetector not available',
+        );
+        if (missing) return missing;
+        return handleGetComputeWaste(deps.retryDetector!, deps.antiPatternDetector!);
+      },
+    },
   ]);
+}
+
+export function handleGetComputeWaste(
+  retryDetector: RetryDetector,
+  antiPatternDetector: AntiPatternDetector,
+): { content: Array<{ type: 'text'; text: string }> } {
+  const retryTokensWasted = retryDetector.getMetrics().totalTokensWasted;
+  const antiPatternTokensWasted = antiPatternDetector.getTotalAntiPatternWaste();
+  const totalTokensWasted = retryTokensWasted + antiPatternTokensWasted;
+
+  const patterns = antiPatternDetector.getCurrentPatterns();
+  const breakdown = [
+    ...patterns
+      .filter((p) => p.tokensWasted > 0)
+      .reduce<Map<string, { tokens_wasted: number; instances: number }>>((acc, p) => {
+        const existing = acc.get(p.type) ?? { tokens_wasted: 0, instances: 0 };
+        acc.set(p.type, {
+          tokens_wasted: existing.tokens_wasted + p.tokensWasted,
+          instances: existing.instances + 1,
+        });
+        return acc;
+      }, new Map())
+      .entries(),
+  ]
+    .map(([type, v]) => ({ type, ...v }))
+    .sort((a, b) => b.tokens_wasted - a.tokens_wasted);
+
+  const status =
+    totalTokensWasted >= 2000 ? 'needs_attention' : totalTokensWasted >= 500 ? 'moderate' : 'clean';
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          {
+            total_tokens_wasted: totalTokensWasted,
+            retry_tokens_wasted: retryTokensWasted,
+            anti_pattern_tokens_wasted: antiPatternTokensWasted,
+            breakdown,
+            status,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
 }

@@ -946,6 +946,102 @@ describe('api-handler GET /api/turn-costs', () => {
   });
 });
 
+describe('api-handler GET /api/compute-waste', () => {
+  it('returns clean status with correct totals when waste is low', async () => {
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => ({ totalTokensWasted: 100 }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+      antiPatternDetector: {
+        getCurrentPatterns: () => [
+          { type: 'stuck_loop', tokensWasted: 200, command: 'npm test', suggestion: '' },
+        ],
+        getTotalAntiPatternWaste: () => 200,
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const json = JSON.parse(body()) as Record<string, unknown>;
+    expect(json.total_tokens_wasted).toBe(300);
+    expect(json.retry_tokens_wasted).toBe(100);
+    expect(json.anti_pattern_tokens_wasted).toBe(200);
+    expect(json.status).toBe('clean');
+    expect((json.breakdown as unknown[]).length).toBe(1);
+  });
+
+  it('returns needs_attention when totalTokensWasted >= 2000', async () => {
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => ({ totalTokensWasted: 1500 }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+      antiPatternDetector: {
+        getCurrentPatterns: () => [
+          { type: 're_reading', tokensWasted: 600, file: '/a.ts', suggestion: '' },
+        ],
+        getTotalAntiPatternWaste: () => 600,
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const json = JSON.parse(body()) as Record<string, unknown>;
+    expect(json.total_tokens_wasted).toBe(2100);
+    expect(json.status).toBe('needs_attention');
+    expect((json.breakdown as Array<Record<string, unknown>>).length).toBe(1);
+    expect((json.breakdown as Array<Record<string, unknown>>)[0].type).toBe('re_reading');
+    expect((json.breakdown as Array<Record<string, unknown>>)[0].tokens_wasted).toBe(600);
+  });
+
+  it('returns 503 when retryDetector is missing', async () => {
+    const handler = createApiHandler({
+      antiPatternDetector: {
+        getCurrentPatterns: () => [],
+        getTotalAntiPatternWaste: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns 503 when antiPatternDetector is missing', async () => {
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => ({ totalTokensWasted: 0 }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns moderate status when totalTokensWasted is in 500-1999 range', async () => {
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => ({ totalTokensWasted: 400 }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+      antiPatternDetector: {
+        getCurrentPatterns: () => [
+          { type: 're_reading', tokensWasted: 200, file: '/a.ts', suggestion: '' },
+        ],
+        getTotalAntiPatternWaste: () => 200,
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const json = JSON.parse(body()) as Record<string, unknown>;
+    expect(json.total_tokens_wasted).toBe(600);
+    expect(json.status).toBe('moderate');
+  });
+});
+
 describe('api-handler GET /api/audit', () => {
   it('returns audit log mapped to SPA AuditEntry shape', async () => {
     const ts1 = Date.now() - 5000;

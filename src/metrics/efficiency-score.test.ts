@@ -88,6 +88,7 @@ describe('Poor task', () => {
         type: 'thrashing',
         file: '/a.ts',
         iterations: 5,
+        tokensWasted: 0,
         suggestion: 'Consider reading the test output more carefully',
       },
     ];
@@ -145,6 +146,7 @@ describe('Thrash iterations', () => {
         type: 'thrashing',
         file: '/a.ts',
         iterations: 3,
+        tokensWasted: 0,
         suggestion: '',
       },
     ];
@@ -162,6 +164,7 @@ describe('Thrash iterations', () => {
         type: 'thrashing',
         file: '/a.ts',
         iterations: 1,
+        tokensWasted: 0,
         suggestion: '',
       },
     ];
@@ -175,9 +178,9 @@ describe('Thrash iterations', () => {
     const scorer = new EfficiencyScorer();
 
     const antiPatterns: AntiPattern[] = [
-      { type: 'thrashing', file: '/a.ts', iterations: 1, suggestion: '' },
-      { type: 'thrashing', file: '/b.ts', iterations: 4, suggestion: '' },
-      { type: 'thrashing', file: '/c.ts', iterations: 2, suggestion: '' },
+      { type: 'thrashing', file: '/a.ts', iterations: 1, tokensWasted: 0, suggestion: '' },
+      { type: 'thrashing', file: '/b.ts', iterations: 4, tokensWasted: 0, suggestion: '' },
+      { type: 'thrashing', file: '/c.ts', iterations: 2, tokensWasted: 0, suggestion: '' },
     ];
 
     const result = scorer.computeScore(makeTask(), antiPatterns);
@@ -190,8 +193,8 @@ describe('Thrash iterations', () => {
     const scorer = new EfficiencyScorer();
 
     const antiPatterns: AntiPattern[] = [
-      { type: 're_reading', file: '/a.ts', readCount: 10, suggestion: '' },
-      { type: 'stuck_loop', command: 'npm test', repeatCount: 5, suggestion: '' },
+      { type: 're_reading', file: '/a.ts', readCount: 10, tokensWasted: 0, suggestion: '' },
+      { type: 'stuck_loop', command: 'npm test', repeatCount: 5, tokensWasted: 0, suggestion: '' },
     ];
 
     const result = scorer.computeScore(makeTask(), antiPatterns);

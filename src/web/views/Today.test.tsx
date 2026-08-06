@@ -1413,3 +1413,100 @@ describe('Today view — Recent alerts panel', () => {
     expect(titles.map((el) => el.textContent)).toEqual(['New alert', 'Middle alert', 'Old alert']);
   });
 });
+
+describe('Today view — Compute Waste panel', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows clean status when total_tokens_wasted is 0', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/compute-waste')) {
+        return new Response(
+          JSON.stringify({
+            total_tokens_wasted: 0,
+            retry_tokens_wasted: 0,
+            anti_pattern_tokens_wasted: 0,
+            breakdown: [],
+            status: 'clean',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText(/~0 wasted tokens/)).toBeInTheDocument();
+    expect(screen.getByText('clean')).toBeInTheDocument();
+    expect(screen.getByText('No compute waste detected this session.')).toBeInTheDocument();
+  });
+
+  it('shows needs_attention status with top offender chip', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/compute-waste')) {
+        return new Response(
+          JSON.stringify({
+            total_tokens_wasted: 2400,
+            retry_tokens_wasted: 800,
+            anti_pattern_tokens_wasted: 1600,
+            breakdown: [{ type: 'stuck_loop', tokens_wasted: 1600, instances: 2 }],
+            status: 'needs_attention',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText(/~2,400 wasted tokens/)).toBeInTheDocument();
+    expect(screen.getByText('needs attention')).toBeInTheDocument();
+    expect(screen.getByText(/stuck loop/i)).toBeInTheDocument();
+    expect(screen.getByText(/~1,600 tokens/)).toBeInTheDocument();
+  });
+
+  it('shows per-source breakdown sub-line', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/compute-waste')) {
+        return new Response(
+          JSON.stringify({
+            total_tokens_wasted: 600,
+            retry_tokens_wasted: 200,
+            anti_pattern_tokens_wasted: 400,
+            breakdown: [{ type: 're_reading', tokens_wasted: 400, instances: 1 }],
+            status: 'moderate',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText(/retry: ~200/)).toBeInTheDocument();
+    expect(screen.getByText(/anti-pattern: ~400/)).toBeInTheDocument();
+  });
+});

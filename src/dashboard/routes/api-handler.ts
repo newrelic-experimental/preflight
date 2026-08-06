@@ -382,7 +382,10 @@ export interface ApiHandlerDeps {
     getSnapshot: () => ObservabilityHealthSnapshot;
   };
   readonly costForecast?: () => CostForecast;
-  readonly antiPatternDetector?: { getCurrentPatterns: () => readonly AntiPattern[] };
+  readonly antiPatternDetector?: {
+    getCurrentPatterns: () => readonly AntiPattern[];
+    getTotalAntiPatternWaste: () => number;
+  };
   readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
   readonly instructionDriftTracker?: { getMetrics: () => InstructionDriftMetrics };
   readonly decisionTracker?: { getMetrics: () => DecisionTreeMetrics };
@@ -1655,6 +1658,46 @@ export function createApiHandler(
   routes.set('GET /api/turn-costs', (_req, res) => {
     if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
     jsonOk(res, deps.turnCostAttributor.getMetrics());
+  });
+
+  routes.set('GET /api/compute-waste', (_req, res) => {
+    if (!deps.retryDetector) return unavailable(res, 'retryDetector');
+    if (!deps.antiPatternDetector) return unavailable(res, 'antiPatternDetector');
+
+    const retryTokensWasted = deps.retryDetector.getMetrics().totalTokensWasted;
+    const antiPatternTokensWasted = deps.antiPatternDetector.getTotalAntiPatternWaste();
+    const totalTokensWasted = retryTokensWasted + antiPatternTokensWasted;
+
+    const patterns = deps.antiPatternDetector.getCurrentPatterns();
+    const breakdownMap = patterns
+      .filter((p) => p.tokensWasted > 0)
+      .reduce<Map<string, { tokens_wasted: number; instances: number }>>((acc, p) => {
+        const existing = acc.get(p.type) ?? { tokens_wasted: 0, instances: 0 };
+        acc.set(p.type, {
+          tokens_wasted: existing.tokens_wasted + p.tokensWasted,
+          instances: existing.instances + 1,
+        });
+        return acc;
+      }, new Map());
+
+    const breakdown = [...breakdownMap.entries()]
+      .map(([type, v]) => ({ type, ...v }))
+      .sort((a, b) => b.tokens_wasted - a.tokens_wasted);
+
+    const status =
+      totalTokensWasted >= 2000
+        ? 'needs_attention'
+        : totalTokensWasted >= 500
+          ? 'moderate'
+          : 'clean';
+
+    jsonOk(res, {
+      total_tokens_wasted: totalTokensWasted,
+      retry_tokens_wasted: retryTokensWasted,
+      anti_pattern_tokens_wasted: antiPatternTokensWasted,
+      breakdown,
+      status,
+    });
   });
 
   routes.set('GET /api/audit', (_req, res) => {

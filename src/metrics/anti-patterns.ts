@@ -37,6 +37,7 @@ export interface AntiPattern {
   readonly repeatCount?: number;
   readonly editCount?: number;
   readonly agentCount?: number;
+  readonly tokensWasted: number;
   readonly suggestion: string;
 }
 
@@ -109,13 +110,15 @@ export class AntiPatternDetector implements Resettable {
   }
 
   analyze(toolCalls: ToolCallRecord[]): AntiPatternMetrics {
-    const patterns: AntiPattern[] = [];
+    const rawPatterns: AntiPattern[] = [];
 
-    patterns.push(...this.detectThrashing(toolCalls));
-    patterns.push(...this.detectReReading(toolCalls));
-    patterns.push(...this.detectStuckLoop(toolCalls));
-    patterns.push(...this.detectBlindEditing(toolCalls));
-    patterns.push(...this.detectOverDelegation(toolCalls));
+    rawPatterns.push(...this.detectThrashing(toolCalls));
+    rawPatterns.push(...this.detectReReading(toolCalls));
+    rawPatterns.push(...this.detectStuckLoop(toolCalls));
+    rawPatterns.push(...this.detectBlindEditing(toolCalls));
+    rawPatterns.push(...this.detectOverDelegation(toolCalls));
+
+    const patterns = this.annotateTokenWaste(rawPatterns, toolCalls);
 
     const metrics = {
       readEfficiency: this.computeReadEfficiency(toolCalls),
@@ -133,6 +136,10 @@ export class AntiPatternDetector implements Resettable {
 
   reset(_sessionId: string): void {
     this.lastMetrics = null;
+  }
+
+  getTotalAntiPatternWaste(): number {
+    return (this.lastMetrics?.patterns ?? []).reduce((sum, p) => sum + p.tokensWasted, 0);
   }
 
   emitMetrics(aggregator: MetricAggregator, patterns: AntiPattern[]): void {
@@ -184,6 +191,7 @@ export class AntiPatternDetector implements Resettable {
         type: 'thrashing',
         file,
         iterations,
+        tokensWasted: 0,
         suggestion:
           'Consider reading the test output more carefully or reading the test framework docs',
       });
@@ -220,6 +228,7 @@ export class AntiPatternDetector implements Resettable {
           type: 're_reading',
           file,
           readCount: count,
+          tokensWasted: 0,
           suggestion:
             'Context may have been compressed — consider breaking the task into smaller pieces',
         });
@@ -268,6 +277,7 @@ export class AntiPatternDetector implements Resettable {
         command,
         repeatCount,
         bashCategory,
+        tokensWasted: 0,
         suggestion: stuckLoopSuggestion(bashCategory),
       });
     }
@@ -319,6 +329,7 @@ export class AntiPatternDetector implements Resettable {
         type: 'blind_editing',
         file,
         editCount,
+        tokensWasted: 0,
         suggestion: 'Verify changes with tests between edits',
       });
     }
@@ -344,12 +355,74 @@ export class AntiPatternDetector implements Resettable {
         {
           type: 'over_delegation',
           agentCount,
+          tokensWasted: 0,
           suggestion: 'Too many sub-agents spawned — consider handling more work directly',
         },
       ];
     }
 
     return [];
+  }
+
+  private annotateTokenWaste(patterns: AntiPattern[], toolCalls: ToolCallRecord[]): AntiPattern[] {
+    const tokenSum = (records: ToolCallRecord[]): number =>
+      records.reduce(
+        (sum, r) => sum + (((r.inputTokens as number) || 0) + ((r.outputTokens as number) || 0)),
+        0,
+      );
+
+    return patterns.map((p): AntiPattern => {
+      switch (p.type) {
+        case 'stuck_loop': {
+          if (!p.command) return p;
+          const matching = toolCalls.filter(
+            (r) => r.toolName === 'Bash' && r.command === p.command,
+          );
+          return { ...p, tokensWasted: tokenSum(matching.slice(1)) };
+        }
+        case 're_reading': {
+          if (!p.file) return p;
+          const matching = toolCalls.filter(
+            (r) =>
+              (r.toolName === 'Read' ||
+                r.toolName === 'NotebookRead' ||
+                r.toolName.toLowerCase().includes('read')) &&
+              r.filePath === p.file,
+          );
+          return { ...p, tokensWasted: tokenSum(matching.slice(1)) };
+        }
+        case 'thrashing': {
+          if (!p.file) return p;
+          let sawEdit = false;
+          const wastedCalls: ToolCallRecord[] = [];
+          for (const r of toolCalls) {
+            if (r.toolName === 'Edit' || r.toolName === 'Write') {
+              sawEdit = r.filePath === p.file;
+            } else if (r.toolName === 'Bash' && r.isTestCommand) {
+              if (sawEdit && !r.success) {
+                wastedCalls.push(r);
+              } else if (r.success) {
+                sawEdit = false;
+              }
+            }
+          }
+          return { ...p, tokensWasted: tokenSum(wastedCalls) };
+        }
+        case 'blind_editing': {
+          if (!p.file) return p;
+          const matching = toolCalls.filter(
+            (r) => (r.toolName === 'Edit' || r.toolName === 'Write') && r.filePath === p.file,
+          );
+          return { ...p, tokensWasted: tokenSum(matching.slice(this.blindEditThreshold)) };
+        }
+        case 'over_delegation': {
+          const matching = toolCalls.filter((r) => r.toolName === 'Agent');
+          return { ...p, tokensWasted: tokenSum(matching.slice(this.overDelegationThreshold)) };
+        }
+        default:
+          return p;
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------

@@ -281,6 +281,21 @@ export const fetchCost = (): Promise<CostResponse> => getJson<CostResponse>('/ap
 export const fetchAntiPatterns = (): Promise<AntiPattern[]> =>
   getJson<AntiPattern[]>('/api/anti-patterns');
 
+export interface ComputeWasteResponse {
+  readonly total_tokens_wasted: number;
+  readonly retry_tokens_wasted: number;
+  readonly anti_pattern_tokens_wasted: number;
+  readonly breakdown: ReadonlyArray<{
+    readonly type: string;
+    readonly tokens_wasted: number;
+    readonly instances: number;
+  }>;
+  readonly status: 'clean' | 'moderate' | 'needs_attention';
+}
+
+export const fetchComputeWaste = (): Promise<ComputeWasteResponse> =>
+  getJson<ComputeWasteResponse>('/api/compute-waste');
+
 export interface ThrashingAlertEntry {
   readonly toolName: string;
   readonly occurrences: number;
@@ -1157,6 +1172,7 @@ export const qk = {
   sessionDetail: (id: string) => ['session', id] as const,
   cost: ['cost'] as const,
   antiPatterns: ['anti-patterns'] as const,
+  computeWaste: ['compute-waste'] as const,
   audit: ['audit'] as const,
   weekly: ['weekly'] as const,
   budget: ['budget'] as const,

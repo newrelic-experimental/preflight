@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.35] - 2026-08-06
+
+### Added
+
+- **Compute waste is now a unified metric** — `AntiPatternDetector` annotates every detected anti-pattern (thrashing, re-reading, stuck loops, blind editing, over-delegation) with an estimated `tokensWasted`, combined with `RetryDetector`'s existing waste tracking into one total. Surfaced via a new "Compute Waste" panel in the Today dashboard view (headline token count, status pill, per-source breakdown, top offender, and a recommendation), a new `GET /api/compute-waste` dashboard route, and a new `nr_observe_get_compute_waste` MCP tool.
+
 ## [1.14.34] - 2026-08-06
 
 ### Added
