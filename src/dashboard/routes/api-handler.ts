@@ -400,6 +400,56 @@ export interface ApiHandlerDeps {
   readonly recommendationEngine?: {
     generateAllRecommendations: (developer: string) => readonly Recommendation[];
   };
+  readonly claudeMdTracker?: {
+    getChanges: () => readonly {
+      timestamp: number;
+      filePath: string;
+      changeType: 'created' | 'modified' | 'deleted';
+      linesAdded: number;
+      linesRemoved: number;
+    }[];
+    computeImpact: (timestamp: number) => {
+      beforeMetrics: {
+        avgEfficiencyScore: number | null;
+        avgCostUsd: number;
+        avgCorrectionRate: number;
+        sessionCount: number;
+      };
+      afterMetrics: {
+        avgEfficiencyScore: number | null;
+        avgCostUsd: number;
+        avgCorrectionRate: number;
+        sessionCount: number;
+      };
+      deltas: {
+        efficiencyScore: { value: number; percentChange: number | null; improved: boolean } | null;
+        cost: { value: number; percentChange: number | null; improved: boolean };
+        correctionRate: { value: number; percentChange: number | null; improved: boolean };
+      };
+      contextTokensForClaudeMd: number | null;
+      verdict: string;
+    };
+  };
+  readonly collaborationProfiler?: {
+    computeProfile: (developer: string) => {
+      classification: string;
+      dimensions: {
+        specificity: number;
+        autonomy: number;
+        correctionRate: number;
+        taskComplexity: number;
+      };
+      sessionCount: number;
+    };
+    compareToTeam: (developer: string) => {
+      deltas: {
+        specificity: number;
+        autonomy: number;
+        correctionRate: number;
+        taskComplexity: number;
+      };
+    };
+  };
   readonly alertLog?: { readRecent: (limit: number) => Promise<AlertEvent[]> };
   readonly taskDetector?: {
     getCompletedTasks: () => readonly { toolCalls: readonly ToolCallRecord[] }[];
@@ -1747,6 +1797,44 @@ export function createApiHandler(
           rec.subCategory !== 'claudemd_impact',
       );
     jsonOk(res, { recommendations: recs, count: recs.length });
+  });
+
+  routes.set('GET /api/claudemd-impact', (_req, res) => {
+    if (!deps.claudeMdTracker) return unavailable(res, 'claudeMdTracker');
+    const changes = deps.claudeMdTracker.getChanges();
+    if (changes.length === 0) {
+      jsonOk(res, { message: 'No instruction-file changes detected' });
+      return;
+    }
+    const latest = changes[changes.length - 1]!;
+    const impact = deps.claudeMdTracker.computeImpact(latest.timestamp);
+    jsonOk(res, {
+      change: {
+        filePath: latest.filePath,
+        changeType: latest.changeType,
+        timestamp: latest.timestamp,
+        linesAdded: latest.linesAdded,
+        linesRemoved: latest.linesRemoved,
+      },
+      before: impact.beforeMetrics,
+      after: impact.afterMetrics,
+      deltas: impact.deltas,
+      contextTokensForClaudeMd: impact.contextTokensForClaudeMd,
+      verdict: impact.verdict,
+    });
+  });
+
+  routes.set('GET /api/collaboration-profile', (_req, res) => {
+    if (!deps.collaborationProfiler) return unavailable(res, 'collaborationProfiler');
+    const developer = (deps.config?.developer as string | undefined) ?? 'unknown';
+    const profile = deps.collaborationProfiler.computeProfile(developer);
+    const comparison = deps.collaborationProfiler.compareToTeam(developer);
+    jsonOk(res, {
+      classification: profile.classification,
+      dimensions: profile.dimensions,
+      sessionCount: profile.sessionCount,
+      teamDeltas: comparison.deltas,
+    });
   });
 
   routes.set('GET /api/alerts/recent', async (_req, res) => {

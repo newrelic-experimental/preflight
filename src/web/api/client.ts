@@ -521,6 +521,66 @@ export interface RecommendationsApiResponse {
 export const fetchRecommendations = (): Promise<RecommendationsApiResponse> =>
   getJson<RecommendationsApiResponse>('/api/recommendations');
 
+// Mirrors the subset of AggregateMetrics (src/metrics/claudemd-tracker.ts, not
+// importable) actually rendered by ClaudeMdImpactPanel.
+export interface AggregateMetricsSubset {
+  readonly avgEfficiencyScore: number | null;
+  readonly avgCostUsd: number;
+  readonly avgCorrectionRate: number;
+  readonly sessionCount: number;
+}
+
+export interface MetricDelta {
+  readonly value: number;
+  readonly percentChange: number | null;
+  readonly improved: boolean;
+}
+
+// Mirrors the shape built by GET /api/claudemd-impact in api-handler.ts.
+export interface ClaudeMdImpactApiResponse {
+  readonly message?: string;
+  readonly change?: {
+    readonly filePath: string;
+    readonly changeType: 'created' | 'modified' | 'deleted';
+    readonly timestamp: number;
+    readonly linesAdded: number;
+    readonly linesRemoved: number;
+  };
+  readonly before?: AggregateMetricsSubset;
+  readonly after?: AggregateMetricsSubset;
+  readonly deltas?: {
+    readonly efficiencyScore: MetricDelta | null;
+    readonly cost: MetricDelta;
+    readonly correctionRate: MetricDelta;
+  };
+  readonly contextTokensForClaudeMd?: number | null;
+  readonly verdict?: string;
+}
+
+export const fetchClaudeMdImpact = (): Promise<ClaudeMdImpactApiResponse> =>
+  getJson<ClaudeMdImpactApiResponse>('/api/claudemd-impact');
+
+// Mirrors the shape built by GET /api/collaboration-profile in api-handler.ts.
+export interface CollaborationProfileApiResponse {
+  readonly classification: string;
+  readonly dimensions: {
+    readonly specificity: number;
+    readonly autonomy: number;
+    readonly correctionRate: number;
+    readonly taskComplexity: number;
+  };
+  readonly sessionCount: number;
+  readonly teamDeltas: {
+    readonly specificity: number;
+    readonly autonomy: number;
+    readonly correctionRate: number;
+    readonly taskComplexity: number;
+  };
+}
+
+export const fetchCollaborationProfile = (): Promise<CollaborationProfileApiResponse> =>
+  getJson<CollaborationProfileApiResponse>('/api/collaboration-profile');
+
 export const fetchRecentAlerts = (): Promise<AlertEvent[]> =>
   getJson<AlertEvent[]>('/api/alerts/recent');
 export const fetchSessionReplay = (id: string): Promise<SessionReplayResponse> =>
@@ -1105,6 +1165,8 @@ export const qk = {
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
   recommendations: ['recommendations'] as const,
+  claudeMdImpact: ['claudemd-impact'] as const,
+  collaborationProfile: ['collaboration-profile'] as const,
   alertsRecent: ['alerts', 'recent'] as const,
   sessionReplay: (id: string) => ['session', id, 'replay'] as const,
   sessionSubagents: (id: string) => ['session', id, 'subagents'] as const,

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.34] - 2026-08-06
+
+### Added
+
+- **History dashboard now shows a Collaboration Profile panel and an Instruction File Impact panel** — a developer-collaboration-style classification (specificity, autonomy, correction rate, task complexity vs. team baseline) and a before/after comparison for the most recent instruction-file change (CLAUDE.md, or your platform's equivalent), both previously available only through MCP tools.
+
 ## [1.14.33] - 2026-08-05
 
 ### Added

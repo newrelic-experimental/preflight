@@ -1388,6 +1388,8 @@ async function main(): Promise<void> {
           personalCoach,
           trendAnalyzer,
           recommendationEngine,
+          claudeMdTracker,
+          collaborationProfiler,
           alertLog,
           taskDetector,
           efficiencyScorer,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   History,
@@ -148,10 +148,49 @@ const SAMPLE_RECOMMENDATIONS_EMPTY = {
   count: 0,
 };
 
+const SAMPLE_CLAUDEMD_IMPACT = {
+  change: {
+    filePath: '/Users/alice/.claude/CLAUDE.md',
+    changeType: 'modified',
+    timestamp: new Date(2026, 5, 29, 12, 0, 0).getTime(),
+    linesAdded: 5,
+    linesRemoved: 2,
+  },
+  before: { avgEfficiencyScore: 0.64, avgCostUsd: 0.52, avgCorrectionRate: 0.18, sessionCount: 8 },
+  after: { avgEfficiencyScore: 0.71, avgCostUsd: 0.44, avgCorrectionRate: 0.12, sessionCount: 6 },
+  deltas: {
+    efficiencyScore: { value: 0.07, percentChange: 10.9, improved: true },
+    cost: { value: -0.08, percentChange: -15.4, improved: true },
+    correctionRate: { value: -0.06, percentChange: -33.3, improved: true },
+  },
+  contextTokensForClaudeMd: 1240,
+  verdict: 'Positive impact: efficiency +7pts, cost -15%',
+};
+
+const SAMPLE_CLAUDEMD_NO_CHANGES = {
+  message: 'No instruction-file changes detected',
+};
+
+const SAMPLE_COLLAB_PROFILE = {
+  classification: 'Explorer',
+  dimensions: { specificity: 0.78, autonomy: 0.61, correctionRate: 0.42, taskComplexity: 0.73 },
+  sessionCount: 47,
+  teamDeltas: { specificity: 0.12, autonomy: 0.03, correctionRate: -0.08, taskComplexity: 0.05 },
+};
+
+const SAMPLE_COLLAB_EMPTY = {
+  classification: 'Unknown',
+  dimensions: { specificity: 0, autonomy: 0, correctionRate: 0, taskComplexity: 0 },
+  sessionCount: 0,
+  teamDeltas: { specificity: 0, autonomy: 0, correctionRate: 0, taskComplexity: 0 },
+};
+
 interface FetchOverrides {
   outcome?: unknown;
   coach?: unknown;
   recommendations?: unknown;
+  claudemdImpact?: unknown;
+  collabProfile?: unknown;
 }
 
 function renderHistory(overrides: FetchOverrides = {}) {
@@ -184,6 +223,22 @@ function renderHistory(overrides: FetchOverrides = {}) {
     if (url.startsWith('/api/recommendations')) {
       return Promise.resolve(
         new Response(JSON.stringify(overrides.recommendations ?? SAMPLE_RECOMMENDATIONS_OK), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    if (url.startsWith('/api/claudemd-impact')) {
+      return Promise.resolve(
+        new Response(JSON.stringify(overrides.claudemdImpact ?? SAMPLE_CLAUDEMD_IMPACT), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    if (url.startsWith('/api/collaboration-profile')) {
+      return Promise.resolve(
+        new Response(JSON.stringify(overrides.collabProfile ?? SAMPLE_COLLAB_PROFILE), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -391,6 +446,34 @@ describe('History view', () => {
     await waitFor(() =>
       expect(screen.getByText('Recommendations unavailable')).toBeInTheDocument(),
     );
+  });
+
+  it('renders ClaudeMdImpactPanel with verdict and metric rows', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/instruction file impact/i)).toBeInTheDocument());
+    const panel = screen
+      .getByText(/instruction file impact/i)
+      .closest('.glass-card') as HTMLElement;
+    expect(within(panel).getByText(/Positive impact/)).toBeInTheDocument();
+    expect(within(panel).getByText('Efficiency')).toBeInTheDocument();
+  });
+
+  it('renders no-changes state for ClaudeMdImpactPanel', async () => {
+    renderHistory({ claudemdImpact: SAMPLE_CLAUDEMD_NO_CHANGES });
+    await waitFor(() =>
+      expect(screen.getByText('No instruction file changes yet')).toBeInTheDocument(),
+    );
+  });
+
+  it('renders CollaborationProfilePanel with classification and dimension labels', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/collaboration profile/i)).toBeInTheDocument());
+    expect(screen.getByText('Explorer')).toBeInTheDocument();
+  });
+
+  it('renders no-data state for CollaborationProfilePanel', async () => {
+    renderHistory({ collabProfile: SAMPLE_COLLAB_EMPTY });
+    await waitFor(() => expect(screen.getByText('No collaboration data yet')).toBeInTheDocument());
   });
 
   it('skips the anti-pattern panel chart when no weeks have anti-patterns', async () => {
@@ -1240,17 +1323,18 @@ describe('CoachMetricsTable', () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText(/personal coach/i)).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/strong week/i)).toBeInTheDocument());
+    const panel = screen.getByText(/personal coach/i).closest('.glass-card') as HTMLElement;
     // Check for the four row labels (exact match with word boundaries)
-    expect(screen.getByText('Efficiency')).toBeInTheDocument();
-    expect(screen.getByText('Cost / session')).toBeInTheDocument();
-    expect(screen.getByText('Anti-pattern rate')).toBeInTheDocument();
-    expect(screen.getAllByText('Sessions').length).toBeGreaterThanOrEqual(1);
+    expect(within(panel).getByText('Efficiency')).toBeInTheDocument();
+    expect(within(panel).getByText('Cost / session')).toBeInTheDocument();
+    expect(within(panel).getByText('Anti-pattern rate')).toBeInTheDocument();
+    expect(within(panel).getAllByText('Sessions').length).toBeGreaterThanOrEqual(1);
     // Now check for the metrics table values
-    expect(screen.getByText('72')).toBeInTheDocument(); // effValue = 0.72 * 100 = 72
-    expect(screen.getByText('$0.42')).toBeInTheDocument(); // thisWeek cost
-    expect(screen.getByText('4.2%')).toBeInTheDocument(); // antiPatternRate as percentage
+    expect(within(panel).getByText('72')).toBeInTheDocument(); // effValue = 0.72 * 100 = 72
+    expect(within(panel).getByText('$0.42')).toBeInTheDocument(); // thisWeek cost
+    expect(within(panel).getByText('4.2%')).toBeInTheDocument(); // antiPatternRate as percentage
     // SAMPLE_COACH_OK has efficiency 0.72 vs baseline 0.64 → delta = +8pts
-    expect(screen.getByText('↑8pts')).toBeInTheDocument();
+    expect(within(panel).getByText('↑8pts')).toBeInTheDocument();
   });
 
   it('renders zero deltas correctly when baseline values are null or zero', async () => {

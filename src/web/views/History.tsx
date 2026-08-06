@@ -25,6 +25,8 @@ import {
   fetchCostPerOutcome,
   fetchPersonalCoach,
   fetchRecommendations,
+  fetchClaudeMdImpact,
+  fetchCollaborationProfile,
   fetchActivityHeatmap,
   fetchConcurrencyHistory,
   fetchInstructionDrift,
@@ -38,6 +40,9 @@ import {
   type InstructionDriftResponse,
   type DriftCorrelationEntry,
   type RecommendationsApiResponse,
+  type ClaudeMdImpactApiResponse,
+  type CollaborationProfileApiResponse,
+  type MetricDelta,
 } from '../api/client';
 import { formatUsdOrDash, shortToolName } from '../lib/format';
 
@@ -186,6 +191,18 @@ export function History(): JSX.Element {
   const recommendations = useQuery<RecommendationsApiResponse>({
     queryKey: qk.recommendations,
     queryFn: fetchRecommendations,
+    retry: false,
+  });
+
+  const claudeMdImpact = useQuery<ClaudeMdImpactApiResponse>({
+    queryKey: qk.claudeMdImpact,
+    queryFn: fetchClaudeMdImpact,
+    retry: false,
+  });
+
+  const collabProfile = useQuery<CollaborationProfileApiResponse>({
+    queryKey: qk.collaborationProfile,
+    queryFn: fetchCollaborationProfile,
     retry: false,
   });
 
@@ -507,6 +524,11 @@ export function History(): JSX.Element {
         </Card>
       </div>
 
+      <div className="mt-3 space-y-3">
+        <CollaborationProfilePanel data={collabProfile.data} isError={collabProfile.isError} />
+        <ClaudeMdImpactPanel data={claudeMdImpact.data} isError={claudeMdImpact.isError} />
+      </div>
+
       <div className="mt-3">
         <InstructionDriftCard data={drift.data} />
       </div>
@@ -730,6 +752,250 @@ function RecommendationsPanel({
             </div>
           </div>
         )}
+      </div>
+    </Panel>
+  );
+}
+
+function verdictColor(verdict: string): string {
+  if (verdict.startsWith('Positive')) return 'text-accent-green';
+  if (verdict.startsWith('Negative')) return 'text-accent-red';
+  return 'text-accent-amber';
+}
+
+function ptsDeltaText(delta: MetricDelta | null | undefined): string {
+  if (!delta) return '—';
+  if (delta.value === 0) return '0pts';
+  const pts = Math.round(Math.abs(delta.value) * 100);
+  return `${delta.value > 0 ? '↑' : '↓'}${pts}pts`;
+}
+
+function pctDeltaText(delta: MetricDelta | undefined): string {
+  if (!delta) return '—';
+  if (delta.percentChange == null) return '—';
+  if (delta.value === 0) return '0%';
+  const pct = Math.round(Math.abs(delta.percentChange));
+  return `${delta.value > 0 ? '↑' : '↓'}${pct}%`;
+}
+
+function ClaudeMdImpactPanel({
+  data,
+  isError,
+}: {
+  data: ClaudeMdImpactApiResponse | undefined;
+  isError: boolean;
+}): JSX.Element {
+  if (isError) {
+    return (
+      <Panel title="Instruction File Impact">
+        <EmptyState icon="radar" title="Instruction file impact unavailable" />
+      </Panel>
+    );
+  }
+  if (!data) {
+    return (
+      <Panel title="Instruction File Impact">
+        <EmptyState variant="loading" title="Loading instruction file impact…" />
+      </Panel>
+    );
+  }
+  if (
+    data.message ||
+    !data.change ||
+    !data.before ||
+    !data.after ||
+    !data.deltas ||
+    !data.verdict
+  ) {
+    return (
+      <Panel title="Instruction File Impact">
+        <EmptyState
+          icon="radar"
+          title="No instruction file changes yet"
+          subtitle="Edit your instruction file (CLAUDE.md, or your platform's equivalent) to start tracking impact."
+        />
+      </Panel>
+    );
+  }
+  const changeDate = new Date(data.change.timestamp).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+  const beforeEff =
+    data.before.avgEfficiencyScore !== null
+      ? Math.round(data.before.avgEfficiencyScore * 100)
+      : null;
+  const afterEff =
+    data.after.avgEfficiencyScore !== null ? Math.round(data.after.avgEfficiencyScore * 100) : null;
+  return (
+    <Panel title="Instruction File Impact">
+      <div className="text-xs mb-3">
+        <span className={`font-medium ${verdictColor(data.verdict)}`}>{data.verdict}</span>
+        <span className="text-[10px] text-ink-muted">
+          {' · '}
+          {data.change.changeType} {data.change.filePath.split('/').pop()} · {changeDate}
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-xs">
+        <span className="text-ink-muted" />
+        <span className="text-ink-muted">Before</span>
+        <span className="text-ink-muted">After</span>
+        <span className="text-ink-muted">Δ</span>
+
+        <span className="text-ink-muted">Efficiency</span>
+        <span className="font-mono">{beforeEff ?? '—'}</span>
+        <span className="font-mono">{afterEff ?? '—'}</span>
+        <span
+          className={
+            data.deltas.efficiencyScore == null
+              ? 'text-ink-muted'
+              : data.deltas.efficiencyScore.improved
+                ? 'text-accent-green'
+                : 'text-accent-amber'
+          }
+        >
+          {ptsDeltaText(data.deltas.efficiencyScore)}
+        </span>
+
+        <span className="text-ink-muted">Cost/session</span>
+        <span className="font-mono">${data.before.avgCostUsd.toFixed(2)}</span>
+        <span className="font-mono">${data.after.avgCostUsd.toFixed(2)}</span>
+        <span className={data.deltas.cost.improved ? 'text-accent-green' : 'text-accent-amber'}>
+          {pctDeltaText(data.deltas.cost)}
+        </span>
+
+        <span className="text-ink-muted">Correction rate</span>
+        <span className="font-mono">{Math.round(data.before.avgCorrectionRate * 100)}%</span>
+        <span className="font-mono">{Math.round(data.after.avgCorrectionRate * 100)}%</span>
+        <span
+          className={
+            data.deltas.correctionRate.improved ? 'text-accent-green' : 'text-accent-amber'
+          }
+        >
+          {pctDeltaText(data.deltas.correctionRate)}
+        </span>
+      </div>
+      {data.contextTokensForClaudeMd != null && data.contextTokensForClaudeMd > 0 && (
+        <div className="text-[10px] text-ink-muted italic mt-2">
+          Instruction file adds ~{data.contextTokensForClaudeMd.toLocaleString()} tokens/turn
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function CollaborationProfilePanel({
+  data,
+  isError,
+}: {
+  data: CollaborationProfileApiResponse | undefined;
+  isError: boolean;
+}): JSX.Element {
+  if (isError) {
+    return (
+      <Panel title="Collaboration Profile">
+        <EmptyState icon="radar" title="Collaboration profile unavailable" />
+      </Panel>
+    );
+  }
+  if (!data) {
+    return (
+      <Panel title="Collaboration Profile">
+        <EmptyState variant="loading" title="Loading collaboration profile…" />
+      </Panel>
+    );
+  }
+  if (data.sessionCount === 0) {
+    return (
+      <Panel title="Collaboration Profile">
+        <EmptyState
+          icon="radar"
+          title="No collaboration data yet"
+          subtitle="Profile appears after a few sessions."
+        />
+      </Panel>
+    );
+  }
+  const dims = [
+    {
+      name: 'Specificity',
+      key: 'specificity',
+      value: Math.round(data.dimensions.specificity * 100),
+      delta: data.teamDeltas.specificity,
+      lowerIsBetter: false,
+    },
+    {
+      name: 'Autonomy',
+      key: 'autonomy',
+      value: Math.round(data.dimensions.autonomy * 100),
+      delta: data.teamDeltas.autonomy,
+      lowerIsBetter: false,
+    },
+    {
+      name: 'Correction rate',
+      key: 'correctionRate',
+      value: Math.round(data.dimensions.correctionRate * 100),
+      delta: data.teamDeltas.correctionRate,
+      lowerIsBetter: true,
+    },
+    {
+      name: 'Task complexity',
+      key: 'taskComplexity',
+      value: Math.round(data.dimensions.taskComplexity * 100),
+      delta: data.teamDeltas.taskComplexity,
+      lowerIsBetter: false,
+    },
+  ];
+  return (
+    <Panel title="Collaboration Profile">
+      <div className="text-xs mb-3">
+        <span className="text-sm font-medium text-ink-base">{data.classification}</span>
+        <span className="text-ink-muted"> · {data.sessionCount} sessions</span>
+      </div>
+      <div className="min-w-0" style={{ height: `${dims.length * 28 + 40}px` }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+          <BarChart data={dims} layout="vertical">
+            <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
+            <XAxis
+              type="number"
+              domain={[0, 100]}
+              tick={TICK_STYLE}
+              stroke={GRID_STROKE}
+              tickFormatter={(v: number) => `${v}%`}
+            />
+            <YAxis
+              type="category"
+              dataKey="name"
+              tick={TICK_STYLE}
+              stroke={GRID_STROKE}
+              width={110}
+            />
+            <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v}%`]} />
+            <Bar dataKey="value" fill={ACCENT_TEAL} fillOpacity={0.8} radius={[0, 3, 3, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="space-y-1 mt-2">
+        {dims.map((d) => {
+          const pct = Math.round(Math.abs(d.delta) * 100);
+          const positive = d.lowerIsBetter ? d.delta < 0 : d.delta > 0;
+          const color =
+            d.delta === 0 ? 'text-ink-muted' : positive ? 'text-accent-green' : 'text-accent-amber';
+          const sign = d.delta > 0 ? '+' : d.delta < 0 ? '-' : '';
+          const note = d.lowerIsBetter ? ' (lower = better)' : '';
+          return (
+            <div key={d.key} className="flex items-center justify-between text-[10px]">
+              <span className="text-ink-muted">
+                {d.name}
+                {note}
+              </span>
+              <span className={color}>
+                {sign}
+                {pct}% vs team
+              </span>
+            </div>
+          );
+        })}
       </div>
     </Panel>
   );
