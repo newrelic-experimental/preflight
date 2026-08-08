@@ -554,6 +554,8 @@ Antigravity's hook payloads have **no field naming the event type at all** — `
 
 **Detection (`isSupported()`):** `MCP_CLIENT === 'copilot'`, or `NEW_RELIC_AI_PLATFORM === 'copilot'` (the only adapter besides Kiro that actually reads `NEW_RELIC_AI_PLATFORM`).
 
+**Token-exact cost:** `CopilotUsageWatcher` (`src/hooks/copilot-usage-watcher.ts`) tails VS Code's per-session Copilot debug log (`<userDataDir>/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<sessionId>/main.jsonl`), whose `llm_request` records carry exact `inputTokens`/`outputTokens`/`cachedTokens` per model request, and emits `mode: 'token'` events into the same session buffer the hooks write to — the Copilot analog of the Claude Code parent-transcript watcher. The log format is not a stable API (same stability tier as the Claude Code transcript format the other watchers depend on); schema drift degrades to estimation-based cost, never a crash. Opt out with `NR_AI_ENABLE_COPILOT_USAGE_WATCHER=0`.
+
 **Known gaps:** agent hooks are a Preview feature and may change; organizations can disable hooks via enterprise policy. Hook matchers are ignored by VS Code, so per-tool matcher filtering is unavailable (irrelevant to Preflight's empty matcher).
 
 **Setup:**

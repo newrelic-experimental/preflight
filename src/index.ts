@@ -1,135 +1,136 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
+import { Command } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Command } from 'commander';
-import { createLogger } from './shared/index.js';
-import { VERSION } from './version.js';
-import { createServer } from './server.js';
-import { loadMcpConfig, DEFAULT_STORAGE_PATH } from './config.js';
+import { AlertLog } from './alerts/alert-log.js';
+import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
+import { LocalAlertEngine } from './alerts/local-alert-engine.js';
+import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
+import { OsNotifier } from './alerts/os-notifier.js';
 import type { McpServerConfig } from './config.js';
-import { ProxyManager } from './proxy/index.js';
-import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
-import { LocalStore } from './storage/index.js';
-import type { ToolCallRecord } from './storage/types.js';
-import {
-  SessionStore,
-  buildSessionSummary,
-  sessionSummaryToDriftRecord,
-} from './storage/session-store.js';
-import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
-import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
+import { DEFAULT_STORAGE_PATH, loadMcpConfig } from './config.js';
+import { DashboardServer } from './dashboard/dashboard-server.js';
+import { LiveEventBus } from './dashboard/index.js';
+import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
+import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
+import { WorkflowStore } from './dashboard/workflow-store.js';
+import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
-import { SessionTracker } from './metrics/session-tracker.js';
-import { CostTracker } from './metrics/cost-tracker.js';
-import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
-import { BudgetTracker } from './metrics/budget-tracker.js';
-import { TaskDetector } from './metrics/task-detector.js';
+import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
+import {
+  isSyntheticSessionId,
+  resolveFromBreadcrumb,
+  resolveFromCwd,
+  resolveFromJobDir,
+  resolveSessionId,
+  watchPpidBreadcrumb,
+} from './hooks/session-resolver.js';
+import { SubagentWatcher } from './hooks/subagent-watcher.js';
+import { WorkflowWatcher } from './hooks/workflow-watcher.js';
+import { migrateStoragePath } from './install/migrate.js';
+import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
-import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { TrendAnalyzer } from './metrics/trend-analyzer.js';
-import { CollaborationProfiler } from './metrics/collaboration-profile.js';
+import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
+import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
-import { createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
-import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
-import { PersonalCoach } from './metrics/personal-coach.js';
-import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
-import { RecommendationEngine } from './metrics/recommendation-engine.js';
-import { ContextWindowTracker } from './metrics/context-window-tracker.js';
-import { LatencyTracker } from './metrics/latency-tracker.js';
-import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
-import { RetryDetector } from './metrics/retry-detector.js';
+import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
-import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
+import { ContextWindowTracker } from './metrics/context-window-tracker.js';
+import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
+import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
+import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
-import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
-import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
-import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
-import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
-import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
-import { LiveSessionRegistry } from './metrics/live-session-registry.js';
-import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
-import { TurnTracker } from './metrics/turn-tracker.js';
+import { EfficiencyScorer } from './metrics/efficiency-score.js';
 import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
+import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
+import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
+import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
+import { LatencyTracker } from './metrics/latency-tracker.js';
+import { LiveSessionRegistry } from './metrics/live-session-registry.js';
+import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
+import { PersonalCoach } from './metrics/personal-coach.js';
+import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
+import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
+import { RecommendationEngine } from './metrics/recommendation-engine.js';
+import { RetryDetector } from './metrics/retry-detector.js';
+import { SessionTracker } from './metrics/session-tracker.js';
+import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
+import { TaskDetector } from './metrics/task-detector.js';
+import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
+import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
+import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
-import { SubagentWatcher } from './hooks/subagent-watcher.js';
-import { WorkflowWatcher } from './hooks/workflow-watcher.js';
-import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
-import { WorkflowStore } from './dashboard/workflow-store.js';
-import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
-import { NrIngestManager } from './transport/nr-ingest.js';
-import type { TokenUsage } from './shared/index.js';
+import { createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
+import { ProxyManager } from './proxy/index.js';
 import { AuditTrailManager } from './security/audit-trail.js';
-import { LiveEventBus } from './dashboard/index.js';
-import { DashboardServer } from './dashboard/dashboard-server.js';
-import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
-import { LocalAlertEngine } from './alerts/local-alert-engine.js';
-import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
-import { AlertLog } from './alerts/alert-log.js';
-import { OsNotifier } from './alerts/os-notifier.js';
-import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
-import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
-import { FeedbackCollector } from './tools/workflow-tools.js';
-import { registerTools, registerPendingTools } from './tools/session-stats.js';
-import type { ConfigSummary } from './tools/session-stats.js';
+import { createServer } from './server.js';
+import type { TokenUsage } from './shared/index.js';
+import { createLogger } from './shared/index.js';
+import { LocalStore } from './storage/index.js';
+import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
-  resolveSessionId,
-  resolveFromJobDir,
-  resolveFromBreadcrumb,
-  resolveFromCwd,
-  isSyntheticSessionId,
-  watchPpidBreadcrumb,
-} from './hooks/session-resolver.js';
+  buildSessionSummary,
+  SessionStore,
+  sessionSummaryToDriftRecord,
+} from './storage/session-store.js';
+import type { ToolCallRecord } from './storage/types.js';
+import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
+import type { ConfigSummary } from './tools/session-stats.js';
+import { registerPendingTools, registerTools } from './tools/session-stats.js';
+import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
 import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
+import { NrIngestManager } from './transport/nr-ingest.js';
 import type { CliOptions } from './types.js';
-import { migrateStoragePath } from './install/migrate.js';
+import { VERSION } from './version.js';
 
-export { VERSION };
-export { NrMcpServer, createServer } from './server.js';
 export { loadMcpConfig, redactSensitive } from './config.js';
 export type { McpServerConfig } from './config.js';
-export { LocalStore } from './storage/index.js';
-export type { HookEvent, SessionSummary, AuditEntry } from './storage/index.js';
-export type { CliOptions, ServerOptions } from './types.js';
-export { ProxyManager } from './proxy/index.js';
-export type { ProxyToolCallRecord, ProxyRequestRecord, UpstreamConfig } from './proxy/index.js';
 export {
-  ClaudeCodeAdapter,
-  CursorAdapter,
-  WindsurfAdapter,
-  CopilotAdapter,
-  ZedAdapter,
-  ContinueAdapter,
   AmazonQAdapter,
-  parseCopilotUsageResponse,
-  GenericMcpAdapter,
-  validateReportToolCallInput,
-  REPORT_TOOL_CALL_TOOL,
-  REPORT_SESSION_START_TOOL,
-  REPORT_SESSION_END_TOOL,
-  PlatformRegistry,
+  ClaudeCodeAdapter,
+  ContinueAdapter,
+  CopilotAdapter,
   createDefaultRegistry,
+  CursorAdapter,
+  GenericMcpAdapter,
+  parseCopilotUsageResponse,
+  PlatformRegistry,
+  REPORT_SESSION_END_TOOL,
+  REPORT_SESSION_START_TOOL,
+  REPORT_TOOL_CALL_TOOL,
+  validateReportToolCallInput,
+  WindsurfAdapter,
+  ZedAdapter,
 } from './platforms/index.js';
 export type {
   NormalizedToolCall,
+  PlatformAdapter,
   PlatformConfig,
   PlatformSessionMetadata,
-  PlatformAdapter,
-  ReportToolCallInput,
-  ReportSessionStartInput,
   ReportSessionEndInput,
+  ReportSessionStartInput,
+  ReportToolCallInput,
 } from './platforms/index.js';
+export { ProxyManager } from './proxy/index.js';
+export type { ProxyRequestRecord, ProxyToolCallRecord, UpstreamConfig } from './proxy/index.js';
+export { createServer, NrMcpServer } from './server.js';
+export { LocalStore } from './storage/index.js';
+export type { AuditEntry, HookEvent, SessionSummary } from './storage/index.js';
+export type { CliOptions, ServerOptions } from './types.js';
+export { VERSION };
 
 const logger = createLogger('mcp-cli');
 
@@ -755,6 +756,7 @@ async function main(): Promise<void> {
   let activeSubagentWatcher: SubagentWatcher | null = null;
   let activeWorkflowWatcher: WorkflowWatcher | null = null;
   let activeParentTranscriptWatcher: ParentTranscriptWatcher | null = null;
+  let activeCopilotUsageWatcher: CopilotUsageWatcher | null = null;
   // Aborts the async resolveSessionId polling loop when shutdown fires so
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
@@ -843,6 +845,7 @@ async function main(): Promise<void> {
       activeSubagentWatcher?.stop();
       activeWorkflowWatcher?.stop();
       activeParentTranscriptWatcher?.stop();
+      activeCopilotUsageWatcher?.stop();
       liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
@@ -2163,6 +2166,12 @@ async function main(): Promise<void> {
     // the exact regression this divergence avoids.
     const parentTranscriptWatcherEnabled =
       process.env['NR_AI_ENABLE_PARENT_TRANSCRIPT_WATCHER'] !== '0';
+    // CopilotUsageWatcher is the Copilot analog of ParentTranscriptWatcher
+    // (token-exact cost from VS Code's Copilot debug logs) and follows the
+    // same always-run rationale: it feeds the primary cost signal, so it is
+    // gated only by its own opt-out. It no-ops cheaply when no VS Code
+    // workspaceStorage dirs exist.
+    const copilotUsageWatcherEnabled = process.env['NR_AI_ENABLE_COPILOT_USAGE_WATCHER'] !== '0';
 
     // Construct + start the watchers for a given session id. In `--stdio` mode
     // the watchers filter discovered transcript dirs by `parentSessionId`; in
@@ -2192,6 +2201,16 @@ async function main(): Promise<void> {
         });
         activeParentTranscriptWatcher.start();
         logger.info('ParentTranscriptWatcher started', {
+          parentSessionId: isStdioWatcher ? watcherSessionId : null,
+        });
+      }
+      if (copilotUsageWatcherEnabled) {
+        activeCopilotUsageWatcher = new CopilotUsageWatcher({
+          storagePath: config!.storagePath,
+          parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+        });
+        activeCopilotUsageWatcher.start();
+        logger.info('CopilotUsageWatcher started', {
           parentSessionId: isStdioWatcher ? watcherSessionId : null,
         });
       }
@@ -2264,6 +2283,10 @@ async function main(): Promise<void> {
       if (activeParentTranscriptWatcher) {
         activeParentTranscriptWatcher.stop();
         activeParentTranscriptWatcher = null;
+      }
+      if (activeCopilotUsageWatcher) {
+        activeCopilotUsageWatcher.stop();
+        activeCopilotUsageWatcher = null;
       }
       if (activeSubagentWatcher) {
         activeSubagentWatcher.stop();
