@@ -1,22 +1,22 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, statSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
 import {
-  processHook,
-  redact,
+  _procFs,
+  _stdinFs,
+  getBufferPath,
+  getLinuxAncestorPids,
+  getRecordContent,
   hashInput,
+  processHook,
+  readStdinSync,
+  redact,
   sizeOf,
   truncate,
-  getRecordContent,
-  getBufferPath,
-  writePpidBreadcrumb,
   writeCwdBreadcrumb,
-  getLinuxAncestorPids,
-  _procFs,
-  readStdinSync,
-  _stdinFs,
+  writePpidBreadcrumb,
 } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -303,6 +303,112 @@ describe('collector-script', () => {
 
       const event = readBufferEvents()[0]!;
       expect(event.toolOutput).toEqual({ agentResultLength: 11 });
+    });
+  });
+
+  // VS Code Copilot agent hooks send the uniform PreToolUse/PostToolUse envelope
+  // but with VS Code's own tool names and camelCase tool_input keys — both deltas
+  // documented in the hooks FAQ (code.visualstudio.com/docs/copilot/customization/hooks).
+  // Copilot CLI sends the same events with lowerCamelCase names (preToolUse).
+  describe('processHook() — VS Code Copilot hooks', () => {
+    function makeCopilotPreToolUse(overrides?: Record<string, unknown>): string {
+      return JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'create_file',
+        tool_input: { filePath: '/src/new.ts', content: 'line1\nline2' },
+        tool_use_id: 'toolu_copilot_1',
+        session_id: 'copilot-sess-001',
+        cwd: '/projects/test',
+        timestamp: '2026-08-07T00:00:00.000Z',
+        ...overrides,
+      });
+    }
+
+    it('captures camelCase filePath as the common file_path meta field', () => {
+      processHook(makeCopilotPreToolUse());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const toolInput = events[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.file_path).toBe('/src/new.ts');
+    });
+
+    it('extracts Write-style content metadata for create_file', () => {
+      processHook(makeCopilotPreToolUse());
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.content).toBeUndefined();
+      expect(toolInput.contentLength).toBe(11);
+      expect(toolInput.lineCount).toBe(2);
+    });
+
+    it('extracts Edit-style metadata from replace_string_in_file camelCase fields', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          tool_name: 'replace_string_in_file',
+          tool_input: { filePath: '/src/a.ts', oldString: 'aaa\nbbb', newString: '' },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.oldStringLength).toBe(7);
+      expect(toolInput.oldLineCount).toBe(2);
+      expect(toolInput.newStringLength).toBe(0);
+      expect(toolInput.isDelete).toBe(true);
+    });
+
+    it('counts replacements for multi_replace_string_in_file', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          tool_name: 'multi_replace_string_in_file',
+          tool_input: {
+            replacements: [
+              { filePath: '/a.ts', oldString: 'x', newString: 'y' },
+              { filePath: '/b.ts', oldString: 'p', newString: 'q' },
+            ],
+          },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.replacementsCount).toBe(2);
+    });
+
+    it('extracts Bash-style command metadata for run_in_terminal', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          tool_name: 'run_in_terminal',
+          tool_input: { command: 'npm test', explanation: 'Run tests', isBackground: false },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).toBe('npm test');
+      expect(toolInput.description).toBe('Run tests');
+      expect(toolInput.run_in_background).toBe(false);
+    });
+
+    it('handles a plain-string tool_response on PostToolUse', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          hook_event_name: 'PostToolUse',
+          tool_response: 'File edited successfully',
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.mode).toBe('post');
+      expect(event.success).toBe(true);
+      expect(event.outputSize).toBeGreaterThan(0);
+    });
+
+    it('accepts Copilot CLI lowerCamelCase event names', () => {
+      processHook(makeCopilotPreToolUse({ hook_event_name: 'preToolUse' }));
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.mode).toBe('pre');
+      expect(events[0]!.tool).toBe('create_file');
     });
   });
 

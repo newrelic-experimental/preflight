@@ -370,8 +370,11 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   const obj = input as Record<string, unknown>;
   const meta: Record<string, unknown> = {};
 
-  // Common field: file_path (Read, Write, Edit)
+  // Common field: file_path (Read, Write, Edit). VS Code Copilot hooks send
+  // camelCase tool_input keys (filePath) per the hooks FAQ
+  // (https://code.visualstudio.com/docs/copilot/customization/hooks).
   if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
+  else if (typeof obj.filePath === 'string') meta.file_path = obj.filePath;
 
   switch (toolName) {
     case 'Read':
@@ -379,10 +382,36 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       if (typeof obj.limit === 'number') meta.limit = obj.limit;
       break;
     case 'Write':
+    case 'create_file': // VS Code Copilot — same `content` field shape
       if (typeof obj.content === 'string') {
         meta.contentLength = obj.content.length;
         meta.lineCount = obj.content.length > 0 ? countLines(obj.content) : 0;
       }
+      break;
+    // VS Code Copilot's find-and-replace edit tools. Field names are camelCase
+    // (oldString/newString) per the hooks FAQ; tool names from toolNames.ts in
+    // microsoft/vscode (extensions/copilot/src/extension/tools/common/).
+    case 'replace_string_in_file': {
+      const oldStr = obj.oldString;
+      const newStr = obj.newString;
+      if (typeof oldStr === 'string') {
+        meta.oldStringLength = oldStr.length;
+        meta.oldLineCount = oldStr.length > 0 ? countLines(oldStr) : 0;
+      }
+      if (typeof newStr === 'string') {
+        meta.newStringLength = newStr.length;
+        meta.newLineCount = newStr.length > 0 ? countLines(newStr) : 0;
+        meta.isDelete = newStr.length === 0;
+      }
+      break;
+    }
+    case 'multi_replace_string_in_file':
+      if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
+      break;
+    case 'run_in_terminal':
+      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.explanation === 'string') meta.description = redact(obj.explanation);
+      if (typeof obj.isBackground === 'boolean') meta.run_in_background = obj.isBackground;
       break;
     case 'Edit':
       if (typeof obj.old_string === 'string') {

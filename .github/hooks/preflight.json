@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "command -v preflight-collector >/dev/null 2>&1 && preflight-collector pre-tool || exit 0",
+        "windows": "cmd /d /c \"where preflight-collector >nul 2>nul && preflight-collector pre-tool & exit 0\"",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "command -v preflight-collector >/dev/null 2>&1 && preflight-collector post-tool || exit 0",
+        "windows": "cmd /d /c \"where preflight-collector >nul 2>nul && preflight-collector post-tool & exit 0\"",
+        "timeout": 5
+      }
+    ]
+  }
+}
