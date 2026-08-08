@@ -1,6 +1,6 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { CopilotAdapter, parseCopilotUsageResponse } from './copilot-adapter.js';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { CopilotToolCallEvent } from './copilot-adapter.js';
+import { CopilotAdapter, parseCopilotUsageResponse } from './copilot-adapter.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
