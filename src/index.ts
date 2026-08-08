@@ -2208,6 +2208,7 @@ async function main(): Promise<void> {
         activeCopilotUsageWatcher = new CopilotUsageWatcher({
           storagePath: config!.storagePath,
           parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          localStore,
         });
         activeCopilotUsageWatcher.start();
         logger.info('CopilotUsageWatcher started', {

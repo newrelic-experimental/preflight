@@ -43,6 +43,7 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
+import type { LocalStore } from '../storage/local-store.js';
 
 const logger = createLogger('copilot-usage-watcher');
 
@@ -52,9 +53,13 @@ const logger = createLogger('copilot-usage-watcher');
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_DISCOVERY_HOURS = 24;
-const MAX_BYTES_PER_POLL = 64 * 1024;
+// Copilot debug-log lines embed full inputMessages payloads and routinely run
+// hundreds of KiB — far larger than transcript lines. A bigger window keeps a
+// single record from spanning many polls (each carry-over persists the whole
+// partial line into the cursor file).
+const MAX_BYTES_PER_POLL = 1024 * 1024;
 /** See SubagentWatcher's identical constant for the OOM-bug rationale this guards against. */
-const MAX_PARTIAL_LINE_BYTES = 1024 * 1024; // 1 MiB
+const MAX_PARTIAL_LINE_BYTES = 4 * 1024 * 1024; // 4 MiB — sized to the larger log lines
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const COPILOT_LOG_SUBPATH = join('GitHub.copilot-chat', 'debug-logs');
 
@@ -96,6 +101,8 @@ export interface CopilotUsageWatcherOptions {
    * case). Default: every recent session log (matches `--local` semantics).
    */
   readonly parentSessionId?: string;
+  /** LocalStore, used to exclude sessions already owned by a live --stdio watcher in unscoped mode. */
+  readonly localStore?: LocalStore;
 }
 
 export interface CopilotUsageWatcherHealth {
@@ -130,6 +137,7 @@ export class CopilotUsageWatcher {
   private readonly pollIntervalMs: number;
   private readonly discoveryHours: number;
   private readonly parentSessionFilter: string | null;
+  private readonly localStore: LocalStore | undefined;
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private readonly partialByPath = new Map<string, string>();
@@ -146,6 +154,7 @@ export class CopilotUsageWatcher {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.discoveryHours = options.discoveryHours ?? DEFAULT_DISCOVERY_HOURS;
     this.parentSessionFilter = options.parentSessionId ?? null;
+    this.localStore = options.localStore;
   }
 
   start(): void {
@@ -197,6 +206,13 @@ export class CopilotUsageWatcher {
   private discoverFiles(): Array<{ path: string; sessionId: string }> {
     const out: Array<{ path: string; sessionId: string }> = [];
     const cutoffMs = Date.now() - this.discoveryHours * 3_600_000;
+    // Unscoped (--local) mode: skip sessions a live --stdio process already
+    // tails, so two processes never race on the same cursor file — identical
+    // to ParentTranscriptWatcher's unfiltered discovery.
+    const liveOwnedSessionIds =
+      this.parentSessionFilter === null
+        ? (this.localStore?.getActiveSessionIdsFromHeartbeats() ?? null)
+        : null;
     for (const root of this.workspaceStorageRoots) {
       if (!existsSync(root)) continue;
       let workspaceHashes: string[];
@@ -219,6 +235,7 @@ export class CopilotUsageWatcher {
           if (this.parentSessionFilter !== null && sessionId !== this.parentSessionFilter) {
             continue;
           }
+          if (liveOwnedSessionIds?.has(sessionId)) continue;
           const logPath = join(logsDir, sessionId, 'main.jsonl');
           try {
             const st = statSync(logPath);
@@ -308,10 +325,15 @@ export class CopilotUsageWatcher {
         sessionId,
         messageId: parsed.responseId,
         model: parsed.model,
-        inputTokens: parsed.inputTokens,
+        // VS Code's inputTokens is cache-INCLUSIVE (verified against a real
+        // main.jsonl: each request's cachedTokens ≈ the previous request's
+        // inputTokens). CostTracker follows the Anthropic convention where
+        // input excludes cache reads, so emit only the uncached remainder —
+        // otherwise cached tokens are double-billed at full input rate.
+        inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
         outputTokens: parsed.outputTokens,
-        // VS Code reports a single cachedTokens figure; treat it as cache
-        // reads (there is no cache-creation analog in the log schema).
+        // Single cachedTokens figure; treat as cache reads (no cache-creation
+        // analog in the log schema).
         cacheReadTokens: parsed.cachedTokens,
         cacheCreationTokens: 0,
       });

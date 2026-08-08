@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { LocalStore } from '../storage/local-store.js';
 import { CopilotUsageWatcher } from './copilot-usage-watcher.js';
 
 const STDERR_WRITE = process.stderr.write;
@@ -111,6 +112,23 @@ describe('CopilotUsageWatcher', () => {
       cacheCreationTokens: 0,
       timestamp: 1786151170779,
     });
+  });
+
+  it('subtracts cachedTokens from inputTokens (VS Code inputTokens is cache-inclusive)', () => {
+    // Real observed record shape: inputTokens 65016, cachedTokens 62361 —
+    // only the difference is genuinely new (uncached) input.
+    writeFileSync(logPath, makeLlmRequestLine({ inputTokens: 65016, cachedTokens: 62361 }) + '\n');
+    makeWatcher().poll();
+    expect(readTokenEvents()[0]).toMatchObject({
+      inputTokens: 65016 - 62361,
+      cacheReadTokens: 62361,
+    });
+  });
+
+  it('clamps input to 0 if cachedTokens somehow exceeds inputTokens', () => {
+    writeFileSync(logPath, makeLlmRequestLine({ inputTokens: 100, cachedTokens: 500 }) + '\n');
+    makeWatcher().poll();
+    expect(readTokenEvents()[0]).toMatchObject({ inputTokens: 0, cacheReadTokens: 500 });
   });
 
   it('maps cachedTokens to cacheReadTokens', () => {
@@ -241,6 +259,44 @@ describe('CopilotUsageWatcher', () => {
     watcher.start();
     watcher.stop();
     watcher.stop();
+  });
+
+  it('unscoped mode skips sessions owned by a live --stdio heartbeat', () => {
+    writeFileSync(logPath, makeLlmRequestLine({ responseId: 'resp_a' }) + '\n');
+    const localStore = {
+      getActiveSessionIdsFromHeartbeats: () => new Set([SESSION_ID]),
+    } as unknown as LocalStore;
+    const watcher = new CopilotUsageWatcher({
+      storagePath,
+      workspaceStorageRoots: [workspaceStorageRoot],
+      localStore,
+    });
+    watcher.poll();
+    expect(readTokenEvents()).toHaveLength(0);
+  });
+
+  it('processes a record whose line exceeds one poll read window', () => {
+    // Real main.jsonl lines carry full inputMessages payloads and routinely
+    // exceed 64 KiB; a single record must survive multi-poll assembly.
+    const bigLine = JSON.stringify({
+      ts: 1786151170779,
+      sid: SESSION_ID,
+      type: 'llm_request',
+      attrs: {
+        model: 'claude-opus-4-7',
+        responseId: 'resp_big',
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedTokens: 0,
+        inputMessages: 'x'.repeat(200 * 1024),
+      },
+    });
+    writeFileSync(logPath, bigLine + '\n');
+    const watcher = makeWatcher();
+    for (let i = 0; i < 8; i++) watcher.poll();
+    const events = readTokenEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ messageId: 'resp_big', inputTokens: 10 });
   });
 
   it('reports health counters', () => {
