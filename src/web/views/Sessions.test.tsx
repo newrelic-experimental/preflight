@@ -486,6 +486,23 @@ describe('Sessions view — workflow consolidation', () => {
     expect(container.textContent).toMatch(/\$3(\.0+)?/);
   });
 
+  // A run's totalUsd being null is ambiguous between "confirmed $0" and "no
+  // process ever observed this run's cost". costUnknown distinguishes the
+  // two (a partial mitigation); the KPI must disclose when it does.
+  it('flags the Workflow spend KPI as partial when a run has an unknown (not confirmed-zero) cost', async () => {
+    const runsWithUnknownCost = [RUNS[0], { ...RUNS[1], totalUsd: null, costUnknown: true }];
+    renderSessionsFull(SESSIONS, runsWithUnknownCost);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    expect(screen.getByText(/partial/i)).toBeInTheDocument();
+  });
+
+  it('does not flag the Workflow spend KPI as partial when every null cost is a confirmed $0', async () => {
+    const runsWithConfirmedZero = [RUNS[0], { ...RUNS[1], totalUsd: null, costUnknown: false }];
+    renderSessionsFull(SESSIONS, runsWithConfirmedZero);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
+  });
+
   it('scopes the visible session list to the run-source filter', async () => {
     renderSessionsFull(SESSIONS, RUNS);
     await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());

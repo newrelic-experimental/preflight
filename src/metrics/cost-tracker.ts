@@ -330,6 +330,26 @@ export class CostTracker implements Resettable {
     return total;
   }
 
+  /**
+   * Whether THIS process's live CostTracker has ever observed a token event
+   * for `runId` at all, distinct from `getCostForWorkflowRun()` returning 0.
+   * That 0 is ambiguous: it means either "confirmed $0 spend" or "this
+   * process never personally observed this run's cost" (e.g. after a
+   * process restart, or in a `--local` standalone dashboard reading rollups
+   * from disk for a run a different `--stdio` process actually paid for) —
+   * `WorkflowStore` uses this to distinguish the two so the "Workflow
+   * spend" KPI can flag a total as partial instead of silently treating
+   * "unknown" as "zero". A partial mitigation.
+   *
+   * This is a read-only accessor over existing state — it does not change
+   * what `costByWorkflowRunId` tracks or how. A full fix would persist
+   * per-run cost somewhere `WorkflowStore` can read across process
+   * restarts/instances; that's out of scope here.
+   */
+  hasCostForWorkflowRun(runId: string): boolean {
+    return this.costByWorkflowRunId.has(runId);
+  }
+
   /** Iterable view of every (runId, dayKey, usd) tuple — for dashboard joins. */
   *iterCostByWorkflowRun(): IterableIterator<{ runId: string; dayKey: string; usd: number }> {
     for (const [runId, m] of this.costByWorkflowRunId) {

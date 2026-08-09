@@ -164,6 +164,51 @@ describe('GitEfficiencyTracker', () => {
     expect(metrics.conflictResolutionRate).toBe(1);
   });
 
+  // this.events is only ever .push()'d, in whatever order
+  // recordToolCall is invoked — not necessarily ascending timestamp order.
+  // Two realistic causes: parallel tool calls within a session (a
+  // later-started, earlier-finishing command lands first) or multi-session
+  // buffer draining. GitEfficiency.tsx's "Recent Git Activity" does
+  // `[...gitCommandTimeline].reverse().slice(0, 30)`, which only picks the
+  // true newest 30 if the source is already ascending.
+  it('sorts gitCommandTimeline by timestamp ascending regardless of push order', () => {
+    tracker.recordToolCall(makeRecord({ command: 'git status', timestamp: 300 }));
+    tracker.recordToolCall(makeRecord({ command: 'git status', timestamp: 100 }));
+    tracker.recordToolCall(makeRecord({ command: 'git status', timestamp: 200 }));
+    const metrics = tracker.getMetrics();
+    // Unsorted, this would equal [300, 100, 200] — raw push order — so
+    // .reverse().slice(0, N) on the frontend would silently pick the wrong
+    // window instead of the true newest N.
+    expect(metrics.gitCommandTimeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
+  it('sorts conflictHistory by timestamp ascending when conflict sequences interleave out of order', () => {
+    // Conflict B (timestamp 100) is processed AFTER conflict A (timestamp
+    // 200) — e.g. two concurrent sessions whose buffers were drained in an
+    // order that doesn't match wall-clock order.
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git merge main',
+        timestamp: 200,
+        success: false,
+        error: 'CONFLICT (content): Merge conflict in src/a.ts',
+      }),
+    );
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "resolve a"', timestamp: 250 }));
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git merge main',
+        timestamp: 100,
+        success: false,
+        error: 'CONFLICT (content): Merge conflict in src/b.ts',
+      }),
+    );
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "resolve b"', timestamp: 150 }));
+    const metrics = tracker.getMetrics();
+    // Unsorted, this would equal [200, 100] — raw push order.
+    expect(metrics.conflictHistory.map((c) => c.timestamp)).toEqual([100, 200]);
+  });
+
   it('extracts conflicted file paths', () => {
     tracker.recordToolCall(
       makeRecord({
@@ -497,6 +542,98 @@ describe('GitEfficiencyTracker', () => {
     expect(metrics.riskIndicators.syncedBeforeEditing).toBeNull();
   });
 
+  // Without a day-boundary reset, GitEfficiencyTracker never resets, so in
+  // --local mode (a persistent, multi-day dashboard daemon) "Today's
+  // activity across all sessions" would silently become an unbounded
+  // all-time counter. The actual day-boundary trigger lives in
+  // src/index.ts's onRecord handler (calls reset() then re-hydrates
+  // repoContext/branch-divergence from what was captured at startup, once
+  // localDateKey() changes) — not unit-testable from this file. This test
+  // instead verifies the composability that depends on: reset() must clear
+  // the day's accumulated activity while leaving room for the caller to
+  // immediately re-hydrate the repo identity (which isn't "today's
+  // activity" and has no periodic refresh of its own), so a day-boundary
+  // reset doesn't also make the "Repos Today" pills lose their repoName.
+  it('a day-boundary reset followed by re-hydration clears activity but the repo identity can be restored', () => {
+    tracker.hydrateRepoContext({
+      repoName: 'org/repo',
+      branch: 'main',
+      remoteName: 'origin',
+      defaultBranch: 'main',
+    });
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "b"' }));
+    expect(tracker.getMetrics().commitCount).toBe(2);
+    expect(tracker.getMetrics().repoContext.repoName).toBe('org/repo');
+
+    // Simulate the day-boundary reset+re-hydrate sequence performed in
+    // src/index.ts's onRecord handler when localDateKey() changes.
+    tracker.reset('next-session');
+    tracker.hydrateRepoContext({
+      repoName: 'org/repo',
+      branch: 'main',
+      remoteName: 'origin',
+      defaultBranch: 'main',
+    });
+
+    const metrics = tracker.getMetrics();
+    // Yesterday's commits don't leak into today's count.
+    expect(metrics.commitCount).toBe(0);
+    // But the repo identity survives, because the caller re-hydrated it
+    // immediately after reset() — it isn't "today's activity" and has no
+    // other refresh path once the process is running.
+    expect(metrics.repoContext.repoName).toBe('org/repo');
+  });
+
+  // Follow-up to the test above: src/index.ts's day-boundary handler now also
+  // re-runs `git log --since=<new local midnight>` (mirroring the startup
+  // hydration) and feeds the result through hydrateGitLog() right after
+  // reset(), so commits Claude Code makes internally — which never reach
+  // recordToolCall() via tool hooks (see the comment on the startup
+  // hydration in src/index.ts) — still count toward "today's commits" on
+  // day 2+ of a long-lived --local daemon, instead of only ever seeing
+  // hook-observed commits made after the reset.
+  it('a day-boundary reset followed by hydrateGitLog() recovers commits made outside tool hooks', () => {
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));
+    expect(tracker.getMetrics().commitCount).toBe(1);
+
+    tracker.reset('next-session');
+    expect(tracker.getMetrics().commitCount).toBe(0);
+
+    // Simulates src/index.ts feeding the day-scoped `git log` output
+    // (commits not captured by tool hooks) back into the tracker right
+    // after the reset.
+    tracker.hydrateGitLog([
+      { hash: 'abc123', timestamp: Date.now() },
+      { hash: 'def456', timestamp: Date.now() },
+    ]);
+
+    expect(tracker.getMetrics().commitCount).toBe(2);
+  });
+
+  // A drain batch can hold hook-observed records for commits that already
+  // landed by the time the day-boundary `git log` snapshot ran — that
+  // snapshot's hydrateGitLog() call sees them too. Without a way to tell
+  // "this hook event is the same commit `git log` already vouched for" from
+  // "this is a genuinely new commit," recordToolCall() would double-count.
+  it('does not double-count a hook-observed commit whose timestamp hydrateGitLog() already covered', () => {
+    const hydratedAt = Date.now();
+    tracker.hydrateGitLog([{ hash: 'abc123', timestamp: hydratedAt }]);
+    expect(tracker.getMetrics().commitCount).toBe(1);
+
+    // The buffered hook event for that same commit, still queued from before
+    // the day-boundary flip, now gets processed — its timestamp is at or
+    // before what git log already covered.
+    tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: hydratedAt }));
+    expect(tracker.getMetrics().commitCount).toBe(1);
+
+    // A genuinely new commit made after the hydration snapshot still counts.
+    tracker.recordToolCall(
+      makeRecord({ command: 'git commit -m "b"', timestamp: hydratedAt + 5_000 }),
+    );
+    expect(tracker.getMetrics().commitCount).toBe(2);
+  });
+
   describe('replayTimeline', () => {
     it('hydrates tracker from prior session timeline entries', () => {
       const t = Date.now() - 3600_000;
@@ -638,6 +775,81 @@ describe('GitEfficiencyTracker', () => {
       tracker.replayTimeline(timeline);
       const metrics = tracker.getMetrics();
       expect(metrics.forcePushes).toBe(1);
+    });
+
+    // A developer who worked in a different repo earlier today must
+    // not have that repo's commits/conflicts/force-pushes counted against
+    // whichever repo this tracker's header currently names.
+    describe('cross-repo filtering', () => {
+      const t = Date.now() - 3600_000;
+      const otherRepoTimeline: ReplayTimelineEntry[] = [
+        {
+          timestamp: t,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m "work in repo A"',
+        },
+        {
+          timestamp: t + 1000,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git push --force origin feature',
+        },
+      ];
+
+      it('skips a replayed session from a different repo than the current repoContext', () => {
+        tracker.hydrateRepoContext({
+          repoName: 'org/repo-b',
+          branch: 'main',
+          remoteName: 'origin',
+          defaultBranch: 'main',
+        });
+
+        tracker.replayTimeline(otherRepoTimeline, 'org/repo-a');
+
+        const metrics = tracker.getMetrics();
+        expect(metrics.totalGitCommands).toBe(0);
+        expect(metrics.commitCount).toBe(0);
+        expect(metrics.forcePushes).toBe(0);
+      });
+
+      it('replays a session from the SAME repo as the current repoContext', () => {
+        tracker.hydrateRepoContext({
+          repoName: 'org/repo-a',
+          branch: 'main',
+          remoteName: 'origin',
+          defaultBranch: 'main',
+        });
+
+        tracker.replayTimeline(otherRepoTimeline, 'org/repo-a');
+
+        const metrics = tracker.getMetrics();
+        expect(metrics.totalGitCommands).toBe(2);
+        expect(metrics.commitCount).toBe(1);
+        expect(metrics.forcePushes).toBe(1);
+      });
+
+      it('replays unfiltered when the session repoName is unknown (null)', () => {
+        tracker.hydrateRepoContext({
+          repoName: 'org/repo-b',
+          branch: 'main',
+          remoteName: 'origin',
+          defaultBranch: 'main',
+        });
+
+        tracker.replayTimeline(otherRepoTimeline, null);
+
+        expect(tracker.getMetrics().totalGitCommands).toBe(2);
+      });
+
+      it('replays unfiltered when the tracker has no repoContext yet', () => {
+        // No hydrateRepoContext() call — repoContext.repoName stays null.
+        tracker.replayTimeline(otherRepoTimeline, 'org/repo-a');
+
+        expect(tracker.getMetrics().totalGitCommands).toBe(2);
+      });
     });
   });
 

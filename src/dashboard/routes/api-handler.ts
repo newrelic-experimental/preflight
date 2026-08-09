@@ -43,6 +43,7 @@ import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
 import type { Recommendation } from '../../metrics/recommendation-engine.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import type {
+  QualityEvent,
   QualityProxyMetrics,
   QualityProxyRawCounts,
 } from '../../metrics/quality-proxy-tracker.js';
@@ -130,6 +131,8 @@ interface WorkflowRunDto {
   readonly agentCount: number;
   readonly totalTokens: number;
   readonly totalUsd: number | null;
+  /** Partial mitigation — see `WorkflowRunRow.cost_unknown`'s docstring. */
+  readonly costUnknown: boolean;
   readonly declaredPhases: number | null;
   readonly observedPhases: number;
   readonly declaredParallelWidths: ReadonlyArray<number | 'dynamic'>;
@@ -173,6 +176,7 @@ function toWorkflowRunDto(row: unknown): WorkflowRunDto {
     agentCount: r.agent_count,
     totalTokens: r.total_tokens,
     totalUsd: r.total_usd ?? null,
+    costUnknown: r.cost_unknown ?? false,
     declaredPhases: r.declared_phases ?? null,
     observedPhases: r.observed_phases,
     declaredParallelWidths: r.declared_parallel_widths ?? [],
@@ -226,6 +230,11 @@ function toLiveWorkflowDetail(live: LiveWorkflowRunDetail): {
     agentCount: live.agentCount,
     totalTokens: live.totalTokens,
     totalUsd: live.totalUsd,
+    // A still-running workflow's cost comes straight from this process's own
+    // live SubagentWatcher state, not a cross-process/restart-vulnerable
+    // on-disk rollup — so it's never ambiguous the way a completed run's
+    // WorkflowStore-read cost can be.
+    costUnknown: false,
     declaredPhases: live.topology?.declaredPhases ?? null,
     // No phase-title telemetry exists mid-run (that comes from the rollup's
     // workflowProgress), so observed phases are unknown → 0.
@@ -388,9 +397,9 @@ export interface ApiHandlerDeps {
   };
   readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
   readonly instructionDriftTracker?: { getMetrics: () => InstructionDriftMetrics };
-  readonly decisionTracker?: { getMetrics: () => DecisionTreeMetrics };
-  readonly turnCostAttributor?: { getMetrics: () => CostAttributionMetrics };
-  readonly auditTrailManager?: { getAuditLog: () => readonly AuditRecord[] };
+  readonly decisionTracker?: { getMetrics: (sessionId?: string) => DecisionTreeMetrics };
+  readonly turnCostAttributor?: { getMetrics: (sessionId?: string) => CostAttributionMetrics };
+  readonly auditTrailManager?: { getAuditLog: (limit?: number) => readonly AuditRecord[] };
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
@@ -769,23 +778,50 @@ function computeTodayPeakConcurrency(sessions: readonly SessionActivityLike[]): 
   return peak;
 }
 
+// Mirrors QualityProxyTracker's own getRawCounts()/countBySignal() math, but
+// over a caller-filtered event slice — needed so GET /api/quality-proxy can
+// day-filter this process's own live contribution (see the startMs pattern
+// in GET /api/tool-selection-score) without adding a day-bucketed accessor
+// to the tracker itself.
+function rawQualityCountsFromEvents(events: readonly QualityEvent[]): QualityProxyRawCounts {
+  const count = (signal: QualityEvent['signal']): number =>
+    events.filter((e) => e.signal === signal).length;
+  return {
+    totalSignals: events.length,
+    diffApplyCleanCount: count('diff_applied_clean'),
+    diffFailCount: count('diff_failed'),
+    testPassCount: count('test_pass'),
+    testFailCount: count('test_fail'),
+    backtrackCount: count('backtrack'),
+    selfCorrectionCount: count('self_correction'),
+  };
+}
+
 function computeDailyPeakConcurrency(
   sessions: readonly SessionActivityLike[],
   days: number,
 ): Array<{ date: string; peak: number }> {
-  const now = new Date();
+  // Local (not UTC) day boundaries — see localStartOfDay's doc comment. A
+  // developer's evening session commonly straddles UTC midnight, which would
+  // otherwise land that activity on the wrong calendar day for anyone not in
+  // UTC, and disagree with this same file's local-day `aggregateDailyCost`
+  // equivalent on the client (History.tsx).
+  const todayStart = localStartOfDay();
   const result: Array<{ date: string; peak: number }> = [];
 
   for (let d = days - 1; d >= 0; d--) {
-    const dayStart = new Date(now);
-    dayStart.setUTCDate(dayStart.getUTCDate() - d);
-    dayStart.setUTCHours(0, 0, 0, 0);
-    const dayEnd = new Date(dayStart);
-    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
-
+    const dayStart = new Date(todayStart);
+    dayStart.setDate(dayStart.getDate() - d);
     const dayStartMs = dayStart.getTime();
+    // `dayEnd` must be derived via the same local-date arithmetic as
+    // `dayStart`, not `dayStartMs + 86_400_000` — a local calendar day is
+    // 23h or 25h long on the ~2 DST-transition days/year, so the fixed-ms
+    // offset lands an hour into (or short of) the next/previous local day,
+    // misattributing entries near the boundary on those days.
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
     const dayEndMs = dayEnd.getTime();
-    const dateKey = dayStart.toISOString().slice(0, 10);
+    const dateKey = localDateKey(dayStartMs);
 
     // Find sessions that overlap with this day and have timeline data
     const events: Array<{ ts: number; delta: number }> = [];
@@ -1046,6 +1082,12 @@ export function createApiHandler(
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
           estimatedCostUsd: deps.costTracker?.getMetrics().sessionTotalCostUsd ?? null,
+          // costTracker.getMetrics() also exposes the model this live
+          // session is actually using; without it, aggregateModelPerformance
+          // (History.tsx) buckets this session's real-time cost/count under
+          // "unknown" until the session is persisted and rebuilt with a
+          // real `model` field.
+          model: deps.costTracker?.getMetrics().model ?? null,
         } as SessionIdentityLike);
       }
     }
@@ -1650,14 +1692,23 @@ export function createApiHandler(
     jsonOk(res, deps.instructionDriftTracker.getMetrics());
   });
 
-  routes.set('GET /api/decision-tree', (_req, res) => {
+  routes.set('GET /api/decision-tree', (req, res) => {
     if (!deps.decisionTracker) return unavailable(res, 'decisionTracker');
-    jsonOk(res, deps.decisionTracker.getMetrics());
+    // Optional ?sessionId= scopes the result to one session — without
+    // it, this process-global tracker's data can belong to a different
+    // session than the one selected in the dashboard's trace pane (in
+    // `--local` mode, several concurrently-live sessions blended together).
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const sessionId = url.searchParams.get('sessionId') ?? undefined;
+    jsonOk(res, deps.decisionTracker.getMetrics(sessionId));
   });
 
-  routes.set('GET /api/turn-costs', (_req, res) => {
+  routes.set('GET /api/turn-costs', (req, res) => {
     if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
-    jsonOk(res, deps.turnCostAttributor.getMetrics());
+    // Same reasoning as /api/decision-tree above.
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const sessionId = url.searchParams.get('sessionId') ?? undefined;
+    jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
   });
 
   routes.set('GET /api/compute-waste', (_req, res) => {
@@ -1700,9 +1751,20 @@ export function createApiHandler(
     });
   });
 
-  routes.set('GET /api/audit', (_req, res) => {
+  routes.set('GET /api/audit', (req, res) => {
     if (!deps.auditTrailManager) return unavailable(res, 'auditTrailManager');
-    const log = deps.auditTrailManager.getAuditLog();
+    // Cap here too (not just via getAuditLog()'s own default) so a caller
+    // can't force an unbounded read by passing an absurdly large `limit` —
+    // the audit log is unpruned on disk, so a naive pass-through would let
+    // a single request re-read the entire history.
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const limitStr = url.searchParams.get('limit') ?? '';
+    let limit = 1000;
+    const parsedLimit = parseInt(limitStr, 10);
+    if (!Number.isNaN(parsedLimit)) {
+      limit = Math.min(Math.max(parsedLimit, 1), 2000);
+    }
+    const log = deps.auditTrailManager.getAuditLog(limit);
     jsonOk(res, log.map(toAuditEntry));
   });
 
@@ -1801,8 +1863,21 @@ export function createApiHandler(
     if (!Number.isNaN(parsedDays)) {
       days = Math.min(Math.max(parsedDays, 1), 365);
     }
-    const since = new Date(Date.now() - days * 86_400_000);
-    const sessions = deps.sessionStore.loadAllSessions({ since });
+    // Anchor the window to local midnight `days` ago — matching
+    // aggregateDailyCost's local-day grouping for the sibling "Daily Spend"
+    // chart (History.tsx) — instead of a raw rolling instant, which doesn't
+    // align with any calendar boundary and would draw a different
+    // "last N days" line than that chart. loadAllSessions()'s own
+    // pre-filter still compares against session-store.ts's UTC-derived
+    // filename date, so `since` is widened by one extra day to guarantee it
+    // never excludes a session that actually falls inside the local window;
+    // the startTime check below applies the real, local-day-aligned cutoff.
+    const windowStartMs = localStartOfDay() - (days - 1) * 86_400_000;
+    const since = new Date(windowStartMs - 86_400_000);
+    const sessions = deps.sessionStore.loadAllSessions({ since }).filter((s) => {
+      const startTime = (s as { startTime?: number }).startTime;
+      return startTime === undefined || startTime >= windowStartMs;
+    });
     jsonOk(res, attributeSessionCosts(sessions));
   });
 
@@ -1915,13 +1990,21 @@ export function createApiHandler(
     // live tracker only.
     const live = deps.qualityProxyTracker.getMetrics();
     const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // Day-filter this process's own live contribution the same way GET
+    // /api/tool-selection-score does just below — QualityProxyTracker has no
+    // concept of "day" internally (events accumulate for the tracker's whole
+    // process lifetime), so a --local dashboard daemon running since before
+    // midnight would otherwise blend yesterday's (or older) signals into
+    // "today's sessions" here, inconsistent with the correctly-scoped Tool
+    // Selection panel right next to it.
+    const startMs = localStartOfDay(Date.now());
+    const liveRawCounts = rawQualityCountsFromEvents(
+      live.events.filter((e) => e.timestamp >= startMs),
+    );
     const persistedCounts = (deps.sessionStore?.loadTodaySessions() ?? [])
       .filter((s) => s.sessionId !== ownSessionId)
       .map((s) => s.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS);
-    const combined = combineQualityProxyRawCounts([
-      deps.qualityProxyTracker.getRawCounts(),
-      ...persistedCounts,
-    ]);
+    const combined = combineQualityProxyRawCounts([liveRawCounts, ...persistedCounts]);
     jsonOk(res, {
       ...combined,
       qualityByTurnBucket: live.qualityByTurnBucket,
@@ -2078,15 +2161,15 @@ export function createApiHandler(
       // Derive the headline "today peak" from the SAME buckets shown in the
       // chart — rather than from an independent computation over a
       // differently-scoped session set — so the two numbers can never
-      // disagree by construction. (This was the root cause of the bug this
-      // fix addresses: the headline and the chart used to be computed from
-      // two different concurrency models that could silently drift apart.)
+      // disagree by construction. Computing them from two different
+      // concurrency models is exactly how the headline and chart can
+      // silently drift apart.
       //
       // Deliberately NOT folded with `livePeak` here (unlike allTimePeak
       // below): `livePeak` is a synthetic-id-unfiltered, never-reset
       // lifetime max from LiveSessionRegistry, so mixing it into today's
-      // headline can reintroduce a chart/headline disagreement — the exact
-      // class of bug this fix exists to eliminate. It's unnecessary anyway:
+      // headline can reintroduce that same chart/headline disagreement.
+      // It's unnecessary anyway:
       // `windows` already unions each live session's buffered (not-yet-
       // persisted) activity into the same buckets, so a currently-live
       // session with any tool-call activity is already reflected here.
@@ -2112,6 +2195,15 @@ export function createApiHandler(
       const view = url.searchParams.get('view') ?? 'today';
 
       if (view === 'today') {
+        // localStartOfDay() draws "today" using this dashboard *server*
+        // process's own OS/Intl timezone. The browser calls the same helper
+        // client-side (src/lib/date.ts) for its own "today" filtering, so
+        // this endpoint is only guaranteed to agree with the client when
+        // server and browser share a timezone — the common single-machine
+        // `--local`/`--stdio` deployment. A cloud-hosted or containerized
+        // dashboard viewed from a different timezone can see this bucket
+        // range anchored to the wrong midnight; neither side is ever
+        // told the other's offset today.
         const now = Date.now();
         const startMs = localStartOfDay(now);
         const bucketSizeMs = 900_000;
@@ -2160,28 +2252,57 @@ export function createApiHandler(
       if (view === 'history') {
         const weeksParam = url.searchParams.get('weeks');
         const weeks = weeksParam ? Math.min(Math.max(parseInt(weeksParam, 10) || 12, 1), 52) : 12;
-        const now = new Date();
-        const startDate = new Date(now);
-        startDate.setUTCDate(startDate.getUTCDate() - weeks * 7);
-        startDate.setUTCHours(0, 0, 0, 0);
+        // Local (not UTC) day boundaries — see localStartOfDay's doc comment
+        // and computeDailyPeakConcurrency's identical handling just above. A
+        // developer's evening session commonly straddles UTC midnight, which
+        // would otherwise land that activity on the wrong calendar day for
+        // anyone not in UTC.
+        const todayStart = localStartOfDay();
+        const startDate = new Date(todayStart);
+        startDate.setDate(startDate.getDate() - weeks * 7);
 
         const sessions = deps.sessionStore?.loadAllSessions?.({ since: startDate }) ?? [];
 
         const dayMap = new Map<string, number>();
         const cursor = new Date(startDate);
-        while (cursor <= now) {
-          dayMap.set(cursor.toISOString().slice(0, 10), 0);
-          cursor.setUTCDate(cursor.getUTCDate() + 1);
+        while (cursor.getTime() <= todayStart) {
+          dayMap.set(localDateKey(cursor.getTime()), 0);
+          cursor.setDate(cursor.getDate() + 1);
         }
 
+        // Bucket by each timeline entry's own timestamp, mirroring the
+        // `view=today` branch above — not by attributing a session's entire
+        // toolCallCount to the single day it *started* on. A session whose
+        // activity spans a day boundary would otherwise show a false spike
+        // on the start day and a false gap on the day(s) it actually
+        // continued into.
+        //
+        // `timeline` is optional and was only added to persisted sessions
+        // ~2026-06-02 (session-store.ts) — this route's default 12-week
+        // window still reaches sessions saved before that. A session with no
+        // timeline falls back to the old, still local-day-keyed,
+        // start-day/toolCallCount attribution so that older history doesn't
+        // silently drop to zero; only sessions that *do* have a timeline get
+        // the per-entry walk.
+        const startMs = startDate.getTime();
         for (const s of sessions) {
-          const session = s as { startTime?: string | number; toolCallCount?: number };
-          if (!session.startTime) continue;
-          const d = new Date(
-            typeof session.startTime === 'number' ? session.startTime : session.startTime,
-          );
-          if (d < startDate) continue;
-          const key = d.toISOString().slice(0, 10);
+          const session = s as {
+            startTime?: number;
+            toolCallCount?: number;
+            timeline?: readonly { timestamp: number }[];
+          };
+          if (session.timeline) {
+            for (const entry of session.timeline) {
+              if (entry.timestamp < startMs) continue;
+              const key = localDateKey(entry.timestamp);
+              if (dayMap.has(key)) {
+                dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
+              }
+            }
+            continue;
+          }
+          if (!session.startTime || session.startTime < startMs) continue;
+          const key = localDateKey(session.startTime);
           if (dayMap.has(key)) {
             dayMap.set(key, (dayMap.get(key) ?? 0) + (session.toolCallCount ?? 0));
           }
@@ -2203,7 +2324,14 @@ export function createApiHandler(
 
   routes.set('GET /api/git-efficiency/repos', (_req, res) => {
     if (!deps.sessionStore) return unavailable(res, 'sessionStore');
-    const todaySessions = deps.sessionStore.loadTodaySessions() as Array<{
+    // Prefer loadSessionsOverlappingToday() so a session that started
+    // yesterday and crossed into today isn't invisible from these pills —
+    // loadTodaySessions() filters by filename date (= start date) and would
+    // otherwise silently drop it, even though its git activity still counts
+    // toward the KPIs shown alongside these pills — same reasoning as the
+    // day-boundary hydration in src/index.ts.
+    const todaySessions = (deps.sessionStore.loadSessionsOverlappingToday?.() ??
+      deps.sessionStore.loadTodaySessions()) as Array<{
       repoName?: string | null;
       sessionId: string;
     }>;
@@ -2606,6 +2734,13 @@ export function createApiHandler(
           ]);
           const responseBody: Record<string, unknown> = { ...session };
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
+          // `session.timeline` is append-only in processing order, not
+          // timestamp order (parallel tool calls can complete out of
+          // start-order) — sort before returning, mirroring the identical
+          // fix already applied to buildReplayResponse()'s persisted branch.
+          if (Array.isArray(session.timeline)) {
+            responseBody.timeline = [...session.timeline].sort((a, b) => a.timestamp - b.timestamp);
+          }
           jsonOk(res, responseBody);
           return;
         }
@@ -2648,13 +2783,17 @@ export function createApiHandler(
                   : undefined,
               // Use the same `timeline` shape as persisted sessions so the
               // Sessions and Replay views can consume one type. See
-              // src/storage/types.ts ReplayTimelineEntry.
-              timeline: live.toolCallTimeline.map((t) => ({
-                timestamp: t.timestamp,
-                toolName: t.toolName,
-                durationMs: t.durationMs,
-                success: t.success ?? true,
-              })),
+              // src/storage/types.ts ReplayTimelineEntry. `toolCallTimeline`
+              // is append-only in processing order, not timestamp order —
+              // sort before returning, mirroring buildReplayResponse().
+              timeline: live.toolCallTimeline
+                .map((t) => ({
+                  timestamp: t.timestamp,
+                  toolName: t.toolName,
+                  durationMs: t.durationMs,
+                  success: t.success ?? true,
+                }))
+                .sort((a, b) => a.timestamp - b.timestamp),
             });
             return;
           }

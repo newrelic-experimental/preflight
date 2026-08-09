@@ -129,6 +129,53 @@ describe('WorkflowStore', () => {
     expect(rows[0].total_usd).toBeCloseTo(4.56, 2);
   });
 
+  // total_usd === null is ambiguous between "confirmed $0" and "this
+  // process never observed the run's cost". cost_unknown resolves that
+  // ambiguity when hasCostForRun is wired.
+  describe('cost_unknown', () => {
+    it('is false when total_usd is a real positive number', () => {
+      writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
+      const store = new WorkflowStore({
+        projectsDir,
+        getCostForRun: () => 4.56,
+        hasCostForRun: () => true,
+      });
+      expect(store.listRuns()[0].cost_unknown).toBe(false);
+    });
+
+    it('is false when hasCostForRun confirms a genuine $0 spend', () => {
+      writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
+      const store = new WorkflowStore({
+        projectsDir,
+        getCostForRun: () => 0,
+        hasCostForRun: () => true,
+      });
+      const row = store.listRuns()[0];
+      expect(row.total_usd).toBeNull();
+      expect(row.cost_unknown).toBe(false);
+    });
+
+    it('is true when hasCostForRun reports the cost was never observed', () => {
+      writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
+      const store = new WorkflowStore({
+        projectsDir,
+        getCostForRun: () => 0,
+        hasCostForRun: () => false,
+      });
+      const row = store.listRuns()[0];
+      expect(row.total_usd).toBeNull();
+      expect(row.cost_unknown).toBe(true);
+    });
+
+    it('defaults to true (conservative) when hasCostForRun is not wired at all', () => {
+      writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
+      const store = new WorkflowStore({ projectsDir }); // no getCostForRun/hasCostForRun
+      const row = store.listRuns()[0];
+      expect(row.total_usd).toBeNull();
+      expect(row.cost_unknown).toBe(true);
+    });
+  });
+
   it('returns null when run not found', () => {
     const store = new WorkflowStore({ projectsDir });
     expect(store.getRun('wf_nonexistent')).toBeNull();

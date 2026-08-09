@@ -384,6 +384,23 @@ describe('AuditTrailManager', () => {
     expect(mgr.getSensitiveAccessLog()).toHaveLength(0);
   });
 
+  // entries is append-only in processing order, not timestamp order.
+  // Audit.tsx does `visible.slice(0, VISIBLE_LIMIT)` assuming newest-first,
+  // so getAuditLog() must sort by timestamp descending before returning —
+  // otherwise, once more than VISIBLE_LIMIT entries exist, the page shows
+  // the oldest entries forever instead of the most recent ones.
+  it('getAuditLog returns entries sorted by timestamp descending regardless of push order', () => {
+    const mgr = makeManager();
+    mgr.recordToolCall(makeRecord({ toolName: 'Read', timestamp: 300 }));
+    mgr.recordToolCall(makeRecord({ toolName: 'Write', timestamp: 100 }));
+    mgr.recordToolCall(makeRecord({ toolName: 'Bash', timestamp: 200 }));
+
+    // Unsorted, this would equal [300, 100, 200] — raw push order — so
+    // slice(0, N) on the frontend would keep whichever N happened to be
+    // pushed first, not the true newest N.
+    expect(mgr.getAuditLog().map((e) => e.timestamp)).toEqual([300, 200, 100]);
+  });
+
   // 11. Write → FileWrite
   it('classifies Write as FileWrite', () => {
     const mgr = makeManager();
@@ -549,6 +566,194 @@ describe('AuditTrailManager', () => {
   it('does not throw when no localStore is provided', () => {
     const mgr = makeManager();
     expect(() => mgr.recordToolCall(makeRecord())).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Synthetic session-id filtering on record.sessionId itself
+// ---------------------------------------------------------------------------
+
+describe('AuditTrailManager synthetic sessionId filtering', () => {
+  it.each(['pending-1738000000000', 'local-1738000000000', 'proxy-1738000000000'])(
+    'nulls out a synthetic record.sessionId ("%s") on recordToolCall, even though it is non-null',
+    (syntheticId) => {
+      const mgr = makeManager({ sessionId: 'sess-real' });
+      const audit = mgr.recordToolCall(makeRecord({ sessionId: syntheticId }));
+      expect(audit.sessionId).toBeNull();
+    },
+  );
+
+  it('nulls out a synthetic record.sessionId on recordProxyCall', () => {
+    const mgr = makeManager({ sessionId: 'sess-real' });
+    const audit = mgr.recordProxyCall(makeProxyRecord({ sessionId: 'proxy-conn-abc123' }));
+    expect(audit.sessionId).toBeNull();
+  });
+
+  it('still nulls out via the manager fallback when record.sessionId is null and the manager id is synthetic', () => {
+    const mgr = makeManager({ sessionId: 'local-1738000000000' });
+    const audit = mgr.recordToolCall(makeRecord({ sessionId: null }));
+    expect(audit.sessionId).toBeNull();
+  });
+
+  it('keeps a real, non-synthetic record.sessionId', () => {
+    const mgr = makeManager({ sessionId: 'local-1738000000000' });
+    const audit = mgr.recordToolCall(makeRecord({ sessionId: 'sess-abc-real' }));
+    expect(audit.sessionId).toBe('sess-abc-real');
+  });
+
+  it("a synthetic sessionId never appears in getAuditLog()'s output", () => {
+    const mgr = makeManager({ sessionId: 'sess-real' });
+    mgr.recordToolCall(makeRecord({ sessionId: 'pending-1738000000000', toolName: 'Read' }));
+    mgr.recordToolCall(makeRecord({ sessionId: 'sess-real', toolName: 'Write' }));
+
+    const log = mgr.getAuditLog();
+    expect(
+      log.every((e) => e.sessionId == null || !e.sessionId.match(/^(pending|local|proxy)-/)),
+    ).toBe(true);
+    expect(log.find((e) => e.tool === 'Read')?.sessionId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Disk read-back merges other processes' persisted audit history
+// ---------------------------------------------------------------------------
+
+describe('AuditTrailManager.getAuditLog() disk read-back', () => {
+  function makeLocalStoreWithDisk(diskEntries: unknown[]): {
+    store: LocalStore;
+    appendSpy: ReturnType<typeof jest.fn>;
+  } {
+    const appendSpy = jest.fn();
+    const store = {
+      appendAuditLog: appendSpy,
+      peekAllAuditLogs: jest.fn(() => diskEntries),
+    } as unknown as LocalStore;
+    return { store, appendSpy };
+  }
+
+  it("merges in a second (simulated) process's persisted audit records", () => {
+    // Simulates a second --stdio process that wrote to the shared audit/
+    // directory but whose in-memory AuditTrailManager this process never saw.
+    const otherProcessEntry = {
+      timestamp: 999,
+      sessionId: 'sess-other-process',
+      action: 'FileRead',
+      tool: 'Read',
+      detail: 'Read src/other-process-file.ts',
+      developer: 'bob',
+    };
+    const { store } = makeLocalStoreWithDisk([otherProcessEntry]);
+    const mgr = makeManager({ localStore: store });
+
+    mgr.recordToolCall(makeRecord({ toolName: 'Write', filePath: 'src/this-process-file.ts' }));
+
+    const log = mgr.getAuditLog();
+    expect(log.some((e) => e.detail === 'Read src/other-process-file.ts')).toBe(true);
+    expect(log.some((e) => e.detail.includes('this-process-file.ts'))).toBe(true);
+  });
+
+  it('does not double-count a record this process already has in memory AND already persisted to disk', () => {
+    const { store } = makeLocalStoreWithDisk([]);
+    const mgr = makeManager({ localStore: store });
+    const audit = mgr.recordToolCall(makeRecord({ toolName: 'Read', filePath: 'src/app.ts' }));
+
+    // The disk read-back sees this exact record (same shape it was
+    // persisted as) reflected back — simulating peekAllAuditLogs() reading
+    // the very entry this process's own persistToDisk() just wrote.
+    (store.peekAllAuditLogs as unknown as jest.Mock).mockReturnValue([
+      {
+        timestamp: audit.timestamp,
+        sessionId: audit.sessionId,
+        action: audit.action,
+        tool: audit.tool,
+        detail: audit.detail,
+        developer: audit.developer,
+        filePath: audit.filePath,
+      },
+    ]);
+
+    expect(mgr.getAuditLog()).toHaveLength(1);
+  });
+
+  it('drops a disk entry missing required fields instead of surfacing a broken row', () => {
+    const { store } = makeLocalStoreWithDisk([
+      { timestamp: 123, action: 'not-a-real-action', tool: 'Read', detail: 'x', developer: 'x' },
+      { timestamp: 123, tool: 'Read' }, // missing action/detail/developer
+    ]);
+    const mgr = makeManager({ localStore: store });
+
+    expect(mgr.getAuditLog()).toEqual([]);
+  });
+
+  it('re-filters a synthetic sessionId found in an old on-disk entry written before this filtering existed', () => {
+    const { store } = makeLocalStoreWithDisk([
+      {
+        timestamp: 555,
+        sessionId: 'pending-1738000000000',
+        action: 'FileRead',
+        tool: 'Read',
+        detail: 'Read src/old.ts',
+        developer: 'alice',
+      },
+    ]);
+    const mgr = makeManager({ localStore: store });
+
+    const log = mgr.getAuditLog();
+    expect(log).toHaveLength(1);
+    expect(log[0]?.sessionId).toBeNull();
+  });
+
+  it('works with no localStore configured (falls back to in-memory only)', () => {
+    const mgr = makeManager();
+    mgr.recordToolCall(makeRecord({ toolName: 'Read' }));
+    expect(mgr.getAuditLog()).toHaveLength(1);
+  });
+
+  // Regression for the unbounded CPU/payload finding: getAuditLog() must
+  // cap its result and must forward that cap to peekAllAuditLogs() so the
+  // disk read itself stays bounded — not just the final in-memory slice.
+  it('passes an explicit limit through to localStore.peekAllAuditLogs()', () => {
+    const { store } = makeLocalStoreWithDisk([]);
+    const mgr = makeManager({ localStore: store });
+
+    mgr.getAuditLog(42);
+
+    expect(store.peekAllAuditLogs).toHaveBeenCalledWith(42);
+  });
+
+  it('defaults the limit passed to peekAllAuditLogs() when the caller omits one', () => {
+    const { store } = makeLocalStoreWithDisk([]);
+    const mgr = makeManager({ localStore: store });
+
+    mgr.getAuditLog();
+
+    // Whatever the concrete default is, it must be a bounded number, not
+    // "call with no argument" (which is what regressed to an unbounded
+    // disk read).
+    const [calledLimit] = (store.peekAllAuditLogs as unknown as jest.Mock).mock.calls[0] as [
+      number,
+    ];
+    expect(typeof calledLimit).toBe('number');
+    expect(calledLimit).toBeGreaterThan(0);
+  });
+
+  it('caps the merged in-memory + disk result to the requested limit', () => {
+    const diskEntries = Array.from({ length: 10 }, (_, i) => ({
+      timestamp: 1000 + i,
+      sessionId: null,
+      action: 'FileRead',
+      tool: 'Read',
+      detail: `disk-${i}`,
+      developer: 'alice',
+    }));
+    const { store } = makeLocalStoreWithDisk(diskEntries);
+    const mgr = makeManager({ localStore: store });
+    for (let i = 0; i < 10; i++) {
+      mgr.recordToolCall(makeRecord({ toolName: 'Read', filePath: `mem-${i}.ts` }));
+    }
+
+    const log = mgr.getAuditLog(5);
+    expect(log).toHaveLength(5);
   });
 });
 

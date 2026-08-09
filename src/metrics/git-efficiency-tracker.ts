@@ -252,6 +252,12 @@ export class GitEfficiencyTracker {
   private totalToolCalls = 0;
   private sessionStartTimestamp: number | null = null;
   private commitTimestamps: number[] = [];
+  // Latest commit timestamp covered by a `hydrateGitLog()` call. A live
+  // `git commit` event with a timestamp at or before this is one `git log`
+  // already saw at hydration time — recordToolCall() must skip it rather
+  // than double-count a commit that's about to arrive (or already has)
+  // through the normal hook-observed path too. See recordToolCall().
+  private hydratedThroughMs = 0;
   private worktreeCommands = 0;
   private oursCount = 0;
   private theirsCount = 0;
@@ -305,6 +311,14 @@ export class GitEfficiencyTracker {
     if (!GIT_COMMAND_RE.test(command)) return;
 
     const event = this.classifyGitCommand(command, record);
+    // A hook-observed commit whose timestamp `hydrateGitLog()` already saw
+    // (via `git log`) is the same commit, not a new one — hydrateGitLog()
+    // can't dedupe this itself since a live event's `command` is the raw
+    // shell string, not `git commit (<hash>)`, so it never matches its own
+    // hash-based check. Without this, a day-boundary hydration followed by
+    // this same commit's hook event arriving from the same drain batch
+    // would count it twice.
+    if (event.type === 'commit' && event.timestamp <= this.hydratedThroughMs) return;
     this.events.push(event);
     this.processEvent(event, command, record);
   }
@@ -384,10 +398,36 @@ export class GitEfficiencyTracker {
         // Don't increment commitsSinceLastSync for historical commits — this counter
         // tracks real-time session activity, not replayed history.
       }
+      // Advance the watermark even for a commit that was already tracked —
+      // either way, `git log` has now vouched for everything up to here, so
+      // recordToolCall() must not add it again when the hook-observed event
+      // for it (still queued in the same drain batch) gets processed.
+      if (commit.timestamp > this.hydratedThroughMs) {
+        this.hydratedThroughMs = commit.timestamp;
+      }
     }
   }
 
-  replayTimeline(entries: readonly ReplayTimelineEntry[]): void {
+  /**
+   * @param repoName The replayed session's own repo (from `SessionSummary.repoName`).
+   *   When both this and the tracker's own `repoContext.repoName` (set via
+   *   `hydrateRepoContext()`) are known and they don't match, the whole
+   *   timeline is skipped — otherwise a session worked on in a
+   *   different repo earlier today would have its commits/conflicts/force-
+   *   pushes counted against whichever repo this process's header currently
+   *   names. When either side is unknown (null/undefined — e.g. no git
+   *   remote configured, or `repoContext` not hydrated yet), the timeline is
+   *   replayed unfiltered rather than risk dropping legitimate same-repo
+   *   history.
+   */
+  replayTimeline(entries: readonly ReplayTimelineEntry[], repoName?: string | null): void {
+    if (
+      repoName != null &&
+      this.repoContext.repoName != null &&
+      repoName !== this.repoContext.repoName
+    ) {
+      return;
+    }
     for (const entry of entries) {
       const syntheticRecord: ToolCallRecord = {
         id: `replay-${entry.timestamp}`,
@@ -496,8 +536,15 @@ export class GitEfficiencyTracker {
       conflictResolutionRate,
       avgConflictResolutionMs,
       staleBranchPulls,
-      gitCommandTimeline: this.events.slice(-50),
-      conflictHistory: this.conflictRecords,
+      // this.events/this.conflictRecords are append-only in processing
+      // order, not timestamp order — parallel tool calls within a session,
+      // or multi-session buffer draining, can push an earlier-timestamped
+      // event after a later one. Sort by timestamp ascending (oldest-first)
+      // before exposing, so gitCommandTimeline's consumer
+      // (GitEfficiency.tsx's `[...timeline].reverse().slice(0, 30)`) picks
+      // the true newest 30, not whichever 30 happened to be pushed last.
+      gitCommandTimeline: [...this.events].sort((a, b) => a.timestamp - b.timestamp).slice(-50),
+      conflictHistory: [...this.conflictRecords].sort((a, b) => a.timestamp - b.timestamp),
       suggestions,
       bestPractices,
       preventionScore,
@@ -534,6 +581,7 @@ export class GitEfficiencyTracker {
     this.totalToolCalls = 0;
     this.sessionStartTimestamp = null;
     this.commitTimestamps = [];
+    this.hydratedThroughMs = 0;
     this.worktreeCommands = 0;
     this.oursCount = 0;
     this.theirsCount = 0;

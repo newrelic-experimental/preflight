@@ -235,6 +235,78 @@ describe('DecisionTracker.recordToolCall triggers', () => {
   });
 });
 
+// In `--local` mode, HookEventProcessor's `drainAllSessions` feeds
+// this one process-global tracker events from every concurrently-live
+// session, so the dashboard's session-detail drawer must be able to filter
+// down to just the session the user has selected.
+describe('DecisionTracker.getMetrics(sessionId) session isolation', () => {
+  function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
+    return {
+      id: 'id-1',
+      sessionId: 'session-1',
+      toolName: 'Read',
+      toolUseId: 'tool_1',
+      timestamp: Date.now(),
+      durationMs: 10,
+      success: true,
+      ...overrides,
+    };
+  }
+
+  it('scopes totalBranches/failurePoints to the requested session only', () => {
+    const tracker = new DecisionTracker();
+
+    // Session A: an AskUserQuestion branch (resolves as a 'success' outcome
+    // since the call itself succeeds).
+    tracker.recordToolCall(
+      makeRecord({ sessionId: 'session-a', toolName: 'AskUserQuestion', toolUseId: 'a-1' }),
+    );
+    // Session B: a failure followed by a recovery attempt that ALSO fails,
+    // so the recovery branch resolves to a 'failure' outcome.
+    tracker.recordToolCall(
+      makeRecord({ sessionId: 'session-b', toolName: 'Bash', success: false, toolUseId: 'b-1' }),
+    );
+    tracker.recordToolCall(
+      makeRecord({ sessionId: 'session-b', toolName: 'Bash', success: false, toolUseId: 'b-2' }),
+    );
+
+    const aMetrics = tracker.getMetrics('session-a');
+    const bMetrics = tracker.getMetrics('session-b');
+
+    expect(aMetrics.totalBranches).toBe(1);
+    expect(bMetrics.totalBranches).toBe(1);
+    expect(bMetrics.failurePoints).toHaveLength(1);
+    expect(aMetrics.failurePoints).toHaveLength(0);
+    // Unfiltered getMetrics() (no sessionId) still sees both sessions' branches.
+    expect(tracker.getMetrics().totalBranches).toBe(
+      aMetrics.totalBranches + bMetrics.totalBranches,
+    );
+  });
+
+  it('returns zero branches for an unknown sessionId rather than leaking another session', () => {
+    const tracker = new DecisionTracker();
+    tracker.recordToolCall(
+      makeRecord({ sessionId: 'session-a', toolName: 'AskUserQuestion', toolUseId: 'a-1' }),
+    );
+
+    const metrics = tracker.getMetrics('session-does-not-exist');
+    expect(metrics.totalBranches).toBe(0);
+    expect(metrics.failurePoints).toHaveLength(0);
+  });
+
+  it('getMetrics() with no sessionId still returns every branch (back-compat for callers with no single session in view)', () => {
+    const tracker = new DecisionTracker();
+    tracker.recordToolCall(
+      makeRecord({ sessionId: 'session-a', toolName: 'AskUserQuestion', toolUseId: 'a-1' }),
+    );
+    tracker.recordToolCall(
+      makeRecord({ sessionId: 'session-b', toolName: 'AskUserQuestion', toolUseId: 'b-1' }),
+    );
+
+    expect(tracker.getMetrics().totalBranches).toBe(2);
+  });
+});
+
 describe('DecisionTracker transcript reasoning extraction (recordContent)', () => {
   let tmpDir: string;
   let transcriptPath: string;

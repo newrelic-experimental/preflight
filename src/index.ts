@@ -57,6 +57,7 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
+import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
 import { SubagentWatcher } from './hooks/subagent-watcher.js';
@@ -1035,6 +1036,20 @@ async function main(): Promise<void> {
     const turnCostAttributor = new TurnCostAttributor();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
+    // Day-boundary reset bookkeeping for gitEfficiencyTracker: the
+    // tracker has a reset() method but, unlike costTracker/modelUsageTracker/
+    // contextCompositionTracker/turnCostAttributor (reset at session
+    // boundaries just below), nothing ever called it for a day boundary. In
+    // a --local dashboard daemon that survives one midnight, "Today's
+    // activity across all sessions" would otherwise silently become an
+    // unbounded all-time counter. `capturedRepoContext`/
+    // `capturedBranchDivergence` are re-hydrated after each reset (see
+    // onRecord below) so resetting the day's activity counters doesn't also
+    // forget which repo/branch this process is watching — that identity is
+    // read from disk once at startup, not part of "today's activity".
+    let gitEfficiencyDayKey = localDateKey();
+    let capturedRepoContext: RepoContext | null = null;
+    let capturedBranchDivergence: { ahead: number; behind: number } | null = null;
     const workflowRunTracker = new WorkflowRunTracker();
     // Always constructed (cheap, stateless until a client calls one of its
     // report_* tools) so nr_observe_report_tool_call/_session_start/_session_end
@@ -1048,6 +1063,10 @@ async function main(): Promise<void> {
     // when the watcher's reconciliation pass needs them.
     const workflowStoreInstance = new WorkflowStore({
       getCostForRun: (runId) => costTracker.getCostForWorkflowRun(runId),
+      // Lets the "Workflow spend" KPI flag its total as partial (a partial
+      // mitigation) instead of silently treating "this process never
+      // observed the run's cost" the same as "confirmed $0".
+      hasCostForRun: (runId) => costTracker.hasCostForWorkflowRun(runId),
     });
 
     // Per-session subagent timeline reader — backs the "agent fan-out"
@@ -1065,34 +1084,6 @@ async function main(): Promise<void> {
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
 
-    // Hydrate git efficiency tracker with today's prior sessions so the
-    // dashboard shows all-day git activity, not just the current session.
-    const todaySessions = sessionStore.loadSessionsOverlappingToday();
-    for (const session of todaySessions) {
-      if (session.sessionId === currentSessionId) continue;
-      if (session.timeline && session.timeline.length > 0) {
-        gitEfficiencyTracker.replayTimeline(session.timeline);
-      }
-    }
-
-    // Hydrate instruction-drift tracker with the last 7 days of prior
-    // sessions so cross-session prompt-variant correlation has real data
-    // from the moment this session starts (mirrors computeHistoricalCosts'
-    // weekAgo window below). Sessions persisted before this field existed
-    // have instructionPromptHash === null and are naturally excluded.
-    const weekAgoForDrift = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const historicalDriftSessions = sessionStore.loadAllSessions({ since: weekAgoForDrift });
-    const driftRecords: SessionOutcomeRecord[] = [];
-    for (const session of historicalDriftSessions) {
-      if (session.sessionId === currentSessionId) continue;
-      const record = sessionSummaryToDriftRecord(session);
-      if (record) driftRecords.push(record);
-    }
-    instructionDriftTracker.loadRecords(driftRecords);
-
-    // Also hydrate from git log — commit commands often aren't captured by
-    // tool hooks (Claude Code commits internally), so we read the actual
-    // repo history to get an accurate commit count for today.
     // Each command is isolated so a slow/missing git or remote doesn't block
     // the others. Uses spawnSync (no shell) to avoid injection; stderr is
     // suppressed via stdio rather than shell redirection. Timeout 2s per call.
@@ -1103,27 +1094,11 @@ async function main(): Promise<void> {
       stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
     };
 
-    // spawnSync with ENOENT doesn't throw — it returns { status: null, error: Error }.
-    // The status === 0 guard handles unavailable-git without a try/catch.
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const logResult = spawnSync(
-      'git',
-      ['log', `--since=${todayStr}T00:00:00Z`, '--format=%H %ct'],
-      GIT_OPTS,
-    );
-    if (logResult.status === 0 && logResult.stdout !== null) {
-      const commits = logResult.stdout
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const [hash, epochStr] = line.split(' ');
-          return { hash: hash ?? '', timestamp: parseInt(epochStr ?? '0', 10) * 1000 };
-        });
-      gitEfficiencyTracker.hydrateGitLog(commits);
-    }
-
-    // Repo context for the dashboard header
+    // Repo context for the dashboard header — hydrated BEFORE the
+    // today-sessions replay loop below so GitEfficiencyTracker.
+    // replayTimeline() can filter each session's timeline against this
+    // process's own repoContext.repoName instead of blending in another
+    // repo's commits/conflicts/force-pushes.
     const remoteResult = spawnSync('git', ['remote', 'get-url', 'origin'], GIT_OPTS);
     const branchResult = spawnSync('git', ['branch', '--show-current'], GIT_OPTS);
     const remoteName = 'origin';
@@ -1145,12 +1120,64 @@ async function main(): Promise<void> {
         defaultBranch = parseDefaultBranchFromSymbolicRef(symbolicRefResult.stdout, remoteName);
       }
 
-      gitEfficiencyTracker.hydrateRepoContext({
+      capturedRepoContext = {
         repoName,
         branch: branch || null,
         remoteName,
         defaultBranch,
-      });
+      };
+      gitEfficiencyTracker.hydrateRepoContext(capturedRepoContext);
+    }
+
+    // Hydrate git efficiency tracker with today's prior sessions so the
+    // dashboard shows all-day git activity, not just the current session.
+    // Each session's own repoName is passed through so a session
+    // worked on in a different repo earlier today doesn't get counted
+    // against whichever repo this process's header currently names.
+    const todaySessions = sessionStore.loadSessionsOverlappingToday();
+    for (const session of todaySessions) {
+      if (session.sessionId === currentSessionId) continue;
+      if (session.timeline && session.timeline.length > 0) {
+        gitEfficiencyTracker.replayTimeline(session.timeline, session.repoName);
+      }
+    }
+
+    // Hydrate instruction-drift tracker with the last 7 days of prior
+    // sessions so cross-session prompt-variant correlation has real data
+    // from the moment this session starts (mirrors computeHistoricalCosts'
+    // weekAgo window below). Sessions persisted before this field existed
+    // have instructionPromptHash === null and are naturally excluded.
+    const weekAgoForDrift = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const historicalDriftSessions = sessionStore.loadAllSessions({ since: weekAgoForDrift });
+    const driftRecords: SessionOutcomeRecord[] = [];
+    for (const session of historicalDriftSessions) {
+      if (session.sessionId === currentSessionId) continue;
+      const record = sessionSummaryToDriftRecord(session);
+      if (record) driftRecords.push(record);
+    }
+    instructionDriftTracker.loadRecords(driftRecords);
+
+    // Also hydrate from git log — commit commands often aren't captured by
+    // tool hooks (Claude Code commits internally), so we read the actual
+    // repo history to get an accurate commit count for today.
+    // spawnSync with ENOENT doesn't throw — it returns { status: null, error: Error }.
+    // The status === 0 guard handles unavailable-git without a try/catch.
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const logResult = spawnSync(
+      'git',
+      ['log', `--since=${todayStr}T00:00:00Z`, '--format=%H %ct'],
+      GIT_OPTS,
+    );
+    if (logResult.status === 0 && logResult.stdout !== null) {
+      const commits = logResult.stdout
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [hash, epochStr] = line.split(' ');
+          return { hash: hash ?? '', timestamp: parseInt(epochStr ?? '0', 10) * 1000 };
+        });
+      gitEfficiencyTracker.hydrateGitLog(commits);
     }
 
     // Branch divergence from the real default branch — how far ahead/behind are we?
@@ -1169,6 +1196,7 @@ async function main(): Promise<void> {
       const ahead = parseInt(aheadResult.stdout.trim(), 10);
       const behind = parseInt(behindResult.stdout.trim(), 10);
       if (!Number.isNaN(ahead) && !Number.isNaN(behind)) {
+        capturedBranchDivergence = { ahead, behind };
         gitEfficiencyTracker.hydrateBranchDivergence(ahead, behind);
       }
     }
@@ -1670,6 +1698,51 @@ async function main(): Promise<void> {
           rawRecord.transcriptPath as string | undefined,
         );
         instructionDriftTracker.recordToolCall(rawRecord);
+        // Day-boundary reset — checked on every record rather than on
+        // a timer so it fires promptly on the next real tool call after
+        // midnight without needing a separate interval. reset() clears
+        // repoContext/branch-divergence too, so both are re-hydrated
+        // immediately from what was captured at startup — this endpoint's
+        // "today's activity" counters reset, not the tracker's identity of
+        // which repo/branch it's watching.
+        const gitDayKey = localDateKey();
+        if (gitDayKey !== gitEfficiencyDayKey) {
+          gitEfficiencyDayKey = gitDayKey;
+          gitEfficiencyTracker.reset(sessionTraceId);
+          if (capturedRepoContext) gitEfficiencyTracker.hydrateRepoContext(capturedRepoContext);
+          if (capturedBranchDivergence) {
+            gitEfficiencyTracker.hydrateBranchDivergence(
+              capturedBranchDivergence.ahead,
+              capturedBranchDivergence.behind,
+            );
+          }
+          // Re-run the git-log hydration (mirrors the startup hydration
+          // above) scoped to the new local day. Without this, commits
+          // Claude Code makes internally (not captured by tool hooks — see
+          // the comment on the startup hydration) would only be visible via
+          // hook-observed `git commit` calls made *after* this reset, so
+          // "commits today" would under-report on day 2+ of a long-lived
+          // `--local` daemon. Uses local midnight (not UTC) since that's the
+          // boundary `localDateKey()` just crossed.
+          const newDayMidnight = new Date();
+          newDayMidnight.setHours(0, 0, 0, 0);
+          const dayBoundaryLogResult = spawnSync(
+            'git',
+            ['log', `--since=${newDayMidnight.toISOString()}`, '--format=%H %ct'],
+            GIT_OPTS,
+          );
+          if (dayBoundaryLogResult.status === 0 && dayBoundaryLogResult.stdout !== null) {
+            const dayBoundaryCommits = dayBoundaryLogResult.stdout
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => {
+                const [hash, epochStr] = line.split(' ');
+                return { hash: hash ?? '', timestamp: parseInt(epochStr ?? '0', 10) * 1000 };
+              });
+            gitEfficiencyTracker.hydrateGitLog(dayBoundaryCommits);
+          }
+        }
         gitEfficiencyTracker.recordToolCall(rawRecord);
 
         const record: ToolCallRecord = { ...rawRecord, turn_id: turnId, turn_number: turnNumber };

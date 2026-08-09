@@ -16,6 +16,13 @@ export interface DecisionBranch {
   readonly outcome: BranchOutcome;
   readonly nextToolSuccess: boolean | null;
   readonly sessionSucceeded: boolean | null;
+  /**
+   * Owning session, tagged from the `ToolCallRecord.sessionId` that produced
+   * this branch — `recordDecision()` callers outside `recordToolCall()`
+   * (tests, `markSessionOutcome()`) don't have a session in scope, so this is
+   * `null` for those. `getMetrics(sessionId)` filters on this field.
+   */
+  readonly sessionId: string | null;
 }
 
 export interface DecisionTreeMetrics {
@@ -68,6 +75,7 @@ export class DecisionTracker {
     this.turnCounter++;
     const turn = this.turnCounter;
     const transcriptPath = record.transcriptPath as string | undefined;
+    const sessionId = record.sessionId ?? null;
 
     if (this.lastRecordFailed) {
       // Previous tool failed — this tool call represents a recovery decision
@@ -78,6 +86,7 @@ export class DecisionTracker {
           `recovery after ${this.lastToolName ?? 'unknown'} failure`,
         chosenAction: record.toolName,
         toolName: record.toolName,
+        sessionId,
       });
     }
 
@@ -87,6 +96,7 @@ export class DecisionTracker {
         reasoning: this.extractReasoning(transcriptPath, record.toolUseId) ?? 'delegating to user',
         chosenAction: 'ask_user',
         toolName: record.toolName,
+        sessionId,
       });
     }
 
@@ -104,6 +114,7 @@ export class DecisionTracker {
             `retrying ${record.toolName} on ${filePath} (${count} attempts)`,
           chosenAction: 'retry',
           toolName: record.toolName,
+          sessionId,
         });
       }
     }
@@ -127,6 +138,7 @@ export class DecisionTracker {
     reasoning: string;
     chosenAction: string;
     toolName: string | null;
+    sessionId?: string | null;
   }): void {
     const branch: DecisionBranch = {
       turnNumber: input.turnNumber,
@@ -137,6 +149,7 @@ export class DecisionTracker {
       outcome: 'unknown',
       nextToolSuccess: null,
       sessionSucceeded: null,
+      sessionId: input.sessionId ?? null,
     };
 
     this.branches.push(branch);
@@ -173,18 +186,31 @@ export class DecisionTracker {
     }
   }
 
-  getMetrics(): DecisionTreeMetrics {
-    const resolved = this.branches.filter((b) => b.outcome !== 'unknown');
+  /**
+   * @param sessionId When provided, scopes every stat to branches tagged
+   *   with this session — without this, `/api/decision-tree` would return
+   *   whatever this process-global tracker happens to contain, which in
+   *   `--local` mode can be several concurrently-live sessions blended
+   *   together. Omit to get every branch this tracker has ever recorded —
+   *   used by callers with no single session in view, e.g. the
+   *   `nr_observe_get_decision_tree` MCP tool.
+   */
+  getMetrics(sessionId?: string): DecisionTreeMetrics {
+    const branches =
+      sessionId !== undefined
+        ? this.branches.filter((b) => b.sessionId === sessionId)
+        : this.branches;
+    const resolved = branches.filter((b) => b.outcome !== 'unknown');
     const successes = resolved.filter((b) => b.outcome === 'success').length;
     const successRate = resolved.length > 0 ? successes / resolved.length : null;
-    const failurePoints = this.branches.filter((b) => b.outcome === 'failure');
+    const failurePoints = branches.filter((b) => b.outcome === 'failure');
 
     return {
-      totalBranches: this.branches.length,
+      totalBranches: branches.length,
       successRate: successRate !== null ? Math.round(successRate * 1000) / 1000 : null,
       failurePoints,
-      longestFailureStreak: this.computeLongestFailureStreak(),
-      firstFailureIndex: this.findFirstFailureIndex(),
+      longestFailureStreak: this.computeLongestFailureStreak(branches),
+      firstFailureIndex: this.findFirstFailureIndex(branches),
       note: DECISION_TREE_REASONING_NOTE,
     };
   }
@@ -222,11 +248,11 @@ export class DecisionTracker {
     this.fileCallCounts.clear();
   }
 
-  private computeLongestFailureStreak(): number {
+  private computeLongestFailureStreak(branches: readonly DecisionBranch[]): number {
     let maxStreak = 0;
     let currentStreak = 0;
 
-    for (const branch of this.branches) {
+    for (const branch of branches) {
       if (branch.outcome === 'failure') {
         currentStreak++;
         maxStreak = Math.max(maxStreak, currentStreak);
@@ -238,9 +264,9 @@ export class DecisionTracker {
     return maxStreak;
   }
 
-  private findFirstFailureIndex(): number | null {
-    for (let i = 0; i < this.branches.length; i++) {
-      if (this.branches[i].outcome === 'failure') {
+  private findFirstFailureIndex(branches: readonly DecisionBranch[]): number | null {
+    for (let i = 0; i < branches.length; i++) {
+      if (branches[i].outcome === 'failure') {
         return i;
       }
     }

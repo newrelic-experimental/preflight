@@ -119,6 +119,18 @@ interface LiveState {
   addSubagentTurn(usdEstimate: number | null): void;
   upsertWorkflowRun(run: WorkflowRunLiveState): void;
   setObservabilityHealth(health: ObservabilityHealthState): void;
+  /**
+   * Clears the SSE-derived `cost` snapshot and resets the subagent
+   * accumulators once the caller has detected a local-midnight rollover
+   * (see the interval in Today.tsx). `setCost`/`addSubagentTurn`
+   * only fire on a fresh server push, so a tab left open across midnight
+   * with no new tool-call activity right away would otherwise keep
+   * displaying yesterday's "Spend Today"/forecast/subagent numbers forever
+   * — nothing else ever invalidates the cached value. After this runs, the
+   * KPIs fall back to the day-aware `/api/sessions/today/aggregate`/
+   * persisted-session values until a fresh same-day SSE frame arrives.
+   */
+  handleDayRollover(): void;
 }
 
 const RECENT_CAP = 20;
@@ -245,6 +257,8 @@ export const useLiveStore = create<LiveState>((set) => ({
     }),
 
   setObservabilityHealth: (health) => set({ observabilityHealth: health }),
+
+  handleDayRollover: () => set({ cost: null, todaySubagentUsd: 0, todaySubagentTurnCount: 0 }),
 }));
 
 // ---------------------------------------------------------------------------

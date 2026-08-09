@@ -358,10 +358,21 @@ export interface TurnCostsResponse {
   readonly attributionRate: number;
 }
 
-export const fetchDecisionTree = (): Promise<DecisionTreeResponse> =>
-  getJson<DecisionTreeResponse>('/api/decision-tree');
-export const fetchTurnCosts = (): Promise<TurnCostsResponse> =>
-  getJson<TurnCostsResponse>('/api/turn-costs');
+// sessionId scopes the result to one session's own decision-
+// tree/turn-cost data instead of whichever session(s) this process-global
+// tracker happened to have most recently accumulated (in `--local` mode,
+// several concurrently-live sessions blended together). Omit to preserve
+// the old unscoped behavior.
+export const fetchDecisionTree = (sessionId?: string): Promise<DecisionTreeResponse> =>
+  getJson<DecisionTreeResponse>(
+    sessionId
+      ? `/api/decision-tree?sessionId=${encodeURIComponent(sessionId)}`
+      : '/api/decision-tree',
+  );
+export const fetchTurnCosts = (sessionId?: string): Promise<TurnCostsResponse> =>
+  getJson<TurnCostsResponse>(
+    sessionId ? `/api/turn-costs?sessionId=${encodeURIComponent(sessionId)}` : '/api/turn-costs',
+  );
 
 export interface QualityEvent {
   readonly signal:
@@ -1081,6 +1092,14 @@ export interface WorkflowRunInfo {
   readonly agentCount?: number | null;
   readonly totalTokens?: number | null;
   readonly totalUsd?: number | null;
+  /**
+   * True when `totalUsd` is `null` because the cost was never observed by
+   * any process (as opposed to a confirmed $0) — see
+   * `WorkflowRunRow.cost_unknown`'s docstring (`workflow-store.ts`). Sum a
+   * KPI over several runs' `totalUsd` and flag the sum as partial when any
+   * contributing run has `costUnknown: true`.
+   */
+  readonly costUnknown?: boolean;
   readonly declaredPhases?: number | null;
   readonly observedPhases?: number | null;
   readonly declaredParallelWidths?: ReadonlyArray<number | 'dynamic'> | null;

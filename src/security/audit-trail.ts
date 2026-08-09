@@ -6,7 +6,7 @@
 
 import { createLogger } from '../shared/index.js';
 import type { NrEventData } from '../shared/index.js';
-import type { ToolCallRecord } from '../storage/types.js';
+import type { ToolCallRecord, AuditEntry } from '../storage/types.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { LocalStore } from '../storage/local-store.js';
 import { redactSensitive } from '../config.js';
@@ -270,6 +270,115 @@ export function securityAlertToNrEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Session ID resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * `record.sessionId` can itself already be synthetic
+ * (`pending-<ts>` before stdio session-ID resolution, `local-<ts>` in
+ * `--local` mode, `proxy-<ts>`/`proxy-conn-<uuid>` proxy fallbacks — see
+ * `src/index.ts`), so `isSyntheticSessionId()` must run against whichever
+ * value is actually used (the record's own id when present, otherwise the
+ * manager's own fallback `managerSessionId`), not only against the
+ * fallback. Matches the pattern already used by `SessionStore.
+ * loadAllSessions()` and `LiveSessionRegistry.getLiveSessions()`.
+ */
+function resolveAuditSessionId(
+  recordSessionId: string | null | undefined,
+  managerSessionId: string | null,
+): string | null {
+  const raw = recordSessionId ?? managerSessionId;
+  return isSyntheticSessionId(raw) ? null : raw;
+}
+
+// ---------------------------------------------------------------------------
+// Disk read-back
+// ---------------------------------------------------------------------------
+
+function isAuditAction(value: string): value is AuditAction {
+  return (
+    value === 'FileRead' ||
+    value === 'FileWrite' ||
+    value === 'FileEdit' ||
+    value === 'BashCommand' ||
+    value === 'McpToolCall' ||
+    value === 'AgentSpawn' ||
+    value === 'Search' ||
+    value === 'Other'
+  );
+}
+
+function isAlertSeverity(value: unknown): value is AlertSeverity {
+  return value === 'critical' || value === 'high' || value === 'medium';
+}
+
+/**
+ * Converts one on-disk `AuditEntry` (persisted by `appendAuditLog()`, from
+ * this process or another one) back into an `AuditRecord`. Returns `null`
+ * for a line that's missing/mistyped a required field rather than throwing
+ * or fabricating placeholder values — a malformed line is dropped, not
+ * surfaced as a broken row in the Audit page.
+ *
+ * Defensively re-applies `isSyntheticSessionId()` to the persisted
+ * `sessionId` too: files written before that filtering existed may still
+ * contain an unfiltered synthetic id (`pending-*`/`local-*`/`proxy-*`).
+ */
+function auditEntryToRecord(entry: AuditEntry): AuditRecord | null {
+  const { timestamp, action, tool, detail, developer } = entry;
+  if (
+    typeof timestamp !== 'number' ||
+    typeof action !== 'string' ||
+    typeof tool !== 'string' ||
+    typeof detail !== 'string' ||
+    typeof developer !== 'string' ||
+    !isAuditAction(action)
+  ) {
+    return null;
+  }
+
+  const rawSessionId = entry.sessionId;
+  const sessionId =
+    typeof rawSessionId === 'string' && !isSyntheticSessionId(rawSessionId) ? rawSessionId : null;
+  const filePath = typeof entry.filePath === 'string' ? entry.filePath : undefined;
+  const command = typeof entry.command === 'string' ? entry.command : undefined;
+
+  let securityAlert: SecurityAlert | undefined;
+  const rawAlert = entry.securityAlert;
+  if (rawAlert && typeof rawAlert === 'object') {
+    const a = rawAlert as Record<string, unknown>;
+    if (isAlertSeverity(a.severity) && typeof a.alertType === 'string') {
+      securityAlert = {
+        severity: a.severity,
+        alertType: a.alertType,
+        description: typeof a.description === 'string' ? a.description : a.alertType,
+      };
+    }
+  }
+
+  return {
+    timestamp,
+    sessionId,
+    action,
+    tool,
+    detail,
+    developer,
+    filePath,
+    command,
+    securityAlert,
+  };
+}
+
+/** Best-effort content fingerprint — AuditRecord has no unique id field, so
+ * this is the identity dedup key used to avoid double-counting a record
+ * that exists both in this process's own in-memory `entries` (not yet
+ * evicted) AND in the disk file it was already persisted to. */
+function auditIdentityKey(
+  r: Pick<AuditRecord, 'timestamp' | 'sessionId' | 'tool' | 'detail'>,
+): string {
+  return `${r.timestamp}|${r.sessionId ?? ''}|${r.tool}|${r.detail}`;
+}
+
+// ---------------------------------------------------------------------------
 // AuditTrailManager
 // ---------------------------------------------------------------------------
 
@@ -294,6 +403,16 @@ export class AuditTrailManager {
   private entries: AuditRecord[] = [];
   private sensitiveAccessLog: AuditRecord[] = [];
   private static readonly MAX_ENTRIES = 10_000;
+  /**
+   * Default cap for `getAuditLog()` when the caller doesn't pass an
+   * explicit `limit`. The largest known consumer is `Audit.tsx`, which
+   * renders at most 200 rows and exports at most the same 200-row slice —
+   * 1000 gives headroom for its per-classification client-side filter
+   * (a rare classification like `external_network` may need to look past
+   * more than 200 raw rows to find 200 matching ones) without ever falling
+   * back to a full unbounded disk read.
+   */
+  private static readonly DEFAULT_LOG_LIMIT = 1000;
 
   constructor(options: AuditTrailManagerOptions) {
     this.developer = options.developer;
@@ -319,7 +438,7 @@ export class AuditTrailManager {
     const rawCommand = record.command as string | undefined;
     const auditRecord: AuditRecord = {
       timestamp: record.timestamp,
-      sessionId: record.sessionId ?? (isSyntheticSessionId(this.sessionId) ? null : this.sessionId),
+      sessionId: resolveAuditSessionId(record.sessionId, this.sessionId),
       action,
       tool: record.toolName,
       detail,
@@ -363,7 +482,7 @@ export class AuditTrailManager {
 
     const auditRecord: AuditRecord = {
       timestamp: record.timestamp,
-      sessionId: record.sessionId ?? (isSyntheticSessionId(this.sessionId) ? null : this.sessionId),
+      sessionId: resolveAuditSessionId(record.sessionId, this.sessionId),
       action: 'McpToolCall',
       tool: record.toolName,
       detail,
@@ -392,8 +511,47 @@ export class AuditTrailManager {
     return auditRecord;
   }
 
-  getAuditLog(): readonly AuditRecord[] {
-    return this.entries;
+  /**
+   * Merges this process's own in-memory `entries` (capped at
+   * `MAX_ENTRIES`, evicted FIFO) with every process's persisted history from
+   * `~/.newrelic-preflight/audit/*.jsonl` via `LocalStore.peekAllAuditLogs()`,
+   * so disk is the durable source of truth and the in-memory array is just
+   * this process's own cache. Without this, every OTHER concurrent (or
+   * already-exited) process's flagged sensitive-file/destructive-command/
+   * external-network events would be invisible through this API even
+   * though they were faithfully written to disk.
+   *
+   * Bounded to `limit` (default `DEFAULT_LOG_LIMIT`): a long-lived `--local`
+   * daemon accumulates hundreds of thousands of on-disk rows across many
+   * `audit/*.jsonl` files, and reading/parsing all of them on every call
+   * would be unbounded CPU and payload for a caller that only ever renders
+   * or exports a couple hundred rows. `LocalStore.peekAllAuditLogs(limit)`
+   * itself stops reading once it has collected `limit` rows (newest files
+   * first), which is sufficient here: the merged set's size is always at
+   * least `max(this.entries.length, diskRowsPulled)`, so pulling `limit`
+   * disk rows guarantees at least `limit` total distinct rows are available
+   * to sort and slice below, whenever that many actually exist.
+   */
+  getAuditLog(limit: number = AuditTrailManager.DEFAULT_LOG_LIMIT): readonly AuditRecord[] {
+    const combined = [...this.entries];
+
+    if (this.localStore) {
+      const seen = new Set(combined.map(auditIdentityKey));
+      for (const diskEntry of this.localStore.peekAllAuditLogs(limit)) {
+        const record = auditEntryToRecord(diskEntry);
+        if (!record) continue;
+        const key = auditIdentityKey(record);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        combined.push(record);
+      }
+    }
+
+    // `entries` is append-only in processing order, not timestamp order —
+    // sort newest-first before slicing, so the cap (and the route's own
+    // `Audit.tsx` 200-row render/export slice) keeps the most recent
+    // entries, not whichever ones happen to sit at the front of the array.
+    return combined.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
   }
 
   getSensitiveAccessLog(): readonly AuditRecord[] {

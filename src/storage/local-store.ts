@@ -1040,4 +1040,91 @@ export class LocalStore {
       logger.warn('Failed to append audit log', { error: String(err) });
     }
   }
+
+  /**
+   * Read persisted audit-log JSONL files under `audit/` (one per calendar
+   * day, written by `appendAuditLog()` — including by *other* processes'
+   * `AuditTrailManager` instances, since every `--stdio`/`--local` process
+   * persists to the same shared `audit/` directory) WITHOUT deleting or
+   * moving anything — read-only, unlike `drainAllBuffers()`, because the
+   * audit log is meant to be a durable record, not a work queue. Used by
+   * `AuditTrailManager.getAuditLog()` to merge in every process's
+   * persisted history instead of returning only the calling process's own
+   * capped in-memory `entries` array.
+   *
+   * Mirrors `peekAllBuffers()`'s torn-tail-tolerant parse pattern above: the
+   * last non-empty line of a file may legitimately be torn by a concurrent
+   * appender and is dropped silently, but a parse failure on any earlier
+   * line is real corruption and is logged.
+   *
+   * @param limit Optional cap on how many rows to return. Filenames are
+   *   `YYYY-MM-DD.jsonl`, which sort lexicographically in calendar order, so
+   *   files are read newest-day-first and reading stops as soon as `limit`
+   *   rows have been collected — older files are never opened. A whole file
+   *   is always read to completion once opened (rows aren't truncated
+   *   mid-file), so the result may overshoot `limit` slightly; callers that
+   *   need an exact count should slice the result themselves. Without a
+   *   `limit`, every file is read (unbounded, same as `peekAllBuffers()`) —
+   *   audit files are never pruned, so a very long-lived
+   *   `~/.newrelic-preflight/audit/` directory means more files read on
+   *   every call in that mode.
+   */
+  peekAllAuditLogs(limit?: number): AuditEntry[] {
+    const all: AuditEntry[] = [];
+    const auditDir = resolve(this.storagePath, 'audit');
+    let entries: string[];
+    try {
+      if (!existsSync(auditDir)) return [];
+      entries = readdirSync(auditDir);
+    } catch (err) {
+      logger.warn('Failed to enumerate audit dir for peekAllAuditLogs', { error: String(err) });
+      return [];
+    }
+    // Newest day-file first so a `limit` can stop opening older files once
+    // enough rows are collected — `YYYY-MM-DD.jsonl` names sort
+    // chronologically as plain strings, so lexicographic descending order
+    // is newest-first.
+    const jsonlFiles = entries
+      .filter((name) => name.endsWith('.jsonl'))
+      .sort()
+      .reverse();
+    for (const name of jsonlFiles) {
+      const path = resolve(auditDir, name);
+      let raw: string;
+      try {
+        raw = readFileSync(path, 'utf-8');
+      } catch {
+        continue;
+      }
+      if (!raw.trim()) continue;
+      const lines = raw.split('\n');
+      let lastNonEmptyIdx = -1;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i]!.trim()) {
+          lastNonEmptyIdx = i;
+          break;
+        }
+      }
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (!line.trim()) continue;
+        try {
+          all.push(JSON.parse(line) as AuditEntry);
+        } catch {
+          if (i === lastNonEmptyIdx) {
+            // Torn-tail race against a concurrent appender — expected.
+            continue;
+          }
+          logger.warn('peekAllAuditLogs: dropping malformed mid-file line', {
+            file: name,
+            lineIndex: i,
+            preview: line.slice(0, 100),
+            entriesSoFar: all.length,
+          });
+        }
+      }
+      if (limit !== undefined && all.length >= limit) break;
+    }
+    return all;
+  }
 }

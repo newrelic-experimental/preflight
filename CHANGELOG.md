@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.36] - 2026-08-09
+
+### Fixed
+
+- **The Today and History dashboards now handle local-day boundaries consistently.** Day-window math across the concurrency, activity-heatmap, and cost/tool-call/anti-pattern-flag routes now uses local (not UTC) midnight everywhere, is DST-safe, and is anchored the same way as the sibling charts it's meant to agree with — previously a developer's evening session could land on the wrong calendar day, and a "last N days" window could quietly disagree with an adjacent chart labeled the same way.
+- **A session that spans local midnight now contributes its correct proportional share to today's tool-call count, flag count, and hourly spend**, instead of either being skipped entirely or counted at its full lifetime total.
+- **Several timeline/history arrays (session activity, audit log, git commit/conflict history) are now sorted by timestamp before being sliced or windowed**, fixing cases where an out-of-order array could show a negative duration or silently drop the true most-recent entries.
+- **Session-, repo-, and process-scoped data is now attributed to the right owner** — a live in-progress session's real model is no longer bucketed as "unknown," a different repo's git activity earlier in the day no longer counts against the currently active repo, and per-session decision-tree/turn-cost data no longer blends across concurrently-live sessions.
+- **`GET /api/audit` and the underlying audit-log reader now cap how much history is read from disk per request**, bounding both the response size and the amount of work a single request can trigger.
+
 ## [1.14.35] - 2026-08-06
 
 ### Added

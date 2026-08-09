@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Today } from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
+import { localStartOfDay } from '../../lib/date.js';
 
 function renderToday(qc?: QueryClient) {
   const client =
@@ -232,6 +233,122 @@ describe('Today view', () => {
       </QueryClientProvider>,
     );
     await waitFor(() => expect(screen.queryByText(/session detail/i)).toBeNull());
+  });
+
+  // With two concurrently-live sessions (a documented, supported
+  // scenario in `--local` mode), the session-detail drawer must only ever
+  // show the SELECTED session's turn-cost/decision-tree data, not a blend
+  // of both or whichever session this process-global tracker last recorded.
+  it('scopes the session-detail drawer to the selected session when two sessions are concurrently live', async () => {
+    const liveSessions = [
+      { sessionId: 'session-alpha', sessionName: 'alpha', startTime: 1, lastActivity: 9_000 },
+      { sessionId: 'session-beta', sessionName: 'beta', startTime: 1, lastActivity: 1_000 },
+    ];
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/live')) {
+        return new Response(JSON.stringify(liveSessions), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.startsWith('/api/turn-costs')) {
+        const sessionId = new URL(url, 'http://localhost').searchParams.get('sessionId');
+        const isAlpha = sessionId === 'session-alpha';
+        return new Response(
+          JSON.stringify({
+            turns: [
+              {
+                turnId: 't1',
+                startTime: 0,
+                endTime: 1,
+                toolCalls: ['toolu_1'],
+                toolNames: ['Read'],
+                inputTokens: 500,
+                outputTokens: 200,
+                cacheReadTokens: 0,
+                model: 'claude-sonnet-5',
+                estimatedCostUsd: isAlpha ? 0.11 : 0.99,
+                costPerToolCall: isAlpha ? 0.11 : 0.99,
+              },
+            ],
+            costByToolType: {},
+            totalAttributedCost: isAlpha ? 0.11 : 0.99,
+            attributionRate: 1,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.startsWith('/api/decision-tree')) {
+        return new Response(
+          JSON.stringify({
+            totalBranches: 0,
+            successRate: null,
+            failurePoints: [],
+            longestFailureStreak: 0,
+            firstFailureIndex: null,
+            note: '',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 1,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 2,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/session-alpha/replay')) {
+        return new Response(JSON.stringify({ sessionId: 'session-alpha', timeline: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions/session-beta/replay')) {
+        return new Response(JSON.stringify({ sessionId: 'session-beta', timeline: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.startsWith('/api/context')) {
+        return new Response(
+          JSON.stringify({
+            turnCount: 0,
+            growth: { startTokens: 0, currentTokens: 0, deltaTokens: 0 },
+            currentBreakdown: { system: 0, tools: 0, user: 0, assistant: 0 },
+            fillPercent: 0,
+            contextWindow: 200_000,
+            toolContributions: [],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    // Default selection is the most-recently-active session (alpha).
+    const alphaTrigger = await screen.findByText(/\$0\.11.*session detail/i);
+    expect(alphaTrigger).toBeInTheDocument();
+    expect(screen.queryByText(/\$0\.99/)).toBeNull();
+
+    // Switch to beta — the drawer trigger must update to beta's own data,
+    // not stay pinned to alpha's or show a blend of both.
+    fireEvent.click(screen.getByText('beta'));
+    const betaTrigger = await screen.findByText(/\$0\.99.*session detail/i);
+    expect(betaTrigger).toBeInTheDocument();
+    expect(screen.queryByText(/\$0\.11/)).toBeNull();
   });
 
   it('shows the session detail trigger from context-history data alone, with no decision/cost data', async () => {
@@ -1508,5 +1625,247 @@ describe('Today view — Compute Waste panel', () => {
     renderToday();
     expect(await screen.findByText(/retry: ~200/)).toBeInTheDocument();
     expect(screen.getByText(/anti-pattern: ~400/)).toBeInTheDocument();
+  });
+});
+
+describe('Today view — cross-midnight session proration', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: null,
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+      activeSessionId: null,
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("prorates a cross-midnight session's tool-call/flag counts and hourly spend by its today-portion, instead of its full lifetime count or excluding it entirely", async () => {
+    const dayStart = localStartOfDay();
+    // Started 2h before local midnight and ran 4h total (ends 2h into
+    // today) — half the session's lifetime overlaps today, ratio 0.5.
+    const crossMidnightSession = {
+      sessionId: 'cross-midnight',
+      startTime: dayStart - 2 * 60 * 60 * 1000,
+      durationMs: 4 * 60 * 60 * 1000,
+      toolCallCount: 100,
+      estimatedCostUsd: 10,
+      antiPatterns: Array.from({ length: 10 }, (_, i) => ({
+        type: 'thrashing',
+        target: `f${i}.ts`,
+      })),
+    };
+
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 0,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+            forecastEndOfDayUsd: 5,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(JSON.stringify([crossMidnightSession]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    // 100 tool calls * 0.5 ratio = 50 — not the full lifetime count of 100.
+    // Using ratio only as an inclusion gate and adding the entire
+    // toolCallCount once the session qualifies would show 100 instead.
+    expect(await screen.findByText('50')).toBeInTheDocument();
+    // 10 flags * 0.5 ratio = 5 — not the full lifetime count of 10, for the
+    // same reason.
+    expect(screen.getByText('5')).toBeInTheDocument();
+    // buildHourlySpend must not skip a session that didn't *start* today
+    // entirely (a naive `!isToday(s.startTime)` → continue would drop it),
+    // or the hourly chart would be absent here even though todayTotal > 0.
+    expect(screen.getByRole('img', { name: /Hourly spend today/ })).toBeInTheDocument();
+  });
+});
+
+describe('Today view — day-rollover clears stale SSE snapshot', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('clears the stale SSE cost/subagent snapshot once the 60s tick detects a local-midnight rollover', () => {
+    vi.setSystemTime(new Date(2026, 5, 14, 23, 59, 0));
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 12, todayTotalUsd: 999, forecastEodUsd: 999 },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+      todaySubagentUsd: 3,
+      todaySubagentTurnCount: 4,
+      activeSessionId: null,
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <Today />
+      </QueryClientProvider>,
+    );
+
+    // Sanity check: the stale-but-same-day snapshot is present before the
+    // rollover.
+    expect(useLiveStore.getState().cost?.todayTotalUsd).toBe(999);
+
+    // Cross local midnight and let the 60s tick run — asserted against the
+    // store directly (not the rendered KPI text), since the KPI's displayed
+    // value also depends on unrelated TanStack Query fetches settling,
+    // which isn't what this test is verifying.
+    act(() => {
+      vi.setSystemTime(new Date(2026, 5, 15, 0, 1, 0));
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // Without invalidating this cached SSE snapshot, it would keep
+    // reporting yesterday's numbers forever once the tab was left open
+    // across midnight with no new SSE frame.
+    const state = useLiveStore.getState();
+    expect(state.cost).toBeNull();
+    expect(state.todaySubagentUsd).toBe(0);
+    expect(state.todaySubagentTurnCount).toBe(0);
+  });
+});
+
+describe('Today view — traceWindow ignores the no-subagent sentinel window', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: null,
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+      activeSessionId: null,
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('does not drag the shared trace window down to epoch 0 when the session has no subagents', async () => {
+    const startMs = 1_700_000_000_000;
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/live')) {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 'no-agents',
+              sessionName: 'solo',
+              startTime: startMs,
+              lastActivity: startMs,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/no-agents/replay')) {
+        return new Response(
+          JSON.stringify({
+            sessionId: 'no-agents',
+            // Two entries spanning 65s of real, recent wall-clock time.
+            timeline: [
+              { timestamp: startMs, toolName: 'Read', durationMs: 0, success: true },
+              { timestamp: startMs + 65_000, toolName: 'Read', durationMs: 0, success: true },
+            ],
+            segments: [],
+            worstSegment: null,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/no-agents/subagents')) {
+        // getSubagentsForSession's documented no-transcripts sentinel.
+        return new Response(JSON.stringify({ window: { startMs: 0, endMs: 0 }, agents: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        // Nonzero toolCallCount so the page doesn't fall into the
+        // no-activity-today empty state, which would hide the trace pane
+        // entirely.
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 2,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 1,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/context')) {
+        // The session is live, so ContextBar renders below the trace and
+        // needs a well-shaped response.
+        return new Response(
+          JSON.stringify({
+            turnCount: 0,
+            growth: { startTokens: 0, currentTokens: 0, deltaTokens: 0 },
+            currentBreakdown: { system: 0, tools: 0, user: 0, assistant: 0 },
+            fillPercent: 0,
+            toolContributions: [],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    // Sanity: the trace pane actually rendered the Gantt view for this session.
+    expect(await screen.findByText('Parent')).toBeInTheDocument();
+
+    // With a real ~65s window, the axis's ticks land on small mm:ss values
+    // (e.g. "1:00" at the 60s mark). A naive `Number.isFinite(0)` check
+    // would let the {startMs:0,endMs:0} sentinel merge in, dragging startMs
+    // to epoch 0 and inflating the span to ~1.7e12ms — every tick label
+    // would then render as a multi-million-minute value instead.
+    expect(await screen.findByText('1:00')).toBeInTheDocument();
+    expect(screen.queryByText(/^\d{4,}:\d{2}$/)).toBeNull();
   });
 });

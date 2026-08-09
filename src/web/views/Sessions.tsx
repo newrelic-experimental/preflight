@@ -287,9 +287,15 @@ export function Sessions(): JSX.Element {
     const totalAgents = filteredRuns.reduce((sum, r) => sum + (r.agentCount ?? 0), 0);
     const spendVals = filteredRuns.map((r) => r.totalUsd).filter((v): v is number => v != null);
     const totalSpend = spendVals.length > 0 ? spendVals.reduce((a, b) => a + b, 0) : null;
+    // A run's totalUsd can be null either because it's a confirmed $0 or
+    // because no process ever observed its cost (restart, or a --local
+    // dashboard reading a different --stdio process's run). costUnknown
+    // distinguishes the two (a partial mitigation); if any filtered run has
+    // it set, the KPI sum above is missing real spend, not just zeros.
+    const spendIsPartial = filteredRuns.some((r) => r.costUnknown === true);
     const durs = filteredRuns.map((r) => r.durationMs).filter((v): v is number => v != null);
     const avgDurationMs = durs.length > 0 ? durs.reduce((a, b) => a + b, 0) / durs.length : null;
-    return { totalRuns, totalAgents, totalSpend, avgDurationMs };
+    return { totalRuns, totalAgents, totalSpend, spendIsPartial, avgDurationMs };
   }, [filteredRuns]);
   // runId-set per session, built from the FILTERED runs — drives both the
   // per-session run tree and which sessions stay visible when a filter is set.
@@ -380,8 +386,13 @@ export function Sessions(): JSX.Element {
           <div className="px-3">
             <Kpi
               label="Workflow spend"
-              value={formatUsdOrDash(kpis.totalSpend)}
+              value={formatUsdOrDash(kpis.totalSpend) + (kpis.spendIsPartial ? '*' : '')}
               tone={kpis.totalSpend !== null ? 'warn' : 'neutral'}
+              sub={
+                kpis.spendIsPartial
+                  ? '*partial — some runs have cost never observed by any process'
+                  : undefined
+              }
             />
           </div>
           <div className="px-3">

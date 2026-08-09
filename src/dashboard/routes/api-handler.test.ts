@@ -16,7 +16,7 @@ import {
 } from '../../metrics/tool-selection-scorer.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
-import { localStartOfDay } from '../../lib/date.js';
+import { localStartOfDay, localDateKey } from '../../lib/date.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
 
@@ -266,6 +266,81 @@ describe('api-handler GET /api/sessions', () => {
     expect(status()).toBe(200);
     expect(loadAllSessionsSpy).toHaveBeenCalled();
     expect(listSessionsSpy).not.toHaveBeenCalled();
+  });
+
+  // The live-session stub appended for the current process's own
+  // in-progress session (not yet persisted to disk) must carry its real
+  // model, sourced from costTracker.getMetrics().model, so
+  // aggregateModelPerformance (History.tsx) doesn't bucket it under
+  // "unknown" while the session is still running.
+  it('carries the real model on the live-session stub', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({
+          sessionId: 'live-session-with-model',
+          sessionName: null,
+          sessionStartTime: 1000,
+          sessionDurationMs: 500,
+          toolCallCount: 3,
+          toolCallCountByTool: { Read: 3 },
+          uniqueFilesRead: 1,
+          uniqueFilesWritten: 0,
+          toolCallTimeline: [],
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      costTracker: {
+        getMetrics: () => ({
+          sessionTotalCostUsd: 0.42,
+          model: 'claude-sonnet-4-20250514',
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as Array<{ sessionId: string; model: string | null }>;
+    const live = result.find((s) => s.sessionId === 'live-session-with-model');
+    expect(live).toBeDefined();
+    expect(live?.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('defaults model to null on the live-session stub when costTracker has none', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({
+          sessionId: 'live-session-no-model',
+          sessionName: null,
+          sessionStartTime: 1000,
+          sessionDurationMs: 500,
+          toolCallCount: 3,
+          toolCallCountByTool: { Read: 3 },
+          uniqueFilesRead: 1,
+          uniqueFilesWritten: 0,
+          toolCallTimeline: [],
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as Array<{ sessionId: string; model: string | null }>;
+    const live = result.find((s) => s.sessionId === 'live-session-no-model');
+    expect(live).toBeDefined();
+    expect(live?.model ?? null).toBeNull();
   });
 });
 
@@ -562,6 +637,70 @@ describe('api-handler GET /api/sessions/:id', () => {
     };
     expect(parsed.qualityProxy).toBeUndefined();
     expect(parsed.toolSelectionScore?.repeatedFailureCount).toBe(1);
+  });
+
+  // session.timeline is append-only in processing order, not timestamp
+  // order — parallel tool calls can complete (and be pushed) in a different
+  // order than they started. SessionActivityStrip reads timeline[0]/[-1] as
+  // start/end assuming ascending order, so an unsorted response can produce
+  // a negative durationMs and collapse the activity-density bucket count.
+  it('sorts an out-of-order persisted session.timeline chronologically before returning it', async () => {
+    const outOfOrderTimeline = [
+      { timestamp: 300, toolName: 'Read', durationMs: 10, success: true },
+      { timestamp: 100, toolName: 'Edit', durationMs: 20, success: true },
+      { timestamp: 200, toolName: 'Bash', durationMs: 30, success: true },
+    ];
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) =>
+          id === 'sess-detail' ? { sessionId: 'sess-detail', timeline: outOfOrderTimeline } : null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-detail' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { timeline: Array<{ timestamp: number }> };
+    // Unsorted, this would equal [300, 100, 200] — the raw push order — so
+    // timeline[0].timestamp (300) would be greater than timeline[-1].timestamp
+    // (200), a negative apparent duration.
+    expect(parsed.timeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
+  it('sorts an out-of-order own-live-session toolCallTimeline chronologically before returning it', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({
+          sessionId: 'live-timeline',
+          sessionName: null,
+          sessionStartTime: 100,
+          sessionDurationMs: 200,
+          toolCallCount: 3,
+          toolCallCountByTool: { Read: 3 },
+          uniqueFilesRead: 1,
+          uniqueFilesWritten: 0,
+          // A later-started, earlier-finishing parallel call landed first.
+          toolCallTimeline: [
+            { timestamp: 300, toolName: 'Read', durationMs: 10, success: true },
+            { timestamp: 100, toolName: 'Edit', durationMs: 20, success: true },
+            { timestamp: 200, toolName: 'Bash', durationMs: 30, success: true },
+          ],
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/live-timeline' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { timeline: Array<{ timestamp: number }> };
+    expect(parsed.timeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
   });
 });
 
@@ -1189,6 +1328,55 @@ describe('api-handler GET /api/audit', () => {
     expect(parsed[0]).not.toHaveProperty('developer');
     expect(parsed[0]).not.toHaveProperty('action');
   });
+
+  // Regression: the route must bound how many rows it asks getAuditLog()
+  // for, rather than always calling it with no argument (which used to mean
+  // "return everything").
+  it('calls getAuditLog() with a bounded default limit when the query has none', async () => {
+    const getAuditLog = jest.fn((_limit?: number): unknown[] => []);
+    const handler = createApiHandler({
+      auditTrailManager: { getAuditLog } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['auditTrailManager'],
+    });
+    const req = { method: 'GET', url: '/api/audit' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(getAuditLog).toHaveBeenCalledTimes(1);
+    const calledLimit = getAuditLog.mock.calls[0]?.[0] as number | undefined;
+    expect(typeof calledLimit).toBe('number');
+    expect(calledLimit as number).toBeGreaterThan(0);
+  });
+
+  it('clamps an oversized ?limit= query param instead of passing it straight through', async () => {
+    const getAuditLog = jest.fn((_limit?: number): unknown[] => []);
+    const handler = createApiHandler({
+      auditTrailManager: { getAuditLog } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['auditTrailManager'],
+    });
+    const req = { method: 'GET', url: '/api/audit?limit=999999999' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const calledLimit = getAuditLog.mock.calls[0]?.[0] as number | undefined;
+    expect(calledLimit as number).toBeLessThan(999999999);
+  });
+
+  it('honors a reasonable explicit ?limit= query param', async () => {
+    const getAuditLog = jest.fn((_limit?: number): unknown[] => []);
+    const handler = createApiHandler({
+      auditTrailManager: { getAuditLog } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['auditTrailManager'],
+    });
+    const req = { method: 'GET', url: '/api/audit?limit=50' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(getAuditLog).toHaveBeenCalledWith(50);
+  });
 });
 
 describe('api-handler GET /api/weekly', () => {
@@ -1422,6 +1610,53 @@ describe('api-handler GET /api/cost-per-outcome', () => {
     const { res, status } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(503);
+  });
+
+  it("excludes a session whose real startTime falls outside the local N-day window, even when loadAllSessions' own (looser) pre-filter returns it", async () => {
+    const days = 7;
+    // Matches the route's own local-day-aligned window computation, so this
+    // test exercises the real boundary rather than an arbitrary offset.
+    const windowStartMs = localStartOfDay() - (days - 1) * 86_400_000;
+    const outsideSession = {
+      startTime: windowStartMs - 60_000, // just before the local window starts
+      testRunCount: 0,
+      testPassCount: 0,
+      filesModified: [],
+      toolBreakdown: {},
+      toolCallCount: 1,
+      estimatedCostUsd: 5,
+    };
+    const insideSession = {
+      startTime: windowStartMs + 60_000, // just after the local window starts
+      testRunCount: 0,
+      testPassCount: 0,
+      filesModified: [],
+      toolBreakdown: {},
+      toolCallCount: 1,
+      estimatedCostUsd: 1,
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        // Simulates loadAllSessions()'s own UTC-anchored filename-date
+        // pre-filter (session-store.ts) being looser than the local window
+        // and returning both sessions regardless.
+        loadAllSessions: () => [outsideSession, insideSession],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: `/api/cost-per-outcome?days=${days}` } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Only the in-window session counts — without an explicit startTime
+    // check, a raw rolling `since` instant would pass straight through, so a
+    // session outside the intended local window (but inside the looser
+    // pre-filter) would leak into the total.
+    expect(result.totalTasks).toBe(1);
+    expect(result.totalCost).toBeCloseTo(1);
   });
 });
 
@@ -3235,9 +3470,11 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   });
 
   it("view=history leaves today's dailyPeaks bucket alone when the disk-derived peak already meets the live peak", async () => {
-    const nowUtcMidnight = new Date();
-    nowUtcMidnight.setUTCHours(0, 0, 0, 0);
-    const todayOverlapTs = nowUtcMidnight.getTime() + 5 * 60_000;
+    // Local (not UTC) midnight — computeDailyPeakConcurrency buckets by the
+    // dashboard server's local day, so the overlap timestamp used
+    // here to land in "today"'s bucket must be anchored the same way.
+    const todayStart = localStartOfDay();
+    const todayOverlapTs = todayStart + 5 * 60_000;
     const allSessions = [
       { sessionId: 'd-1', timeline: [{ timestamp: todayOverlapTs }] },
       { sessionId: 'd-2', timeline: [{ timestamp: todayOverlapTs }] },
@@ -3259,6 +3496,91 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     const result = JSON.parse(body());
     expect(result.dailyPeaks).toHaveLength(3);
     expect(result.dailyPeaks[2].peak).toBe(2);
+  });
+
+  it("view=history keys each day's dailyPeaks entry by local date, not UTC", async () => {
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: makeLiveRegistry(),
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency?view=history&days=3' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // Last of 3 buckets is today's — its date key must be today's *local*
+    // day key, not `dayStart.toISOString().slice(0, 10)` with dayStart
+    // advanced via setUTCDate/setUTCHours, which disagrees with
+    // localDateKey() for any developer not in UTC.
+    expect(result.dailyPeaks[2].date).toBe(localDateKey());
+  });
+
+  it('keys dailyPeaks correctly across a DST transition, where a local day is 23h (not 86_400_000ms)', async () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    jest.useFakeTimers();
+    try {
+      // 2026-03-08 is a "spring forward" DST transition day in
+      // America/New_York — local midnight to local midnight is only 23 real
+      // hours (82_800_000ms), not 86_400_000ms.
+      const mar8Start = new Date(2026, 2, 8, 0, 0, 0).getTime();
+      const mar9Start = mar8Start + 23 * 60 * 60_000;
+      // "Today" = March 9 mid-afternoon, so days=3 covers Mar 7, 8, 9.
+      jest.setSystemTime(new Date(mar9Start + 15 * 60 * 60_000));
+
+      // Two overlapping sessions active 30 minutes into March 9 local time —
+      // after the *correct* boundary (mar9Start) but still before the
+      // *buggy* one (mar8Start + 86_400_000 = mar9Start + 1h).
+      const overlapTs = mar9Start + 30 * 60_000;
+      const sessions = [
+        { sessionId: 's1', timeline: [{ timestamp: overlapTs }] },
+        { sessionId: 's2', timeline: [{ timestamp: overlapTs }] },
+      ];
+
+      const handler = createApiHandler({
+        concurrencyTracker: makeConcurrencyTracker(),
+        liveSessionRegistry: makeLiveRegistry(),
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadAllSessions: () => sessions,
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = {
+        method: 'GET',
+        url: '/api/concurrency?view=history&days=3',
+      } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      const result = JSON.parse(body());
+      // 3-day window [Mar7, Mar8, Mar9] → indices [0, 1, 2].
+      expect(result.dailyPeaks[1].date).toBe('2026-03-08');
+      expect(result.dailyPeaks[2].date).toBe('2026-03-09');
+      // A naive `dayEndMs = mar8Start + 86_400_000` (March 9 01:00 local —
+      // an hour past the true DST-shortened boundary) would wrongly
+      // attribute this overlap to March 8 instead of 9.
+      expect(result.dailyPeaks[1].peak).toBe(0);
+      expect(result.dailyPeaks[2].peak).toBe(2);
+    } finally {
+      jest.useRealTimers();
+      // `process.env.TZ = undefined` coerces to the literal string
+      // "undefined" (env vars are always strings), which then makes
+      // `Intl.DateTimeFormat().resolvedOptions().timeZone` resolve to
+      // "undefined" and silently breaks local-time computation for every
+      // later test in this Jest worker (maxWorkers: 1) — including this
+      // file's own local-vs-UTC tests. Delete the key outright when TZ was
+      // never set, rather than assigning `undefined` to it.
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
   });
 
   it('counts a session seen only via peekAllBuffers in the current field', async () => {
@@ -4200,6 +4522,54 @@ describe('api-handler GET /api/quality-proxy', () => {
     expect(parsed.totalSignals).toBe(1);
     expect(parsed.diffApplyRate).toBe(1);
   });
+
+  it("day-filters this process's own live signals to today, excluding a stale signal recorded on a prior day", async () => {
+    jest.useFakeTimers();
+    try {
+      const tracker = new QualityProxyTracker();
+      const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
+        id: `id-${Math.random()}`,
+        sessionId: 'live1',
+        toolName: 'Edit',
+        toolUseId: `tu-${Math.random()}`,
+        timestamp: Date.now(),
+        durationMs: 1,
+        success: true,
+        ...overrides,
+      });
+
+      // Yesterday: a failed diff. QualityEvent.timestamp is stamped from
+      // Date.now() at record time (not from the ToolCallRecord itself), so
+      // this must be recorded under yesterday's mocked system time to land
+      // outside today's window.
+      jest.setSystemTime(new Date(2026, 5, 14, 23, 0, 0));
+      tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/stale.ts', success: false }));
+
+      // Today: a clean diff — this is the only signal that should count.
+      jest.setSystemTime(new Date(2026, 5, 15, 8, 0, 0));
+      tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/fresh.ts', success: true }));
+
+      const handler = createApiHandler({ qualityProxyTracker: tracker });
+      const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      const parsed = JSON.parse(body());
+      // Only today's signal counts toward the top-level totals/rates —
+      // yesterday's failed diff must not drag diffApplyRate down. Before the
+      // fix, GET /api/quality-proxy used tracker.getRawCounts() unfiltered,
+      // which would have included both signals (totalSignals: 2,
+      // diffApplyRate: 0.5).
+      expect(parsed.totalSignals).toBe(1);
+      expect(parsed.diffApplyRate).toBe(1);
+      // events/qualityByTurnBucket still reflect the tracker's whole
+      // lifetime — inherently within-session signals with no persisted
+      // cross-session equivalent, unaffected by the day filter above.
+      expect(parsed.events).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('api-handler GET /api/tool-selection-score', () => {
@@ -4470,14 +4840,14 @@ describe('api-handler GET /api/tool-selection-score', () => {
   });
 
   it('does not double-count this own live session when its own in-progress checkpoint is also persisted today', async () => {
-    // Regression test for the bug where index.ts's periodic 30s checkpoint
-    // writes THIS process's own in-progress session to disk (outcome:
-    // 'in progress') with a toolSelectionMetrics summary computed from the
-    // exact same in-memory tool calls toolCallBuffer.getRecords() also
-    // exposes. loadTodaySessions() returns that checkpoint with no
-    // exclusion, so before the fix the route summed the own session's
-    // contribution twice: once via ownRecords -> liveMetrics, and again via
-    // its own persisted checkpoint inside persistedSummaries.
+    // index.ts's periodic 30s checkpoint writes THIS process's own
+    // in-progress session to disk (outcome: 'in progress') with a
+    // toolSelectionMetrics summary computed from the exact same in-memory
+    // tool calls toolCallBuffer.getRecords() also exposes.
+    // loadTodaySessions() returns that checkpoint with no exclusion, so
+    // without a guard the route would sum the own session's contribution
+    // twice: once via ownRecords -> liveMetrics, and again via its own
+    // persisted checkpoint inside persistedSummaries.
     const now = Date.now();
     const ownSessionId = 'sess-own';
     // 3 reads of the same file: the 3rd is the first past the "one re-read
@@ -4886,6 +5256,29 @@ describe('api-handler GET /api/git-efficiency/repos', () => {
     expect(result.repos).toEqual(['alpha-repo', 'current-repo']);
     expect(result.currentRepo).toBe('current-repo');
   });
+
+  it("prefers loadSessionsOverlappingToday() so a cross-midnight session's repo is not dropped from the pills", async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        // Excluded here — its filename date is yesterday's.
+        loadTodaySessions: () => [],
+        // loadSessionsOverlappingToday() must supply it instead, matching
+        // the day-boundary hydration path in src/index.ts.
+        loadSessionsOverlappingToday: () => [
+          { sessionId: 'cross-midnight', repoName: 'cross-midnight-repo' },
+        ],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.repos).toEqual(['cross-midnight-repo']);
+  });
 });
 
 describe('api-handler GET /api/context', () => {
@@ -5248,14 +5641,25 @@ describe('api-handler GET /api/activity-heatmap', () => {
     expect(result.buckets[0]).toBe(1);
   });
 
-  it('returns view=history days aggregated by UTC date, respecting the weeks param', async () => {
-    const nowUtcMidnight = new Date();
-    nowUtcMidnight.setUTCHours(0, 0, 0, 0);
-    const todayKey = nowUtcMidnight.toISOString().slice(0, 10);
+  it('returns view=history days aggregated by local date, walking each timeline entry rather than attributing the whole toolCallCount to the start day', async () => {
+    const todayStart = localStartOfDay();
+    const todayKey = localDateKey(todayStart);
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],
-        loadAllSessions: () => [{ startTime: nowUtcMidnight.getTime() + 60_000, toolCallCount: 7 }],
+        loadAllSessions: () => [
+          {
+            startTime: todayStart + 60_000,
+            // Must be IGNORED — only the timeline entries below should be
+            // counted (mirroring the already-correct view=today branch).
+            toolCallCount: 999,
+            timeline: [
+              { timestamp: todayStart + 60_000 },
+              { timestamp: todayStart + 120_000 },
+              { timestamp: todayStart + 180_000 },
+            ],
+          },
+        ],
         listSessions: () => [],
         loadSession: () => null,
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -5271,8 +5675,85 @@ describe('api-handler GET /api/activity-heatmap', () => {
     expect(Array.isArray(result.days)).toBe(true);
     const todayEntry = result.days.find((d: { date: string }) => d.date === todayKey);
     expect(todayEntry).toBeDefined();
-    expect(todayEntry.count).toBe(7);
-    expect(result.maxCount).toBeGreaterThanOrEqual(7);
+    expect(todayEntry.count).toBe(3);
+    expect(result.maxCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it("attributes a cross-midnight session's timeline entries to the local day each one actually happened on, not the session's start day", async () => {
+    const todayStart = localStartOfDay();
+    const todayKey = localDateKey(todayStart);
+    const yesterdayEntryTs = todayStart - 1_800_000; // 30 min before local midnight
+    const yesterdayKey = localDateKey(yesterdayEntryTs);
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [
+          {
+            // Started yesterday evening...
+            startTime: todayStart - 3_600_000,
+            // ...and the OLD code would have dumped this whole count onto
+            // yesterday's bucket (the start day) and left today's at 0.
+            toolCallCount: 10,
+            timeline: [
+              { timestamp: yesterdayEntryTs },
+              { timestamp: todayStart + 600_000 },
+              { timestamp: todayStart + 1_200_000 },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/activity-heatmap?view=history&weeks=2',
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    const todayEntry = result.days.find((d: { date: string }) => d.date === todayKey);
+    const yesterdayEntry = result.days.find((d: { date: string }) => d.date === yesterdayKey);
+    expect(todayEntry?.count).toBe(2);
+    expect(yesterdayEntry?.count).toBe(1);
+  });
+
+  it('falls back to attributing toolCallCount to the start day for a session with no timeline field, instead of contributing zero', async () => {
+    const todayStart = localStartOfDay();
+    const todayKey = localDateKey(todayStart);
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [
+          {
+            // `timeline` was only added to persisted sessions ~2026-06-02
+            // (session-store.ts) — this route's default 12-week window
+            // still reaches sessions saved before that field existed. Such
+            // a session has no `timeline` property at all (not an empty
+            // array).
+            startTime: todayStart + 60_000,
+            toolCallCount: 5,
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/activity-heatmap?view=history&weeks=1',
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    const todayEntry = result.days.find((d: { date: string }) => d.date === todayKey);
+    // A bare `if (!session.timeline) continue;` would skip this session
+    // entirely, silently zeroing out all history predating the timeline
+    // field instead of falling back to the old (still non-zero)
+    // toolCallCount/start-day attribution.
+    expect(todayEntry?.count).toBe(5);
   });
 
   it('returns 400 invalid_view for an unrecognized view param', async () => {

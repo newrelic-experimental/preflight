@@ -101,8 +101,9 @@ export function SessionDetailDialog({
           <div className="flex-1 min-w-0">
             <h2 className="text-sm font-semibold text-ink-base">Session Detail</h2>
             <p className="mt-1 text-[10px] text-ink-muted">
-              Live, current-process-only — reflects this dashboard process&rsquo;s own current
-              session.
+              Decision Tree and Turn Costs below are scoped to the selected session. Context
+              Composition &amp; Efficiency remain live, current-process-only — they reflect this
+              dashboard process&rsquo;s own current session, not necessarily the one selected above.
             </p>
           </div>
           <button

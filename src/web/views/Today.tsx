@@ -70,7 +70,7 @@ import {
   scoreColor,
   shortToolName,
 } from '../lib/format';
-import { isSameLocalDay, localStartOfDay } from '../../lib/date.js';
+import { isSameLocalDay, localStartOfDay, todayPortionRatio } from '../../lib/date.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
   weekday: 'short',
@@ -298,11 +298,24 @@ export function Today(): JSX.Element {
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
   );
+  // Tracks the local calendar day this component last observed. The same
+  // 60s tick that refreshes the header clock also checks for a local-
+  // midnight rollover and clears the SSE-derived cost/subagent snapshot when
+  // one is detected — without this, a dashboard tab left open across
+  // midnight with no new tool-call activity right away keeps rendering
+  // yesterday's "Spend Today"/forecast/subagent numbers forever, since
+  // setCost()/addSubagentTurn() only fire on a fresh server push and nothing
+  // else invalidates the cached value.
+  const lastSeenDayRef = useRef(Date.now());
   useEffect(() => {
-    const id = setInterval(
-      () => setHeaderTimestamp(new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT)),
-      60_000,
-    );
+    const id = setInterval(() => {
+      const now = Date.now();
+      setHeaderTimestamp(new Date(now).toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT));
+      if (!isSameLocalDay(now, lastSeenDayRef.current)) {
+        lastSeenDayRef.current = now;
+        useLiveStore.getState().handleDayRollover();
+      }
+    }, 60_000);
     return () => clearInterval(id);
   }, []);
 
@@ -1076,17 +1089,19 @@ function LiveSessionPane({
   });
 
   // Decision-tree + per-turn cost detail — both trackers are live,
-  // in-memory, current-process-only accumulators (no persistence), so this
-  // always reflects this dashboard process's own current session, not
-  // necessarily the session selected in the list on the left.
+  // in-memory, process-scoped accumulators (no persistence), but are
+  // filtered server-side to the selected session by passing
+  // `activeId` through as `?sessionId=`, so the session-detail drawer below
+  // always reflects the session actually selected in the trace pane above
+  // it, not just whichever session this process last recorded.
   const { data: turnCosts } = useQuery<TurnCostsResponse>({
-    queryKey: ['turn-costs'],
-    queryFn: fetchTurnCosts,
+    queryKey: activeId ? ['turn-costs', activeId] : ['turn-costs'],
+    queryFn: () => fetchTurnCosts(activeId ?? undefined),
     refetchInterval: 10_000,
   });
   const { data: decisionTree } = useQuery<DecisionTreeResponse>({
-    queryKey: ['decision-tree'],
-    queryFn: fetchDecisionTree,
+    queryKey: activeId ? ['decision-tree', activeId] : ['decision-tree'],
+    queryFn: () => fetchDecisionTree(activeId ?? undefined),
     refetchInterval: 10_000,
   });
   // Mirrors ContextBar's own internal query for the same sessionId — using
@@ -1098,6 +1113,13 @@ function LiveSessionPane({
     refetchInterval: 10_000,
     enabled: isLive && Boolean(activeId),
   });
+  // Unlike turnCosts/decisionTree above, ContextCompositionTracker and
+  // ContextWindowTracker (behind /api/context-efficiency) have no
+  // per-session partitioning (only DecisionTracker/TurnCostAttributor are
+  // partitioned) — these two remain live, in-memory,
+  // current-process-only accumulators. SessionDetailDialog's header caveat
+  // discloses this so the dialog doesn't imply these two sections are also
+  // scoped to the selected session.
   const { data: contextComposition } = useQuery<ContextCompositionResponse>({
     queryKey: ['context-composition'],
     queryFn: fetchContextComposition,
@@ -1195,8 +1217,13 @@ function LiveSessionPane({
       if (startMs === null || e.timestamp < startMs) startMs = e.timestamp;
       if (endMs === null || end > endMs) endMs = end;
     }
-    const sub = subagentData?.window;
-    if (sub && Number.isFinite(sub.startMs) && Number.isFinite(sub.endMs)) {
+    // Guard against the `{ startMs: 0, endMs: 0 }` sentinel returned when a
+    // session has no subagent transcripts (Number.isFinite(0) is true, so a
+    // naive finiteness check let the sentinel drag startMs down to epoch 0).
+    // Mirrors the hasAgents guard in Sessions.tsx's SessionTraceSection.
+    const hasAgents = (subagentData?.agents?.length ?? 0) > 0;
+    const sub = hasAgents ? subagentData!.window : null;
+    if (sub) {
       startMs = startMs === null ? sub.startMs : Math.min(startMs, sub.startMs);
       endMs = endMs === null ? sub.endMs : Math.max(endMs, sub.endMs);
     }
@@ -1517,6 +1544,32 @@ function formatRelativeTime(ts: number): string {
 const isToday = (ts: number): boolean => isSameLocalDay(ts);
 
 /**
+ * What fraction of a session's [startTime, end) window falls within today's
+ * local day, for the more limited fields the dashboard list endpoint exposes
+ * (no timeline — just startTime/endTime/durationMs). Delegates to the
+ * shared `todayPortionRatio` (src/lib/date.ts) so this client-side estimate
+ * uses the exact same elapsed-time-overlap math as the server's
+ * `todayPortionOfSessionCost`, instead of reimplementing it here.
+ *
+ * Used to prorate every "how much of this session counts toward today"
+ * metric consistently — cost, tool calls, and anti-pattern flags — so a
+ * cross-midnight session contributes its today-portion everywhere, not just
+ * for cost. Without this, `computeTodayToolCalls`/`computeTodayFlags` would
+ * add a cross-midnight session's *entire lifetime* count once
+ * `todayPortionOfSession(s) > 0`, rather than prorating the count itself.
+ */
+function todayOverlapRatio(s: SessionSummary): number {
+  if (s.startTime == null) return 0;
+  const end =
+    typeof s.endTime === 'number'
+      ? s.endTime
+      : typeof s.durationMs === 'number'
+        ? s.startTime + s.durationMs
+        : Date.now(); // live session with no end info: assume still running
+  return todayPortionRatio({ startTime: s.startTime, endTime: end });
+}
+
+/**
  * Today-portion of a session's cost. Mirrors the server-side
  * todayPortionOfSessionCost helper but with the more limited fields the
  * dashboard list endpoint exposes (no timeline). For sessions straddling
@@ -1528,27 +1581,7 @@ const isToday = (ts: number): boolean => isSameLocalDay(ts);
 function todayPortionOfSession(s: SessionSummary): number {
   const cost = s.estimatedCostUsd;
   if (cost == null || cost <= 0) return 0;
-  if (s.startTime == null) return 0;
-
-  const dayStart = localStartOfDay();
-  const dayEnd = dayStart + 86_400_000;
-
-  const start = s.startTime;
-  const end =
-    typeof s.endTime === 'number'
-      ? s.endTime
-      : typeof s.durationMs === 'number'
-        ? s.startTime + s.durationMs
-        : Date.now(); // live session with no end info: assume still running
-
-  if (end < dayStart) return 0;
-  if (start >= dayEnd) return 0;
-
-  if (start >= dayStart && end < dayEnd) return cost;
-
-  const overlapMs = Math.min(end, dayEnd) - Math.max(start, dayStart);
-  const totalMs = Math.max(1, end - start);
-  return cost * (overlapMs / totalMs);
+  return cost * todayOverlapRatio(s);
 }
 
 function computeTodaySpend(sessions: SessionSummary[]): number {
@@ -1560,24 +1593,19 @@ function computeTodaySpend(sessions: SessionSummary[]): number {
 function computeTodayToolCalls(sessions: SessionSummary[]): number {
   let total = 0;
   for (const s of sessions) {
-    // isToday fast-path includes sessions that started today regardless of cost
-    // (cost may be null before token data arrives). todayPortionOfSession > 0
-    // additionally picks up cross-midnight sessions with non-null cost.
-    if ((s.startTime && isToday(s.startTime)) || todayPortionOfSession(s) > 0) {
-      total += s.toolCallCount ?? 0;
-    }
+    const ratio = todayOverlapRatio(s);
+    if (ratio > 0) total += (s.toolCallCount ?? 0) * ratio;
   }
-  return total;
+  return Math.round(total);
 }
 
 function computeTodayFlags(sessions: SessionSummary[]): number {
   let total = 0;
   for (const s of sessions) {
-    if ((s.startTime && isToday(s.startTime)) || todayPortionOfSession(s) > 0) {
-      total += s.antiPatterns?.length ?? 0;
-    }
+    const ratio = todayOverlapRatio(s);
+    if (ratio > 0) total += (s.antiPatterns?.length ?? 0) * ratio;
   }
-  return total;
+  return Math.round(total);
 }
 
 function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
@@ -1587,10 +1615,48 @@ function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   // `sessions`, so no separate currentSessionCost addition is needed — adding
   // it separately caused the live session's cost to be counted twice.
   const buckets = new Array<number>(24).fill(0);
+  const dayStart = localStartOfDay();
+  const dayEnd = dayStart + 86_400_000;
+
   for (const s of sessions) {
-    if (!s.startTime || !isToday(s.startTime) || s.estimatedCostUsd == null) continue;
-    const hour = new Date(s.startTime).getHours();
-    buckets[hour]! += s.estimatedCostUsd;
+    if (!s.startTime || s.estimatedCostUsd == null || s.estimatedCostUsd <= 0) continue;
+    const start = s.startTime;
+    const end =
+      typeof s.endTime === 'number'
+        ? s.endTime
+        : typeof s.durationMs === 'number'
+          ? s.startTime + s.durationMs
+          : Date.now();
+
+    // Clamp the session's activity window to today's local day — a session
+    // that started yesterday and is still running now contributes its
+    // today-portion instead of being skipped entirely. A naive `continue`
+    // on any session that didn't *start* today would hide the chart even
+    // when `todayTotal > 0`.
+    const clampedStart = Math.max(start, dayStart);
+    const clampedEnd = Math.min(end, dayEnd);
+    if (clampedEnd <= clampedStart) continue;
+
+    const totalMs = Math.max(1, end - start);
+    const todayShareMs = clampedEnd - clampedStart;
+    const todayCost = s.estimatedCostUsd * (todayShareMs / totalMs);
+
+    // Spread todayCost across every hour bucket the clamped window actually
+    // touches, weighted by time-in-bucket — instead of dumping the whole
+    // amount into the session's start hour, which would make a
+    // multi-hour session appear as one artificial spike.
+    let cursor = clampedStart;
+    while (cursor < clampedEnd) {
+      const cursorDate = new Date(cursor);
+      const hour = cursorDate.getHours();
+      const nextHour = new Date(cursorDate);
+      nextHour.setMinutes(0, 0, 0);
+      nextHour.setHours(hour + 1);
+      const segmentEnd = Math.min(clampedEnd, nextHour.getTime());
+      const segmentMs = segmentEnd - cursor;
+      buckets[hour]! += todayCost * (segmentMs / todayShareMs);
+      cursor = segmentEnd;
+    }
   }
   return buckets.map((cost, hour) => ({ hour, cost }));
 }
