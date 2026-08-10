@@ -245,7 +245,15 @@ export interface GitSuggestion {
 export interface BestPractice {
   readonly id: string;
   readonly label: string;
-  readonly status: 'pass' | 'fail' | 'warn' | 'unknown';
+  /**
+   * `'n/a'` is distinct from `'unknown'`: `'unknown'` means there isn't
+   * enough signal yet to evaluate the check (genuinely insufficient data);
+   * `'n/a'` means the check is fully evaluated and the practice simply
+   * doesn't apply this session (e.g. no parallel work happened, so worktree
+   * usage was never needed) — a known, non-violating outcome that shouldn't
+   * be conflated with "we don't know" or count against the pass ratio.
+   */
+  readonly status: 'pass' | 'fail' | 'warn' | 'unknown' | 'n/a';
   readonly detail: string;
 }
 
@@ -263,6 +271,7 @@ const BEST_PRACTICE_STATUS_RANK: Record<BestPractice['status'], number> = {
   warn: 1,
   pass: 2,
   unknown: 3,
+  'n/a': 4,
 };
 
 export interface RiskIndicators {
@@ -1152,12 +1161,27 @@ export class GitEfficiencyTracker {
         detail:
           'Conflicts detected without worktree usage. When running multiple AI sessions in parallel (or switching between tasks), use `git worktree add` to give each task its own working directory. This completely eliminates cross-session conflicts.',
       });
-    } else {
+    } else if (stats.commitCount < 3) {
+      // Mirrors frequent_sync's "not enough commits yet" gate above — too
+      // little activity to tell whether this session even involves the kind
+      // of parallel/multi-task work worktrees would protect against.
       practices.push({
         id: 'use_worktrees',
         label: 'Use worktrees for parallel work',
         status: 'unknown',
-        detail: 'No worktree usage detected. Consider worktrees if you run parallel sessions.',
+        detail: 'Not enough activity yet to tell whether this session needs worktrees.',
+      });
+    } else {
+      // Fully known, not a violation: no conflicts occurred and no worktree
+      // was used. Distinct from the 'unknown' branch above — this session
+      // had enough activity to judge, and simply didn't need worktree
+      // isolation, which is a fine outcome, not "we don't know."
+      practices.push({
+        id: 'use_worktrees',
+        label: 'Use worktrees for parallel work',
+        status: 'n/a',
+        detail:
+          "No conflicts and no worktree usage detected this session — parallel-session isolation wasn't needed here.",
       });
     }
 
@@ -1257,7 +1281,10 @@ export class GitEfficiencyTracker {
   }
 
   private computePreventionScore(practices: BestPractice[]): number | null {
-    const scorable = practices.filter((p) => p.status !== 'unknown');
+    // 'n/a' (fully known, not applicable) is excluded the same way 'unknown'
+    // (genuinely insufficient data) is — neither should count for or against
+    // the score. See BestPractice['status']'s docstring for the distinction.
+    const scorable = practices.filter((p) => p.status !== 'unknown' && p.status !== 'n/a');
     if (scorable.length < 2) return null;
 
     let points = 0;

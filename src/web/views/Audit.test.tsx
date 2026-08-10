@@ -115,6 +115,14 @@ describe('Audit view', () => {
     expect(screen.getByRole('button', { name: /export jsonl/i })).toBeInTheDocument();
   });
 
+  it('discloses the 200-row export cap on the export button itself', async () => {
+    renderAudit(SAMPLE);
+    await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
+    expect(
+      screen.getByRole('button', { name: /export jsonl \(max 200 rows\)/i }),
+    ).toBeInTheDocument();
+  });
+
   it('caps rendered rows at 200 and shows the "showing first" note when over the limit', async () => {
     const big = Array.from({ length: 500 }, (_, i) => ({
       ts: 1_000_000 + i,

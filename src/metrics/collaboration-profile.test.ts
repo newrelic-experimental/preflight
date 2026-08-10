@@ -330,6 +330,23 @@ describe('CollaborationProfiler', () => {
     expect(baseline.dimensions.autonomy).toBeCloseTo(0.867, 2);
   });
 
+  // With sessions from only one developer, the "team" baseline is really
+  // just that developer, so the dashboard needs developerCount to know when
+  // to caveat "vs team" comparisons as meaningless. Guards against
+  // computeTeamBaseline silently reporting a count that doesn't reflect a
+  // single-developer SessionStore.
+  it('computeTeamBaseline reports developerCount 1 for a single-developer fixture', () => {
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+
+    store.saveSession(makeSummary({ sessionId: 'solo-1', developer: 'alice', toolCallCount: 60 }));
+    store.saveSession(makeSummary({ sessionId: 'solo-2', developer: 'alice', toolCallCount: 40 }));
+
+    const baseline = profiler.computeTeamBaseline();
+
+    expect(baseline.developerCount).toBe(1);
+    expect(baseline.sessionCount).toBe(2);
+  });
+
   // -------------------------------------------------------------------------
   // 6. compareToTeam — deltas
   // -------------------------------------------------------------------------

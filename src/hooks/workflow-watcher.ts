@@ -323,7 +323,10 @@ export class WorkflowWatcher {
 
     const runId = typeof parsed.runId === 'string' ? parsed.runId : file.runId;
     const startTime = typeof parsed.startTime === 'number' ? parsed.startTime : 0;
-    const durationMs = typeof parsed.durationMs === 'number' ? parsed.durationMs : 0;
+    // null (not 0) when absent — an unfinished/killed run's duration is
+    // unknown, not a confirmed instant completion. See
+    // ScriptWorkflowRunMetrics.duration_ms's docstring.
+    const durationMs = typeof parsed.durationMs === 'number' ? parsed.durationMs : null;
     const status = typeof parsed.status === 'string' ? parsed.status : 'unknown';
     const incomplete = status !== 'completed';
     const wfName = typeof parsed.workflowName === 'string' ? parsed.workflowName : 'unknown';

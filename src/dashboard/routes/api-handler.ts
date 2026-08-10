@@ -127,7 +127,8 @@ interface WorkflowRunDto {
   readonly errorReason: string | null;
   readonly defaultModel: string;
   readonly startedAt: number;
-  readonly durationMs: number;
+  /** `null` for an unfinished/killed run — see `WorkflowRunRow.duration_ms`'s docstring. */
+  readonly durationMs: number | null;
   readonly agentCount: number;
   readonly totalTokens: number;
   readonly totalUsd: number | null;
@@ -461,6 +462,7 @@ export interface ApiHandlerDeps {
         taskComplexity: number;
       };
     };
+    computeTeamBaseline: () => { developerCount: number };
   };
   readonly alertLog?: { readRecent: (limit: number) => Promise<AlertEvent[]> };
   readonly taskDetector?: {
@@ -1947,11 +1949,15 @@ export function createApiHandler(
     const developer = (deps.config?.developer as string | undefined) ?? 'unknown';
     const profile = deps.collaborationProfiler.computeProfile(developer);
     const comparison = deps.collaborationProfiler.compareToTeam(developer);
+    // developerCount lets the dashboard caveat "vs team" when the baseline
+    // is really just this one developer.
+    const baseline = deps.collaborationProfiler.computeTeamBaseline();
     jsonOk(res, {
       classification: profile.classification,
       dimensions: profile.dimensions,
       sessionCount: profile.sessionCount,
       teamDeltas: comparison.deltas,
+      developerCount: baseline.developerCount,
     });
   });
 

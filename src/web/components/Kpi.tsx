@@ -18,7 +18,15 @@ export interface KpiProps {
   readonly tone?: KpiTone;
   readonly hero?: boolean;
   readonly animate?: boolean;
-  readonly numericValue?: number;
+  /**
+   * The live numeric value backing the animated count-up. Accepts `null` for
+   * "genuinely unknown/not-yet-available" (as opposed to a confirmed `0`) —
+   * callers should pass the raw nullable metric through rather than
+   * coalescing it to `0` first, or the animate branch below renders a
+   * misleading "0" instead of falling through to the `value` string (e.g.
+   * `value="—"`).
+   */
+  readonly numericValue?: number | null;
   readonly prefix?: string;
   readonly suffix?: string;
   readonly decimals?: number;
@@ -44,18 +52,18 @@ export function Kpi({
   decimals = 0,
   format,
 }: KpiProps): JSX.Element {
+  // `null` means "genuinely unknown", same as `undefined` — neither should
+  // coalesce to a rendered `0`. Only a real number reaches the animate branch.
+  const hasNumericValue = numericValue !== undefined && numericValue !== null;
+
   const animated = useAnimatedValue(numericValue ?? 0, {
     decimals,
-    enabled: animate && numericValue !== undefined,
+    enabled: animate && hasNumericValue,
     format,
   });
 
   const display =
-    animate && numericValue !== undefined
-      ? format
-        ? animated
-        : `${prefix}${animated}${suffix}`
-      : value;
+    animate && hasNumericValue ? (format ? animated : `${prefix}${animated}${suffix}`) : value;
 
   const valueClass = hero
     ? 'text-3xl font-bold mt-1 tabular-nums gradient-text'

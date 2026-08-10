@@ -259,11 +259,13 @@ export function GitEfficiency(): JSX.Element {
             <Kpi
               label="behind main"
               tone={
-                (data.riskIndicators.commitsBehindMain ?? 0) > 20
-                  ? 'bad'
-                  : (data.riskIndicators.commitsBehindMain ?? 0) > 5
-                    ? 'warn'
-                    : 'good'
+                data.riskIndicators.commitsBehindMain === null
+                  ? 'neutral'
+                  : data.riskIndicators.commitsBehindMain > 20
+                    ? 'bad'
+                    : data.riskIndicators.commitsBehindMain > 5
+                      ? 'warn'
+                      : 'good'
               }
               value={
                 data.riskIndicators.commitsBehindMain !== null
@@ -279,7 +281,7 @@ export function GitEfficiency(): JSX.Element {
                     : undefined
               }
               animate
-              numericValue={data.riskIndicators.commitsBehindMain ?? 0}
+              numericValue={data.riskIndicators.commitsBehindMain}
             />
           </div>
         </Card>
@@ -294,7 +296,14 @@ export function GitEfficiency(): JSX.Element {
               action={
                 <span className="text-[11px] text-ink-muted">
                   {(() => {
-                    const known = data.bestPractices.filter((bp) => bp.status !== 'unknown').length;
+                    // 'n/a' (fully known, not applicable) is excluded from the
+                    // ratio the same way 'unknown' (insufficient data) is —
+                    // matching computePreventionScore()'s treatment so this
+                    // header and the Prevention score ring never disagree on
+                    // which items count. See BestPractice['status']'s docstring.
+                    const known = data.bestPractices.filter(
+                      (bp) => bp.status !== 'unknown' && bp.status !== 'n/a',
+                    ).length;
                     if (known === 0) return 'No data yet';
                     const passing = data.bestPractices.filter((bp) => bp.status === 'pass').length;
                     return `${passing}/${known} passing`;
@@ -312,7 +321,7 @@ export function GitEfficiency(): JSX.Element {
                   </Pill>
                 ))}
               {data.bestPractices
-                .filter((bp) => bp.status === 'unknown')
+                .filter((bp) => bp.status === 'unknown' || bp.status === 'n/a')
                 .map((bp) => (
                   <Pill key={bp.id} tone="neutral" size="sm" bordered>
                     <span>&#9679;</span> {bp.label}

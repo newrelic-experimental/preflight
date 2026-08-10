@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.38] - 2026-08-10
+
+### Fixed
+
+- **The Sessions page now recovers gracefully from a bad session link.** An invalid or stale deep-linked session now shows a real error state with a "clear selection" action, instead of leaving the detail pane permanently blank.
+- **A session that has already ended no longer keeps showing a "live" badge.** The live-session check is now the single source of truth for which session is live, so an ended session's badge disappears instead of lingering indefinitely.
+- **Initial session selection on the Sessions page no longer races ahead of the live-session check.** The page waits for the live-session check to settle before falling back to the most recent session, so a live session is never clobbered by a premature default selection.
+- **Several places that quietly capped or truncated what they showed now disclose that cap where it matters.** The Sessions page's recent-sessions notice, the History page's daily-spend sampling, model-performance and top-tools panel titles, the instruction-file-impact sample size, the collaboration-profile team size, and the Audit page's export button all now say when they're showing a partial view instead of implying completeness. The daily-spend truncation notice itself is now more precise — it only appears when the underlying sample was actually capped, not whenever an account simply doesn't have 30 days of history yet.
+- **A shared KPI display component no longer renders an unknown value as a confident animated zero.** Metrics that are genuinely unavailable now fall through to their placeholder text instead of animating toward "0", and the Git Efficiency page's "behind main" KPI now shows a neutral color for an unknown value instead of a reassuring green.
+- **The Git Efficiency page's worktree best-practice check no longer conflates "not enough data" with "fully evaluated, not applicable."** These are now tracked as distinct outcomes, and both are excluded from the best-practices pass ratio the same way.
+- **Workflow-run duration is no longer reported as zero when it's actually unknown.** A run that's still in progress (or was killed before finishing) now reports its duration as unknown rather than a confirmed instant zero, so it no longer skews duration averages downward.
+
 ## [1.14.37] - 2026-08-09
 
 ### Fixed

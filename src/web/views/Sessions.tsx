@@ -247,8 +247,6 @@ export function Sessions(): JSX.Element {
     const set = new Set<string>();
     if (current.data?.liveSessions?.length) {
       for (const id of current.data.liveSessions) set.add(id);
-    } else if (current.data?.sessionId) {
-      set.add(current.data.sessionId);
     }
     return set;
   }, [current.data]);
@@ -323,10 +321,10 @@ export function Sessions(): JSX.Element {
     const firstLiveId = liveSessionIds.size > 0 ? [...liveSessionIds][0]! : null;
     if (firstLiveId) {
       setSelectedId(firstLiveId);
-    } else if (rows.length > 0) {
+    } else if (!current.isLoading && rows.length > 0) {
       setSelectedId(rows[0]!.sessionId);
     }
-  }, [liveSessionIds, rows, selectedId]);
+  }, [liveSessionIds, rows, selectedId, current.isLoading]);
 
   const handleSessionClick = (sessionId: string): void => {
     setSelectedId(sessionId);
@@ -519,10 +517,16 @@ export function Sessions(): JSX.Element {
               sessions exist beyond what's rendered. The cap is enforced
               server-side (api-handler `limit` clamp) and matches the
               `qk.sessionsList(50)` query above; bump both together if the
-              cap ever changes. */}
+              cap ever changes.
+              Worded as "loaded" (not "showing") because this describes the
+              underlying fetch, not the currently visible row count — with a
+              run filter active, visibleRows can be far smaller than
+              SESSIONS_PAGE_SIZE, and "Showing 50" would misleadingly read as
+              a description of the filtered list. */}
             {rows.length >= SESSIONS_PAGE_SIZE && (
               <div className="p-2 text-[10px] text-ink-muted text-center border-t border-border-subtle">
-                Showing {SESSIONS_PAGE_SIZE} most recent sessions.
+                Only the {SESSIONS_PAGE_SIZE} most recent sessions are loaded
+                {filtersActive ? '; filters narrow this further' : ''}.
               </div>
             )}
           </div>
@@ -538,6 +542,22 @@ export function Sessions(): JSX.Element {
           )}
           {selectedId && detail.isLoading && (
             <EmptyState variant="loading" icon="timeline" title="Loading detail" />
+          )}
+          {selectedId && detail.isError && (
+            <div className="flex flex-col items-center justify-center py-8 gap-4">
+              <EmptyState
+                icon="timeline"
+                title="Session not found"
+                subtitle="This session could not be loaded."
+              />
+              <button
+                type="button"
+                onClick={() => setSelectedId(null)}
+                className="text-accent-cyan hover:text-accent-cyan/80 text-sm font-medium"
+              >
+                Clear selection
+              </button>
+            </div>
           )}
           {selectedId && detail.data && (
             <SessionTimeline

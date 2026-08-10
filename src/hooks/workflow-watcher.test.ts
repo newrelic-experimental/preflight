@@ -135,6 +135,39 @@ describe('WorkflowWatcher', () => {
     expect(runs[0].status).toBe('killed');
   });
 
+  // A killed/unfinished run's rollup may have no numeric durationMs at all.
+  // Coercing that to 0 would make it read as a confirmed-instant run and
+  // silently skew any average computed over duration_ms. It must emit as
+  // null (unknown), not 0.
+  it('emits duration_ms as null (not 0) when the rollup has no numeric durationMs', () => {
+    writeFileSync(
+      join(wfDir, 'wf_abc12345-6dd.json'),
+      makeWfJson({ durationMs: undefined, status: 'killed' }),
+    );
+    const watcher = new WorkflowWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    const runs: ScriptWorkflowRunMetrics[] = [];
+    watcher.setOnRun((r) => runs.push(r));
+    watcher.poll();
+    expect(runs[0].duration_ms).toBeNull();
+  });
+
+  it('still emits a real duration_ms of 0 as 0, not conflated with unknown', () => {
+    writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ durationMs: 0 }));
+    const watcher = new WorkflowWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    const runs: ScriptWorkflowRunMetrics[] = [];
+    watcher.setOnRun((r) => runs.push(r));
+    watcher.poll();
+    expect(runs[0].duration_ms).toBe(0);
+  });
+
   it('matches files with longer suffix (R7: prefix-only filename pattern)', () => {
     // Filename uses an unusually long suffix — watcher must still match on `wf_`.
     writeFileSync(join(wfDir, 'wf_abc12345-6ddXYZ-extralongsuffix.json'), makeWfJson());

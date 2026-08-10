@@ -38,6 +38,12 @@ describe('Kpi', () => {
     expect(screen.queryByText('WRONG')).not.toBeInTheDocument();
   });
 
+  it('renders the value string, not "0", when numericValue is null (unknown, not zero) even with animate set', () => {
+    render(<Kpi label="behind main" value="—" animate numericValue={null} />);
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+  });
+
   it('assembles prefix/suffix/decimals around the animated value when no format is given', () => {
     render(
       <Kpi

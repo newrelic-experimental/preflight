@@ -602,6 +602,10 @@ export interface CollaborationProfileApiResponse {
     readonly correctionRate: number;
     readonly taskComplexity: number;
   };
+  // Number of distinct developers folded into the team baseline `teamDeltas`
+  // was compared against. <= 1 means there's no other developer's data yet,
+  // so "vs team" is really "vs yourself".
+  readonly developerCount: number;
 }
 
 export const fetchCollaborationProfile = (): Promise<CollaborationProfileApiResponse> =>
@@ -685,7 +689,12 @@ export interface GitEvent {
 export interface BestPractice {
   readonly id: string;
   readonly label: string;
-  readonly status: 'pass' | 'fail' | 'warn' | 'unknown';
+  /**
+   * `'n/a'` (fully known, not applicable) is distinct from `'unknown'`
+   * (genuinely insufficient data) — see `BestPractice`'s docstring in
+   * `git-efficiency-tracker.ts` for the full explanation.
+   */
+  readonly status: 'pass' | 'fail' | 'warn' | 'unknown' | 'n/a';
   readonly detail: string;
 }
 

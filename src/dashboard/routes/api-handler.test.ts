@@ -1009,6 +1009,45 @@ describe('api-handler GET /api/instruction-drift', () => {
   });
 });
 
+describe('api-handler GET /api/collaboration-profile', () => {
+  it('returns 503 when collaborationProfiler is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/collaboration-profile' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns developerCount from computeTeamBaseline alongside the profile and team deltas', async () => {
+    const handler = createApiHandler({
+      collaborationProfiler: {
+        computeProfile: () => ({
+          classification: 'Power User',
+          dimensions: {
+            specificity: 0.7,
+            autonomy: 0.65,
+            correctionRate: 0.5,
+            taskComplexity: 0.6,
+          },
+          sessionCount: 12,
+        }),
+        compareToTeam: () => ({
+          deltas: { specificity: 0, autonomy: 0, correctionRate: 0, taskComplexity: 0 },
+        }),
+        computeTeamBaseline: () => ({ developerCount: 1 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['collaborationProfiler'],
+    });
+    const req = { method: 'GET', url: '/api/collaboration-profile' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    const parsed = JSON.parse(body());
+    expect(parsed.developerCount).toBe(1);
+    expect(parsed.classification).toBe('Power User');
+  });
+});
+
 describe('api-handler GET /api/decision-tree', () => {
   it('returns 503 when decisionTracker is missing', async () => {
     const handler = createApiHandler({});
@@ -2844,6 +2883,45 @@ describe('api-handler GET /api/workflows', () => {
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].runId).toBe('wf_abc12345-6dd');
+  });
+
+  // An unfinished/killed run's duration_ms is null (unknown), not 0 — the
+  // DTO must pass that null through unchanged rather than defaulting it.
+  it('passes a null duration_ms through as durationMs: null, not 0', async () => {
+    const fakeRow = {
+      workflow_run_id: 'wf_abc12345-6dd',
+      parent_session_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      task_id: null,
+      workflow_name: 'sample',
+      status: 'running',
+      incomplete: true,
+      error_reason: null,
+      default_model: 'claude-opus-4-7',
+      started_at: 1_781_652_144_959,
+      duration_ms: null,
+      agent_count: 2,
+      total_tokens: 826_463,
+      total_usd: null,
+      declared_phases: null,
+      observed_phases: 1,
+      declared_parallel_widths: [],
+      token_reconciliation_delta: null,
+      run_source: 'script',
+      script_path: null,
+      workflow_json_path: '/tmp/wf_abc12345-6dd.json',
+    };
+    const handler = createApiHandler({
+      workflowStore: {
+        listRuns: () => [fakeRow],
+        getRun: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['workflowStore'],
+    });
+    const req = { method: 'GET', url: '/api/workflows' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect(parsed[0].durationMs).toBeNull();
   });
 });
 

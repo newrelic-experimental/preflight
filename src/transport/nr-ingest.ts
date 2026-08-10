@@ -403,7 +403,13 @@ export interface ScriptWorkflowRunMetrics {
   readonly status: string;
   readonly default_model: string;
   readonly started_at: number;
-  readonly duration_ms: number;
+  /**
+   * `null` when the on-disk rollup has no numeric `durationMs` yet (e.g. a
+   * run still in progress or killed before it wrote one) — distinct from a
+   * confirmed 0ms run. See `WorkflowRunRow.duration_ms`'s docstring
+   * (`workflow-store.ts`) for the same distinction on the read side.
+   */
+  readonly duration_ms: number | null;
   readonly agent_count: number;
   /** Re-derived from sum of subagent JSONL usage; falls back to rollup totalTokens. */
   readonly total_tokens: number;
@@ -548,7 +554,10 @@ export function scriptWorkflowRunToNrEvent(
   const event: NrEventData = {
     eventType: 'AiWorkflowRun',
     event_version: 1,
-    timestamp: metrics.started_at + metrics.duration_ms,
+    // duration_ms can be null (unfinished/killed run); fall back to 0 for
+    // this derived timestamp only — the event's own duration_ms field below
+    // still omits the value entirely rather than reporting a false 0.
+    timestamp: metrics.started_at + (metrics.duration_ms ?? 0),
     run_source: 'script',
     workflow_run_id: metrics.workflow_run_id,
     // Declarative metadata: NOT redacted. meta.name is author-declared
@@ -558,7 +567,6 @@ export function scriptWorkflowRunToNrEvent(
     status: metrics.status,
     default_model: metrics.default_model,
     started_at: metrics.started_at,
-    duration_ms: metrics.duration_ms,
     agent_count: metrics.agent_count,
     total_tokens: metrics.total_tokens,
     observed_phases: metrics.observed_phases,
@@ -568,6 +576,7 @@ export function scriptWorkflowRunToNrEvent(
     developer: attrs.developer,
     app_name: attrs.appName,
   };
+  if (metrics.duration_ms !== null) event.duration_ms = metrics.duration_ms;
   if (metrics.task_id !== null) event.task_id = metrics.task_id;
   if (metrics.declared_phases !== null) event.declared_phases = metrics.declared_phases;
   if (metrics.total_usd !== null) event.total_usd = metrics.total_usd;

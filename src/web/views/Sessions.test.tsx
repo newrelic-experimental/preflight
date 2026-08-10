@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Sessions } from './Sessions';
 
@@ -92,14 +92,44 @@ describe('Sessions view', () => {
     }));
     renderSessions(fullPage);
     await waitFor(() =>
-      expect(screen.getByText(/showing 50 most recent sessions/i)).toBeInTheDocument(),
+      expect(screen.getByText(/only the 50 most recent sessions are loaded/i)).toBeInTheDocument(),
     );
   });
 
   it('hides the cap notice when fewer than the page size are returned', async () => {
     renderSessions(SAMPLE_LIST);
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
-    expect(screen.queryByText(/showing 50 most recent sessions/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/only the 50 most recent sessions are loaded/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clarifies the cap notice further narrows when a run filter is active', async () => {
+    // A run filter can shrink the visible list to far fewer rows than the
+    // fetch cap; the notice must not read as a description of that
+    // narrowed view.
+    const fullPage = Array.from({ length: 50 }, (_, i) => ({
+      sessionId: `cap-${i}`,
+      startTime: '2026-05-28T09:00:00Z',
+      toolCallCount: 1,
+      estimatedCostUsd: 0,
+    }));
+    renderSessions(fullPage);
+    await waitFor(() =>
+      expect(screen.getByText(/only the 50 most recent sessions are loaded/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/only the 50 most recent sessions are loaded/i).textContent,
+    ).not.toMatch(/narrow/i);
+
+    const statusGroup = screen.getByRole('group', { name: /status filter/i });
+    fireEvent.click(within(statusGroup).getByRole('button', { name: 'Completed' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/only the 50 most recent sessions are loaded/i).textContent).toMatch(
+        /filters narrow this further/i,
+      ),
+    );
   });
 
   it('auto-selects the first session on load (no manual pick required)', async () => {
@@ -486,6 +516,21 @@ describe('Sessions view — workflow consolidation', () => {
     expect(container.textContent).toMatch(/\$3(\.0+)?/);
   });
 
+  // A run's durationMs being null (unfinished/killed, still upstream in
+  // workflow-store.ts/workflow-watcher.ts) is not the same as a confirmed
+  // 0ms run. Averaging must exclude it rather than let it drag the average
+  // toward zero.
+  it('excludes a null durationMs from the Avg duration KPI average instead of treating it as zero', async () => {
+    const runsWithUnknownDuration = [RUNS[0], { ...RUNS[1], durationMs: null }];
+    const { container } = renderSessionsFull(SESSIONS, runsWithUnknownDuration);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    // Only run-1's 60_000ms contributes — average of just that one run is
+    // "1m", not (60_000 + 0) / 2 = "30s" (which is what treating the null
+    // run's duration as 0 would produce).
+    expect(container.textContent).toContain('1m');
+    expect(container.textContent).not.toContain('30s');
+  });
+
   // A run's totalUsd being null is ambiguous between "confirmed $0" and "no
   // process ever observed this run's cost". costUnknown distinguishes the
   // two (a partial mitigation); the KPI must disclose when it does.
@@ -628,5 +673,196 @@ describe('Sessions view — subagent fetch failure fallback', () => {
     await waitFor(() => expect(screen.getByText('Parent')).toBeInTheDocument());
     expect(screen.queryByText('Loading subagents')).toBeNull();
     await waitFor(() => expect(subagentsCalls.length).toBeGreaterThan(0));
+  });
+});
+
+describe('Sessions view — live-detection and selection reliability', () => {
+  // A deep link to a non-existent session (e.g., ?session=bad-id) should
+  // show an error state with a "clear selection" action, not blank the detail pane.
+  it('shows error state and clear-selection action when a deep-linked session does not exist', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/sessions/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '');
+        // Simulate a 404 for the bad deep-linked id
+        if (id === 'bad-id') {
+          return Promise.resolve(new Response('{"error":"not_found"}', { status: 404 }));
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: id, timeline: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(SAMPLE_LIST), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment
+    delete window.location;
+    window.location = { ...original, search: '?session=bad-id' } as unknown as string & Location;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+
+    // The error state should render with the title "Session not found"
+    await waitFor(() => expect(screen.getByText('Session not found')).toBeInTheDocument());
+    // And a "Clear selection" button must be present to dismiss the error
+    const clearBtn = screen.getByRole('button', { name: /clear selection/i });
+    expect(clearBtn).toBeInTheDocument();
+
+    // Clicking the button should clear selectedId. The error state should disappear.
+    fireEvent.click(clearBtn);
+    await waitFor(() => expect(screen.queryByText('Session not found')).not.toBeInTheDocument());
+
+    window.location = original as unknown as string & Location;
+  });
+
+  // When current.data.sessionId is present but liveSessions is empty (a
+  // session has ended), the liveSessionIds derivation should not fall back to
+  // treating the ended session as live. It should return an empty set.
+  it('treats empty liveSessions array as "nothing is live" and does not fall back to current.data.sessionId', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const sessionList = [
+      {
+        sessionId: 's1',
+        startTime: '2026-05-28T09:00:00Z',
+        toolCallCount: 10,
+      },
+      {
+        sessionId: 's2',
+        startTime: '2026-05-27T09:00:00Z',
+        toolCallCount: 5,
+      },
+    ];
+
+    globalThis.fetch = ((url: string) => {
+      if (url === '/api/session/current') {
+        // Session s1 was active before but has ended: no liveSessions, but sessionId is present
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              sessionId: 's1',
+              liveSessions: [],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        );
+      }
+      if (url.startsWith('/api/sessions/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '');
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: id, timeline: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(sessionList), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    // s1 should NOT have the "live" badge because liveSessions is empty (even
+    // though current.data.sessionId = 's1'). Instead, the oldest item (s1)
+    // should be auto-selected by the fallback once current settles.
+    const liveElements = screen.queryAllByText(/live/i);
+    expect(liveElements.length).toBe(0);
+  });
+
+  // Race condition guard: /api/sessions (list) can resolve before
+  // /api/session/current (live check). The auto-select fallback to rows[0]
+  // must wait until current.isLoading has settled to false at least once,
+  // so it never clobbers a potential live-session selection.
+  it('does not auto-select from rows before the live-session check has settled', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const sessionList = [
+      { sessionId: 's1', startTime: '2026-05-28T09:00:00Z', toolCallCount: 10 },
+      { sessionId: 's2', startTime: '2026-05-27T09:00:00Z', toolCallCount: 5 },
+    ];
+
+    let currentFetchResolved = false;
+    const detailFetchCalls: string[] = [];
+
+    globalThis.fetch = ((url: string) => {
+      if (url === '/api/session/current') {
+        // Simulate a delay: this resolves after /api/sessions
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            currentFetchResolved = true;
+            resolve(
+              new Response(
+                JSON.stringify({
+                  sessionId: 's2',
+                  liveSessions: ['s2'],
+                }),
+                {
+                  status: 200,
+                  headers: { 'content-type': 'application/json' },
+                },
+              ),
+            );
+          }, 100);
+        });
+      }
+      if (url.startsWith('/api/sessions/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '');
+        // Track which session detail is fetched to verify correct selection.
+        // Without the fix, s1 would be fetched (buggy early auto-select).
+        // With the fix, s2 is fetched (correct selection after live check settles).
+        detailFetchCalls.push(id);
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: id, timeline: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      // /api/sessions list resolves immediately
+      return Promise.resolve(
+        new Response(JSON.stringify(sessionList), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    // Even though s1 loads first from the list, the effect should NOT auto-select
+    // it immediately. Once the live-session check settles (current.isLoading → false),
+    // it should select s2 (the live session), not s1.
+    await waitFor(() => expect(currentFetchResolved).toBe(true), { timeout: 1000 });
+    // Verify that s2's detail was fetched, not s1's. This proves s2 was
+    // selected — if s1 had been selected immediately, the "selectedId is
+    // already set" guard would block ever switching to s2.
+    await waitFor(() => expect(detailFetchCalls).toContain('s2'));
   });
 });

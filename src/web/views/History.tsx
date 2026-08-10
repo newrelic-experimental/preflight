@@ -232,10 +232,26 @@ export function History(): JSX.Element {
   });
 
   const dailyData = padDailyCostWindow(aggregateDailyCost(sessions.data ?? [], 30), 30);
+  // The 200-session sample can run out before it reaches back the full
+  // 30-day window (a busy account can churn through 200 sessions in far
+  // fewer than 30 days). When it does, the padded $0 days at the start of
+  // the window aren't confirmed zero-spend — they're simply outside the
+  // sample's reach. Flag that instead of presenting them as real zeros.
+  // Only flag it when the sample actually hit the 200-row cap; an account
+  // with fewer than 200 total sessions has nothing withheld, so its early
+  // zero-padded days are confirmed zero-spend rather than unsampled.
+  const dailySpendTruncated =
+    (sessions.data?.length ?? 0) >= 200 && isDailySpendSampleTruncated(sessions.data ?? [], 30);
   const outcomeData = buildOutcomeData(costPerOutcome.data);
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(sessions.data ?? []);
   const topTools = aggregateToolUsage(sessions.data ?? []);
+  // aggregateToolUsage caps at the top 8 tools; surface how many were
+  // dropped so "Top Tools" doesn't read as an exhaustive list.
+  const totalToolCount = new Set(
+    (sessions.data ?? []).flatMap((r) => (r.toolBreakdown ? Object.keys(r.toolBreakdown) : [])),
+  ).size;
+  const hiddenToolCount = Math.max(0, totalToolCount - topTools.length);
   const concurrencyData = concurrencyHistory.data?.dailyPeaks ?? [];
   const hasConcurrencyData = concurrencyData.some((d) => d.peak > 0);
 
@@ -316,6 +332,12 @@ export function History(): JSX.Element {
               </BarChart>
             </ResponsiveContainer>
           </div>
+          {dailySpendTruncated && (
+            <div className="text-[10px] text-ink-muted italic mt-1">
+              Sample doesn&apos;t reach back 30 days — early days in this chart may undercount
+              actual spend.
+            </div>
+          )}
         </Panel>
 
         <Panel title="Cost Per Outcome · Last 30 Days">
@@ -390,7 +412,7 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
-        <Panel title="Model Performance">
+        <Panel title="Model Performance · Most Recent 200 Sessions">
           {modelPerf.length === 0 ? (
             <EmptyState
               icon="radar"
@@ -483,6 +505,11 @@ export function History(): JSX.Element {
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
+            </div>
+          )}
+          {hiddenToolCount > 0 && (
+            <div className="text-[10px] text-ink-muted italic mt-1">
+              +{hiddenToolCount} more tool{hiddenToolCount === 1 ? '' : 's'} not shown
             </div>
           )}
         </Panel>
@@ -838,8 +865,10 @@ function ClaudeMdImpactPanel({
       </div>
       <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-xs">
         <span className="text-ink-muted" />
-        <span className="text-ink-muted">Before</span>
-        <span className="text-ink-muted">After</span>
+        {/* Sample size next to each column — a 1-vs-1 session comparison
+            shouldn't read with the same confidence as a 50-vs-50 one. */}
+        <span className="text-ink-muted">Before (n={data.before.sessionCount})</span>
+        <span className="text-ink-muted">After (n={data.after.sessionCount})</span>
         <span className="text-ink-muted">Δ</span>
 
         <span className="text-ink-muted">Efficiency</span>
@@ -952,6 +981,17 @@ function CollaborationProfilePanel({
         <span className="text-sm font-medium text-ink-base">{data.classification}</span>
         <span className="text-ink-muted"> · {data.sessionCount} sessions</span>
       </div>
+      {/* The "vs team" deltas below are computed against a baseline of
+          whatever developers have recorded sessions. With developerCount <= 1
+          that baseline is just this developer, so every delta is trivially
+          ~0 and reads as "right on target" rather than "no comparison data
+          exists yet". */}
+      {data.developerCount <= 1 && (
+        <div className="text-[10px] text-ink-muted italic mb-2">
+          No team data yet — &quot;vs team&quot; comparisons below will reflect other developers
+          once their sessions are recorded.
+        </div>
+      )}
       <div className="min-w-0" style={{ height: `${dims.length * 28 + 40}px` }}>
         <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
           <BarChart data={dims} layout="vertical">
@@ -1065,6 +1105,36 @@ export function aggregateDailyCost(
   }
   const sorted = Array.from(byDay.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   return sorted.slice(-days).map(([day, cost]) => ({ day, cost: Number(cost.toFixed(2)) }));
+}
+
+/**
+ * True when the session sample (already capped upstream, e.g. to the most
+ * recent 200) doesn't reach back the full `days`-day window — i.e. the
+ * oldest session in `rows` is more recent than the window's start date.
+ * When true, `padDailyCostWindow`'s zero-filled early days aren't confirmed
+ * zero-spend; they're simply outside what the sample covers, and the UI
+ * should flag that instead of presenting them as real zeros. Callers should
+ * also confirm the sample actually hit its row cap before using this — a
+ * short window can be genuinely complete rather than truncated.
+ */
+export function isDailySpendSampleTruncated(
+  rows: SessionRow[],
+  days: number,
+  today: Date = new Date(),
+): boolean {
+  if (rows.length === 0) return false;
+  let oldest: number | null = null;
+  for (const r of rows) {
+    if (r.startTime == null) continue;
+    const t = new Date(r.startTime).getTime();
+    if (Number.isNaN(t)) continue;
+    if (oldest === null || t < oldest) oldest = t;
+  }
+  if (oldest === null) return false;
+  const windowStart = new Date(today);
+  windowStart.setDate(windowStart.getDate() - (days - 1));
+  windowStart.setHours(0, 0, 0, 0);
+  return oldest > windowStart.getTime();
 }
 
 export function buildOutcomeData(

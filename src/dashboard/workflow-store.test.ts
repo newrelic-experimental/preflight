@@ -119,6 +119,27 @@ describe('WorkflowStore', () => {
     expect(complete[0].status).toBe('completed');
   });
 
+  // A killed/unfinished run's rollup may have no numeric durationMs at all.
+  // Coercing that to 0 would make it read as a confirmed-instant run and
+  // silently skew any average computed over duration_ms. It must read back
+  // as null (unknown), not 0.
+  it('reports duration_ms as null (not 0) when the rollup has no numeric durationMs', () => {
+    writeFileSync(
+      join(wfDir, 'wf_abc12345-6dd.json'),
+      makeWfJson({ durationMs: undefined, status: 'killed' }),
+    );
+    const store = new WorkflowStore({ projectsDir });
+    const rows = store.listRuns();
+    expect(rows[0].duration_ms).toBeNull();
+  });
+
+  it('still reports a real duration_ms of 0 as 0, not conflated with unknown', () => {
+    writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson({ durationMs: 0 }));
+    const store = new WorkflowStore({ projectsDir });
+    const rows = store.listRuns();
+    expect(rows[0].duration_ms).toBe(0);
+  });
+
   it('integrates getCostForRun for total_usd', () => {
     writeFileSync(join(wfDir, 'wf_abc12345-6dd.json'), makeWfJson());
     const store = new WorkflowStore({

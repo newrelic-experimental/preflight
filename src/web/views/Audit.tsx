@@ -64,7 +64,11 @@ export function Audit(): JSX.Element {
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Audit</h1>
         <Button variant="secondary" size="md" onClick={() => downloadJsonl(visibleSlice)}>
-          Export JSONL
+          {/* Discloses the row cap at the point of action rather than only in
+              the table footer note below — the export always mirrors
+              visibleSlice, so it's silently capped even when the footer note
+              is scrolled out of view. */}
+          Export JSONL (max {VISIBLE_LIMIT} rows)
         </Button>
       </header>
 

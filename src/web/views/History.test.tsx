@@ -176,6 +176,7 @@ const SAMPLE_COLLAB_PROFILE = {
   dimensions: { specificity: 0.78, autonomy: 0.61, correctionRate: 0.42, taskComplexity: 0.73 },
   sessionCount: 47,
   teamDeltas: { specificity: 0.12, autonomy: 0.03, correctionRate: -0.08, taskComplexity: 0.05 },
+  developerCount: 4,
 };
 
 const SAMPLE_COLLAB_EMPTY = {
@@ -183,6 +184,18 @@ const SAMPLE_COLLAB_EMPTY = {
   dimensions: { specificity: 0, autonomy: 0, correctionRate: 0, taskComplexity: 0 },
   sessionCount: 0,
   teamDeltas: { specificity: 0, autonomy: 0, correctionRate: 0, taskComplexity: 0 },
+  developerCount: 0,
+};
+
+// Single-developer baseline fixture. teamDeltas are ~0 because the "team"
+// baseline is just this one developer compared to itself; the panel must
+// caveat this instead of presenting it as a real team comparison.
+const SAMPLE_COLLAB_SINGLE_DEV = {
+  classification: 'Power User',
+  dimensions: { specificity: 0.7, autonomy: 0.65, correctionRate: 0.5, taskComplexity: 0.6 },
+  sessionCount: 12,
+  teamDeltas: { specificity: 0, autonomy: 0, correctionRate: 0, taskComplexity: 0 },
+  developerCount: 1,
 };
 
 interface FetchOverrides {
@@ -191,6 +204,7 @@ interface FetchOverrides {
   recommendations?: unknown;
   claudemdImpact?: unknown;
   collabProfile?: unknown;
+  sessions?: unknown;
 }
 
 function renderHistory(overrides: FetchOverrides = {}) {
@@ -246,7 +260,7 @@ function renderHistory(overrides: FetchOverrides = {}) {
     }
     if (url.startsWith('/api/sessions')) {
       return Promise.resolve(
-        new Response(JSON.stringify(SAMPLE_SESSIONS), {
+        new Response(JSON.stringify(overrides.sessions ?? SAMPLE_SESSIONS), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -333,6 +347,69 @@ describe('History view', () => {
       expect(screen.getByText('Top Tools · Most Recent 200 Sessions')).toBeInTheDocument(),
     );
     expect(screen.queryByText('Top Tools · All Sessions')).toBeNull();
+  });
+
+  it('titles the model performance panel with the same 200-session-cap disclosure as the other sampled panels', async () => {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getByText('Model Performance · Most Recent 200 Sessions')).toBeInTheDocument(),
+    );
+  });
+
+  it('does not show a "+N more" tools note when there are 8 or fewer distinct tools', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/top tools/i)).toBeInTheDocument());
+    expect(screen.queryByText(/more tools? not shown/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a "+N more" tools note when aggregateToolUsage\'s top-8 cap drops entries', async () => {
+    const toolBreakdown: Record<string, number> = {};
+    for (let i = 0; i < 11; i++) toolBreakdown[`tool_${i}`] = 11 - i;
+    renderHistory({ sessions: [{ sessionId: 's1', toolBreakdown }] });
+    // 11 distinct tools, top 8 shown -> 3 hidden. Waits for the session
+    // fetch to resolve — the panel briefly renders its empty state first.
+    await waitFor(() => expect(screen.getByText('+3 more tools not shown')).toBeInTheDocument());
+  });
+
+  it('does not flag the daily spend chart for an account with only a few recent sessions', async () => {
+    // Only 5 sessions total, well under the 200-row cap — nothing was
+    // withheld, so the account's history genuinely started this morning
+    // and the early days of the window are confirmed zero-spend.
+    const recentOnly = Array.from({ length: 5 }, (_, i) => ({
+      sessionId: `recent-${i}`,
+      startTime: new Date(Date.now() - i * 60 * 60 * 1000).toISOString(),
+      estimatedCostUsd: 1,
+      model: 'claude-opus-4-6',
+      toolBreakdown: { Read: 1 },
+    }));
+    renderHistory({ sessions: recentOnly });
+    await waitFor(() => expect(screen.getByText(/daily spend/i)).toBeInTheDocument());
+    expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
+  });
+
+  it('flags the daily spend chart when a full 200-session sample does not reach back 30 days', async () => {
+    // 200 sessions (hitting the fetch cap) all within the last few hours —
+    // the sample is capped AND doesn't cover the 30-day window, so early
+    // days are genuinely unsampled rather than confirmed zero-spend.
+    const cappedRecentOnly = Array.from({ length: 200 }, (_, i) => ({
+      sessionId: `recent-${i}`,
+      startTime: new Date(Date.now() - i * 60 * 1000).toISOString(),
+      estimatedCostUsd: 1,
+      model: 'claude-opus-4-6',
+      toolBreakdown: { Read: 1 },
+    }));
+    renderHistory({ sessions: cappedRecentOnly });
+    await waitFor(() =>
+      expect(screen.getByText(/sample doesn.t reach back 30 days/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('does not flag the daily spend chart when the session sample already spans the full 30-day window', async () => {
+    // Default SAMPLE_SESSIONS are dated well over 30 days before the
+    // current clock, so the sample already covers the whole window.
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/daily spend/i)).toBeInTheDocument());
+    expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
   });
 
   it('uses the real 12-week window in the activity heatmap aria-label', async () => {
@@ -458,6 +535,13 @@ describe('History view', () => {
     expect(within(panel).getByText('Efficiency')).toBeInTheDocument();
   });
 
+  it('renders the before/after sample size next to each ClaudeMdImpactPanel column', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/instruction file impact/i)).toBeInTheDocument());
+    expect(screen.getByText('Before (n=8)')).toBeInTheDocument();
+    expect(screen.getByText('After (n=6)')).toBeInTheDocument();
+  });
+
   it('renders no-changes state for ClaudeMdImpactPanel', async () => {
     renderHistory({ claudemdImpact: SAMPLE_CLAUDEMD_NO_CHANGES });
     await waitFor(() =>
@@ -469,6 +553,18 @@ describe('History view', () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText(/collaboration profile/i)).toBeInTheDocument());
     expect(screen.getByText('Explorer')).toBeInTheDocument();
+  });
+
+  it('does not show the no-team-data caveat when developerCount is above 1', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText('Explorer')).toBeInTheDocument());
+    expect(screen.queryByText(/no team data yet/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a no-team-data caveat on CollaborationProfilePanel when developerCount is 1', async () => {
+    renderHistory({ collabProfile: SAMPLE_COLLAB_SINGLE_DEV });
+    await waitFor(() => expect(screen.getByText('Power User')).toBeInTheDocument());
+    expect(screen.getByText(/no team data yet/i)).toBeInTheDocument();
   });
 
   it('renders no-data state for CollaborationProfilePanel', async () => {

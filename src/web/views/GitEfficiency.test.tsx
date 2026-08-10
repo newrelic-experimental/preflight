@@ -193,6 +193,26 @@ describe('GitEfficiency view — bestPractices filtering', () => {
     });
     expect(await screen.findByText('No data yet')).toBeInTheDocument();
   });
+
+  // 'n/a' (fully known, not applicable) must be excluded from the
+  // known/passing ratio the same way 'unknown' already is, and still render
+  // visibly as a neutral chip rather than silently disappearing from the list.
+  it('excludes n/a entries from the known/passing ratio and still renders them as a neutral chip', async () => {
+    const practicesWithNA: BestPractice[] = [
+      ...bestPractices,
+      {
+        id: 'use_worktrees',
+        label: 'Use worktrees for parallel work',
+        status: 'n/a',
+        detail: 'No conflicts and no worktree usage detected this session.',
+      },
+    ];
+    renderGitEfficiency({ ...BASE_DATA, bestPractices: practicesWithNA });
+    // known/passing unchanged from the no-n/a case (2/4) — the n/a entry
+    // must not inflate the denominator.
+    expect(await screen.findByText('2/4 passing')).toBeInTheDocument();
+    expect(screen.getByText(/Use worktrees for parallel work/)).toBeInTheDocument();
+  });
 });
 
 describe('GitEfficiency view — hero KPIs and gated sections', () => {
@@ -206,6 +226,30 @@ describe('GitEfficiency view — hero KPIs and gated sections', () => {
     expect(await screen.findByText('commits today')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
     expect(screen.getByText('rebase soon')).toBeInTheDocument();
+  });
+
+  // The "behind main" KPI passes `animate`, so it must not coalesce a null
+  // commitsBehindMain to 0 before it reaches Kpi — that would render a
+  // misleading "0" instead of falling through to the "—" (unknown) string.
+  it('shows "—" (not "0") for "behind main" when commitsBehindMain is null — unknown, not a confirmed zero', async () => {
+    renderGitEfficiency({
+      ...BASE_DATA,
+      riskIndicators: { ...BASE_DATA.riskIndicators, commitsBehindMain: null },
+    });
+    const label = await screen.findByText('behind main');
+    expect(label.nextElementSibling?.textContent).toBe('—');
+    // A null value must render with a neutral tone, not the "good" green
+    // that a coalesced-to-0 value would fall through to.
+    expect(label.nextElementSibling?.className).not.toContain('text-accent-green');
+  });
+
+  it('renders the real "behind main" count when commitsBehindMain is a known number', async () => {
+    renderGitEfficiency({
+      ...BASE_DATA,
+      riskIndicators: { ...BASE_DATA.riskIndicators, commitsBehindMain: 12 },
+    });
+    const label = await screen.findByText('behind main');
+    expect(label.nextElementSibling?.textContent).toBe('12');
   });
 
   // A `merge` event has no per-PR correlation with `create` — a session that

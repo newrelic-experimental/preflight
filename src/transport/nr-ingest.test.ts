@@ -1878,6 +1878,26 @@ describe('scriptWorkflowRunToNrEvent()', () => {
     expect(event.incomplete).toBe(true);
     expect(event.status).toBe('killed');
   });
+
+  // An unfinished/killed run's duration is unknown, not a confirmed
+  // 0ms — the event must omit duration_ms entirely (same treatment as the
+  // total_usd-null case above) rather than reporting a false 0.
+  it('omits duration_ms when null (unfinished/killed run), and falls back to started_at alone for the timestamp', () => {
+    const event = scriptWorkflowRunToNrEvent(
+      makeScriptWorkflowRun({ started_at: 1_700_000_000_000, duration_ms: null }),
+      { developer: 'd', appName: 'a' },
+    );
+    expect(event.duration_ms).toBeUndefined();
+    expect(event.timestamp).toBe(1_700_000_000_000);
+  });
+
+  it('still includes a real duration_ms of 0, not conflated with unknown', () => {
+    const event = scriptWorkflowRunToNrEvent(makeScriptWorkflowRun({ duration_ms: 0 }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.duration_ms).toBe(0);
+  });
 });
 
 describe('subagentTurnToNrEvent()', () => {

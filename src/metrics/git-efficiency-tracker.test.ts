@@ -506,6 +506,20 @@ describe('GitEfficiencyTracker', () => {
       expect(practice?.status).toBe('unknown');
     });
 
+    // A session with enough activity to judge (3+ commits), no conflicts,
+    // and no worktree usage genuinely doesn't need worktrees — this is a
+    // known, non-violating outcome ('n/a'), distinct from the
+    // insufficient-data 'unknown' case above (which fires below the
+    // commitCount threshold).
+    it('marks use_worktrees as n/a (not unknown) once there is enough activity to judge and no conflicts occurred', () => {
+      for (let i = 0; i < 3; i++) {
+        tracker.recordToolCall(makeRecord({ command: `git commit -m "c${i}"` }));
+      }
+      const metrics = tracker.getMetrics();
+      const practice = metrics.bestPractices.find((p) => p.id === 'use_worktrees');
+      expect(practice?.status).toBe('n/a');
+    });
+
     it('fails force_with_lease check when bare --force is used', () => {
       tracker.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
       const metrics = tracker.getMetrics();
@@ -796,6 +810,26 @@ describe('GitEfficiencyTracker', () => {
         makeRecord({ command: 'git worktree add ../fix fix', timestamp: t + 600 }),
       );
       const metrics = tracker.getMetrics();
+      expect(metrics.preventionScore).toBe(100);
+    });
+
+    // use_worktrees resolving to 'n/a' (no conflicts, no worktree, enough
+    // activity to judge) must not drag the score down — it's excluded from
+    // the ratio the same way a genuinely-'unknown' check already is.
+    it('excludes an n/a use_worktrees check from the score, same as it excludes unknown checks', () => {
+      const t = Date.now();
+      tracker.recordToolCall(makeRecord({ command: 'git fetch origin', timestamp: t }));
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'Edit', filePath: 'src/a.ts', timestamp: t + 100 }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: t + 200 }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "b"', timestamp: t + 300 }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "c"', timestamp: t + 400 }));
+      tracker.recordToolCall(makeRecord({ command: 'git rebase origin/main', timestamp: t + 500 }));
+      // No worktree usage, no conflicts.
+      const metrics = tracker.getMetrics();
+      const useWorktrees = metrics.bestPractices.find((p) => p.id === 'use_worktrees');
+      expect(useWorktrees?.status).toBe('n/a');
       expect(metrics.preventionScore).toBe(100);
     });
   });

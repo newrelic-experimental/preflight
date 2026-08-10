@@ -62,7 +62,13 @@ export interface WorkflowRunRow {
   readonly error_reason: string | null;
   readonly default_model: string;
   readonly started_at: number;
-  readonly duration_ms: number;
+  /**
+   * `null` when the on-disk rollup has no numeric `durationMs` yet (e.g. a
+   * run still in progress or killed before it wrote one) — distinct from a
+   * confirmed 0ms run. Averaging over several runs' `duration_ms` must
+   * filter out nulls rather than let them silently count as zero.
+   */
+  readonly duration_ms: number | null;
   readonly agent_count: number;
   readonly total_tokens: number;
   readonly total_usd: number | null;
@@ -280,7 +286,9 @@ export class WorkflowStore {
     const runId = typeof parsed.runId === 'string' ? parsed.runId : '';
     if (!runId) return null;
     const startTime = typeof parsed.startTime === 'number' ? parsed.startTime : 0;
-    const durationMs = typeof parsed.durationMs === 'number' ? parsed.durationMs : 0;
+    // null (not 0) when absent — an unfinished/killed run's duration is
+    // unknown, not a confirmed instant completion. See WorkflowRunRow's docstring.
+    const durationMs = typeof parsed.durationMs === 'number' ? parsed.durationMs : null;
     const status = typeof parsed.status === 'string' ? parsed.status : 'unknown';
     const wfName = typeof parsed.workflowName === 'string' ? parsed.workflowName : 'unknown';
     const defaultModel = typeof parsed.defaultModel === 'string' ? parsed.defaultModel : 'unknown';
