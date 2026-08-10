@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.37] - 2026-08-09
+
+### Fixed
+
+- **The Git Efficiency page's force-push risk assessment no longer contradicts itself.** A dangerous bare `--force` push and safe `--force-with-lease` pushes now rank consistently across the Best Practices and Suggestions panels, and a bare push to the shared default branch is now flagged as more severe than one to a personal feature branch.
+- **The "commits today" and "behind main" KPIs are more accurate on long-running, non-`--local` processes.** Commit deduplication after a process restart no longer relies on a hash match that could never succeed; branch-divergence now refreshes periodically instead of staying frozen at process startup.
+- **PR-tracking KPIs no longer silently drop data.** A `git push` chained with `&&`/`;`/`|` before a `gh pr create` command is now recognized, "Time to PR" now reflects the most recent PR rather than only the first one of the session, and the worktree-usage indicators only count real `add`/`remove` activity, not read-only inspection like `git worktree list`.
+- **The Best Practices and Suggestions panels no longer duplicate the same finding with disagreeing detail, and both now sort by severity** so a critical item never renders below a lower-severity one.
+- **Conflict-resolution counts now correspond to real conflicts.** Accept-ours/accept-theirs/cherry-pick counts are attributed per pending conflict instead of per matching command, concurrent pending conflicts are tracked independently instead of overwriting each other, and a pull that conflicts directly is now counted as a stale-branch pull.
+
 ## [1.14.36] - 2026-08-09
 
 ### Fixed

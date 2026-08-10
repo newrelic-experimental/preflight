@@ -127,6 +127,9 @@ export function GitEfficiency(): JSX.Element {
     refetchInterval: 30000,
   });
 
+  const resolvedConflictCount =
+    data?.conflictHistory.filter((c) => c.resolution === 'resolved').length ?? 0;
+
   if (isLoading) return <EmptyState icon="clock" variant="loading" title="Loading..." />;
   if (error)
     return <div className="text-accent-red text-xs">Error loading git efficiency data.</div>;
@@ -238,7 +241,6 @@ export function GitEfficiency(): JSX.Element {
               label="PRs opened"
               tone={data.prMetrics.created > 0 ? 'good' : 'neutral'}
               value={String(data.prMetrics.created)}
-              sub={data.prMetrics.merged > 0 ? `${data.prMetrics.merged} merged` : undefined}
               animate
               numericValue={data.prMetrics.created}
             />
@@ -249,7 +251,7 @@ export function GitEfficiency(): JSX.Element {
               sub={
                 data.mergeConflicts + data.rebaseConflicts === 0
                   ? 'clean session'
-                  : `${data.abortedOperations} aborted`
+                  : `${resolvedConflictCount} resolved`
               }
               animate
               numericValue={data.mergeConflicts + data.rebaseConflicts}

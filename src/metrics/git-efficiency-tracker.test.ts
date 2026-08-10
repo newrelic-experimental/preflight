@@ -250,10 +250,129 @@ describe('GitEfficiencyTracker', () => {
     expect(metrics.staleBranchPulls).toBe(2);
   });
 
+  // A `git pull` whose own output contains a conflict indicator classifies
+  // as merge_conflict/rebase_conflict, never as 'pull' — so the common case
+  // (a pull that directly conflicts)
+  // must be detected off that single event's own command, not only via the
+  // adjacent-event pattern (which is preserved below for the separate,
+  // rarer case of a clean pull followed by an unrelated conflicting command).
+  it('detects a pull that directly conflicts, not just a pull followed by a separate conflicting command', () => {
+    tracker.recordToolCall(
+      makeRecord({
+        command: 'git pull origin main',
+        success: false,
+        error: 'CONFLICT (content): Merge conflict in foo.ts',
+      }),
+    );
+    const metrics = tracker.getMetrics();
+    expect(metrics.staleBranchPulls).toBe(1);
+  });
+
+  describe('pending conflicts', () => {
+    it('includes an open, unresolved conflict in the resolution-rate denominator as "pending"', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      // Without counting the open conflict, conflictRecords would be empty
+      // (nothing has aborted or resolved yet) and the rate would show null
+      // rather than reflecting that a real conflict is unresolved.
+      expect(metrics.conflictResolutionRate).toBe(0);
+      const pendingEntry = metrics.conflictHistory.find((c) => c.resolution === 'pending');
+      expect(pendingEntry).toBeDefined();
+    });
+
+    it('reflects a mix of one resolved and one still-open conflict as a 50% resolution rate, not 100%', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          timestamp: t,
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve a"', timestamp: t + 1000 }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git rebase main',
+          timestamp: t + 2000,
+          success: false,
+          error: 'rebase conflict could not apply patch',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictResolutionRate).toBe(0.5);
+    });
+
+    // A second conflict arriving while one is already pending must be
+    // queued, not silently overwrite the first — both must eventually
+    // resolve independently, in the order they arose.
+    it('queues a second conflict arriving while one is already pending, instead of overwriting the first', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          timestamp: t,
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git rebase main',
+          timestamp: t + 1000,
+          success: false,
+          error: 'rebase conflict could not apply patch',
+        }),
+      );
+      // Both still open at this point.
+      let metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.filter((c) => c.resolution === 'pending')).toHaveLength(2);
+
+      // Resolving in FIFO order: the first (a.ts) conflict resolves first.
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve a"', timestamp: t + 2000 }),
+      );
+      metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.filter((c) => c.resolution === 'resolved')).toHaveLength(1);
+      expect(metrics.conflictHistory.filter((c) => c.resolution === 'pending')).toHaveLength(1);
+
+      // The second conflict resolves next — it was queued, not dropped.
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve b"', timestamp: t + 3000 }),
+      );
+      metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.filter((c) => c.resolution === 'resolved')).toHaveLength(2);
+      expect(metrics.conflictResolutionRate).toBe(1);
+    });
+  });
+
   it('detects worktree usage', () => {
     tracker.recordToolCall(makeRecord({ command: 'git worktree add ../feature-x feature-x' }));
     const metrics = tracker.getMetrics();
     expect(metrics.riskIndicators.usesWorktrees).toBe(true);
+  });
+
+  it('does not count read-only worktree inspection (e.g. "list") toward the worktree-ops counter', () => {
+    tracker.recordToolCall(makeRecord({ command: 'git worktree list' }));
+    tracker.recordToolCall(makeRecord({ command: 'git worktree list' }));
+    const metrics = tracker.getMetrics();
+    expect(metrics.velocityMetrics.worktreeCount).toBe(0);
+  });
+
+  it('counts only "add"/"remove" worktree subcommands toward the worktree-ops counter', () => {
+    tracker.recordToolCall(makeRecord({ command: 'git worktree add ../feature-x feature-x' }));
+    tracker.recordToolCall(makeRecord({ command: 'git worktree remove ../feature-x' }));
+    tracker.recordToolCall(makeRecord({ command: 'git worktree list' }));
+    const metrics = tracker.getMetrics();
+    expect(metrics.velocityMetrics.worktreeCount).toBe(2);
   });
 
   it('detects push rejections', () => {
@@ -377,6 +496,16 @@ describe('GitEfficiencyTracker', () => {
       expect(practice?.status).toBe('fail');
     });
 
+    it('does not treat read-only worktree inspection as real worktree usage in the use_worktrees check', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git worktree list' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.velocityMetrics.worktreeCount).toBe(0);
+      expect(metrics.riskIndicators.usesWorktrees).toBe(false);
+      const practice = metrics.bestPractices.find((p) => p.id === 'use_worktrees');
+      expect(practice?.status).not.toBe('pass');
+      expect(practice?.status).toBe('unknown');
+    });
+
     it('fails force_with_lease check when bare --force is used', () => {
       tracker.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
       const metrics = tracker.getMetrics();
@@ -389,6 +518,19 @@ describe('GitEfficiencyTracker', () => {
       const metrics = tracker.getMetrics();
       const practice = metrics.bestPractices.find((p) => p.id === 'force_with_lease');
       expect(practice?.status).toBe('pass');
+    });
+
+    // A bare --force push is the riskiest single operation this tracker
+    // tracks. The check must catch it even when a later, safe
+    // --force-with-lease push also occurred in the same session — checking
+    // only whether lease was ever used would let the safe push mask the
+    // unsafe one with a "pass".
+    it('warns (not passes) force_with_lease check when a bare --force push is mixed with a later --force-with-lease push', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
+      tracker.recordToolCall(makeRecord({ command: 'git push --force-with-lease origin feature' }));
+      const metrics = tracker.getMetrics();
+      const practice = metrics.bestPractices.find((p) => p.id === 'force_with_lease');
+      expect(practice?.status).toBe('warn');
     });
   });
 
@@ -410,26 +552,51 @@ describe('GitEfficiencyTracker', () => {
       expect(conflictSuggestion!.message).toContain('worktrees');
     });
 
-    it('warns about no initial sync', () => {
+    // syncedBeforeEditing is surfaced solely by the sync_before_edit best
+    // practice; it must not also fire as a 'no_initial_sync' suggestion,
+    // which would render the identical fact twice.
+    it('does not duplicate "no initial sync" as a suggestion — it is a Best Practices condition', () => {
       const t = Date.now();
       tracker.recordToolCall(makeRecord({ toolName: 'Edit', filePath: 'src/a.ts', timestamp: t }));
       // Need a git command for suggestions to fire
       tracker.recordToolCall(makeRecord({ command: 'git status', timestamp: t + 100 }));
       const metrics = tracker.getMetrics();
-      const syncSuggestion = metrics.suggestions.find((s) => s.category === 'no_initial_sync');
-      expect(syncSuggestion).toBeDefined();
-      expect(syncSuggestion!.message).toContain('git fetch');
+      expect(metrics.suggestions.find((s) => s.category === 'no_initial_sync')).toBeUndefined();
+      const practice = metrics.bestPractices.find((p) => p.id === 'sync_before_edit');
+      expect(practice?.status).toBe('fail');
     });
 
-    it('warns about drift risk', () => {
+    // commitsSinceLastSync > 8 is surfaced solely by the frequent_sync
+    // best practice; it must not also fire as a 'drift_risk' suggestion,
+    // which would render the identical fact twice.
+    it('does not duplicate "drift risk" as a suggestion — it is a Best Practices condition', () => {
       tracker.recordToolCall(makeRecord({ command: 'git pull origin main' }));
       for (let i = 0; i < 12; i++) {
         tracker.recordToolCall(makeRecord({ command: `git commit -m "c${i}"` }));
       }
       const metrics = tracker.getMetrics();
-      const driftSuggestion = metrics.suggestions.find((s) => s.category === 'drift_risk');
-      expect(driftSuggestion).toBeDefined();
-      expect(driftSuggestion!.message).toContain('rebase');
+      expect(metrics.suggestions.find((s) => s.category === 'drift_risk')).toBeUndefined();
+      const practice = metrics.bestPractices.find((p) => p.id === 'frequent_sync');
+      expect(practice?.status).toBe('fail');
+    });
+
+    // hotFiles is surfaced solely by the avoid_hot_files best practice; it
+    // must not also fire as a 'hot_files' suggestion with a different
+    // severity for the identical trigger.
+    it('does not duplicate "hot files" as a suggestion — it is a Best Practices condition', () => {
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in src/hot.ts',
+        }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "resolve"' }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Edit', filePath: 'src/hot.ts' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.suggestions.find((s) => s.category === 'hot_files')).toBeUndefined();
+      const practice = metrics.bestPractices.find((p) => p.id === 'avoid_hot_files');
+      expect(practice?.status).toBe('warn');
     });
 
     it('flags force-push-after-rejection pattern', () => {
@@ -459,6 +626,150 @@ describe('GitEfficiencyTracker', () => {
       const syncSuggestion = metrics.suggestions.find((s) => s.category === 'sync_frequency');
       expect(syncSuggestion).toBeDefined();
       expect(syncSuggestion!.severity).toBe('info');
+    });
+
+    // A single bare --force push is the riskiest single operation this
+    // tracker tracks, so its severity must never rate as the mildest tier
+    // ('info') — severity has to account for whether the push was actually
+    // safe, not just how many force pushes occurred.
+    it('elevates a single bare --force push suggestion above info severity', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
+      const metrics = tracker.getMetrics();
+      const suggestion = metrics.suggestions.find((s) => s.category === 'force_push');
+      expect(suggestion).toBeDefined();
+      expect(suggestion!.severity).not.toBe('info');
+    });
+
+    // The force_push suggestion's severity must agree with the
+    // force_with_lease best-practice check on which of these two sessions is
+    // riskier: adding a safe --force-with-lease push on top of an existing
+    // bare push must never raise severity above what the bare push alone
+    // already set, since only the bare push is actually unsafe.
+    it('does not escalate force_push suggestion severity when a safe --force-with-lease push follows a bare push', () => {
+      const bareOnly = new GitEfficiencyTracker();
+      bareOnly.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
+      const bareOnlySuggestion = bareOnly
+        .getMetrics()
+        .suggestions.find((s) => s.category === 'force_push');
+      expect(bareOnlySuggestion?.severity).toBe('warning');
+
+      const bareThenLease = new GitEfficiencyTracker();
+      bareThenLease.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
+      bareThenLease.recordToolCall(
+        makeRecord({ command: 'git push --force-with-lease origin feature' }),
+      );
+      const bareThenLeaseSuggestion = bareThenLease
+        .getMetrics()
+        .suggestions.find((s) => s.category === 'force_push');
+      expect(bareThenLeaseSuggestion?.severity).toBe('warning');
+    });
+
+    // Two safe, lease-protected force pushes must never rate worse than the
+    // single unsafe bare push case above — and must never surface advice to
+    // "always use --force-with-lease" when the user is already doing
+    // exactly that.
+    it('does not fire a force_push suggestion for a single lease-protected push with no bare push present', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git push --force-with-lease origin feature' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.suggestions.find((s) => s.category === 'force_push')).toBeUndefined();
+    });
+
+    it('rates repeated lease-protected force pushes as info, not critical, when no bare push occurred', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git push --force-with-lease origin feature' }));
+      tracker.recordToolCall(makeRecord({ command: 'git push --force-with-lease origin feature' }));
+      const metrics = tracker.getMetrics();
+      const suggestion = metrics.suggestions.find((s) => s.category === 'force_push');
+      expect(suggestion?.severity).toBe('info');
+    });
+
+    // Force-push severity must be branch-aware: a bare --force push to the
+    // shared default branch is categorically more dangerous (it can clobber
+    // other collaborators' work) than an identical bare --force push to a
+    // branch only one person is using, so the two must not produce the same
+    // severity.
+    it('escalates a bare force push on the default branch above an identical push on a feature branch', () => {
+      const onDefaultBranch = new GitEfficiencyTracker();
+      onDefaultBranch.hydrateRepoContext({
+        repoName: 'org/repo',
+        branch: 'main',
+        remoteName: 'origin',
+        defaultBranch: 'main',
+      });
+      onDefaultBranch.recordToolCall(makeRecord({ command: 'git push --force origin main' }));
+
+      const onFeatureBranch = new GitEfficiencyTracker();
+      onFeatureBranch.hydrateRepoContext({
+        repoName: 'org/repo',
+        branch: 'feature-x',
+        remoteName: 'origin',
+        defaultBranch: 'main',
+      });
+      onFeatureBranch.recordToolCall(makeRecord({ command: 'git push --force origin feature-x' }));
+
+      const defaultBranchSuggestion = onDefaultBranch
+        .getMetrics()
+        .suggestions.find((s) => s.category === 'force_push');
+      const featureBranchSuggestion = onFeatureBranch
+        .getMetrics()
+        .suggestions.find((s) => s.category === 'force_push');
+
+      expect(defaultBranchSuggestion?.severity).toBe('critical');
+      expect(featureBranchSuggestion?.severity).toBe('warning');
+    });
+  });
+
+  describe('severity sort order', () => {
+    it('sorts suggestions by severity — critical before warning before info, even when a lower-severity item is pushed first in source order', () => {
+      // discarded_changes (info) and sync_frequency (info) are both pushed,
+      // in generateSuggestions' fixed source-code order, before
+      // divergence_risk (warning) — the output must be sorted by severity
+      // rather than relying on source-code order, or both info items would
+      // land ahead of the warning.
+      for (let i = 0; i < 3; i++) {
+        tracker.recordToolCall(makeRecord({ command: 'git checkout -- src/file.ts' }));
+      }
+      for (let i = 0; i < 11; i++) {
+        tracker.recordToolCall(makeRecord({ command: `git commit -m "c${i}"` }));
+      }
+      const metrics = tracker.getMetrics();
+      const categories = metrics.suggestions.map((s) => s.category);
+      expect(categories).toEqual(
+        expect.arrayContaining(['discarded_changes', 'sync_frequency', 'divergence_risk']),
+      );
+      const severities = metrics.suggestions.map((s) => s.severity);
+      const rank: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+      const sortedRanks = severities.map((s) => rank[s]);
+      expect(sortedRanks).toEqual([...sortedRanks].sort((a, b) => a - b));
+      expect(metrics.suggestions[0]?.category).toBe('divergence_risk');
+    });
+
+    it('sorts the failing/warning bestPractices subset — fail before warn, even when warn is pushed first in source order', () => {
+      // frequent_sync (check #2, 'warn' here) is pushed before use_worktrees
+      // (check #4, 'fail' here) in evaluateBestPractices' fixed source-code
+      // order — the failing/warning subset must be sorted by status rather
+      // than relying on source-code order, or the 'warn' would land first.
+      tracker.recordToolCall(makeRecord({ command: 'git pull origin main' }));
+      for (let i = 0; i < 6; i++) {
+        tracker.recordToolCall(makeRecord({ command: `git commit -m "c${i}"` }));
+      }
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in file.ts',
+        }),
+      );
+      const metrics = tracker.getMetrics();
+      const frequentSync = metrics.bestPractices.find((p) => p.id === 'frequent_sync');
+      const useWorktrees = metrics.bestPractices.find((p) => p.id === 'use_worktrees');
+      expect(frequentSync?.status).toBe('warn');
+      expect(useWorktrees?.status).toBe('fail');
+
+      const relevant = metrics.bestPractices.filter(
+        (p) => p.status === 'fail' || p.status === 'warn',
+      );
+      expect(relevant[0]?.id).toBe('use_worktrees');
+      expect(relevant[1]?.id).toBe('frequent_sync');
     });
   });
 
@@ -603,9 +914,10 @@ describe('GitEfficiencyTracker', () => {
     // Simulates src/index.ts feeding the day-scoped `git log` output
     // (commits not captured by tool hooks) back into the tracker right
     // after the reset.
+    const hydratedAt = Date.now();
     tracker.hydrateGitLog([
-      { hash: 'abc123', timestamp: Date.now() },
-      { hash: 'def456', timestamp: Date.now() },
+      { hash: 'abc123', timestamp: hydratedAt },
+      { hash: 'def456', timestamp: hydratedAt + 1_000 },
     ]);
 
     expect(tracker.getMetrics().commitCount).toBe(2);
@@ -884,6 +1196,43 @@ describe('GitEfficiencyTracker', () => {
       const metrics = tracker.getMetrics();
       expect(metrics.prMetrics.created).toBe(0);
     });
+
+    it('detects a gh command chained after a git command in a compound shell invocation', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git push origin main && gh pr create --fill' }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(1);
+    });
+
+    it('detects a gh command separated by ";" or "|" from a preceding git command', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git push origin main; gh pr create --fill' }));
+      tracker.recordToolCall(makeRecord({ command: 'git status | gh pr checks 42' }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(1);
+      expect(metrics.prMetrics.checksViewed).toBe(1);
+    });
+
+    it('computes avgTimeToCreateMs across every PR opened this session, not just the first', () => {
+      const t = Date.now();
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: t }));
+      tracker.recordToolCall(
+        makeRecord({ command: 'gh pr create --title "first"', timestamp: t + 10_000 }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "b"', timestamp: t + 20_000 }));
+      tracker.recordToolCall(
+        makeRecord({ command: 'gh pr create --title "second"', timestamp: t + 25_000 }),
+      );
+
+      const metrics = tracker.getMetrics();
+      // First PR: 10s after its preceding commit. Second PR: 5s after its own
+      // most recent preceding commit. True average of the two is 7.5s — not
+      // 10s, which is what you'd get by anchoring every PR to the very first
+      // commit the tracker ever saw.
+      expect(metrics.prMetrics.avgTimeToCreateMs).toBe(7_500);
+    });
   });
 
   describe('hydration entry points', () => {
@@ -891,7 +1240,7 @@ describe('GitEfficiencyTracker', () => {
       const t = Date.now() - 3600_000;
       tracker.hydrateGitLog([
         { timestamp: t, hash: 'abc123' },
-        { timestamp: t + 1000, hash: 'def456' },
+        { timestamp: t + 1_000, hash: 'def456' },
       ]);
 
       let metrics = tracker.getMetrics();
@@ -906,12 +1255,91 @@ describe('GitEfficiencyTracker', () => {
       expect(metrics.commitCount).toBe(2);
     });
 
+    // Two genuinely distinct commits landing within the dedup window must
+    // both be counted — a hydrated-vs-hydrated comparison has a real hash on
+    // both sides, so it must match by hash equality rather than timestamp
+    // proximity, or two rapid sequential commits in the same `git log` batch
+    // would incorrectly collapse into one.
+    it('counts two distinct commits within the dedup window as separate commits, not a duplicate', () => {
+      const t = Date.now() - 3600_000;
+      tracker.hydrateGitLog([
+        { timestamp: t, hash: 'abc123' },
+        { timestamp: t + 500, hash: 'def456' },
+      ]);
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(2);
+      expect(metrics.totalGitCommands).toBe(2);
+    });
+
+    // The day-boundary re-hydration path in src/index.ts resets the tracker
+    // (emptying this.events) and then feeds it the whole day's `git log`
+    // output in one call — every proximity comparison in that batch is
+    // hydrated-vs-hydrated, with no hook events to dedup against, so it must
+    // rely on hash equality to avoid collapsing distinct commits.
+    it('counts two distinct commits within the dedup window after a day-boundary reset', () => {
+      tracker.reset('next-session');
+      const hydratedAt = Date.now();
+      tracker.hydrateGitLog([
+        { hash: 'abc123', timestamp: hydratedAt },
+        { hash: 'def456', timestamp: hydratedAt + 500 },
+      ]);
+
+      expect(tracker.getMetrics().commitCount).toBe(2);
+    });
+
+    // Simulates a process restart mid-day: a prior, now-ended session's
+    // commit was already replayed as a raw hook event (command text with no
+    // hash), then the startup `git log` hydration sees the same commit by
+    // hash. A hash-substring dedup can never match a raw command string, so
+    // this would double-count every commit made before the restart.
+    it('does not double-count a commit already present as a replayed hook event, on process restart', () => {
+      const commitTimestamp = Date.now() - 60_000;
+      tracker.replayTimeline([
+        {
+          timestamp: commitTimestamp,
+          toolName: 'Bash',
+          durationMs: 100,
+          success: true,
+          command: 'git commit -m "fix thing"',
+        },
+      ]);
+      expect(tracker.getMetrics().commitCount).toBe(1);
+
+      tracker.hydrateGitLog([{ timestamp: commitTimestamp, hash: 'abc123' }]);
+
+      expect(tracker.getMetrics().commitCount).toBe(1);
+    });
+
     it('hydrateBranchDivergence sets ahead/behind counts on risk indicators', () => {
       tracker.hydrateBranchDivergence(3, 7);
 
       const metrics = tracker.getMetrics();
       expect(metrics.riskIndicators.commitsAheadOfMain).toBe(3);
       expect(metrics.riskIndicators.commitsBehindMain).toBe(7);
+    });
+
+    // The "behind main" KPI polls every 5s, implying a live number, but
+    // hydrateBranchDivergence() only ever gets called by whatever invokes it
+    // — the tracker itself has no way to notice staleness or re-fetch on its
+    // own. The actual periodic re-fetch trigger lives in src/index.ts (a
+    // setInterval re-running `git rev-list` and re-hydrating) and isn't
+    // unit-testable from this file; this test instead verifies the
+    // composability that periodic re-fetch depends on: calling
+    // hydrateBranchDivergence() again must fully replace the previous
+    // snapshot, not just supplement it.
+    it('supports a later hydrateBranchDivergence() call replacing a stale snapshot', () => {
+      tracker.hydrateBranchDivergence(0, 12);
+      expect(tracker.getMetrics().riskIndicators.commitsBehindMain).toBe(12);
+
+      jest.useFakeTimers().setSystemTime(Date.now() + 10 * 60_000);
+      // With no re-fetch, the value stays frozen — the tracker itself never
+      // refreshes it on its own; only an explicit re-hydration call does.
+      expect(tracker.getMetrics().riskIndicators.commitsBehindMain).toBe(12);
+
+      tracker.hydrateBranchDivergence(0, 3);
+      expect(tracker.getMetrics().riskIndicators.commitsBehindMain).toBe(3);
+      jest.useRealTimers();
     });
 
     it('hydrateRepoContext sets the repo context returned in metrics', () => {
@@ -933,15 +1361,121 @@ describe('GitEfficiencyTracker', () => {
   });
 
   describe('conflict resolution strategy', () => {
-    it('tracks ours/theirs/cherry-pick conflict resolution counters', () => {
+    // oursCount/theirsCount/cherryPickCount must attribute to the specific
+    // pending conflict they resolve (one credit
+    // per conflict), not increment per matching command — a strategy command
+    // run with no conflict pending isn't resolving anything.
+    it('does not credit ours/theirs/cherry-pick strategy when no conflict is pending', () => {
       tracker.recordToolCall(makeRecord({ command: 'git checkout --ours file.ts' }));
       tracker.recordToolCall(makeRecord({ command: 'git checkout --theirs other.ts' }));
       tracker.recordToolCall(makeRecord({ command: 'git cherry-pick abc123' }));
 
       const metrics = tracker.getMetrics();
+      expect(metrics.conflictResolutionStrategy.oursCount).toBe(0);
+      expect(metrics.conflictResolutionStrategy.theirsCount).toBe(0);
+      expect(metrics.conflictResolutionStrategy.cherryPickCount).toBe(0);
+    });
+
+    // Concrete example: one conflict spanning 3 files, resolved by
+    // running `git checkout --ours <file>` once per file then committing
+    // once. oursCount must be 1 (one conflict resolved with that strategy),
+    // not 3 (one per command).
+    it('dedupes ours/theirs credit per conflict, not per command, for a multi-file conflict', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          timestamp: t,
+          success: false,
+          error:
+            'CONFLICT (content): Merge conflict in a.ts\n' +
+            'CONFLICT (content): Merge conflict in b.ts\n' +
+            'CONFLICT (content): Merge conflict in c.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git checkout --ours a.ts', timestamp: t + 1000 }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git checkout --ours b.ts', timestamp: t + 2000 }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git checkout --ours c.ts', timestamp: t + 3000 }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve"', timestamp: t + 4000 }),
+      );
+
+      const metrics = tracker.getMetrics();
       expect(metrics.conflictResolutionStrategy.oursCount).toBe(1);
-      expect(metrics.conflictResolutionStrategy.theirsCount).toBe(1);
+      expect(metrics.conflictResolutionStrategy.totalResolutions).toBe(1);
+    });
+
+    it('credits ours/theirs/cherry-pick strategy once each conflict resolves via commit', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          timestamp: t,
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in file.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git checkout --ours file.ts', timestamp: t + 1000 }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve"', timestamp: t + 2000 }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictResolutionStrategy.oursCount).toBe(1);
+      expect(metrics.conflictResolutionStrategy.theirsCount).toBe(0);
+      expect(metrics.conflictResolutionStrategy.cherryPickCount).toBe(0);
+    });
+
+    // Cherry-picks must be included in totalResolutions, not tallied
+    // separately and excluded from the total.
+    it('includes cherry-pick resolutions in totalResolutions', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git cherry-pick abc123',
+          timestamp: t,
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in file.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git cherry-pick --continue', timestamp: t + 1000 }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "resolve"', timestamp: t + 2000 }),
+      );
+
+      const metrics = tracker.getMetrics();
       expect(metrics.conflictResolutionStrategy.cherryPickCount).toBe(1);
+      expect(metrics.conflictResolutionStrategy.totalResolutions).toBe(1);
+    });
+
+    // `git cherry-pick --abort` is an abort, not a resolution, and must not
+    // be counted toward cherryPickCount.
+    it('does not credit cherryPickCount for a cherry-pick that was aborted', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git cherry-pick abc123',
+          timestamp: t,
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in file.ts',
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({ command: 'git cherry-pick --abort', timestamp: t + 1000 }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictResolutionStrategy.cherryPickCount).toBe(0);
     });
   });
 

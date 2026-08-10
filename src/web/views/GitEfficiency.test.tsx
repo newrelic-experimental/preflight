@@ -205,8 +205,52 @@ describe('GitEfficiency view — hero KPIs and gated sections', () => {
     });
     expect(await screen.findByText('commits today')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
-    expect(screen.getByText('2 merged')).toBeInTheDocument();
     expect(screen.getByText('rebase soon')).toBeInTheDocument();
+  });
+
+  // A `merge` event has no per-PR correlation with `create` — a session that
+  // merges a PR opened on a prior day but hasn't opened anything new today
+  // would otherwise render "PRs opened: 0, 2 merged" directly underneath,
+  // reading as a contradiction. The independent "PRs merged" KPI further
+  // down the page (in the Pull Requests section) already reports this
+  // number without that coupling problem.
+  it('does not present "PRs opened" as if merged were a subset/outcome of it', async () => {
+    renderGitEfficiency({
+      ...BASE_DATA,
+      prMetrics: { ...BASE_DATA.prMetrics, created: 0, merged: 2 },
+    });
+    await screen.findByText('Git Efficiency');
+    expect(screen.queryByText('2 merged')).toBeNull();
+  });
+
+  // `abortedOperations` is a tracker-wide count of every aborted
+  // merge/rebase/cherry-pick this session, unrelated to whether *these*
+  // conflicts were ever resolved. Showing it under "conflicts" without
+  // qualification reads as "0 aborted" even when conflicts were fully
+  // resolved, with no confirmation that resolution actually happened.
+  it('shows a resolved count under "conflicts" instead of the tracker-wide aborted-operations count', async () => {
+    renderGitEfficiency({
+      ...BASE_DATA,
+      mergeConflicts: 2,
+      abortedOperations: 3,
+      conflictHistory: [
+        {
+          timestamp: 1,
+          resolution: 'resolved',
+          resolutionTimeMs: 100,
+          command: 'git commit -m "fix"',
+        },
+        {
+          timestamp: 2,
+          resolution: 'resolved',
+          resolutionTimeMs: 200,
+          command: 'git commit -m "fix2"',
+        },
+      ],
+    });
+    await screen.findByText('Git Efficiency');
+    expect(screen.queryByText('3 aborted')).toBeNull();
+    expect(screen.getByText('2 resolved')).toBeInTheDocument();
   });
 
   it('hides the Conflict Resolution section when there are no conflicts', async () => {

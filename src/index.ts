@@ -736,6 +736,11 @@ async function main(): Promise<void> {
   // independent of dashboard-bind status. Cleared in the shutdown handler.
   let maintenanceGcInterval: NodeJS.Timeout | undefined;
   let retentionInterval: NodeJS.Timeout | undefined;
+  // Periodic re-fetch of ahead/behind-main counts so the Git Efficiency
+  // dashboard's "behind main" KPI doesn't stay frozen at its startup value
+  // for the life of a long-running `--local` daemon. Cleared in the
+  // shutdown handler.
+  let branchDivergenceInterval: NodeJS.Timeout | undefined;
   // Periodic local session-JSON flush so a non-clean exit (crash/SIGKILL)
   // loses at most one interval of session data — persistSession otherwise runs
   // only on clean shutdown. Cleared in the shutdown handler. Synthetic /
@@ -811,6 +816,7 @@ async function main(): Promise<void> {
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
       if (maintenanceGcInterval) clearInterval(maintenanceGcInterval);
       if (retentionInterval) clearInterval(retentionInterval);
+      if (branchDivergenceInterval) clearInterval(branchDivergenceInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
       if (sessionPersistInterval) clearInterval(sessionPersistInterval);
       if (pendingConfirmationCapTimer) clearTimeout(pendingConfirmationCapTimer);
@@ -1093,6 +1099,7 @@ async function main(): Promise<void> {
       timeout: 2000,
       stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
     };
+    const BRANCH_DIVERGENCE_REFRESH_MS = 5 * 60 * 1000;
 
     // Repo context for the dashboard header — hydrated BEFORE the
     // today-sessions replay loop below so GitEfficiencyTracker.
@@ -1180,26 +1187,36 @@ async function main(): Promise<void> {
       gitEfficiencyTracker.hydrateGitLog(commits);
     }
 
-    // Branch divergence from the real default branch — how far ahead/behind are we?
+    // Branch divergence from the real default branch — how far ahead/behind
+    // are we? The dashboard polls this every 5s, implying a live number, but
+    // without this re-hydration it would otherwise be computed once here at
+    // startup and then frozen for the life of the process. Re-running it on
+    // an interval (rather than only at startup) keeps it reasonably current
+    // in a long-running `--local` daemon.
     const remoteDefaultBranch = `${remoteName}/${defaultBranch}`;
-    const aheadResult = spawnSync(
-      'git',
-      ['rev-list', '--count', `${remoteDefaultBranch}..HEAD`],
-      GIT_OPTS,
-    );
-    const behindResult = spawnSync(
-      'git',
-      ['rev-list', '--count', `HEAD..${remoteDefaultBranch}`],
-      GIT_OPTS,
-    );
-    if (aheadResult.status === 0 && behindResult.status === 0) {
-      const ahead = parseInt(aheadResult.stdout.trim(), 10);
-      const behind = parseInt(behindResult.stdout.trim(), 10);
-      if (!Number.isNaN(ahead) && !Number.isNaN(behind)) {
-        capturedBranchDivergence = { ahead, behind };
-        gitEfficiencyTracker.hydrateBranchDivergence(ahead, behind);
+    const refreshBranchDivergence = (): void => {
+      const aheadResult = spawnSync(
+        'git',
+        ['rev-list', '--count', `${remoteDefaultBranch}..HEAD`],
+        GIT_OPTS,
+      );
+      const behindResult = spawnSync(
+        'git',
+        ['rev-list', '--count', `HEAD..${remoteDefaultBranch}`],
+        GIT_OPTS,
+      );
+      if (aheadResult.status === 0 && behindResult.status === 0) {
+        const ahead = parseInt(aheadResult.stdout.trim(), 10);
+        const behind = parseInt(behindResult.stdout.trim(), 10);
+        if (!Number.isNaN(ahead) && !Number.isNaN(behind)) {
+          capturedBranchDivergence = { ahead, behind };
+          gitEfficiencyTracker.hydrateBranchDivergence(ahead, behind);
+        }
       }
-    }
+    };
+    refreshBranchDivergence();
+    branchDivergenceInterval = setInterval(refreshBranchDivergence, BRANCH_DIVERGENCE_REFRESH_MS);
+    branchDivergenceInterval.unref?.();
 
     // Cached prior-cost baseline. Refreshed lazily so:
     //   - sessions persisted by other MCPs during this session land in totals
