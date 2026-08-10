@@ -170,7 +170,16 @@ export interface SessionListEntry {
   readonly durationMs?: number;
   readonly toolCallCount?: number;
   readonly estimatedCostUsd?: number | null;
-  readonly antiPatterns?: Array<{ type: string; count: number }>;
+  readonly antiPatterns?: Array<{
+    readonly type: string;
+    readonly file?: string;
+    readonly command?: string;
+    readonly iterations?: number;
+    readonly readCount?: number;
+    readonly repeatCount?: number;
+    readonly editCount?: number;
+    readonly agentCount?: number;
+  }>;
   readonly model?: string | null;
   readonly toolSuccessRate?: number | null;
   readonly efficiencyScore?: number | null;
@@ -259,7 +268,16 @@ export interface SessionDetail {
   readonly toolBreakdown?: Record<string, number>;
   readonly filesRead?: string[];
   readonly filesModified?: string[];
-  readonly antiPatterns?: Array<{ type: string; count: number }>;
+  readonly antiPatterns?: Array<{
+    readonly type: string;
+    readonly file?: string;
+    readonly command?: string;
+    readonly iterations?: number;
+    readonly readCount?: number;
+    readonly repeatCount?: number;
+    readonly editCount?: number;
+    readonly agentCount?: number;
+  }>;
   readonly timeline?: ReadonlyArray<ReplayTimelineEntry>;
   readonly qualityProxy?: {
     readonly diffApplyRate: number | null;
@@ -295,24 +313,6 @@ export interface ComputeWasteResponse {
 
 export const fetchComputeWaste = (): Promise<ComputeWasteResponse> =>
   getJson<ComputeWasteResponse>('/api/compute-waste');
-
-export interface ThrashingAlertEntry {
-  readonly toolName: string;
-  readonly occurrences: number;
-  readonly windowSize: number;
-  readonly similarity: number;
-  readonly tokensWastedEstimate: number;
-  readonly timestamp: number;
-}
-
-export interface RetryAlertsResponse {
-  readonly alerts: readonly ThrashingAlertEntry[];
-  readonly totalTokensWasted: number;
-  readonly totalAlertsEmitted: number;
-}
-
-export const fetchRetryAlerts = (): Promise<RetryAlertsResponse> =>
-  getJson<RetryAlertsResponse>('/api/retry-alerts');
 
 export interface DecisionBranchEntry {
   readonly turnNumber: number;

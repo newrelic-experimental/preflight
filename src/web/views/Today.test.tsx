@@ -80,15 +80,38 @@ describe('Today view', () => {
     expect(screen.queryByText(/thrashing/i)).toBeNull();
   });
 
-  it('shows retry-detector detail on the thrashing banner when a matching alert exists', async () => {
-    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'Read', count: 4 }] });
+  it('renders a generic fallback banner when the flags KPI is nonzero but every anti-pattern source is empty', async () => {
+    useLiveStore.setState({ antiPatterns: [] });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ antiPatternCount: 3 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText(/3 flag\(s\) detected today/i)).toBeInTheDocument();
+  });
+
+  it('does not show a retry-detector tokens-wasted annotation on the thrashing banner', async () => {
+    // Even when a retry-alerts entry happens to share a name with the
+    // anti-pattern's file-path target, the banner must not cross-reference
+    // it — RetryDetector groups by literal tool name, an unrelated key.
+    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/retry-alerts') {
         return new Response(
           JSON.stringify({
             alerts: [
               {
-                toolName: 'Read',
+                toolName: 'auth.ts',
                 occurrences: 4,
                 windowSize: 5,
                 similarity: 0.9,
@@ -108,7 +131,8 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    expect(await screen.findByText(/~750 tokens wasted/i)).toBeInTheDocument();
+    expect(await screen.findByText(/thrashing/i)).toBeInTheDocument();
+    expect(screen.queryByText(/tokens wasted/i)).toBeNull();
   });
 
   function stubTurnCostsAndDecisionTree(turnCount = 1): void {
@@ -716,6 +740,41 @@ describe('Today view', () => {
     expect(await screen.findByText(/subagent activity from other sessions/i)).toBeInTheDocument();
     expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
     expect(screen.queryByText(/NR_AI_ENABLE_SUBAGENT_WATCHER=0/)).toBeNull();
+  });
+
+  it('does not show the watcher-disabled banner when the cross-session aggregate reports nonzero subagent turns, even though the live SSE turn count is 0', async () => {
+    // The live-only subagentStats.turns stays 0 in this test (no SSE frames
+    // are ever pushed for it) while the polled aggregate endpoint — the same
+    // one the "subagent spend" KPI above these banners already falls back
+    // to — reports turns for today. The gate must agree with that KPI.
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/observability-health')) {
+        return new Response(
+          JSON.stringify({
+            watcherActive: false,
+            watcherDisabledByLock: false,
+            watcherDisabledReason: 'env_var',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ subagentTurnCount: 5 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    await screen.findByText('5 turns');
+    expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
+    expect(screen.queryByText(/subagent activity from other sessions/i)).toBeNull();
   });
 });
 

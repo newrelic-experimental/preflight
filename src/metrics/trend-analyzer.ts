@@ -167,7 +167,7 @@ function aggregateWeek(sessions: FullSessionSummary[]): WeekAggregates {
     }
 
     for (const ap of s.antiPatterns) {
-      antiPatterns[ap.type] = (antiPatterns[ap.type] ?? 0) + ap.count;
+      antiPatterns[ap.type] = (antiPatterns[ap.type] ?? 0) + 1;
     }
   }
 

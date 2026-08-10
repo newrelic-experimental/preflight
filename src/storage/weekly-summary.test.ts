@@ -149,7 +149,7 @@ describe('WeeklySummaryGenerator', () => {
           testPassCount: 2,
           efficiencyScore: 0.8,
           toolBreakdown: { Read: 4, Edit: 3, Bash: 3 },
-          antiPatterns: [{ type: 'thrashing', count: 1 }],
+          antiPatterns: [{ type: 'thrashing' }],
         }),
       );
     }

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.39] - 2026-08-10
+
+### Fixed
+
+- **Anti-pattern data now keeps its file/command target and real occurrence count all the way to disk.** Persisted anti-patterns no longer collapse into an opaque type/count pair — the Today dashboard's persisted-session banner and the Sessions detail page's anti-pattern pills now show the actual file or command involved instead of "unknown," and a real magnitude (iterations, repeated reads, etc.) instead of a count of unrelated distinct entries. Loading an older session file still works and now expands its count faithfully into the same shape.
+- **The Today dashboard's "tokens wasted" annotation on a thrashing alert no longer silently fails to render.** It compared a file path against a tool name from two unrelated detectors, so it could essentially never match; the broken lookup is now removed.
+- **A nonzero "flags" count on the Today dashboard always shows something explaining it.** Previously the flag count could show a warning with no detail underneath if none of the three data sources backing the banner had loaded yet; a generic fallback message now always appears in that case.
+- **A dead "subagent watcher disabled (lock conflict)" banner on the Today dashboard has been removed** — neither of its two backing signals could ever report true, so it could never actually render.
+- **The Today dashboard's two "subagent watcher disabled" banners no longer contradict the subagent spend KPI shown right above them.** Both now gate on the same combined turn count the KPI uses, instead of a live-only counter that always stayed at zero.
+- **The Sessions detail page's anti-pattern pills no longer show a raw, unlabeled type for over-delegation.**
+- **The Sessions detail page's "Session Quality" and "Tool Selection" cards now render consistently for every session**, including completed sessions and sessions live in a different process — both previously had gaps left by an earlier partial fix.
+- **The Sessions detail page's Context tab now goes through the same typed request path as the rest of the app**, so a backend error shows a real error/retry state instead of silently looking identical to "no data yet."
+- **Switching sessions on the Sessions detail page no longer leaves the Tools panel stuck on a disabled tab.** The panel now resets to the default view when the selected session changes.
+- **The Sessions page's KPI strip now discloses when it's describing sessions outside the currently visible list**, and the disclosed count now matches what's actually shown rather than a fixed page size.
+- **A live session tracked by a different process on the Sessions detail page now scores tool selection using correctly time-ordered records.**
+
 ## [1.14.38] - 2026-08-10
 
 ### Fixed

@@ -120,7 +120,7 @@ describe('RecommendationEngine', () => {
           sessionId: `s-${i}`,
           userMessages: 20,
           userCorrections: 8,
-          antiPatterns: [{ type: 're_reading', count: 3 }],
+          antiPatterns: [{ type: 're_reading' }],
         }),
       );
     }
@@ -129,7 +129,7 @@ describe('RecommendationEngine', () => {
         sessionId: 's-clean',
         userMessages: 20,
         userCorrections: 8,
-        antiPatterns: [{ type: 're_reading', count: 1 }],
+        antiPatterns: [{ type: 're_reading' }],
       }),
     );
 
@@ -180,7 +180,7 @@ describe('RecommendationEngine', () => {
           sessionId: `s-${i}`,
           userMessages: 20,
           userCorrections: 8,
-          antiPatterns: [{ type: 're_reading', count: 2 }],
+          antiPatterns: [{ type: 're_reading' }],
         }),
       );
     }
@@ -189,7 +189,7 @@ describe('RecommendationEngine', () => {
         sessionId: 's-clean',
         userMessages: 20,
         userCorrections: 8,
-        antiPatterns: [{ type: 're_reading', count: 1 }],
+        antiPatterns: [{ type: 're_reading' }],
       }),
     );
 
@@ -219,7 +219,7 @@ describe('RecommendationEngine', () => {
           sessionId: `s-${i}`,
           userMessages: 20,
           userCorrections: 8,
-          antiPatterns: [{ type: 're_reading', count: 3 }],
+          antiPatterns: [{ type: 're_reading' }],
         }),
       );
     }
@@ -228,7 +228,7 @@ describe('RecommendationEngine', () => {
         sessionId: 's-extra',
         userMessages: 20,
         userCorrections: 8,
-        antiPatterns: [{ type: 're_reading', count: 1 }],
+        antiPatterns: [{ type: 're_reading' }],
       }),
     );
 

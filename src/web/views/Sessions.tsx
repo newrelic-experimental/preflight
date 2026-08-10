@@ -17,6 +17,7 @@ import {
   fetchSessionSubagents,
   fetchWorkflows,
   fetchWorkflowDetail,
+  fetchContext,
   qk,
   type SessionDetail,
   type WorkflowRunInfo,
@@ -76,6 +77,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   stuck_loop: 'Stuck Loop',
   blind_editing: 'Blind Editing',
   re_reading: 'Repeated Reads',
+  over_delegation: 'Over-Delegation',
 };
 
 const WORKFLOW_STATUS_PILL: Record<WorkflowRunInfo['status'], { tone: PillTone; label: string }> = {
@@ -315,6 +317,23 @@ export function Sessions(): JSX.Element {
     () => (filtersActive ? rows.filter((r) => runsBySession.has(r.sessionId)) : rows),
     [filtersActive, rows, runsBySession],
   );
+  // The KPI strip above is built from filteredRuns, which come from
+  // WorkflowStore.listRuns() — a machine-wide, 30-day-window, 500-run scan
+  // with no relationship to `rows` (the session list's own most-recent-50
+  // page from a separate store). Count how many of those runs belong to a
+  // session that isn't even in the visible page, so the UI can disclose
+  // when the two panels describe different populations instead of silently
+  // contradicting each other.
+  const runsOutsideVisibleSessions = useMemo(() => {
+    const visibleSessionIds = new Set(visibleRows.map((r) => r.sessionId));
+    let count = 0;
+    for (const run of filteredRuns) {
+      if (typeof run.parentSessionId === 'string' && !visibleSessionIds.has(run.parentSessionId)) {
+        count++;
+      }
+    }
+    return count;
+  }, [filteredRuns, visibleRows]);
 
   useEffect(() => {
     if (selectedId) return;
@@ -400,6 +419,13 @@ export function Sessions(): JSX.Element {
             />
           </div>
         </div>
+        {runsOutsideVisibleSessions > 0 && (
+          <div className="text-[11px] text-ink-subtle mt-2 pt-2 border-t border-border-subtle">
+            +{runsOutsideVisibleSessions} run{runsOutsideVisibleSessions === 1 ? '' : 's'} above
+            from {runsOutsideVisibleSessions === 1 ? 'a session' : 'sessions'} outside the{' '}
+            {visibleRows.length} shown below
+          </div>
+        )}
       </Card>
 
       <div className="flex items-center gap-3 flex-wrap mb-2 shrink-0">
@@ -900,7 +926,25 @@ function SessionTimeline({
         <div className="mb-4">
           <Eyebrow className="mb-1">Anti-Patterns</Eyebrow>
           <div className="flex flex-wrap gap-1.5">
-            {data.antiPatterns!.map(({ type, count }) => (
+            {/* One pill per type, grouping the per-incident array by `type`
+                so each pill has a stable React key. The pill's number is
+                the summed real magnitude (iterations/readCount/repeatCount/
+                editCount/agentCount, whichever the incident carries) across
+                every incident of that type, not a count of incident
+                objects. */}
+            {Object.entries(
+              (data.antiPatterns ?? []).reduce<Record<string, number>>((counts, ap) => {
+                const magnitude =
+                  ap.iterations ??
+                  ap.readCount ??
+                  ap.repeatCount ??
+                  ap.editCount ??
+                  ap.agentCount ??
+                  1;
+                counts[ap.type] = (counts[ap.type] ?? 0) + magnitude;
+                return counts;
+              }, {}),
+            ).map(([type, count]) => (
               <Pill key={type} tone="warning" size="sm" bordered>
                 {SEGMENT_LABELS[type] ?? type}
                 <span className="opacity-70">× {count}</span>
@@ -973,6 +1017,7 @@ function SessionTimeline({
           so they stay visible without scrolling past the whole gantt/list. */}
       {breakdownEntries.length > 0 && (
         <ToolsSection
+          key={`tools-${data.sessionId}`}
           breakdownEntries={breakdownEntries}
           totalCalls={totalCalls}
           isLive={isLive}
@@ -1173,10 +1218,9 @@ function ToolsSection({
 }): JSX.Element {
   const [tab, setTab] = useState<'calls' | 'context'>('calls');
 
-  const contextUrl = `/api/context?sessionId=${encodeURIComponent(sessionId)}`;
   const { data: contextData } = useQuery<ContextResponse>({
     queryKey: ['context', sessionId],
-    queryFn: () => fetch(contextUrl).then((r) => (r.ok ? r.json() : null)),
+    queryFn: () => fetchContext(sessionId),
     refetchInterval: 10_000,
     enabled: isLive && tab === 'context',
   });

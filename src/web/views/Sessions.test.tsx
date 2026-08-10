@@ -6,7 +6,7 @@ interface DetailMap {
   readonly [sessionId: string]: unknown;
 }
 
-function renderSessions(listData: unknown, detailMap: DetailMap = {}) {
+function renderSessions(listData: unknown, detailMap: DetailMap = {}, workflowsData: unknown = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
   globalThis.fetch = ((url: string) => {
     if (url.startsWith('/api/sessions/')) {
@@ -14,6 +14,14 @@ function renderSessions(listData: unknown, detailMap: DetailMap = {}) {
       const detail = detailMap[id] ?? { sessionId: id, timeline: [] };
       return Promise.resolve(
         new Response(JSON.stringify(detail), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    if (url.startsWith('/api/workflows')) {
+      return Promise.resolve(
+        new Response(JSON.stringify(workflowsData), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -55,6 +63,25 @@ describe('Sessions view', () => {
     renderSessions(SAMPLE_LIST);
     await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
     expect(screen.getByText(/s2/)).toBeInTheDocument();
+  });
+
+  it('states the actual number of visible sessions in the runs-outside-page disclosure, not the page-size cap', async () => {
+    // Fewer sessions than the page-size cap are loaded (2), and one run
+    // belongs to a session that isn't among them — the disclosure must
+    // report against the real visible count, not the fetch cap.
+    renderSessions(SAMPLE_LIST, {}, [
+      {
+        runId: 'run-1',
+        parentSessionId: 'missing-session',
+        taskId: null,
+        workflowName: 'wf',
+        status: 'completed',
+        defaultModel: 'claude',
+      },
+    ]);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/\+1 run above/i)).toBeInTheDocument());
+    expect(screen.getByText(/outside the 2 shown below/i)).toBeInTheDocument();
   });
 
   it('renders the consolidated workflow KPI strip and filter controls', async () => {
@@ -229,21 +256,45 @@ describe('Sessions view', () => {
     expect(screen.queryByText('Files Read')).toBeNull();
   });
 
-  it('renders antiPatterns pills reusing the SEGMENT_LABELS taxonomy, falling back to the raw type for unmapped values', async () => {
+  it('renders antiPatterns pills reusing the SEGMENT_LABELS taxonomy, summing real magnitude across grouped incidents', async () => {
+    // Real API shape: one entry per detected incident, each carrying its
+    // own file/command target.
     const detail = {
       sessionId: 's1',
       timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
       antiPatterns: [
-        { type: 'thrashing', count: 3 },
-        { type: 'over_delegation', count: 1 },
+        { type: 'thrashing', file: 'a.ts', iterations: 3 },
+        { type: 'thrashing', file: 'b.ts', iterations: 2 },
+        { type: 'thrashing', file: 'c.ts', iterations: 4 },
+        { type: 'over_delegation', agentCount: 5 },
       ],
     };
     const { container } = renderSessions(SAMPLE_LIST, { s1: detail });
     await waitFor(() => expect(container.textContent).toContain('Edit/Test Thrashing'));
-    expect(container.textContent).toContain('× 3');
-    // over_delegation has no SEGMENT_LABELS entry — falls back to the raw type string.
-    expect(container.textContent).toContain('over_delegation');
-    expect(container.textContent).toContain('× 1');
+    // Three thrashing incidents (3 + 2 + 4 iterations) sum to the real
+    // magnitude, not the count of incident objects (which would be 3).
+    expect(container.textContent).toContain('× 9');
+    // over_delegation has a SEGMENT_LABELS entry and its own magnitude.
+    expect(container.textContent).toContain('Over-Delegation');
+    expect(container.textContent).not.toContain('over_delegation');
+    expect(container.textContent).toContain('× 5');
+  });
+
+  it('groups same-type anti-pattern incidents into one pill with a stable key, summing to 1 per incident when no magnitude field is present', async () => {
+    const detail = {
+      sessionId: 's1',
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+      antiPatterns: [
+        { type: 'stuck_loop', command: 'npm test' },
+        { type: 'stuck_loop', command: 'npm run build' },
+      ],
+    };
+    const { container } = renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(container.textContent).toContain('× 2'));
+    // Exactly one pill for the type — not two pills sharing a React key,
+    // and no "undefined" from a missing top-level count field.
+    expect(screen.getAllByText(/stuck.loop/i)).toHaveLength(1);
+    expect(container.textContent).not.toContain('undefined');
   });
 
   it('does not render the Anti-Patterns section when antiPatterns is absent or empty', async () => {
@@ -864,5 +915,157 @@ describe('Sessions view — live-detection and selection reliability', () => {
     // selected — if s1 had been selected immediately, the "selectedId is
     // already set" guard would block ever switching to s2.
     await waitFor(() => expect(detailFetchCalls).toContain('s2'));
+  });
+});
+
+describe('Sessions view — Tools panel Context tab', () => {
+  it('fetches Context tab data through fetchContext(sessionId), rendering real contribution data', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const sessionList = [
+      { sessionId: 'live-sess', startTime: '2026-05-28T09:00:00Z', toolCallCount: 5 },
+    ];
+    const contextRequests: string[] = [];
+
+    globalThis.fetch = ((url: string) => {
+      if (url === '/api/session/current') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: 'live-sess', liveSessions: ['live-sess'] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/context')) {
+        contextRequests.push(url);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              turnCount: 3,
+              growth: { startTokens: 0, currentTokens: 1000, deltaTokens: 1000 },
+              currentBreakdown: { system: 100, tools: 500, user: 200, assistant: 200 },
+              fillPercent: 0.5,
+              contextWindow: 200_000,
+              toolContributions: [
+                { tool: 'Read', totalBytes: 2000, estimatedTokens: 500, percentOfToolOutput: 1 },
+              ],
+              history: [],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        );
+      }
+      if (url.startsWith('/api/sessions/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '');
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: id, toolBreakdown: { Bash: 3 } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(sessionList), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText(/^Tools$/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Context' }));
+    await waitFor(() => expect(screen.getByText('Read')).toBeInTheDocument());
+    // Requesting the exact endpoint shape fetchContext(sessionId) builds
+    // confirms the query goes through the shared client helper, not just
+    // that some request happened to succeed.
+    expect(contextRequests[0]).toBe('/api/context?sessionId=live-sess');
+  });
+
+  // Switching from a live session with the Context tab open to a different,
+  // non-live session must reset the Tools panel to the Calls tab — a
+  // session with real tool-call data should never render as if it has no
+  // data.
+  it('resets the Tools panel back to the Calls tab when switching from a live session to a non-live one', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    const sessionList = [
+      { sessionId: 'live-sess', startTime: '2026-05-28T09:00:00Z', toolCallCount: 5 },
+      { sessionId: 'done-sess', startTime: '2026-05-27T09:00:00Z', toolCallCount: 3 },
+    ];
+
+    globalThis.fetch = ((url: string) => {
+      if (url === '/api/session/current') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: 'live-sess', liveSessions: ['live-sess'] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/context')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              turnCount: 0,
+              growth: { startTokens: 0, currentTokens: 0, deltaTokens: 0 },
+              currentBreakdown: { system: 0, tools: 0, user: 0, assistant: 0 },
+              fillPercent: 0,
+              contextWindow: 200_000,
+              toolContributions: [],
+              history: [],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        );
+      }
+      if (url.startsWith('/api/sessions/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '');
+        const toolBreakdown = id === 'live-sess' ? { Bash: 3 } : { Edit: 7 };
+        return Promise.resolve(
+          new Response(JSON.stringify({ sessionId: id, toolBreakdown }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(sessionList), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <Sessions />
+      </QueryClientProvider>,
+    );
+
+    // Auto-selects the live session; open its Context tab.
+    await waitFor(() => expect(screen.getByText(/^Tools$/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Context' }));
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Context' })).toHaveAttribute('aria-selected', 'true'),
+    );
+
+    // Switch to the non-live session.
+    fireEvent.click(screen.getAllByText(/done-ses/)[0]);
+    await waitFor(() => expect(screen.getByText('Edit')).toBeInTheDocument());
+    // The non-live session has no tab switcher at all (isLive is false), and
+    // the Calls breakdown — not a stuck "No context data" empty state —
+    // must be what's showing.
+    expect(screen.queryByRole('tab', { name: 'Context' })).toBeNull();
+    expect(screen.queryByText(/no context data/i)).toBeNull();
   });
 });

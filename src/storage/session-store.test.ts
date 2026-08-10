@@ -13,6 +13,7 @@ import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
+import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
@@ -162,7 +163,11 @@ describe('sessionSummaryToDriftRecord', () => {
       tokensOutput: 500,
       taskCount: 4,
       efficiencyScore: 0.9,
-      antiPatterns: [{ type: 'thrashing', count: 3 }],
+      antiPatterns: [
+        { type: 'thrashing', file: 'a.ts' },
+        { type: 'thrashing', file: 'b.ts' },
+        { type: 'thrashing', file: 'c.ts' },
+      ],
     });
 
     const record = sessionSummaryToDriftRecord(summary) as SessionOutcomeRecord;
@@ -181,11 +186,176 @@ describe('sessionSummaryToDriftRecord', () => {
   it('defaults thrashingIncidents to 0 when no thrashing anti-pattern is present', () => {
     const summary = makeSummary({
       instructionPromptHash: 'hash-456',
-      antiPatterns: [{ type: 're_reading', count: 2 }],
+      antiPatterns: [{ type: 're_reading', file: 'x.ts' }],
     });
 
     const record = sessionSummaryToDriftRecord(summary) as SessionOutcomeRecord;
     expect(record.thrashingIncidents).toBe(0);
+  });
+});
+
+describe('buildSessionSummary anti-patterns', () => {
+  const mockSessionTracker = {
+    getMetrics: () => ({
+      sessionId: 'ap-session',
+      sessionStartTime: 1_700_000_000_000,
+      sessionDurationMs: 10_000,
+      toolCallCount: 1,
+      toolCallCountByTool: { Edit: 1 },
+      toolDurationMsByTool: {},
+      toolSuccessRate: 1,
+      toolSuccessRateByTool: {},
+      toolErrorCount: 0,
+      toolErrorsByType: {},
+      uniqueFilesRead: 0,
+      uniqueFilesWritten: 1,
+      bashCommandsRun: 0,
+      bashExitCodes: {},
+      searchQueries: 0,
+      toolCallTimeline: [],
+    }),
+  };
+
+  const mockTaskDetector = {
+    getCurrentTask: () => null,
+    getMetrics: () => ({
+      totalTasksCompleted: 1,
+      currentTaskActive: false,
+      currentTaskToolCalls: 0,
+      averageTaskDurationMs: 10_000,
+      averageToolCallsPerTask: 1,
+      completedTasks: [
+        {
+          taskId: 't1',
+          startTime: 1_700_000_000_000,
+          endTime: 1_700_000_010_000,
+          durationMs: 10_000,
+          toolCallCount: 1,
+          toolCallsByType: { Edit: 1 },
+          filesRead: [],
+          filesModified: ['/src/auth.ts'],
+          linesChanged: 2,
+          linesAdded: 2,
+          linesRemoved: 0,
+          bashCommandsRun: 0,
+          testsRun: 0,
+          testsPassed: 0,
+          buildRun: 0,
+          buildPassed: 0,
+          estimatedCostUsd: 0.01,
+          tokensUsed: 100,
+          askedUserQuestions: 0,
+          subAgentsSpawned: 0,
+          toolCalls: [
+            {
+              id: 'tc1',
+              sessionId: 'ap-session',
+              toolName: 'Edit',
+              toolUseId: 'tu1',
+              timestamp: 1_700_000_001_000,
+              durationMs: 20,
+              success: true,
+              filePath: '/src/auth.ts',
+            },
+          ],
+        },
+      ],
+    }),
+  };
+
+  it('persists file and the real per-incident occurrence count', () => {
+    const mockAntiPatternDetector = {
+      analyze: () => ({
+        readEfficiency: null,
+        verifyRate: null,
+        patterns: [
+          {
+            type: 'thrashing',
+            file: '/src/auth.ts',
+            iterations: 4,
+            tokensWasted: 200,
+            suggestion: 'Read the test failure output before editing again.',
+          },
+        ],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      antiPatternDetector: mockAntiPatternDetector as unknown as AntiPatternDetector,
+      developer: 'alice',
+    });
+
+    expect(summary.antiPatterns).toEqual([
+      { type: 'thrashing', file: '/src/auth.ts', iterations: 4 },
+    ]);
+  });
+
+  it('keeps one row per incident when multiple incidents share a type', () => {
+    const mockAntiPatternDetector = {
+      analyze: () => ({
+        readEfficiency: null,
+        verifyRate: null,
+        patterns: [
+          {
+            type: 'thrashing',
+            file: '/src/auth.ts',
+            iterations: 4,
+            tokensWasted: 200,
+            suggestion: 's1',
+          },
+          {
+            type: 'thrashing',
+            file: '/src/session.ts',
+            iterations: 2,
+            tokensWasted: 80,
+            suggestion: 's2',
+          },
+        ],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      antiPatternDetector: mockAntiPatternDetector as unknown as AntiPatternDetector,
+      developer: 'alice',
+    });
+
+    expect(summary.antiPatterns).toHaveLength(2);
+    expect(summary.antiPatterns.map((p) => p.file)).toEqual(['/src/auth.ts', '/src/session.ts']);
+  });
+
+  it('round-trips file/iterations through JSON serialization', () => {
+    const original = makeSummary({
+      antiPatterns: [{ type: 're_reading', file: '/src/config.ts', readCount: 6 }],
+    });
+    const raw = JSON.parse(JSON.stringify(original)) as Record<string, unknown>;
+    const roundTripped = deserializeFullSessionSummary(raw);
+
+    expect(roundTripped.antiPatterns).toEqual([
+      { type: 're_reading', file: '/src/config.ts', readCount: 6 },
+    ]);
+  });
+
+  it('deserializes legacy {type, count} session files into `count` separate incidents of that type', () => {
+    const raw = { sessionId: 'legacy-1', antiPatterns: [{ type: 'thrashing', count: 3 }] };
+    const roundTripped = deserializeFullSessionSummary(raw);
+
+    expect(roundTripped.antiPatterns).toEqual([
+      { type: 'thrashing' },
+      { type: 'thrashing' },
+      { type: 'thrashing' },
+    ]);
+  });
+
+  it('expands a legacy {type, count: 5} entry into 5 rows of that type, matching the historical aggregate', () => {
+    const raw = { sessionId: 'legacy-2', antiPatterns: [{ type: 'thrashing', count: 5 }] };
+    const roundTripped = deserializeFullSessionSummary(raw);
+
+    expect(roundTripped.antiPatterns).toHaveLength(5);
+    expect(roundTripped.antiPatterns.every((p) => p.type === 'thrashing')).toBe(true);
   });
 });
 

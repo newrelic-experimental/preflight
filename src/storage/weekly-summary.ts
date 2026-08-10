@@ -292,7 +292,7 @@ function aggregateSessions(weekId: string, sessions: FullSessionSummary[]): Week
     }
 
     for (const ap of session.antiPatterns) {
-      antiPatternCounts[ap.type] = (antiPatternCounts[ap.type] ?? 0) + ap.count;
+      antiPatternCounts[ap.type] = (antiPatternCounts[ap.type] ?? 0) + 1;
     }
   }
 
@@ -362,7 +362,7 @@ function aggregateDeveloperSessions(sessions: FullSessionSummary[]): DeveloperWe
     }
 
     for (const ap of session.antiPatterns) {
-      antiPatternCounts[ap.type] = (antiPatternCounts[ap.type] ?? 0) + ap.count;
+      antiPatternCounts[ap.type] = (antiPatternCounts[ap.type] ?? 0) + 1;
     }
   }
 

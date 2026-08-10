@@ -542,7 +542,7 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(parsed.toolSelectionScore?.redundantReadCount).toBe(1);
   });
 
-  it('aggregates live-session anti-patterns by type into {type, count} pairs', async () => {
+  it('reports live-session anti-patterns as one entry per incident, preserving file/count detail', async () => {
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],
@@ -574,14 +574,22 @@ describe('api-handler GET /api/sessions/:id', () => {
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    const parsed = JSON.parse(body()) as { antiPatterns?: Array<{ type: string; count: number }> };
+    const parsed = JSON.parse(body()) as {
+      antiPatterns?: Array<{
+        type: string;
+        file?: string;
+        readCount?: number;
+        iterations?: number;
+      }>;
+    };
     expect(parsed.antiPatterns).toEqual([
-      { type: 're_reading', count: 2 },
-      { type: 'thrashing', count: 1 },
+      { type: 're_reading', file: '/a.ts', readCount: 4 },
+      { type: 're_reading', file: '/b.ts', readCount: 5 },
+      { type: 'thrashing', file: '/c.ts', iterations: 3 },
     ]);
   });
 
-  it('attaches toolSelectionScore (but not qualityProxy) to the registry-synthesized branch', async () => {
+  it('attaches toolSelectionScore, antiPatterns, and qualityProxy to the registry-synthesized branch', async () => {
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],
@@ -614,6 +622,13 @@ describe('api-handler GET /api/sessions/:id', () => {
         }),
       } as unknown as Parameters<typeof createApiHandler>[0]['toolSelectionScorer'],
       toolCallBuffer: {
+        // 3 consecutive failing `npm test` Bash calls on the same session:
+        // enough to trip AntiPatternDetector's stuck_loop threshold AND to
+        // produce 3 test_fail QualityProxyTracker signals. Both fields must
+        // be computed from this branch's own filtered records, using
+        // detector/tracker instances scoped to this one request — not a
+        // shared, stateful instance owned by a different (this process's
+        // own) session.
         getRecords: () => [
           {
             id: '1',
@@ -623,6 +638,30 @@ describe('api-handler GET /api/sessions/:id', () => {
             timestamp: 1,
             durationMs: 1,
             success: false,
+            command: 'npm test',
+            isTestCommand: true,
+          },
+          {
+            id: '2',
+            sessionId: 'concurrent1',
+            toolName: 'Bash',
+            toolUseId: 'u2',
+            timestamp: 2,
+            durationMs: 1,
+            success: false,
+            command: 'npm test',
+            isTestCommand: true,
+          },
+          {
+            id: '3',
+            sessionId: 'concurrent1',
+            toolName: 'Bash',
+            toolUseId: 'u3',
+            timestamp: 3,
+            durationMs: 1,
+            success: false,
+            command: 'npm test',
+            isTestCommand: true,
           },
         ],
       } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
@@ -632,11 +671,86 @@ describe('api-handler GET /api/sessions/:id', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     const parsed = JSON.parse(body()) as {
-      qualityProxy?: unknown;
+      qualityProxy?: { testPassRate: number | null };
+      antiPatterns?: Array<{ type: string; repeatCount?: number }>;
       toolSelectionScore?: { repeatedFailureCount: number };
     };
+    expect(parsed.toolSelectionScore?.repeatedFailureCount).toBe(3);
+    expect(parsed.antiPatterns).toEqual([
+      expect.objectContaining({ type: 'stuck_loop', repeatCount: 3 }),
+    ]);
+    expect(parsed.qualityProxy?.testPassRate).toBe(0);
+  });
+
+  it('leaves antiPatterns empty and qualityProxy absent on the registry-synthesized branch when there are no records to analyze', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => ['concurrent-empty'],
+        getSessionName: () => null,
+      },
+      toolCallBuffer: {
+        getRecords: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/concurrent-empty' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { qualityProxy?: unknown; antiPatterns?: unknown[] };
+    expect(parsed.antiPatterns).toEqual([]);
     expect(parsed.qualityProxy).toBeUndefined();
-    expect(parsed.toolSelectionScore?.repeatedFailureCount).toBe(1);
+  });
+
+  it("remaps a persisted session's toolSelectionMetrics onto toolSelectionScore", async () => {
+    const fakeSession = {
+      sessionId: 'sess-tool-selection-1',
+      toolSelectionMetrics: {
+        score: 0.75,
+        totalCalls: 4,
+        penalizedCalls: 1,
+        redundantReadCount: 1,
+        repeatedFailureCount: 0,
+        unusedOutputCount: 0,
+      },
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-tool-selection-1' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-tool-selection-1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as {
+      toolSelectionScore?: { score: number; redundantReadCount: number };
+    };
+    expect(parsed.toolSelectionScore?.score).toBe(0.75);
+    expect(parsed.toolSelectionScore?.redundantReadCount).toBe(1);
+  });
+
+  it('does not attach toolSelectionScore to a persisted session with no toolSelectionMetrics (regression guard)', async () => {
+    const fakeSession = { sessionId: 'sess-no-tool-selection', toolCallCount: 3 };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-no-tool-selection' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-no-tool-selection' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { toolSelectionScore?: unknown };
+    expect(parsed.toolSelectionScore).toBeUndefined();
   });
 
   // session.timeline is append-only in processing order, not timestamp

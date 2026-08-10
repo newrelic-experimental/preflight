@@ -308,5 +308,3 @@ export function selectMaxSeverity(state: LiveState): AlertEvent['severity'] | nu
 // keeping the `{ usd, turns }` call-site API intact.
 export const useSubagentStats = (): { usd: number; turns: number } =>
   useLiveStore(useShallow((s) => ({ usd: s.todaySubagentUsd, turns: s.todaySubagentTurnCount })));
-export const useObservabilityHealth = (): ObservabilityHealthState | null =>
-  useLiveStore((s) => s.observabilityHealth);

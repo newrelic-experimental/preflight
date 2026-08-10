@@ -25,6 +25,7 @@ import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
+import type { AntiPattern } from '../metrics/anti-patterns.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -42,6 +43,40 @@ const logger = createLogger('session-store');
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * One detected anti-pattern occurrence, persisted per incident rather than
+ * grouped by type — the target (`file`/`command`) and the detector's own
+ * per-incident occurrence count (`iterations`/`readCount`/etc., matching
+ * `AntiPattern`) both survive the round-trip to disk.
+ */
+export interface PersistedAntiPattern {
+  readonly type: string;
+  readonly file?: string;
+  readonly command?: string;
+  readonly iterations?: number;
+  readonly readCount?: number;
+  readonly repeatCount?: number;
+  readonly editCount?: number;
+  readonly agentCount?: number;
+}
+
+/**
+ * Maps detector-reported anti-pattern incidents into the persisted/API shape,
+ * redacting `file`/`command` targets the same way other persisted fields are.
+ */
+export function toPersistedAntiPatterns(patterns: readonly AntiPattern[]): PersistedAntiPattern[] {
+  return patterns.map((p) => ({
+    type: p.type,
+    file: p.file !== undefined ? redactSensitive(p.file) : undefined,
+    command: p.command !== undefined ? redactSensitive(p.command) : undefined,
+    iterations: p.iterations,
+    readCount: p.readCount,
+    repeatCount: p.repeatCount,
+    editCount: p.editCount,
+    agentCount: p.agentCount,
+  }));
+}
 
 export interface FullSessionSummary extends SessionSummary {
   readonly sessionName: string | null;
@@ -71,7 +106,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensCacheCreation: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
-  readonly antiPatterns: Array<{ type: string; count: number }>;
+  readonly antiPatterns: PersistedAntiPattern[];
   readonly taskCount: number;
   readonly taskSuccessRate: number | null;
   readonly toolSuccessRate: number | null;
@@ -393,16 +428,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       ? antiPatternDetector.analyze(allToolCalls)
       : null;
 
-  const antiPatterns: Array<{ type: string; count: number }> = [];
-  if (antiPatternResults) {
-    const grouped = new Map<string, number>();
-    for (const p of antiPatternResults.patterns) {
-      grouped.set(p.type, (grouped.get(p.type) ?? 0) + 1);
-    }
-    for (const [type, count] of grouped) {
-      antiPatterns.push({ type, count });
-    }
-  }
+  const antiPatterns: PersistedAntiPattern[] = antiPatternResults
+    ? toPersistedAntiPatterns(antiPatternResults.patterns)
+    : [];
 
   // Tool-selection quality: same allToolCalls used for anti-pattern analysis
   // above, still holding real outputSizeBytes at this point — see the
@@ -507,7 +535,7 @@ export function sessionSummaryToDriftRecord(
     timestamp: summary.endTime,
     successRate: summary.taskSuccessRate,
     totalTokens: summary.tokensInput + summary.tokensOutput,
-    thrashingIncidents: summary.antiPatterns.find((p) => p.type === 'thrashing')?.count ?? 0,
+    thrashingIncidents: summary.antiPatterns.filter((p) => p.type === 'thrashing').length,
     taskCount: summary.taskCount,
     avgEfficiency: summary.efficiencyScore,
   };
@@ -591,14 +619,43 @@ export function deserializeFullSessionSummary(
     }
   }
 
-  const antiPatterns: Array<{ type: string; count: number }> = [];
+  // Legacy on-disk files only ever have the old `{type, count}` shape —
+  // `count` meant "distinct entries of this type" and carried no target
+  // info. Every downstream consumer (trend analysis, weekly summaries,
+  // thrashing-incident counts) counts array entries rather than reading a
+  // magnitude field, so a legacy entry is expanded back into `count`
+  // separate rows of that type here, leaving `file`/`command`/etc.
+  // undefined for those older records — that keeps "one array entry = one
+  // incident" true for both legacy and current on-disk shapes.
+  const antiPatterns: PersistedAntiPattern[] = [];
   if (Array.isArray(obj.antiPatterns)) {
     for (const ap of obj.antiPatterns) {
       if (typeof ap === 'object' && ap !== null) {
         const a = ap;
-        if (typeof a.type === 'string' && typeof a.count === 'number') {
-          antiPatterns.push({ type: a.type, count: a.count });
+        if (typeof a.type !== 'string') continue;
+        const hasMagnitudeField =
+          typeof a.iterations === 'number' ||
+          typeof a.readCount === 'number' ||
+          typeof a.repeatCount === 'number' ||
+          typeof a.editCount === 'number' ||
+          typeof a.agentCount === 'number';
+        if (!hasMagnitudeField && typeof a.count === 'number') {
+          const legacyCount = Math.max(0, Math.trunc(a.count));
+          for (let i = 0; i < legacyCount; i++) {
+            antiPatterns.push({ type: a.type });
+          }
+          continue;
         }
+        antiPatterns.push({
+          type: a.type,
+          file: typeof a.file === 'string' ? a.file : undefined,
+          command: typeof a.command === 'string' ? a.command : undefined,
+          iterations: typeof a.iterations === 'number' ? a.iterations : undefined,
+          readCount: typeof a.readCount === 'number' ? a.readCount : undefined,
+          repeatCount: typeof a.repeatCount === 'number' ? a.repeatCount : undefined,
+          editCount: typeof a.editCount === 'number' ? a.editCount : undefined,
+          agentCount: typeof a.agentCount === 'number' ? a.agentCount : undefined,
+        });
       }
     }
   }

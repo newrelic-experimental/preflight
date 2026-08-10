@@ -27,7 +27,12 @@ import { computeCacheHealth } from './cache-health-aggregate.js';
 import type { CacheHealthTotals, AggregateCacheHealth } from './cache-health-aggregate.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
 import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
-import type { FullSessionSummary, SessionFileInfo } from '../../storage/session-store.js';
+import type {
+  FullSessionSummary,
+  SessionFileInfo,
+  PersistedAntiPattern,
+} from '../../storage/session-store.js';
+import { toPersistedAntiPatterns } from '../../storage/session-store.js';
 import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
 import type {
   SubagentTimeline,
@@ -50,6 +55,7 @@ import type {
 import {
   combineQualityProxyRawCounts,
   ZERO_QUALITY_PROXY_COUNTS,
+  QualityProxyTracker,
 } from '../../metrics/quality-proxy-tracker.js';
 import type {
   ToolSelectionMetrics,
@@ -63,6 +69,7 @@ import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/co
 import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
 import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
+import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
 import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
 import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
@@ -2740,6 +2747,13 @@ export function createApiHandler(
           ]);
           const responseBody: Record<string, unknown> = { ...session };
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
+          // The persisted shape's key is `toolSelectionMetrics`, but
+          // Sessions.tsx's SessionTimeline reads `toolSelectionScore` —
+          // remap here so this branch's response uses the same field name
+          // as the other two `/api/sessions/:id` branches.
+          if (session.toolSelectionMetrics) {
+            responseBody.toolSelectionScore = session.toolSelectionMetrics;
+          }
           // `session.timeline` is append-only in processing order, not
           // timestamp order (parallel tool calls can complete out of
           // start-order) — sort before returning, mirroring the identical
@@ -2757,16 +2771,9 @@ export function createApiHandler(
             const costMetrics = deps.costTracker?.getMetrics();
             const costUsd = costMetrics?.sessionTotalCostUsd ?? null;
             const model = costMetrics?.model ?? null;
-            const antiPatterns: Array<{ type: string; count: number }> = [];
-            if (deps.antiPatternDetector) {
-              const grouped = new Map<string, number>();
-              for (const p of deps.antiPatternDetector.getCurrentPatterns()) {
-                grouped.set(p.type, (grouped.get(p.type) ?? 0) + 1);
-              }
-              for (const [type, count] of grouped) {
-                antiPatterns.push({ type, count });
-              }
-            }
+            const antiPatterns: PersistedAntiPattern[] = deps.antiPatternDetector
+              ? toPersistedAntiPatterns(deps.antiPatternDetector.getCurrentPatterns())
+              : [];
             const ownSessionRecords = (deps.toolCallBuffer?.getRecords() ?? []).filter(
               (r) => r.sessionId === sessionId,
             );
@@ -2827,6 +2834,27 @@ export function createApiHandler(
           }
           const startTime = timeline.length > 0 ? timeline[0]!.timestamp : Date.now();
           const lastTs = timeline.length > 0 ? timeline[timeline.length - 1]!.timestamp : startTime;
+          // Chronological order matters for both detectors below (thrashing/
+          // stuck-loop/self-correction all reason about call sequence), but
+          // `records` comes straight from the tool call buffer with no
+          // ordering guarantee — sort a copy, mirroring `timeline` above.
+          const sortedRecords = [...records].sort((a, b) => a.timestamp - b.timestamp);
+          // A fresh AntiPatternDetector instance, not `deps.antiPatternDetector`
+          // — that shared instance belongs to this process's own live session
+          // and caches its last analyze() result for getCurrentPatterns();
+          // reusing it here would clobber that cache with a different
+          // session's patterns.
+          const antiPatternResults =
+            sortedRecords.length > 0 ? new AntiPatternDetector().analyze(sortedRecords) : null;
+          const antiPatterns: PersistedAntiPattern[] = antiPatternResults
+            ? toPersistedAntiPatterns(antiPatternResults.patterns)
+            : [];
+          // Likewise a fresh QualityProxyTracker — it's stateful (tracks the
+          // last edit for backtrack/self-correction detection), so it can't
+          // be a pure function call the way AntiPatternDetector.analyze() is.
+          const qualityTracker = new QualityProxyTracker();
+          for (const r of sortedRecords) qualityTracker.recordToolCall(r);
+          const quality = combineQualityProxyRawCounts([qualityTracker.getRawCounts()]);
           jsonOk(res, {
             sessionId,
             sessionName: deps.liveSessionRegistry.getSessionName(sessionId),
@@ -2837,9 +2865,12 @@ export function createApiHandler(
             model: null,
             outcome: 'in progress',
             toolBreakdown: breakdown,
-            antiPatterns: [],
+            antiPatterns,
+            qualityProxy: quality.totalSignals > 0 ? quality : undefined,
             toolSelectionScore:
-              records.length > 0 ? deps.toolSelectionScorer?.scoreSession(records) : undefined,
+              sortedRecords.length > 0
+                ? deps.toolSelectionScorer?.scoreSession(sortedRecords)
+                : undefined,
             timeline,
           });
           return;

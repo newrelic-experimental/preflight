@@ -2,12 +2,7 @@ import { useMemo, useState, useRef, useEffect } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
-import {
-  useLiveStore,
-  useSubagentStats,
-  useObservabilityHealth,
-  type AlertEvent,
-} from '../store/liveStore';
+import { useLiveStore, useSubagentStats, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { HourlyCostBlocks, type HourlyCostEntry } from '../components/HourlyCostBlocks';
@@ -31,8 +26,6 @@ import {
   fetchSessionSubagents,
   fetchWorkflows,
   fetchAntiPatterns,
-  fetchRetryAlerts,
-  type RetryAlertsResponse,
   fetchTurnCosts,
   type TurnCostsResponse,
   fetchDecisionTree,
@@ -182,7 +175,6 @@ export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
   const subagentStats = useSubagentStats();
-  const observabilityHealth = useObservabilityHealth();
   const { data: healthApi } = useQuery<ObservabilityHealthResponse>({
     queryKey: ['observability-health'],
     queryFn: fetchObservabilityHealth,
@@ -206,11 +198,6 @@ export function Today(): JSX.Element {
   const { data: apiAntiPatterns, isPending: antiPatternsPending } = useQuery<SessionAntiPattern[]>({
     queryKey: qk.antiPatterns,
     queryFn: fetchAntiPatterns,
-  });
-  const { data: retryAlerts } = useQuery<RetryAlertsResponse>({
-    queryKey: ['retry-alerts'],
-    queryFn: fetchRetryAlerts,
-    refetchInterval: 10_000,
   });
   const { data: concurrency, isPending: concurrencyPending } = useQuery<ConcurrencyData>({
     queryKey: qk.concurrency,
@@ -367,15 +354,8 @@ export function Today(): JSX.Element {
         </>
       ) : (
         <>
-          {(observabilityHealth?.watcherDisabledByLock === true ||
-            healthApi?.watcherDisabledByLock === true) && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300 mb-4">
-              Subagent watcher is disabled (lock conflict). Subagent costs may be undercounted.
-              Check Settings &rarr; Observability health.
-            </div>
-          )}
           {healthApi?.watcherActive === false &&
-            subagentStats.turns === 0 &&
+            subagentTurns === 0 &&
             healthApi?.watcherDisabledReason !== 'mode_mismatch' && (
               <div className="rounded-lg border border-border-subtle bg-surface-5 px-4 py-3 text-sm text-ink-muted mb-4">
                 Subagent cost tracking is disabled (
@@ -385,7 +365,7 @@ export function Today(): JSX.Element {
               </div>
             )}
           {healthApi?.watcherActive === false &&
-            subagentStats.turns === 0 &&
+            subagentTurns === 0 &&
             healthApi?.watcherDisabledReason === 'mode_mismatch' && (
               <div className="rounded-lg border border-border-subtle bg-surface-5 px-4 py-3 text-sm text-ink-muted mb-4">
                 This dashboard process isn&rsquo;t running its own subagent watcher — expected for a
@@ -459,86 +439,73 @@ export function Today(): JSX.Element {
             )}
           </AnimatedCard>
 
-          {flagsCount > 0 &&
-            (antiPatterns.length > 0 ||
-              (apiAntiPatterns && apiAntiPatterns.length > 0) ||
-              persistedAntiPatterns.length > 0) && (
-              <AnimatedCard index={2} className="mb-3">
-                <Card padding="sm" tone="warning" className="text-xs">
-                  {antiPatterns.length > 0 ? (
-                    <>
-                      <Pill tone="warning" size="sm" className="mr-2">
-                        {antiPatterns[0].type}
+          {flagsCount > 0 && (
+            <AnimatedCard index={2} className="mb-3">
+              <Card padding="sm" tone="warning" className="text-xs">
+                {antiPatterns.length > 0 ? (
+                  <>
+                    <Pill tone="warning" size="sm" className="mr-2">
+                      {antiPatterns[0].type}
+                    </Pill>
+                    <span className="text-ink-muted">— </span>
+                    <span>{antiPatterns[0].count}× on </span>
+                    <code className="bg-surface-5 px-1 rounded">{antiPatterns[0].target}</code>
+                    {/* Per-session pill so users can identify
+                        which of N concurrent sessions triggered the alert. */}
+                    {antiPatterns[0].sessionId && (
+                      <Pill tone="neutral" size="sm" className="ml-2">
+                        Session: {sessionPillLabel(antiPatterns[0].sessionId, liveSessions ?? [])}
                       </Pill>
-                      <span className="text-ink-muted">— </span>
-                      <span>{antiPatterns[0].count}× on </span>
-                      <code className="bg-surface-5 px-1 rounded">{antiPatterns[0].target}</code>
-                      {/* Per-session pill so users can identify
-                          which of N concurrent sessions triggered the alert. */}
-                      {antiPatterns[0].sessionId && (
-                        <Pill tone="neutral" size="sm" className="ml-2">
-                          Session: {sessionPillLabel(antiPatterns[0].sessionId, liveSessions ?? [])}
-                        </Pill>
-                      )}
-                      {antiPatterns[0].type === 'thrashing' &&
-                        retryAlerts?.alerts?.find((a) => a.toolName === antiPatterns[0].target)
-                          ?.tokensWastedEstimate !== undefined && (
-                          <span className="text-ink-muted ml-2">
-                            ~
-                            {
-                              retryAlerts.alerts.find((a) => a.toolName === antiPatterns[0].target)!
-                                .tokensWastedEstimate
-                            }{' '}
-                            tokens wasted
-                          </span>
-                        )}
-                    </>
-                  ) : apiAntiPatterns && apiAntiPatterns.length > 0 ? (
-                    <>
-                      <Pill tone="warning" size="sm" className="mr-2">
-                        {apiAntiPatterns[0].type}
-                      </Pill>
-                      <span className="text-ink-muted">— </span>
-                      <span>
-                        {apiAntiPatterns[0].count ??
-                          apiAntiPatterns[0].iterations ??
-                          apiAntiPatterns[0].readCount ??
-                          apiAntiPatterns[0].repeatCount ??
-                          apiAntiPatterns[0].editCount ??
-                          apiAntiPatterns[0].agentCount ??
-                          '?'}
-                        × on{' '}
-                      </span>
-                      <code className="bg-surface-5 px-1 rounded">
-                        {apiAntiPatterns[0].file ?? apiAntiPatterns[0].command ?? 'unknown'}
-                      </code>
-                    </>
-                  ) : persistedAntiPatterns.length > 0 ? (
-                    <>
-                      <Pill tone="warning" size="sm" className="mr-2">
-                        {persistedAntiPatterns[0].type}
-                      </Pill>
-                      <span className="text-ink-muted">— </span>
-                      <span>
-                        {persistedAntiPatterns[0].count ??
-                          persistedAntiPatterns[0].iterations ??
-                          persistedAntiPatterns[0].readCount ??
-                          persistedAntiPatterns[0].repeatCount ??
-                          persistedAntiPatterns[0].editCount ??
-                          persistedAntiPatterns[0].agentCount ??
-                          '?'}
-                        × on{' '}
-                      </span>
-                      <code className="bg-surface-5 px-1 rounded">
-                        {persistedAntiPatterns[0].file ??
-                          persistedAntiPatterns[0].command ??
-                          'unknown'}
-                      </code>
-                    </>
-                  ) : null}
-                </Card>
-              </AnimatedCard>
-            )}
+                    )}
+                  </>
+                ) : apiAntiPatterns && apiAntiPatterns.length > 0 ? (
+                  <>
+                    <Pill tone="warning" size="sm" className="mr-2">
+                      {apiAntiPatterns[0].type}
+                    </Pill>
+                    <span className="text-ink-muted">— </span>
+                    <span>
+                      {apiAntiPatterns[0].count ??
+                        apiAntiPatterns[0].iterations ??
+                        apiAntiPatterns[0].readCount ??
+                        apiAntiPatterns[0].repeatCount ??
+                        apiAntiPatterns[0].editCount ??
+                        apiAntiPatterns[0].agentCount ??
+                        '?'}
+                      × on{' '}
+                    </span>
+                    <code className="bg-surface-5 px-1 rounded">
+                      {apiAntiPatterns[0].file ?? apiAntiPatterns[0].command ?? 'unknown'}
+                    </code>
+                  </>
+                ) : persistedAntiPatterns.length > 0 ? (
+                  <>
+                    <Pill tone="warning" size="sm" className="mr-2">
+                      {persistedAntiPatterns[0].type}
+                    </Pill>
+                    <span className="text-ink-muted">— </span>
+                    <span>
+                      {persistedAntiPatterns[0].count ??
+                        persistedAntiPatterns[0].iterations ??
+                        persistedAntiPatterns[0].readCount ??
+                        persistedAntiPatterns[0].repeatCount ??
+                        persistedAntiPatterns[0].editCount ??
+                        persistedAntiPatterns[0].agentCount ??
+                        '?'}
+                      × on{' '}
+                    </span>
+                    <code className="bg-surface-5 px-1 rounded">
+                      {persistedAntiPatterns[0].file ??
+                        persistedAntiPatterns[0].command ??
+                        'unknown'}
+                    </code>
+                  </>
+                ) : (
+                  <span>{flagsCount} flag(s) detected today — details unavailable.</span>
+                )}
+              </Card>
+            </AnimatedCard>
+          )}
 
           <AnimatedCard index={3} className="grid grid-cols-3 gap-3 mb-3">
             <QualityProxyPanel />
