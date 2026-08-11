@@ -151,6 +151,8 @@ export interface AuditEntry {
   readonly action: string;
   readonly tool?: string;
   readonly detail?: string;
+  // Optional because legacy on-disk records predate this field.
+  readonly id?: string;
   readonly [key: string]: unknown;
 }
 

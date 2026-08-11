@@ -567,6 +567,28 @@ describe('AuditTrailManager', () => {
     const mgr = makeManager();
     expect(() => mgr.recordToolCall(makeRecord())).not.toThrow();
   });
+
+  // 21. carries ToolCallRecord.id through to AuditRecord.id
+  it('carries the ToolCallRecord id through to AuditRecord.id on recordToolCall', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(makeRecord({ id: 'tool-call-xyz' }));
+    expect(audit.id).toBe('tool-call-xyz');
+  });
+
+  // 22. carries ProxyToolCallRecord.id through to AuditRecord.id
+  it('carries the ProxyToolCallRecord id through to AuditRecord.id on recordProxyCall', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordProxyCall(makeProxyRecord({ id: 'proxy-call-xyz' }));
+    expect(audit.id).toBe('proxy-call-xyz');
+  });
+
+  // 23. persists id to disk
+  it('includes id in the object persisted to disk', () => {
+    const { store, appendSpy } = makeLocalStore();
+    const mgr = makeManager({ localStore: store });
+    mgr.recordToolCall(makeRecord({ id: 'tool-call-persisted' }));
+    expect(appendSpy.mock.calls[0][0]).toMatchObject({ id: 'tool-call-persisted' });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -673,6 +695,42 @@ describe('AuditTrailManager.getAuditLog() disk read-back', () => {
     ]);
 
     expect(mgr.getAuditLog()).toHaveLength(1);
+  });
+
+  it("round-trips a disk entry's id unchanged", () => {
+    const { store } = makeLocalStoreWithDisk([
+      {
+        id: 'disk-entry-id',
+        timestamp: 555,
+        sessionId: 'sess-other',
+        action: 'FileRead',
+        tool: 'Read',
+        detail: 'Read src/old.ts',
+        developer: 'alice',
+      },
+    ]);
+    const mgr = makeManager({ localStore: store });
+
+    const log = mgr.getAuditLog();
+    expect(log[0]?.id).toBe('disk-entry-id');
+  });
+
+  it('falls back to a generated id for a legacy disk entry with no id', () => {
+    const { store } = makeLocalStoreWithDisk([
+      {
+        timestamp: 555,
+        sessionId: 'sess-other',
+        action: 'FileRead',
+        tool: 'Read',
+        detail: 'Read src/old.ts',
+        developer: 'alice',
+      },
+    ]);
+    const mgr = makeManager({ localStore: store });
+
+    const log = mgr.getAuditLog();
+    expect(typeof log[0]?.id).toBe('string');
+    expect(log[0]?.id.length).toBeGreaterThan(0);
   });
 
   it('drops a disk entry missing required fields instead of surfacing a broken row', () => {

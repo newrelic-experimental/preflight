@@ -37,6 +37,10 @@ export interface SecurityAlert {
 }
 
 export interface AuditRecord {
+  /** Stable per-call id, sourced from `ToolCallRecord.id`/`ProxyToolCallRecord.id` — lets
+   * consumers (e.g. the Audit page's React key) distinguish two entries that otherwise
+   * share the same timestamp/tool/detail. */
+  readonly id: string;
   readonly timestamp: number;
   readonly sessionId: string | null;
   readonly action: AuditAction;
@@ -341,6 +345,15 @@ function auditEntryToRecord(entry: AuditEntry): AuditRecord | null {
     typeof rawSessionId === 'string' && !isSyntheticSessionId(rawSessionId) ? rawSessionId : null;
   const filePath = typeof entry.filePath === 'string' ? entry.filePath : undefined;
   const command = typeof entry.command === 'string' ? entry.command : undefined;
+  // Disk entries written before this field was introduced have no `id`; fall
+  // back to the same content fingerprint used for cross-process dedup below.
+  // That fingerprint isn't guaranteed unique across two distinct legacy
+  // entries that happen to share timestamp/tool/detail — an inherent limit
+  // of identifying such entries by content alone.
+  const id =
+    typeof entry.id === 'string' && entry.id.length > 0
+      ? entry.id
+      : auditIdentityKey({ timestamp, sessionId, tool, detail });
 
   let securityAlert: SecurityAlert | undefined;
   const rawAlert = entry.securityAlert;
@@ -356,6 +369,7 @@ function auditEntryToRecord(entry: AuditEntry): AuditRecord | null {
   }
 
   return {
+    id,
     timestamp,
     sessionId,
     action,
@@ -437,6 +451,7 @@ export class AuditTrailManager {
     const rawFilePath = record.filePath as string | undefined;
     const rawCommand = record.command as string | undefined;
     const auditRecord: AuditRecord = {
+      id: record.id,
       timestamp: record.timestamp,
       sessionId: resolveAuditSessionId(record.sessionId, this.sessionId),
       action,
@@ -481,6 +496,7 @@ export class AuditTrailManager {
     );
 
     const auditRecord: AuditRecord = {
+      id: record.id,
       timestamp: record.timestamp,
       sessionId: resolveAuditSessionId(record.sessionId, this.sessionId),
       action: 'McpToolCall',
@@ -588,6 +604,7 @@ export class AuditTrailManager {
   private persistToDisk(record: AuditRecord): void {
     if (!this.localStore) return;
     this.localStore.appendAuditLog({
+      id: record.id,
       timestamp: record.timestamp,
       sessionId: record.sessionId,
       action: record.action,

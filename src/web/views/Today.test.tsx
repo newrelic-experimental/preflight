@@ -776,6 +776,187 @@ describe('Today view', () => {
     expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
     expect(screen.queryByText(/subagent activity from other sessions/i)).toBeNull();
   });
+
+  it('keeps the ForecastEodCard parent+subagent breakdown summing to the displayed total even when the page-wide todayTotal/subagentUsd would disagree', async () => {
+    // A fresh live SSE subagent tick (todaySubagentUsd) has landed while the
+    // SSE total-spend push is stale-low and the polled aggregate hasn't
+    // caught up to that subagent tick either. Maxing todayTotal and
+    // subagentUsd independently across their own, different endpoint pairs
+    // would let subagentUsd (15) exceed todayTotal (10), clamping "parent"
+    // to $0 even though aggregate.totalCostUsd (10) and aggregate.subagentUsd
+    // (8) — sourced together in one request — agree that parent is $2.
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 3, todayTotalUsd: 5, forecastEodUsd: 20 },
+      todaySubagentUsd: 15,
+      todaySubagentTurnCount: 3,
+    });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({ totalCostUsd: 10, subagentUsd: 8, forecastEndOfDayUsd: 20 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 's1',
+              startTime: Date.now() - 60_000,
+              estimatedCostUsd: 5,
+              toolCallCount: 3,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    // All four assertions must hold together in the same settled render —
+    // splitting them across separate waitFor/synchronous checks risks
+    // observing a transitional DOM state where only some values have
+    // committed.
+    await waitFor(() => {
+      expect(screen.getByText(/parent \$2\.00/)).toBeInTheDocument();
+      expect(screen.getByText(/subagent \$8\.00/)).toBeInTheDocument();
+      // Must never clamp "parent" to $0 just because the page-wide
+      // todayTotal/subagentUsd picked different underlying sources.
+      expect(screen.queryByText(/parent \$0\.00/)).toBeNull();
+      // parent ($2.00) + subagent ($8.00) sums to the $10.00 the "spend today"
+      // KPI shows for the same aggregate-sourced total.
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$10.00')).toBeInTheDocument();
+    });
+  });
+
+  it('does not let a legitimate zero from the aggregate override the forecast breakdown total when other sources already know about real spend', async () => {
+    // The aggregate endpoint can legitimately resolve to 0 while its
+    // disk-only sources haven't yet seen any events from today, even though
+    // the SSE push and a persisted session both already know about real
+    // spend. The Forecast card's breakdown must still be computed against
+    // that already-higher total, not the aggregate's zero, or it would
+    // contradict the "spend today" KPI shown directly above it.
+    useLiveStore.setState({
+      cost: { sessionTotalUsd: 8, todayTotalUsd: 8, forecastEodUsd: 12 },
+      todaySubagentUsd: 2,
+      todaySubagentTurnCount: 1,
+    });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ totalCostUsd: 0, subagentUsd: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 's1',
+              startTime: Date.now() - 60_000,
+              estimatedCostUsd: 6,
+              toolCallCount: 3,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    // All assertions must hold together in the same settled render — see
+    // the sibling test above for why these aren't split across separate
+    // waitFor/synchronous checks.
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$8.00')).toBeInTheDocument();
+      expect(screen.getByText(/parent \$6\.00/)).toBeInTheDocument();
+      expect(screen.getByText(/subagent \$2\.00/)).toBeInTheDocument();
+      expect(screen.queryByText(/parent \$0\.00/)).toBeNull();
+      expect(screen.queryByText(/parent \$8\.00/)).toBeNull();
+    });
+  });
+
+  it('folds the /api/cost REST fallback into todayTotal so the KPI does not flash $0.00 before the first SSE frame arrives', async () => {
+    // No SSE cost frame has arrived yet, and the aggregate endpoint has
+    // legitimately resolved to 0 (no disk-backed data yet from this
+    // process) — only the /api/cost REST payload has this session's actual
+    // today-scoped spend.
+    useLiveStore.setState({ cost: null });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === '/api/cost') {
+        return new Response(
+          JSON.stringify({ cost: { sessionTotalCostUsd: 7 }, forecast: null, sessionTodayUsd: 7 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ totalCostUsd: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    await waitFor(() => {
+      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
+      expect(within(spendTile).getByText('$7.00')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No activity yet today/)).toBeNull();
+  });
+
+  it('falls back to the /api/cost REST forecast when neither SSE nor the aggregate has one', async () => {
+    useLiveStore.setState({ cost: null });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === '/api/cost') {
+        return new Response(
+          JSON.stringify({
+            cost: { sessionTotalCostUsd: 5 },
+            forecast: { forecastEndOfDayUsd: 12 },
+            sessionTodayUsd: 5,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(JSON.stringify({ totalCostUsd: 5 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    await waitFor(() => expect(screen.getByText('$12.00')).toBeInTheDocument());
+    // delta = 12 - 5 = 7
+    expect(screen.getByText(/\+\$7\.00/)).toBeInTheDocument();
+  });
 });
 
 describe('Today view — empty state', () => {

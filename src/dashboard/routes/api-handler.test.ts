@@ -1438,6 +1438,31 @@ describe('api-handler GET /api/audit', () => {
     expect(parsed[0]!.severity).toBeUndefined();
   });
 
+  it('passes through the AuditRecord.id as the DTO id field', async () => {
+    const fakeAuditLog = [
+      {
+        id: 'call-abc123',
+        timestamp: 1700000000000,
+        sessionId: 'session-a',
+        action: 'FileRead',
+        tool: 'Read',
+        detail: '/some/file.ts',
+        developer: 'alice',
+      },
+    ];
+    const handler = createApiHandler({
+      auditTrailManager: { getAuditLog: () => fakeAuditLog } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['auditTrailManager'],
+    });
+    const req = { method: 'GET', url: '/api/audit' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed[0]!.id).toBe('call-abc123');
+  });
+
   it('returns 503 when auditTrailManager is missing', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/audit' } as IncomingMessage;
@@ -4540,11 +4565,35 @@ describe('api-handler GET /api/cache-health', () => {
     expect(result.total_savings_usd).toBe(0.5);
   });
 
-  it('computes week_over_week_delta_pts from the trend, excluding the current ISO week', async () => {
+  it('computes week_over_week_delta_pts against the today-scoped aggregate rate, excluding the current ISO week', async () => {
     const currentWeek = getIsoWeekId(new Date());
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
     const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'live-1', sessionStartTime: startMs + 5_000 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
       costTracker: {
-        getMetrics: () => ({ cacheHitRate: 0.5 }),
+        // Lifetime cacheHitRate (0.99) deliberately disagrees with the
+        // today-scoped totals below (which resolve to a 50% hit rate) —
+        // the delta must be computed from the latter, matching the
+        // aggregate's headline rate, not CostTracker's lifetime rate.
+        getMetrics: () => ({
+          cacheHitRate: 0.99,
+          totalCacheReadTokens: 500,
+          totalCacheCreationTokens: 0,
+          totalInputTokens: 500,
+          totalCacheSavingsUsd: 0,
+        }),
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
       trendAnalyzer: {
         computeTrends: () => ({
@@ -4560,7 +4609,8 @@ describe('api-handler GET /api/cache-health', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     const result = JSON.parse(body());
-    // cacheHitRatePct = 50, lastWeekEntry (after excluding currentWeek) = 0.3 → 30
+    // today-scoped cacheHitRatePct = 500 / (500 + 500) = 50, lastWeekEntry
+    // (after excluding currentWeek) = 0.3 → 30, delta = 20.
     expect(result.week_over_week_delta_pts).toBe(20);
   });
 

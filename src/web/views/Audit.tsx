@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'wouter';
 import { fetchAuditLog, qk, type AuditEntry } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
 import { GeoBanner } from '../components/GeoBanner';
@@ -19,6 +20,17 @@ const SEVERITY_TONE: Record<string, 'danger' | 'warning' | 'info'> = {
   critical: 'danger',
   high: 'warning',
   medium: 'info',
+};
+
+// Labels for the classification Pill, distinct from FILTERS above (which only
+// covers the filter chips — 'all' isn't a real classification, and 'other'
+// isn't a filter). Every classification toAuditEntry() can produce needs an
+// entry here so the Pill never falls back to rendering the raw key.
+const CLASSIFICATION_LABELS: Record<string, string> = {
+  sensitive_file: 'Sensitive files',
+  destructive_command: 'Destructive',
+  external_network: 'External network',
+  other: 'Other',
 };
 
 export function downloadJsonl(rows: AuditEntry[]): void {
@@ -45,9 +57,10 @@ export function downloadJsonl(rows: AuditEntry[]): void {
 
 export function Audit(): JSX.Element {
   const [filter, setFilter] = useState<FilterKey>('all');
-  const { data, isLoading, error } = useQuery<AuditEntry[]>({
+  const { data, isLoading, error, refetch } = useQuery<AuditEntry[]>({
     queryKey: qk.audit,
     queryFn: () => fetchAuditLog(),
+    refetchInterval: 10_000,
   });
 
   const rows = data ?? [];
@@ -86,7 +99,17 @@ export function Audit(): JSX.Element {
       </div>
 
       {isLoading && <EmptyState icon="clock" variant="loading" title="Loading..." />}
-      {error && <div className="text-accent-red text-xs">Error loading audit log.</div>}
+      {error && (
+        <div className="text-accent-red text-xs flex items-center gap-2">
+          <span>Error loading audit log.</span>
+          <button
+            onClick={() => void refetch()}
+            className="text-[10px] text-ink-muted hover:text-ink-base transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {!isLoading && !error && visible.length > VISIBLE_LIMIT && (
         <div className="text-[11px] text-ink-muted mb-2">
@@ -115,7 +138,7 @@ export function Audit(): JSX.Element {
                 </tr>
               )}
               {visibleSlice.map((r) => (
-                <tr key={`${r.ts}-${r.tool}-${r.target}`} className="border-t border-border-subtle">
+                <tr key={r.id} className="border-t border-border-subtle">
                   <td className="p-2 tabular-nums">
                     {new Date(r.ts).toLocaleString(undefined, {
                       month: 'short',
@@ -125,16 +148,29 @@ export function Audit(): JSX.Element {
                     })}
                   </td>
                   <td className="p-2">{r.tool}</td>
-                  <td className="p-2 font-mono text-[11px]">{r.target}</td>
+                  <td className="p-2 font-mono text-[11px] break-all" title={r.target}>
+                    {r.target}
+                  </td>
                   <td className="p-2">
                     <Pill
                       tone={r.severity ? (SEVERITY_TONE[r.severity] ?? 'neutral') : 'neutral'}
                       size="sm"
                     >
-                      {FILTERS.find((f) => f.key === r.classification)?.label ?? r.classification}
+                      {CLASSIFICATION_LABELS[r.classification] ?? r.classification}
                     </Pill>
                   </td>
-                  <td className="p-2 text-ink-subtle">{r.sessionId ?? '—'}</td>
+                  <td className="p-2 text-ink-subtle">
+                    {r.sessionId ? (
+                      <Link
+                        href={`/sessions?session=${encodeURIComponent(r.sessionId)}`}
+                        className="text-accent-cyan hover:underline transition-colors duration-150"
+                      >
+                        {r.sessionId}
+                      </Link>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

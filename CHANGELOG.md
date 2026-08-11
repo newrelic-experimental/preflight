@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.40] - 2026-08-11
+
+### Fixed
+
+- **The Audit page's classification column no longer shows a raw, unlabeled "other" for every routine tool call** — the common, non-flagged case now shows a proper label like every other row.
+- **The Audit page now auto-refreshes and offers a retry action on load failure**, matching the other pages in this dashboard.
+- **The Audit page's session ID is now a link to that session's detail view**, instead of inert text.
+- **Two distinct audit entries that happen to share the same timestamp, tool, and target no longer risk colliding on the same React key** (e.g. two parallel calls landing in the same millisecond) — each entry now carries a stable, unique identifier.
+- **The Audit page's target column no longer silently clips long values** — long targets now wrap and expose the full value on hover.
+- **The "Anti-Pattern Frequency" chart on the History page no longer drops weeks with zero anti-patterns**, keeping its weekly axis aligned with the sibling "Daily Spend" and "Weekly Efficiency" charts — and a history with no anti-patterns at all still shows the "No anti-patterns detected" message instead of an all-zero chart.
+- **The "Model Performance" panel's $/1M-token figure is no longer inflated by sessions with a real cost but no recorded token counts.**
+- **The "Model Performance" panel's "elevated error rates" warning now accounts for how many of a model's sessions were actually measured**, instead of flagging any model with at least one low-success session regardless of sample size.
+- **The "Collaboration Profile" panel's "Correction rate" comparison no longer shows backwards color-coding** — a developer who corrects less than their team now correctly renders as better, not worse, and the dimension is now labeled to match its actual direction.
+- **The "Personal Coach" panel no longer applies full-strength regression/highlight language to a week that's barely started**, avoiding confident-sounding conclusions drawn from too small a sample.
+- **The Today dashboard's "Forecast · End of Day" card's parent/subagent spend breakdown now always sums to the total spend shown above it**, including when the aggregate endpoint briefly reports a legitimate zero while other sources already know about real spend today.
+- **The Cache Health panel's week-over-week trend is now computed against the same today-scoped rate as the headline number it's shown beside**, instead of a separate process's lifetime cache rate.
+- **The Today dashboard's spend figures now also refresh from the `/api/cost` endpoint**, closing a gap where they could otherwise go stale across a day boundary.
+
 ## [1.14.39] - 2026-08-10
 
 ### Fixed

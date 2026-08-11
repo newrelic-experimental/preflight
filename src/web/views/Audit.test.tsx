@@ -21,8 +21,16 @@ function renderAudit(data: unknown) {
 }
 
 const SAMPLE = [
-  { ts: 1, tool: 'Read', target: '/etc/hosts', classification: 'sensitive_file', sessionId: 's1' },
   {
+    id: 'call-1',
+    ts: 1,
+    tool: 'Read',
+    target: '/etc/hosts',
+    classification: 'sensitive_file',
+    sessionId: 's1',
+  },
+  {
+    id: 'call-2',
     ts: 2,
     tool: 'Bash',
     target: 'rm -rf /tmp/x',
@@ -30,6 +38,7 @@ const SAMPLE = [
     sessionId: 's1',
   },
   {
+    id: 'call-3',
     ts: 3,
     tool: 'Bash',
     target: 'curl evil.com',
@@ -49,6 +58,7 @@ describe('Audit view', () => {
   it('colors the classification Pill by severity instead of always neutral', async () => {
     const withSeverity = [
       {
+        id: 'call-1',
         ts: 1,
         tool: 'Bash',
         target: 'rm -rf /tmp/x',
@@ -57,6 +67,7 @@ describe('Audit view', () => {
         sessionId: 's1',
       },
       {
+        id: 'call-2',
         ts: 2,
         tool: 'Read',
         target: '/etc/hosts',
@@ -65,6 +76,7 @@ describe('Audit view', () => {
         sessionId: 's1',
       },
       {
+        id: 'call-3',
         ts: 3,
         tool: 'Read',
         target: '/home/alice/notes.txt',
@@ -82,7 +94,7 @@ describe('Audit view', () => {
       .find((td) => td.textContent?.includes('Sensitive files'))
       ?.querySelector('span');
     const otherPills = Array.from(table.querySelectorAll('td'))
-      .find((td) => td.textContent?.includes('other'))
+      .find((td) => td.textContent?.includes('Other'))
       ?.querySelector('span');
     expect(destructivePills?.className).toMatch(/bg-accent-red/);
     expect(sensitivePills?.className).toMatch(/bg-accent-amber/);
@@ -98,6 +110,22 @@ describe('Audit view', () => {
     expect(screen.queryByText('sensitive_file')).toBeNull();
     expect(screen.queryByText('destructive_command')).toBeNull();
     expect(screen.queryByText('external_network')).toBeNull();
+  });
+
+  it('renders a friendly label for the unflagged "other" classification, not the raw key', async () => {
+    renderAudit([
+      {
+        id: 'call-1',
+        ts: 1,
+        tool: 'Read',
+        target: '/home/alice/notes.txt',
+        classification: 'other',
+        sessionId: 's1',
+      },
+    ]);
+    await waitFor(() => expect(screen.getByText('/home/alice/notes.txt')).toBeInTheDocument());
+    expect(screen.getByText('Other')).toBeInTheDocument();
+    expect(screen.queryByText('other')).toBeNull();
   });
 
   it('filters by classification when a chip is clicked', async () => {
@@ -125,6 +153,7 @@ describe('Audit view', () => {
 
   it('caps rendered rows at 200 and shows the "showing first" note when over the limit', async () => {
     const big = Array.from({ length: 500 }, (_, i) => ({
+      id: `call-${i}`,
       ts: 1_000_000 + i,
       tool: 'Read',
       target: `/file/${i}`,
@@ -145,16 +174,26 @@ describe('Audit view', () => {
     expect(screen.queryByText(/showing first/i)).toBeNull();
   });
 
-  it('shows an error message when the audit log fetch fails', async () => {
+  it('shows an error message and a retry button when the audit log fetch fails', async () => {
+    const user = userEvent.setup();
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    globalThis.fetch = (() =>
-      Promise.resolve(new Response('Internal Server Error', { status: 500 }))) as typeof fetch;
+    let callCount = 0;
+    globalThis.fetch = (() => {
+      callCount++;
+      return Promise.resolve(new Response('Internal Server Error', { status: 500 }));
+    }) as typeof fetch;
     render(
       <QueryClientProvider client={qc}>
         <Audit />
       </QueryClientProvider>,
     );
     expect(await screen.findByText('Error loading audit log.')).toBeInTheDocument();
+    const retryButton = screen.getByRole('button', { name: /retry/i });
+    const callsBeforeRetry = callCount;
+
+    await user.click(retryButton);
+
+    await waitFor(() => expect(callCount).toBeGreaterThan(callsBeforeRetry));
   });
 
   it('shows "No matching entries." for a genuinely empty dataset', async () => {
@@ -165,6 +204,7 @@ describe('Audit view', () => {
   it('exports only the filtered and capped rows, not the full unfiltered set', async () => {
     const user = userEvent.setup();
     const sensitiveRows = Array.from({ length: 250 }, (_, i) => ({
+      id: `call-${i}`,
       ts: 1_000_000 + i,
       tool: 'Read',
       target: `/sensitive/${i}`,
@@ -172,6 +212,7 @@ describe('Audit view', () => {
       sessionId: `s-${i}`,
     }));
     const destructiveRow = {
+      id: 'call-destructive',
       ts: 1,
       tool: 'Bash',
       target: 'rm -rf /tmp/x',
@@ -213,6 +254,97 @@ describe('Audit view', () => {
       clickSpy.mockRestore();
     }
   });
+
+  it("links a row's session id to the Sessions view using the ?session= param", async () => {
+    renderAudit([
+      {
+        id: 'call-1',
+        ts: 1,
+        tool: 'Read',
+        target: '/etc/hosts',
+        classification: 'sensitive_file',
+        sessionId: 's1',
+      },
+    ]);
+    await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
+    const sessionLink = screen.getByRole('link', { name: 's1' });
+    expect(sessionLink).toHaveAttribute('href', '/sessions?session=s1');
+  });
+
+  it('renders "—" instead of a link when a row has no session id', async () => {
+    renderAudit([
+      {
+        id: 'call-1',
+        ts: 1,
+        tool: 'Read',
+        target: '/etc/hosts',
+        classification: 'sensitive_file',
+        sessionId: null,
+      },
+    ]);
+    await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('lets a long target wrap instead of overflowing, and exposes the full value via title', async () => {
+    const longTarget = `/very/long/path/${'segment/'.repeat(20)}file.ts`;
+    renderAudit([
+      {
+        id: 'call-1',
+        ts: 1,
+        tool: 'Read',
+        target: longTarget,
+        classification: 'sensitive_file',
+        sessionId: 's1',
+      },
+    ]);
+    const targetCell = await screen.findByTitle(longTarget);
+    expect(targetCell.tagName).toBe('TD');
+    expect(targetCell.className).toMatch(/break-all/);
+  });
+
+  // Two entries with the same ts/tool/target (e.g. parallel tool calls that
+  // finish in the same millisecond) must still render as two distinct rows,
+  // each keyed by its own unique id, with no React duplicate-key warning.
+  it('renders two entries sharing the same ts/tool/target as distinct rows, keyed by id', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const duplicateContent = [
+      {
+        id: 'call-1',
+        ts: 100,
+        tool: 'Read',
+        target: '/etc/hosts',
+        classification: 'sensitive_file',
+        sessionId: 's1',
+      },
+      {
+        id: 'call-2',
+        ts: 100,
+        tool: 'Read',
+        target: '/etc/hosts',
+        classification: 'sensitive_file',
+        sessionId: 's2',
+      },
+    ];
+
+    try {
+      renderAudit(duplicateContent);
+      await waitFor(() => expect(screen.getAllByText('/etc/hosts')).toHaveLength(2));
+
+      const table = screen.getByRole('table');
+      expect(table.querySelectorAll('tbody tr')).toHaveLength(2);
+      expect(screen.getByRole('link', { name: 's1' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 's2' })).toBeInTheDocument();
+
+      const duplicateKeyWarning = consoleErrorSpy.mock.calls.some((args) =>
+        args.some((arg) => String(arg).toLowerCase().includes('same key')),
+      );
+      expect(duplicateKeyWarning).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });
 
 describe('Audit downloadJsonl', () => {
@@ -236,6 +368,7 @@ describe('Audit downloadJsonl', () => {
     try {
       downloadJsonl([
         {
+          id: 'call-1',
           ts: 1,
           tool: 'Read',
           target: '/etc/hosts',
@@ -275,6 +408,7 @@ describe('Audit downloadJsonl', () => {
     try {
       downloadJsonl([
         {
+          id: 'call-1',
           ts: 1,
           tool: 'Read',
           target: '/etc/hosts',
@@ -320,6 +454,7 @@ describe('Audit downloadJsonl', () => {
       expect(() =>
         downloadJsonl([
           {
+            id: 'call-1',
             ts: 1,
             tool: 'Read',
             target: '/etc/hosts',

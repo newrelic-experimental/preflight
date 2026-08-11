@@ -380,7 +380,7 @@ export function History(): JSX.Element {
         </Panel>
 
         <Panel title="Anti-Pattern Frequency · Weekly">
-          {antiPatternSeries.length === 0 ? (
+          {antiPatternSeries.length === 0 || antiPatternSeries.every((d) => d.count === 0) ? (
             <EmptyState
               icon="checkmark"
               title="No anti-patterns detected"
@@ -952,6 +952,7 @@ function CollaborationProfilePanel({
       value: Math.round(data.dimensions.specificity * 100),
       delta: data.teamDeltas.specificity,
       lowerIsBetter: false,
+      note: '',
     },
     {
       name: 'Autonomy',
@@ -959,13 +960,19 @@ function CollaborationProfilePanel({
       value: Math.round(data.dimensions.autonomy * 100),
       delta: data.teamDeltas.autonomy,
       lowerIsBetter: false,
+      note: '',
     },
     {
-      name: 'Correction rate',
+      // The backend dimension is a correction-free score — higher means
+      // fewer corrections were needed — so the label spells that out
+      // directly instead of reading as a raw "rate of corrections" (which
+      // would suggest the opposite direction).
+      name: 'Correction-free rate',
       key: 'correctionRate',
       value: Math.round(data.dimensions.correctionRate * 100),
       delta: data.teamDeltas.correctionRate,
-      lowerIsBetter: true,
+      lowerIsBetter: false,
+      note: ' (higher = better)',
     },
     {
       name: 'Task complexity',
@@ -973,6 +980,7 @@ function CollaborationProfilePanel({
       value: Math.round(data.dimensions.taskComplexity * 100),
       delta: data.teamDeltas.taskComplexity,
       lowerIsBetter: false,
+      note: '',
     },
   ];
   return (
@@ -1022,7 +1030,7 @@ function CollaborationProfilePanel({
           const color =
             d.delta === 0 ? 'text-ink-muted' : positive ? 'text-accent-green' : 'text-accent-amber';
           const sign = d.delta > 0 ? '+' : d.delta < 0 ? '-' : '';
-          const note = d.lowerIsBetter ? ' (lower = better)' : '';
+          const note = d.lowerIsBetter ? ' (lower = better)' : d.note;
           return (
             <div key={d.key} className="flex items-center justify-between text-[10px]">
               <span className="text-ink-muted">
@@ -1185,9 +1193,7 @@ export function buildAntiPatternSeries(weeks: WeeklyRow[]): Array<{ week: string
   for (const w of weeks) {
     const counts = w.antiPatternCounts ?? {};
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    if (total > 0) {
-      out.push({ week: w.week || '?', count: total });
-    }
+    out.push({ week: w.week || '?', count: total });
   }
   return out;
 }
@@ -1210,6 +1216,10 @@ export interface ModelPerformanceRow {
 }
 
 const FLAGGED_SUCCESS_THRESHOLD = 0.85;
+// A single low-success session shouldn't carry the same visual weight for a
+// model with 50 sessions as it does for a model with 2 — flag a model only
+// once a meaningful share of its sessions fall below FLAGGED_SUCCESS_THRESHOLD.
+const FLAGGED_LOW_SUCCESS_PROPORTION = 0.3;
 
 export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceRow[] {
   const byModel = new Map<
@@ -1264,10 +1274,14 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       // Only blend cost and tokens from the same session — a live session row
       // can carry a cost before its token counts have been persisted, which
       // would otherwise inflate costPerMillionTokens by counting cost against
-      // fewer tokens than were actually spent.
-      if (r.tokensInput != null || r.tokensOutput != null) {
+      // fewer tokens than were actually spent. The schema guarantees non-null
+      // token defaults, so guard on an actual positive token count rather
+      // than null-ness (a session with real cost but zero recorded tokens
+      // would otherwise pass the null check and inflate the blended rate).
+      const sessionTokens = (r.tokensInput ?? 0) + (r.tokensOutput ?? 0);
+      if (sessionTokens > 0) {
         entry.blendedCostSum += r.estimatedCostUsd;
-        entry.blendedTokensSum += (r.tokensInput ?? 0) + (r.tokensOutput ?? 0);
+        entry.blendedTokensSum += sessionTokens;
       }
     }
   }
@@ -1282,7 +1296,9 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       avgCost: e.costCount > 0 ? e.costSum / e.costCount : null,
       costPerMillionTokens:
         e.blendedTokensSum > 0 ? (e.blendedCostSum / e.blendedTokensSum) * 1_000_000 : null,
-      flagged: e.lowSuccessSessions > 0,
+      flagged:
+        e.successCount > 0 &&
+        e.lowSuccessSessions / e.successCount > FLAGGED_LOW_SUCCESS_PROPORTION,
     });
   }
 

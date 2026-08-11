@@ -428,8 +428,12 @@ export interface ToolSelectionMetrics {
 // Mirrors AuditEntryDto in src/dashboard/routes/api-handler.ts (not importable —
 // tsconfig.web.json excludes server source). sessionId is `string | null` at
 // runtime (never `undefined`) — the real handler's toAuditEntry() always sets it,
-// falling back to null when the underlying audit record has none.
+// falling back to null when the underlying audit record has none. id is a stable
+// per-call identifier (sourced from AuditRecord.id) — use it as the React key
+// instead of deriving one from ts/tool/target, which collide when two distinct
+// calls share a timestamp.
 export interface AuditEntry {
+  readonly id: string;
   readonly ts: number;
   readonly sessionId: string | null;
   readonly tool: string;

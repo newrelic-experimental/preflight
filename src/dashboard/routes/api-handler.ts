@@ -76,6 +76,7 @@ import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import type { CostAttributionMetrics } from '../../metrics/turn-cost-attributor.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 interface RawAuditRecord {
+  readonly id: string;
   readonly timestamp: number;
   readonly sessionId: string | null;
   readonly action: string;
@@ -94,6 +95,7 @@ interface RawAuditRecord {
 // alertType chip (sensitive_file/destructive_command/external_network)
 // directly so the SPA's filter chips work without a second mapping.
 interface AuditEntryDto {
+  readonly id: string;
   readonly ts: number;
   readonly sessionId: string | null;
   readonly tool: string;
@@ -111,6 +113,7 @@ function toAuditEntry(entry: unknown): AuditEntryDto {
   // surface only flagged entries.
   const classification = r.securityAlert?.alertType ?? 'other';
   return {
+    id: r.id,
     ts: r.timestamp,
     sessionId: r.sessionId ?? null,
     tool: r.tool,
@@ -1234,14 +1237,10 @@ export function createApiHandler(
   const MAX_AGGREGATE_LATENCY_SAMPLES = 5_000;
   let aggregateCache: { bucket: number; payload: TodayAggregatePayload } | null = null;
 
-  routes.set('GET /api/sessions/today/aggregate', (_req, res) => {
-    const now = Date.now();
-    const currentBucket = Math.floor(now / AGGREGATE_TTL_MS);
-    if (aggregateCache && aggregateCache.bucket === currentBucket) {
-      jsonOk(res, aggregateCache.payload);
-      return;
-    }
-
+  // Extracted so GET /api/cache-health can read the same today-scoped
+  // cacheHitRatePct this computes, instead of falling back to CostTracker's
+  // lifetime cumulative rate — the two would otherwise disagree on scope.
+  function computeTodayAggregatePayload(now: number): TodayAggregatePayload {
     const startMs = localStartOfDay(now);
     const minuteBuckets = Math.max(1, Math.ceil((now - startMs) / 60_000));
     const sparkline = new Array<number>(minuteBuckets).fill(0);
@@ -1617,8 +1616,21 @@ export function createApiHandler(
           ? Math.round(forecast.forecastEndOfDayUsd * 1000) / 1000
           : null,
     };
+    return payload;
+  }
+
+  function getTodayAggregatePayload(now: number): TodayAggregatePayload {
+    const currentBucket = Math.floor(now / AGGREGATE_TTL_MS);
+    if (aggregateCache && aggregateCache.bucket === currentBucket) {
+      return aggregateCache.payload;
+    }
+    const payload = computeTodayAggregatePayload(now);
     aggregateCache = { bucket: currentBucket, payload };
-    jsonOk(res, payload);
+    return payload;
+  }
+
+  routes.set('GET /api/sessions/today/aggregate', (_req, res) => {
+    jsonOk(res, getTodayAggregatePayload(Date.now()));
   });
 
   // Workflow listing (script-driven runs). Reads the workflow
@@ -1847,11 +1859,21 @@ export function createApiHandler(
       (e) => e.week !== currentWeek,
     );
     const lastWeekEntry = trendData.length > 0 ? trendData[trendData.length - 1] : null;
+    // The headline hit-rate the Cache Health panel renders (aggregate.cacheHealth,
+    // from GET /api/sessions/today/aggregate) is today-scoped. Compare against
+    // that same today-scoped rate here — not the lifetime cacheHitRatePct
+    // derived above — so the week-over-week delta is on the same basis as the
+    // number it's displayed alongside.
+    const todayCacheHitRatePct = getTodayAggregatePayload(Date.now()).cacheHealth.cacheHitRatePct;
     const weekOverWeekDeltaPts =
-      cacheHitRatePct !== null && lastWeekEntry !== null
-        ? Math.round(cacheHitRatePct - lastWeekEntry.value * 100)
+      todayCacheHitRatePct !== null && lastWeekEntry !== null
+        ? Math.round(todayCacheHitRatePct - lastWeekEntry.value * 100)
         : null;
 
+    // cache_hit_rate_pct/status reflect this process's lifetime cache
+    // activity; week_over_week_delta_pts is computed against today's scoped
+    // rate to match the headline it's compared against. Mixing scopes here
+    // is intentional — see the comment above weekOverWeekDeltaPts.
     jsonOk(res, {
       status,
       cache_hit_rate_pct: cacheHitRatePct,

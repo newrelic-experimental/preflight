@@ -198,6 +198,19 @@ const SAMPLE_COLLAB_SINGLE_DEV = {
   developerCount: 1,
 };
 
+// The backend `correctionRate` dimension is a correction-free score — higher
+// means fewer corrections were needed. A developer who needs fewer
+// corrections than their team has a HIGHER correctionRate than the team, so
+// this fixture's positive teamDeltas.correctionRate represents a developer
+// with a lower (better) real-world correction rate than their team.
+const SAMPLE_COLLAB_FEWER_CORRECTIONS = {
+  classification: 'Power User',
+  dimensions: { specificity: 0.7, autonomy: 0.65, correctionRate: 0.88, taskComplexity: 0.6 },
+  sessionCount: 20,
+  teamDeltas: { specificity: 0.02, autonomy: 0.01, correctionRate: 0.15, taskComplexity: 0.03 },
+  developerCount: 5,
+};
+
 interface FetchOverrides {
   outcome?: unknown;
   coach?: unknown;
@@ -561,6 +574,23 @@ describe('History view', () => {
     expect(screen.queryByText(/no team data yet/i)).not.toBeInTheDocument();
   });
 
+  it('renders the correction-rate delta in the "better" color when the developer corrects less than their team', async () => {
+    renderHistory({ collabProfile: SAMPLE_COLLAB_FEWER_CORRECTIONS });
+    await waitFor(() => expect(screen.getByText('Power User')).toBeInTheDocument());
+    // "Correction-free rate" also appears as a Y-axis tick label inside the
+    // SVG chart above the delta list; only the label in the delta row itself
+    // has a sibling "% vs team" span, so filter to that row.
+    const row = screen
+      .getAllByText(/Correction-free rate/)
+      .map((el) => el.closest('div'))
+      .find((el) => el && within(el).queryByText(/vs team/) !== null);
+    expect(row).toBeTruthy();
+    const deltaEl = within(row!).getByText(/vs team/);
+    expect(deltaEl.className).toContain('text-accent-green');
+    expect(deltaEl.className).not.toContain('text-accent-amber');
+    expect(within(row!).getByText(/\(higher = better\)/)).toBeInTheDocument();
+  });
+
   it('shows a no-team-data caveat on CollaborationProfilePanel when developerCount is 1', async () => {
     renderHistory({ collabProfile: SAMPLE_COLLAB_SINGLE_DEV });
     await waitFor(() => expect(screen.getByText('Power User')).toBeInTheDocument());
@@ -582,6 +612,71 @@ describe('History view', () => {
                 week: '2026-05-05',
                 avgEfficiencyScore: 0.91,
                 totalCostUsd: 12.75,
+                antiPatternCounts: {},
+              },
+            ]),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      return null;
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      const override = fetchOverrides(url);
+      if (override) return override;
+      if (url.startsWith('/api/cost-per-outcome')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_OUTCOME), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/personal-coach')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_COACH_OK), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.startsWith('/api/sessions')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(SAMPLE_SESSIONS), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(new Response('null', { status: 200 }));
+    }) as typeof globalThis.fetch;
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText(/no anti-patterns detected/i).length).toBeGreaterThanOrEqual(1),
+    );
+  });
+
+  it('skips the anti-pattern panel chart when multiple loaded weeks all have zero anti-patterns', async () => {
+    const fetchOverrides = (url: string) => {
+      if (url.startsWith('/api/weekly')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                week: '2026-05-05',
+                avgEfficiencyScore: 0.91,
+                totalCostUsd: 12.75,
+                antiPatternCounts: {},
+              },
+              {
+                week: '2026-05-12',
+                avgEfficiencyScore: 0.88,
+                totalCostUsd: 10.5,
                 antiPatternCounts: {},
               },
             ]),
@@ -1075,7 +1170,7 @@ describe('History data helpers', () => {
   });
 
   describe('buildAntiPatternSeries', () => {
-    it('sums anti-pattern counts per week and skips weeks with zero', () => {
+    it('sums anti-pattern counts per week and zero-fills weeks with none', () => {
       const out = buildAntiPatternSeries([
         {
           week: '2026-04-21',
@@ -1099,18 +1194,21 @@ describe('History data helpers', () => {
       ]);
       // Keep the full ISO date in chart data so cross-year ticks
       // remain unique; the XAxis tickFormatter shortens to MM-DD on render.
+      // The zero-count week stays in the series (like padDailyCostWindow's
+      // zero-fill) so the chart's x-axis reflects a continuous timeline.
       expect(out).toEqual([
         { week: '2026-04-21', count: 3 },
         { week: '2026-04-28', count: 3 },
+        { week: '2026-05-05', count: 0 },
         { week: '2026-05-12', count: 4 },
       ]);
     });
 
-    it('treats missing antiPatternCounts as empty', () => {
+    it('treats missing antiPatternCounts as a zero-count week', () => {
       const out = buildAntiPatternSeries([
         { week: '2026-05-05', avgEfficiencyScore: 0.9, totalCostUsd: 10, antiPatternCounts: {} },
       ]);
-      expect(out).toEqual([]);
+      expect(out).toEqual([{ week: '2026-05-05', count: 0 }]);
     });
 
     it('returns an empty array when given no weeks', () => {
@@ -1229,7 +1327,7 @@ describe('History helpers with real API data shapes', () => {
       expect(out[0].week).toBe('2026-W22');
     });
 
-    it('handles empty antiPatternCounts (skips the week)', () => {
+    it('handles empty antiPatternCounts (zero-fills the week)', () => {
       const out = buildAntiPatternSeries([
         {
           week: '2026-W22',
@@ -1238,7 +1336,7 @@ describe('History helpers with real API data shapes', () => {
           antiPatternCounts: {},
         },
       ]);
-      expect(out).toEqual([]);
+      expect(out).toEqual([{ week: '2026-W22', count: 0 }]);
     });
   });
 
@@ -1345,6 +1443,31 @@ describe('aggregateModelPerformance', () => {
     expect(result[0].costPerMillionTokens).toBeCloseTo(9.0);
   });
 
+  it('excludes a session with explicit zero token counts but real cost from costPerMillionTokens', () => {
+    const sessions = [
+      {
+        sessionId: 's1',
+        model: 'claude-opus-4-6',
+        estimatedCostUsd: 9.0,
+        tokensInput: 800_000,
+        tokensOutput: 200_000,
+      },
+      // Reports a real cost but the schema's non-null token defaults happen
+      // to both be 0 (e.g. a token-count write failure) — a null-check
+      // guard would treat this as "has tokens" and let the cost inflate the
+      // blended rate above the true 9.0.
+      {
+        sessionId: 's2-zero-tokens',
+        model: 'claude-opus-4-6',
+        estimatedCostUsd: 5.0,
+        tokensInput: 0,
+        tokensOutput: 0,
+      },
+    ];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].costPerMillionTokens).toBeCloseTo(9.0);
+  });
+
   it('flags models that have sessions below 85% success rate', () => {
     const sessions = [
       { sessionId: 's1', model: 'claude-opus-4-6', toolSuccessRate: 0.95 },
@@ -1353,6 +1476,58 @@ describe('aggregateModelPerformance', () => {
     ];
     const result = aggregateModelPerformance(sessions);
     expect(result[0].flagged).toBe(true);
+  });
+
+  it('does not flag a model when only a small proportion of its many sessions have low success', () => {
+    const sessions = [
+      { sessionId: 's1', model: 'claude-opus-4-6', toolSuccessRate: 0.6 },
+      ...Array.from({ length: 49 }, (_, i) => ({
+        sessionId: `s${i + 2}`,
+        model: 'claude-opus-4-6',
+        toolSuccessRate: 0.95,
+      })),
+    ];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].sessions).toBe(50);
+    expect(result[0].flagged).toBe(false);
+  });
+
+  it('flags a model when a large proportion of a small sample has low success', () => {
+    const sessions = [
+      { sessionId: 's1', model: 'claude-opus-4-6', toolSuccessRate: 0.5 },
+      { sessionId: 's2', model: 'claude-opus-4-6', toolSuccessRate: 0.95 },
+    ];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].sessions).toBe(2);
+    expect(result[0].flagged).toBe(true);
+  });
+
+  it('flags a model based on the proportion of measured sessions with low success, not the proportion of all sessions', () => {
+    const sessions = [
+      { sessionId: 's1', model: 'claude-opus-4-6', toolSuccessRate: 0.5 },
+      { sessionId: 's2', model: 'claude-opus-4-6', toolSuccessRate: 0.6 },
+      // These sessions have no recorded success rate at all — they must not
+      // dilute the flagged proportion, which is a fraction of measured
+      // sessions only.
+      ...Array.from({ length: 8 }, (_, i) => ({
+        sessionId: `s${i + 3}`,
+        model: 'claude-opus-4-6',
+      })),
+    ];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].sessions).toBe(10);
+    expect(result[0].avgSuccessRate).toBeCloseTo(0.55);
+    expect(result[0].flagged).toBe(true);
+  });
+
+  it('does not flag a model with no measured sessions', () => {
+    const sessions = [
+      { sessionId: 's1', model: 'claude-opus-4-6' },
+      { sessionId: 's2', model: 'claude-opus-4-6' },
+    ];
+    const result = aggregateModelPerformance(sessions);
+    expect(result[0].avgSuccessRate).toBeNull();
+    expect(result[0].flagged).toBe(false);
   });
 
   it('returns empty array for empty input', () => {

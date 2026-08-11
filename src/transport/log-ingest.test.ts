@@ -9,6 +9,7 @@ import type { AuditRecord } from '../security/audit-trail.js';
 
 function makeAuditRecord(overrides?: Partial<AuditRecord>): AuditRecord {
   return {
+    id: 'audit-001',
     timestamp: 1_700_000_000_000,
     sessionId: 'sess-001',
     action: 'FileRead',

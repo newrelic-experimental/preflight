@@ -1,4 +1,5 @@
 import { createLogger } from '../shared/index.js';
+import { getIsoWeekId } from '../storage/weekly-summary.js';
 import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
 import type { DeveloperWeeklyStats } from '../storage/weekly-summary.js';
 
@@ -52,6 +53,10 @@ const WEEKS_REQUIRED = 2;
 // ~2 months of history — enough for a meaningful baseline mean without
 // diluting it with data old enough to no longer reflect current habits.
 const WEEKS_TO_LOAD = 8;
+// Below this many sessions, a still-in-progress week hasn't accumulated
+// enough signal to be diffed against a baseline of fully-elapsed weeks —
+// see hasSufficientSample in generate().
+const MIN_SESSIONS_FOR_WEEKLY_COMPARISON = 3;
 
 export class PersonalCoach {
   private readonly summaryGenerator: WeeklySummaryGenerator;
@@ -62,7 +67,7 @@ export class PersonalCoach {
     this.developer = developer;
   }
 
-  generate(): PersonalInsightsResult {
+  generate(now: Date = new Date()): PersonalInsightsResult {
     const weeks = this.loadDeveloperWeeks();
 
     if (weeks.length < WEEKS_REQUIRED) {
@@ -88,10 +93,28 @@ export class PersonalCoach {
     const thisWeek = this.toPersonalWeekMetrics(thisWeekData);
     const lastWeek = lastWeekData ? this.toPersonalWeekMetrics(lastWeekData) : null;
 
-    const highlights = this.buildHighlights(thisWeek, lastWeek, baseline);
-    const regressions = this.buildRegressions(thisWeek, lastWeek, baseline);
+    // Weekly summaries for the current, still-running ISO week are
+    // regenerated on demand from whatever sessions exist so far (see the
+    // various generate(getIsoWeekId(new Date())) call sites), so "this
+    // week" can be a handful of hours of data. Diffing that against a
+    // baseline built from fully-elapsed weeks produces a comparison the
+    // sample can't actually support, so full-strength highlight/regression
+    // language and the top recommendation are held back until the current
+    // week has accumulated a minimum amount of signal.
+    const isCurrentWeekInProgress = thisWeekData.weekId === getIsoWeekId(now);
+    const hasSufficientSample =
+      !isCurrentWeekInProgress || thisWeek.sessionsCount >= MIN_SESSIONS_FOR_WEEKLY_COMPARISON;
+
+    const highlights = hasSufficientSample
+      ? this.buildHighlights(thisWeek, lastWeek, baseline)
+      : [];
+    const regressions = hasSufficientSample
+      ? this.buildRegressions(thisWeek, lastWeek, baseline)
+      : [];
     const streaks = this.buildStreaks(weeks);
-    const topRecommendation = this.buildTopRecommendation(regressions, thisWeek, baseline);
+    const topRecommendation = hasSufficientSample
+      ? this.buildTopRecommendation(regressions, thisWeek, baseline)
+      : `Only ${thisWeek.sessionsCount} session${thisWeek.sessionsCount === 1 ? '' : 's'} logged so far this week — check back once more sessions land before drawing week-over-week comparisons.`;
 
     logger.debug('Personal insights generated', {
       developer: this.developer,

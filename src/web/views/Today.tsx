@@ -181,9 +181,10 @@ export function Today(): JSX.Element {
     refetchInterval: 30_000,
   });
 
-  const { isPending: costPending } = useQuery<CostApiResponse>({
+  const { data: costApi, isPending: costPending } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
     queryFn: fetchCost,
+    refetchInterval: 10_000,
   });
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
@@ -248,7 +249,11 @@ export function Today(): JSX.Element {
   // disk-only data sources see no events from today (e.g., the live
   // session's events are in the in-memory tool-call buffer of a different
   // MCP, not in any drained buffer-*.jsonl file). Matches the spend +
-  // flags formulas just below.
+  // flags formulas just below. `costApi?.sessionTodayUsd` (the REST
+  // fallback for this process's own today-scoped spend) is folded in
+  // alongside the SSE and aggregate sources so the KPI reflects real spend
+  // as soon as any one source resolves, instead of waiting on the first SSE
+  // frame while the aggregate still legitimately reads 0.
   const calls = Math.max(aggregate?.toolCallCount ?? 0, persistedTodayCalls);
   const spendLoading =
     (costPending || sessionsPending || aggregatePending) &&
@@ -259,6 +264,7 @@ export function Today(): JSX.Element {
     cost?.todayTotalUsd ?? 0,
     aggregate?.totalCostUsd ?? 0,
     persistedTodaySpend,
+    costApi?.sessionTodayUsd ?? 0,
   );
 
   // Aggregate flags = anti-patterns from every live + persisted session today.
@@ -282,6 +288,24 @@ export function Today(): JSX.Element {
   // Distinguish "no data yet" (aggregate still loading and no live ticks) from
   // a genuine zero so the KPI shows the em-dash empty state instead of $0.00.
   const subagentHasData = aggregate !== undefined || subagentStats.turns > 0;
+  // The Forecast card's parent/subagent breakdown must always sum to the
+  // total it displays. aggregate.totalCostUsd and aggregate.subagentUsd come
+  // from the same request and are guaranteed consistent (subagent cost is
+  // already a subset of total cost by construction), whereas todayTotal and
+  // subagentUsd above are each independently maxed across sources that don't
+  // share that guarantee (e.g. a live SSE subagent tick can outrun a
+  // stale-low SSE/aggregate total). Prefer the aggregate's own pair for the
+  // breakdown, but only when the aggregate is actually the dominant source —
+  // aggregate.totalCostUsd can legitimately read 0 while a fresher SSE/REST
+  // source already knows about real spend (its disk-only sources see no
+  // events from today yet), and switching to the aggregate pair in that case
+  // would present a stale-zero breakdown under an already-higher KPI. When
+  // the aggregate isn't dominant, fall back to the independently-maxed
+  // page-wide values instead.
+  const forecastBreakdownTotalUsd =
+    aggregate && aggregate.totalCostUsd >= todayTotal ? aggregate.totalCostUsd : todayTotal;
+  const forecastBreakdownSubagentUsd =
+    aggregate && aggregate.totalCostUsd >= todayTotal ? (aggregate.subagentUsd ?? 0) : subagentUsd;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
   );
@@ -418,14 +442,17 @@ export function Today(): JSX.Element {
 
           <AnimatedCard index={1} className="grid grid-cols-2 gap-3 mb-3">
             <ForecastEodCard
-              todayTotal={todayTotal}
+              todayTotal={forecastBreakdownTotalUsd}
               forecastEod={
                 spendLoading
                   ? null
-                  : (cost?.forecastEodUsd ?? aggregate?.forecastEndOfDayUsd ?? null)
+                  : (cost?.forecastEodUsd ??
+                    aggregate?.forecastEndOfDayUsd ??
+                    costApi?.forecast?.forecastEndOfDayUsd ??
+                    null)
               }
               hourlySpend={hourlySpend}
-              subagentUsd={subagentUsd}
+              subagentUsd={forecastBreakdownSubagentUsd}
             />
             {concurrency && concurrency.buckets && (
               <ConcurrencyIndicator
@@ -1644,9 +1671,10 @@ function ForecastEodCard({
   const delta = hasForecast ? effectiveForecast - todayTotal : 0;
   const pct = hasForecast && todayTotal > 0 ? (delta / todayTotal) * 100 : 0;
   const hasSpend = hourlySpend.some((h) => h.cost > 0);
-  // todayTotal and subagentUsd are each a Math.max over different endpoints, so
-  // the subtraction can momentarily go negative when they pick different
-  // sources; clamp to 0 (the server clamps its own parentUsd the same way).
+  // The caller passes todayTotal/subagentUsd from the same source whenever
+  // possible, so subagentUsd is normally guaranteed <= todayTotal. Clamp to 0
+  // defensively anyway (the server clamps its own parentUsd the same way) for
+  // the brief window before that shared source has resolved.
   const parentUsd = subagentUsd > 0 ? Math.max(0, todayTotal - subagentUsd) : 0;
 
   return (
