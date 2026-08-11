@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.41] - 2026-08-11
+
+### Fixed
+
+- **The "Activity Today" heatmap now uses the viewing browser's timezone instead of the dashboard server's**, so its day boundary agrees with the rest of the page even when the server and browser run in different timezones (a cloud-hosted or containerized dashboard, or a dev box viewed from a different region). Applies to both the "today" and "history" views of the heatmap.
+
 ## [1.14.40] - 2026-08-11
 
 ### Fixed

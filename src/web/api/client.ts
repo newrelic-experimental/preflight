@@ -876,8 +876,12 @@ export function fetchActivityHeatmap(
   view: string,
   weeks?: number,
 ): Promise<ActivityHeatmapTodayResponse | ActivityHeatmapHistoryResponse> {
+  // The server has no way to know the viewing browser's timezone on its own —
+  // send it explicitly so "today"/each day's boundary is drawn where the
+  // browser is, not where the dashboard server process happens to run.
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return getJson<ActivityHeatmapTodayResponse | ActivityHeatmapHistoryResponse>(
-    `/api/activity-heatmap?view=${encodeURIComponent(view)}${weeks ? `&weeks=${weeks}` : ''}`,
+    `/api/activity-heatmap?view=${encodeURIComponent(view)}${weeks ? `&weeks=${weeks}` : ''}&tz=${encodeURIComponent(tz)}`,
   );
 }
 // Mirrors ContextTrackerMetrics in src/metrics/context-tracker.ts (not
