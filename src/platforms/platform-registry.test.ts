@@ -1,23 +1,24 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { PlatformRegistry, createDefaultRegistry } from './platform-registry.js';
-import { ClaudeCodeAdapter } from './claude-code-adapter.js';
-import { CursorAdapter } from './cursor-adapter.js';
-import { WindsurfAdapter } from './windsurf-adapter.js';
-import { CopilotAdapter } from './copilot-adapter.js';
-import { GenericMcpAdapter } from './generic-mcp-adapter.js';
-import { ZedAdapter } from './zed-adapter.js';
-import { ContinueAdapter } from './continue-adapter.js';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
-import { KiroAdapter } from './kiro-adapter.js';
-import { DroidAdapter } from './droid-adapter.js';
-import { GeminiCliAdapter } from './gemini-cli-adapter.js';
+import { AntigravityAdapter } from './antigravity-adapter.js';
+import { ClaudeCodeAdapter } from './claude-code-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
-import { OpencodeAdapter } from './opencode-adapter.js';
+import { ContinueAdapter } from './continue-adapter.js';
+import { CopilotAdapter } from './copilot-adapter.js';
+import { CopilotCliAdapter } from './copilot-cli-adapter.js';
+import { CursorAdapter } from './cursor-adapter.js';
+import { DroidAdapter } from './droid-adapter.js';
+import { GeminiCliAdapter } from './gemini-cli-adapter.js';
+import { GenericMcpAdapter } from './generic-mcp-adapter.js';
 import { KiloCodeAdapter } from './kilo-code-adapter.js';
+import { KiroAdapter } from './kiro-adapter.js';
+import { OpencodeAdapter } from './opencode-adapter.js';
 import { PiAdapter } from './pi-adapter.js';
-import { AntigravityAdapter } from './antigravity-adapter.js';
-import type { PlatformAdapter, PlatformSessionMetadata, NormalizedToolCall } from './types.js';
+import { PlatformRegistry, createDefaultRegistry } from './platform-registry.js';
+import type { NormalizedToolCall, PlatformAdapter, PlatformSessionMetadata } from './types.js';
+import { WindsurfAdapter } from './windsurf-adapter.js';
+import { ZedAdapter } from './zed-adapter.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
@@ -233,6 +234,15 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('copilot');
     });
 
+    it('selects Copilot CLI adapter when copilot-cli platform env is set', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot-cli';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('copilot-cli');
+    });
+
     it('selects Zed adapter when Zed env vars are present', () => {
       process.env.ZED_SESSION_ID = 'zed-abc';
       const registry = createDefaultRegistry();
@@ -399,24 +409,25 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(17);
+    expect(registered).toHaveLength(18);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
     expect(registered[3]).toBeInstanceOf(CopilotAdapter);
-    expect(registered[4]).toBeInstanceOf(ZedAdapter);
-    expect(registered[5]).toBeInstanceOf(ContinueAdapter);
-    expect(registered[6]).toBeInstanceOf(AmazonQAdapter);
-    expect(registered[7]).toBeInstanceOf(KiroAdapter);
-    expect(registered[8]).toBeInstanceOf(DroidAdapter);
-    expect(registered[9]).toBeInstanceOf(GeminiCliAdapter);
-    expect(registered[10]).toBeInstanceOf(ClineAdapter);
-    expect(registered[11]).toBeInstanceOf(CodexAdapter);
-    expect(registered[12]).toBeInstanceOf(OpencodeAdapter);
-    expect(registered[13]).toBeInstanceOf(KiloCodeAdapter);
-    expect(registered[14]).toBeInstanceOf(PiAdapter);
-    expect(registered[15]).toBeInstanceOf(AntigravityAdapter);
-    expect(registered[16]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[4]).toBeInstanceOf(CopilotCliAdapter);
+    expect(registered[5]).toBeInstanceOf(ZedAdapter);
+    expect(registered[6]).toBeInstanceOf(ContinueAdapter);
+    expect(registered[7]).toBeInstanceOf(AmazonQAdapter);
+    expect(registered[8]).toBeInstanceOf(KiroAdapter);
+    expect(registered[9]).toBeInstanceOf(DroidAdapter);
+    expect(registered[10]).toBeInstanceOf(GeminiCliAdapter);
+    expect(registered[11]).toBeInstanceOf(ClineAdapter);
+    expect(registered[12]).toBeInstanceOf(CodexAdapter);
+    expect(registered[13]).toBeInstanceOf(OpencodeAdapter);
+    expect(registered[14]).toBeInstanceOf(KiloCodeAdapter);
+    expect(registered[15]).toBeInstanceOf(PiAdapter);
+    expect(registered[16]).toBeInstanceOf(AntigravityAdapter);
+    expect(registered[17]).toBeInstanceOf(GenericMcpAdapter);
   });
 
   it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, codex, opencode, kilocode, pi, and antigravity adapters', () => {

@@ -1,22 +1,23 @@
 import { createLogger } from '../shared/index.js';
-import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
-import { ClaudeCodeAdapter } from './claude-code-adapter.js';
-import { CursorAdapter } from './cursor-adapter.js';
-import { WindsurfAdapter } from './windsurf-adapter.js';
-import { CopilotAdapter } from './copilot-adapter.js';
-import { ZedAdapter } from './zed-adapter.js';
-import { ContinueAdapter } from './continue-adapter.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
-import { KiroAdapter } from './kiro-adapter.js';
-import { DroidAdapter } from './droid-adapter.js';
-import { GeminiCliAdapter } from './gemini-cli-adapter.js';
+import { AntigravityAdapter } from './antigravity-adapter.js';
+import { ClaudeCodeAdapter } from './claude-code-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
-import { OpencodeAdapter } from './opencode-adapter.js';
-import { KiloCodeAdapter } from './kilo-code-adapter.js';
-import { PiAdapter } from './pi-adapter.js';
-import { AntigravityAdapter } from './antigravity-adapter.js';
+import { ContinueAdapter } from './continue-adapter.js';
+import { CopilotAdapter } from './copilot-adapter.js';
+import { CopilotCliAdapter } from './copilot-cli-adapter.js';
+import { CursorAdapter } from './cursor-adapter.js';
+import { DroidAdapter } from './droid-adapter.js';
+import { GeminiCliAdapter } from './gemini-cli-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
+import { KiloCodeAdapter } from './kilo-code-adapter.js';
+import { KiroAdapter } from './kiro-adapter.js';
+import { OpencodeAdapter } from './opencode-adapter.js';
+import { PiAdapter } from './pi-adapter.js';
+import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
+import { WindsurfAdapter } from './windsurf-adapter.js';
+import { ZedAdapter } from './zed-adapter.js';
 
 const logger = createLogger('platform-registry');
 
@@ -65,6 +66,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new CursorAdapter());
   registry.register(new WindsurfAdapter());
   registry.register(new CopilotAdapter());
+  registry.register(new CopilotCliAdapter());
   registry.register(new ZedAdapter());
   registry.register(new ContinueAdapter());
   registry.register(new AmazonQAdapter());
