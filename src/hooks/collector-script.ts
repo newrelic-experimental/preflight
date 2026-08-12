@@ -1075,9 +1075,18 @@ export const _stdinFs = {
  * Code runs on a Windows host and spawns this script inside WSL via
  * `wsl.exe`: the piped stdin crossing that boundary is created by WSL's
  * root-owned init/relay (root:root, mode 0600), so re-opening `/dev/stdin`
- * fails with EACCES for the non-root user even though fd 0 is readable. Fall
- * back to the fd only on that specific error so the common case keeps
- * avoiding the EAGAIN risk above.
+ * fails with EACCES for the non-root user even though fd 0 is readable.
+ *
+ * A second case where the path fails but the fd works: when the spawning
+ * process is itself Node/Electron (VS Code's Copilot Chat runs hooks this
+ * way), libuv backs a `stdio: 'pipe'` child with a *socketpair* rather than
+ * a FIFO. `open()` on a unix socket via /proc/self/fd fails with ENXIO, so
+ * `/dev/stdin` is unusable there even though fd 0 reads fine.
+ *
+ * Rather than enumerate errnos, fall back to the fd on any /dev/stdin
+ * failure — the fd read is the more universally correct source, and the path
+ * is only preferred to dodge the EAGAIN risk noted above. If the fallback
+ * fails too, that error propagates.
  */
 function readStdinSync(): string {
   if (process.platform === 'win32') {
@@ -1085,11 +1094,8 @@ function readStdinSync(): string {
   }
   try {
     return _stdinFs.readFileSync('/dev/stdin');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
-      return _stdinFs.readFileSync(process.stdin.fd);
-    }
-    throw err;
+  } catch {
+    return _stdinFs.readFileSync(process.stdin.fd);
   }
 }
 

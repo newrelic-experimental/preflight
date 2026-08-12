@@ -1611,17 +1611,37 @@ describe('collector-script', () => {
       expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
     });
 
-    it('re-throws non-EACCES /dev/stdin errors without falling back to the fd', () => {
+    it('falls back to the inherited stdin fd when /dev/stdin is a socket (ENXIO)', () => {
+      // Reproduces VS Code Copilot Chat's hook spawn: an Electron/Node parent
+      // backs a `stdio: 'pipe'` child with a socketpair rather than a FIFO,
+      // and open() on a unix socket via /proc/self/fd fails with ENXIO even
+      // though the inherited fd 0 reads normally.
       Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
       const calls: Array<string | number> = [];
       _stdinFs.readFileSync = (pathOrFd) => {
         calls.push(pathOrFd);
-        const err = new Error("ENOENT: no such file or directory, open '/dev/stdin'");
-        (err as NodeJS.ErrnoException).code = 'ENOENT';
+        if (pathOrFd === '/dev/stdin') {
+          const err = new Error("ENXIO: no such device or address, open '/dev/stdin'");
+          (err as NodeJS.ErrnoException).code = 'ENXIO';
+          throw err;
+        }
+        return '{"hook_event_name":"PreToolUse"}';
+      };
+      expect(readStdinSync()).toBe('{"hook_event_name":"PreToolUse"}');
+      expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
+    });
+
+    it('propagates the error when the fd fallback also fails', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      const calls: Array<string | number> = [];
+      _stdinFs.readFileSync = (pathOrFd) => {
+        calls.push(pathOrFd);
+        const err = new Error('EBADF: bad file descriptor, read');
+        (err as NodeJS.ErrnoException).code = 'EBADF';
         throw err;
       };
-      expect(() => readStdinSync()).toThrow('ENOENT');
-      expect(calls).toEqual(['/dev/stdin']);
+      expect(() => readStdinSync()).toThrow('EBADF');
+      expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
     });
   });
 
