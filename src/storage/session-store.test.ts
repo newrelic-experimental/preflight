@@ -1563,7 +1563,7 @@ describe('SessionStore corruption-recovery', () => {
     }
   });
 
-  it('two saveSession calls with the same sessionId result in last-write-wins, and logs a warning on the second write', () => {
+  it('merges two saveSession calls with the same sessionId into one file, keeping the latest scalar fields', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const startTime = new Date('2026-03-01T00:00:00Z').getTime();
 
@@ -1575,14 +1575,10 @@ describe('SessionStore corruption-recovery', () => {
 
     const loaded = store.loadSession('dup-id');
     expect(loaded).not.toBeNull();
+    // Scalar identity fields still follow the later write; only recorded
+    // activity is protected from regression (see the cross-process merge
+    // tests below).
     expect(loaded!.developer).toBe('bob');
-
-    const logged = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0]));
-    expect(
-      logged.some(
-        (l: string) => l.includes('"warn"') && l.includes('Overwriting existing session file'),
-      ),
-    ).toBe(true);
   });
 });
 
@@ -2083,5 +2079,103 @@ describe('qualityProxy field', () => {
       JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
     );
     expect(roundTripped.qualityProxy).toEqual(ZERO_QUALITY_PROXY_COUNTS);
+  });
+});
+
+describe('saveSession cross-process merge', () => {
+  it('does not let a thinner writer erase a richer view of the same session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const rich = makeSummary({
+      sessionId: 'd0f6fceb-ecc5-4610-9c62-3b2c10415137',
+      toolCallCount: 7,
+      toolBreakdown: { Bash: 7 },
+      model: 'claude-sonnet-4-6',
+      tokensInput: 292,
+      tokensOutput: 533,
+      estimatedCostUsd: 0.008871,
+      modelBreakdown: {
+        'claude-sonnet-4-6': {
+          requestCount: 1,
+          totalInputTokens: 292,
+          totalOutputTokens: 533,
+          totalCostUsd: 0.008871,
+        },
+      },
+    });
+    store.saveSession(rich);
+
+    // The MCP engine spawned by the same CLI session writes its own partial
+    // view under the identical session id.
+    const thin = makeSummary({
+      sessionId: 'd0f6fceb-ecc5-4610-9c62-3b2c10415137',
+      toolCallCount: 1,
+      toolBreakdown: { Bash: 1 },
+      model: null,
+      tokensInput: 0,
+      tokensOutput: 0,
+      estimatedCostUsd: null,
+      modelBreakdown: {},
+    });
+    store.saveSession(thin);
+
+    const loaded = store.loadSession('d0f6fceb-ecc5-4610-9c62-3b2c10415137');
+    expect(loaded?.toolCallCount).toBe(7);
+    expect(loaded?.model).toBe('claude-sonnet-4-6');
+    expect(loaded?.tokensInput).toBe(292);
+    expect(loaded?.modelBreakdown).toEqual({
+      'claude-sonnet-4-6': {
+        requestCount: 1,
+        totalInputTokens: 292,
+        totalOutputTokens: 533,
+        totalCostUsd: 0.008871,
+      },
+    });
+  });
+
+  it('still lets a later write add new activity', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'aaaa1111-2222-4333-8444-555566667777';
+    store.saveSession(makeSummary({ sessionId: id, toolCallCount: 2, toolBreakdown: { Bash: 2 } }));
+    store.saveSession(makeSummary({ sessionId: id, toolCallCount: 9, toolBreakdown: { Bash: 9 } }));
+    const loaded = store.loadSession(id);
+    expect(loaded?.toolCallCount).toBe(9);
+    expect(loaded?.toolBreakdown).toEqual({ Bash: 9 });
+  });
+
+  it('unions per-model breakdowns contributed by different processes', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'bbbb1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        toolCallCount: 1,
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 1,
+            totalInputTokens: 10,
+            totalOutputTokens: 5,
+            totalCostUsd: 0.1,
+          },
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        toolCallCount: 1,
+        modelBreakdown: {
+          'model-b': {
+            requestCount: 2,
+            totalInputTokens: 20,
+            totalOutputTokens: 6,
+            totalCostUsd: 0.2,
+          },
+        },
+      }),
+    );
+    expect(Object.keys(store.loadSession(id)?.modelBreakdown ?? {}).sort()).toEqual([
+      'model-a',
+      'model-b',
+    ]);
   });
 });

@@ -2062,6 +2062,15 @@ async function main(): Promise<void> {
           workflowRunId: turn.workflowRunId,
           agentId: turn.agentId,
         });
+        // Subagent turns are real model requests and cost real money, so they
+        // belong in the model breakdown too — recording them only in the cost
+        // tracker left Model Usage blind to every subagent-only session.
+        modelUsageTracker.recordUsage(
+          turn.model,
+          turn.inputTokens,
+          turn.outputTokens,
+          breakdown.totalUsd,
+        );
         // Pricing miss → usd:null on the wire; we recompute here so
         // the breakdown view distinguishes "0 because pricing absent" from
         // "0 because the turn truly had zero cost".

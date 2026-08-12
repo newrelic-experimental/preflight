@@ -163,6 +163,128 @@ export interface ListSessionsOptions {
 // SessionStore
 // ---------------------------------------------------------------------------
 
+/**
+ * Combine two views of the same session so neither writer can lose the other's
+ * data. Counters take the max rather than the sum: the two processes observe
+ * overlapping (not disjoint) slices of one session, so summing would inflate
+ * and taking the incoming value alone would regress.
+ */
+export function mergeSummaries(
+  existing: FullSessionSummary,
+  incoming: FullSessionSummary,
+): FullSessionSummary {
+  const maxNum = (a: unknown, b: unknown): number =>
+    Math.max(typeof a === 'number' ? a : 0, typeof b === 'number' ? b : 0);
+  const maxNullable = (a: number | null, b: number | null): number | null =>
+    a === null && b === null ? null : Math.max(a ?? 0, b ?? 0);
+  const mergeCounts = (
+    a: Record<string, number> = {},
+    b: Record<string, number> = {},
+  ): Record<string, number> => {
+    const out: Record<string, number> = { ...a };
+    for (const [k, v] of Object.entries(b)) out[k] = Math.max(out[k] ?? 0, v);
+    return out;
+  };
+  const union = (a: string[] = [], b: string[] = []): string[] => [...new Set([...a, ...b])];
+
+  const modelBreakdown: Record<string, ModelBreakdownEntry> = { ...existing.modelBreakdown };
+  for (const [model, entry] of Object.entries(incoming.modelBreakdown ?? {})) {
+    const prev = modelBreakdown[model];
+    modelBreakdown[model] = prev
+      ? {
+          requestCount: Math.max(prev.requestCount, entry.requestCount),
+          totalInputTokens: Math.max(prev.totalInputTokens, entry.totalInputTokens),
+          totalOutputTokens: Math.max(prev.totalOutputTokens, entry.totalOutputTokens),
+          totalCostUsd: Math.max(prev.totalCostUsd, entry.totalCostUsd),
+        }
+      : entry;
+  }
+
+  const qa = existing.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS;
+  const qb = incoming.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS;
+  const qualityProxy: QualityProxyRawCounts = {
+    totalSignals: maxNum(qa.totalSignals, qb.totalSignals),
+    diffApplyCleanCount: maxNum(qa.diffApplyCleanCount, qb.diffApplyCleanCount),
+    diffFailCount: maxNum(qa.diffFailCount, qb.diffFailCount),
+    testPassCount: maxNum(qa.testPassCount, qb.testPassCount),
+    testFailCount: maxNum(qa.testFailCount, qb.testFailCount),
+    backtrackCount: maxNum(qa.backtrackCount, qb.backtrackCount),
+    selfCorrectionCount: maxNum(qa.selfCorrectionCount, qb.selfCorrectionCount),
+  };
+
+  // Keep whichever tool-selection score saw more of the session; it is scored
+  // from an ordered record list that cannot be meaningfully merged field-wise.
+  const toolSelectionMetrics =
+    (incoming.toolSelectionMetrics?.totalCalls ?? 0) >=
+    (existing.toolSelectionMetrics?.totalCalls ?? 0)
+      ? (incoming.toolSelectionMetrics ?? existing.toolSelectionMetrics)
+      : existing.toolSelectionMetrics;
+
+  const timeline =
+    (incoming.timeline?.length ?? 0) >= (existing.timeline?.length ?? 0)
+      ? incoming.timeline
+      : existing.timeline;
+
+  const startTime = Math.min(
+    existing.startTime || incoming.startTime,
+    incoming.startTime || existing.startTime,
+  );
+  const endTime = maxNum(existing.endTime, incoming.endTime);
+
+  return {
+    ...existing,
+    ...incoming,
+    startTime,
+    endTime,
+    durationMs: Math.max(0, endTime - startTime),
+    toolCallCount: maxNum(existing.toolCallCount, incoming.toolCallCount),
+    sessionName: incoming.sessionName ?? existing.sessionName,
+    repoName: incoming.repoName ?? existing.repoName,
+    model: incoming.model ?? existing.model,
+    platform: incoming.platform ?? existing.platform,
+    instructionPromptHash: incoming.instructionPromptHash ?? existing.instructionPromptHash,
+    toolBreakdown: mergeCounts(existing.toolBreakdown, incoming.toolBreakdown),
+    filesRead: union(existing.filesRead, incoming.filesRead),
+    filesModified: union(existing.filesModified, incoming.filesModified),
+    linesAdded: maxNum(existing.linesAdded, incoming.linesAdded),
+    linesRemoved: maxNum(existing.linesRemoved, incoming.linesRemoved),
+    bashCommandCount: maxNum(existing.bashCommandCount, incoming.bashCommandCount),
+    testRunCount: maxNum(existing.testRunCount, incoming.testRunCount),
+    testPassCount: maxNum(existing.testPassCount, incoming.testPassCount),
+    buildRunCount: maxNum(existing.buildRunCount, incoming.buildRunCount),
+    buildPassCount: maxNum(existing.buildPassCount, incoming.buildPassCount),
+    estimatedCostUsd: maxNullable(existing.estimatedCostUsd, incoming.estimatedCostUsd),
+    subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
+    tokensInput: maxNum(existing.tokensInput, incoming.tokensInput),
+    tokensOutput: maxNum(existing.tokensOutput, incoming.tokensOutput),
+    tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
+    tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
+    tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
+    cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
+    efficiencyScore: incoming.efficiencyScore ?? existing.efficiencyScore,
+    taskCount: maxNum(existing.taskCount, incoming.taskCount),
+    taskSuccessRate: incoming.taskSuccessRate ?? existing.taskSuccessRate,
+    toolSuccessRate: incoming.toolSuccessRate ?? existing.toolSuccessRate,
+    contextCompressions: maxNum(existing.contextCompressions, incoming.contextCompressions),
+    agentSpawns: maxNum(existing.agentSpawns, incoming.agentSpawns),
+    userMessages: maxNum(existing.userMessages, incoming.userMessages),
+    assistantMessages: maxNum(existing.assistantMessages, incoming.assistantMessages),
+    userCorrections: maxNum(existing.userCorrections, incoming.userCorrections),
+    antiPatterns:
+      (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
+        ? incoming.antiPatterns
+        : existing.antiPatterns,
+    outcome:
+      incoming.outcome === 'completed' || existing.outcome !== 'completed'
+        ? incoming.outcome
+        : existing.outcome,
+    ...(timeline ? { timeline } : {}),
+    toolSelectionMetrics,
+    modelBreakdown,
+    qualityProxy,
+  };
+}
+
 export class SessionStore {
   private readonly sessionsDir: string;
 
@@ -206,6 +328,7 @@ export class SessionStore {
     // dashboard on the next refresh. Never let an empty summary clobber a
     // non-empty one; other collisions keep the previous last-write-wins
     // behaviour with a warning.
+    let toWrite: FullSessionSummary = summary;
     if (existsSync(filepath)) {
       const existing = this.loadSession(summary.sessionId);
       const existingCalls = existing?.toolCallCount ?? 0;
@@ -213,21 +336,26 @@ export class SessionStore {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
           filename,
-          existingToolCallCount: existingCalls,
         });
         return;
       }
-      logger.warn(
-        'Overwriting existing session file — possible cross-process sessionId collision',
-        {
-          sessionId: summary.sessionId,
-          filename,
-        },
-      );
+      if (existing) {
+        // Two processes legitimately share one session id: the CLI/editor
+        // spawns an MCP engine that owns the session natively, while a
+        // `--local` dashboard adopts the same id from the session-by-cwd
+        // breadcrumb. Each sees only part of the picture — the engine has the
+        // token/model events, the dashboard has the aggregated hook activity —
+        // so plain last-write-wins let whichever wrote last erase the other's
+        // data, which is how a fully recorded session could come back with
+        // modelBreakdown {} and a lower toolCallCount. Merge non-destructively
+        // instead: counters take the max (they only ever grow, so max never
+        // regresses and never double-counts overlapping views).
+        toWrite = mergeSummaries(existing, summary);
+      }
     }
 
     try {
-      writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
+      writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
       logger.debug('Session saved', { sessionId: summary.sessionId, filename });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
