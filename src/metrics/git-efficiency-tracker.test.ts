@@ -1636,11 +1636,18 @@ describe('GitEfficiencyTracker repo attribution', () => {
   it('tags a live git event with a repo rather than leaving it blank', () => {
     // RepoNameResolver shells out to `git -C <dir> remote get-url origin`,
     // so this needs a real repo with a controlled remote rather than
-    // hardcoding whatever repo/fork happens to check this test out.
+    // hardcoding whatever repo/fork happens to check this test out. Clear
+    // GIT_DIR/GIT_WORK_TREE: git sets these for hook subprocesses (e.g. this
+    // suite running under husky's pre-push), and they'd otherwise redirect
+    // `git init` away from the fresh temp dir and onto the real repo.
     const dir = mkdtempSync(join(tmpdir(), 'git-efficiency-repo-attr-'));
+    const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
     try {
-      execSync('git init -q', { cwd: dir });
-      execSync('git remote add origin https://github.com/acme/widgets.git', { cwd: dir });
+      execSync('git init -q', { cwd: dir, env: gitEnv });
+      execSync('git remote add origin https://github.com/acme/widgets.git', {
+        cwd: dir,
+        env: gitEnv,
+      });
 
       const tracker = new GitEfficiencyTracker();
       tracker.recordToolCall(

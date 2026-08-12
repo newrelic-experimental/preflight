@@ -34,6 +34,12 @@ const GIT_OPTS = {
   encoding: 'utf-8' as const,
   timeout: 2000,
   stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
+  // GIT_DIR/GIT_WORK_TREE (set by git for hook subprocesses, among other
+  // cases) override `-C <dir>`, silently redirecting these calls to whatever
+  // repo the ambient env points at instead of the target directory.
+  get env() {
+    return { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+  },
 };
 
 export interface LocalSessionRollup {
