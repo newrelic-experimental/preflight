@@ -54,6 +54,12 @@ import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js'
 import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
 import { LatencyTracker } from './metrics/latency-tracker.js';
 import { LiveSessionRegistry } from './metrics/live-session-registry.js';
+import {
+  collectCommitsAcrossRepos,
+  LocalSessionAggregator,
+  RepoNameResolver,
+  resolveAuthorEmail,
+} from './metrics/local-session-aggregator.js';
 import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
 import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
@@ -1094,6 +1100,14 @@ async function main(): Promise<void> {
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
 
+    // An unscoped process (--local, or a provisional --stdio window) drains
+    // every unowned buffer and folds it into trackers keyed by its own
+    // synthetic id, which persistSession() skips — so without this rollup the
+    // sessions it observes are never written to disk at all. See
+    // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
+    const localSessionAggregator = new LocalSessionAggregator();
+    const repoNameResolver = new RepoNameResolver();
+
     // Each command is isolated so a slow/missing git or remote doesn't block
     // the others. Uses spawnSync (no shell) to avoid injection; stderr is
     // suppressed via stdio rather than shell redirection. Timeout 2s per call.
@@ -1173,23 +1187,44 @@ async function main(): Promise<void> {
     // repo history to get an accurate commit count for today.
     // spawnSync with ENOENT doesn't throw — it returns { status: null, error: Error }.
     // The status === 0 guard handles unavailable-git without a try/catch.
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const logResult = spawnSync(
-      'git',
-      ['log', `--since=${todayStr}T00:00:00Z`, '--format=%H %ct'],
-      GIT_OPTS,
-    );
-    if (logResult.status === 0 && logResult.stdout !== null) {
-      const commits = logResult.stdout
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const [hash, epochStr] = line.split(' ');
-          return { hash: hash ?? '', timestamp: parseInt(epochStr ?? '0', 10) * 1000 };
-        });
-      gitEfficiencyTracker.hydrateGitLog(commits);
-    }
+    //
+    // Repos are collected from an explicit NR_AI_GIT_REPOS list plus every repo
+    // root seen in observed session cwds, rather than relying on this process's
+    // own cwd. A dashboard started in one repo would otherwise report that
+    // repo's history no matter which repos are actually being worked in — and,
+    // with no --author filter, count other contributors' commits as the user's.
+    const gitAuthorEmail = resolveAuthorEmail(process.cwd());
+    const configuredRepoRoots = (process.env.NR_AI_GIT_REPOS ?? '')
+      .split(/[,:]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+    const collectRepoRoots = (): string[] => {
+      const roots = new Set<string>();
+      const selfRoot = repoNameResolver.root(process.cwd());
+      if (selfRoot) roots.add(selfRoot);
+      for (const dir of configuredRepoRoots) {
+        const root = repoNameResolver.root(dir);
+        if (root) roots.add(root);
+      }
+      for (const cwd of localSessionAggregator.cwds()) {
+        const root = repoNameResolver.root(cwd);
+        if (root) roots.add(root);
+      }
+      return [...roots];
+    };
+
+    const hydrateGitCommits = (): void => {
+      // Recomputed per call so a long-lived dashboard rolls over at midnight
+      // instead of reporting "today" relative to the day it was started.
+      const since = new Date().toISOString().slice(0, 10);
+      const commits = collectCommitsAcrossRepos(collectRepoRoots(), since, gitAuthorEmail);
+      if (commits.length > 0) gitEfficiencyTracker.hydrateGitLog(commits);
+    };
+
+    hydrateGitCommits();
+    const gitHydrationInterval = setInterval(hydrateGitCommits, 5 * 60_000);
+    gitHydrationInterval.unref();
 
     // Branch divergence from the real default branch — how far ahead/behind
     // are we? The dashboard polls this every 5s, implying a live number, but
@@ -1690,6 +1725,7 @@ async function main(): Promise<void> {
 
         sessionTracker.recordToolCall(rawRecord);
         taskDetector.recordToolCall(rawRecord);
+        localSessionAggregator.recordToolCall(rawRecord);
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
@@ -1919,6 +1955,15 @@ async function main(): Promise<void> {
           tokenEvent.outputTokens,
           breakdown.totalUsd,
         );
+        localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
+          timestamp: tokenEvent.timestamp,
+          costUsd: breakdown.totalUsd,
+          model: tokenEvent.model,
+          inputTokens: tokenEvent.inputTokens,
+          outputTokens: tokenEvent.outputTokens,
+          cacheReadTokens: tokenEvent.cacheReadTokens,
+          cacheCreationTokens: tokenEvent.cacheCreationTokens,
+        });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
         const ctxSnapshot = contextTracker.recordTurn(tokenEvent);
@@ -2095,9 +2140,25 @@ async function main(): Promise<void> {
         // real session id is still being resolved).
         const isSyntheticId = isSyntheticSessionId(summary.sessionId);
         if (isSyntheticId) {
+          // This process owns no real session of its own, but it has been
+          // draining other sessions' buffers destructively — so if it returns
+          // here without writing them, those events are simply lost. Persist
+          // each real session it observed instead.
+          const rollups = localSessionAggregator.toSummaries({
+            developer: config.developer ?? 'unknown',
+            platform: eventProcessor?.activePlatform,
+            outcome: opts?.periodic ? 'in progress' : 'completed',
+            repoResolver: repoNameResolver,
+          });
+          for (const rollup of rollups) {
+            sessionStore.saveSession(
+              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
+            );
+          }
           if (!opts?.periodic) {
-            logger.info('Skipping synthetic session JSON persistence', {
+            logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
+              persistedSessions: rollups.length,
             });
           }
           return;
