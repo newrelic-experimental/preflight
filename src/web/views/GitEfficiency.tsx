@@ -58,6 +58,19 @@ function formatEventType(type: string): string {
   return type.replace(/_/g, ' ');
 }
 
+/** Time-only for today's events; date-prefixed for older ones so the ordering reads correctly. */
+function formatEventTime(timestamp: number): string {
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return '—';
+  const time = d.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+}
+
 function ScoreRing({ score }: { score: number | null }): JSX.Element {
   if (score === null) {
     return (
@@ -567,16 +580,14 @@ export function GitEfficiency(): JSX.Element {
               </thead>
               <tbody>
                 {[...data.gitCommandTimeline]
-                  .reverse()
+                  // Hydrated commits are appended after live events, so
+                  // insertion order isn't chronological — sort explicitly.
+                  .sort((a, b) => b.timestamp - a.timestamp)
                   .slice(0, 30)
                   .map((e) => (
                     <tr key={`${e.type}-${e.timestamp}`} className="border-t border-border-subtle">
-                      <td className="p-2 tabular-nums text-ink-subtle">
-                        {new Date(e.timestamp).toLocaleTimeString(undefined, {
-                          hour: 'numeric',
-                          minute: '2-digit',
-                          second: '2-digit',
-                        })}
+                      <td className="p-2 tabular-nums text-ink-subtle whitespace-nowrap">
+                        {formatEventTime(e.timestamp)}
                       </td>
                       <td className="p-2">
                         <span
