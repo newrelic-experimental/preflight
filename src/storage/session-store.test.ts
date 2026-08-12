@@ -402,6 +402,29 @@ describe('SessionStore', () => {
     expect(files[0]).toBe('2026-04-15_abc-123.json');
   });
 
+  it('does not let an empty summary clobber a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'clobber-me', startTime, toolCallCount: 12 }));
+
+    // A short-lived process that adopted the same session id via the
+    // session-by-cwd breadcrumb but saw no hook activity.
+    store.saveSession(
+      makeSummary({ sessionId: 'clobber-me', startTime, toolCallCount: 0, toolBreakdown: {} }),
+    );
+
+    expect(store.loadSession('clobber-me')!.toolCallCount).toBe(12);
+  });
+
+  it('still overwrites when the new summary has activity', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'grow', startTime, toolCallCount: 3 }));
+    store.saveSession(makeSummary({ sessionId: 'grow', startTime, toolCallCount: 9 }));
+
+    expect(store.loadSession('grow')!.toolCallCount).toBe(9);
+  });
+
   it('loadSession reads and parses a saved session', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const summary = makeSummary({ sessionId: 'load-test' });

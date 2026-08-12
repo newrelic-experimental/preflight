@@ -197,10 +197,26 @@ export class SessionStore {
 
     // A second process saving under the same sessionId+date (e.g. two MCP
     // servers both resumed/forked against one real session ID) would
-    // otherwise silently overwrite the first save with no error. This
-    // warning makes that cross-process collision visible instead of a
-    // silent last-write-wins; the overwrite itself is unchanged.
+    // otherwise silently overwrite the first save with no error.
+    //
+    // Guard the destructive case: a short-lived process that adopts an
+    // existing session ID (resolved from the session-by-cwd breadcrumb) but
+    // never observed any hook activity would replace a fully recorded session
+    // with an all-zero summary, erasing tool calls, tokens and cost from the
+    // dashboard on the next refresh. Never let an empty summary clobber a
+    // non-empty one; other collisions keep the previous last-write-wins
+    // behaviour with a warning.
     if (existsSync(filepath)) {
+      const existing = this.loadSession(summary.sessionId);
+      const existingCalls = existing?.toolCallCount ?? 0;
+      if (existingCalls > 0 && (summary.toolCallCount ?? 0) === 0) {
+        logger.warn('Refusing to overwrite recorded session with an empty summary', {
+          sessionId: summary.sessionId,
+          filename,
+          existingToolCallCount: existingCalls,
+        });
+        return;
+      }
       logger.warn(
         'Overwriting existing session file — possible cross-process sessionId collision',
         {
