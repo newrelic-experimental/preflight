@@ -70,9 +70,41 @@ export function repoNameFromRemote(remote: string | null | undefined): string | 
 }
 
 /**
- * Resolves a directory to its repo's `owner/name`, shelling out at most once per
- * distinct directory. Returns null for non-repos and for repos with no origin.
+ * Strips heredoc bodies from a shell command so its *text* is not mistaken for
+ * its *actions*. Agents routinely pipe scripts inline (`python3 - <<'PY' ...`),
+ * and a body that merely mentions git words made the command classify as a real
+ * `push`/`log` and made a `cd` inside the script hijack repo attribution.
+ *
+ * The line introducing the heredoc is kept — `git commit -F- <<'MSG'` is still
+ * a commit.
  */
+export function stripHeredocBodies(command: string): string {
+  if (!command.includes('<<')) return command;
+
+  const startRe = /<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
+  const kept: string[] = [];
+  const pending: { tag: string; stripTabs: boolean }[] = [];
+
+  for (const line of command.split('\n')) {
+    if (pending.length > 0) {
+      const current = pending[0];
+      const candidate = current.stripTabs ? line.replace(/^\t+/, '') : line;
+      if (candidate.trim() === current.tag) pending.shift();
+      continue;
+    }
+
+    kept.push(line);
+    startRe.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = startRe.exec(line)) !== null) {
+      const tag = match[2] ?? match[3] ?? match[4];
+      if (tag) pending.push({ tag, stripTabs: match[1] === '-' });
+    }
+  }
+
+  return kept.join('\n');
+}
+
 /**
  * Directory a git command actually acts on. Work is often driven from one
  * workspace but targeted at another repo (`git -C <path>`, or `cd <path> &&
@@ -80,9 +112,10 @@ export function repoNameFromRemote(remote: string | null | undefined): string | 
  * driving repo instead of the one being changed.
  */
 export function gitCommandTargetDir(
-  command: string,
+  rawCommand: string,
   cwd: string | null | undefined,
 ): string | null {
+  const command = stripHeredocBodies(rawCommand);
   const dashC = /(?:^|[|&;]\s*)git\s+(?:-c\s+\S+\s+)*-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(
     command,
   );
@@ -98,6 +131,10 @@ export function gitCommandTargetDir(
   return typeof cwd === 'string' && cwd.length > 0 ? cwd : null;
 }
 
+/**
+ * Resolves a directory to its repo's `owner/name`, shelling out at most once per
+ * distinct directory. Returns null for non-repos and for repos with no origin.
+ */
 export class RepoNameResolver {
   private readonly cache = new Map<string, string | null>();
 

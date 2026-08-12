@@ -2,7 +2,7 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './git-efficiency-tracker.js';
-import { gitCommandTargetDir } from './local-session-aggregator.js';
+import { gitCommandTargetDir, stripHeredocBodies } from './local-session-aggregator.js';
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -1649,5 +1649,53 @@ describe('GitEfficiencyTracker repo attribution', () => {
     );
     const [event] = tracker.getMetrics().gitCommandTimeline;
     expect(event?.command).not.toContain('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+  });
+});
+
+describe('stripHeredocBodies()', () => {
+  it('drops an inline script body but keeps the introducing line', () => {
+    const out = stripHeredocBodies("python3 - <<'PY'\ngit push --force\nPY\necho done");
+    expect(out).toBe("python3 - <<'PY'\necho done");
+  });
+
+  it('keeps the body of an unterminated heredoc from leaking a terminator match', () => {
+    const out = stripHeredocBodies('cat <<EOF\ngit log\n');
+    expect(out).toBe('cat <<EOF');
+  });
+
+  it('honours <<- tab-stripped terminators', () => {
+    const out = stripHeredocBodies('cat <<-EOF\n\tgit push\n\tEOF\ngit status');
+    expect(out).toBe('cat <<-EOF\ngit status');
+  });
+
+  it('leaves commands without a heredoc untouched', () => {
+    expect(stripHeredocBodies('git push origin main')).toBe('git push origin main');
+  });
+});
+
+describe('GitEfficiencyTracker heredoc misclassification', () => {
+  it('does not classify a script that merely mentions git words as a git operation', () => {
+    const tracker = new GitEfficiencyTracker();
+    tracker.recordToolCall(
+      makeRecord({
+        command:
+          "cd /tmp/x && python3 - <<'PYEOF'\ns = s.replace('git push --force', 'git log')\nPYEOF\necho ok",
+      } as Partial<ToolCallRecord>),
+    );
+    const metrics = tracker.getMetrics();
+    expect(metrics.gitCommandTimeline).toHaveLength(0);
+    expect(metrics.pushCount).toBe(0);
+    expect(metrics.forcePushes).toBe(0);
+  });
+
+  it('still classifies a real git command that carries a heredoc payload', () => {
+    const tracker = new GitEfficiencyTracker();
+    tracker.recordToolCall(
+      makeRecord({
+        command: "git commit -F- <<'MSG'\nfix: something\nMSG",
+      } as Partial<ToolCallRecord>),
+    );
+    const [event] = tracker.getMetrics().gitCommandTimeline;
+    expect(event?.type).toBe('commit');
   });
 });

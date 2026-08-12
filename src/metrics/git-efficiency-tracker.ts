@@ -1,6 +1,10 @@
 import { redactSensitive } from '../config.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { gitCommandTargetDir, RepoNameResolver } from './local-session-aggregator.js';
+import {
+  gitCommandTargetDir,
+  RepoNameResolver,
+  stripHeredocBodies,
+} from './local-session-aggregator.js';
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
@@ -390,8 +394,11 @@ export class GitEfficiencyTracker {
       this.lastBuildOrTestTimestamp = record.timestamp;
     }
 
-    const command = record.command as string | undefined;
-    if (!command) return;
+    const rawCommand = record.command as string | undefined;
+    if (!rawCommand) return;
+    // Classify on the command *minus* any inline script bodies: a heredoc that
+    // merely mentions git words is not a git operation.
+    const command = stripHeredocBodies(rawCommand);
 
     // Track GitHub CLI PR commands. Split on shell separators first so a
     // `gh` invocation chained after a `git` command (e.g. `git push && gh pr
