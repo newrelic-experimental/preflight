@@ -1672,31 +1672,73 @@ describe('api-handler GET /api/budget', () => {
 });
 
 describe('api-handler GET /api/latency', () => {
-  it('returns latency metrics as JSON', async () => {
-    const fakeLatencyMetrics = {
-      p50ByTool: { Read: 50, Edit: 100, Bash: 200 },
-      p95ByTool: { Read: 150, Edit: 300, Bash: 600 },
-      p99ByTool: { Read: 250, Edit: 500, Bash: 1000 },
+  const startOfToday = (): number => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+
+  const persistedLatencyDeps = (): Parameters<typeof createApiHandler>[0] => {
+    const startMs = startOfToday();
+    return {
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'persisted-1',
+            timeline: [
+              { timestamp: startMs + 30_000, durationMs: 50, toolName: 'Read', success: true },
+              { timestamp: startMs + 60_000, durationMs: 150, toolName: 'Read', success: true },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
     };
+  };
+
+  it('serves percentiles rehydrated from persisted sessions, not just live tracker state', async () => {
+    // A restarted process has an empty tracker but the day's calls are on disk.
     const handler = createApiHandler({
-      latencyTracker: { getMetrics: () => fakeLatencyMetrics } as unknown as Parameters<
-        typeof createApiHandler
-      >[0]['latencyTracker'],
+      ...persistedLatencyDeps(),
+      latencyTracker: {
+        getMetrics: () => ({ overall: null, byTool: {}, slowestCalls: [] }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['latencyTracker'],
     });
     const req = { method: 'GET', url: '/api/latency' } as IncomingMessage;
     const { res, status, body, headers } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
     expect(headers()['content-type']).toMatch(/application\/json/);
-    expect(JSON.parse(body())).toEqual(fakeLatencyMetrics);
+    const parsed = JSON.parse(body()) as {
+      overall: { count: number } | null;
+      byTool: Record<string, { count: number } | null>;
+    };
+    expect(parsed.overall?.count).toBe(2);
+    expect(parsed.byTool.Read?.count).toBe(2);
   });
 
-  it('returns 503 when latencyTracker is missing', async () => {
+  it('keeps slowestCalls from the live tracker, which has no persisted counterpart', async () => {
+    const slowest = [{ toolName: 'Bash', durationMs: 9_000, timestamp: Date.now() }];
+    const handler = createApiHandler({
+      ...persistedLatencyDeps(),
+      latencyTracker: {
+        getMetrics: () => ({ overall: null, byTool: {}, slowestCalls: slowest }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['latencyTracker'],
+    });
+    const req = { method: 'GET', url: '/api/latency' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect((JSON.parse(body()) as { slowestCalls: unknown[] }).slowestCalls).toEqual(slowest);
+  });
+
+  it('still responds without a latencyTracker, since the store is now the source', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/latency' } as IncomingMessage;
-    const { res, status } = fakeRes();
+    const { res, status, body } = fakeRes();
     await handler(req, res);
-    expect(status()).toBe(503);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ overall: null, byTool: {}, slowestCalls: [] });
   });
 });
 

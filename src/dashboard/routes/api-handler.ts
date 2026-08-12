@@ -1,52 +1,37 @@
-import { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { IncomingMessage, ServerResponse } from 'node:http';
+import type { McpServerConfig } from '../../config.js';
+import { normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  isSyntheticSessionId,
+  isUnscopedAggregatorSessionId,
+} from '../../hooks/session-resolver.js';
 import {
   localDateKey,
   localStartOfDay,
   todayPortionOfSessionCost,
   todayPortionRatio,
 } from '../../lib/date.js';
-import { redactSensitive, normalizeDeveloperName } from '../../config.js';
-import {
-  isSyntheticSessionId,
-  isUnscopedAggregatorSessionId,
-} from '../../hooks/session-resolver.js';
-import { handleSendDigest } from '../../tools/cross-session-tools.js';
-import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
-import type { McpServerConfig } from '../../config.js';
+import type { AntiPattern } from '../../metrics/anti-patterns.js';
+import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
+import type { BudgetStatus } from '../../metrics/budget-tracker.js';
+import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
+import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
+import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
+import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
+import type { CostForecast } from '../../metrics/cost-forecast.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import {
   attributeSessionCosts,
   type SessionLikeForCostOutcome,
 } from '../../metrics/cost-per-outcome.js';
-import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { analyzeReplayTimeline } from './replay-analyzer.js';
-import type { AntiPatternSegment } from './replay-analyzer.js';
-import { computeLatencyPercentiles } from './latency-percentiles.js';
-import type { LatencySample, AggregateLatencyMetrics } from './latency-percentiles.js';
-import { computeCacheHealth } from './cache-health-aggregate.js';
-import type { CacheHealthTotals, AggregateCacheHealth } from './cache-health-aggregate.js';
-import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
-import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
-import type {
-  FullSessionSummary,
-  SessionFileInfo,
-  PersistedAntiPattern,
-} from '../../storage/session-store.js';
-import { toPersistedAntiPatterns } from '../../storage/session-store.js';
-import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
-import type {
-  SubagentTimeline,
-  AgentCall,
-  LiveWorkflowRunDetail,
-} from '../subagent-timeline-store.js';
-import type { CostForecast } from '../../metrics/cost-forecast.js';
-import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
-import type { AlertEvent } from '../live-event-bus.js';
-import type { BudgetStatus } from '../../metrics/budget-tracker.js';
-import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
-import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
-import type { Recommendation } from '../../metrics/recommendation-engine.js';
+import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
+import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
+import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
+import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
+import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
+import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -54,27 +39,42 @@ import type {
 } from '../../metrics/quality-proxy-tracker.js';
 import {
   combineQualityProxyRawCounts,
-  ZERO_QUALITY_PROXY_COUNTS,
   QualityProxyTracker,
+  ZERO_QUALITY_PROXY_COUNTS,
 } from '../../metrics/quality-proxy-tracker.js';
+import type { Recommendation } from '../../metrics/recommendation-engine.js';
+import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
 import type {
   ToolSelectionMetrics,
   ToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { toToolSelectionSummary } from '../../metrics/tool-selection-scorer.js';
-import type { ModelUsageMetrics, ModelBreakdownEntry } from '../../metrics/model-usage-tracker.js';
-import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
-import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
-import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
-import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
-import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
-import type { AntiPattern } from '../../metrics/anti-patterns.js';
-import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
-import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
-import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
-import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import type { CostAttributionMetrics } from '../../metrics/turn-cost-attributor.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
+import type {
+  FullSessionSummary,
+  PersistedAntiPattern,
+  SessionFileInfo,
+} from '../../storage/session-store.js';
+import { toPersistedAntiPatterns } from '../../storage/session-store.js';
+import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
+import { getIsoWeekId } from '../../storage/weekly-summary.js';
+import { handleSendDigest } from '../../tools/cross-session-tools.js';
+import type { AlertEvent } from '../live-event-bus.js';
+import type {
+  AgentCall,
+  LiveWorkflowRunDetail,
+  SubagentTimeline,
+} from '../subagent-timeline-store.js';
+import type { WorkflowAgentRow, WorkflowRunRow } from '../workflow-store.js';
+import type { AggregateCacheHealth, CacheHealthTotals } from './cache-health-aggregate.js';
+import { computeCacheHealth } from './cache-health-aggregate.js';
+import type { AggregateLatencyMetrics, LatencySample } from './latency-percentiles.js';
+import { computeLatencyPercentiles } from './latency-percentiles.js';
+import type { AntiPatternSegment } from './replay-analyzer.js';
+import { analyzeReplayTimeline } from './replay-analyzer.js';
+import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -1821,8 +1821,17 @@ export function createApiHandler(
   });
 
   routes.set('GET /api/latency', (_req, res) => {
-    if (!deps.latencyTracker) return unavailable(res, 'latencyTracker');
-    jsonOk(res, deps.latencyTracker.getMetrics());
+    // Percentiles come from today's rehydrated samples (persisted timelines +
+    // live buffers) rather than this process's tracker, which only ever sees
+    // the calls made since it started. slowestCalls has no persisted
+    // counterpart, so it stays live-only.
+    const today = getTodayAggregatePayload(Date.now()).latency;
+    const live = deps.latencyTracker?.getMetrics();
+    jsonOk(res, {
+      overall: today.overall,
+      byTool: today.byTool,
+      slowestCalls: live?.slowestCalls ?? [],
+    });
   });
 
   routes.set('GET /api/model-usage', (_req, res) => {
