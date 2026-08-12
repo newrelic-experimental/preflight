@@ -1008,6 +1008,15 @@ export const fetchModelUsage = (): Promise<ModelUsageMetrics> =>
   getJson<ModelUsageMetrics>('/api/model-usage');
 export const fetchCacheHealth = (): Promise<CacheHealthResponse> =>
   getJson<CacheHealthResponse>('/api/cache-health');
+// Same underlying tracker/shape as fetchTurnCosts (both read
+// TurnCostAttributor.getMetrics()) — reuses TurnCostsResponse rather than
+// duplicating an identical interface. sessionId scopes the same way.
+export const fetchCostPerTool = (sessionId?: string): Promise<TurnCostsResponse> =>
+  getJson<TurnCostsResponse>(
+    sessionId
+      ? `/api/cost-per-tool?sessionId=${encodeURIComponent(sessionId)}`
+      : '/api/cost-per-tool',
+  );
 
 // Mirrors the real GET /api/settings handler response in
 // src/dashboard/routes/api-handler.ts (not importable — tsconfig.web.json
@@ -1234,6 +1243,7 @@ export const qk = {
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
   cacheHealth: ['cache-health'] as const,
+  costPerTool: ['cost-per-tool'] as const,
   settings: ['settings'] as const,
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,

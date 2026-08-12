@@ -1884,6 +1884,15 @@ export function createApiHandler(
     });
   });
 
+  routes.set('GET /api/cost-per-tool', (req, res) => {
+    if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
+    // Same reasoning as /api/turn-costs above — optional ?sessionId= scopes
+    // this process-global tracker's data to one session.
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const sessionId = url.searchParams.get('sessionId') ?? undefined;
+    jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
+  });
+
   routes.set('GET /api/cost-per-outcome', (req, res) => {
     if (!deps.sessionStore?.loadAllSessions)
       return unavailable(res, 'sessionStore.loadAllSessions');

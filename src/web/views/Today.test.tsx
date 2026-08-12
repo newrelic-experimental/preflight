@@ -2109,3 +2109,135 @@ describe('Today view — traceWindow ignores the no-subagent sentinel window', (
     expect(screen.queryByText(/^\d{4,}:\d{2}$/)).toBeNull();
   });
 });
+
+describe('Today view — forecast end-of-week and session chips', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1.2, todayTotalUsd: 4.8, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cost')) {
+        return new Response(
+          JSON.stringify({
+            cost: { sessionTotalCostUsd: 1.2, model: null },
+            forecast: {
+              forecastEndOfDayUsd: 4.8,
+              forecastEndOfWeekUsd: 18.4,
+              forecastSessionEndUsd: 2.1,
+              confidenceNote: 'Reasonable confidence — based on 30+ minutes of data.',
+            },
+            sessionTodayUsd: 1.2,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders end-of-week and end-of-session forecast chips when API returns them', async () => {
+    renderToday();
+    await waitFor(() => expect(screen.getByText('End of week')).toBeInTheDocument());
+    expect(screen.getByText('End of session')).toBeInTheDocument();
+  });
+});
+
+describe('Today view — Cost by Tool panel', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
+        return new Response(
+          JSON.stringify({
+            costByToolType: {
+              Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
+              Read: { totalCost: 0.52, callCount: 61, avgCost: 0.0085 },
+            },
+            totalAttributedCost: 4.72,
+            attributionRate: 0.88,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders Cost by Tool panel with a chart instead of the empty state', async () => {
+    // Recharts' ResponsiveContainer measures 0x0 under jsdom, so bar/axis
+    // content doesn't render meaningfully in tests — assert the panel
+    // rendered its chart branch (no empty state), matching the same
+    // convention History.test.tsx uses for its own Recharts panels.
+    renderToday();
+    await waitFor(() => expect(screen.queryByText('No cost data yet')).toBeNull());
+    expect(screen.getByText('Cost by Tool')).toBeInTheDocument();
+  });
+
+  it('renders Cost attribution unavailable when /api/cost-per-tool returns 503', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
+        return new Response('Service Unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    await waitFor(() =>
+      expect(screen.getByText('Cost attribution unavailable')).toBeInTheDocument(),
+    );
+  });
+
+  it('renders the empty state instead of crashing when the query settles with a null value', async () => {
+    // A 200 response whose body is the JSON literal `null` (distinct from a
+    // request that errors) resolves the query successfully with `data` set
+    // to `null`, not `undefined` — asserting against the pending state's
+    // identical "No cost data yet" text wouldn't distinguish the two, so
+    // seed the cache directly with the already-settled value instead of
+    // waiting on the mocked fetch to resolve.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, null);
+    renderToday(qc);
+    expect(screen.getByText('No cost data yet')).toBeInTheDocument();
+  });
+
+  it('shows the low-attribution footnote when attributionRate is below 50%', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {
+        Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
+      },
+      totalAttributedCost: 4.2,
+      attributionRate: 0.3,
+    });
+    renderToday(qc);
+    expect(screen.getByText('Based on 30% of session cost')).toBeInTheDocument();
+  });
+});
