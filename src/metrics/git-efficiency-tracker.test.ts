@@ -1,3 +1,8 @@
+import { execSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
@@ -1629,14 +1634,24 @@ describe('gitCommandTargetDir()', () => {
 
 describe('GitEfficiencyTracker repo attribution', () => {
   it('tags a live git event with a repo rather than leaving it blank', () => {
-    const tracker = new GitEfficiencyTracker();
-    tracker.recordToolCall(
-      makeRecord({ command: 'git status --short', cwd: process.cwd() } as Partial<ToolCallRecord>),
-    );
-    const [event] = tracker.getMetrics().gitCommandTimeline;
-    expect(event).toBeDefined();
-    // Resolved from the real repo this test runs in.
-    expect(event?.repo).toBe('Thetanner/preflight');
+    // RepoNameResolver shells out to `git -C <dir> remote get-url origin`,
+    // so this needs a real repo with a controlled remote rather than
+    // hardcoding whatever repo/fork happens to check this test out.
+    const dir = mkdtempSync(join(tmpdir(), 'git-efficiency-repo-attr-'));
+    try {
+      execSync('git init -q', { cwd: dir });
+      execSync('git remote add origin https://github.com/acme/widgets.git', { cwd: dir });
+
+      const tracker = new GitEfficiencyTracker();
+      tracker.recordToolCall(
+        makeRecord({ command: 'git status --short', cwd: dir } as Partial<ToolCallRecord>),
+      );
+      const [event] = tracker.getMetrics().gitCommandTimeline;
+      expect(event).toBeDefined();
+      expect(event?.repo).toBe('acme/widgets');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('redacts credentials embedded in a git remote URL', () => {
