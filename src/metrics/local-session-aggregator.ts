@@ -22,6 +22,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import type { ReplayTimelineEntry } from '../storage/types.js';
+
+/** Matches SessionTracker's own cap so session files stay bounded. */
+const MAX_TIMELINE_ENTRIES = 10_000;
 
 const GIT_OPTS = {
   encoding: 'utf-8' as const,
@@ -37,6 +41,7 @@ export interface LocalSessionRollup {
   toolBreakdown: Record<string, number>;
   filesModified: Set<string>;
   cwd: string | null;
+  timeline: ReplayTimelineEntry[];
   costUsd: number;
   tokensInput: number;
   tokensOutput: number;
@@ -44,6 +49,13 @@ export interface LocalSessionRollup {
   tokensCacheCreation: number;
   models: Set<string>;
   successCount: number;
+}
+
+/** Parse `owner/name` out of a git remote URL. Null when it isn't recognizable. */
+export function repoNameFromRemote(remote: string | null | undefined): string | null {
+  if (typeof remote !== 'string') return null;
+  const match = remote.trim().match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -62,8 +74,7 @@ export class RepoNameResolver {
     try {
       const remote = spawnSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], GIT_OPTS);
       if (remote.status === 0 && typeof remote.stdout === 'string') {
-        const match = remote.stdout.trim().match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-        repoName = match?.[1] ?? null;
+        repoName = repoNameFromRemote(remote.stdout);
       }
     } catch {
       repoName = null;
@@ -117,6 +128,7 @@ export class LocalSessionAggregator {
         toolBreakdown: {},
         filesModified: new Set(),
         cwd: null,
+        timeline: [],
         costUsd: 0,
         tokensInput: 0,
         tokensOutput: 0,
@@ -136,12 +148,19 @@ export class LocalSessionAggregator {
     sessionId?: string | null;
     toolName?: string;
     timestamp?: number;
+    durationMs?: number | null;
     success?: boolean;
     cwd?: unknown;
     filePath?: unknown;
+    command?: unknown;
+    isTestCommand?: boolean;
+    isBuildCommand?: boolean;
+    isLintCommand?: boolean;
+    errorType?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
-    const rollup = this.ensure(record.sessionId, record.timestamp ?? Date.now());
+    const timestamp = record.timestamp ?? Date.now();
+    const rollup = this.ensure(record.sessionId, timestamp);
     rollup.toolCallCount += 1;
     if (record.success !== false) rollup.successCount += 1;
     const tool = record.toolName ?? 'unknown';
@@ -149,6 +168,25 @@ export class LocalSessionAggregator {
     if (typeof record.cwd === 'string' && record.cwd.length > 0) rollup.cwd = record.cwd;
     if (typeof record.filePath === 'string' && record.filePath.length > 0) {
       rollup.filesModified.add(record.filePath);
+    }
+
+    // Persisting the per-call timeline is what lets a restarted process replay
+    // this session (git activity, anti-pattern analysis). Capped the same way
+    // SessionTracker caps its own timeline so a long session can't grow the
+    // session file without bound.
+    if (rollup.timeline.length < MAX_TIMELINE_ENTRIES) {
+      rollup.timeline.push({
+        timestamp,
+        toolName: tool,
+        durationMs: record.durationMs ?? null,
+        success: record.success !== false,
+        ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
+        ...(typeof record.command === 'string' && { command: record.command }),
+        ...(record.isTestCommand === true && { isTestCommand: true }),
+        ...(record.isBuildCommand === true && { isBuildCommand: true }),
+        ...(record.isLintCommand === true && { isLintCommand: true }),
+        ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
+      });
     }
   }
 
@@ -216,6 +254,7 @@ export class LocalSessionAggregator {
         model: models.length === 1 ? models[0] : null,
         filesRead: [],
         filesModified: [...rollup.filesModified],
+        timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
         linesAdded: 0,
         linesRemoved: 0,
         bashCommandCount: 0,
@@ -262,32 +301,75 @@ export class LocalSessionAggregator {
  * `since` is passed per call rather than captured once so a long-lived process
  * rolls over at midnight instead of reporting "today" relative to its start day.
  */
+export interface CollectedCommit {
+  hash: string;
+  timestamp: number;
+  repo: string | null;
+  subject: string | null;
+  url: string | null;
+}
+
+/**
+ * Build a browsable GitHub commit URL from a git remote. Handles both SSH
+ * (`git@github.com:owner/repo.git`) and HTTPS remotes, and returns null for
+ * hosts we can't confidently map so the UI degrades to plain text rather than
+ * rendering a broken link.
+ */
+export function commitUrlFromRemote(remote: string | null, hash: string): string | null {
+  if (!remote || !hash) return null;
+  const trimmed = remote.trim().replace(/\.git$/, '');
+  const ssh = /^(?:ssh:\/\/)?[^@]+@([^:/]+)[:/](.+)$/.exec(trimmed);
+  const https = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(trimmed);
+  const match = ssh ?? https;
+  if (!match) return null;
+  const [, host, path] = match;
+  if (!host || !path) return null;
+  return `https://${host}/${path}/commit/${hash}`;
+}
+
+function gitOut(root: string, args: readonly string[]): string | null {
+  try {
+    const result = spawnSync('git', ['-C', root, ...args], GIT_OPTS);
+    if (result.status !== 0 || typeof result.stdout !== 'string') return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 export function collectCommitsAcrossRepos(
   repoRoots: readonly string[],
   since: string,
   authorEmail: string | null,
-): Array<{ hash: string; timestamp: number }> {
+): CollectedCommit[] {
   const seen = new Set<string>();
-  const commits: Array<{ hash: string; timestamp: number }> = [];
+  const commits: CollectedCommit[] = [];
 
   for (const root of repoRoots) {
-    const args = ['-C', root, 'log', `--since=${since}T00:00:00`, '--format=%H %ct'];
+    // %x1f (unit separator) can't appear in a hash, epoch, or subject, so it is
+    // a safe delimiter where a space would break on multi-word subjects.
+    const args = ['log', `--since=${since}T00:00:00`, '--format=%H%x1f%ct%x1f%s'];
     if (authorEmail) args.push(`--author=${authorEmail}`);
 
-    let result;
-    try {
-      result = spawnSync('git', args, GIT_OPTS);
-    } catch {
-      continue;
-    }
-    if (result.status !== 0 || typeof result.stdout !== 'string') continue;
+    const stdout = gitOut(root, args);
+    if (stdout === null) continue;
 
-    for (const line of result.stdout.trim().split('\n')) {
+    const remote = gitOut(root, ['remote', 'get-url', 'origin']);
+    const repo = repoNameFromRemote(remote);
+
+    for (const line of stdout.split('\n')) {
       if (!line) continue;
-      const [hash, epochStr] = line.split(' ');
+      const [hash, epochStr, subject] = line.split('\x1f');
       if (!hash || seen.has(hash)) continue;
       seen.add(hash);
-      commits.push({ hash, timestamp: parseInt(epochStr ?? '0', 10) * 1000 });
+      commits.push({
+        hash,
+        timestamp: parseInt(epochStr ?? '0', 10) * 1000,
+        repo,
+        subject: subject ?? null,
+        url: commitUrlFromRemote(remote, hash),
+      });
     }
   }
 

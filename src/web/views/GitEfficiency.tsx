@@ -559,6 +559,8 @@ export function GitEfficiency(): JSX.Element {
                 <tr>
                   <th className="text-left p-2">Time</th>
                   <th className="text-left p-2">Type</th>
+                  <th className="text-left p-2">Repo</th>
+                  <th className="text-left p-2">Detail</th>
                   <th className="text-left p-2">Duration</th>
                   <th className="text-left p-2">Status</th>
                 </tr>
@@ -582,6 +584,23 @@ export function GitEfficiency(): JSX.Element {
                         >
                           {formatEventType(e.type)}
                         </span>
+                      </td>
+                      <td className="p-2 text-ink-subtle whitespace-nowrap">
+                        {e.repo ? e.repo.split('/').pop() : '—'}
+                      </td>
+                      <td className="p-2 max-w-xs truncate" title={e.subject ?? undefined}>
+                        {e.url ? (
+                          <a
+                            href={e.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-accent-blue hover:underline"
+                          >
+                            {e.subject ?? 'view commit'}
+                          </a>
+                        ) : (
+                          (e.subject ?? '—')
+                        )}
                       </td>
                       <td className="p-2 tabular-nums text-ink-subtle">{formatMs(e.durationMs)}</td>
                       <td className="p-2">

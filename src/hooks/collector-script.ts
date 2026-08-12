@@ -320,6 +320,7 @@ interface HookInput {
   tool_name?: string;
   tool_input?: unknown;
   tool_response?: unknown;
+  tool_result?: unknown;
   tool_use_id?: string;
   session_id?: string;
   cwd?: string;
@@ -650,16 +651,31 @@ function processHook(raw: string): void {
     // — a no-match edit is a genuine failure worth surfacing to
     // anti-pattern/task-completion metrics, not a behavior to special-case
     // away.
-    const toolResponse = data.tool_response;
-    const responseSuccess =
+    // GitHub Copilot CLI sends the tool's result under `tool_result`, not
+    // `tool_response`, and signals outcome with `result_type: 'success' |
+    // 'failure'` rather than a `success` boolean (confirmed against the CLI's
+    // own runtime, which serializes `toolResult`/`resultType`/
+    // `text_result_for_llm` and fires a matching `postToolUseFailure` event).
+    // Without this alias every Copilot CLI tool call recorded outputSize 0,
+    // no output metadata, and success: true unconditionally.
+    const toolResponse = data.tool_response ?? data.tool_result;
+    const responseObj =
       toolResponse !== null && typeof toolResponse === 'object' && !Array.isArray(toolResponse)
-        ? (toolResponse as Record<string, unknown>).success
+        ? (toolResponse as Record<string, unknown>)
         : undefined;
+    const responseSuccess =
+      responseObj === undefined
+        ? undefined
+        : responseObj.success !== undefined
+          ? responseObj.success
+          : responseObj.result_type !== undefined
+            ? responseObj.result_type !== 'failure'
+            : undefined;
     event = {
       mode: 'post' as const,
       tool: toolName,
       timestamp,
-      outputSize: sizeOf(data.tool_response),
+      outputSize: sizeOf(toolResponse),
       success: typeof responseSuccess === 'boolean' ? responseSuccess : true,
     };
 
@@ -668,14 +684,12 @@ function processHook(raw: string): void {
     if (postInputMeta !== undefined) event.toolInput = postInputMeta;
 
     // Store only the metadata fields needed for tool-specific parsing
-    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    const outputMeta = extractOutputMeta(toolName, toolResponse);
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
-    if (recordContent && data.tool_response !== undefined) {
+    if (recordContent && toolResponse !== undefined) {
       const content =
-        typeof data.tool_response === 'string'
-          ? data.tool_response
-          : JSON.stringify(data.tool_response);
+        typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
       event.outputContent = redact(truncate(content, maxContentLen));
     }
   } else if (eventName === 'posttoolusefailure') {

@@ -1645,6 +1645,59 @@ describe('collector-script', () => {
     });
   });
 
+  describe('collector-script — GitHub Copilot CLI tool_result payloads', () => {
+    // The Copilot CLI puts the tool outcome under `tool_result` with a
+    // `result_type` string, not under `tool_response` with a `success` boolean.
+    // Verified against real CLI hook payloads captured on v1.0.78.
+    const makeCopilotCliPost = (overrides: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        session_id: 'cc25c3e5-5475-4c5b-861b-dc5637fd04da',
+        cwd: '/home/dev/project',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hi', description: 'Echo' },
+        tool_result: { result_type: 'success', text_result_for_llm: 'hi\n' },
+        ...overrides,
+      });
+
+    it('records a non-zero outputSize from tool_result', () => {
+      processHook(makeCopilotCliPost());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('post');
+      expect(events[0].outputSize).toBeGreaterThan(0);
+    });
+
+    it('treats result_type "success" as a successful call', () => {
+      processHook(makeCopilotCliPost());
+      expect(readBufferEvents()[0].success).toBe(true);
+    });
+
+    it('treats result_type "failure" as a failed call', () => {
+      processHook(
+        makeCopilotCliPost({
+          tool_result: { result_type: 'failure', text_result_for_llm: 'boom' },
+        }),
+      );
+      expect(readBufferEvents()[0].success).toBe(false);
+    });
+
+    it('still prefers tool_response when both fields are present', () => {
+      processHook(
+        makeCopilotCliPost({
+          tool_response: { success: false },
+          tool_result: { result_type: 'success' },
+        }),
+      );
+      expect(readBufferEvents()[0].success).toBe(false);
+    });
+
+    it('defaults to success when neither field carries an outcome', () => {
+      processHook(makeCopilotCliPost({ tool_result: { text_result_for_llm: 'hi' } }));
+      expect(readBufferEvents()[0].success).toBe(true);
+    });
+  });
+
   describe('collector-script — Gemini CLI hook event names (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md)', () => {
     it('writes a pre event when hook_event_name is "BeforeTool"', () => {
       processHook(makeGeminiBeforeTool());

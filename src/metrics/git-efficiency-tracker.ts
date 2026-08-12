@@ -118,6 +118,12 @@ export interface GitEvent {
   readonly command?: string;
   readonly success: boolean;
   readonly durationMs: number | null;
+  /** `owner/name` of the repo this event belongs to, when known. */
+  readonly repo?: string | null;
+  /** Commit subject line, for events hydrated from `git log`. */
+  readonly subject?: string | null;
+  /** Browsable URL for the commit, when the remote could be mapped. */
+  readonly url?: string | null;
 }
 
 export type GitEventType =
@@ -481,7 +487,15 @@ export class GitEfficiencyTracker {
     };
   }
 
-  hydrateGitLog(commits: readonly { timestamp: number; hash: string }[]): void {
+  hydrateGitLog(
+    commits: readonly {
+      timestamp: number;
+      hash: string;
+      repo?: string | null;
+      subject?: string | null;
+      url?: string | null;
+    }[],
+  ): void {
     for (const commit of commits) {
       if (!commit.hash) continue;
       const event: GitEvent = {
@@ -490,6 +504,9 @@ export class GitEfficiencyTracker {
         command: `git commit (${commit.hash})`,
         success: true,
         durationMs: null,
+        repo: commit.repo ?? null,
+        subject: commit.subject ?? null,
+        url: commit.url ?? null,
       };
       // Only add if we don't already have this commit tracked. Against an
       // existing hydrated event (one carrying its own real hash), match by

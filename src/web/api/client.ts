@@ -688,6 +688,9 @@ export interface GitEvent {
   readonly command?: string;
   readonly success: boolean;
   readonly durationMs: number | null;
+  readonly repo?: string | null;
+  readonly subject?: string | null;
+  readonly url?: string | null;
 }
 
 export interface BestPractice {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
-import { LocalSessionAggregator, RepoNameResolver } from './local-session-aggregator.js';
+import {
+  commitUrlFromRemote,
+  LocalSessionAggregator,
+  repoNameFromRemote,
+  RepoNameResolver,
+} from './local-session-aggregator.js';
 
 const REAL_ID = 'a143754c-f742-40b7-bf1a-7dc01ad1932f';
 
@@ -148,5 +153,95 @@ describe('LocalSessionAggregator', () => {
       cwd: '/two',
     });
     expect(agg.cwds().sort()).toEqual(['/one', '/two']);
+  });
+});
+
+describe('repoNameFromRemote', () => {
+  it.each([
+    ['git@github.com:acme/widgets.git', 'acme/widgets'],
+    ['https://github.com/acme/widgets.git', 'acme/widgets'],
+    ['https://github.com/acme/widgets', 'acme/widgets'],
+    ['ssh://git@github.com/acme/widgets.git', 'acme/widgets'],
+  ])('parses %s', (remote, expected) => {
+    expect(repoNameFromRemote(remote)).toBe(expected);
+  });
+
+  it('returns null for a missing remote', () => {
+    expect(repoNameFromRemote(null)).toBeNull();
+    expect(repoNameFromRemote(undefined)).toBeNull();
+  });
+});
+
+describe('commitUrlFromRemote', () => {
+  const hash = 'abc1234';
+
+  it('builds a browsable URL from an SSH remote', () => {
+    expect(commitUrlFromRemote('git@github.com:acme/widgets.git', hash)).toBe(
+      `https://github.com/acme/widgets/commit/${hash}`,
+    );
+  });
+
+  it('builds a browsable URL from an HTTPS remote', () => {
+    expect(commitUrlFromRemote('https://github.com/acme/widgets.git', hash)).toBe(
+      `https://github.com/acme/widgets/commit/${hash}`,
+    );
+  });
+
+  it('strips embedded credentials rather than leaking them into the link', () => {
+    expect(commitUrlFromRemote('https://token@github.com/acme/widgets.git', hash)).toBe(
+      `https://github.com/acme/widgets/commit/${hash}`,
+    );
+  });
+
+  it('supports non-github hosts', () => {
+    expect(commitUrlFromRemote('git@gitlab.com:acme/widgets.git', hash)).toBe(
+      `https://gitlab.com/acme/widgets/commit/${hash}`,
+    );
+  });
+
+  it('returns null when the remote or hash is unusable, so the UI shows plain text', () => {
+    expect(commitUrlFromRemote(null, hash)).toBeNull();
+    expect(commitUrlFromRemote('/srv/local/repo.git', hash)).toBeNull();
+    expect(commitUrlFromRemote('git@github.com:acme/widgets.git', '')).toBeNull();
+  });
+});
+
+describe('LocalSessionAggregator timeline persistence', () => {
+  it('emits a replayable timeline entry per tool call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'run_in_terminal',
+      timestamp: 100,
+      durationMs: 42,
+      success: true,
+      command: 'npm test',
+      isTestCommand: true,
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toMatchObject({
+      timestamp: 100,
+      toolName: 'run_in_terminal',
+      durationMs: 42,
+      success: true,
+      command: 'npm test',
+      isTestCommand: true,
+    });
+  });
+
+  it('omits the timeline entirely when nothing was recorded for it', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as unknown[];
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).not.toHaveProperty('command');
+  });
+
+  it('records failures so replay can distinguish them', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'edit', timestamp: 1, success: false });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.success).toBe(false);
   });
 });
