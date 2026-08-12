@@ -588,7 +588,10 @@ export function GitEfficiency(): JSX.Element {
                       <td className="p-2 text-ink-subtle whitespace-nowrap">
                         {e.repo ? e.repo.split('/').pop() : '—'}
                       </td>
-                      <td className="p-2 max-w-xs truncate" title={e.subject ?? undefined}>
+                      <td
+                        className="p-2 max-w-xs truncate"
+                        title={e.subject ?? e.command ?? undefined}
+                      >
                         {e.url ? (
                           <a
                             href={e.url}
@@ -599,7 +602,9 @@ export function GitEfficiency(): JSX.Element {
                             {e.subject ?? 'view commit'}
                           </a>
                         ) : (
-                          (e.subject ?? '—')
+                          // Live git events carry no commit subject, but the
+                          // command itself is the useful detail for them.
+                          (e.subject ?? e.command ?? '—')
                         )}
                       </td>
                       <td className="p-2 tabular-nums text-ink-subtle">{formatMs(e.durationMs)}</td>

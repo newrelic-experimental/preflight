@@ -1,4 +1,31 @@
-import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
+import { redactSensitive } from '../config.js';
+import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import { RepoNameResolver } from './local-session-aggregator.js';
+
+/**
+ * Directory a git command actually acts on. Work is often driven from one
+ * workspace but targeted at another repo (`git -C <path>`, or `cd <path> &&
+ * git ...`), so the tool call's cwd alone would mislabel those events with the
+ * driving repo instead of the one being changed.
+ */
+export function gitCommandTargetDir(
+  command: string,
+  cwd: string | null | undefined,
+): string | null {
+  const dashC = /(?:^|[|&;]\s*)git\s+(?:-c\s+\S+\s+)*-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(
+    command,
+  );
+  if (dashC) return dashC[1] ?? dashC[2] ?? dashC[3] ?? null;
+
+  // `cd <path> && git ...` — the last cd before the git call wins.
+  const cd = /(?:^|[|&;]\s*)cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;)/.exec(command);
+  if (cd) {
+    const dir = cd[1] ?? cd[2] ?? cd[3] ?? null;
+    if (dir && !dir.startsWith('-')) return dir;
+  }
+
+  return typeof cwd === 'string' && cwd.length > 0 ? cwd : null;
+}
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
@@ -357,6 +384,8 @@ export class GitEfficiencyTracker {
   private commitsBehindMain: number | null = null;
   private quickConflictResolutions = 0;
   private prEvents: PrEvent[] = [];
+  private firstCommitTimestamp: number | null = null;
+  private readonly repoResolver = new RepoNameResolver();
   private repoContext: RepoContext = {
     repoName: null,
     branch: null,
@@ -769,9 +798,16 @@ export class GitEfficiencyTracker {
   private classifyGitCommand(command: string, record: ToolCallRecord): GitEvent {
     const base = {
       timestamp: record.timestamp,
-      command,
+      // The command is now surfaced in the dashboard's Detail column, so
+      // redact it: a git remote URL can carry an embedded access token.
+      command: redactSensitive(command),
       success: record.success,
       durationMs: record.durationMs,
+      // Live git events previously carried no repo at all, so the dashboard
+      // showed "—" for everything except commits hydrated from git log.
+      repo: this.repoResolver.resolve(
+        gitCommandTargetDir(command, record.cwd as string | undefined),
+      ),
     };
 
     const output = (record.error as string) ?? '';

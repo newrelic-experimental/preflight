@@ -1,5 +1,6 @@
 import {
   GitEfficiencyTracker,
+  gitCommandTargetDir,
   parseDefaultBranchFromSymbolicRef,
 } from './git-efficiency-tracker.js';
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
@@ -1583,5 +1584,70 @@ describe('GitEfficiencyTracker', () => {
       const metrics = tracker.getMetrics();
       expect(metrics.riskIndicators.quickConflictResolutions).toBe(1);
     });
+  });
+});
+
+describe('gitCommandTargetDir()', () => {
+  it('falls back to the tool call cwd for a plain git command', () => {
+    expect(gitCommandTargetDir('git status --short', '/home/u/aic')).toBe('/home/u/aic');
+  });
+
+  it('prefers the -C target over cwd, so work driven from one repo at another is attributed correctly', () => {
+    expect(gitCommandTargetDir('git -C /home/u/other log --oneline -1', '/home/u/aic')).toBe(
+      '/home/u/other',
+    );
+  });
+
+  it('handles a quoted -C path containing spaces', () => {
+    expect(gitCommandTargetDir('git -C "/home/u/my repo" status', '/home/u/aic')).toBe(
+      '/home/u/my repo',
+    );
+  });
+
+  it('resolves the target of a cd && git chain', () => {
+    expect(gitCommandTargetDir('cd /home/u/worktree && git commit -m x', '/home/u/aic')).toBe(
+      '/home/u/worktree',
+    );
+  });
+
+  it('ignores -C belonging to a different command', () => {
+    expect(gitCommandTargetDir('tar -C /tmp -xf a.tar && git status', '/home/u/aic')).toBe(
+      '/home/u/aic',
+    );
+  });
+
+  it('returns null when there is no target and no cwd', () => {
+    expect(gitCommandTargetDir('git status', undefined)).toBeNull();
+  });
+
+  it('skips -c config flags preceding -C', () => {
+    expect(gitCommandTargetDir('git -c core.pager=cat -C /home/u/repo log', '/home/u/aic')).toBe(
+      '/home/u/repo',
+    );
+  });
+});
+
+describe('GitEfficiencyTracker repo attribution', () => {
+  it('tags a live git event with a repo rather than leaving it blank', () => {
+    const tracker = new GitEfficiencyTracker();
+    tracker.recordToolCall(
+      makeRecord({ command: 'git status --short', cwd: process.cwd() } as Partial<ToolCallRecord>),
+    );
+    const [event] = tracker.getMetrics().gitCommandTimeline;
+    expect(event).toBeDefined();
+    // Resolved from the real repo this test runs in.
+    expect(event?.repo).toBe('Thetanner/preflight');
+  });
+
+  it('redacts credentials embedded in a git remote URL', () => {
+    const tracker = new GitEfficiencyTracker();
+    tracker.recordToolCall(
+      makeRecord({
+        command:
+          'git push https://x-access-token:ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@github.com/a/b.git',
+      } as Partial<ToolCallRecord>),
+    );
+    const [event] = tracker.getMetrics().gitCommandTimeline;
+    expect(event?.command).not.toContain('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
   });
 });
