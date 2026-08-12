@@ -22,7 +22,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import type { ReplayTimelineEntry } from '../storage/types.js';
+import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import type { ModelBreakdownEntry } from './model-usage-tracker.js';
+import { QualityProxyTracker } from './quality-proxy-tracker.js';
+import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
 
 /** Matches SessionTracker's own cap so session files stay bounded. */
 const MAX_TIMELINE_ENTRIES = 10_000;
@@ -42,6 +45,14 @@ export interface LocalSessionRollup {
   filesModified: Set<string>;
   cwd: string | null;
   timeline: ReplayTimelineEntry[];
+  /** Live records kept for sequence-sensitive tool-selection scoring. */
+  records: ToolCallRecord[];
+  /** Per-session quality tracker, so raw counts survive into the summary. */
+  quality: QualityProxyTracker;
+  modelBreakdown: Map<
+    string,
+    { requestCount: number; input: number; output: number; cost: number }
+  >;
   costUsd: number;
   tokensInput: number;
   tokensOutput: number;
@@ -129,6 +140,9 @@ export class LocalSessionAggregator {
         filesModified: new Set(),
         cwd: null,
         timeline: [],
+        records: [],
+        quality: new QualityProxyTracker(),
+        modelBreakdown: new Map(),
         costUsd: 0,
         tokensInput: 0,
         tokensOutput: 0,
@@ -188,6 +202,12 @@ export class LocalSessionAggregator {
         ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
       });
     }
+
+    // Feed the real trackers rather than reimplementing their heuristics, so a
+    // rehydrated panel shows exactly what the live one would have shown.
+    const fullRecord = record as unknown as ToolCallRecord;
+    rollup.quality.recordToolCall(fullRecord);
+    if (rollup.records.length < MAX_TIMELINE_ENTRIES) rollup.records.push(fullRecord);
   }
 
   recordTokenUsage(
@@ -209,7 +229,20 @@ export class LocalSessionAggregator {
     rollup.tokensOutput += usage.outputTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
-    if (usage.model) rollup.models.add(usage.model);
+    if (usage.model) {
+      rollup.models.add(usage.model);
+      const entry = rollup.modelBreakdown.get(usage.model) ?? {
+        requestCount: 0,
+        input: 0,
+        output: 0,
+        cost: 0,
+      };
+      entry.requestCount += 1;
+      entry.input += usage.inputTokens ?? 0;
+      entry.output += usage.outputTokens ?? 0;
+      entry.cost += usage.costUsd ?? 0;
+      rollup.modelBreakdown.set(usage.model, entry);
+    }
   }
 
   /** Distinct working directories seen across all sessions. */
@@ -236,6 +269,7 @@ export class LocalSessionAggregator {
     platform?: string | null;
     outcome: string;
     repoResolver: RepoNameResolver;
+    toolSelectionScorer: ToolSelectionScorer;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
@@ -255,6 +289,16 @@ export class LocalSessionAggregator {
         filesRead: [],
         filesModified: [...rollup.filesModified],
         timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
+        // These three fields are what let the dashboard rebuild its
+        // Model Usage / Quality / Tool Selection panels after a restart: the
+        // API combines them across today's persisted sessions. Without them a
+        // restarted process shows empty panels despite having the history.
+        modelBreakdown: modelBreakdownOf(rollup),
+        qualityProxy: rollup.quality.getRawCounts(),
+        toolSelectionMetrics:
+          rollup.records.length > 0
+            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+            : null,
         linesAdded: 0,
         linesRemoved: 0,
         bashCommandCount: 0,
@@ -388,4 +432,23 @@ export function resolveAuthorEmail(dir: string): string | null {
     /* no git identity */
   }
   return null;
+}
+
+/** Shape the per-model tallies the way `combineBreakdowns()` expects them. */
+function modelBreakdownOf(rollup: {
+  modelBreakdown: Map<
+    string,
+    { requestCount: number; input: number; output: number; cost: number }
+  >;
+}): Record<string, ModelBreakdownEntry> {
+  const out: Record<string, ModelBreakdownEntry> = {};
+  for (const [model, e] of rollup.modelBreakdown) {
+    out[model] = {
+      requestCount: e.requestCount,
+      totalInputTokens: e.input,
+      totalOutputTokens: e.output,
+      totalCostUsd: e.cost,
+    };
+  }
+  return out;
 }

@@ -5,6 +5,7 @@ import {
   repoNameFromRemote,
   RepoNameResolver,
 } from './local-session-aggregator.js';
+import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
 const REAL_ID = 'a143754c-f742-40b7-bf1a-7dc01ad1932f';
 
@@ -21,6 +22,7 @@ function summariesOf(agg: LocalSessionAggregator, outcome = 'in progress') {
     platform: 'copilot',
     outcome,
     repoResolver: new StubRepoResolver(),
+    toolSelectionScorer: new ToolSelectionScorer(),
   });
 }
 
@@ -243,5 +245,61 @@ describe('LocalSessionAggregator timeline persistence', () => {
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'edit', timestamp: 1, success: false });
     const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
     expect(timeline[0]?.success).toBe(false);
+  });
+});
+
+describe('LocalSessionAggregator panel rehydration', () => {
+  it('emits modelBreakdown, qualityProxy and toolSelectionMetrics', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'read_file',
+      timestamp: 1000,
+      success: true,
+    } as never);
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'read_file',
+      timestamp: 2000,
+      success: true,
+    } as never);
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      inputTokens: 100,
+      outputTokens: 20,
+      costUsd: 0.5,
+    } as never);
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      inputTokens: 50,
+      outputTokens: 10,
+      costUsd: 0.25,
+    } as never);
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.modelBreakdown).toEqual({
+      'gpt-5': {
+        requestCount: 2,
+        totalInputTokens: 150,
+        totalOutputTokens: 30,
+        totalCostUsd: 0.75,
+      },
+    });
+    const quality = summary?.qualityProxy as { totalSignals: number } | undefined;
+    expect(quality).toBeDefined();
+    expect(typeof quality?.totalSignals).toBe('number');
+    const toolSelection = summary?.toolSelectionMetrics as { totalCalls: number } | null;
+    expect(toolSelection?.totalCalls).toBe(2);
+  });
+
+  it('keeps a token-only session out of the summaries, as before', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {
+      model: 'gpt-5',
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 0.01,
+    });
+    expect(summariesOf(agg)).toEqual([]);
   });
 });

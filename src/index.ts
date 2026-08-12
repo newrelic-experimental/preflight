@@ -2148,6 +2148,7 @@ async function main(): Promise<void> {
             developer: config.developer ?? 'unknown',
             platform: eventProcessor?.activePlatform,
             outcome: opts?.periodic ? 'in progress' : 'completed',
+            toolSelectionScorer,
             repoResolver: repoNameResolver,
           });
           for (const rollup of rollups) {
