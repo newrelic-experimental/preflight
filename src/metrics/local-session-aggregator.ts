@@ -73,6 +73,31 @@ export function repoNameFromRemote(remote: string | null | undefined): string | 
  * Resolves a directory to its repo's `owner/name`, shelling out at most once per
  * distinct directory. Returns null for non-repos and for repos with no origin.
  */
+/**
+ * Directory a git command actually acts on. Work is often driven from one
+ * workspace but targeted at another repo (`git -C <path>`, or `cd <path> &&
+ * git ...`), so the tool call's cwd alone would mislabel those events with the
+ * driving repo instead of the one being changed.
+ */
+export function gitCommandTargetDir(
+  command: string,
+  cwd: string | null | undefined,
+): string | null {
+  const dashC = /(?:^|[|&;]\s*)git\s+(?:-c\s+\S+\s+)*-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(
+    command,
+  );
+  if (dashC) return dashC[1] ?? dashC[2] ?? dashC[3] ?? null;
+
+  // `cd <path> && git ...` — the last cd before the git call wins.
+  const cd = /(?:^|[|&;]\s*)cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;)/.exec(command);
+  if (cd) {
+    const dir = cd[1] ?? cd[2] ?? cd[3] ?? null;
+    if (dir && !dir.startsWith('-')) return dir;
+  }
+
+  return typeof cwd === 'string' && cwd.length > 0 ? cwd : null;
+}
+
 export class RepoNameResolver {
   private readonly cache = new Map<string, string | null>();
 
@@ -118,6 +143,8 @@ export class RepoNameResolver {
  */
 export class LocalSessionAggregator {
   private readonly sessions = new Map<string, LocalSessionRollup>();
+  /** Repo dirs targeted by git commands but never entered as a cwd. */
+  private readonly gitTargetDirs = new Set<string>();
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
@@ -180,6 +207,13 @@ export class LocalSessionAggregator {
     const tool = record.toolName ?? 'unknown';
     rollup.toolBreakdown[tool] = (rollup.toolBreakdown[tool] ?? 0) + 1;
     if (typeof record.cwd === 'string' && record.cwd.length > 0) rollup.cwd = record.cwd;
+    // A `git -C <path>` / `cd <path> && git` command works on a repo that the
+    // cwd never names, so without this the repo would be invisible to commit
+    // hydration — the whole point of driving other repos from one workspace.
+    if (typeof record.command === 'string' && /(?:^|[|&;]\s*)(?:cd\s|git\s)/.test(record.command)) {
+      const target = gitCommandTargetDir(record.command, record.cwd as string | undefined);
+      if (target) this.gitTargetDirs.add(target);
+    }
     if (typeof record.filePath === 'string' && record.filePath.length > 0) {
       rollup.filesModified.add(record.filePath);
     }
@@ -247,7 +281,7 @@ export class LocalSessionAggregator {
 
   /** Distinct working directories seen across all sessions. */
   cwds(): string[] {
-    const out = new Set<string>();
+    const out = new Set<string>(this.gitTargetDirs);
     for (const rollup of this.sessions.values()) {
       if (rollup.cwd) out.add(rollup.cwd);
     }

@@ -1,31 +1,6 @@
 import { redactSensitive } from '../config.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { RepoNameResolver } from './local-session-aggregator.js';
-
-/**
- * Directory a git command actually acts on. Work is often driven from one
- * workspace but targeted at another repo (`git -C <path>`, or `cd <path> &&
- * git ...`), so the tool call's cwd alone would mislabel those events with the
- * driving repo instead of the one being changed.
- */
-export function gitCommandTargetDir(
-  command: string,
-  cwd: string | null | undefined,
-): string | null {
-  const dashC = /(?:^|[|&;]\s*)git\s+(?:-c\s+\S+\s+)*-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(
-    command,
-  );
-  if (dashC) return dashC[1] ?? dashC[2] ?? dashC[3] ?? null;
-
-  // `cd <path> && git ...` — the last cd before the git call wins.
-  const cd = /(?:^|[|&;]\s*)cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;)/.exec(command);
-  if (cd) {
-    const dir = cd[1] ?? cd[2] ?? cd[3] ?? null;
-    if (dir && !dir.startsWith('-')) return dir;
-  }
-
-  return typeof cwd === 'string' && cwd.length > 0 ? cwd : null;
-}
+import { gitCommandTargetDir, RepoNameResolver } from './local-session-aggregator.js';
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout

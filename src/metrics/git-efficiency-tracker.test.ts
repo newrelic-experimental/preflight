@@ -1,8 +1,8 @@
 import {
   GitEfficiencyTracker,
-  gitCommandTargetDir,
   parseDefaultBranchFromSymbolicRef,
 } from './git-efficiency-tracker.js';
+import { gitCommandTargetDir } from './local-session-aggregator.js';
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);

@@ -303,3 +303,31 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(summariesOf(agg)).toEqual([]);
   });
 });
+
+describe('LocalSessionAggregator cross-repo git discovery', () => {
+  it('exposes a repo targeted only by git -C, which no cwd would reveal', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 1000,
+      success: true,
+      cwd: '/home/u/aic',
+      command: 'git -C /home/u/other-repo status --short',
+    } as never);
+    expect(agg.cwds().sort()).toEqual(['/home/u/aic', '/home/u/other-repo']);
+  });
+
+  it('does not treat a non-git command as a repo target', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 1000,
+      success: true,
+      cwd: '/home/u/aic',
+      command: 'npm run build',
+    } as never);
+    expect(agg.cwds()).toEqual(['/home/u/aic']);
+  });
+});
