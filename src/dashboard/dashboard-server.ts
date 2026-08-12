@@ -13,6 +13,9 @@ import type { AlertLog } from '../alerts/alert-log.js';
 
 const logger = createLogger('dashboard-server');
 
+/** Comfortably above the interval at which the UI polls, so a reused socket is never mid-close. */
+const KEEP_ALIVE_TIMEOUT_MS = 65_000;
+
 function isNewerVersion(candidate: string, installed: string): boolean {
   const parse = (v: string): [number, number, number] => {
     const parts = v.replace(/^v/, '').replace(/-.*$/, '').split('.').map(Number);
@@ -149,6 +152,14 @@ export class DashboardServer {
       const server = createServer((req, res) => {
         void this.handle(req, res);
       });
+      // Node's 5s default keep-alive is shorter than browsers hold a socket
+      // open, so a poll dispatched just as the server closes the connection is
+      // lost and the request hangs "(pending)" forever — the dashboard shows a
+      // permanent "Loading..." while the API answers curl in milliseconds.
+      // headersTimeout must stay above keepAliveTimeout or it re-introduces
+      // the same race it is meant to bound.
+      server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+      server.headersTimeout = KEEP_ALIVE_TIMEOUT_MS + 1_000;
       // Reject the start() promise on any pre-listen error (e.g. EADDRINUSE).
       // Once listen() succeeds, swap in a permanent error logger so post-start
       // errors aren't silently swallowed by the resolved promise.
@@ -201,6 +212,10 @@ export class DashboardServer {
       }
       const url = req.url ?? '/';
       const pathname = url.split('?')[0] ?? '/';
+      // Without an explicit directive these JSON responses are heuristically
+      // cacheable, so a live dashboard can be served stale metrics from the
+      // browser's disk cache. SSE sets its own no-cache headers.
+      if (pathname.startsWith('/api/')) res.setHeader('cache-control', 'no-store');
       const key = `${req.method ?? 'GET'} ${pathname}`;
       const handler = this.routes.get(key);
       if (handler) {
