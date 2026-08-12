@@ -37,7 +37,7 @@
   ],
   "scripts": {
     "build:server": "tsc --build && chmod +x dist/index.js dist/hooks/collector-script.js && npm run build:copy-data",
-    "build:copy-data": "node -e \"const{cpSync,mkdirSync}=require('node:fs');mkdirSync('dist/data',{recursive:true});cpSync('alerts','dist/data/alerts',{recursive:true});cpSync('dashboards','dist/data/dashboards',{recursive:true});cpSync('copilot-pricing','dist/data/copilot-pricing',{recursive:true});cpSync('copilot-cli-extension','dist/data/copilot-cli-extension',{recursive:true});\"",
+    "build:copy-data": "node -e \"const{cpSync,mkdirSync}=require('node:fs');mkdirSync('dist/data',{recursive:true});cpSync('alerts','dist/data/alerts',{recursive:true});cpSync('dashboards','dist/data/dashboards',{recursive:true});cpSync('copilot-pricing','dist/data/copilot-pricing',{recursive:true});cpSync('copilot-sdk-extension','dist/data/copilot-sdk-extension',{recursive:true});\"",
     "build:web": "vite build",
     "build": "npm run build:server && npm run build:web",
     "build:clean": "tsc --build --clean && rimraf dist/web",

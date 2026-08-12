@@ -3,7 +3,7 @@ import {
   mapAssistantUsageEvent,
   resolveBufferPath,
   resolveStoragePath,
-} from './copilot-cli-usage-mapper.js';
+} from './copilot-sdk-usage-mapper.js';
 
 describe('mapAssistantUsageEvent', () => {
   // Real assistant.usage payload captured live from a Copilot CLI session
@@ -21,7 +21,7 @@ describe('mapAssistantUsageEvent', () => {
     const result = mapAssistantUsageEvent(data, 'sess-1', 1786561408464);
     expect(result).toEqual({
       mode: 'token',
-      tool: 'copilot-cli-usage',
+      tool: 'copilot-sdk-usage',
       timestamp: 1786561408464,
       sessionId: 'sess-1',
       messageId: 'msg_011CdyNdWPfiRzEn1KTwuNp2',

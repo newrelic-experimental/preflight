@@ -1,18 +1,18 @@
-// Preflight — GitHub Copilot CLI usage-capture extension
+// Preflight — GitHub Copilot SDK usage-capture extension
 //
-// Gives Copilot CLI sessions token-exact cost, mirroring what
-// CopilotUsageWatcher already gives VS Code Copilot Chat sessions (see
-// src/hooks/copilot-usage-watcher.ts in the Preflight repo). Tool-call
-// capture for the CLI already works via the existing PreToolUse/PostToolUse
+// Gives Copilot SDK / agent-host sessions (e.g. the Copilot CLI) token-exact
+// cost, mirroring what CopilotUsageWatcher already gives VS Code Copilot Chat
+// sessions (see src/hooks/copilot-usage-watcher.ts in the Preflight repo).
+// Tool-call capture already works via the existing PreToolUse/PostToolUse
 // hooks (~/.copilot/hooks/preflight.json) — this extension covers only the
 // cost signal those hooks can't see: per-call token counts.
 //
 // WHY THIS FILE IS HAND-WRITTEN PLAIN JAVASCRIPT, NOT COMPILED FROM TYPESCRIPT:
-// Copilot CLI extensions must be plain JavaScript — TypeScript and other
+// Copilot SDK extensions must be plain JavaScript — TypeScript and other
 // languages are not supported (docs.github.com/en/copilot/concepts/agents/
 // copilot-cli/about-cli-extensions, "How extensions are discovered"). The
 // mapping logic below is a deliberate, minimal mirror of the tested,
-// type-checked TypeScript module at src/hooks/copilot-cli-usage-mapper.ts in
+// type-checked TypeScript module at src/hooks/copilot-sdk-usage-mapper.ts in
 // the Preflight repo (see that file's tests for the field-mapping evidence,
 // captured from two real assistant.usage events) — KEEP THE TWO IN SYNC.
 //
@@ -25,9 +25,9 @@
 // them again here would double-count.
 //
 // Installation: copy this file to ~/.copilot/extensions/preflight/extension.mjs
-// (user-level, applies to every session) and run the CLI with --experimental
+// (user-level, applies to every session) and run the host with --experimental
 // (or `/experimental on` in an interactive session) — extensions are an
-// experimental CLI feature. See docs/ADAPTERS.md's "GitHub Copilot CLI"
+// experimental feature. See docs/ADAPTERS.md's "GitHub Copilot SDK"
 // section in the Preflight repo for full setup steps.
 
 import { joinSession } from '@github/copilot-sdk/extension';
@@ -50,7 +50,7 @@ function num(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-// Mirrors mapAssistantUsageEvent() in copilot-cli-usage-mapper.ts — see that
+// Mirrors mapAssistantUsageEvent() in copilot-sdk-usage-mapper.ts — see that
 // file's tests for the field-mapping evidence. Returns null (never throws)
 // when the payload is missing the fields a usable line requires.
 function mapAssistantUsageEvent(data, sessionId, timestampMs) {
@@ -69,7 +69,7 @@ function mapAssistantUsageEvent(data, sessionId, timestampMs) {
 
   return {
     mode: 'token',
-    tool: 'copilot-cli-usage',
+    tool: 'copilot-sdk-usage',
     timestamp: timestampMs,
     sessionId,
     messageId: apiCallId,

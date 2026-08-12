@@ -6,12 +6,13 @@ import type {
 } from './types.js';
 
 /**
- * Maps Copilot CLI's built-in tool names to Preflight's canonical
+ * Maps the Copilot agent-host's built-in tool names to Preflight's canonical
  * (Claude-Code-shaped) vocabulary. Source: GitHub's own CLI command
  * reference, "Tool availability values" section
  * (docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#tool-availability-values),
  * which enumerates the full built-in tool set by category (shell, file
- * operation, agent/task delegation, other).
+ * operation, agent/task delegation, other). The CLI is the reference host
+ * for this SDK-defined tool set.
  *
  * Deliberately unmapped (no clear canonical correspondence, preserved as
  * the original name downstream): the shell session-management variants
@@ -22,7 +23,7 @@ import type {
  * VS Code CopilotAdapter's COPILOT_TOOL_MAP precedent of leaving
  * introspection/messaging tools unmapped rather than guessing.
  */
-const COPILOT_CLI_TOOL_MAP: Record<string, string> = {
+const COPILOT_SDK_TOOL_MAP: Record<string, string> = {
   bash: 'Bash',
   powershell: 'Bash',
   apply_patch: 'Edit',
@@ -35,7 +36,7 @@ const COPILOT_CLI_TOOL_MAP: Record<string, string> = {
   rg: 'Grep',
 };
 
-interface CopilotCliToolCallEvent {
+interface CopilotSdkToolCallEvent {
   tool?: string;
   toolName?: string;
   timestamp?: number;
@@ -50,26 +51,28 @@ interface CopilotCliToolCallEvent {
   sessionId?: string;
 }
 
-function isCopilotCliToolCallEvent(x: unknown): x is CopilotCliToolCallEvent {
+function isCopilotSdkToolCallEvent(x: unknown): x is CopilotSdkToolCallEvent {
   return typeof x === 'object' && x !== null;
 }
 
 /**
- * Adapter for the GitHub Copilot CLI runtime — distinct from the VS Code
- * Copilot Chat adapter (`CopilotAdapter`): different session-id space (no
- * `workspaceStorage`; sessions live in `~/.copilot/session-state/<id>/`),
+ * Adapter for the GitHub Copilot SDK / agent-host runtime — distinct from the
+ * VS Code Copilot Chat adapter (`CopilotAdapter`): different session-id space
+ * (no `workspaceStorage`; sessions live in `~/.copilot/session-state/<id>/`),
  * and different tool-name vocabulary (`bash`/`edit`/`grep` rather than VS
- * Code's `run_in_terminal`/`replace_string_in_file`).
+ * Code's `run_in_terminal`/`replace_string_in_file`). The Copilot CLI is the
+ * confirmed host of this runtime; the same SDK extension mechanism plausibly
+ * hosts elsewhere (e.g. the desktop app), untested.
  */
-export class CopilotCliAdapter implements PlatformAdapter {
-  readonly platformName = 'copilot-cli';
-  // Copilot CLI hooks fire on every built-in tool call via the same
+export class CopilotSdkAdapter implements PlatformAdapter {
+  readonly platformName = 'copilot-sdk';
+  // The agent host's hooks fire on every built-in tool call via the same
   // uniform hook envelope collector-script.ts already parses (confirmed:
   // ~/.copilot/hooks/preflight.json fires for CLI sessions, lowerCamelCase
   // event names surviving the collector's case normalization — see
-  // docs/ADAPTERS.md's Copilot section).
+  // docs/ADAPTERS.md's Copilot SDK section).
   readonly visibilityLevel = 'full-hooks' as const;
-  // Repo-relative instruction files the CLI itself reads (Git root and cwd),
+  // Repo-relative instruction files the host itself reads (Git root and cwd),
   // per GitHub's own CLI reference, "Custom instructions locations"
   // (docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#custom-instructions-locations).
   // That table also lists a user-level `$HOME/.copilot/copilot-instructions.md`,
@@ -83,14 +86,14 @@ export class CopilotCliAdapter implements PlatformAdapter {
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {
-    // Tool calls arrive via Copilot CLI agent hooks (collector script),
-    // parsed by collector-script.ts's uniform branch.
+    // Tool calls arrive via the Copilot agent host's hooks (collector
+    // script), parsed by collector-script.ts's uniform branch.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
-    const event = isCopilotCliToolCallEvent(raw) ? raw : {};
+    const event = isCopilotSdkToolCallEvent(raw) ? raw : {};
     const platformToolName = event.tool ?? event.toolName ?? 'unknown';
-    const toolName = COPILOT_CLI_TOOL_MAP[platformToolName] ?? 'Unknown';
+    const toolName = COPILOT_SDK_TOOL_MAP[platformToolName] ?? 'Unknown';
     const filePath = event.filePath ?? event.path;
 
     return {
@@ -110,7 +113,7 @@ export class CopilotCliAdapter implements PlatformAdapter {
   }
 
   mapToolName(platformToolName: string): string {
-    return COPILOT_CLI_TOOL_MAP[platformToolName] ?? 'Unknown';
+    return COPILOT_SDK_TOOL_MAP[platformToolName] ?? 'Unknown';
   }
 
   getSessionMetadata(): PlatformSessionMetadata {
@@ -121,7 +124,7 @@ export class CopilotCliAdapter implements PlatformAdapter {
 
   getHookInstallInstructions(): string {
     return [
-      'GitHub Copilot CLI Setup:',
+      'GitHub Copilot (SDK / agent-host, e.g. the Copilot CLI) Setup:',
       '1. Create a hooks file to enable tool-call capture — user-level',
       '   ~/.copilot/hooks/preflight.json (applies to all sessions) or',
       '   workspace-level .github/hooks/preflight.json:',
@@ -134,25 +137,25 @@ export class CopilotCliAdapter implements PlatformAdapter {
       '2. Ensure preflight-collector is on PATH (npm link, or npm install -g @newrelic/preflight)',
       '3. Register the Preflight MCP server:',
       '   copilot mcp add preflight \\',
-      '     --env MCP_CLIENT=copilot-cli \\',
+      '     --env MCP_CLIENT=copilot-sdk \\',
       '     --env NEW_RELIC_LICENSE_KEY=<your-key> \\',
       '     --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \\',
       '     -- npx preflight --stdio',
-      '4. (Optional, for token-exact cost) Copy the bundled Copilot CLI extension',
+      '4. (Optional, for token-exact cost) Copy the bundled Copilot SDK extension',
       '   to pick up per-call token counts (the hooks above cover tool calls only):',
       '   mkdir -p ~/.copilot/extensions/preflight',
-      '   cp <preflight-install-dir>/data/copilot-cli-extension/extension.mjs \\',
+      '   cp <preflight-install-dir>/data/copilot-sdk-extension/extension.mjs \\',
       '     ~/.copilot/extensions/preflight/extension.mjs',
-      '5. Restart the CLI (or run /extensions reload if already open) with',
+      '5. Restart the host (or run /extensions reload if already open) with',
       '   --experimental (or run /experimental on) — extensions require the',
-      '   experimental CLI feature flag.',
+      '   experimental feature flag.',
     ].join('\n');
   }
 
   isSupported(): boolean {
     return (
-      process.env.MCP_CLIENT === 'copilot-cli' ||
-      process.env.NEW_RELIC_AI_PLATFORM === 'copilot-cli'
+      process.env.MCP_CLIENT === 'copilot-sdk' ||
+      process.env.NEW_RELIC_AI_PLATFORM === 'copilot-sdk'
     );
   }
 }

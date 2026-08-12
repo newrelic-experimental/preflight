@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
-import { CopilotCliAdapter } from './copilot-cli-adapter.js';
+import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
 
 const ENV_KEYS = ['NEW_RELIC_AI_PLATFORM', 'MCP_CLIENT'];
 const savedEnv: Record<string, string | undefined> = {};
@@ -18,11 +18,11 @@ afterEach(() => {
   }
 });
 
-describe('CopilotCliAdapter', () => {
-  const adapter = new CopilotCliAdapter();
+describe('CopilotSdkAdapter', () => {
+  const adapter = new CopilotSdkAdapter();
 
-  it('has platformName "copilot-cli"', () => {
-    expect(adapter.platformName).toBe('copilot-cli');
+  it('has platformName "copilot-sdk"', () => {
+    expect(adapter.platformName).toBe('copilot-sdk');
   });
 
   it('has visibilityLevel "full-hooks"', () => {
@@ -41,7 +41,7 @@ describe('CopilotCliAdapter', () => {
       const normalized = adapter.normalizeToolCall({ tool: 'bash', timestamp: 5000 });
       expect(normalized.toolName).toBe('Bash');
       expect(normalized.platformToolName).toBe('bash');
-      expect(normalized.platform).toBe('copilot-cli');
+      expect(normalized.platform).toBe('copilot-sdk');
     });
 
     it('reads platform tool name from "toolName" field', () => {
@@ -59,7 +59,7 @@ describe('CopilotCliAdapter', () => {
       const normalized = adapter.normalizeToolCall(null);
       expect(normalized.toolName).toBe('Unknown');
       expect(normalized.platformToolName).toBe('unknown');
-      expect(normalized.platform).toBe('copilot-cli');
+      expect(normalized.platform).toBe('copilot-sdk');
       expect(normalized.success).toBe(true);
       expect(normalized.durationMs).toBeNull();
     });
@@ -106,12 +106,12 @@ describe('CopilotCliAdapter', () => {
       const normalized = adapter.normalizeToolCall({
         tool: 'bash',
         command: 'npm test',
-        sessionId: 'copilot-cli-sess-1',
+        sessionId: 'copilot-sdk-sess-1',
         inputSizeBytes: 10,
         outputSizeBytes: 20,
       });
       expect(normalized.command).toBe('npm test');
-      expect(normalized.sessionId).toBe('copilot-cli-sess-1');
+      expect(normalized.sessionId).toBe('copilot-sdk-sess-1');
       expect(normalized.inputSizeBytes).toBe(10);
       expect(normalized.outputSizeBytes).toBe(20);
     });
@@ -141,23 +141,23 @@ describe('CopilotCliAdapter', () => {
   });
 
   describe('getSessionMetadata', () => {
-    it('returns platform "copilot-cli"', () => {
-      expect(adapter.getSessionMetadata().platform).toBe('copilot-cli');
+    it('returns platform "copilot-sdk"', () => {
+      expect(adapter.getSessionMetadata().platform).toBe('copilot-sdk');
     });
   });
 
   describe('isSupported', () => {
-    it('returns true when NEW_RELIC_AI_PLATFORM is "copilot-cli"', () => {
-      process.env.NEW_RELIC_AI_PLATFORM = 'copilot-cli';
+    it('returns true when NEW_RELIC_AI_PLATFORM is "copilot-sdk"', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot-sdk';
       expect(adapter.isSupported()).toBe(true);
     });
 
-    it('returns true when MCP_CLIENT is "copilot-cli"', () => {
-      process.env.MCP_CLIENT = 'copilot-cli';
+    it('returns true when MCP_CLIENT is "copilot-sdk"', () => {
+      process.env.MCP_CLIENT = 'copilot-sdk';
       expect(adapter.isSupported()).toBe(true);
     });
 
-    it('returns false when copilot-cli env vars are absent', () => {
+    it('returns false when copilot-sdk env vars are absent', () => {
       expect(adapter.isSupported()).toBe(false);
     });
 
@@ -172,12 +172,12 @@ describe('CopilotCliAdapter', () => {
       const instructions = adapter.getHookInstallInstructions();
       expect(instructions.length).toBeGreaterThan(0);
       expect(instructions).toContain('copilot mcp add');
-      expect(instructions).toContain('copilot-cli');
+      expect(instructions).toContain('copilot-sdk');
     });
 
     it('mentions installing the token-usage extension and --experimental', () => {
       const instructions = adapter.getHookInstallInstructions();
-      expect(instructions).toContain('copilot-cli-extension/extension.mjs');
+      expect(instructions).toContain('copilot-sdk-extension/extension.mjs');
       expect(instructions).toContain('~/.copilot/extensions/preflight/extension.mjs');
       expect(instructions).toContain('--experimental');
     });

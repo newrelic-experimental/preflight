@@ -6,7 +6,7 @@ import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { CopilotAdapter } from './copilot-adapter.js';
-import { CopilotCliAdapter } from './copilot-cli-adapter.js';
+import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
 import { CursorAdapter } from './cursor-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
 import { GeminiCliAdapter } from './gemini-cli-adapter.js';
@@ -234,13 +234,13 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('copilot');
     });
 
-    it('selects Copilot CLI adapter when copilot-cli platform env is set', () => {
-      process.env.NEW_RELIC_AI_PLATFORM = 'copilot-cli';
+    it('selects Copilot SDK adapter when copilot-sdk platform env is set', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot-sdk';
       const registry = createDefaultRegistry();
 
       const detected = registry.detect();
       expect(detected).not.toBeNull();
-      expect(detected!.platformName).toBe('copilot-cli');
+      expect(detected!.platformName).toBe('copilot-sdk');
     });
 
     it('selects Zed adapter when Zed env vars are present', () => {
@@ -414,7 +414,7 @@ describe('createDefaultRegistry', () => {
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
     expect(registered[3]).toBeInstanceOf(CopilotAdapter);
-    expect(registered[4]).toBeInstanceOf(CopilotCliAdapter);
+    expect(registered[4]).toBeInstanceOf(CopilotSdkAdapter);
     expect(registered[5]).toBeInstanceOf(ZedAdapter);
     expect(registered[6]).toBeInstanceOf(ContinueAdapter);
     expect(registered[7]).toBeInstanceOf(AmazonQAdapter);

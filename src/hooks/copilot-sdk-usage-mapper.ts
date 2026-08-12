@@ -1,13 +1,14 @@
 /**
  * Maps GitHub Copilot SDK `assistant.usage` events to Preflight's `mode:
  * 'token'` buffer-line contract, and resolves the buffer file path — the
- * shared, tested logic behind `copilot-cli-extension/extension.mjs` (a
- * hand-maintained plain-JS mirror of this file; Copilot CLI extensions must
+ * shared, tested logic behind `copilot-sdk-extension/extension.mjs` (a
+ * hand-maintained plain-JS mirror of this file; Copilot SDK extensions must
  * be written in JavaScript, so the logic can't be imported directly — see
  * that file's header comment).
  *
  * Field mapping verified against two real `assistant.usage` events captured
- * live from a Copilot CLI session (see copilot-cli-usage-mapper.test.ts):
+ * live from a Copilot SDK session, via the Copilot CLI host (see
+ * copilot-sdk-usage-mapper.test.ts):
  * the SDK's `inputTokens` is inclusive of BOTH cache-read and cache-write
  * (unlike VS Code's debug log, which is cache-read-inclusive only) — proven
  * by cross-checking against the SDK's own `copilotUsage.tokenDetails`
@@ -21,7 +22,7 @@ const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 
 export interface TokenBufferLine {
   readonly mode: 'token';
-  readonly tool: 'copilot-cli-usage';
+  readonly tool: 'copilot-sdk-usage';
   readonly timestamp: number;
   readonly sessionId: string;
   readonly messageId: string;
@@ -63,7 +64,7 @@ export function mapAssistantUsageEvent(
 
   return {
     mode: 'token',
-    tool: 'copilot-cli-usage',
+    tool: 'copilot-sdk-usage',
     timestamp: timestampMs,
     sessionId,
     messageId: apiCallId,

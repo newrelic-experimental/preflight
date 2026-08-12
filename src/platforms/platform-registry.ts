@@ -6,7 +6,7 @@ import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { CopilotAdapter } from './copilot-adapter.js';
-import { CopilotCliAdapter } from './copilot-cli-adapter.js';
+import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
 import { CursorAdapter } from './cursor-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
 import { GeminiCliAdapter } from './gemini-cli-adapter.js';
@@ -66,7 +66,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new CursorAdapter());
   registry.register(new WindsurfAdapter());
   registry.register(new CopilotAdapter());
-  registry.register(new CopilotCliAdapter());
+  registry.register(new CopilotSdkAdapter());
   registry.register(new ZedAdapter());
   registry.register(new ContinueAdapter());
   registry.register(new AmazonQAdapter());

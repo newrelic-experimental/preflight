@@ -11,9 +11,9 @@ import { dirname, resolve } from 'node:path';
  * tarball contains everything under `dist/`, so the data lives at
  * `<dist>/data/<name>/`.
  *
- * `copilot-cli-extension` is the hand-written plain-JS Copilot CLI extension
- * (see copilot-cli-extension/extension.mjs) installed into a user's
- * `~/.copilot/extensions/preflight/` directory by `installCopilotCliExtension()`.
+ * `copilot-sdk-extension` is the hand-written plain-JS Copilot SDK extension
+ * (see copilot-sdk-extension/extension.mjs) installed into a user's
+ * `~/.copilot/extensions/preflight/` directory by `installCopilotSdkExtension()`.
  *
  * For local dev (running tests from `src/deploy/*.test.ts`), the JSON files
  * live at the repo root in `<repoRoot>/<name>/`. We probe both locations so
@@ -28,7 +28,7 @@ import { dirname, resolve } from 'node:path';
  * their own commands) must wrap this in a try/catch and degrade gracefully.
  */
 export function resolveDataDir(
-  name: 'alerts' | 'dashboards' | 'copilot-pricing' | 'copilot-cli-extension',
+  name: 'alerts' | 'dashboards' | 'copilot-pricing' | 'copilot-sdk-extension',
 ): string {
   const rawPath = process.argv[1] ?? process.cwd();
   const scriptPath = (() => {

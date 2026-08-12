@@ -587,17 +587,17 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 ---
 
-## GitHub Copilot CLI (`copilot-cli`)
+## GitHub Copilot SDK (`copilot-sdk`)
 
-**Mechanism:** Distinct from the VS Code Copilot adapter above — different session-id space (`~/.copilot/session-state/<id>/`, no `workspaceStorage`) and a different tool-name vocabulary. Tool calls arrive via the CLI's own `PreToolUse`/`PostToolUse` hooks, parsed by `preflight-collector` (the same uniform hook envelope `collector-script.ts` already handles for other hook-based platforms).
+**Mechanism:** The Copilot SDK / agent-host runtime — distinct from the VS Code Copilot Chat adapter above (`copilot`): different session-id space (`~/.copilot/session-state/<id>/`, no `workspaceStorage`) and a different tool-name vocabulary. The GitHub Copilot CLI is the confirmed host of this runtime; the same SDK extension mechanism plausibly hosts elsewhere (e.g. the desktop app), untested. Tool calls arrive via the host's own `PreToolUse`/`PostToolUse` hooks, parsed by `preflight-collector` (the same uniform hook envelope `collector-script.ts` already handles for other hook-based platforms).
 
-**Detection (`isSupported()`):** `MCP_CLIENT === 'copilot-cli'`, or `NEW_RELIC_AI_PLATFORM === 'copilot-cli'`.
+**Detection (`isSupported()`):** `MCP_CLIENT === 'copilot-sdk'`, or `NEW_RELIC_AI_PLATFORM === 'copilot-sdk'`.
 
-**Event vocabulary:** `bash`/`powershell`→Bash, `apply_patch`→Edit, `create`→Write, `edit`→Edit, `view`→Read, `task`→Agent, `glob`→Glob, `grep`/`rg`→Grep. Source: GitHub's CLI command reference, "Tool availability values". Deliberately left unmapped (preserved as-is): the background shell session-management tools (`list_bash`/`read_bash`/`stop_bash`/`write_bash` and their PowerShell equivalents), `list_agents`/`read_agent`/`write_agent`, `ask_user`, `skill`, `web_fetch`.
+**Event vocabulary:** `bash`/`powershell`→Bash, `apply_patch`→Edit, `create`→Write, `edit`→Edit, `view`→Read, `task`→Agent, `glob`→Glob, `grep`/`rg`→Grep. Source: GitHub's CLI command reference, "Tool availability values" (the CLI being the reference host for this SDK-defined tool set). Deliberately left unmapped (preserved as-is): the background shell session-management tools (`list_bash`/`read_bash`/`stop_bash`/`write_bash` and their PowerShell equivalents), `list_agents`/`read_agent`/`write_agent`, `ask_user`, `skill`, `web_fetch`.
 
-**Instruction files:** `AGENTS.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The CLI also reads a user-level `$HOME/.copilot/copilot-instructions.md`, which isn't modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative fragment, and a global per-user path doesn't fit that shape.
+**Instruction files:** `AGENTS.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The host also reads a user-level `$HOME/.copilot/copilot-instructions.md`, which isn't modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative fragment, and a global per-user path doesn't fit that shape.
 
-**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small, hand-written plain-JavaScript Copilot CLI extension (`copilot-cli-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot CLI extensions must be plain JavaScript — TypeScript isn't supported — so this file hand-mirrors the tested logic in `src/hooks/copilot-cli-usage-mapper.ts`; keep the two in sync when changing either. Extensions are an experimental CLI feature, requiring `--experimental` or `/experimental on`.
+**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small, hand-written plain-JavaScript Copilot SDK extension (`copilot-sdk-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot SDK extensions must be plain JavaScript — TypeScript isn't supported — so this file hand-mirrors the tested logic in `src/hooks/copilot-sdk-usage-mapper.ts`; keep the two in sync when changing either. Extensions are an experimental feature, requiring `--experimental` or `/experimental on`.
 
 **Known gap:** without the extension above, cost is estimated from tool-call counts rather than exact tokens (same limitation as most other hook-based adapters).
 
@@ -616,13 +616,13 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 3. Register the Preflight MCP server:
    ```bash
    copilot mcp add preflight \
-     --env MCP_CLIENT=copilot-cli \
+     --env MCP_CLIENT=copilot-sdk \
      --env NEW_RELIC_LICENSE_KEY=<your-key> \
      --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
      -- npx preflight --stdio
    ```
 4. (Optional, for token-exact cost) Copy the bundled extension to `~/.copilot/extensions/preflight/extension.mjs`
-5. Restart the CLI with `--experimental` (or run `/experimental on` in an already-open session)
+5. Restart the host with `--experimental` (or run `/experimental on` in an already-open session)
 
 ---
 
