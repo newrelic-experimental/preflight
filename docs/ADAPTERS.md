@@ -587,6 +587,45 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 ---
 
+## GitHub Copilot CLI (`copilot-cli`)
+
+**Mechanism:** Distinct from the VS Code Copilot adapter above — different session-id space (`~/.copilot/session-state/<id>/`, no `workspaceStorage`) and a different tool-name vocabulary. Tool calls arrive via the CLI's own `PreToolUse`/`PostToolUse` hooks, parsed by `preflight-collector` (the same uniform hook envelope `collector-script.ts` already handles for other hook-based platforms).
+
+**Detection (`isSupported()`):** `MCP_CLIENT === 'copilot-cli'`, or `NEW_RELIC_AI_PLATFORM === 'copilot-cli'`.
+
+**Event vocabulary:** `bash`/`powershell`→Bash, `apply_patch`→Edit, `create`→Write, `edit`→Edit, `view`→Read, `task`→Agent, `glob`→Glob, `grep`/`rg`→Grep. Source: GitHub's CLI command reference, "Tool availability values". Deliberately left unmapped (preserved as-is): the background shell session-management tools (`list_bash`/`read_bash`/`stop_bash`/`write_bash` and their PowerShell equivalents), `list_agents`/`read_agent`/`write_agent`, `ask_user`, `skill`, `web_fetch`.
+
+**Instruction files:** `AGENTS.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The CLI also reads a user-level `$HOME/.copilot/copilot-instructions.md`, which isn't modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative fragment, and a global per-user path doesn't fit that shape.
+
+**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small, hand-written plain-JavaScript Copilot CLI extension (`copilot-cli-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot CLI extensions must be plain JavaScript — TypeScript isn't supported — so this file hand-mirrors the tested logic in `src/hooks/copilot-cli-usage-mapper.ts`; keep the two in sync when changing either. Extensions are an experimental CLI feature, requiring `--experimental` or `/experimental on`.
+
+**Known gap:** without the extension above, cost is estimated from tool-call counts rather than exact tokens (same limitation as most other hook-based adapters).
+
+**Setup:**
+
+1. Create a hooks file for tool-call capture — user-level `~/.copilot/hooks/preflight.json` or workspace-level `.github/hooks/preflight.json`:
+   ```json
+   {
+     "hooks": {
+       "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],
+       "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]
+     }
+   }
+   ```
+2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
+3. Register the Preflight MCP server:
+   ```bash
+   copilot mcp add preflight \
+     --env MCP_CLIENT=copilot-cli \
+     --env NEW_RELIC_LICENSE_KEY=<your-key> \
+     --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
+     -- npx preflight --stdio
+   ```
+4. (Optional, for token-exact cost) Copy the bundled extension to `~/.copilot/extensions/preflight/extension.mjs`
+5. Restart the CLI with `--experimental` (or run `/experimental on` in an already-open session)
+
+---
+
 ## Generic MCP fallback (`generic-mcp`)
 
 **Mechanism:** Self-report via MCP tools. Always registered last and always `isSupported() === true` — the catch-all for any MCP-speaking client not otherwise named above.

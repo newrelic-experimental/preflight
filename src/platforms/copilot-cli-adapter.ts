@@ -138,7 +138,14 @@ export class CopilotCliAdapter implements PlatformAdapter {
       '     --env NEW_RELIC_LICENSE_KEY=<your-key> \\',
       '     --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \\',
       '     -- npx preflight --stdio',
-      '4. Restart the CLI (or run /extensions reload if already open)',
+      '4. (Optional, for token-exact cost) Copy the bundled Copilot CLI extension',
+      '   to pick up per-call token counts (the hooks above cover tool calls only):',
+      '   mkdir -p ~/.copilot/extensions/preflight',
+      '   cp <preflight-install-dir>/data/copilot-cli-extension/extension.mjs \\',
+      '     ~/.copilot/extensions/preflight/extension.mjs',
+      '5. Restart the CLI (or run /extensions reload if already open) with',
+      '   --experimental (or run /experimental on) — extensions require the',
+      '   experimental CLI feature flag.',
     ].join('\n');
   }
 

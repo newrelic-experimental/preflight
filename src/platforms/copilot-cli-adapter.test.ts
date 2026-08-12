@@ -174,6 +174,13 @@ describe('CopilotCliAdapter', () => {
       expect(instructions).toContain('copilot mcp add');
       expect(instructions).toContain('copilot-cli');
     });
+
+    it('mentions installing the token-usage extension and --experimental', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('copilot-cli-extension/extension.mjs');
+      expect(instructions).toContain('~/.copilot/extensions/preflight/extension.mjs');
+      expect(instructions).toContain('--experimental');
+    });
   });
 
   describe('initialize', () => {
