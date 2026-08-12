@@ -1,0 +1,91 @@
+{
+  "claude-opus-5": {
+    "inputPerMTok": 5,
+    "outputPerMTok": 25,
+    "cacheReadPerMTok": 0.5,
+    "cacheCreationPerMTok": 6.25,
+    "contextWindow": 1000000
+  },
+  "gpt-5-mini": {
+    "inputPerMTok": 0.25,
+    "outputPerMTok": 2,
+    "cacheReadPerMTok": 0.025,
+    "contextWindow": 128000
+  },
+  "gpt-5.3-codex": {
+    "inputPerMTok": 1.75,
+    "outputPerMTok": 14,
+    "cacheReadPerMTok": 0.175,
+    "contextWindow": 400000
+  },
+  "gpt-5.6-luna": {
+    "inputPerMTok": 0.2,
+    "outputPerMTok": 1.2,
+    "cacheReadPerMTok": 0.02,
+    "cacheCreationPerMTok": 0.25,
+    "contextWindow": 1000000,
+    "tierThreshold": 200000,
+    "tierMode": "marginal",
+    "tierInputPerMTok": 0.4
+  },
+  "gpt-5.6-sol": {
+    "inputPerMTok": 5,
+    "outputPerMTok": 30,
+    "cacheReadPerMTok": 0.5,
+    "cacheCreationPerMTok": 6.25,
+    "contextWindow": 1000000,
+    "tierThreshold": 272000,
+    "tierMode": "marginal",
+    "tierInputPerMTok": 10
+  },
+  "gpt-5.6-terra": {
+    "inputPerMTok": 2,
+    "outputPerMTok": 12,
+    "cacheReadPerMTok": 0.2,
+    "cacheCreationPerMTok": 2.5,
+    "contextWindow": 1000000,
+    "tierThreshold": 272000,
+    "tierMode": "marginal",
+    "tierInputPerMTok": 4
+  },
+  "grok-4.5": {
+    "inputPerMTok": 2,
+    "outputPerMTok": 6,
+    "cacheReadPerMTok": 0.5,
+    "contextWindow": 1000000,
+    "tierThreshold": 200000,
+    "tierMode": "flat",
+    "tierInputPerMTok": 4,
+    "tierOutputPerMTok": 12
+  },
+  "kimi-k2.7-code": {
+    "inputPerMTok": 0.95,
+    "outputPerMTok": 4,
+    "cacheReadPerMTok": 0.19,
+    "contextWindow": 256000
+  },
+  "kimi-k3": {
+    "inputPerMTok": 3,
+    "outputPerMTok": 15,
+    "cacheReadPerMTok": 0.3,
+    "contextWindow": 256000
+  },
+  "mai-code-1-flash": {
+    "inputPerMTok": 0.75,
+    "outputPerMTok": 4.5,
+    "cacheReadPerMTok": 0.075,
+    "contextWindow": 128000
+  },
+  "mai-code-1.1-flash": {
+    "inputPerMTok": 0.2,
+    "outputPerMTok": 1.2,
+    "cacheReadPerMTok": 0.02,
+    "contextWindow": 128000
+  },
+  "raptor-mini": {
+    "inputPerMTok": 0.25,
+    "outputPerMTok": 2,
+    "cacheReadPerMTok": 0.025,
+    "contextWindow": 128000
+  }
+}

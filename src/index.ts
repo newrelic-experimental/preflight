@@ -18,7 +18,6 @@ import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { WorkflowStore } from './dashboard/workflow-store.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
-import { checkNodeVersion } from './install/node-version-check.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import {
   isSyntheticSessionId,
@@ -31,6 +30,7 @@ import {
 import { SubagentWatcher } from './hooks/subagent-watcher.js';
 import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
+import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
@@ -40,6 +40,7 @@ import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
+import { applyCopilotPricingOverlay } from './metrics/copilot-pricing-overlay.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
@@ -890,6 +891,8 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
+      applyCopilotPricingOverlay(process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ?? null);
+
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
       const fromCwd =
@@ -933,6 +936,8 @@ async function main(): Promise<void> {
         logger.info('Server disabled via config — exiting');
         process.exit(0);
       }
+
+      applyCopilotPricingOverlay(process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ?? null);
 
       // --local has no owning Claude Code session — derive a deterministic
       // identifier so the rest of the codebase can rely on a non-empty

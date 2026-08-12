@@ -2,8 +2,8 @@ import { existsSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 /**
- * Resolve the directory containing bundled data files (alerts/ or dashboards/
- * JSON definitions).
+ * Resolve the directory containing bundled data files (alerts/, dashboards/,
+ * or copilot-pricing/ JSON definitions).
  *
  * The deploy modules ship as `dist/deploy/*.js` after TypeScript build, with
  * data files copied into `dist/data/<name>/` by the postbuild step (see
@@ -19,9 +19,11 @@ import { dirname, resolve } from 'node:path';
  * Jest's TS-module check — same pattern as `src/install/setup-wizard.ts`.
  *
  * Throws if no candidate exists — the deploy commands cannot run without the
- * underlying data files.
+ * underlying data files. Callers for whom the data is optional (e.g. the
+ * copilot-pricing overlay, unlike alerts/dashboards which are required for
+ * their own commands) must wrap this in a try/catch and degrade gracefully.
  */
-export function resolveDataDir(name: 'alerts' | 'dashboards'): string {
+export function resolveDataDir(name: 'alerts' | 'dashboards' | 'copilot-pricing'): string {
   const rawPath = process.argv[1] ?? process.cwd();
   const scriptPath = (() => {
     try {
