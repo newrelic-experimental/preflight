@@ -44,11 +44,11 @@ import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
+import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
-import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
 import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
 import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
@@ -1525,6 +1525,8 @@ async function main(): Promise<void> {
                 watcherDisabledByLock: stats?.watcherDisabledByLock ?? false,
                 costSelfCheckDeltaPct: null,
                 watcherDisabledReason,
+                copilotDebugLoggingDisabled:
+                  activeCopilotUsageWatcher?.getHealth().debugLoggingLikelyDisabled ?? false,
               };
             },
           },

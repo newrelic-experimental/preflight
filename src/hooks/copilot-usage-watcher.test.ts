@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getLogOutput } from '../__test-utils__/log-output.js';
 import { LocalStore } from '../storage/local-store.js';
 import { CopilotUsageWatcher } from './copilot-usage-watcher.js';
 
@@ -307,5 +308,58 @@ describe('CopilotUsageWatcher', () => {
     expect(health.filesWatched).toBe(1);
     expect(health.linesRead).toBe(1);
     expect(health.bytesRead).toBeGreaterThan(0);
+  });
+
+  it('does not flag debug logging as disabled when a debug-logs directory exists', () => {
+    writeFileSync(logPath, makeLlmRequestLine({}) + '\n');
+    const watcher = makeWatcher();
+    watcher.poll();
+    expect(watcher.getHealth().debugLoggingLikelyDisabled).toBe(false);
+  });
+
+  it('flags debug logging as likely disabled when a workspace root exists but has no debug-logs directory', () => {
+    // A real VS Code install (workspace root present) with the off-by-default
+    // github.copilot.chat.agentDebugLog.fileLogging.enabled setting never
+    // writes a debug-logs directory — the watcher would otherwise observe
+    // nothing with no indication why.
+    const emptyRoot = mkTmp();
+    try {
+      const watcher = new CopilotUsageWatcher({
+        storagePath,
+        workspaceStorageRoots: [emptyRoot],
+      });
+      watcher.poll();
+      expect(watcher.getHealth().debugLoggingLikelyDisabled).toBe(true);
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not flag disabled when no workspace root exists at all (cannot conclude)', () => {
+    const watcher = new CopilotUsageWatcher({
+      storagePath,
+      workspaceStorageRoots: [join(workspaceStorageRoot, 'no-such-root')],
+    });
+    watcher.poll();
+    expect(watcher.getHealth().debugLoggingLikelyDisabled).toBe(false);
+  });
+
+  it('warns once, naming the enable setting, when debug logging is disabled', () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const emptyRoot = mkTmp();
+    try {
+      const watcher = new CopilotUsageWatcher({
+        storagePath,
+        workspaceStorageRoots: [emptyRoot],
+      });
+      watcher.poll();
+      watcher.poll();
+      const output = getLogOutput(errorSpy);
+      const matches = output.split('agentDebugLog.fileLogging.enabled').length - 1;
+      expect(matches).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
   });
 });

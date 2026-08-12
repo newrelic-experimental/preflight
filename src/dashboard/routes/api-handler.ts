@@ -310,6 +310,14 @@ export interface ObservabilityHealthSnapshot {
    * actively wrong advice when the real cause is `'mode_mismatch'`.
    */
   readonly watcherDisabledReason: 'env_var' | 'mode_mismatch' | null;
+  /**
+   * True when the Copilot usage watcher is running but found a VS Code
+   * workspaceStorage root with no `debug-logs` directory — i.e. the
+   * off-by-default `github.copilot.chat.agentDebugLog.fileLogging.enabled`
+   * setting is not enabled, so token-exact Copilot cost is unavailable.
+   * Optional/absent for non-Copilot deployments and older snapshot producers.
+   */
+  readonly copilotDebugLoggingDisabled?: boolean;
 }
 
 export interface ApiHandlerDeps {

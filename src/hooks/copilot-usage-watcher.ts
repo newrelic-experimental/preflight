@@ -11,8 +11,12 @@
  * `session_id` in agent hook payloads — so events emitted here land in the
  * same `buffer-<sessionId>.jsonl` the hook collector writes to. Each usage
  * record is `{ type: 'llm_request', sid, ts, attrs: { model, inputTokens,
- * outputTokens, cachedTokens, responseId, copilotUsageNanoAiu, ... } }`
- * (shape verified against a real main.jsonl, VS Code 1.109 / Copilot Chat).
+ * outputTokens, cachedTokens, responseId, copilotUsageNanoAiu, ... } }`.
+ * This path + schema are produced by VS Code's `chatDebugFileLoggerService.ts`
+ * (formerly `microsoft/vscode-copilot-chat`, now merged into
+ * `microsoft/vscode` under `extensions/copilot/` and archived); the record
+ * shape is documented in its `otel-data-flow.html` and cross-checked against a
+ * real main.jsonl (VS Code 1.109 / Copilot Chat).
  * The hooks doc notes transcript/debug-log formats are not a stable API
  * (code.visualstudio.com/docs/copilot/customization/hooks) — same stability
  * tier as the Claude Code transcript format the parent/subagent watchers
@@ -110,6 +114,15 @@ export interface CopilotUsageWatcherHealth {
   readonly linesRead: number;
   readonly bytesRead: number;
   readonly parseErrors: number;
+  /**
+   * True when at least one VS Code workspaceStorage root exists but no Copilot
+   * `debug-logs` directory was found in any of them — the signature of the
+   * off-by-default `github.copilot.chat.agentDebugLog.fileLogging.enabled`
+   * setting. Lets callers distinguish "integration broken" from "prerequisite
+   * not enabled" instead of silently reporting zero cost. False when no root
+   * exists at all (VS Code absent / wrong OS path — cannot conclude).
+   */
+  readonly debugLoggingLikelyDisabled: boolean;
 }
 
 interface ParsedUsageRecord {
@@ -147,6 +160,8 @@ export class CopilotUsageWatcher {
   private linesRead = 0;
   private bytesRead = 0;
   private parseErrors = 0;
+  private debugLoggingLikelyDisabled = false;
+  private warnedDebugLoggingDisabled = false;
 
   constructor(options: CopilotUsageWatcherOptions = {}) {
     this.storagePath = options.storagePath ?? join(homedir(), '.newrelic-preflight');
@@ -182,6 +197,7 @@ export class CopilotUsageWatcher {
       linesRead: this.linesRead,
       bytesRead: this.bytesRead,
       parseErrors: this.parseErrors,
+      debugLoggingLikelyDisabled: this.debugLoggingLikelyDisabled,
     };
   }
 
@@ -213,8 +229,11 @@ export class CopilotUsageWatcher {
       this.parentSessionFilter === null
         ? (this.localStore?.getActiveSessionIdsFromHeartbeats() ?? null)
         : null;
+    let anyRootExists = false;
+    let anyDebugLogDir = false;
     for (const root of this.workspaceStorageRoots) {
       if (!existsSync(root)) continue;
+      anyRootExists = true;
       let workspaceHashes: string[];
       try {
         workspaceHashes = readdirSync(root);
@@ -224,6 +243,7 @@ export class CopilotUsageWatcher {
       for (const hash of workspaceHashes) {
         const logsDir = join(root, hash, COPILOT_LOG_SUBPATH);
         if (!existsSync(logsDir)) continue;
+        anyDebugLogDir = true;
         let sessionDirs: string[];
         try {
           sessionDirs = readdirSync(logsDir);
@@ -249,6 +269,19 @@ export class CopilotUsageWatcher {
           out.push({ path: logPath, sessionId });
         }
       }
+    }
+    // A VS Code install is present (root exists) yet no Copilot debug-logs
+    // directory anywhere ⇒ the off-by-default fileLogging setting is almost
+    // certainly not enabled. Warn once so a zero-cost session reads as a
+    // missing prerequisite rather than a broken integration.
+    this.debugLoggingLikelyDisabled = anyRootExists && !anyDebugLogDir;
+    if (this.debugLoggingLikelyDisabled && !this.warnedDebugLoggingDisabled) {
+      this.warnedDebugLoggingDisabled = true;
+      logger.warn(
+        'No Copilot debug-logs directory found; token-exact cost is unavailable. ' +
+          'Enable "github.copilot.chat.agentDebugLog.fileLogging.enabled" in VS Code ' +
+          'settings.json and reload the window.',
+      );
     }
     return out;
   }
@@ -332,8 +365,16 @@ export class CopilotUsageWatcher {
         // otherwise cached tokens are double-billed at full input rate.
         inputTokens: Math.max(0, parsed.inputTokens - parsed.cachedTokens),
         outputTokens: parsed.outputTokens,
-        // Single cachedTokens figure; treat as cache reads (no cache-creation
-        // analog in the log schema).
+        // `cachedTokens` is the only cache figure the debug-log schema exposes,
+        // and it is cache-READ (confirmed against a real main.jsonl: it tracks
+        // the previous request's input). KNOWN ESTIMATION GAP: VS Code does not
+        // surface cache-CREATION (cache-write) tokens separately, so any turn
+        // with a fresh cache write has those tokens folded into `inputTokens`
+        // above and billed at the base input rate instead of the premium
+        // `cacheCreationPerMTok` rate (src/shared/pricing.ts). This causes a
+        // small, consistent UNDER-billing on cache-write turns. We report 0
+        // rather than guess a split the source doesn't provide; revisit if VS
+        // Code adds a cache-creation field to the schema.
         cacheReadTokens: parsed.cachedTokens,
         cacheCreationTokens: 0,
       });

@@ -554,9 +554,17 @@ Antigravity's hook payloads have **no field naming the event type at all** — `
 
 **Detection (`isSupported()`):** `MCP_CLIENT === 'copilot'`, or `NEW_RELIC_AI_PLATFORM === 'copilot'` (the only adapter besides Kiro that actually reads `NEW_RELIC_AI_PLATFORM`).
 
-**Token-exact cost:** `CopilotUsageWatcher` (`src/hooks/copilot-usage-watcher.ts`) tails VS Code's per-session Copilot debug log (`<userDataDir>/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<sessionId>/main.jsonl`), whose `llm_request` records carry exact `inputTokens`/`outputTokens`/`cachedTokens` per model request, and emits `mode: 'token'` events into the same session buffer the hooks write to — the Copilot analog of the Claude Code parent-transcript watcher. The log format is not a stable API (same stability tier as the Claude Code transcript format the other watchers depend on); schema drift degrades to estimation-based cost, never a crash. Opt out with `NR_AI_ENABLE_COPILOT_USAGE_WATCHER=0`.
+**Token-exact cost:** `CopilotUsageWatcher` (`src/hooks/copilot-usage-watcher.ts`) tails VS Code's per-session Copilot debug log (`<userDataDir>/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<sessionId>/main.jsonl`), whose `llm_request` records carry exact `inputTokens`/`outputTokens`/`cachedTokens` per model request, and emits `mode: 'token'` events into the same session buffer the hooks write to — the Copilot analog of the Claude Code parent-transcript watcher. The path + record schema come from VS Code's `chatDebugFileLoggerService.ts` (formerly `microsoft/vscode-copilot-chat`, now merged into `microsoft/vscode` under `extensions/copilot/` and archived) and its `otel-data-flow.html`. The log format is not a stable API (same stability tier as the Claude Code transcript format the other watchers depend on); schema drift degrades to estimation-based cost, never a crash. Opt out with `NR_AI_ENABLE_COPILOT_USAGE_WATCHER=0`.
 
-**Known gaps:** agent hooks are a Preview feature and may change; organizations can disable hooks via enterprise policy. Hook matchers are ignored by VS Code, so per-tool matcher filtering is unavailable (irrelevant to Preflight's empty matcher).
+**Required setting (prerequisite for token-exact cost):** this debug log is **off by default**, gated behind `github.copilot.chat.agentDebugLog.fileLogging.enabled` — an `advanced`/`experimental` setting hidden from the normal Settings UI and still labelled "(Preview)". Users must add it to their VS Code **User `settings.json`**:
+
+```jsonc
+"github.copilot.chat.agentDebugLog.fileLogging.enabled": true
+```
+
+then **reload the window** (`Developer: Reload Window`). Until then the debug-logs directory never exists and cost falls back to content-size estimation. `CopilotUsageWatcher` detects this case (a VS Code workspaceStorage root present but no `debug-logs` directory anywhere), logs a one-time warning naming the setting, and surfaces it as `copilotDebugLoggingDisabled` in the dashboard observability-health snapshot — so a zero-cost session reads as a missing prerequisite rather than a broken integration.
+
+**Known gaps:** agent hooks are a Preview feature and may change; organizations can disable hooks via enterprise policy. Hook matchers are ignored by VS Code, so per-tool matcher filtering is unavailable (irrelevant to Preflight's empty matcher). Token-exact cost additionally requires the off-by-default `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting (see above); without it, cost is estimation-based. Cache-**creation** (cache-write) tokens are a known estimation gap: VS Code's debug-log schema exposes only a single cache-read `cachedTokens` figure, so cache-write tokens are folded into base-rate input and slightly under-billed on cache-write turns.
 
 **Setup:**
 
@@ -572,7 +580,8 @@ Antigravity's hook payloads have **no field naming the event type at all** — `
    VS Code also reads Claude-format hooks from `~/.claude/settings.json` by default, so a `preflight install` done for Claude Code is picked up automatically — but hooks from all locations are _collected_, so pick one user-level source: either rely on the Claude-format file, or use `~/.copilot/hooks` and disable the Claude location for Copilot via `chat.hookFilesLocations` (`"~/.claude/settings.json": false`). Same-event hooks in both files double-capture every tool call.
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`).
 3. Register the Preflight MCP server for `nr_observe_*` tools with env `MCP_CLIENT=copilot`, `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`.
-4. Copilot CLI: same hook config, lowerCamelCase event names — no extra steps.
+4. For token-exact cost, add `"github.copilot.chat.agentDebugLog.fileLogging.enabled": true` to VS Code User `settings.json` and reload the window (see **Required setting** above). Not needed for tool-call/session telemetry, only for exact cost.
+5. Copilot CLI: same hook config, lowerCamelCase event names — no extra steps.
 
 **Legacy fallback (HTTP push):** the previous integration path remains — a Copilot-compatible VS Code extension pushing events to `http://localhost:9847` (`"preflight.endpoint"` in VS Code settings), with the `file_edit`/`file_open`/`file_create`/`file_delete`/`terminal_command`/`task` event vocabulary. Preflight only receives what such an extension chooses to send; treat that path's fidelity as bounded by the extension.
 
