@@ -68,23 +68,41 @@ const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]
 const COPILOT_LOG_SUBPATH = join('GitHub.copilot-chat', 'debug-logs');
 
 /**
- * Default VS Code `workspaceStorage` roots per OS (stable + Insiders).
+ * VS Code Remote (WSL, SSH, dev containers, Codespaces) `workspaceStorage`
+ * roots. When the Copilot Chat extension runs in a remote extension host, it
+ * writes debug logs under the server's user-data dir rather than the desktop
+ * one, so these must be searched alongside the local roots or remote sessions
+ * silently yield zero token events (and therefore $0.00 cost).
+ */
+function remoteWorkspaceStorageRoots(home: string): string[] {
+  return ['.vscode-server', '.vscode-server-insiders', '.vscode-remote'].map((dir) =>
+    join(home, dir, 'data', 'User', 'workspaceStorage'),
+  );
+}
+
+/**
+ * Default VS Code `workspaceStorage` roots per OS (stable + Insiders), plus
+ * the remote-server roots used by WSL/SSH/dev-container sessions.
  * Sourced from VS Code's documented user-data locations
  * (code.visualstudio.com/docs/configure/command-line#_advanced-cli-options).
  */
 export function defaultWorkspaceStorageRoots(): string[] {
   const home = homedir();
   const variants = ['Code', 'Code - Insiders'];
+  const remote = remoteWorkspaceStorageRoots(home);
   if (process.platform === 'darwin') {
-    return variants.map((v) =>
-      join(home, 'Library', 'Application Support', v, 'User', 'workspaceStorage'),
-    );
+    return [
+      ...variants.map((v) =>
+        join(home, 'Library', 'Application Support', v, 'User', 'workspaceStorage'),
+      ),
+      ...remote,
+    ];
   }
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming');
-    return variants.map((v) => join(appData, v, 'User', 'workspaceStorage'));
+    return [...variants.map((v) => join(appData, v, 'User', 'workspaceStorage')), ...remote];
   }
-  return variants.map((v) => join(home, '.config', v, 'User', 'workspaceStorage'));
+  return [...variants.map((v) => join(home, '.config', v, 'User', 'workspaceStorage')), ...remote];
 }
 
 // ---------------------------------------------------------------------------

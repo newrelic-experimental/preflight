@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getLogOutput } from '../__test-utils__/log-output.js';
 import { LocalStore } from '../storage/local-store.js';
-import { CopilotUsageWatcher } from './copilot-usage-watcher.js';
+import { CopilotUsageWatcher, defaultWorkspaceStorageRoots } from './copilot-usage-watcher.js';
 
 const STDERR_WRITE = process.stderr.write;
 
@@ -298,6 +298,16 @@ describe('CopilotUsageWatcher', () => {
     const events = readTokenEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ messageId: 'resp_big', inputTokens: 10 });
+  });
+
+  it('includes VS Code Remote server roots so WSL/SSH/dev-container sessions are found', () => {
+    const roots = defaultWorkspaceStorageRoots();
+    const home = homedir();
+    expect(roots).toContain(join(home, '.vscode-server', 'data', 'User', 'workspaceStorage'));
+    expect(roots).toContain(
+      join(home, '.vscode-server-insiders', 'data', 'User', 'workspaceStorage'),
+    );
+    expect(roots).toContain(join(home, '.vscode-remote', 'data', 'User', 'workspaceStorage'));
   });
 
   it('reports health counters', () => {
