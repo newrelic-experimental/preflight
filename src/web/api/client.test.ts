@@ -6,6 +6,7 @@ import {
   fetchGitEfficiency,
   fetchWorkflowDetail,
   fetchSessionReplay,
+  fetchActivityHeatmap,
   patchSettings,
   postDigestSend,
   qk,
@@ -287,5 +288,40 @@ describe('api/client', () => {
     const result = await fetchSessionReplay('sess-1');
     expect(calledWith).toBe('/api/sessions/sess-1/replay');
     expect(result).toEqual(payload);
+  });
+
+  it('fetchActivityHeatmap sends the browser IANA timezone as a tz query param', async () => {
+    let calledWith = '';
+    const payload = { buckets: [1, 2], bucketSizeMs: 900_000, startTimestamp: 0, maxCount: 2 };
+    globalThis.fetch = ((u: string) => {
+      calledWith = u;
+      return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const result = await fetchActivityHeatmap('today');
+    const expectedTz = encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(calledWith).toBe(`/api/activity-heatmap?view=today&tz=${expectedTz}`);
+    expect(result).toEqual(payload);
+  });
+
+  it('fetchActivityHeatmap includes both weeks and tz for the history view', async () => {
+    let calledWith = '';
+    const payload = { days: [{ date: '2026-06-10', count: 3 }], maxCount: 3 };
+    globalThis.fetch = ((u: string) => {
+      calledWith = u;
+      return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as unknown as typeof globalThis.fetch;
+    await fetchActivityHeatmap('history', 12);
+    const expectedTz = encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(calledWith).toBe(`/api/activity-heatmap?view=history&weeks=12&tz=${expectedTz}`);
   });
 });

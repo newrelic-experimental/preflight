@@ -1,6 +1,16 @@
 import { useMemo, useState, useRef, useEffect } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Cell,
+  ResponsiveContainer,
+} from 'recharts';
 import { useLocation } from 'wouter';
 import { useLiveStore, useSubagentStats, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
@@ -20,6 +30,7 @@ import {
   fetchRecentAlerts,
   fetchCacheHealth,
   fetchCost,
+  fetchCostPerTool,
   fetchSessionCurrent,
   fetchSessionsList,
   fetchSessionReplay,
@@ -83,7 +94,12 @@ const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
 
 interface CostApiResponse {
   readonly cost: { readonly sessionTotalCostUsd?: number | null; readonly model?: string | null };
-  readonly forecast: { readonly forecastEndOfDayUsd?: number | null } | null;
+  readonly forecast: {
+    readonly forecastEndOfDayUsd?: number | null;
+    readonly forecastEndOfWeekUsd?: number | null;
+    readonly forecastSessionEndUsd?: number | null;
+    readonly confidenceNote?: string | null;
+  } | null;
   readonly sessionTodayUsd?: number | null;
 }
 
@@ -170,6 +186,27 @@ interface ToolSelectionMetrics {
 }
 
 const QUALITY_REFETCH_MS = 10_000;
+
+const CHART_TICK_STYLE = { fill: 'var(--color-ink-muted)', fontSize: 10 };
+const CHART_GRID_STROKE = 'var(--color-border-subtle)';
+const CHART_TOOLTIP_STYLE = {
+  background: 'var(--color-bg-elevated)',
+  border: '1px solid var(--color-border-medium)',
+  borderRadius: 8,
+  fontSize: 12,
+  color: 'var(--color-ink-base)',
+};
+
+// Mirrors History.tsx's toolFillColor — same tool-name-keyed palette, so a
+// tool's color is consistent whether viewed here (by cost) or in the Top
+// Tools panel (by call count).
+function toolFillColor(toolName: string): string {
+  if (toolName === 'Read') return 'var(--color-accent-blue)';
+  if (toolName === 'Edit' || toolName === 'Write') return 'var(--color-accent-green)';
+  if (toolName === 'Bash') return 'var(--color-accent-purple)';
+  if (toolName === 'Agent') return 'var(--color-accent-teal)';
+  return 'var(--color-ink-muted)';
+}
 
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
@@ -372,7 +409,11 @@ export function Today(): JSX.Element {
             />
           </AnimatedCard>
 
-          <AnimatedCard index={1}>
+          <AnimatedCard index={1} className="mb-3">
+            <CostByToolPanel />
+          </AnimatedCard>
+
+          <AnimatedCard index={2}>
             <RecentAlertsPanel />
           </AnimatedCard>
         </>
@@ -453,6 +494,9 @@ export function Today(): JSX.Element {
               }
               hourlySpend={hourlySpend}
               subagentUsd={forecastBreakdownSubagentUsd}
+              forecastSessionEnd={costApi?.forecast?.forecastSessionEndUsd ?? null}
+              forecastWeek={costApi?.forecast?.forecastEndOfWeekUsd ?? null}
+              confidenceNote={costApi?.forecast?.confidenceNote ?? null}
             />
             {concurrency && concurrency.buckets && (
               <ConcurrencyIndicator
@@ -538,9 +582,12 @@ export function Today(): JSX.Element {
             <QualityProxyPanel />
             <ToolSelectionPanel />
             <LatencyPanel aggregate={aggregate} />
+            <ComputeWastePanel />
             <ModelUsagePanel />
             <CacheHealthPanel aggregate={aggregate} />
-            <ComputeWastePanel />
+            <div className="col-span-3">
+              <CostByToolPanel />
+            </div>
           </AnimatedCard>
 
           <AnimatedCard index={4}>
@@ -572,6 +619,105 @@ export function Today(): JSX.Element {
         </>
       )}
     </section>
+  );
+}
+
+function CostByToolPanel(): JSX.Element {
+  const { data, isError } = useQuery<TurnCostsResponse>({
+    queryKey: qk.costPerTool,
+    queryFn: () => fetchCostPerTool(),
+    refetchInterval: QUALITY_REFETCH_MS,
+    retry: false,
+  });
+
+  const tools = data?.costByToolType
+    ? Object.entries(data.costByToolType)
+        .filter(([, e]) => e.totalCost > 0)
+        .sort((a, b) => b[1].totalCost - a[1].totalCost)
+        .map(([tool, e]) => ({ tool, totalCost: e.totalCost, callCount: e.callCount }))
+    : [];
+
+  const lowAttribution = data != null && (data.attributionRate ?? 1) < 0.5;
+
+  if (isError) {
+    return (
+      <Card padding="sm" className="h-full">
+        <Eyebrow className="mb-2">Cost by Tool</Eyebrow>
+        <EmptyState
+          icon="radar"
+          title="Cost attribution unavailable"
+          subtitle="Start a Claude Code session to enable cost attribution."
+        />
+      </Card>
+    );
+  }
+
+  if (!data) {
+    return (
+      <Card padding="sm" className="h-full">
+        <Eyebrow className="mb-2">Cost by Tool</Eyebrow>
+        <EmptyState
+          icon="radar"
+          title="No cost data yet"
+          subtitle="Cost attribution appears after token data is recorded."
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Cost by Tool</Eyebrow>
+      {tools.length === 0 ? (
+        <EmptyState
+          icon="radar"
+          title="No cost data yet"
+          subtitle="Cost attribution appears after token data is recorded."
+        />
+      ) : (
+        <>
+          <div className="min-w-0" style={{ height: `${Math.max(96, tools.length * 28 + 24)}px` }}>
+            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+              <BarChart data={tools} layout="vertical">
+                <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray="3 3" />
+                <XAxis type="number" tick={CHART_TICK_STYLE} stroke={CHART_GRID_STROKE} unit="$" />
+                <YAxis
+                  type="category"
+                  dataKey="tool"
+                  tick={CHART_TICK_STYLE}
+                  tickFormatter={(value: string) => {
+                    const match = tools.find((t) => t.tool === value);
+                    const label = shortToolName(value);
+                    return match ? `${label} (${match.callCount})` : label;
+                  }}
+                  stroke={CHART_GRID_STROKE}
+                  width={90}
+                  interval={0}
+                />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_STYLE}
+                  labelFormatter={(label) => shortToolName(String(label))}
+                />
+                <Bar dataKey="totalCost" name="Cost ($)" radius={[0, 3, 3, 0]}>
+                  {tools.map((entry) => (
+                    <Cell
+                      key={entry.tool}
+                      fill={toolFillColor(shortToolName(entry.tool))}
+                      fillOpacity={0.8}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          {lowAttribution && (
+            <div className="text-[10px] text-ink-muted italic mt-1">
+              Based on {Math.round((data.attributionRate ?? 0) * 100)}% of session cost
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -1660,11 +1806,17 @@ function ForecastEodCard({
   forecastEod,
   hourlySpend,
   subagentUsd = 0,
+  forecastSessionEnd,
+  forecastWeek,
+  confidenceNote,
 }: {
   todayTotal: number;
   forecastEod: number | null;
   hourlySpend: HourlyCostEntry[];
   subagentUsd?: number;
+  forecastSessionEnd: number | null;
+  forecastWeek: number | null;
+  confidenceNote: string | null;
 }): JSX.Element {
   const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
   const effectiveForecast = hasForecast ? Math.max(forecastEod, todayTotal) : 0;
@@ -1711,6 +1863,25 @@ function ForecastEodCard({
                 </div>
               )}
             </div>
+          )}
+          {(forecastSessionEnd !== null || forecastWeek !== null) && (
+            <div className="grid grid-cols-2 gap-x-3 mt-2 pt-2 border-t border-border-subtle text-xs">
+              {forecastSessionEnd !== null && (
+                <div>
+                  <div className="text-ink-muted">End of session</div>
+                  <div className="font-mono tabular-nums">~${forecastSessionEnd.toFixed(2)}</div>
+                </div>
+              )}
+              {forecastWeek !== null && (
+                <div>
+                  <div className="text-ink-muted">End of week</div>
+                  <div className="font-mono tabular-nums">~${forecastWeek.toFixed(2)}</div>
+                </div>
+              )}
+            </div>
+          )}
+          {confidenceNote && (
+            <div className="text-[10px] text-ink-muted italic mt-1">{confidenceNote}</div>
           )}
         </>
       ) : (

@@ -1901,6 +1901,15 @@ export function createApiHandler(
     });
   });
 
+  routes.set('GET /api/cost-per-tool', (req, res) => {
+    if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
+    // Same reasoning as /api/turn-costs above — optional ?sessionId= scopes
+    // this process-global tracker's data to one session.
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const sessionId = url.searchParams.get('sessionId') ?? undefined;
+    jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
+  });
+
   routes.set('GET /api/cost-per-outcome', (req, res) => {
     if (!deps.sessionStore?.loadAllSessions)
       return unavailable(res, 'sessionStore.loadAllSessions');
@@ -2245,19 +2254,34 @@ export function createApiHandler(
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const view = url.searchParams.get('view') ?? 'today';
+      // The browser sends its own IANA timezone (Intl.DateTimeFormat().
+      // resolvedOptions().timeZone) as `tz` — see fetchActivityHeatmap in
+      // src/web/api/client.ts. When present and recognized, `tz` is used
+      // instead of this dashboard *server* process's own OS/Intl timezone to
+      // draw the day boundary, so a cloud-hosted or containerized dashboard
+      // viewed from a different timezone than the server still buckets
+      // "today" the way the viewing browser expects. Falls back to the
+      // server's own timezone when `tz` is absent, blank, or not a name this
+      // server's ICU recognizes — Intl.DateTimeFormat throws a RangeError on
+      // an unrecognized IANA name, which can happen from ICU version skew
+      // alone (e.g. a browser reporting a newer alias like
+      // "America/Ciudad_Juarez" that this server's Node/ICU doesn't have),
+      // with no malice or client bug required; probing it here keeps that
+      // case a graceful fallback instead of a 500 for the whole panel.
+      const tzParam = url.searchParams.get('tz')?.trim();
+      let tz: string | undefined;
+      if (tzParam) {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: tzParam });
+          tz = tzParam;
+        } catch {
+          tz = undefined;
+        }
+      }
 
       if (view === 'today') {
-        // localStartOfDay() draws "today" using this dashboard *server*
-        // process's own OS/Intl timezone. The browser calls the same helper
-        // client-side (src/lib/date.ts) for its own "today" filtering, so
-        // this endpoint is only guaranteed to agree with the client when
-        // server and browser share a timezone — the common single-machine
-        // `--local`/`--stdio` deployment. A cloud-hosted or containerized
-        // dashboard viewed from a different timezone can see this bucket
-        // range anchored to the wrong midnight; neither side is ever
-        // told the other's offset today.
         const now = Date.now();
-        const startMs = localStartOfDay(now);
+        const startMs = localStartOfDay(now, tz);
         const bucketSizeMs = 900_000;
         const bucketCount = Math.ceil((now - startMs) / bucketSizeMs) || 1;
         const buckets = new Array<number>(bucketCount).fill(0);
@@ -2309,17 +2333,28 @@ export function createApiHandler(
         // developer's evening session commonly straddles UTC midnight, which
         // would otherwise land that activity on the wrong calendar day for
         // anyone not in UTC.
-        const todayStart = localStartOfDay();
-        const startDate = new Date(todayStart);
-        startDate.setDate(startDate.getDate() - weeks * 7);
+        const todayStart = localStartOfDay(undefined, tz);
 
-        const sessions = deps.sessionStore?.loadAllSessions?.({ since: startDate }) ?? [];
+        // Walk backward from today to the start of the window, one day at a
+        // time, snapping each step to that day's actual local midnight via
+        // localStartOfDay rather than subtracting a fixed 86_400_000ms — a
+        // local day can be 23h or 25h across a DST transition. Subtracting
+        // 12h before re-snapping is always enough to land within the
+        // previous day (the shortest possible local day is 23h) and never
+        // enough to skip past it (the longest is 25h).
+        const totalDays = weeks * 7;
+        const dayBoundaries = new Array<number>(totalDays + 1);
+        dayBoundaries[totalDays] = todayStart;
+        for (let i = totalDays - 1; i >= 0; i--) {
+          dayBoundaries[i] = localStartOfDay(dayBoundaries[i + 1] - 12 * 3_600_000, tz);
+        }
+        const startMs = dayBoundaries[0];
+
+        const sessions = deps.sessionStore?.loadAllSessions?.({ since: new Date(startMs) }) ?? [];
 
         const dayMap = new Map<string, number>();
-        const cursor = new Date(startDate);
-        while (cursor.getTime() <= todayStart) {
-          dayMap.set(localDateKey(cursor.getTime()), 0);
-          cursor.setDate(cursor.getDate() + 1);
+        for (const boundary of dayBoundaries) {
+          dayMap.set(localDateKey(boundary, tz), 0);
         }
 
         // Bucket by each timeline entry's own timestamp, mirroring the
@@ -2336,7 +2371,6 @@ export function createApiHandler(
         // start-day/toolCallCount attribution so that older history doesn't
         // silently drop to zero; only sessions that *do* have a timeline get
         // the per-entry walk.
-        const startMs = startDate.getTime();
         for (const s of sessions) {
           const session = s as {
             startTime?: number;
@@ -2346,7 +2380,7 @@ export function createApiHandler(
           if (session.timeline) {
             for (const entry of session.timeline) {
               if (entry.timestamp < startMs) continue;
-              const key = localDateKey(entry.timestamp);
+              const key = localDateKey(entry.timestamp, tz);
               if (dayMap.has(key)) {
                 dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
               }
@@ -2354,7 +2388,7 @@ export function createApiHandler(
             continue;
           }
           if (!session.startTime || session.startTime < startMs) continue;
-          const key = localDateKey(session.startTime);
+          const key = localDateKey(session.startTime, tz);
           if (dayMap.has(key)) {
             dayMap.set(key, (dayMap.get(key) ?? 0) + (session.toolCallCount ?? 0));
           }

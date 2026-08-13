@@ -6040,6 +6040,198 @@ describe('api-handler GET /api/activity-heatmap', () => {
     expect(todayEntry?.count).toBe(5);
   });
 
+  it("uses the tz query param, not the server process's own timezone, for view=today", async () => {
+    jest.useFakeTimers();
+    try {
+      const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+      jest.setSystemTime(now);
+
+      // Asia/Kolkata (UTC+5:30), computed via the same shared helper the
+      // route itself calls, so this test is not tied to any one host
+      // timezone. Guard against a vacuous scenario by checking Kolkata
+      // against an explicit UTC computation — not against "whatever this
+      // test process's own default timezone happens to be" (that would
+      // itself go vacuous, and wrongly fail this guard, if the suite ever
+      // ran with TZ=Asia/Kolkata or an equal-offset zone like Asia/Colombo).
+      const kolkataStart = localStartOfDay(now, 'Asia/Kolkata');
+      expect(kolkataStart).not.toBe(localStartOfDay(now, 'UTC'));
+      const defaultStart = localStartOfDay(now);
+
+      const recordTs = kolkataStart + 60_000;
+      const handler = createApiHandler({
+        toolCallBuffer: {
+          getRecords: () =>
+            [
+              {
+                id: 'r1',
+                sessionId: 's1',
+                toolName: 'Read',
+                toolUseId: 't1',
+                timestamp: recordTs,
+                durationMs: 10,
+                success: true,
+              },
+            ] as unknown as ReturnType<
+              NonNullable<Parameters<typeof createApiHandler>[0]['toolCallBuffer']>['getRecords']
+            >,
+        },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadAllSessions: () => [],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+
+      const reqWithTz = {
+        method: 'GET',
+        url: '/api/activity-heatmap?view=today&tz=Asia%2FKolkata',
+      } as IncomingMessage;
+      const { res: resWithTz, status: statusWithTz, body: bodyWithTz } = fakeRes();
+      await handler(reqWithTz, resWithTz);
+      expect(statusWithTz()).toBe(200);
+      const resultWithTz = JSON.parse(bodyWithTz());
+      expect(resultWithTz.startTimestamp).toBe(kolkataStart);
+      expect((resultWithTz.buckets as number[]).reduce((sum, n) => sum + n, 0)).toBe(1);
+
+      const reqWithoutTz = {
+        method: 'GET',
+        url: '/api/activity-heatmap?view=today',
+      } as IncomingMessage;
+      const { res: resNoTz, status: statusNoTz, body: bodyNoTz } = fakeRes();
+      await handler(reqWithoutTz, resNoTz);
+      expect(statusNoTz()).toBe(200);
+      const resultNoTz = JSON.parse(bodyNoTz());
+      expect(resultNoTz.startTimestamp).toBe(defaultStart);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("uses the tz query param, not the server process's own timezone, for view=history day-keying", async () => {
+    jest.useFakeTimers();
+    try {
+      const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+      jest.setSystemTime(now);
+
+      const kolkataStart = localStartOfDay(now, 'Asia/Kolkata');
+      // See the view=today test above for why this guards against UTC
+      // specifically rather than against this process's own default tz.
+      expect(kolkataStart).not.toBe(localStartOfDay(now, 'UTC'));
+
+      const entryTs = kolkataStart + 60_000;
+      const kolkataKey = localDateKey(entryTs, 'Asia/Kolkata');
+      const defaultKey = localDateKey(entryTs);
+      const handler = createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadAllSessions: () => [
+            {
+              startTime: entryTs,
+              toolCallCount: 1,
+              timeline: [{ timestamp: entryTs }],
+            },
+          ],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+
+      const reqWithTz = {
+        method: 'GET',
+        url: '/api/activity-heatmap?view=history&weeks=1&tz=Asia%2FKolkata',
+      } as IncomingMessage;
+      const { res: resWithTz, status: statusWithTz, body: bodyWithTz } = fakeRes();
+      await handler(reqWithTz, resWithTz);
+      expect(statusWithTz()).toBe(200);
+      const resultWithTz = JSON.parse(bodyWithTz());
+      const kolkataDay = (resultWithTz.days as Array<{ date: string; count: number }>).find(
+        (d) => d.date === kolkataKey,
+      );
+      expect(kolkataDay?.count).toBe(1);
+
+      const reqWithoutTz = {
+        method: 'GET',
+        url: '/api/activity-heatmap?view=history&weeks=1',
+      } as IncomingMessage;
+      const { res: resNoTz, status: statusNoTz, body: bodyNoTz } = fakeRes();
+      await handler(reqWithoutTz, resNoTz);
+      expect(statusNoTz()).toBe(200);
+      const resultNoTz = JSON.parse(bodyNoTz());
+      const defaultDay = (resultNoTz.days as Array<{ date: string; count: number }>).find(
+        (d) => d.date === defaultKey,
+      );
+      expect(defaultDay?.count).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("falls back to the server's own timezone (200, not 500) when tz is not a recognized IANA name", async () => {
+    // Intl.DateTimeFormat throws a RangeError on an unrecognized timeZone —
+    // reachable without any client bug via ICU version skew between the
+    // browser and this server's Node/ICU. That must degrade to the default
+    // behavior for the whole panel, not surface as a 500.
+    jest.useFakeTimers();
+    try {
+      const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+      jest.setSystemTime(now);
+      const handler = createApiHandler({
+        toolCallBuffer: { getRecords: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadAllSessions: () => [],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = {
+        method: 'GET',
+        url: '/api/activity-heatmap?view=today&tz=Not%2FARealZone',
+      } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      expect(JSON.parse(body()).startTimestamp).toBe(localStartOfDay(now));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('trims whitespace from tz before validating and forwarding it', async () => {
+    jest.useFakeTimers();
+    try {
+      const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+      jest.setSystemTime(now);
+      const kolkataStart = localStartOfDay(now, 'Asia/Kolkata');
+
+      const handler = createApiHandler({
+        toolCallBuffer: { getRecords: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => [],
+          loadAllSessions: () => [],
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      // Leading space (`%20`) is inside the emptiness check but must not
+      // survive into what's actually forwarded to localStartOfDay — a
+      // space-padded IANA name would otherwise fail Intl.DateTimeFormat's
+      // validation and silently fall back to the server's own timezone
+      // instead of Kolkata.
+      const req = {
+        method: 'GET',
+        url: '/api/activity-heatmap?view=today&tz=%20Asia%2FKolkata',
+      } as IncomingMessage;
+      const { res, status, body } = fakeRes();
+      await handler(req, res);
+      expect(status()).toBe(200);
+      expect(JSON.parse(body()).startTimestamp).toBe(kolkataStart);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('returns 400 invalid_view for an unrecognized view param', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/activity-heatmap?view=bogus' } as IncomingMessage;
