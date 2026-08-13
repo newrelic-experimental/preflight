@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-08-12
+
+### Added
+
+- **The GitHub Copilot adapter now captures tool calls via VS Code's native agent hooks (Preview)** instead of self-reported data, giving full session and tool-call visibility for Copilot Chat users, matching the other full-hooks platforms.
+- **Copilot sessions can now report token-exact cost** by reading VS Code's Copilot Chat debug log instead of estimating cost from content size. This requires enabling VS Code's `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting and reloading the window — see the Copilot section of `docs/ADAPTERS.md` for setup steps. Without it, cost falls back to estimation as before.
+
 ## [1.15.0] - 2026-08-12
 
 ### Added
