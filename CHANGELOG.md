@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.1] - 2026-08-13
+
+### Fixed
+
+- **The Sessions page now shows the LIVE badge and a placeholder row for sessions running in a different Claude Code window**, not just the window the dashboard happens to be attached to — previously such sessions were invisible entirely. (Full activity detail for a cross-process session — call counts, timeline — is not yet available; only its live status and identity are.)
+- **The Sessions page's Today/7-days/30-days tabs no longer hide sessions that never spawned a subagent** — most sessions — regardless of how recently they actually happened. Only "All" reliably showed every session before this fix.
+- **The session-backfill script (`scripts/backfill-sessions.ts`) now writes every `FullSessionSummary` field**, so sessions it reconstructs from historical New Relic telemetry no longer permanently report zero/null for model breakdown, cache-token, and quality-proxy data that later dashboard views expect.
+
+### Changed
+
+- **A dashboard-only dead code path (`fetchLatency`) was removed** — no user-visible change; latency data continues to be served via the Today dashboard's aggregate endpoint.
+- **Region host configuration (events-ingest host, NerdGraph URL, license-key auto-detect, deploy CLI flags) is now consolidated into one internal registry**, instead of being hand-maintained separately in four places — no change in behavior, this only reduces the risk of the four copies drifting out of sync when a region is added or changed in the future.
+
 ## [1.15.0] - 2026-08-12
 
 ### Added

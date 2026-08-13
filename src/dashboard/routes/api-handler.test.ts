@@ -97,6 +97,31 @@ describe('api-handler GET /api/session/current', () => {
     expect(JSON.parse(body())).toEqual({ ...fake, efficiencyScore: null, liveSessions: [] });
   });
 
+  it('includes a session live only in another process (via localStore buffer) in liveSessions', async () => {
+    const fake = { id: 'sess-cross-process', toolCallCount: 2 };
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionTracker: { getMetrics: () => fake } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['sessionTracker'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/session/current' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { liveSessions: string[] };
+    expect(parsed.liveSessions).toContain('other-process-session');
+  });
+
   it('returns 503 with { error, what } body when sessionTracker is missing', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/session/current' } as IncomingMessage;
@@ -342,6 +367,34 @@ describe('api-handler GET /api/sessions', () => {
     expect(live).toBeDefined();
     expect(live?.model ?? null).toBeNull();
   });
+
+  it('injects a stub row for a session live only in another process', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getLastActivity: () => null,
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+    expect(result.some((s) => s.sessionId === 'other-process-session')).toBe(true);
+  });
 });
 
 describe('api-handler GET /api/sessions/:id', () => {
@@ -402,6 +455,36 @@ describe('api-handler GET /api/sessions/:id', () => {
     const { res, status } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(404);
+  });
+
+  it('returns an in-progress shell instead of 404 for a session live only in another process', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/sessions/other-process-session',
+    } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { sessionId: string; outcome: string };
+    expect(parsed.sessionId).toBe('other-process-session');
+    expect(parsed.outcome).toBe('in progress');
   });
 
   it('attaches qualityProxy (derived from persisted raw counts) to a persisted session with real signals', async () => {

@@ -582,6 +582,35 @@ describe('Sessions view — workflow consolidation', () => {
     expect(container.textContent).not.toContain('30s');
   });
 
+  it('shows a session with no workflow runs under the Today tab when it started today', async () => {
+    // sessionId kept to 8 chars: SessionListRow renders `sessionId.slice(0, 8)`,
+    // so a longer id would never render in full and this assertion would be
+    // vacuous regardless of the filtering fix under test.
+    const todaySession = {
+      sessionId: 'sess-tdy',
+      startTime: new Date().toISOString(),
+      toolCallCount: 3,
+      estimatedCostUsd: 0.1,
+    };
+    const { container } = renderSessionsFull([...SESSIONS, todaySession], RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Today' }));
+    await waitFor(() => expect(within(container).getByText(/sess-tdy/)).toBeInTheDocument());
+  });
+
+  it('hides a session under the Today tab when it did not start today, even with no workflow runs', async () => {
+    const oldSession = {
+      sessionId: 'sess-old',
+      startTime: '2020-01-01T00:00:00Z',
+      toolCallCount: 3,
+      estimatedCostUsd: 0.1,
+    };
+    const { container } = renderSessionsFull([...SESSIONS, oldSession], RUNS);
+    await waitFor(() => expect(screen.getByText(/sess-a/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Today' }));
+    await waitFor(() => expect(container.textContent).not.toContain('sess-old'));
+  });
+
   // A run's totalUsd being null is ambiguous between "confirmed $0" and "no
   // process ever observed this run's cost". costUnknown distinguishes the
   // two (a partial mitigation); the KPI must disclose when it does.

@@ -12,6 +12,7 @@ import { resolve, sep } from 'node:path';
 
 import { normalizeDeveloperName } from '../config.js';
 import { resolveDataDir } from './data-paths.js';
+import { getRegionByDeployFlags } from '../install/regions.js';
 
 export const CREATE_MUTATION = `
 mutation DashboardCreate($accountId: Int!, $dashboard: DashboardInput!) {
@@ -350,9 +351,7 @@ async function teardownDashboard(
 
 function pickNerdgraphUrl(opts: DashboardDeployOptions): string {
   if (opts.nerdgraphUrlOverride) return opts.nerdgraphUrlOverride;
-  if (opts.eu) return 'https://api.eu.newrelic.com/graphql';
-  if (opts.jp) return 'https://api.jp.newrelic.com/graphql';
-  return 'https://api.newrelic.com/graphql';
+  return getRegionByDeployFlags(opts).nerdgraphUrl;
 }
 
 /**
