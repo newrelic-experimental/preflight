@@ -818,7 +818,7 @@ describe('runDiagnostics', () => {
     it('returns ok when the installed version is the latest', async () => {
       const mod = await import('../version.js');
       mockFetch.mockImplementation(async (url: string | URL | Request) => {
-        if (String(url).includes('registry.npmjs.org')) {
+        if (new URL(String(url)).hostname === 'registry.npmjs.org') {
           return { ok: true, json: async () => ({ version: mod.VERSION }) } as unknown as Response;
         }
         return { ok: true, json: async () => ({}) } as unknown as Response;
@@ -830,7 +830,7 @@ describe('runDiagnostics', () => {
 
     it('returns warn with an upgrade fix command when a newer version is on npm', async () => {
       mockFetch.mockImplementation(async (url: string | URL | Request) => {
-        if (String(url).includes('registry.npmjs.org')) {
+        if (new URL(String(url)).hostname === 'registry.npmjs.org') {
           return { ok: true, json: async () => ({ version: '99.0.0' }) } as unknown as Response;
         }
         return { ok: true, json: async () => ({}) } as unknown as Response;
@@ -844,7 +844,7 @@ describe('runDiagnostics', () => {
 
     it('returns skip when the npm registry is unreachable', async () => {
       mockFetch.mockImplementation(async (url: string | URL | Request) => {
-        if (String(url).includes('registry.npmjs.org')) {
+        if (new URL(String(url)).hostname === 'registry.npmjs.org') {
           return { ok: false } as unknown as Response;
         }
         return { ok: true, json: async () => ({}) } as unknown as Response;
