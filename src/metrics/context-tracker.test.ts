@@ -9,6 +9,12 @@ import type { TokenEvent, ToolCallRecord } from '../storage/types.js';
 function makeTokenEvent(overrides: Partial<TokenEvent> = {}): TokenEvent {
   // Total context = inputTokens + cacheReadTokens + cacheCreationTokens
   // Default: 5000 + 30000 + 15000 = 50000 total context
+  //
+  // Model deliberately doesn't match any pricing-table entry/alias/prefix, so
+  // resolveModelPricing() returns null and the tracker keeps the 200K window
+  // set in beforeEach — these tests exercise the fillPercent arithmetic in
+  // isolation, not model-based window resolution (see the dedicated
+  // 'modelContextWindow resolution' tests below for that).
   return {
     mode: 'token',
     timestamp: Date.now(),
@@ -16,7 +22,7 @@ function makeTokenEvent(overrides: Partial<TokenEvent> = {}): TokenEvent {
     outputTokens: 2_000,
     cacheReadTokens: 30_000,
     cacheCreationTokens: 15_000,
-    model: 'claude-opus-4-6',
+    model: 'test-fixture-model',
     ...overrides,
   };
 }
@@ -408,6 +414,7 @@ describe('computeContextMetricsFromEvents', () => {
         timestamp: 2_000,
         inputTokens: 10_000,
         outputTokens: 5_000,
+        model: 'claude-opus-4-6',
         cacheReadTokens: 50_000,
         cacheCreationTokens: 20_000,
       }),

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.3] - 2026-08-14
+
+### Added
+
+- **New models added to the pricing tables** following a full audit of all 6 supported vendors: Anthropic's `claude-opus-5` and `claude-mythos-5`; OpenAI's GPT-5.6 family (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`); Google's `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.5-flash-lite`; Mistral's Ministral 3 family; and several previously-unmapped Cohere and AWS Bedrock model IDs.
+
+### Fixed
+
+- **Corrected several pricing and context-window inaccuracies** found during that same audit (Anthropic, Google, OpenAI, Mistral, Cohere, and AWS Bedrock):
+  - A bare `gpt-5` request was silently billed at `gpt-5.5` rates — several times higher than GPT-5's real rate — due to an incorrect alias. `gpt-5` now bills at its own correct, lower rate.
+  - `claude-opus-4-6` and several Gemini and Mistral models reported a smaller context window than they actually support, which understated the context-fill percentage shown for sessions using those models.
+  - AWS Bedrock's Meta Llama 3 models (both sizes) and the legacy Claude 3.5 Sonnet cache rate were corrected to match Amazon's current published pricing.
+  - A `gemini-3.1-flash-lite` shorthand pointed at a preview model ID that Google has since shut down; it now resolves to the current, live model.
+
+### Changed
+
+- Bumped several development dependencies (testing, linting, and build tooling) to their latest compatible versions. No user-visible behavior change.
+
+### Security
+
+- Resolved 2 high-severity `npm audit` findings (`brace-expansion`, `js-yaml`) by updating to their patched versions.
+
 ## [1.15.2] - 2026-08-13
 
 ### Added

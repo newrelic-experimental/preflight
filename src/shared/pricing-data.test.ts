@@ -101,31 +101,54 @@ describe('DEFAULT_PRICING_TABLE', () => {
   });
 
   describe('OpenAI models', () => {
-    it('has gpt-5.5 with correct rates and long-context tier', () => {
+    it('has gpt-5.5 with correct rates and flat long-context tier', () => {
       const p = DEFAULT_PRICING_TABLE['gpt-5.5'];
       expect(p).toBeDefined();
       expect(p.inputPerMTok).toBe(5);
       expect(p.outputPerMTok).toBe(30);
       expect(p.cacheReadPerMTok).toBe(0.5);
-      expect(p.contextWindow).toBe(1_000_000);
-      expect(p.tierThreshold).toBe(270_000);
-      expect(p.tierMode).toBe('marginal');
+      expect(p.contextWindow).toBe(1_050_000);
+      expect(p.tierThreshold).toBe(272_000);
+      // 'flat' is the default (tierMode omitted) — OpenAI bills the entire
+      // request at tier rates once inputTokens > threshold, output included.
+      expect(p.tierMode).toBeUndefined();
       expect(p.tierInputPerMTok).toBe(10);
-      // marginal mode ignores tierOutputPerMTok — must not be set (dead data).
-      expect(p.tierOutputPerMTok).toBeUndefined();
+      expect(p.tierOutputPerMTok).toBe(45);
     });
 
-    it('has gpt-5.4 with correct rates and long-context tier', () => {
+    it('has gpt-5.4 with correct rates and flat long-context tier', () => {
       const p = DEFAULT_PRICING_TABLE['gpt-5.4'];
       expect(p).toBeDefined();
       expect(p.inputPerMTok).toBe(2.5);
       expect(p.outputPerMTok).toBe(15);
       expect(p.cacheReadPerMTok).toBe(0.25);
-      expect(p.tierThreshold).toBe(270_000);
-      expect(p.tierMode).toBe('marginal');
+      expect(p.contextWindow).toBe(1_050_000);
+      expect(p.tierThreshold).toBe(272_000);
+      expect(p.tierMode).toBeUndefined();
       expect(p.tierInputPerMTok).toBe(5);
-      // marginal mode ignores tierOutputPerMTok — must not be set (dead data).
-      expect(p.tierOutputPerMTok).toBeUndefined();
+      expect(p.tierOutputPerMTok).toBe(22.5);
+    });
+
+    it('has gpt-5 as its own real entry, not aliased to gpt-5.5/5.6', () => {
+      const p = DEFAULT_PRICING_TABLE['gpt-5'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(1.25);
+      expect(p.outputPerMTok).toBe(10);
+      expect(p.contextWindow).toBe(400_000);
+    });
+
+    it('has the gpt-5.6 family (Sol/Terra/Luna) with correct rates and flat long-context tier', () => {
+      const sol = DEFAULT_PRICING_TABLE['gpt-5.6-sol'];
+      expect(sol).toBeDefined();
+      expect(sol.inputPerMTok).toBe(5);
+      expect(sol.outputPerMTok).toBe(30);
+      expect(sol.contextWindow).toBe(1_050_000);
+      expect(sol.tierThreshold).toBe(272_000);
+      expect(sol.tierInputPerMTok).toBe(10);
+      expect(sol.tierOutputPerMTok).toBe(45);
+
+      expect(DEFAULT_PRICING_TABLE['gpt-5.6-terra']).toBeDefined();
+      expect(DEFAULT_PRICING_TABLE['gpt-5.6-luna']).toBeDefined();
     });
 
     it('has gpt-5.4-mini and gpt-5.4-nano', () => {
@@ -159,9 +182,13 @@ describe('DEFAULT_PRICING_TABLE', () => {
       expect(p.thinkingPerMTok).toBeUndefined();
     });
 
-    it('has o3 — no separate thinkingPerMTok (reasoning billed via outputTokens)', () => {
+    it('has o3 at its current repriced rate — no separate thinkingPerMTok (reasoning billed via outputTokens)', () => {
       const p = DEFAULT_PRICING_TABLE['o3'];
       expect(p).toBeDefined();
+      // Repriced down from its April 2025 launch rate ($10/$40).
+      expect(p.inputPerMTok).toBe(2);
+      expect(p.outputPerMTok).toBe(8);
+      expect(p.cacheReadPerMTok).toBe(0.5);
       expect(p.thinkingPerMTok).toBeUndefined();
     });
 

@@ -5699,7 +5699,9 @@ describe('api-handler GET /api/context', () => {
     expect(status()).toBe(200);
     const result = JSON.parse(body()) as { turnCount: number; fillPercent: number };
     expect(result.turnCount).toBe(1);
-    expect(result.fillPercent).toBe(40);
+    // claude-opus-4-6 has a 1M context window, so the recomputed tracker grows
+    // past the 200K default: 80,000 / 1,000,000 = 8%.
+    expect(result.fillPercent).toBe(8);
   });
 
   it('falls back to the empty local default when no buffer events match the session either', async () => {

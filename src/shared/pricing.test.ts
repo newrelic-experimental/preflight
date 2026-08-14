@@ -300,14 +300,13 @@ describe('calculateCost', () => {
       expect(cost.inputUsd).toBeCloseTo(0.75, 6);
     });
 
-    it('bills gpt-5.5 output at the base rate above the tier threshold (marginal mode has no tiered output)', () => {
-      // Regression: gpt-5.5 is 'marginal' mode and must not carry a
-      // tierOutputPerMTok — output always bills at outputPerMTok ($30),
-      // never the base rate's would-be tier multiplier, even when input
-      // exceeds the 270k threshold.
+    it('bills gpt-5.5 output at the tier rate once input exceeds the threshold (flat mode)', () => {
+      // gpt-5.5 is 'flat' mode (the default): OpenAI's own docs say
+      // long-context requests are "priced at 2x input and 1.5x output for
+      // the full request" — output tiers too, unlike marginal mode.
       const cost = calculateCost('gpt-5.5', usage({ inputTokens: 300_000, outputTokens: 10_000 }));
-      // Output: 10_000 * 30 / 1_000_000 = 0.3
-      expect(cost.outputUsd).toBeCloseTo(0.3, 6);
+      // Output: 10_000 * 45 / 1_000_000 = 0.45 (tierOutputPerMTok, 1.5x base)
+      expect(cost.outputUsd).toBeCloseTo(0.45, 6);
     });
   });
 });
@@ -387,7 +386,9 @@ describe('resolveModelPricing', () => {
     expect(haiku4!.outputPerMTok).toBe(5);
   });
 
-  it('resolves gpt-5, gemini-2.5, gemini-2.0 via added MODEL_ALIASES', () => {
+  it('resolves gpt-5 via exact match, gemini-2.5/gemini-2.0 via added MODEL_ALIASES', () => {
+    // gpt-5 is a real, separately-priced model with its own table entry
+    // (not an alias) — see the MODEL_ALIASES comment in pricing-data.ts.
     const gpt5 = resolveModelPricing('gpt-5');
     expect(gpt5).not.toBeNull();
     expect(gpt5!.inputPerMTok).toBeGreaterThan(0);
