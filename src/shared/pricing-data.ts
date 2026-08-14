@@ -39,7 +39,8 @@ export const MODEL_ALIASES: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Built-in pricing table — USD per million tokens
 //
-// Rates last verified against vendor public pricing pages on 2026-07-01:
+// Rates last verified against vendor public pricing pages on 2026-07-01
+// (Anthropic re-checked 2026-08-14 for the Claude Opus 5 entries):
 //   - Anthropic   https://www.anthropic.com/pricing
 //   - Google      https://cloud.google.com/vertex-ai/generative-ai/pricing
 //   - OpenAI      https://openai.com/api/pricing/
@@ -64,6 +65,14 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 50,
     cacheReadPerMTok: 1,
     cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  'claude-opus-5': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    thinkingPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
   'claude-opus-4-8': {
@@ -387,6 +396,11 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   'anthropic.claude-sonnet-5': {
     inputPerMTok: 2,
     outputPerMTok: 10,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-opus-5': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-8': {

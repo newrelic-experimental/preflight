@@ -2,6 +2,17 @@ import { DEFAULT_PRICING_TABLE } from './pricing-data.js';
 
 describe('DEFAULT_PRICING_TABLE', () => {
   describe('Anthropic models', () => {
+    it('has claude-opus-5 (current gen) with correct rates', () => {
+      const p = DEFAULT_PRICING_TABLE['claude-opus-5'];
+      expect(p).toBeDefined();
+      expect(p.inputPerMTok).toBe(5);
+      expect(p.outputPerMTok).toBe(25);
+      expect(p.thinkingPerMTok).toBe(25);
+      expect(p.cacheReadPerMTok).toBe(0.5);
+      expect(p.cacheCreationPerMTok).toBe(6.25);
+      expect(p.contextWindow).toBe(1_000_000);
+    });
+
     it('has claude-opus-4-7 (current gen) with correct rates', () => {
       const p = DEFAULT_PRICING_TABLE['claude-opus-4-7'];
       expect(p).toBeDefined();
