@@ -138,7 +138,9 @@ describe('runDiagnostics', () => {
     });
     mockedDetectSettingsPath.mockReturnValue('/test-home/.claude/settings.json');
     mockedIsWsl.mockReturnValue(false);
-    mockFetch.mockResolvedValue({ ok: true } as Response);
+    mockFetch.mockImplementation(async () => {
+      return { ok: true, json: async () => ({ version: '0.0.0' }) } as unknown as Response;
+    });
     mockedStatSync.mockImplementation(() => {
       throw new Error('ENOENT');
     });
@@ -200,7 +202,16 @@ describe('runDiagnostics', () => {
     });
   });
 
-  describe('Check 2: Daemon installed', () => {
+  describe('Check 2: Node version', () => {
+    it('returns ok on a supported Node version', async () => {
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Node version')!;
+      expect(c.status).toBe('ok');
+      expect(c.detail).toContain(process.version);
+    });
+  });
+
+  describe('Check 3: Daemon installed', () => {
     it('returns skip on non-macOS', async () => {
       mockedPlatform.mockReturnValue('linux');
       const checks = await runDiagnostics(makeOpts());
@@ -225,7 +236,7 @@ describe('runDiagnostics', () => {
     });
   });
 
-  describe('Check 3: Daemon node path', () => {
+  describe('Check 4: Daemon node path', () => {
     it('returns skip when daemon not installed', async () => {
       mockedGetDaemonStatus.mockReturnValue({ installed: false, readable: false });
       const checks = await runDiagnostics(makeOpts());
@@ -301,7 +312,7 @@ describe('runDiagnostics', () => {
     });
   });
 
-  describe('Check 4: Hooks wired', () => {
+  describe('Check 5: Hooks wired', () => {
     it('returns fail when settings file does not exist', async () => {
       mockedExistSync.mockImplementation((p) => p !== '/test-home/.claude/settings.json');
       const checks = await runDiagnostics(makeOpts());
@@ -494,7 +505,81 @@ describe('runDiagnostics', () => {
     });
   });
 
-  describe('Check 5: Storage writable', () => {
+  describe('Check 6: Hook node path', () => {
+    function settingsWithHookCommand(command: string) {
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === '/test-home/.claude/settings.json') {
+          return JSON.stringify({
+            hooks: {
+              PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command }] }],
+              PostToolUse: [{ matcher: '', hooks: [{ type: 'command', command }] }],
+            },
+          });
+        }
+        return '{}';
+      });
+    }
+
+    it('skips when no NR hook is installed', async () => {
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation(() => JSON.stringify({ hooks: {} }));
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('skip');
+    });
+
+    it('skips when the installed hook uses a bare command name (no absolute path)', async () => {
+      settingsWithHookCommand('preflight-collector pre-tool');
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('skip');
+      expect(c.detail).toContain('bare command name');
+    });
+
+    it('fails when no node binary is found next to the installed hook', async () => {
+      settingsWithHookCommand('"/opt/stale-node/bin/preflight-collector" pre-tool');
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: null, hasNonExecutable: false });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('fail');
+      expect(c.fix).toBeDefined();
+    });
+
+    it('fails with permission error when node binary exists but is not executable', async () => {
+      settingsWithHookCommand('"/opt/node/bin/preflight-collector" pre-tool');
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: null, hasNonExecutable: true });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('not executable');
+      expect(c.fix).toContain('chmod +x');
+    });
+
+    it('returns ok when the colocated node binary matches the current Node install', async () => {
+      const currentNodeDir = dirname(process.execPath);
+      settingsWithHookCommand(`"${currentNodeDir}/preflight-collector" pre-tool`);
+      mockedFindExecutableNodeDir.mockReturnValue({ dir: currentNodeDir, hasNonExecutable: false });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('ok');
+    });
+
+    it('warns when the colocated node binary differs from the current Node install', async () => {
+      settingsWithHookCommand('"/opt/other-node/bin/preflight-collector" pre-tool');
+      mockedFindExecutableNodeDir.mockReturnValue({
+        dir: '/opt/other-node/bin',
+        hasNonExecutable: false,
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hook node path')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('/opt/other-node/bin');
+      expect(c.fix).toBeDefined();
+    });
+  });
+
+  describe('Check 7: Storage writable', () => {
     it('returns fail when directory does not exist', async () => {
       mockedExistSync.mockImplementation((p) => p !== '/test-home/.newrelic-preflight');
       const checks = await runDiagnostics(makeOpts());
@@ -533,7 +618,7 @@ describe('runDiagnostics', () => {
     });
   });
 
-  describe('Check 6: NR reachable', () => {
+  describe('Check 10: NR reachable', () => {
     beforeEach(() => {
       mockedValidateConfig.mockReturnValue({
         fileExists: true,
@@ -662,7 +747,7 @@ describe('runDiagnostics', () => {
     });
   });
 
-  describe('Check 7: Local instances', () => {
+  describe('Check 8: Local instances', () => {
     it('reports ok with no --local processes running', async () => {
       (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
         getLiveLocalDashboardProcess: jest.fn(() => null),
@@ -719,9 +804,9 @@ describe('runDiagnostics', () => {
         throw new Error('registry file is corrupt');
       });
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
-      // All 7 checks must still be present — one throwing dependency must not
+      // All 10 checks must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(7);
+      expect(checks).toHaveLength(10);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -729,8 +814,49 @@ describe('runDiagnostics', () => {
     });
   });
 
-  it('returns exactly 7 checks on macOS', async () => {
+  describe('Check 9: Preflight version', () => {
+    it('returns ok when the installed version is the latest', async () => {
+      const mod = await import('../version.js');
+      mockFetch.mockImplementation(async (url: string | URL | Request) => {
+        if (String(url).includes('registry.npmjs.org')) {
+          return { ok: true, json: async () => ({ version: mod.VERSION }) } as unknown as Response;
+        }
+        return { ok: true, json: async () => ({}) } as unknown as Response;
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Preflight version')!;
+      expect(c.status).toBe('ok');
+    });
+
+    it('returns warn with an upgrade fix command when a newer version is on npm', async () => {
+      mockFetch.mockImplementation(async (url: string | URL | Request) => {
+        if (String(url).includes('registry.npmjs.org')) {
+          return { ok: true, json: async () => ({ version: '99.0.0' }) } as unknown as Response;
+        }
+        return { ok: true, json: async () => ({}) } as unknown as Response;
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Preflight version')!;
+      expect(c.status).toBe('warn');
+      expect(c.detail).toContain('99.0.0');
+      expect(c.fix).toBe('npm install -g @newrelic/preflight@latest');
+    });
+
+    it('returns skip when the npm registry is unreachable', async () => {
+      mockFetch.mockImplementation(async (url: string | URL | Request) => {
+        if (String(url).includes('registry.npmjs.org')) {
+          return { ok: false } as unknown as Response;
+        }
+        return { ok: true, json: async () => ({}) } as unknown as Response;
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Preflight version')!;
+      expect(c.status).toBe('skip');
+    });
+  });
+
+  it('returns exactly 10 checks on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(7);
+    expect(checks).toHaveLength(10);
   });
 });

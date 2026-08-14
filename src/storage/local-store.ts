@@ -316,35 +316,71 @@ export class LocalStore {
    * resolving its session_id, and remove it on graceful shutdown via
    * `removeHeartbeat()`.
    *
+   * Also writes a sidecar `active-<sessionId>.meta.json` file with `argv`
+   * and `cwd`, consumed by `listActiveStdioInstances()`. `argv`/`cwd`
+   * default to the current process's own argv/cwd.
+   *
    * No-op if the LocalStore is not bound to a sessionId (e.g. --local mode).
    */
-  writeHeartbeat(pid: number = process.pid): void {
+  writeHeartbeat(
+    pid: number = process.pid,
+    argv: readonly string[] = process.argv.slice(1),
+    cwd: string = process.cwd(),
+  ): void {
     if (!this.sessionId) return;
     if (!Number.isFinite(pid) || pid <= 0) return;
     const heartbeatPath = resolve(this.storagePath, `active-${this.sessionId}.pid`);
+    const metaPath = resolve(this.storagePath, `active-${this.sessionId}.meta.json`);
     try {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
       writeFileSync(heartbeatPath, String(pid), { mode: 0o600 });
+      // Sidecar metadata for listActiveStdioInstances() — kept separate from
+      // the heartbeat's own bare-PID content so hasLiveOwner(),
+      // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
+      // parse active-<sessionId>.pid as a bare PID) are unaffected.
+      writeFileSync(metaPath, JSON.stringify({ argv: Array.from(argv), cwd }), { mode: 0o600 });
     } catch (err) {
       logger.warn('Failed to write heartbeat file', { error: String(err) });
     }
   }
 
   /**
-   * Remove this MCP's heartbeat file. Called from the shutdown handler so the
-   * next maintenance GC pass knows the buffer is up for adoption.
+   * Remove this MCP's heartbeat file (and its sidecar metadata, if present).
+   * Called from the shutdown handler so the next maintenance GC pass knows
+   * the buffer is up for adoption.
    *
    * No-op if no heartbeat was ever written or if the file is already gone.
    */
   removeHeartbeat(): void {
     if (!this.sessionId) return;
     const heartbeatPath = resolve(this.storagePath, `active-${this.sessionId}.pid`);
+    const metaPath = resolve(this.storagePath, `active-${this.sessionId}.meta.json`);
     try {
       if (existsSync(heartbeatPath)) unlinkSync(heartbeatPath);
+      if (existsSync(metaPath)) unlinkSync(metaPath);
     } catch (err) {
       logger.debug('Failed to remove heartbeat file', { error: String(err) });
+    }
+  }
+
+  /**
+   * Remove another session's heartbeat + sidecar metadata by explicit
+   * sessionId. Unlike removeHeartbeat() (which only ever acts on `this`
+   * LocalStore's own bound sessionId), this lets a caller — the `preflight
+   * local --clean` CLI command, which isn't scoped to any one session —
+   * clean up a *different* session's files after killing that session's
+   * process. Safe to call even if the files are already gone.
+   */
+  removeStdioHeartbeat(sessionId: string): void {
+    const heartbeatPath = resolve(this.storagePath, `active-${sessionId}.pid`);
+    const metaPath = resolve(this.storagePath, `active-${sessionId}.meta.json`);
+    try {
+      if (existsSync(heartbeatPath)) unlinkSync(heartbeatPath);
+      if (existsSync(metaPath)) unlinkSync(metaPath);
+    } catch (err) {
+      logger.debug('Failed to remove stdio heartbeat/sidecar', { error: String(err) });
     }
   }
 
@@ -671,6 +707,18 @@ export class LocalStore {
               error: String(err),
             });
           }
+          // Sidecar metadata written by writeHeartbeat() alongside the
+          // heartbeat — removed separately so a missing/unlinkable sidecar
+          // never blocks the heartbeat cleanup above.
+          const metaPath = resolve(this.storagePath, `active-${sessionId}.meta.json`);
+          try {
+            if (existsSync(metaPath)) unlinkSync(metaPath);
+          } catch (err) {
+            logger.debug('Failed to remove sidecar metadata after archive', {
+              sessionId,
+              error: String(err),
+            });
+          }
         }
       } catch (err) {
         logger.warn('Failed to archive orphan buffer', { sessionId, error: String(err) });
@@ -815,6 +863,80 @@ export class LocalStore {
       }
     }
     return active;
+  }
+
+  /**
+   * List every live `--stdio` MCP process from `active-<sessionId>.pid`
+   * heartbeats — the same files `getActiveSessionIdsFromHeartbeats()` and
+   * `hasLiveOwner()` already read, scanned here for user-facing detail
+   * (`preflight local`) instead of internal GC/ownership bookkeeping.
+   * `argv`/`cwd` come from the sidecar `active-<sessionId>.meta.json`
+   * written by `writeHeartbeat()`; a heartbeat from a pre-upgrade build that
+   * predates the sidecar reports `argv: []`, `cwd: null`. `startedAt` is the
+   * heartbeat file's mtime — `writeHeartbeat()` is called exactly once at
+   * process startup (never refreshed), so mtime is an accurate proxy for
+   * process start time. Malformed entries are skipped silently.
+   */
+  listActiveStdioInstances(): Array<{
+    pid: number;
+    sessionId: string;
+    argv: string[];
+    cwd: string | null;
+    startedAt: number;
+    alive: boolean;
+  }> {
+    if (!existsSync(this.storagePath)) return [];
+    let entries: string[];
+    try {
+      entries = readdirSync(this.storagePath);
+    } catch (err) {
+      logger.warn('Failed to enumerate storage path for listActiveStdioInstances', {
+        error: String(err),
+      });
+      return [];
+    }
+    const result: Array<{
+      pid: number;
+      sessionId: string;
+      argv: string[];
+      cwd: string | null;
+      startedAt: number;
+      alive: boolean;
+    }> = [];
+    for (const name of entries) {
+      if (!name.startsWith('active-') || !name.endsWith('.pid')) continue;
+      const sessionId = name.slice('active-'.length, -'.pid'.length);
+      if (!SESSION_ID_RE.test(sessionId)) continue;
+      const heartbeatPath = resolve(this.storagePath, name);
+      let pid: number;
+      let startedAt: number;
+      try {
+        pid = Number.parseInt(readFileSync(heartbeatPath, 'utf-8').trim(), 10);
+        startedAt = statSync(heartbeatPath).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+
+      let argv: string[] = [];
+      let cwd: string | null = null;
+      try {
+        const metaPath = resolve(this.storagePath, `active-${sessionId}.meta.json`);
+        const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as {
+          argv?: unknown;
+          cwd?: unknown;
+        };
+        if (Array.isArray(meta.argv) && meta.argv.every((a) => typeof a === 'string')) {
+          argv = meta.argv as string[];
+        }
+        if (typeof meta.cwd === 'string') cwd = meta.cwd;
+      } catch {
+        // No sidecar (pre-upgrade heartbeat) or unreadable — leave argv/cwd at their defaults.
+      }
+
+      result.push({ pid, sessionId, argv, cwd, startedAt, alive: isPidAlive(pid) });
+    }
+    return result;
   }
 
   /**
