@@ -230,3 +230,85 @@ describe('ModelUsageTracker.combineBreakdowns', () => {
     expect(t.combineBreakdowns([t.getRawBreakdown()])).toEqual(t.getMetrics());
   });
 });
+
+describe('ModelUsageTracker.seedFromPersisted', () => {
+  it('adds a persisted breakdown into an empty tracker', () => {
+    const t = new ModelUsageTracker();
+    t.seedFromPersisted({
+      'claude-sonnet-5': {
+        requestCount: 12,
+        totalInputTokens: 502,
+        totalOutputTokens: 6642,
+        totalCostUsd: 3.0984488,
+      },
+    });
+
+    const raw = t.getRawBreakdown();
+    expect(raw['claude-sonnet-5']).toEqual({
+      requestCount: 12,
+      totalInputTokens: 502,
+      totalOutputTokens: 6642,
+      totalCostUsd: 3.0984488,
+    });
+  });
+
+  it('adds on top of usage already recorded by this process, rather than overwriting', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('claude-sonnet-5', 100, 50, 0.01);
+
+    t.seedFromPersisted({
+      'claude-sonnet-5': {
+        requestCount: 12,
+        totalInputTokens: 502,
+        totalOutputTokens: 6642,
+        totalCostUsd: 3.0984488,
+      },
+    });
+
+    const raw = t.getRawBreakdown();
+    expect(raw['claude-sonnet-5']?.requestCount).toBe(13);
+    expect(raw['claude-sonnet-5']?.totalInputTokens).toBe(602);
+    expect(raw['claude-sonnet-5']?.totalOutputTokens).toBe(6692);
+    expect(raw['claude-sonnet-5']?.totalCostUsd).toBeCloseTo(3.1084488, 6);
+  });
+
+  it('merges a model already partially recorded and adds a new model not yet seen', () => {
+    const t = new ModelUsageTracker();
+    t.recordUsage('claude-sonnet-5', 100, 50, 0.01);
+
+    t.seedFromPersisted({
+      'claude-sonnet-5': {
+        requestCount: 1,
+        totalInputTokens: 200,
+        totalOutputTokens: 100,
+        totalCostUsd: 0.02,
+      },
+      'claude-opus-5': {
+        requestCount: 5,
+        totalInputTokens: 1000,
+        totalOutputTokens: 500,
+        totalCostUsd: 0.5,
+      },
+    });
+
+    const raw = t.getRawBreakdown();
+    expect(raw['claude-sonnet-5']).toEqual({
+      requestCount: 2,
+      totalInputTokens: 300,
+      totalOutputTokens: 150,
+      totalCostUsd: 0.03,
+    });
+    expect(raw['claude-opus-5']).toEqual({
+      requestCount: 5,
+      totalInputTokens: 1000,
+      totalOutputTokens: 500,
+      totalCostUsd: 0.5,
+    });
+  });
+
+  it('is a no-op for an empty breakdown (no persisted session found)', () => {
+    const t = new ModelUsageTracker();
+    t.seedFromPersisted({});
+    expect(t.getRawBreakdown()).toEqual({});
+  });
+});

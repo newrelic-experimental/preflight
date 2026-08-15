@@ -110,6 +110,36 @@ export class ModelUsageTracker implements Resettable {
     stats.totalCostUsd += costUsd;
   }
 
+  /**
+   * Seeds cumulative per-model counters from a previous process's last
+   * checkpoint for this same session — mirrors
+   * `CostTracker.seedFromPersisted()`, which this tracker has the identical
+   * in-memory-only, resets-on-restart problem alongside (see that method's
+   * doc comment for why): a process restart mid-session (sleep, closing a
+   * terminal, `claude --resume`, a crash) otherwise silently discards every
+   * request/token/dollar a now-dead prior process already attributed to a
+   * model, even after CostTracker's own totals are correctly restored —
+   * leaving this tracker's per-model breakdown inconsistent with (short of)
+   * the session total.
+   *
+   * Adds to current per-model state rather than overwriting, so callers must
+   * invoke this at most once per (re)adopted session id, before any real
+   * activity for that id has reached this tracker.
+   */
+  seedFromPersisted(breakdown: Readonly<Record<string, ModelBreakdownEntry>>): void {
+    for (const [model, entry] of Object.entries(breakdown)) {
+      let stats = this.byModel.get(model);
+      if (!stats) {
+        stats = { requestCount: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0 };
+        this.byModel.set(model, stats);
+      }
+      stats.requestCount += entry.requestCount;
+      stats.totalInputTokens += entry.totalInputTokens;
+      stats.totalOutputTokens += entry.totalOutputTokens;
+      stats.totalCostUsd += entry.totalCostUsd;
+    }
+  }
+
   // Raw per-model counters only — no derived ratios. This is the shape
   // persisted onto FullSessionSummary.modelBreakdown (session-store.ts) so a
   // session file never stores a stale derived ratio; ratios are always

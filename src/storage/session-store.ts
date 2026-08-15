@@ -136,6 +136,14 @@ export interface FullSessionSummary extends SessionSummary {
    */
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
   /**
+   * Per-workflow-run cost, split by local-day, keyed by workflow_run_id then
+   * day key — the exact shape `CostMetrics.costByWorkflowRunId` already
+   * produces. Captured once at save time so a resumed session's per-run
+   * spend survives a process restart (see CostTracker.seedFromPersisted()).
+   * `{}` for pre-fix session files and for sessions with no workflow runs.
+   */
+  readonly costByWorkflowRunId: Record<string, Record<string, number>>;
+  /**
    * Raw quality-proxy signal counts for this session, captured once at save
    * time from QualityProxyTracker.getRawCounts(). Raw counts only, no derived
    * rates — see combineQualityProxyRawCounts for why rates are always
@@ -510,6 +518,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     timeline: timeline.length > 0 ? timeline : undefined,
     toolSelectionMetrics: toolSelectionResult,
     modelBreakdown: sources.modelUsageTracker?.getRawBreakdown() ?? {},
+    costByWorkflowRunId: costMetrics?.costByWorkflowRunId ?? {},
     qualityProxy: sources.qualityProxyTracker?.getRawCounts() ?? ZERO_QUALITY_PROXY_COUNTS,
   };
 }
@@ -601,6 +610,7 @@ interface SerializedFullSessionSummary {
   readonly timeline?: Array<Record<string, unknown>>;
   readonly toolSelectionMetrics?: unknown;
   readonly modelBreakdown?: Record<string, unknown>;
+  readonly costByWorkflowRunId?: Record<string, unknown>;
   readonly qualityProxy?: Record<string, unknown>;
 }
 
@@ -705,6 +715,18 @@ export function deserializeFullSessionSummary(
     }
   }
 
+  const costByWorkflowRunId: Record<string, Record<string, number>> = {};
+  if (typeof obj.costByWorkflowRunId === 'object' && obj.costByWorkflowRunId !== null) {
+    for (const [runId, dayMap] of Object.entries(obj.costByWorkflowRunId)) {
+      if (typeof dayMap !== 'object' || dayMap === null) continue;
+      const days: Record<string, number> = {};
+      for (const [dayKey, usd] of Object.entries(dayMap)) {
+        if (typeof usd === 'number') days[dayKey] = usd;
+      }
+      costByWorkflowRunId[runId] = days;
+    }
+  }
+
   const qualityProxy: QualityProxyRawCounts = (() => {
     const q = obj.qualityProxy;
     if (typeof q !== 'object' || q === null) return ZERO_QUALITY_PROXY_COUNTS;
@@ -802,6 +824,7 @@ export function deserializeFullSessionSummary(
       : undefined,
     toolSelectionMetrics,
     modelBreakdown,
+    costByWorkflowRunId,
     qualityProxy,
   };
 }

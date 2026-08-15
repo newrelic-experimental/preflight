@@ -84,6 +84,36 @@ export interface CostMetrics {
   readonly costByWorkflowRunId: Record<string, Record<string, number>>;
 }
 
+/**
+ * Cumulative totals to seed into a freshly-constructed tracker, derived from
+ * a previous process's last checkpoint for the SAME session — see
+ * `seedFromPersisted()` for why this exists.
+ */
+export interface CostTrackerSeed {
+  readonly totalCostUsd: number;
+  readonly subagentCostUsd: number;
+  readonly parentCostUsd: number;
+  readonly totalInputTokens: number;
+  readonly totalOutputTokens: number;
+  readonly totalThinkingTokens: number;
+  readonly totalCacheReadTokens: number;
+  readonly totalCacheCreationTokens: number;
+  readonly totalCacheSavingsUsd: number;
+  readonly costByModel: Readonly<Record<string, number>>;
+  /** Local-day key (see `localDateKey`) `dayCostUsd`/`daySubagentCostUsd` book against. */
+  readonly dayKey: string;
+  /** Portion of `totalCostUsd`/`subagentCostUsd` attributable to `dayKey` (see `todayPortionOfSessionCost`). */
+  readonly dayCostUsd: number;
+  readonly daySubagentCostUsd: number;
+  /**
+   * Per-workflow-run cost, split by local-day, from the persisted checkpoint
+   * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
+   * `reset()`, which still clears this map for the unrelated "wrong session
+   * id" correction case).
+   */
+  readonly costByWorkflowRunId: Readonly<Record<string, Readonly<Record<string, number>>>>;
+}
+
 export interface SubagentMetrics {
   readonly subagentUsd: number;
   readonly parentUsd: number;
@@ -125,9 +155,9 @@ export class CostTracker implements Resettable {
   /**
    * Per-workflow-run cost attribution split by local-day so a run that crosses
    * midnight contributes to each day's bucket independently. Two-level map:
-   * `costByWorkflowRunId.get(runId).get(dayKey) → usd`. Restart-resets to empty
-   * (intentional: per-day totals remain correct even if run-level attribution
-   * is lost across restarts).
+   * `costByWorkflowRunId.get(runId).get(dayKey) → usd`. Restart-resets to
+   * empty UNLESS `seedFromPersisted()` restores it from a persisted
+   * checkpoint for this same session (see that method's doc comment).
    */
   private costByWorkflowRunId = new Map<string, Map<string, number>>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
@@ -274,6 +304,80 @@ export class CostTracker implements Resettable {
     return breakdown;
   }
 
+  /**
+   * Seeds cumulative totals from a previous process's last checkpoint for
+   * this same session. Adds to current state rather than overwriting, so
+   * callers must invoke this at most once per (re)adopted session id, before
+   * any real activity for that id has been recorded here — see the call
+   * sites in `index.ts` for the once-per-id guard.
+   *
+   * Restart data-loss fix: `ParentTranscriptWatcher`'s transcript-read cursor
+   * is durably persisted across process restarts so a resumed session never
+   * re-reads old transcript lines — but this tracker's totals are pure
+   * in-memory state with no equivalent persistence. Without this seed, every
+   * dollar/token attributed to lines a now-dead prior process already
+   * consumed is silently and permanently lost the moment a session gets
+   * paused and resumed (sleep, closing a terminal, `claude --resume`,
+   * a crash) — the longer/more-interrupted the session, the worse the loss.
+   *
+   * `costByWorkflowRunId` IS seeded (additively, per run+day) — this used to
+   * be the one dimension left to reset on restart, but `WorkflowStore`'s
+   * `cost_unknown` flag (see its doc comment in `src/dashboard/workflow-store.ts`)
+   * depends on `hasCostForWorkflowRun()` staying accurate across a restart
+   * too, so it gets the same treatment as everything else here.
+   */
+  seedFromPersisted(seed: CostTrackerSeed): void {
+    const hasAnyTotal =
+      seed.totalCostUsd !== 0 ||
+      seed.totalInputTokens !== 0 ||
+      seed.totalOutputTokens !== 0 ||
+      seed.totalThinkingTokens !== 0 ||
+      seed.totalCacheReadTokens !== 0 ||
+      seed.totalCacheCreationTokens !== 0;
+    if (!hasAnyTotal) return;
+
+    this.totalCostUsd += seed.totalCostUsd;
+    this.subagentCostUsd += seed.subagentCostUsd;
+    this.parentCostUsd += seed.parentCostUsd;
+    this.totalInputTokens += seed.totalInputTokens;
+    this.totalOutputTokens += seed.totalOutputTokens;
+    this.totalThinkingTokens += seed.totalThinkingTokens;
+    this.totalCacheReadTokens += seed.totalCacheReadTokens;
+    this.totalCacheCreationTokens += seed.totalCacheCreationTokens;
+    this.totalCacheSavingsUsd += seed.totalCacheSavingsUsd;
+    this.reportCount += 1;
+
+    for (const [model, usd] of Object.entries(seed.costByModel)) {
+      this.costByModel.set(model, (this.costByModel.get(model) ?? 0) + usd);
+    }
+
+    if (seed.dayCostUsd !== 0) {
+      this.costByDayUsd.set(
+        seed.dayKey,
+        (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
+      );
+      this.lastMutationMsByDay.set(seed.dayKey, Date.now());
+      const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
+      if (existingFirst === undefined) {
+        this.firstActivityMsByDay.set(seed.dayKey, Date.now());
+      }
+    }
+    if (seed.daySubagentCostUsd !== 0) {
+      this.subagentCostByDayUsd.set(
+        seed.dayKey,
+        (this.subagentCostByDayUsd.get(seed.dayKey) ?? 0) + seed.daySubagentCostUsd,
+      );
+    }
+
+    for (const [runId, days] of Object.entries(seed.costByWorkflowRunId)) {
+      const runMap = this.costByWorkflowRunId.get(runId) ?? new Map<string, number>();
+      for (const [dayKey, usd] of Object.entries(days)) {
+        runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + usd);
+      }
+      this.costByWorkflowRunId.set(runId, runMap);
+    }
+  }
+
   private computeCacheHitRate(): number | null {
     const denominator =
       this.totalInputTokens + this.totalCacheReadTokens + this.totalCacheCreationTokens;
@@ -334,17 +438,15 @@ export class CostTracker implements Resettable {
    * Whether THIS process's live CostTracker has ever observed a token event
    * for `runId` at all, distinct from `getCostForWorkflowRun()` returning 0.
    * That 0 is ambiguous: it means either "confirmed $0 spend" or "this
-   * process never personally observed this run's cost" (e.g. after a
-   * process restart, or in a `--local` standalone dashboard reading rollups
-   * from disk for a run a different `--stdio` process actually paid for) —
+   * process never personally observed this run's cost" — e.g. in a
+   * `--local` standalone dashboard reading rollups from disk for a run a
+   * different, concurrently-running `--stdio` process is the one actually
+   * paying for. (A sequential process restart for the SAME session no
+   * longer hits this ambiguity — `seedFromPersisted()` rehydrates
+   * `costByWorkflowRunId` from the session's own last checkpoint.)
    * `WorkflowStore` uses this to distinguish the two so the "Workflow
    * spend" KPI can flag a total as partial instead of silently treating
-   * "unknown" as "zero". A partial mitigation.
-   *
-   * This is a read-only accessor over existing state — it does not change
-   * what `costByWorkflowRunId` tracks or how. A full fix would persist
-   * per-run cost somewhere `WorkflowStore` can read across process
-   * restarts/instances; that's out of scope here.
+   * "unknown" as "zero".
    */
   hasCostForWorkflowRun(runId: string): boolean {
     return this.costByWorkflowRunId.has(runId);

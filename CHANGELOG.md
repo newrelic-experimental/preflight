@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.4] - 2026-08-14
+
+### Fixed
+
+- **Local session cost and token totals no longer reset to zero when the MCP server process restarts mid-session** — closing and reopening a terminal, a laptop sleep/wake, `claude --resume`, or a crash all restart the process. Previously only activity observed since the most recent restart was ever counted; a long or repeatedly-interrupted session could silently lose most of its real cost and token totals, well beyond anything explained by subagent-tracking gaps.
+- **A resumed session's per-model and per-workflow-run cost breakdowns no longer lag behind its now-correct overall total** — both are restored from the same pre-restart checkpoint as the fix above, so the Model Performance panel and per-workflow-run spend stay consistent with the session total instead of only reflecting post-restart activity.
+- **A session's restored cost/token total can no longer be attributed to the wrong session.** The restart-recovery fix above only re-attaches a session's own prior totals once its identity is confirmed — previously, an unconfirmed, ambiguous session-id guess could import a different session's cost/token total before that guess was verified.
+
 ## [1.15.3] - 2026-08-14
 
 ### Added

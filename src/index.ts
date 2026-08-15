@@ -24,6 +24,7 @@ import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.j
 import { HookEventProcessor } from './hooks/index.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { CostTracker } from './metrics/cost-tracker.js';
+import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
@@ -1059,6 +1060,38 @@ async function main(): Promise<void> {
     sessionStore = new SessionStore({ storagePath: config.storagePath });
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
+
+    // Recover a resumed session's pre-restart cost/token totals — see
+    // CostTracker.seedFromPersisted()'s doc comment for the bug this fixes.
+    // Also seeds ModelUsageTracker, which has the identical in-memory-only,
+    // resets-on-restart problem for its own per-model breakdown — without
+    // this, its numbers would stay inconsistent with (short of) CostTracker's
+    // now-correct session total after a restart.
+    // Guarded per-id (not a single fired-once flag) because adoptRealSessionId
+    // below can call this again for a *different* id after a pending->real
+    // transition or a PPID correction.
+    const rehydratedTrackerSessionIds = new Set<string>();
+    const rehydrateTrackersIfResumed = (sessionId: string): void => {
+      if (isSyntheticSessionId(sessionId)) return;
+      if (rehydratedTrackerSessionIds.has(sessionId)) return;
+      rehydratedTrackerSessionIds.add(sessionId);
+      try {
+        const persisted = sessionStore!.loadSession(sessionId);
+        if (!persisted) return;
+        costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+        modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
+        logger.info('Rehydrated trackers from a prior checkpoint for this session', {
+          sessionId,
+          estimatedCostUsd: persisted.estimatedCostUsd,
+        });
+      } catch (err) {
+        logger.warn('Failed to rehydrate trackers from a prior checkpoint', {
+          sessionId,
+          error: String(err),
+        });
+      }
+    };
+    if (!isProvisional && !resolvedViaCwdOnly) rehydrateTrackersIfResumed(currentSessionId);
 
     // Each command is isolated so a slow/missing git or remote doesn't block
     // the others. Uses spawnSync (no shell) to avoid injection; stderr is
@@ -2257,7 +2290,7 @@ async function main(): Promise<void> {
     // stopped first so its harvest interval never leaks on a second call.
     const adoptRealSessionId = async (
       realId: string,
-      opts?: { isCorrection?: boolean },
+      opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
@@ -2276,6 +2309,15 @@ async function main(): Promise<void> {
       }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);
+      // viaCwdOnly means this id came from the collision-prone cwd fallback
+      // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
+      // resolvedViaCwdOnly gate on the synchronous resolution path's own
+      // eager-seed call. Seeding here would import a DIFFERENT session's
+      // real cost/token total on an unconfirmed guess; the caller arms
+      // startPpidCorrectionWatch right after this returns, whose
+      // confirmation branch (ppidId === staleId) calls
+      // rehydrateTrackersIfResumed itself once the guess is confirmed.
+      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
 
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
@@ -2434,7 +2476,11 @@ async function main(): Promise<void> {
           if (ppidId === staleId) {
             // The cwd guess turned out to be correct — no correction needed,
             // so no reason to keep suppressing checkpoints for the rest of
-            // the cap window.
+            // the cap window. It was NOT seeded eagerly (see the
+            // resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's first
+            // call site) precisely because it wasn't confirmed yet — seed it
+            // now that it is.
+            rehydrateTrackersIfResumed(staleId);
             clearPendingConfirmation();
             return;
           }
@@ -2504,8 +2550,11 @@ async function main(): Promise<void> {
             }
 
             // Adopt the real session ID without clearing accumulated
-            // metrics — see adoptRealSessionId's own comment above.
-            await adoptRealSessionId(realId);
+            // metrics — see adoptRealSessionId's own comment above. Skip the
+            // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
+            // doc comment there) — startPpidCorrectionWatch below seeds it
+            // once confirmed, exactly like the synchronous resolution path.
+            await adoptRealSessionId(realId, { viaCwdOnly: resolvedSource === 'cwd' });
 
             logger.info('Session ID resolved, full initialization complete', {
               sessionTraceId: realId,
