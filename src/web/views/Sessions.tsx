@@ -91,8 +91,9 @@ const WORKFLOW_STATUS_PILL: Record<WorkflowRunInfo['status'], { tone: PillTone; 
 type SortKey = 'date' | 'lastActive' | 'cost' | 'calls';
 
 // Run-level filters consolidated from the former Workflows view. They scope the
-// KPI strip AND the master list (a non-default filter shows only sessions that
-// own a matching run).
+// KPI strip AND the master list — see the `visibleRows` computation below for
+// how each filter narrows the master list (the time window and the run
+// source/status filters apply differently).
 type TimeWindow = 'today' | '7d' | '30d' | 'all';
 type RunSource = 'all' | 'script' | 'agent_tool';
 type StatusFilter = 'all' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -312,11 +313,30 @@ export function Sessions(): JSX.Element {
   }, [filteredRuns]);
   const filtersActive =
     activeWindow !== 'all' || runSourceFilter !== 'all' || statusFilter !== 'all';
-  // When a filter is active, show only sessions that own a matching run.
-  const visibleRows = useMemo(
-    () => (filtersActive ? rows.filter((r) => runsBySession.has(r.sessionId)) : rows),
-    [filtersActive, rows, runsBySession],
-  );
+  // Run-specific filters (source/status) still narrow to sessions owning a
+  // matching run — that's the whole point of those two filters. The time
+  // window, however, must filter sessions by their OWN startTime: most
+  // sessions never spawn a subagent and so have no entry in runsBySession at
+  // all, and joining them out via that map hid every such session the moment
+  // any tab but "All" was active, regardless of when it actually happened.
+  const runFiltersActive = runSourceFilter !== 'all' || statusFilter !== 'all';
+  const visibleRows = useMemo(() => {
+    let result = rows;
+    if (activeWindow !== 'all') {
+      // A session is in-window if its own startTime falls inside it, OR it
+      // owns a run that does (runsBySession is built from filteredRuns, which
+      // is already window-filtered) — this keeps a session visible when it
+      // started just before the window but spawned a subagent run just after
+      // the boundary.
+      result = result.filter(
+        (r) => isWithinWindow(startTimeMs(r), activeWindow) || runsBySession.has(r.sessionId),
+      );
+    }
+    if (runFiltersActive) {
+      result = result.filter((r) => runsBySession.has(r.sessionId));
+    }
+    return result;
+  }, [rows, activeWindow, runFiltersActive, runsBySession]);
   // The KPI strip above is built from filteredRuns, which come from
   // WorkflowStore.listRuns() — a machine-wide, 30-day-window, 500-run scan
   // with no relationship to `rows` (the session list's own most-recent-50
@@ -518,7 +538,9 @@ export function Sessions(): JSX.Element {
                 title={filtersActive ? 'No matching sessions' : 'No sessions yet'}
                 subtitle={
                   filtersActive
-                    ? 'No sessions own a workflow run matching these filters.'
+                    ? runFiltersActive
+                      ? 'No sessions own a workflow run matching these filters.'
+                      : 'No sessions in this time window.'
                     : 'Start coding with Claude to see your sessions here.'
                 }
               />

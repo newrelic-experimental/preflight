@@ -12,6 +12,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The GitHub Copilot adapter now captures tool calls via VS Code's native agent hooks (Preview)** instead of self-reported data, giving full session and tool-call visibility for Copilot Chat users, matching the other full-hooks platforms.
 - **Copilot sessions can now report token-exact cost** by reading VS Code's Copilot Chat debug log instead of estimating cost from content size. This requires enabling VS Code's `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting and reloading the window — see the Copilot section of `docs/ADAPTERS.md` for setup steps. Without it, cost falls back to estimation as before.
 
+## [1.15.4] - 2026-08-14
+
+### Fixed
+
+- **Local session cost and token totals no longer reset to zero when the MCP server process restarts mid-session** — closing and reopening a terminal, a laptop sleep/wake, `claude --resume`, or a crash all restart the process. Previously only activity observed since the most recent restart was ever counted; a long or repeatedly-interrupted session could silently lose most of its real cost and token totals, well beyond anything explained by subagent-tracking gaps.
+- **A resumed session's per-model and per-workflow-run cost breakdowns no longer lag behind its now-correct overall total** — both are restored from the same pre-restart checkpoint as the fix above, so the Model Performance panel and per-workflow-run spend stay consistent with the session total instead of only reflecting post-restart activity.
+- **A session's restored cost/token total can no longer be attributed to the wrong session.** The restart-recovery fix above only re-attaches a session's own prior totals once its identity is confirmed — previously, an unconfirmed, ambiguous session-id guess could import a different session's cost/token total before that guess was verified.
+
+## [1.15.3] - 2026-08-14
+
+### Added
+
+- **New models added to the pricing tables** following a full audit of all 6 supported vendors: Anthropic's `claude-opus-5` and `claude-mythos-5`; OpenAI's GPT-5.6 family (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`); Google's `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.5-flash-lite`; Mistral's Ministral 3 family; and several previously-unmapped Cohere and AWS Bedrock model IDs.
+
+### Fixed
+
+- **Corrected several pricing and context-window inaccuracies** found during that same audit (Anthropic, Google, OpenAI, Mistral, Cohere, and AWS Bedrock):
+  - A bare `gpt-5` request was silently billed at `gpt-5.5` rates — several times higher than GPT-5's real rate — due to an incorrect alias. `gpt-5` now bills at its own correct, lower rate.
+  - `claude-opus-4-6` and several Gemini and Mistral models reported a smaller context window than they actually support, which understated the context-fill percentage shown for sessions using those models.
+  - AWS Bedrock's Meta Llama 3 models (both sizes) and the legacy Claude 3.5 Sonnet cache rate were corrected to match Amazon's current published pricing.
+  - A `gemini-3.1-flash-lite` shorthand pointed at a preview model ID that Google has since shut down; it now resolves to the current, live model.
+
+### Changed
+
+- Bumped several development dependencies (testing, linting, and build tooling) to their latest compatible versions. No user-visible behavior change.
+
+### Security
+
+- Resolved 2 high-severity `npm audit` findings (`brace-expansion`, `js-yaml`) by updating to their patched versions.
+
+## [1.15.2] - 2026-08-13
+
+### Added
+
+- **`preflight doctor` now includes three additional checks**: whether the running Node.js version meets the minimum supported version, whether a newer version of Preflight is available on npm, and whether the Node.js binary colocated with the installed Claude Code hook matches the Node currently running `doctor` (catches an nvm default that changed after install).
+- **`preflight local` now also lists live `--stdio` MCP processes** (one per Claude Code window), not just `--local` dashboard processes, and `--clean` auto-flags `--stdio` processes whose recorded binary no longer exists on disk for cleanup.
+
+## [1.15.1] - 2026-08-13
+
+### Fixed
+
+- **The Sessions page now shows the LIVE badge and a placeholder row for sessions running in a different Claude Code window**, not just the window the dashboard happens to be attached to — previously such sessions were invisible entirely. (Full activity detail for a cross-process session — call counts, timeline — is not yet available; only its live status and identity are.)
+- **The Sessions page's Today/7-days/30-days tabs no longer hide sessions that never spawned a subagent** — most sessions — regardless of how recently they actually happened. Only "All" reliably showed every session before this fix.
+- **The session-backfill script (`scripts/backfill-sessions.ts`) now writes every `FullSessionSummary` field**, so sessions it reconstructs from historical New Relic telemetry no longer permanently report zero/null for model breakdown, cache-token, and quality-proxy data that later dashboard views expect.
+
+### Changed
+
+- **A dashboard-only dead code path (`fetchLatency`) was removed** — no user-visible change; latency data continues to be served via the Today dashboard's aggregate endpoint.
+- **Region host configuration (events-ingest host, NerdGraph URL, license-key auto-detect, deploy CLI flags) is now consolidated into one internal registry**, instead of being hand-maintained separately in four places — no change in behavior, this only reduces the risk of the four copies drifting out of sync when a region is added or changed in the future.
+
 ## [1.15.0] - 2026-08-12
 
 ### Added

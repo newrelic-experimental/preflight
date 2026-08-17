@@ -165,11 +165,11 @@ You'll need a **license key** (telemetry ingest) and your **account ID**, plus a
 ## Other Commands
 
 ```bash
-preflight doctor               # Run 7 diagnostic checks and print actionable fix commands
+preflight doctor               # Run 10 diagnostic checks and print actionable fix commands
 preflight validate             # Check config for syntax errors and unknown keys
 preflight update               # Pull latest version, rebuild, and offer to restart a running dashboard (source installs only — npm installs: npm install -g @newrelic/preflight@latest)
-preflight local                # List running --local dashboard processes
-preflight local --clean        # Kill orphaned --local processes (prompts for confirmation)
+preflight local                # List running --local dashboard processes and live --stdio MCP processes
+preflight local --clean        # Kill orphaned --local processes and --stdio processes with a missing binary (prompts for confirmation)
 preflight uninstall            # Remove hooks and MCP config (prompts with a summary first)
 preflight uninstall --yes      # Skip the confirmation prompt (for scripts and CI)
 preflight uninstall --daemon   # Remove only the background dashboard daemon

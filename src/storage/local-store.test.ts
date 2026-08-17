@@ -978,6 +978,34 @@ describe('LocalStore', () => {
       // Should not throw
       expect(() => store.removeHeartbeat()).not.toThrow();
     });
+
+    it('also writes a sidecar meta file with argv and cwd', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir, 'sess-hb-3');
+      store.writeHeartbeat(
+        12345,
+        ['/opt/preflight/dist/index.js', '--stdio'],
+        '/home/user/project',
+      );
+
+      const metaPath = resolve(tmpDir, 'active-sess-hb-3.meta.json');
+      expect(existsSync(metaPath)).toBe(true);
+      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      expect(meta).toEqual({
+        argv: ['/opt/preflight/dist/index.js', '--stdio'],
+        cwd: '/home/user/project',
+      });
+    });
+
+    it('removeHeartbeat also removes the sidecar meta file', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir, 'sess-hb-4');
+      store.writeHeartbeat(67890, ['/opt/preflight/dist/index.js'], '/home/user/project');
+      expect(existsSync(resolve(tmpDir, 'active-sess-hb-4.meta.json'))).toBe(true);
+
+      store.removeHeartbeat();
+      expect(existsSync(resolve(tmpDir, 'active-sess-hb-4.meta.json'))).toBe(false);
+    });
   });
 
   describe('gcOrphanBuffers()', () => {
@@ -1014,6 +1042,23 @@ describe('LocalStore', () => {
         /^buffer-sess-dead\.jsonl\.archived-\d+$/.test(n),
       );
       expect(archives).toHaveLength(1);
+    });
+
+    it('also removes the sidecar meta.json when archiving a dead-heartbeat buffer', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      makeBufferFile('buffer-sess-dead-meta.jsonl');
+      writeFileSync(resolve(tmpDir, 'active-sess-dead-meta.pid'), String(DEAD_PID));
+      writeFileSync(
+        resolve(tmpDir, 'active-sess-dead-meta.meta.json'),
+        JSON.stringify({ argv: ['/opt/preflight/dist/index.js'], cwd: '/home/user/project' }),
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcOrphanBuffers(new Set());
+
+      expect(result.archived).toBe(1);
+      expect(existsSync(resolve(tmpDir, 'active-sess-dead-meta.pid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'active-sess-dead-meta.meta.json'))).toBe(false);
     });
 
     it('preserves a buffer whose heartbeat PID is alive (this process)', () => {
@@ -1314,6 +1359,54 @@ describe('LocalStore', () => {
       mkdirSync(tmpDir, { recursive: true });
       const store = new LocalStore(tmpDir);
       expect(store.getActiveSessionIdsFromHeartbeats().size).toBe(0);
+    });
+  });
+
+  describe('listActiveStdioInstances()', () => {
+    it('returns live instances with argv/cwd from the sidecar meta file', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const store = new LocalStore(tmpDir, 'sess-stdio-1');
+      store.writeHeartbeat(
+        process.pid,
+        ['/opt/preflight/dist/index.js', '--stdio'],
+        '/home/user/project',
+      );
+
+      const [inst] = new LocalStore(tmpDir).listActiveStdioInstances();
+      expect(inst.pid).toBe(process.pid);
+      expect(inst.sessionId).toBe('sess-stdio-1');
+      expect(inst.argv).toEqual(['/opt/preflight/dist/index.js', '--stdio']);
+      expect(inst.cwd).toBe('/home/user/project');
+      expect(inst.alive).toBe(true);
+      expect(typeof inst.startedAt).toBe('number');
+    });
+
+    it('marks a dead PID as not alive', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const DEAD_PID = 999999;
+      writeFileSync(resolve(tmpDir, 'active-sess-stdio-dead.pid'), String(DEAD_PID));
+      const [inst] = new LocalStore(tmpDir).listActiveStdioInstances();
+      expect(inst.pid).toBe(DEAD_PID);
+      expect(inst.alive).toBe(false);
+    });
+
+    it('defaults argv to [] and cwd to null when the sidecar meta file is missing (pre-upgrade heartbeat)', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, 'active-sess-stdio-nometa.pid'), String(process.pid));
+      const [inst] = new LocalStore(tmpDir).listActiveStdioInstances();
+      expect(inst.argv).toEqual([]);
+      expect(inst.cwd).toBeNull();
+    });
+
+    it('returns an empty array when no heartbeats exist', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      expect(new LocalStore(tmpDir).listActiveStdioInstances()).toEqual([]);
+    });
+
+    it('skips a heartbeat file with a malformed sessionId', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(resolve(tmpDir, 'active-bad session id!.pid'), String(process.pid));
+      expect(new LocalStore(tmpDir).listActiveStdioInstances()).toEqual([]);
     });
   });
 

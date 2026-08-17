@@ -13,17 +13,18 @@
  *
  * Requires a New Relic User API key (NRAK-...), not a license key.
  *
- * Note: filesRead / filesModified and token breakdowns cannot be recovered
- * from NR event data and are left empty. All fields used by PersonalCoach
- * (efficiencyScore, estimatedCostUsd, antiPatterns, taskCount, toolBreakdown)
- * are fully recoverable.
+ * Note: filesRead / filesModified, per-model/cache token breakdowns,
+ * sessionName, and repoName cannot be recovered from NR event data and are
+ * left at their FullSessionSummary legacy-file defaults. All fields used by
+ * PersonalCoach (efficiencyScore, estimatedCostUsd, antiPatterns, taskCount,
+ * toolBreakdown) are fully recoverable.
  */
 
 import 'dotenv/config';
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { SessionStore, buildSessionSummary } from '../src/storage/session-store.js';
+import { SessionStore } from '../src/storage/session-store.js';
 import {
   WeeklySummaryGenerator,
   getIsoWeekId,
@@ -31,6 +32,7 @@ import {
 } from '../src/storage/weekly-summary.js';
 import type { FullSessionSummary } from '../src/storage/session-store.js';
 import { normalizeDeveloperName } from '../src/config.js';
+import { ZERO_QUALITY_PROXY_COUNTS } from '../src/metrics/quality-proxy-tracker.js';
 
 const NERDGRAPH_URL = 'https://api.newrelic.com/graphql';
 
@@ -315,6 +317,8 @@ async function main(): Promise<void> {
 
     const summary: FullSessionSummary = {
       sessionId,
+      sessionName: null, // not recoverable from NR event data
+      repoName: null, // not recoverable from NR event data
       startTime: base.startTime,
       endTime: base.endTime,
       durationMs: base.endTime - base.startTime,
@@ -332,9 +336,13 @@ async function main(): Promise<void> {
       buildRunCount: tasks?.buildRunCount ?? 0,
       buildPassCount: tasks?.buildPassCount ?? 0,
       estimatedCostUsd: typeof estimatedCostUsd === 'number' ? estimatedCostUsd : null,
+      subagentCostUsd: 0, // not recoverable from NR event data
       tokensInput: 0, // not recoverable from NR event data
       tokensOutput: 0,
       tokensThinking: 0,
+      tokensCacheRead: 0, // not recoverable from NR event data
+      tokensCacheCreation: 0, // not recoverable from NR event data
+      cacheSavingsUsd: 0, // not recoverable from NR event data
       efficiencyScore: efficiencyScores.get(sessionId) ?? null,
       antiPatterns: antiPatterns.get(sessionId) ?? [],
       taskCount: tasks?.taskCount ?? 0,
@@ -346,6 +354,9 @@ async function main(): Promise<void> {
       assistantMessages: 0,
       userCorrections: 0,
       outcome: 'completed',
+      toolSelectionMetrics: null, // not recoverable from NR event data
+      modelBreakdown: {}, // not recoverable from NR event data
+      qualityProxy: ZERO_QUALITY_PROXY_COUNTS,
     };
 
     const weekId = getIsoWeekId(new Date(base.startTime));

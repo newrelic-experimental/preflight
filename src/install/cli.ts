@@ -368,12 +368,14 @@ function formatAge(ms: number): string {
 /**
  * `preflight local` — lists every `--local` process preflight has
  * registered (see `LocalStore.registerLocalInstance()`), marking whichever
- * one currently owns the dashboard port. `--clean` additionally offers to
- * kill every live, non-owning entry (a single combined prompt, default
- * yes) — these are processes that lost the dashboard port race and have
- * been running headless ever since, with no other way to detect them
- * short of scanning the OS process table, which this feature deliberately
- * avoids.
+ * one currently owns the dashboard port, and every live `--stdio` MCP
+ * process (one per Claude Code window, see `LocalStore.writeHeartbeat()`).
+ * `--clean` additionally offers to kill every live, non-owning `--local`
+ * entry (processes that lost the dashboard port race and have been running
+ * headless ever since) plus any `--stdio` process whose recorded binary no
+ * longer exists on disk (a high-confidence sign it was uninstalled or moved
+ * out from under a still-running session) — a single combined prompt,
+ * default yes.
  */
 async function handleLocal(options: { clean?: boolean }): Promise<void> {
   const localStore = new LocalStore(DEFAULT_STORAGE_PATH);
@@ -385,25 +387,56 @@ async function handleLocal(options: { clean?: boolean }): Promise<void> {
 
   const owner = localStore.getLiveLocalDashboardProcess();
   const instances = localStore.listLocalInstances().filter((i) => i.alive);
+  const stdioInstances = localStore.listActiveStdioInstances().filter((i) => i.alive);
 
-  if (instances.length === 0) {
-    print('No --local processes running.');
+  if (instances.length === 0 && stdioInstances.length === 0) {
+    print('No --local or --stdio processes running.');
     return;
   }
 
-  print(`${instances.length} --local process(es) running:`);
-  print();
-  for (const inst of instances) {
-    const status = inst.pid === owner?.pid ? 'dashboard owner' : 'idle';
+  if (instances.length > 0) {
+    print(`${instances.length} --local process(es) running:`);
+    print();
+    for (const inst of instances) {
+      const status = inst.pid === owner?.pid ? 'dashboard owner' : 'idle';
+      print(
+        `  PID ${inst.pid}  (${status}, started ${formatAge(Date.now() - inst.startedAt)} ago)  ${inst.cwd}`,
+      );
+    }
+    print();
+  }
+
+  // High-confidence --stdio orphans: the recorded binary (argv[0]) no longer
+  // exists on disk — e.g. it was uninstalled or moved after Claude Code
+  // spawned this process. Unlike a --local process that lost the dashboard
+  // port race, a live --stdio process with an intact binary is the normal
+  // case (one per Claude Code window) — only the binary-missing ones are
+  // auto-flagged.
+  const stdioOrphans = stdioInstances.filter((i) => i.argv[0] && !existsSync(i.argv[0]));
+
+  if (stdioInstances.length > 0) {
+    print(`${stdioInstances.length} --stdio MCP process(es) running:`);
+    print();
+    for (const inst of stdioInstances) {
+      const orphanTag = stdioOrphans.includes(inst) ? ', binary missing' : '';
+      print(
+        `  PID ${inst.pid}  (session ${inst.sessionId}, started ${formatAge(Date.now() - inst.startedAt)} ago${orphanTag})  ${inst.cwd ?? 'unknown cwd'}`,
+      );
+    }
+    print();
     print(
-      `  PID ${inst.pid}  (${status}, started ${formatAge(Date.now() - inst.startedAt)} ago)  ${inst.cwd}`,
+      '  Note: a --stdio process is spawned once by Claude Code over stdio pipes — killing it will not',
+    );
+    print(
+      '  make Claude Code respawn a replacement; restart Claude Code (or that window) afterward.',
     );
   }
 
   if (!options.clean) return;
 
-  const orphans = instances.filter((i) => i.pid !== owner?.pid);
-  if (orphans.length === 0) {
+  const localOrphans = instances.filter((i) => i.pid !== owner?.pid);
+  const totalOrphans = localOrphans.length + stdioOrphans.length;
+  if (totalOrphans === 0) {
     print('\nNo orphaned processes to clean up.');
     return;
   }
@@ -413,7 +446,7 @@ async function handleLocal(options: { clean?: boolean }): Promise<void> {
   try {
     answer = (
       await rl.question(
-        `\nKill ${orphans.length} orphaned process${orphans.length > 1 ? 'es' : ''}? [Y/n]: `,
+        `\nKill ${totalOrphans} orphaned process${totalOrphans > 1 ? 'es' : ''}? [Y/n]: `,
       )
     )
       .trim()
@@ -423,11 +456,21 @@ async function handleLocal(options: { clean?: boolean }): Promise<void> {
   }
   if (answer === 'n' || answer === 'no') return;
 
-  for (const orphan of orphans) {
+  for (const orphan of localOrphans) {
     try {
       await killProcessGracefully(orphan.pid);
       localStore.unregisterLocalInstance(orphan.pid);
       print(`✓ Killed PID ${orphan.pid}.`);
+    } catch (err) {
+      print(`⚠ Could not kill PID ${orphan.pid}: ${errMsg(err)}`);
+    }
+  }
+
+  for (const orphan of stdioOrphans) {
+    try {
+      await killProcessGracefully(orphan.pid);
+      localStore.removeStdioHeartbeat(orphan.sessionId);
+      print(`✓ Killed PID ${orphan.pid} (session ${orphan.sessionId}).`);
     } catch (err) {
       print(`⚠ Could not kill PID ${orphan.pid}: ${errMsg(err)}`);
     }

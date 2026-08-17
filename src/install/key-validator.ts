@@ -1,29 +1,16 @@
 import { createLogger } from '../shared/index.js';
 import { validateSsrfUrl } from '../security/index.js';
+import { getRegion } from './regions.js';
 
 const logger = createLogger('key-validator');
 
-const EVENTS_API_HOSTS: Record<string, string> = {
-  eu: 'insights-collector.eu01.nr-data.net',
-  gov: 'gov-insights-collector.newrelic.com',
-  jp: 'insights-collector.jp.nr-data.net',
-  us: 'insights-collector.newrelic.com',
-};
-
-const NERDGRAPH_URLS: Record<string, string> = {
-  eu: 'https://api.eu.newrelic.com/graphql',
-  gov: 'https://api.newrelic.com/graphql',
-  jp: 'https://api.jp.newrelic.com/graphql',
-  us: 'https://api.newrelic.com/graphql',
-};
-
 export function getEventsApiUrl(accountId: string, collectorHost: string | null): string {
-  const host = EVENTS_API_HOSTS[collectorHost ?? 'us'] ?? EVENTS_API_HOSTS['us'];
+  const host = getRegion(collectorHost).eventsApiHost;
   return `https://${host}/v1/accounts/${accountId}/events`;
 }
 
 export function getNerdgraphUrl(collectorHost: string | null): string {
-  return NERDGRAPH_URLS[collectorHost ?? 'us'] ?? NERDGRAPH_URLS['us'];
+  return getRegion(collectorHost).nerdgraphUrl;
 }
 
 export interface ValidationResult {

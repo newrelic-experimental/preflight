@@ -18,6 +18,7 @@ import type {
 import { DEFAULT_PERSONAL_THRESHOLDS } from '../alerts/types.js';
 import { normalizeDeveloperName } from '../config.js';
 import { resolveDataDir } from './data-paths.js';
+import { getRegionByDeployFlags } from '../install/regions.js';
 
 export const CREATE_POLICY_MUTATION = `
 mutation CreateAlertPolicy($accountId: Int!, $name: String!, $incidentPreference: AlertsIncidentPreference!) {
@@ -410,9 +411,7 @@ async function syncConditions(
 
 function pickNerdgraphUrl(opts: AlertsDeployOptions): string {
   if (opts.nerdgraphUrlOverride) return opts.nerdgraphUrlOverride;
-  if (opts.eu) return 'https://api.eu.newrelic.com/graphql';
-  if (opts.jp) return 'https://api.jp.newrelic.com/graphql';
-  return 'https://api.newrelic.com/graphql';
+  return getRegionByDeployFlags(opts).nerdgraphUrl;
 }
 
 /**

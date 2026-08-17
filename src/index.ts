@@ -18,6 +18,7 @@ import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { WorkflowStore } from './dashboard/workflow-store.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
+import { checkNodeVersion } from './install/node-version-check.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import {
   isSyntheticSessionId,
@@ -41,6 +42,7 @@ import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
+import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
 import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
@@ -635,37 +637,6 @@ export function parseArgs(argv: string[]): CliOptions {
   };
 }
 
-// Must track package.json's `engines.node` floor.
-export const MIN_SUPPORTED_NODE_MAJOR = 22;
-
-/**
- * Returns a diagnostic message when the running Node major version is below
- * MIN_SUPPORTED_NODE_MAJOR, or null when it's fine. Checked at the very start
- * of main() so an MCP client resolving a stale/unintended Node binary (e.g.
- * via nvm — see docs/TROUBLESHOOTING.md) fails with a clear message instead
- * of an opaque deep-in-the-stack error or silent connection failure.
- *
- * This only actually catches Node 20-21: on those versions the static import
- * graph still loads fine, so this check's own code gets a chance to run
- * before failing on the version floor. On Node 16-19 the process crashes
- * earlier, during ESM's evaluation of the whole static import graph — before
- * main() (and this check) ever runs — with a less clear error, e.g.
- * `ReferenceError: structuredClone is not defined` (Node 16, from
- * src/shared/pricing.ts) or `ReferenceError: File is not defined` (Node 18,
- * from undici). Still valuable for the most common real-world case: a stale
- * nvm default resolving to a merely-slightly-old Node.
- */
-export function checkNodeVersion(nodeVersion: string = process.version): string | null {
-  const major = parseInt(nodeVersion.replace(/^v/, '').split('.')[0], 10);
-  if (!Number.isFinite(major) || major >= MIN_SUPPORTED_NODE_MAJOR) return null;
-  return (
-    `preflight requires Node.js v${MIN_SUPPORTED_NODE_MAJOR}+, but is running under ${nodeVersion}. ` +
-    'This usually means your MCP client resolved a stale or unintended Node binary (e.g. via nvm). ' +
-    'See docs/TROUBLESHOOTING.md, "MCP server won\'t start (wrong Node version)", for how to pin the ' +
-    'exact Node path in ~/.mcp.json.'
-  );
-}
-
 async function main(): Promise<void> {
   const nodeVersionError = checkNodeVersion();
   if (nodeVersionError) {
@@ -1107,6 +1078,38 @@ async function main(): Promise<void> {
     // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
     const localSessionAggregator = new LocalSessionAggregator();
     const repoNameResolver = new RepoNameResolver();
+
+    // Recover a resumed session's pre-restart cost/token totals — see
+    // CostTracker.seedFromPersisted()'s doc comment for the bug this fixes.
+    // Also seeds ModelUsageTracker, which has the identical in-memory-only,
+    // resets-on-restart problem for its own per-model breakdown — without
+    // this, its numbers would stay inconsistent with (short of) CostTracker's
+    // now-correct session total after a restart.
+    // Guarded per-id (not a single fired-once flag) because adoptRealSessionId
+    // below can call this again for a *different* id after a pending->real
+    // transition or a PPID correction.
+    const rehydratedTrackerSessionIds = new Set<string>();
+    const rehydrateTrackersIfResumed = (sessionId: string): void => {
+      if (isSyntheticSessionId(sessionId)) return;
+      if (rehydratedTrackerSessionIds.has(sessionId)) return;
+      rehydratedTrackerSessionIds.add(sessionId);
+      try {
+        const persisted = sessionStore!.loadSession(sessionId);
+        if (!persisted) return;
+        costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+        modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
+        logger.info('Rehydrated trackers from a prior checkpoint for this session', {
+          sessionId,
+          estimatedCostUsd: persisted.estimatedCostUsd,
+        });
+      } catch (err) {
+        logger.warn('Failed to rehydrate trackers from a prior checkpoint', {
+          sessionId,
+          error: String(err),
+        });
+      }
+    };
+    if (!isProvisional && !resolvedViaCwdOnly) rehydrateTrackersIfResumed(currentSessionId);
 
     // Each command is isolated so a slow/missing git or remote doesn't block
     // the others. Uses spawnSync (no shell) to avoid injection; stderr is
@@ -2385,7 +2388,7 @@ async function main(): Promise<void> {
     // stopped first so its harvest interval never leaks on a second call.
     const adoptRealSessionId = async (
       realId: string,
-      opts?: { isCorrection?: boolean },
+      opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
     ): Promise<void> => {
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
@@ -2404,6 +2407,15 @@ async function main(): Promise<void> {
       }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);
+      // viaCwdOnly means this id came from the collision-prone cwd fallback
+      // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
+      // resolvedViaCwdOnly gate on the synchronous resolution path's own
+      // eager-seed call. Seeding here would import a DIFFERENT session's
+      // real cost/token total on an unconfirmed guess; the caller arms
+      // startPpidCorrectionWatch right after this returns, whose
+      // confirmation branch (ppidId === staleId) calls
+      // rehydrateTrackersIfResumed itself once the guess is confirmed.
+      if (!opts?.viaCwdOnly) rehydrateTrackersIfResumed(realId);
 
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
@@ -2562,7 +2574,11 @@ async function main(): Promise<void> {
           if (ppidId === staleId) {
             // The cwd guess turned out to be correct — no correction needed,
             // so no reason to keep suppressing checkpoints for the rest of
-            // the cap window.
+            // the cap window. It was NOT seeded eagerly (see the
+            // resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's first
+            // call site) precisely because it wasn't confirmed yet — seed it
+            // now that it is.
+            rehydrateTrackersIfResumed(staleId);
             clearPendingConfirmation();
             return;
           }
@@ -2632,8 +2648,11 @@ async function main(): Promise<void> {
             }
 
             // Adopt the real session ID without clearing accumulated
-            // metrics — see adoptRealSessionId's own comment above.
-            await adoptRealSessionId(realId);
+            // metrics — see adoptRealSessionId's own comment above. Skip the
+            // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
+            // doc comment there) — startPpidCorrectionWatch below seeds it
+            // once confirmed, exactly like the synchronous resolution path.
+            await adoptRealSessionId(realId, { viaCwdOnly: resolvedSource === 'cwd' });
 
             logger.info('Session ID resolved, full initialization complete', {
               sessionTraceId: realId,

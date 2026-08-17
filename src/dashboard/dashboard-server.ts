@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { VERSION } from '../version.js';
+import { isNewerVersion, fetchLatestNpmVersion } from '../install/npm-version-check.js';
 import { LiveEventBus } from './live-event-bus.js';
 import { createStaticHandler } from './routes/static-handler.js';
 import { createApiHandler, ApiHandlerDeps } from './routes/api-handler.js';
@@ -15,37 +16,6 @@ const logger = createLogger('dashboard-server');
 
 /** Comfortably above the interval at which the UI polls, so a reused socket is never mid-close. */
 const KEEP_ALIVE_TIMEOUT_MS = 65_000;
-
-function isNewerVersion(candidate: string, installed: string): boolean {
-  const parse = (v: string): [number, number, number] => {
-    const parts = v.replace(/^v/, '').replace(/-.*$/, '').split('.').map(Number);
-    return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
-  };
-  const [ca, cb, cc] = parse(candidate);
-  const [ia, ib, ic] = parse(installed);
-  if (ca !== ia) return ca > ia;
-  if (cb !== ib) return cb > ib;
-  return cc > ic;
-}
-
-interface NpmRegistryLatestResponse {
-  readonly version?: unknown;
-}
-
-async function defaultNpmFetcher(): Promise<string | null> {
-  try {
-    const res = await fetch('https://registry.npmjs.org/@newrelic/preflight/latest', {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as NpmRegistryLatestResponse;
-    const v = data.version;
-    return typeof v === 'string' ? v : null;
-  } catch {
-    return null;
-  }
-}
 
 export interface DashboardServerOptions {
   readonly port: number;
@@ -125,7 +95,7 @@ export class DashboardServer {
       res.on('close', () => this.activeSseResponses.delete(res));
       sseHandler(req, res);
     });
-    const fetcher = opts.npmFetcher ?? defaultNpmFetcher;
+    const fetcher = opts.npmFetcher ?? fetchLatestNpmVersion;
     void fetcher().then((v) => {
       if (v !== null) {
         this.latestVersion = v;

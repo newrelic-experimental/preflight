@@ -86,17 +86,6 @@ export interface LatencyPercentiles {
   readonly count: number;
 }
 
-export interface LatencyMetrics {
-  readonly overall: LatencyPercentiles | null;
-  readonly byTool: Readonly<Record<string, LatencyPercentiles | null>>;
-  readonly slowestCalls: ReadonlyArray<{
-    readonly toolName: string;
-    readonly durationMs: number;
-    readonly timestamp: number;
-    readonly filePath?: string;
-  }>;
-}
-
 export interface ReplayTimelineEntry {
   readonly timestamp: number;
   readonly toolName: string;
@@ -484,7 +473,6 @@ export interface BudgetStatus {
 }
 
 export const fetchBudget = (): Promise<BudgetStatus> => getJson<BudgetStatus>('/api/budget');
-export const fetchLatency = (): Promise<LatencyMetrics> => getJson<LatencyMetrics>('/api/latency');
 
 // Mirrors CostAttribution in src/metrics/cost-per-outcome.ts (not importable).
 export interface CostPerOutcomeResponse {
@@ -1224,7 +1212,6 @@ export const qk = {
   audit: ['audit'] as const,
   weekly: ['weekly'] as const,
   budget: ['budget'] as const,
-  latency: ['latency'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,

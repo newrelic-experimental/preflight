@@ -77,9 +77,11 @@ export interface WorkflowRunRow {
    * observed this run's cost (no `hasCostForRun` callback, or it returned
    * false), as opposed to a confirmed $0. Lets a KPI summing several runs'
    * `total_usd` flag its total as partial instead of silently treating
-   * "unknown" the same as "zero". A full fix — persisting per-run cost
-   * somewhere readable across process restarts/instances — is deferred as
-   * a follow-up; this is a partial mitigation in the meantime.
+   * "unknown" the same as "zero". As of CostTracker.seedFromPersisted()
+   * restoring costByWorkflowRunId across a process restart, this should now
+   * only be true for a run a different, concurrently-running process is
+   * paying for (e.g. a `--local` dashboard reading a `--stdio` process's
+   * run) — not for a run whose owning process simply restarted.
    */
   readonly cost_unknown: boolean;
   readonly declared_phases: number | null;

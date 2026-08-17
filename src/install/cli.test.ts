@@ -1770,8 +1770,10 @@ describe('preflight local', () => {
     (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
       getLiveLocalDashboardProcess: jest.fn(() => null),
       listLocalInstances: jest.fn(() => []),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     const readlineMod = await import('node:readline/promises');
     (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
@@ -1788,17 +1790,19 @@ describe('preflight local', () => {
     return stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
   }
 
-  it('prints "No --local processes running" when the registry is empty', async () => {
+  it('prints "No --local or --stdio processes running" when the registry is empty', async () => {
     await runInstallCli(['local']);
-    expect(getOutput()).toContain('No --local processes running');
+    expect(getOutput()).toContain('No --local or --stdio processes running');
   });
 
   it('cleans up dead entries silently before listing', async () => {
     (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
       getLiveLocalDashboardProcess: jest.fn(() => null),
       listLocalInstances: jest.fn(() => []),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 2),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     await runInstallCli(['local']);
     expect(getOutput()).toContain('Cleaned up 2 stale registry entries');
@@ -1811,8 +1815,10 @@ describe('preflight local', () => {
         { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now() - 1000, alive: true },
         { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now() - 2000, alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     await runInstallCli(['local']);
     const output = getOutput();
@@ -1829,8 +1835,10 @@ describe('preflight local', () => {
       listLocalInstances: jest.fn(() => [
         { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     const killSpy = jest.spyOn(process, 'kill');
     await runInstallCli(['local']);
@@ -1847,8 +1855,10 @@ describe('preflight local', () => {
         { pid: 200, argv: [], cwd: '/orphan-a', startedAt: Date.now(), alive: true },
         { pid: 201, argv: [], cwd: '/orphan-b', startedAt: Date.now(), alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance,
+      removeStdioHeartbeat: jest.fn(),
     }));
     const readlineMod = await import('node:readline/promises');
     const questionMock = jest.fn(async (_prompt: string) => 'y');
@@ -1884,8 +1894,10 @@ describe('preflight local', () => {
       listLocalInstances: jest.fn(() => [
         { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     const readlineMod = await import('node:readline/promises');
     (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
@@ -1911,8 +1923,10 @@ describe('preflight local', () => {
       listLocalInstances: jest.fn(() => [
         { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     const readlineMod = await import('node:readline/promises');
     (readlineMod.createInterface as unknown as jest.Mock).mockReturnValue({
@@ -1953,8 +1967,10 @@ describe('preflight local', () => {
       listLocalInstances: jest.fn(() => [
         { pid: 200, argv: [], cwd: '/orphan', startedAt: Date.now(), alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     const killSpy = jest.spyOn(process, 'kill');
     await runInstallCli(['local', '--clean']);
@@ -1968,14 +1984,121 @@ describe('preflight local', () => {
       listLocalInstances: jest.fn(() => [
         { pid: 100, argv: [], cwd: '/owner', startedAt: Date.now(), alive: true },
       ]),
+      listActiveStdioInstances: jest.fn(() => []),
       gcDeadLocalInstances: jest.fn(() => 0),
       unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
     }));
     const killSpy = jest.spyOn(process, 'kill');
     await runInstallCli(['local', '--clean']);
     expect(getOutput()).toContain('No orphaned processes to clean up');
     expect(killSpy).not.toHaveBeenCalled();
     killSpy.mockRestore();
+  });
+
+  it('lists live --stdio processes alongside --local ones', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => []),
+      listActiveStdioInstances: jest.fn(() => [
+        {
+          pid: 300,
+          sessionId: 'sess-a',
+          argv: ['/opt/preflight/dist/index.js', '--stdio'],
+          cwd: '/home/user/project',
+          startedAt: Date.now() - 5000,
+          alive: true,
+        },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
+    }));
+    await runInstallCli(['local']);
+    const output = getOutput();
+    expect(output).toContain('1 --stdio MCP process(es) running');
+    expect(output).toContain('PID 300');
+    expect(output).toContain('sess-a');
+    expect(output).toContain('/home/user/project');
+    expect(output).toContain('restart Claude Code');
+  });
+
+  it('does not list a --stdio process whose heartbeat PID is dead', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => []),
+      listActiveStdioInstances: jest.fn(() => [
+        {
+          pid: 999999,
+          sessionId: 'sess-dead',
+          argv: [],
+          cwd: null,
+          startedAt: Date.now(),
+          alive: false,
+        },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
+    }));
+    await runInstallCli(['local']);
+    expect(getOutput()).toContain('No --local or --stdio processes running');
+  });
+
+  it('--clean auto-kills a --stdio process whose recorded binary no longer exists on disk', async () => {
+    const removeStdioHeartbeat = jest.fn();
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => []),
+      listActiveStdioInstances: jest.fn(() => [
+        {
+          pid: 300,
+          sessionId: 'sess-orphan',
+          argv: ['/opt/preflight-uninstalled/dist/index.js', '--stdio'],
+          cwd: '/home/user/project',
+          startedAt: Date.now(),
+          alive: true,
+        },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat,
+    }));
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+    await runInstallCli(['local', '--clean']);
+    expect(killSpy).toHaveBeenCalledWith(300, 'SIGTERM');
+    expect(removeStdioHeartbeat).toHaveBeenCalledWith('sess-orphan');
+    killSpy.mockRestore();
+  });
+
+  it('--clean does not touch a live --stdio process whose recorded binary still exists on disk', async () => {
+    (LocalStore as unknown as jest.Mock).mockImplementation(() => ({
+      getLiveLocalDashboardProcess: jest.fn(() => null),
+      listLocalInstances: jest.fn(() => []),
+      listActiveStdioInstances: jest.fn(() => [
+        {
+          // process.execPath is always a real, existing file — a safe stand-in
+          // for "the binary is still on disk".
+          pid: 300,
+          sessionId: 'sess-fine',
+          argv: [process.execPath],
+          cwd: '/home/user/project',
+          startedAt: Date.now(),
+          alive: true,
+        },
+      ]),
+      gcDeadLocalInstances: jest.fn(() => 0),
+      unregisterLocalInstance: jest.fn(),
+      removeStdioHeartbeat: jest.fn(),
+    }));
+    (fsMod.existsSync as jest.Mock).mockImplementation((p: unknown) => p === process.execPath);
+    const killSpy = jest.spyOn(process, 'kill');
+    await runInstallCli(['local', '--clean']);
+    expect(killSpy).not.toHaveBeenCalledWith(300, 'SIGTERM');
+    killSpy.mockRestore();
+    (fsMod.existsSync as jest.Mock).mockImplementation(() => false);
   });
 });
 

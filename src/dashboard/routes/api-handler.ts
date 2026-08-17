@@ -1048,7 +1048,7 @@ export function createApiHandler(
     // SPA Today KPI can render it without a second round-trip. `null` when
     // no tasks have been scored yet (or when the scorer wasn't wired in).
     const efficiencyScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;
-    const liveSessions = deps.liveSessionRegistry?.getLiveSessions() ?? [];
+    const liveSessions = computeCrossProcessLiveSessionIds(deps);
     jsonOk(res, { ...deps.sessionTracker.getMetrics(), efficiencyScore, liveSessions });
   });
 
@@ -1132,7 +1132,7 @@ export function createApiHandler(
           perSession.set(sid, { count: 1, firstTs: ts || Date.now(), lastTs: ts || Date.now() });
         }
       }
-      for (const id of deps.liveSessionRegistry.getLiveSessions()) {
+      for (const id of computeCrossProcessLiveSessionIds(deps)) {
         if (!knownIds.has(id)) {
           const stats = perSession.get(id);
           // getLastActivity is registry-maintained and survives buffer drains,
@@ -2886,7 +2886,7 @@ export function createApiHandler(
         }
         // Concurrent live session tracked by the registry but not this server's
         // own session — synthesize from tool call buffer records.
-        if (deps.liveSessionRegistry?.getLiveSessions().includes(sessionId)) {
+        if (computeCrossProcessLiveSessionIds(deps).includes(sessionId)) {
           const allRecords = deps.toolCallBuffer?.getRecords() ?? [];
           const records = allRecords.filter(
             (r) => (r as { sessionId?: string | null }).sessionId === sessionId,
@@ -2930,7 +2930,7 @@ export function createApiHandler(
           const quality = combineQualityProxyRawCounts([qualityTracker.getRawCounts()]);
           jsonOk(res, {
             sessionId,
-            sessionName: deps.liveSessionRegistry.getSessionName(sessionId),
+            sessionName: deps.liveSessionRegistry?.getSessionName(sessionId) ?? null,
             startTime,
             durationMs: lastTs - startTime,
             toolCallCount: records.length,

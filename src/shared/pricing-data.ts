@@ -23,7 +23,10 @@ export const MODEL_ALIASES: Record<string, string> = {
   // Google Gemini current-gen shortcuts
   'gemini-3.5': 'gemini-3.5-flash',
   'gemini-3.1-pro': 'gemini-3.1-pro-preview',
-  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
+  // No alias for 'gemini-3.1-flash-lite' — it's now an exact-match table key
+  // in its own right (GA'd, dropped the "-preview" suffix). An earlier
+  // revision of this file aliased it to 'gemini-3.1-flash-lite-preview',
+  // which is backwards: that ID is the one that's been shut down.
   'gemini-3-flash': 'gemini-3-flash-preview',
   // Gemini family shortcuts: without these, bare family queries like
   // 'gemini-2.5' return null (gpt-style .x suffixes don't match -\d prefix
@@ -31,20 +34,25 @@ export const MODEL_ALIASES: Record<string, string> = {
   'gemini-2.5': 'gemini-2.5-pro',
   'gemini-2.0': 'gemini-2.0-flash',
 
-  // OpenAI family shortcuts: 'gpt-5' has no exact key and the .x
-  // suffix prevents the forward-prefix heuristic from matching.
-  'gpt-5': 'gpt-5.5',
+  // OpenAI: 'gpt-5.6' is OpenAI's own documented alias for its flagship
+  // model within the 5.6 family (mirrors the API's own alias behavior).
+  // No shortcut for bare 'gpt-5' — it's NOT shorthand for the current
+  // flagship, it's a real, separately priced model with its own exact-match
+  // table entry (see DEFAULT_PRICING_TABLE['gpt-5']). An earlier revision of
+  // this file aliased 'gpt-5' -> 'gpt-5.5', which over-billed real `gpt-5`
+  // calls by several times ($1.25/$10 actual vs $5/$30 aliased).
+  'gpt-5.6': 'gpt-5.6-sol',
 };
 
 // ---------------------------------------------------------------------------
 // Built-in pricing table — USD per million tokens
 //
-// Rates last verified against vendor public pricing pages on 2026-07-01:
-//   - Anthropic   https://www.anthropic.com/pricing
-//   - Google      https://cloud.google.com/vertex-ai/generative-ai/pricing
-//   - OpenAI      https://openai.com/api/pricing/
-//   - Cohere      https://cohere.com/pricing
-//   - Mistral     https://mistral.ai/pricing
+// Rates last verified against vendor public pricing pages on 2026-08-14:
+//   - Anthropic   https://www.anthropic.com/pricing, docs.claude.com
+//   - Google      https://ai.google.dev/gemini-api/docs/pricing
+//   - OpenAI      https://platform.openai.com/docs/pricing, /docs/models
+//   - Cohere      https://cohere.com/pricing, docs.cohere.com
+//   - Mistral     https://mistral.ai/pricing, docs.mistral.ai
 //   - Bedrock     https://aws.amazon.com/bedrock/pricing/
 //
 // When updating rates, bump the date above so consumers can tell at a glance
@@ -55,15 +63,35 @@ export const MODEL_ALIASES: Record<string, string> = {
 
 export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // ---- Anthropic (current generation) ----
-  // "Fable" — internal/beta codename for a Claude variant priced ahead of a
-  // public model-name announcement; update or remove once it ships under a
-  // public name.
+  // Claude Fable 5 GA'd publicly on June 9, 2026 under this exact model ID
+  // (docs.claude.com/.../introducing-claude-fable-5-and-claude-mythos-5) —
+  // no longer an internal/beta codename.
   'claude-fable-5': {
     inputPerMTok: 10,
     outputPerMTok: 50,
     thinkingPerMTok: 50,
     cacheReadPerMTok: 1,
     cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  // Shares Fable 5's specs and pricing exactly, but is limited-availability
+  // only (Project Glasswing, no safety classifiers). Most callers won't hit
+  // this ID, but it's a real, priced model if they do.
+  'claude-mythos-5': {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    thinkingPerMTok: 50,
+    cacheReadPerMTok: 1,
+    cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  // Anthropic's current top-tier model (replaces Opus 4.8 as the default).
+  'claude-opus-5': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    thinkingPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
   'claude-opus-4-8': {
@@ -74,7 +102,10 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
-  // Introductory pricing of $2/$10 through August 31, 2026; standard $3/$15 thereafter.
+  // $2/$10 is Anthropic's standing price, not introductory — the "What's new
+  // in Claude Sonnet 5" doc states this rate plainly with no mention of a
+  // scheduled increase. (An earlier revision of this file said this was
+  // introductory pricing set to expire 2026-08-31; that framing was wrong.)
   'claude-sonnet-5': {
     inputPerMTok: 2,
     outputPerMTok: 10,
@@ -114,9 +145,11 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
 
   // ---- Anthropic (legacy Claude 4 generation) ----
   // These legacy entries are retained for historical-cost backfill. Most use
-  // the pre-1M-context window (200K); claude-opus-4-7 already had the
-  // 1M-context bump backported. Family-name routing (e.g. `claude-opus-4` →
-  // current generation) is handled by MODEL_ALIASES.
+  // the pre-1M-context window (200K); claude-opus-4-7 and claude-opus-4-6
+  // both have the 1M-context window (confirmed via AWS Bedrock docs, which
+  // group them with Opus 4.8/5, Sonnet 5/4.6, and Fable 5). Family-name
+  // routing (e.g. `claude-opus-4` → current generation) is handled by
+  // MODEL_ALIASES.
   'claude-opus-4-7': {
     inputPerMTok: 5,
     outputPerMTok: 25,
@@ -131,7 +164,7 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
-    contextWindow: 200_000,
+    contextWindow: 1_000_000,
   },
   'claude-sonnet-4-5': {
     inputPerMTok: 3,
@@ -187,10 +220,43 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Google Gemini (current generation) ----
+  // Gemini 3.6 Flash and 3.7 Flash are newer generations than 3.5 Flash,
+  // released after this table's last full pass. Both currently carry
+  // identical promotional pricing that steps up on 2027-01-01 (confirmed
+  // directly on ai.google.dev/gemini-api/docs/pricing on 2026-08-14):
+  // input $0.75->$1.50, output (incl. thinking) $3.75->$7.50. Rates below
+  // are the CURRENT (pre-step-up) rate — update both to the post-2027-01-01
+  // rate once that date passes. (Google also publishes a context-caching
+  // rate, $0.075->$0.15, but it's deliberately omitted here, consistent
+  // with every other Gemini entry in this table: none of them set
+  // cacheReadPerMTok even though extractGeminiTokens() does report a real
+  // cachedContentTokenCount. This is a pre-existing gap across the whole
+  // Gemini section, not something introduced here — worth a follow-up pass
+  // if cached Gemini usage becomes material.)
+  'gemini-3.7-flash': {
+    inputPerMTok: 0.75,
+    outputPerMTok: 3.75,
+    thinkingPerMTok: 3.75,
+    contextWindow: 1_000_000,
+  },
+  'gemini-3.6-flash': {
+    inputPerMTok: 0.75,
+    outputPerMTok: 3.75,
+    thinkingPerMTok: 3.75,
+    contextWindow: 1_000_000,
+  },
   'gemini-3.5-flash': {
     inputPerMTok: 1.5,
     outputPerMTok: 9,
     thinkingPerMTok: 9,
+    contextWindow: 1_000_000,
+  },
+  // New — Gemini 3.5 generation's cost-efficient tier, released alongside
+  // 3.5 Flash but not previously in this table.
+  'gemini-3.5-flash-lite': {
+    inputPerMTok: 0.3,
+    outputPerMTok: 2.5,
+    thinkingPerMTok: 2.5,
     contextWindow: 1_000_000,
   },
   'gemini-3.1-pro-preview': {
@@ -202,6 +268,16 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     tierInputPerMTok: 4,
     tierOutputPerMTok: 18,
     tierThinkingPerMTok: 18,
+  },
+  // GA'd and dropped the "-preview" suffix — 'gemini-3.1-flash-lite' (bare)
+  // is the current, live model ID; 'gemini-3.1-flash-lite-preview' has been
+  // fully SHUT DOWN per ai.google.dev/gemini-api/docs/models (not just
+  // deprecated). Same rate, kept below for historical-cost backfill of any
+  // consumer still recording events against the old ID.
+  'gemini-3.1-flash-lite': {
+    inputPerMTok: 0.25,
+    outputPerMTok: 1.5,
+    contextWindow: 1_000_000,
   },
   'gemini-3.1-flash-lite-preview': {
     inputPerMTok: 0.25,
@@ -271,39 +347,88 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- OpenAI (current generation) ----
+  // GPT-5.6 (Sol/Terra/Luna) is OpenAI's current recommended flagship
+  // family, replacing unsuffixed GPT-5.5 as the "top tier" choice. Same
+  // flat long-context tiering as GPT-5.5 (2x input/1.5x output above 272k).
+  // Cache writes are billed at 1.25x uncached input on this family — not
+  // modeled here: extractOpenAITokens() in tokens.ts hardcodes
+  // cacheCreationTokens to 0 (OpenAI's usage shape has no cache-write
+  // count), so a cacheCreationPerMTok here would be dead data until that
+  // extractor gains a field for it.
+  'gpt-5.6-sol': {
+    inputPerMTok: 5,
+    outputPerMTok: 30,
+    cacheReadPerMTok: 0.5,
+    contextWindow: 1_050_000,
+    tierThreshold: 272_000,
+    tierInputPerMTok: 10,
+    tierOutputPerMTok: 45,
+  },
+  'gpt-5.6-terra': {
+    inputPerMTok: 2,
+    outputPerMTok: 12,
+    cacheReadPerMTok: 0.2,
+    contextWindow: 1_050_000,
+    tierThreshold: 272_000,
+    tierInputPerMTok: 4,
+    tierOutputPerMTok: 18,
+  },
+  'gpt-5.6-luna': {
+    inputPerMTok: 0.2,
+    outputPerMTok: 1.2,
+    cacheReadPerMTok: 0.02,
+    contextWindow: 1_050_000,
+    tierThreshold: 272_000,
+    tierInputPerMTok: 0.4,
+    tierOutputPerMTok: 1.8,
+  },
+  // A real, separately-priced model — NOT family shorthand for gpt-5.5/5.6.
+  // See the MODEL_ALIASES comment above: do not alias bare 'gpt-5' to
+  // anything.
+  'gpt-5': {
+    inputPerMTok: 1.25,
+    outputPerMTok: 10,
+    cacheReadPerMTok: 0.125,
+    contextWindow: 400_000,
+  },
+  // Prior-generation flagship, superseded by gpt-5.6-sol above but still
+  // billable at these rates.
   'gpt-5.5': {
     inputPerMTok: 5,
     outputPerMTok: 30,
     cacheReadPerMTok: 0.5,
-    contextWindow: 1_000_000,
-    // OpenAI long-context pricing is marginal: only tokens above 270k are
-    // billed at the tier rate — not the entire request. Output always bills
-    // at outputPerMTok in marginal mode (see ModelPricing.tierMode), so no
-    // tierOutputPerMTok is set here — it would be dead data.
-    tierThreshold: 270_000,
-    tierMode: 'marginal',
+    contextWindow: 1_050_000,
+    // 'flat' tier mode (the default — see ModelPricing.tierMode): once
+    // inputTokens > 272k, the ENTIRE request re-prices at 2x input / 1.5x
+    // output, per OpenAI's own model page ("priced at 2x input and 1.5x
+    // output for the full request"). An earlier revision of this file
+    // modeled this as 'marginal' (excess-tokens-only, no output tiering) —
+    // that was wrong on three counts: mode, threshold (270k vs 272k), and
+    // the missing output multiplier.
+    tierThreshold: 272_000,
     tierInputPerMTok: 10,
+    tierOutputPerMTok: 45,
   },
   'gpt-5.4': {
     inputPerMTok: 2.5,
     outputPerMTok: 15,
     cacheReadPerMTok: 0.25,
-    contextWindow: 1_000_000,
-    tierThreshold: 270_000,
-    tierMode: 'marginal',
+    contextWindow: 1_050_000,
+    tierThreshold: 272_000,
     tierInputPerMTok: 5,
+    tierOutputPerMTok: 22.5,
   },
   'gpt-5.4-mini': {
     inputPerMTok: 0.75,
     outputPerMTok: 4.5,
     cacheReadPerMTok: 0.075,
-    contextWindow: 128_000,
+    contextWindow: 400_000,
   },
   'gpt-5.4-nano': {
     inputPerMTok: 0.2,
     outputPerMTok: 1.25,
     cacheReadPerMTok: 0.02,
-    contextWindow: 128_000,
+    contextWindow: 400_000,
   },
 
   // ---- OpenAI (legacy) ----
@@ -342,6 +467,10 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     // a separate thinkingPerMTok rate would double-bill.
     contextWindow: 200_000,
   },
+  // o1-mini and o1-preview were fully shut down by OpenAI (2025-10-27 and
+  // 2025-07-28 respectively) — requests to these model IDs now fail.
+  // Retained only for historical-cost backfill, same convention as
+  // gemini-2.0-flash / command / command-light below.
   'o1-mini': {
     inputPerMTok: 1.1,
     outputPerMTok: 4.4,
@@ -352,9 +481,12 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 60,
     contextWindow: 128_000,
   },
+  // Repriced down from its April 2025 launch rate ($10/$40) — $2/$8 is the
+  // current rate, confirmed against the live model page.
   o3: {
-    inputPerMTok: 10,
-    outputPerMTok: 40,
+    inputPerMTok: 2,
+    outputPerMTok: 8,
+    cacheReadPerMTok: 0.5,
     // No thinkingPerMTok — see 'o1' comment above.
     contextWindow: 200_000,
   },
@@ -381,41 +513,86 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
 
   // ---- AWS Bedrock (Converse API pricing for on-demand) ----
   // Current Claude generation via Bedrock
-  // NOTE: cache pricing for these models on Bedrock has not been publicly
-  // documented. Rates below are omitted until verified.
-  // Sonnet 5 introductory pricing through August 31, 2026; standard $3/$15 thereafter.
+  // Cache pricing for these models IS now published on the Bedrock pricing
+  // page (it wasn't as of this file's last check) — resolved by matching
+  // each model's known direct-API cache-write/-read multipliers (1.25x /
+  // 0.1x of input), which line up exactly with AWS's own numbers. AWS
+  // publishes BOTH a 5-minute and a 1-hour cache-write rate; cacheCreationPerMTok
+  // here is the 5-minute rate (matches the direct-API default TTL) — there's
+  // no field for the 1-hour rate, which would need a schema change to model.
+  // $2/$10 is Anthropic's standing Sonnet 5 price on Bedrock too — not
+  // introductory. See the direct-API claude-sonnet-5 comment above.
   'anthropic.claude-sonnet-5': {
     inputPerMTok: 2,
     outputPerMTok: 10,
+    cacheReadPerMTok: 0.2,
+    cacheCreationPerMTok: 2.5,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-fable-5': {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    cacheReadPerMTok: 1,
+    cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-opus-5': {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-8': {
     inputPerMTok: 5,
     outputPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-opus-4-7': {
     inputPerMTok: 5,
     outputPerMTok: 25,
+    cacheReadPerMTok: 0.5,
+    cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-sonnet-4-6': {
     inputPerMTok: 3,
     outputPerMTok: 15,
+    cacheReadPerMTok: 0.3,
+    cacheCreationPerMTok: 3.75,
     contextWindow: 1_000_000,
   },
   'anthropic.claude-haiku-4-5-20251001-v1:0': {
     inputPerMTok: 1,
     outputPerMTok: 5,
+    cacheReadPerMTok: 0.1,
+    cacheCreationPerMTok: 1.25,
     contextWindow: 200_000,
   },
   // Legacy Claude models via Bedrock cross-region inference
-  // Cache rates verified against AWS Bedrock pricing page (2026-06-03).
+  // Cache rates verified against AWS Bedrock pricing page (2026-06-03) — but
+  // against the WRONG table. AWS publishes two tiers for this model: the
+  // standard $3/$15 tier (cache write $3.75, cache read $0.30 — used below,
+  // paired with the input/output rate this entry already had and this PR
+  // does not change) and a separate "Public Extended Access, Effective 1
+  // Dec 2025" tier at exactly 2x ($6/$30, cache write $7.50, cache read
+  // $0.60) for accounts still on this model post-EOL. The 2026-06-03 check
+  // paired the standard input/output with the extended-access cache rates
+  // by mistake — the fix here re-derives cache write/read directly from
+  // AWS's own pricing data for the SAME standard-tier row as the existing
+  // $3/$15 (resolved via aws.amazon.com/bedrock/pricing's client-side price
+  // placeholders on 2026-08-14, not inferred), so it's internally
+  // consistent again. If callers are actually on Public Extended Access —
+  // undetectable from usage data alone — the whole entry (not just the
+  // cache rates) would need to move to the $6/$30 row instead; that's a
+  // separate decision this PR doesn't make.
   'anthropic.claude-3-5-sonnet-20241022-v2:0': {
     inputPerMTok: 3,
     outputPerMTok: 15,
-    cacheReadPerMTok: 0.6,
-    cacheCreationPerMTok: 7.5,
+    cacheReadPerMTok: 0.3,
+    cacheCreationPerMTok: 3.75,
     contextWindow: 200_000,
   },
   'anthropic.claude-3-5-haiku-20241022-v1:0': {
@@ -429,15 +606,19 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     contextWindow: 200_000,
   },
   // Meta Llama via Bedrock
+  // Llama 3 (both sizes) has an 8K context window, not 128K — 128K arrived
+  // with Llama 3.1. 70B's rate was also stale: $0.99/$0.99 was actually
+  // Llama 3.1 70B's original 2024 launch price (itself since dropped to
+  // $0.72/$0.72) — it was never Llama 3 70B's price, which is $2.65/$3.50.
   'meta.llama3-70b-instruct-v1:0': {
-    inputPerMTok: 0.99,
-    outputPerMTok: 0.99,
-    contextWindow: 128_000,
+    inputPerMTok: 2.65,
+    outputPerMTok: 3.5,
+    contextWindow: 8_192,
   },
   'meta.llama3-8b-instruct-v1:0': {
     inputPerMTok: 0.3,
     outputPerMTok: 0.6,
-    contextWindow: 128_000,
+    contextWindow: 8_192,
   },
   // Mistral via Bedrock
   'mistral.mistral-large-2402-v1:0': {
@@ -468,21 +649,54 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Mistral ----
+  // "-latest" is a real Mistral API alias (currently routes to Mistral
+  // Medium 3.5 / Large 3 / Small 4 respectively) — not our own shorthand.
+  //
+  // Mistral now publishes a cached-input rate (90% off list price) for all
+  // of the current-gen entries below, INCLUDING Ministral 3 — but it's not
+  // modeled here: extractMistralTokens() in tokens.ts hardcodes
+  // cacheReadTokens to 0 (Mistral's Chat Completions usage shape has no
+  // cache-hit count today), so a cacheReadPerMTok here would be dead data
+  // until that extractor gains a field for it. Same reasoning as the
+  // OpenAI GPT-5.6 cache-write omission above.
   'mistral-medium-latest': {
     inputPerMTok: 1.5,
     outputPerMTok: 7.5,
-    contextWindow: 131_072,
+    contextWindow: 256_000,
   },
   'mistral-large-latest': {
     inputPerMTok: 0.5,
     outputPerMTok: 1.5,
-    contextWindow: 131_072,
+    contextWindow: 256_000,
   },
   'mistral-small-latest': {
     inputPerMTok: 0.15,
     outputPerMTok: 0.6,
-    contextWindow: 131_072,
+    contextWindow: 256_000,
   },
+  // Ministral 3 family — no "-latest" alias exists for these yet, so the
+  // dated snapshot ID (as shown on each model's docs page) is the real,
+  // callable model string.
+  'ministral-14b-2512': {
+    inputPerMTok: 0.2,
+    outputPerMTok: 0.2,
+    contextWindow: 256_000,
+  },
+  'ministral-8b-2512': {
+    inputPerMTok: 0.15,
+    outputPerMTok: 0.15,
+    contextWindow: 256_000,
+  },
+  'ministral-3b-2512': {
+    inputPerMTok: 0.1,
+    outputPerMTok: 0.1,
+    contextWindow: 256_000,
+  },
+  // Retired 2026-07-31 (deprecated 2026-05-22) — no longer billable via the
+  // Mistral API. Retained for historical-cost backfill only, same
+  // convention as gemini-2.0-flash / command / command-light below.
+  // contextWindow unchanged (128k) — this predates the 256k bump the
+  // -latest family got later; it was never repriced, only retired.
   'mistral-nemo': {
     inputPerMTok: 0.15,
     outputPerMTok: 0.15,
@@ -499,13 +713,25 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 0.7,
     contextWindow: 32_000,
   },
+  // Note: codestral gets the SMALLER window (128k) — the generalist models
+  // above get the larger 256k window. This is backwards from what the table
+  // previously encoded (codestral had 256k, generalists had 131_072).
   'codestral-latest': {
     inputPerMTok: 0.3,
     outputPerMTok: 0.9,
-    contextWindow: 256_000,
+    contextWindow: 128_000,
   },
 
   // ---- Cohere ----
+  // Cohere's OWN docs make bare 'command-r'/'command-r-plus' deprecated
+  // aliases for the OLDER dated snapshots (command-r-03-2024 at $0.50/$1.50,
+  // command-r-plus-04-2024 at $3/$15) — not the current -08-2024 snapshots
+  // priced below. This table deliberately keeps 'command-r'/'command-r-plus'
+  // as CURRENT-gen shorthand instead (consistent with every other provider's
+  // alias philosophy in this file — see the MODEL_ALIASES comment at the top:
+  // "a caller passes a family name... they almost always mean the current
+  // generation"). If a caller sends the literal Cohere API model string
+  // (not shorthand), it resolves to the exact-match dated keys below instead.
   'command-r-plus': {
     inputPerMTok: 2.5,
     outputPerMTok: 10,
@@ -516,8 +742,41 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 0.6,
     contextWindow: 128_000,
   },
-  // `command` and `command-light` are deprecated (2024) but retained for
-  // historical-cost backfill of consumer apps that haven't migrated.
+  // Actual current ("Live") Cohere API model IDs — same rates as the
+  // shorthand keys above, added so a caller using the versioned ID gets an
+  // exact match instead of falling through to null.
+  'command-r-plus-08-2024': {
+    inputPerMTok: 2.5,
+    outputPerMTok: 10,
+    contextWindow: 128_000,
+  },
+  'command-r-08-2024': {
+    inputPerMTok: 0.15,
+    outputPerMTok: 0.6,
+    contextWindow: 128_000,
+  },
+  'command-r7b-12-2024': {
+    inputPerMTok: 0.0375,
+    outputPerMTok: 0.15,
+    contextWindow: 128_000,
+  },
+  // Deprecated 2025-09-15 (formal effective date per
+  // docs.cohere.com/docs/deprecations) but retained for historical-cost
+  // backfill — these are the OLDER snapshots the bare 'command-r'/
+  // 'command-r-plus' aliases pointed to before Cohere deprecated them.
+  'command-r-plus-04-2024': {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    contextWindow: 128_000,
+  },
+  'command-r-03-2024': {
+    inputPerMTok: 0.5,
+    outputPerMTok: 1.5,
+    contextWindow: 128_000,
+  },
+  // `command` and `command-light` are deprecated (effective 2025-09-15, per
+  // docs.cohere.com/docs/deprecations) but retained for historical-cost
+  // backfill of consumer apps that haven't migrated.
   // Context window is 4096 tokens, not the round number 4000.
   command: {
     inputPerMTok: 1,

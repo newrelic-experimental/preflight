@@ -1,6 +1,6 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { CostTracker } from './cost-tracker.js';
-import type { TokenRecordContext } from './cost-tracker.js';
+import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
 import { MetricAggregator } from '../shared/index.js';
@@ -1099,5 +1099,200 @@ describe('subagent token support', () => {
     // 0.06 / (0.06 + 0.03) * 100 ≈ 66.7%
     expect(sub.subagentSharePct).toBeCloseTo(66.67, 1);
     expect(sub.reconciliationDeltaPct).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// seedFromPersisted() — restart data-loss fix
+// ---------------------------------------------------------------------------
+
+function makeSeed(overrides?: Partial<CostTrackerSeed>): CostTrackerSeed {
+  return {
+    totalCostUsd: 0,
+    subagentCostUsd: 0,
+    parentCostUsd: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalThinkingTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheCreationTokens: 0,
+    totalCacheSavingsUsd: 0,
+    costByModel: {},
+    dayKey: localDateKey(),
+    dayCostUsd: 0,
+    daySubagentCostUsd: 0,
+    costByWorkflowRunId: {},
+    ...overrides,
+  };
+}
+
+describe('seedFromPersisted()', () => {
+  it('adds seeded totals into a fresh tracker — reproduces the pre-fix bug directly', () => {
+    const tracker = new CostTracker();
+
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 56.02,
+        subagentCostUsd: 0,
+        parentCostUsd: 56.02,
+        totalInputTokens: 143_758,
+        totalOutputTokens: 383_743,
+        totalCacheReadTokens: 171_800_083,
+        totalCacheCreationTokens: 3_409_635,
+        costByModel: { 'claude-sonnet-5': 56.02 },
+        dayCostUsd: 56.02,
+      }),
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.sessionTotalCostUsd).toBeCloseTo(56.02, 4);
+    expect(metrics.totalInputTokens).toBe(143_758);
+    expect(metrics.totalOutputTokens).toBe(383_743);
+    expect(metrics.totalCacheReadTokens).toBe(171_800_083);
+    expect(metrics.totalCacheCreationTokens).toBe(3_409_635);
+    expect(metrics.costByModel['claude-sonnet-5']).toBeCloseTo(56.02, 4);
+    expect(tracker.getCostForDay(localDateKey())).toBeCloseTo(56.02, 4);
+  });
+
+  it('adds on top of totals already recorded by this process, rather than overwriting', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+    );
+    const beforeSeed = tracker.getMetrics().sessionTotalCostUsd!;
+
+    tracker.seedFromPersisted(makeSeed({ totalCostUsd: 10, dayCostUsd: 10 }));
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(beforeSeed + 10, 4);
+  });
+
+  it('books dayCostUsd/daySubagentCostUsd separately from the session-cumulative totals', () => {
+    const tracker = new CostTracker();
+    const yesterday = localDateKey(Date.now() - 86_400_000);
+
+    // A persisted session whose $10 total is entirely from a prior day — the
+    // caller (buildCostTrackerSeed) is expected to compute dayCostUsd as the
+    // *today* portion only (0 here), even though the session-cumulative
+    // total must still reflect the full $10.
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 10,
+        subagentCostUsd: 4,
+        parentCostUsd: 6,
+        dayKey: yesterday,
+        dayCostUsd: 0,
+        daySubagentCostUsd: 0,
+      }),
+    );
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(10, 4);
+    expect(tracker.getSubagentMetrics().subagentUsd).toBeCloseTo(4, 4);
+    expect(tracker.getCostForDay(yesterday)).toBe(0);
+    expect(tracker.getCostForDay(localDateKey())).toBe(0);
+  });
+
+  it('is a no-op for an all-zero seed (no persisted session found)', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(makeSeed());
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.sessionTotalCostUsd).toBeNull();
+    expect(metrics.reportCount).toBe(0);
+  });
+
+  it('makes sessionTotalCostUsd non-null even if no real activity has been recorded yet this process', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(makeSeed({ totalCostUsd: 3.1, dayCostUsd: 3.1 }));
+
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(3.1, 4);
+  });
+
+  it('additively seeds costByWorkflowRunId from a persisted checkpoint', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_live_run' },
+    );
+
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 10,
+        dayCostUsd: 10,
+        costByWorkflowRunId: {
+          wf_persisted_run: { '2026-08-13': 0.5, '2026-08-14': 1.25 },
+        },
+      }),
+    );
+
+    // The run this process already observed live is untouched...
+    expect(tracker.getCostForWorkflowRun('wf_live_run')).toBeGreaterThan(0);
+    // ...and the persisted run's total is restored, summed across its days.
+    expect(tracker.getCostForWorkflowRun('wf_persisted_run')).toBeCloseTo(1.75, 4);
+    expect(tracker.hasCostForWorkflowRun('wf_persisted_run')).toBe(true);
+  });
+
+  it('merges costByWorkflowRunId day-buckets for a run already partially observed by this process, same day', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_resumed_run' },
+    );
+    const liveCostBefore = tracker.getCostForWorkflowRun('wf_resumed_run');
+    const today = localDateKey();
+
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 2,
+        dayCostUsd: 2,
+        costByWorkflowRunId: { wf_resumed_run: { [today]: 2 } },
+      }),
+    );
+
+    expect(tracker.getCostForWorkflowRun('wf_resumed_run')).toBeCloseTo(liveCostBefore + 2, 4);
+    // Assert the actual day-bucket placement, not just the summed total —
+    // a merge bug that filed the seeded amount under the wrong dayKey would
+    // still pass the assertion above, since getCostForWorkflowRun() sums
+    // across every day.
+    const entries = [...tracker.iterCostByWorkflowRun()].filter(
+      (e) => e.runId === 'wf_resumed_run',
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.dayKey).toBe(today);
+    expect(entries[0]!.usd).toBeCloseTo(liveCostBefore + 2, 4);
+  });
+
+  it('keeps a persisted run day-bucket separate from a different day already live-observed by this process', () => {
+    const tracker = new CostTracker();
+    const today = localDateKey();
+    const otherDay = '2020-01-01'; // fixed past date used ONLY as a distinct key, not as "today" — never asserted to be relative to now
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_cross_day_run' },
+    );
+    const liveCostToday = tracker.getCostForWorkflowRun('wf_cross_day_run');
+
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 5,
+        dayCostUsd: 0, // the seed's day-portion for TODAY's costByDayUsd bucket is unrelated to this test
+        costByWorkflowRunId: { wf_cross_day_run: { [otherDay]: 5 } },
+      }),
+    );
+
+    const entries = [...tracker.iterCostByWorkflowRun()].filter(
+      (e) => e.runId === 'wf_cross_day_run',
+    );
+    expect(entries).toHaveLength(2);
+    const todayEntry = entries.find((e) => e.dayKey === today);
+    const otherEntry = entries.find((e) => e.dayKey === otherDay);
+    expect(todayEntry?.usd).toBeCloseTo(liveCostToday, 4);
+    expect(otherEntry?.usd).toBeCloseTo(5, 4);
+    // Total across both days still sums correctly.
+    expect(tracker.getCostForWorkflowRun('wf_cross_day_run')).toBeCloseTo(liveCostToday + 5, 4);
   });
 });

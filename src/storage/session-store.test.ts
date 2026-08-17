@@ -74,6 +74,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     efficiencyScore: 0.75,
     toolSelectionMetrics: null,
     modelBreakdown: {},
+    costByWorkflowRunId: {},
     qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
     antiPatterns: [],
     taskCount: 1,
@@ -1186,6 +1187,47 @@ describe('buildSessionSummary', () => {
     expect(summary.subagentCostUsd).toBe(0.021);
   });
 
+  it('includes costByWorkflowRunId from CostTracker', () => {
+    const sessionTracker = makeSessionTracker();
+    const costTracker = new CostTracker();
+    jest.spyOn(costTracker, 'getMetrics').mockReturnValue({
+      sessionTotalCostUsd: 0.05,
+      costByTask: null,
+      costByModel: {},
+      costPerLineOfCode: null,
+      costPerFileModified: null,
+      costPerMillionTokens: null,
+      model: 'claude-sonnet-4-6',
+      totalInputTokens: 3_000,
+      totalOutputTokens: 1_000,
+      totalThinkingTokens: 0,
+      totalCacheReadTokens: 5_000,
+      totalCacheCreationTokens: 1_500,
+      cacheHitRate: 0.526,
+      totalCacheSavingsUsd: 0.018,
+      reportCount: 2,
+      estimationCount: 0,
+      latestCostBreakdown: null,
+      subagentCostUsd: 0.021,
+      parentCostUsd: 0.029,
+      costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
+    } satisfies CostMetrics);
+    const summary = buildSessionSummary({
+      sessionTracker,
+      costTracker,
+      developer: 'dev',
+    });
+    expect(summary.costByWorkflowRunId).toEqual({ wf_test_run: { '2026-08-14': 0.05 } });
+  });
+
+  it('defaults costByWorkflowRunId to {} when no CostTracker is provided', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      developer: 'dev',
+    });
+    expect(summary.costByWorkflowRunId).toEqual({});
+  });
+
   it('defaults subagentCostUsd to 0 when no CostTracker is provided', () => {
     const summary = buildSessionSummary({
       sessionTracker: makeSessionTracker(),
@@ -1297,6 +1339,53 @@ describe('buildSessionSummary', () => {
     };
     const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
     expect(result.subagentCostUsd).toBe(0);
+  });
+
+  it('deserializeFullSessionSummary round-trips costByWorkflowRunId', () => {
+    const raw = {
+      sessionId: 'sess-wf',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      costByWorkflowRunId: { wf_abc: { '2026-08-14': 0.5, '2026-08-15': 1.25 } },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByWorkflowRunId).toEqual({
+      wf_abc: { '2026-08-14': 0.5, '2026-08-15': 1.25 },
+    });
+  });
+
+  it('deserializeFullSessionSummary defaults costByWorkflowRunId to {} for pre-fix session files', () => {
+    const raw = {
+      sessionId: 'sess-old',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByWorkflowRunId).toEqual({});
+  });
+
+  it('deserializeFullSessionSummary drops non-numeric values inside costByWorkflowRunId rather than throwing', () => {
+    const raw = {
+      sessionId: 'sess-malformed',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      costByWorkflowRunId: {
+        wf_ok: { '2026-08-14': 0.5 },
+        wf_bad_day: { '2026-08-14': 'not-a-number' },
+        wf_not_an_object: 'not-an-object',
+      },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByWorkflowRunId).toEqual({ wf_ok: { '2026-08-14': 0.5 }, wf_bad_day: {} });
   });
 
   it('handles missing optional trackers gracefully', () => {

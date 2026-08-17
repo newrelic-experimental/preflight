@@ -26,7 +26,6 @@ import {
   DEFAULT_PENDING_CONFIRMATION_CAP_MS,
   startRetentionSweep,
   startMaintenanceGc,
-  checkNodeVersion,
 } from './index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import type { LocalStore } from './storage/index.js';
@@ -468,26 +467,6 @@ describe('getPendingConfirmationCapMs()', () => {
     expect(getPendingConfirmationCapMs()).toBe(DEFAULT_PENDING_CONFIRMATION_CAP_MS);
     process.env.NR_AI_PENDING_CONFIRMATION_CAP_MS = '-100';
     expect(getPendingConfirmationCapMs()).toBe(DEFAULT_PENDING_CONFIRMATION_CAP_MS);
-  });
-});
-
-describe('checkNodeVersion()', () => {
-  it('returns null when the running Node version meets the floor', () => {
-    expect(checkNodeVersion('v22.0.0')).toBeNull();
-    expect(checkNodeVersion('v24.18.0')).toBeNull();
-  });
-
-  it('returns a diagnostic message when Node is below the floor', () => {
-    const message = checkNodeVersion('v16.20.0');
-    expect(message).not.toBeNull();
-    expect(message).toContain('v16.20.0');
-    expect(message).toContain('v22');
-    expect(message).toContain('TROUBLESHOOTING.md');
-  });
-
-  it('defaults to process.version when no argument is given', () => {
-    // The test runner itself must satisfy engines.node (>=22), so this is null.
-    expect(checkNodeVersion()).toBeNull();
   });
 });
 

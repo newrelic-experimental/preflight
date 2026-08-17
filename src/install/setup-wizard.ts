@@ -18,6 +18,12 @@ import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
+import {
+  REGIONS,
+  getRegion,
+  suggestRegionFromLicenseKey,
+  detectRegionFromLicenseKeyStrict,
+} from './regions.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 
 const CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
@@ -265,20 +271,13 @@ export async function runSetupWizard(): Promise<void> {
       // Step 2b: Environment / region
       const existingCollectorHost =
         typeof existing.collectorHost === 'string' ? existing.collectorHost : null;
-      const keyLower = licenseKey.toLowerCase();
-      const autoEnv = keyLower.startsWith('eu01')
-        ? 'eu'
-        : keyLower.startsWith('gov01')
-          ? 'gov'
-          : keyLower.startsWith('jp')
-            ? 'jp'
-            : 'us';
+      const autoEnv = suggestRegionFromLicenseKey(licenseKey);
       const defaultEnv = existingCollectorHost ?? autoEnv;
       print('Environment:');
-      print('  1) US      — api.newrelic.com');
-      print('  2) EU      — api.eu.newrelic.com');
-      print('  3) FedRAMP — api.newrelic.com (FedRAMP/GovCloud)');
-      print('  4) Japan   — api.jp.newrelic.com');
+      const menuLabelWidth = Math.max(...REGIONS.map((r) => r.menuLabel.length));
+      REGIONS.forEach((region, i) => {
+        print(`  ${i + 1}) ${region.menuLabel.padEnd(menuLabelWidth)} — ${region.displayHost}`);
+      });
       const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
         .trim()
         .toLowerCase();
@@ -297,15 +296,7 @@ export async function runSetupWizard(): Promise<void> {
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
       // Warn if license key prefix contradicts selected environment.
-      const keyRegion = keyLower.startsWith('eu01')
-        ? 'eu'
-        : keyLower.startsWith('gov01')
-          ? 'gov'
-          : keyLower.startsWith('us01')
-            ? 'us'
-            : keyLower.startsWith('jp')
-              ? 'jp'
-              : null;
+      const keyRegion = detectRegionFromLicenseKeyStrict(licenseKey);
       if (keyRegion && keyRegion !== resolvedEnv) {
         print(
           `  ⚠ Your license key looks like a ${keyRegion.toUpperCase()} key but you selected ${resolvedEnv.toUpperCase()}. Verify this is intentional.`,
@@ -688,7 +679,8 @@ export async function runSetupWizard(): Promise<void> {
 
     // Step 8: Dashboard deploy — show manual command
     if (mode !== 'local') {
-      const regionFlag = collectorHost === 'eu' ? ' --eu' : collectorHost === 'jp' ? ' --jp' : '';
+      const regionCliFlag = getRegion(collectorHost ?? 'us').cliFlag;
+      const regionFlag = regionCliFlag ? ` ${regionCliFlag}` : '';
       // Mask the API key in printed commands — users copy these snippets to
       // terminals, docs, and chat messages, and the raw key could be captured.
       const apiKeyVar = nrApiKey
