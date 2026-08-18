@@ -892,7 +892,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyCopilotPricingOverlay(process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ?? null);
+      applyCopilotPricingOverlay(config.customPricingFile);
 
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
@@ -938,7 +938,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyCopilotPricingOverlay(process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ?? null);
+      applyCopilotPricingOverlay(config.customPricingFile);
 
       // --local has no owning Claude Code session — derive a deterministic
       // identifier so the rest of the codebase can rely on a non-empty

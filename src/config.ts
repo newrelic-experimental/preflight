@@ -43,6 +43,8 @@ export interface McpServerConfig {
   readonly collectorHost: string | null;
   readonly proxyUpstreams: readonly UpstreamConfig[];
   readonly nrApiKey: string | null;
+  /** Path to a custom pricing JSON file, applied via `initPricing()`. See `NEW_RELIC_AI_CUSTOM_PRICING_FILE`. */
+  readonly customPricingFile: string | null;
   readonly digestWebhookUrl: string | null;
   readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
@@ -142,6 +144,7 @@ export const ConfigFileSchema = z
     collectorHost: z.string().nullable().optional(),
     proxyUpstreams: z.array(z.unknown()).optional(),
     nrApiKey: z.string().nullable().optional(),
+    customPricingFile: z.string().nullable().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
     digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
@@ -800,6 +803,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
     nrApiKey:
       process.env.NEW_RELIC_API_KEY ?? (typeof file.nrApiKey === 'string' ? file.nrApiKey : null),
+
+    customPricingFile:
+      process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ??
+      (typeof file.customPricingFile === 'string' ? file.customPricingFile : null),
 
     digestWebhookUrl:
       process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL ??

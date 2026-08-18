@@ -30,3 +30,13 @@ which this overlay reuses as-is — not fixable without editing vendored code):
 - `ModelPricing` has no tiered cache-read field at all, so `grok-4.5`'s
   doubled long-context _cached-input_ rate cannot be represented; the
   default (lower) cache rate is used at every tier.
+
+**Interaction with a user's own custom pricing file:** if you set
+`NEW_RELIC_AI_CUSTOM_PRICING_FILE` (or `customPricingFile` in
+`~/.newrelic-preflight/config.json`) to your own pricing file — for _any_
+reason, even one unrelated to Copilot — this bundled overlay is not applied
+at all. `initPricing()` always replaces the full table from
+`DEFAULT_PRICING_TABLE`; it never merges a user's file with this overlay.
+If you rely on both a custom pricing entry and one of the gap-fill models
+above, add the model you need from `pricing.json` into your own custom
+pricing file instead.
