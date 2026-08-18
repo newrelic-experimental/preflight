@@ -1,5 +1,5 @@
 import type { MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import { createLogger, resolveModelPricing } from '../shared/index.js';
 import type { TokenEvent } from '../storage/types.js';
 
 const logger = createLogger('context-composition');
@@ -81,7 +81,7 @@ const CONTEXT_COMPOSITION_NOTE =
 // ---------------------------------------------------------------------------
 
 export class ContextCompositionTracker {
-  private readonly modelContextWindow: number;
+  private modelContextWindow: number;
   private readonly fillThresholds: readonly number[];
   private readonly dominanceThreshold: number;
   private readonly maxHistorySize: number;
@@ -152,13 +152,25 @@ export class ContextCompositionTracker {
     // Approximate composition from token counts:
     // - cacheReadTokens = previously cached context (system prompt + conversation history)
     // - cacheCreationTokens = first-time context being cached this turn
-    // - remainder of inputTokens = new content (tool results + user input)
+    // - inputTokens = new content this turn (tool results + user input) — under
+    //   prompt caching this is only the uncached delta, NOT the turn's total size,
+    //   so it must never be used alone as the fillPercent/dominance denominator.
+    //   The true total is the sum of all three, matching the sibling
+    //   ContextTracker's totalContext.
     const cachedContext = event.cacheReadTokens;
     const cacheCreation = event.cacheCreationTokens;
-    const newContent = Math.max(0, event.inputTokens - cachedContext - cacheCreation);
-    const totalInput = event.inputTokens;
+    const newContent = Math.max(0, event.inputTokens);
+    const totalInput = event.inputTokens + cachedContext + cacheCreation;
 
     if (totalInput === 0) return;
+
+    // Self-update from the resolved model's pricing entry, mirroring
+    // ContextTracker.recordTurn — never shrinks, so a mid-session model switch
+    // to a smaller-window model doesn't understate an already-larger window.
+    const pricing = resolveModelPricing(event.model);
+    if (pricing && pricing.contextWindow > this.modelContextWindow) {
+      this.modelContextWindow = pricing.contextWindow;
+    }
 
     // cacheCreationTokens are newly-cached conversation context (not just the system prompt),
     // so bucket them under conversation_history for a less misleading breakdown.
