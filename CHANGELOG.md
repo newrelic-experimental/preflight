@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.6] - 2026-08-18
+
+### Fixed
+
+- **`nr_observe_get_context_composition` no longer reports dominance percentages in the millions of percent with `fillPercent` near zero.** Under prompt caching, the turn's total context size was computed from the uncached input delta alone instead of including cache-read and cache-creation tokens, producing a denominator many orders of magnitude too small. The tool also now resolves the model's real context window instead of staying hard-coded at a 200k default.
+- **`nr_observe_get_retry_alerts` no longer flags ordinary, non-repeated tool calls as thrashing for tools without dedicated metadata extraction** (e.g. the native Windows PowerShell tool). Every call to such a tool previously serialized identically for similarity comparison regardless of how different the underlying input actually was. The dedupe key and wasted-token estimate were also corrected so the same offending calls aren't re-counted repeatedly and only genuinely redundant repeats are charged as waste.
+
 ## [1.15.5] - 2026-08-17
 
 ### Fixed
