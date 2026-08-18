@@ -7,7 +7,7 @@ import {
 
 describe('mapAssistantUsageEvent', () => {
   // Real assistant.usage payload captured live from a Copilot CLI session
-  // (Phase 0 spike, 2026-08-12) — see /memories/session/copilot-sdk-usage-plan.md.
+  // (2026-08-12).
   it('maps a real captured event (first call, no cache reads)', () => {
     const data = {
       model: 'claude-opus-5',

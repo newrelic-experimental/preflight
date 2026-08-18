@@ -11,10 +11,6 @@ import { dirname, resolve } from 'node:path';
  * tarball contains everything under `dist/`, so the data lives at
  * `<dist>/data/<name>/`.
  *
- * `copilot-sdk-extension` is the hand-written plain-JS Copilot SDK extension
- * (see copilot-sdk-extension/extension.mjs) installed into a user's
- * `~/.copilot/extensions/preflight/` directory by `installCopilotSdkExtension()`.
- *
  * For local dev (running tests from `src/deploy/*.test.ts`), the JSON files
  * live at the repo root in `<repoRoot>/<name>/`. We probe both locations so
  * the same code works in both layouts.
@@ -27,9 +23,7 @@ import { dirname, resolve } from 'node:path';
  * copilot-pricing overlay, unlike alerts/dashboards which are required for
  * their own commands) must wrap this in a try/catch and degrade gracefully.
  */
-export function resolveDataDir(
-  name: 'alerts' | 'dashboards' | 'copilot-pricing' | 'copilot-sdk-extension',
-): string {
+export function resolveDataDir(name: 'alerts' | 'dashboards' | 'copilot-pricing'): string {
   const rawPath = process.argv[1] ?? process.cwd();
   const scriptPath = (() => {
     try {

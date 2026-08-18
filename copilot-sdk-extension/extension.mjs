@@ -18,7 +18,8 @@
 //
 // WHY assistant.usage ONLY (no tool-call capture here): assistant.usage is
 // ephemeral — delivered live but never persisted or replayed on resume
-// (github.com/github/copilot-sdk streaming-events.md). It is the only source
+// (docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events).
+// It is the only source
 // of per-call token counts; the persisted session log carries only coarse,
 // cumulative totals at shutdown/checkpoint. Tool calls are deliberately
 // NOT captured here — the existing hooks already do that, and capturing
@@ -47,7 +48,7 @@ function resolveBufferPath(storagePath, sessionId) {
 }
 
 function num(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 // Mirrors mapAssistantUsageEvent() in copilot-sdk-usage-mapper.ts — see that
@@ -88,9 +89,12 @@ function appendTokenLine(bufferPath, line) {
   try {
     mkdirSync(dirname(bufferPath), { recursive: true, mode: 0o700 });
     appendFileSync(bufferPath, JSON.stringify(line) + '\n', { mode: 0o600 });
-  } catch {
+  } catch (err) {
     // Best-effort — a write failure here must never crash the extension
-    // process or the CLI session it's attached to.
+    // process or the CLI session it's attached to. stderr is safe to write
+    // to (stdout is the extension's JSON-RPC channel) and is captured by
+    // the CLI into ~/.copilot/logs/extensions/, so this is not silent.
+    process.stderr.write(`preflight extension: failed to write token line: ${err}\n`);
   }
 }
 
@@ -107,8 +111,13 @@ try {
       if (!bufferPath) return;
       appendTokenLine(bufferPath, line);
     });
+  } else {
+    process.stderr.write('preflight extension: joinSession() returned no sessionId\n');
   }
-} catch {
-  // If joinSession() itself fails (e.g. incompatible CLI version), do
-  // nothing — never let this extension prevent the CLI session from working.
+} catch (err) {
+  // If joinSession() itself fails (e.g. incompatible CLI version), never let
+  // this extension prevent the CLI session from working — but do surface it
+  // to stderr (captured by the CLI, not the extension's JSON-RPC channel)
+  // instead of failing completely silently.
+  process.stderr.write(`preflight extension: joinSession() failed: ${err}\n`);
 }
