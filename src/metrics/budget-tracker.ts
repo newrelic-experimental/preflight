@@ -148,6 +148,45 @@ export class BudgetTracker {
     }
   }
 
+  /**
+   * Marks every session-period threshold already implied by a just-restored
+   * CostTracker total as already-fired, so `checkPeriod()` doesn't treat
+   * spend that already existed *before* this process started as a brand-new
+   * crossing. Called from inside `rehydrateTrackersIfResumed()` in
+   * index.ts, using CostTracker's own (by then already restored via its own
+   * restart-recovery seeding) session total. That helper is guarded per
+   * session id, not fired-once — it can run again later in the same process
+   * as different session-id-resolution paths (the synchronous guess,
+   * `adoptRealSessionId`, or a PPID correction) confirm the real id, so this
+   * method can be invoked more than once across a session's lifetime, with
+   * a different (and possibly stale or updated) total each time.
+   *
+   * Repeated invocation is safe: this method only ever marks *additional*
+   * thresholds as fired based on the total it's given — it never un-marks
+   * one already in `firedThresholds`, so calling it again is idempotent-safe
+   * regardless of how the total has moved between calls.
+   *
+   * Scoped to the `session` period only: `dailySpentUsd`/`weeklySpentUsd`
+   * are computed elsewhere from cross-session aggregation, not from a single
+   * restart-recoverable checkpoint, so there's no equivalent restored total
+   * to seed against yet for those two periods.
+   *
+   * Deliberately does not call `onThreshold` or push onto `alerts` — these
+   * thresholds were already alerted on (or silently passed, pre-fix) by the
+   * now-dead prior process; this only suppresses a duplicate, not un-fired
+   * spend the user hasn't been told about yet.
+   */
+  seedFiredThresholdsFromSessionTotal(sessionSpentUsd: number): void {
+    if (this.sessionBudgetUsd === null || this.sessionBudgetUsd <= 0) return;
+    const pctUsed = (sessionSpentUsd / this.sessionBudgetUsd) * 100;
+    const currentPeriod = this.currentPeriodId('session');
+    for (const level of THRESHOLD_LEVELS) {
+      if (pctUsed >= level) {
+        this.firedThresholds.set(`session_${level}`, currentPeriod);
+      }
+    }
+  }
+
   getStatus(): BudgetStatus {
     return {
       session: this.buildPeriodStatus(this.sessionSpentUsd, this.sessionBudgetUsd),

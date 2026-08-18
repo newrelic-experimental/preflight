@@ -815,3 +815,97 @@ describe('markBoundary', () => {
     expect(detector.getCurrentTask()).toBeNull();
   });
 });
+
+describe('seedFromPersisted', () => {
+  it('folds seeded totals into getMetrics().seededAggregate, additive across calls', () => {
+    const detector = new TaskDetector();
+    detector.seedFromPersisted({
+      filesRead: ['/a.ts', '/b.ts'],
+      filesModified: ['/a.ts'],
+      linesAdded: 10,
+      linesRemoved: 2,
+      testsRun: 3,
+      testsPassed: 3,
+      buildRun: 1,
+      buildPassed: 1,
+      agentSpawns: 1,
+      taskCount: 2,
+    });
+    detector.seedFromPersisted({
+      filesRead: ['/b.ts', '/c.ts'],
+      filesModified: ['/c.ts'],
+      linesAdded: 5,
+      linesRemoved: 1,
+      testsRun: 1,
+      testsPassed: 0,
+      buildRun: 0,
+      buildPassed: 0,
+      agentSpawns: 0,
+      taskCount: 1,
+    });
+
+    const metrics = detector.getMetrics();
+    expect(metrics.totalTasksCompleted).toBe(3); // 2 + 1, no real tasks completed yet
+    expect(metrics.seededAggregate).not.toBeNull();
+    expect(metrics.seededAggregate!.filesRead.sort()).toEqual(['/a.ts', '/b.ts', '/c.ts']); // deduped
+    expect(metrics.seededAggregate!.filesModified.sort()).toEqual(['/a.ts', '/c.ts']);
+    expect(metrics.seededAggregate!.linesAdded).toBe(15);
+    expect(metrics.seededAggregate!.linesRemoved).toBe(3);
+    expect(metrics.seededAggregate!.testsRun).toBe(4);
+    expect(metrics.seededAggregate!.testsPassed).toBe(3);
+    expect(metrics.seededAggregate!.buildRun).toBe(1);
+    expect(metrics.seededAggregate!.buildPassed).toBe(1);
+    expect(metrics.seededAggregate!.agentSpawns).toBe(1);
+
+    detector.dispose();
+  });
+
+  it('is a no-op when every seed field is zero/empty', () => {
+    const detector = new TaskDetector();
+    detector.seedFromPersisted({
+      filesRead: [],
+      filesModified: [],
+      linesAdded: 0,
+      linesRemoved: 0,
+      testsRun: 0,
+      testsPassed: 0,
+      buildRun: 0,
+      buildPassed: 0,
+      agentSpawns: 0,
+      taskCount: 0,
+    });
+    expect(detector.getMetrics().seededAggregate).toBeNull();
+    expect(detector.getMetrics().totalTasksCompleted).toBe(0);
+    detector.dispose();
+  });
+
+  it('does not affect averageTaskDurationMs/averageToolCallsPerTask, which stay derived from real completed tasks only', () => {
+    jest.useFakeTimers();
+    const detector = new TaskDetector();
+    detector.seedFromPersisted({
+      filesRead: ['/a.ts'],
+      filesModified: [],
+      linesAdded: 100,
+      linesRemoved: 0,
+      testsRun: 0,
+      testsPassed: 0,
+      buildRun: 0,
+      buildPassed: 0,
+      agentSpawns: 0,
+      taskCount: 5,
+    });
+
+    for (let i = 0; i < 3; i++) {
+      jest.advanceTimersByTime(2000);
+      detector.recordToolCall(makeRecord({ toolName: `Tool${i}` }));
+    }
+    jest.advanceTimersByTime(45_000);
+
+    const metrics = detector.getMetrics();
+    expect(metrics.completedTasks).toHaveLength(1); // only the 1 real task, no synthetic entry
+    expect(metrics.averageToolCallsPerTask).toBe(3); // unskewed by the 5 seeded tasks
+
+    detector.dispose();
+    jest.useRealTimers();
+  });
+});

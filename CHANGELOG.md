@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.5] - 2026-08-17
+
+### Fixed
+
+- **A resumed session's file/line/test/build/agent-spawn counts, quality-proxy signal counts, and efficiency-score average no longer reset to zero when the MCP server process restarts mid-session** — closing and reopening a terminal, a laptop sleep/wake, `claude --resume`, or a crash all restart the process. These are the same restart-recovery gap fixed for cost/token totals and per-model/per-workflow-run breakdowns in 1.15.4, now closed for the remaining stateful trackers found in that same audit.
+- **Session-budget threshold alerts (50%/80%/100%) no longer re-fire after a process restart.** Once the fix above correctly restores a session's pre-restart spend immediately on restart, the budget tracker now also recognizes any threshold that total already implies as already-fired, instead of alerting again for spend that isn't new.
+
 ## [1.15.4] - 2026-08-14
 
 ### Fixed

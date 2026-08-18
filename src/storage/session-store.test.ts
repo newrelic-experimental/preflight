@@ -785,6 +785,8 @@ describe('buildSessionSummary', () => {
         taskId: 'session-average',
         timestamp: Date.now(),
       }),
+      getScores: () => [{}, {}],
+      getSessionSampleCount: () => 2,
     };
 
     const summary = buildSessionSummary({
@@ -814,10 +816,108 @@ describe('buildSessionSummary', () => {
     expect(summary.tokensOutput).toBe(5_000);
     expect(summary.tokensThinking).toBe(2_000);
     expect(summary.efficiencyScore).toBe(0.82);
+    expect(summary.efficiencyScoreSampleCount).toBe(2);
+    expect(summary.efficiencyScoreComponents).toEqual({
+      speed: 0.7,
+      correctness: 0.9,
+      autonomy: 1,
+      firstAttemptQuality: 0.7,
+    });
     expect(summary.taskCount).toBe(2);
     expect(summary.agentSpawns).toBe(1);
     expect(summary.toolSuccessRate).toBe(0.9);
     expect(summary.outcome).toBe('completed');
+  });
+
+  it('folds TaskMetrics.seededAggregate into filesRead/linesAdded/testRunCount/etc alongside completedTasks', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 0,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const mockTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        totalTasksCompleted: 3,
+        currentTaskActive: false,
+        currentTaskToolCalls: 0,
+        averageTaskDurationMs: null,
+        averageToolCallsPerTask: null,
+        completedTasks: [
+          {
+            taskId: 't1',
+            startTime: 1700000000000,
+            endTime: 1700000060000,
+            durationMs: 60_000,
+            toolCallCount: 2,
+            toolCallsByType: {},
+            filesRead: ['/live.ts'],
+            filesModified: [],
+            linesChanged: 4,
+            linesAdded: 4,
+            linesRemoved: 0,
+            bashCommandsRun: 0,
+            testsRun: 1,
+            testsPassed: 1,
+            buildRun: 0,
+            buildPassed: 0,
+            estimatedCostUsd: null,
+            tokensUsed: 0,
+            askedUserQuestions: 0,
+            subAgentsSpawned: 0,
+            toolCalls: [],
+          },
+        ],
+        seededAggregate: {
+          filesRead: ['/seeded-a.ts', '/live.ts'],
+          filesModified: ['/seeded-a.ts'],
+          linesAdded: 20,
+          linesRemoved: 5,
+          testsRun: 3,
+          testsPassed: 2,
+          buildRun: 1,
+          buildPassed: 1,
+          agentSpawns: 2,
+        },
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['sessionTracker'],
+      taskDetector: mockTaskDetector as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['taskDetector'],
+      developer: 'alice',
+    });
+
+    expect(summary.filesRead.sort()).toEqual(['/live.ts', '/seeded-a.ts'].sort()); // deduped union
+    expect(summary.filesModified).toEqual(['/seeded-a.ts']);
+    expect(summary.linesAdded).toBe(24); // 4 live + 20 seeded
+    expect(summary.linesRemoved).toBe(5);
+    expect(summary.testRunCount).toBe(4); // 1 live + 3 seeded
+    expect(summary.testPassCount).toBe(3);
+    expect(summary.buildRunCount).toBe(1);
+    expect(summary.buildPassCount).toBe(1);
+    expect(summary.agentSpawns).toBe(2);
+    expect(summary.taskCount).toBe(3); // from totalTasksCompleted, unaffected by this fold
   });
 
   it('reads userMessages/assistantMessages/userCorrections from transcriptMessageTracker', () => {
@@ -1564,6 +1664,142 @@ describe('buildSessionSummary', () => {
       >[0],
     );
     expect(roundTripped.toolSelectionMetrics).toBeNull();
+  });
+
+  it('captures efficiencyScoreSampleCount and efficiencyScoreComponents from EfficiencyScorer', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 0,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const mockEfficiencyScorer = {
+      getSessionAverage: () => ({
+        score: 0.77,
+        components: { speed: 0.8, correctness: 0.7, autonomy: 0.9, firstAttemptQuality: 0.6 },
+        taskId: 'session-average',
+        timestamp: Date.now(),
+      }),
+      getScores: () => [{}, {}, {}],
+      getSessionSampleCount: () => 3, // what buildSessionSummary actually reads
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['sessionTracker'],
+      efficiencyScorer: mockEfficiencyScorer as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['efficiencyScorer'],
+      developer: 'alice',
+    });
+
+    expect(summary.efficiencyScore).toBe(0.77);
+    expect(summary.efficiencyScoreSampleCount).toBe(3);
+    expect(summary.efficiencyScoreComponents).toEqual({
+      speed: 0.8,
+      correctness: 0.7,
+      autonomy: 0.9,
+      firstAttemptQuality: 0.6,
+    });
+  });
+
+  it('defaults efficiencyScoreSampleCount to 0 and efficiencyScoreComponents to null with no efficiencyScorer', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 0,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['sessionTracker'],
+      developer: 'alice',
+    });
+    expect(summary.efficiencyScoreSampleCount).toBe(0);
+    expect(summary.efficiencyScoreComponents).toBeNull();
+  });
+
+  it('persists efficiencyScoreSampleCount from getSessionSampleCount(), not the fresh-only getScores().length, so seeded weight from an earlier restart survives a second checkpoint', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'test-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 0,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+    // Simulates a session on its second restart: only 1 fresh task has been
+    // scored since the last restart, but getSessionAverage() (and therefore
+    // this checkpoint's efficiencyScore) is already weighted by 4 seeded
+    // samples carried over from the prior process's own checkpoint. If
+    // buildSessionSummary persisted getScores().length here instead of
+    // getSessionSampleCount(), it would record sampleCount=1 alongside a
+    // score that actually reflects 5 samples' worth of history.
+    const mockEfficiencyScorer = {
+      getSessionAverage: () => ({
+        score: 0.81,
+        components: { speed: 0.75, correctness: 0.85, autonomy: 0.9, firstAttemptQuality: 0.75 },
+        taskId: 'session-average',
+        timestamp: Date.now(),
+      }),
+      getScores: () => [{}], // 1 fresh score this process
+      getSessionSampleCount: () => 5, // 1 fresh + 4 seeded from a prior restart
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['sessionTracker'],
+      efficiencyScorer: mockEfficiencyScorer as unknown as Parameters<
+        typeof buildSessionSummary
+      >[0]['efficiencyScorer'],
+      developer: 'alice',
+    });
+
+    expect(summary.efficiencyScoreSampleCount).toBe(5);
+    expect(summary.efficiencyScoreSampleCount).not.toBe(mockEfficiencyScorer.getScores().length);
   });
 });
 
