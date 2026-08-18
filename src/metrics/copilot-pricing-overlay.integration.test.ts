@@ -10,17 +10,16 @@ describe('copilot pricing overlay integration', () => {
   });
 
   it('resolves previously-unresolvable Copilot model ids once the overlay is applied', () => {
-    expect(resolveModelPricing('claude-opus-5')).toBeNull();
+    expect(resolveModelPricing('raptor-mini')).toBeNull();
 
     const overlayPath = resolveCopilotPricingOverlayPath();
     expect(overlayPath).not.toBeNull();
     initPricing(overlayPath);
 
-    expect(resolveModelPricing('claude-opus-5')).toMatchObject({
-      inputPerMTok: 5,
-      outputPerMTok: 25,
-      cacheReadPerMTok: 0.5,
-      cacheCreationPerMTok: 6.25,
+    expect(resolveModelPricing('raptor-mini')).toMatchObject({
+      inputPerMTok: 0.25,
+      outputPerMTok: 2,
+      cacheReadPerMTok: 0.025,
     });
   });
 

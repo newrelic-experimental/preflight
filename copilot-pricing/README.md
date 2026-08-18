@@ -4,7 +4,7 @@
 for model IDs that GitHub Copilot (CLI/SDK/VS Code) reports but the vendored
 table doesn't resolve — confirmed live via `PricingTable.resolve()`'s four
 resolution paths (exact / alias / forward-prefix / reverse-prefix), e.g.
-`claude-opus-5` currently falls through to `null` → `$0` cost.
+`raptor-mini` currently falls through to `null` → `$0` cost.
 
 GitHub Copilot's per-token pricing is a verified passthrough of the
 underlying vendor's direct API list price (checked against the vendored
@@ -27,10 +27,6 @@ context-limit source.
 **Known, unavoidable limitations** (inherited from `ModelPricing`'s shape,
 which this overlay reuses as-is — not fixable without editing vendored code):
 
-- `computeCost()`'s `'marginal'` tier mode never tiers output/thinking rates
-  (only input splits at the threshold), so `gpt-5.6-luna/-sol/-terra`'s
-  higher long-context _output_ rate is not modeled — same pre-existing
-  limitation already present for `gpt-5.4`/`gpt-5.5` in the vendored table.
 - `ModelPricing` has no tiered cache-read field at all, so `grok-4.5`'s
   doubled long-context _cached-input_ rate cannot be represented; the
   default (lower) cache rate is used at every tier.
