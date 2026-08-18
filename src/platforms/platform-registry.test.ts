@@ -517,6 +517,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new CursorAdapter(),
     new WindsurfAdapter(),
     new CopilotAdapter(),
+    new CopilotSdkAdapter(),
     new ZedAdapter(),
     new ContinueAdapter(),
     new AmazonQAdapter(),

@@ -29,9 +29,11 @@ describe('CopilotSdkAdapter', () => {
     expect(adapter.visibilityLevel).toBe('full-hooks');
   });
 
-  it('has instructionFilePaths for AGENTS.md and .github/copilot-instructions.md', () => {
+  it('has instructionFilePaths for AGENTS.md, CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md', () => {
     expect(adapter.capabilities.instructionFilePaths).toEqual([
       'AGENTS.md',
+      'CLAUDE.md',
+      'GEMINI.md',
       '.github/copilot-instructions.md',
     ]);
   });
@@ -118,24 +120,52 @@ describe('CopilotSdkAdapter', () => {
   });
 
   describe('mapToolName', () => {
+    // Canonical Claude-shaped names — what PascalCase PreToolUse/PostToolUse
+    // (the config this adapter's setup instructions require) actually
+    // delivers as `tool_name`. This is the real-world path.
+    it.each([
+      ['Bash', 'Bash'],
+      ['Read', 'Read'],
+      ['Write', 'Write'],
+      ['Edit', 'Edit'],
+      ['Grep', 'Grep'],
+      ['Glob', 'Glob'],
+      ['Agent', 'Agent'],
+      ['Task', 'Agent'],
+      ['WebFetch', 'WebFetch'],
+      ['WebSearch', 'WebSearch'],
+      ['AskUserQuestion', 'AskUserQuestion'],
+      ['TodoWrite', 'TodoWrite'],
+    ])('maps canonical name "%s" to "%s" (identity)', (platformToolName, expected) => {
+      expect(adapter.mapToolName(platformToolName)).toBe(expected);
+    });
+
+    // Raw runtime names — defensive fallback only, not expected to be
+    // looked up under the documented PascalCase config.
     it.each([
       ['bash', 'Bash'],
       ['powershell', 'Bash'],
       ['apply_patch', 'Edit'],
       ['create', 'Write'],
       ['edit', 'Edit'],
+      ['str_replace_editor', 'Edit'],
       ['view', 'Read'],
       ['task', 'Agent'],
       ['glob', 'Glob'],
       ['grep', 'Grep'],
       ['rg', 'Grep'],
-    ])('maps "%s" to "%s"', (platformToolName, expected) => {
+      ['web_fetch', 'WebFetch'],
+      ['web_search', 'WebSearch'],
+      ['ask_user', 'AskUserQuestion'],
+      ['update_todo', 'TodoWrite'],
+    ])('maps raw runtime name "%s" to "%s" (fallback)', (platformToolName, expected) => {
       expect(adapter.mapToolName(platformToolName)).toBe(expected);
     });
 
-    it('returns "Unknown" for an unrecognized tool name', () => {
+    it('returns "Unknown" for a tool with no Claude equivalent', () => {
       expect(adapter.mapToolName('list_agents')).toBe('Unknown');
-      expect(adapter.mapToolName('web_fetch')).toBe('Unknown');
+      expect(adapter.mapToolName('list_bash')).toBe('Unknown');
+      expect(adapter.mapToolName('skill')).toBe('Unknown');
       expect(adapter.mapToolName('totally_made_up')).toBe('Unknown');
     });
   });
@@ -180,6 +210,18 @@ describe('CopilotSdkAdapter', () => {
       expect(instructions).toContain('copilot-sdk-extension/extension.mjs');
       expect(instructions).toContain('~/.copilot/extensions/preflight/extension.mjs');
       expect(instructions).toContain('--experimental');
+    });
+
+    it('includes a "version": 1 field in the sample hooks JSON', () => {
+      // A missing/wrong `version` is a structural error that rejects the
+      // entire hooks file, per GitHub's Copilot hooks reference.
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('"version": 1,');
+    });
+
+    it('does not tell users to run the nonexistent "/extensions reload" command', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).not.toContain('/extensions reload');
     });
   });
 

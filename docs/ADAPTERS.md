@@ -5,7 +5,7 @@ description: Per-platform reference for what each Preflight adapter can and can'
 
 # Platform Adapters
 
-Preflight supports 16 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
+Preflight supports 17 named AI coding platforms plus a generic MCP fallback, each via a `PlatformAdapter` in `src/platforms/`. Adapters differ in one fundamental way: **what the platform actually exposes to a third-party observer.** Some platforms have a real hook/callback mechanism that fires on every built-in tool call; others only support MCP as a client, which means Preflight can see calls the platform's agent chooses to make to Preflight's own tools, but never a callback for the platform's _built-in_ tools (file reads, edits, terminal commands, etc).
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
@@ -13,13 +13,13 @@ This doc is the canonical reference for what each adapter can and can't observe,
 
 ## Integration mechanisms
 
-| Mechanism                                                                                                      | Platforms                                                                                                      | What's captured                                                                        | `visibilityLevel` |
-| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
-| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid, Codex, opencode, Kilo Code, Pi[^pi-no-mcp], GitHub Copilot[^copilot-camel] | All built-in tool calls                                                                | `full-hooks`      |
-| **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                                                                                                     | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
-| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf, Antigravity[^agy-shape-only]                                                                 | All built-in tool calls                                                                | `full-hooks`      |
-| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev, Cline                                                                                       | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
-| **Self-report via MCP tools**                                                                                  | Generic MCP fallback                                                                                           | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
+| Mechanism                                                                                                      | Platforms                                                                                                                          | What's captured                                                                        | `visibilityLevel` |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------- |
+| **Uniform hook events** (`tool_name`/`tool_input`, PreToolUse/PostToolUse-shaped, case-insensitive event name) | Claude Code, Kiro, Amazon Q, Droid, Codex, opencode, Kilo Code, Pi[^pi-no-mcp], GitHub Copilot[^copilot-camel], GitHub Copilot SDK | All built-in tool calls                                                                | `full-hooks`      |
+| **Own event names, Claude-Code-shaped fields**[^gemini-hybrid]                                                 | Gemini CLI                                                                                                                         | All built-in tool calls (and third-party MCP tool calls)                               | `full-hooks`      |
+| **Platform-specific hook events** (own field vocabulary, own branches in `collector-script.ts`)                | Cursor, Windsurf, Antigravity[^agy-shape-only]                                                                                     | All built-in tool calls                                                                | `full-hooks`      |
+| **MCP-client-only** (no hook/callback mechanism exists)                                                        | Zed, Continue.dev, Cline                                                                                                           | Only calls routed to Preflight's own MCP tools — **not** the platform's built-in tools | `mcp-tools-only`  |
+| **Self-report via MCP tools**                                                                                  | Generic MCP fallback                                                                                                               | Whatever the caller reports via `nr_observe_report_tool_call`                          | `self-reported`   |
 
 [^copilot-camel]: VS Code Copilot sends the uniform `hook_event_name`/`tool_name`/`tool_input`/`session_id` envelope but with VS Code's own tool names and camelCase `tool_input` keys — both deltas documented in the hooks FAQ ([code.visualstudio.com/docs/copilot/customization/hooks](https://code.visualstudio.com/docs/copilot/customization/hooks)). Copilot also retains a legacy HTTP-push fallback path (see its section below).
 
@@ -31,7 +31,7 @@ This doc is the canonical reference for what each adapter can and can't observe,
 
 Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` field encoding this table in code, not just prose — `full-hooks` (automatic, deterministic capture), `self-reported` (built-in-tool-shaped events are observable, but only if an external party — a third-party extension, or the calling MCP client itself — actually reports them), or `mcp-tools-only` (structurally cannot see built-in tool calls at all). Consumers that blend metrics across platforms (`nr_observe_get_platform_comparison`, the weekly digest's per-platform breakdown) use `getPlatformVisibilityMap()` (`src/platforms/platform-registry.ts`) to tag results and caveat comparisons that span more than one level.
 
-Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, opencode, Kilo Code, Pi, Antigravity, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
+Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Copilot SDK, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, opencode, Kilo Code, Pi, Antigravity, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
 ---
 
@@ -593,9 +593,9 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 **Detection (`isSupported()`):** `MCP_CLIENT === 'copilot-sdk'`, or `NEW_RELIC_AI_PLATFORM === 'copilot-sdk'`.
 
-**Event vocabulary:** `bash`/`powershell`→Bash, `apply_patch`→Edit, `create`→Write, `edit`→Edit, `view`→Read, `task`→Agent, `glob`→Glob, `grep`/`rg`→Grep. Source: GitHub's CLI command reference, "Tool availability values" (the CLI being the reference host for this SDK-defined tool set). Deliberately left unmapped (preserved as-is): the background shell session-management tools (`list_bash`/`read_bash`/`stop_bash`/`write_bash` and their PowerShell equivalents), `list_agents`/`read_agent`/`write_agent`, `ask_user`, `skill`, `web_fetch`.
+**Event vocabulary:** the adapter's setup requires the PascalCase `PreToolUse`/`PostToolUse` hook config, under which GitHub's CLI already canonicalizes `tool_name` to Claude-shaped names before Preflight ever sees them: `bash`/`powershell`→Bash, `view`→Read, `create`→Write, `edit`/`str_replace_editor`/`apply_patch`→Edit, `grep`/`rg`→Grep, `glob`→Glob, `web_fetch`→WebFetch, `web_search`→WebSearch, `ask_user`→AskUserQuestion, `update_todo`→TodoWrite, `task`→Agent. Source: GitHub's Copilot hooks reference, "Claude-format matchers (PascalCase PreToolUse)" section. The adapter's own tool map keeps these canonical names as the primary (identity) lookup and the raw runtime names as a defensive fallback only. Deliberately left unmapped (no Claude equivalent, preserved as-is): the background shell session-management tools (`list_bash`/`read_bash`/`stop_bash`/`write_bash` and their PowerShell equivalents), `list_agents`/`read_agent`/`write_agent`, `skill`.
 
-**Instruction files:** `AGENTS.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The host also reads a user-level `$HOME/.copilot/copilot-instructions.md`, which isn't modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative fragment, and a global per-user path doesn't fit that shape.
+**Instruction files:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The host also reads a user-level `$HOME/.copilot/copilot-instructions.md` and glob-based `.github/instructions/**/*.instructions.md`, neither of which is modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative exact filename, which supports neither a global per-user path nor a glob pattern.
 
 **Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small, hand-written plain-JavaScript Copilot SDK extension (`copilot-sdk-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot SDK extensions must be plain JavaScript — TypeScript isn't supported — so this file hand-mirrors the tested logic in `src/hooks/copilot-sdk-usage-mapper.ts`; keep the two in sync when changing either. Extensions are an experimental feature, requiring `--experimental` or `/experimental on`.
 
@@ -606,6 +606,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 1. Create a hooks file for tool-call capture — user-level `~/.copilot/hooks/preflight.json` or workspace-level `.github/hooks/preflight.json`:
    ```json
    {
+     "version": 1,
      "hooks": {
        "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],
        "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]
@@ -622,7 +623,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
      -- npx preflight --stdio
    ```
 4. (Optional, for token-exact cost) Copy the bundled extension to `~/.copilot/extensions/preflight/extension.mjs`
-5. Restart the host with `--experimental` (or run `/experimental on` in an already-open session)
+5. Restart the host with `--experimental` (or run `/experimental on` in an already-open session) — extensions load at startup; asking Copilot to reload extensions or running `/clear` may also pick up a newly-copied extension
 
 ---
 
