@@ -111,7 +111,6 @@ export class RetryDetector implements Resettable {
   private totalTokensWasted = 0;
   // Track which tool+window combos already fired to avoid spamming
   private readonly firedKeys = new Set<string>();
-  private callCounter = 0;
 
   constructor(options?: RetryDetectorOptions) {
     this.minOccurrences = options?.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
@@ -122,7 +121,6 @@ export class RetryDetector implements Resettable {
 
   recordToolCall(record: ToolCallRecord): ThrashingAlert | null {
     this.recentCalls.push(record);
-    this.callCounter++;
 
     // Only keep the window we need
     if (this.recentCalls.length > this.windowSize * 2) {
@@ -152,7 +150,6 @@ export class RetryDetector implements Resettable {
     this.alerts.length = 0;
     this.totalTokensWasted = 0;
     this.firedKeys.clear();
-    this.callCounter = 0;
   }
 
   private checkWindow(): ThrashingAlert | null {
@@ -177,8 +174,16 @@ export class RetryDetector implements Resettable {
 
       if (!allFailed && !isSimilar) continue;
 
-      // Dedupe: use the call counter so alerts can fire again after new calls arrive
-      const dedupeKey = `${toolName}:${this.callCounter}`;
+      // Dedupe on the offending group's actual call IDs — not a monotonic
+      // counter, which never repeats and so never dedupes: it re-fired for
+      // the same unchanged group on every subsequent call, however unrelated.
+      // A key built from the group's own call IDs repeats exactly when the
+      // group itself hasn't changed, and changes the moment a call ages out
+      // of the window or a genuinely new occurrence joins it.
+      const dedupeKey = `${toolName}:${calls
+        .map((c) => c.id)
+        .sort()
+        .join(',')}`;
       if (this.firedKeys.has(dedupeKey)) continue;
       this.firedKeys.add(dedupeKey);
 
@@ -233,6 +238,16 @@ export class RetryDetector implements Resettable {
   // input/arguments are identical (timestamps, ids, sizes, error details) —
   // without stripping these, every call would serialize as "different" and
   // similarity would never detect a genuine repeated-input retry.
+  //
+  // inputHash is kept, deliberately not stripped: it's a hash of the FULL raw
+  // tool input, computed for every call regardless of tool name, unlike the
+  // narrowed per-tool fields extractInputMeta()/parseToolSpecificFields() only
+  // populate for a known subset of tools. Without it, a call to any tool
+  // outside that subset (PowerShell, WebFetch, a third-party MCP tool, ...)
+  // serializes to just `{toolName}` — identical for every call regardless of
+  // how different the real inputs were, so it always scored similarity 1.0.
+  // A genuine repeat still hashes identically, so real-retry detection is
+  // unaffected.
   private serializeInput(record: ToolCallRecord): string {
     const {
       id: _id,
@@ -244,7 +259,6 @@ export class RetryDetector implements Resettable {
       error: _er,
       inputSizeBytes: _is,
       outputSizeBytes: _os,
-      inputHash: _ih,
       toolUseId: _tu,
       ...rest
     } = record;
@@ -255,9 +269,11 @@ export class RetryDetector implements Resettable {
     }
   }
 
+  // The first call in the group is necessary work, not waste — only the
+  // repeats after it represent redundant, wasted effort.
   private estimateTokensWasted(calls: ToolCallRecord[]): number {
     let totalBytes = 0;
-    for (const call of calls) {
+    for (const call of calls.slice(1)) {
       totalBytes += (call.inputSizeBytes ?? 0) + (call.outputSizeBytes ?? 0);
     }
     return Math.ceil(totalBytes / BYTES_PER_TOKEN_ESTIMATE);

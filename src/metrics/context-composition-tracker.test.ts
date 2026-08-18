@@ -4,6 +4,20 @@ import type {
   ContextThresholdAlert,
   CategoryDominanceAlert,
 } from './context-composition-tracker.js';
+import type { TokenEvent } from '../storage/types.js';
+
+function makeTokenEvent(overrides: Partial<TokenEvent> = {}): TokenEvent {
+  return {
+    mode: 'token',
+    timestamp: Date.now(),
+    inputTokens: 2,
+    outputTokens: 100,
+    cacheReadTokens: 33_862,
+    cacheCreationTokens: 18_238,
+    model: 'claude-opus-5',
+    ...overrides,
+  };
+}
 
 const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 afterEach(() => stderrSpy.mockClear());
@@ -243,6 +257,70 @@ describe('ContextCompositionTracker', () => {
     expect(aggregator.record).toHaveBeenCalledWith('ai.context.total_tokens', 4000);
     expect(aggregator.record).toHaveBeenCalledWith('ai.context.category_tokens', 1000, {
       category: 'system_prompt',
+    });
+  });
+
+  describe('recordTokenEvent', () => {
+    it('includes cache tokens in totalTokens, matching the sibling ContextTracker', () => {
+      const tracker = new ContextCompositionTracker({ modelContextWindow: 1_000_000 });
+      // Under prompt caching, inputTokens is only the uncached delta, so the
+      // true turn size is
+      // inputTokens + cacheReadTokens + cacheCreationTokens = 2 + 33862 + 18238 = 52102.
+      tracker.recordTokenEvent(makeTokenEvent());
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.currentFillPercent).toBeCloseTo(5.21, 2);
+    });
+
+    it('does not report dominance percentages above 100', () => {
+      const alerts: CategoryDominanceAlert[] = [];
+      const tracker = new ContextCompositionTracker({
+        modelContextWindow: 1_000_000,
+        onDominanceAlert: (a) => alerts.push(a),
+      });
+
+      tracker.recordTokenEvent(makeTokenEvent());
+
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].percent).toBeLessThanOrEqual(100);
+      expect(alerts[0].percent).toBeCloseTo(99.996, 2);
+    });
+
+    it('reproduces the reported turn-1/28/29 sequence without the totalTokens desync', () => {
+      const tracker = new ContextCompositionTracker({ modelContextWindow: 1_000_000 });
+
+      tracker.recordTokenEvent(makeTokenEvent({ cacheReadTokens: 0, cacheCreationTokens: 52_100 }));
+      tracker.recordTokenEvent(
+        makeTokenEvent({ cacheReadTokens: 103_637, cacheCreationTokens: 0 }),
+      );
+      tracker.recordTokenEvent(
+        makeTokenEvent({ inputTokens: 1, cacheReadTokens: 105_627, cacheCreationTokens: 0 }),
+      );
+
+      const metrics = tracker.getMetrics();
+      const [turn1, turn28, turn29] = metrics.history;
+      expect(turn1.totalTokens).toBe(52_102);
+      expect(turn28.totalTokens).toBe(103_639);
+      expect(turn29.totalTokens).toBe(105_628);
+    });
+
+    it('resolves the model context window from the event model, like ContextTracker does', () => {
+      const tracker = new ContextCompositionTracker(); // default 200_000 window
+      tracker.recordTokenEvent(makeTokenEvent({ model: 'claude-opus-5' })); // 1,000,000-token model
+
+      const metrics = tracker.getMetrics();
+      // With a resolved 1,000,000 window, fillPercent should be ~5.21, not the
+      // ~26% a stale 200,000 default would produce.
+      expect(metrics.currentFillPercent).toBeCloseTo(5.21, 2);
+    });
+
+    it('ignores a zero-token event', () => {
+      const tracker = new ContextCompositionTracker({ modelContextWindow: 1_000_000 });
+      tracker.recordTokenEvent(
+        makeTokenEvent({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }),
+      );
+
+      expect(tracker.getMetrics().turnCount).toBe(0);
     });
   });
 

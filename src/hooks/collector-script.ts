@@ -426,7 +426,12 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       }
       if (typeof obj.replace_all === 'boolean') meta.replace_all = obj.replace_all;
       break;
+    // PowerShell is a real, first-party Claude Code tool on native Windows,
+    // auto-enabled without Git Bash (code.claude.com/docs/en/tools-reference,
+    // /setup, /env-vars) — same command/description/timeout/run_in_background
+    // input shape as Bash.
     case 'Bash':
+    case 'PowerShell':
       if (typeof obj.command === 'string') meta.command = redact(obj.command);
       if (typeof obj.description === 'string') meta.description = redact(obj.description);
       if (typeof obj.timeout === 'number') meta.timeout = obj.timeout;

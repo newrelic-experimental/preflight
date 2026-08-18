@@ -224,6 +224,40 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
+    // PowerShell is a real, first-party Claude Code tool (see
+    // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no
+    // case for it, so toolInput stayed undefined and every PowerShell call
+    // serialized identically downstream.
+    it('stores command/description/timeout/run_in_background metadata, same as Bash', () => {
+      const input = {
+        command: 'Get-Process',
+        description: 'List processes',
+        timeout: 30000,
+        run_in_background: false,
+      };
+      processHook(makePreToolUse({ tool_name: 'PowerShell', tool_input: input }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolInput).toEqual({
+        command: 'Get-Process',
+        description: 'List processes',
+        timeout: 30000,
+        run_in_background: false,
+      });
+    });
+
+    it('redacts sensitive content in the command, same as Bash', () => {
+      const input = { command: '$env:API_KEY = "sk-1234567890abcdef"' };
+      processHook(makePreToolUse({ tool_name: 'PowerShell', tool_input: input }));
+
+      const event = readBufferEvents()[0]!;
+      const toolInput = event.toolInput as Record<string, unknown>;
+      expect(toolInput.command).not.toContain('sk-1234567890abcdef');
+      expect(toolInput.command).toContain('[REDACTED]');
+    });
+  });
+
   describe('processHook() — PostToolUse (toolOutput)', () => {
     it('stores output metadata fields when available', () => {
       const response = { exitCode: 0, stdout: 'lots of output here' };

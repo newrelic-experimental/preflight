@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The GitHub Copilot adapter now captures tool calls via VS Code's native agent hooks (Preview)** instead of self-reported data, giving full session and tool-call visibility for Copilot Chat users, matching the other full-hooks platforms.
 - **Copilot sessions can now report token-exact cost** by reading VS Code's Copilot Chat debug log instead of estimating cost from content size. This requires enabling VS Code's `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting and reloading the window — see the Copilot section of `docs/ADAPTERS.md` for setup steps. Without it, cost falls back to estimation as before.
 
+## [1.15.6] - 2026-08-18
+
+### Fixed
+
+- **`nr_observe_get_context_composition` no longer reports dominance percentages in the millions of percent with `fillPercent` near zero.** Under prompt caching, the turn's total context size was computed from the uncached input delta alone instead of including cache-read and cache-creation tokens, producing a denominator many orders of magnitude too small. The tool also now resolves the model's real context window instead of staying hard-coded at a 200k default.
+- **`nr_observe_get_retry_alerts` no longer flags ordinary, non-repeated tool calls as thrashing for tools without dedicated metadata extraction** (e.g. the native Windows PowerShell tool). Every call to such a tool previously serialized identically for similarity comparison regardless of how different the underlying input actually was. The dedupe key and wasted-token estimate were also corrected so the same offending calls aren't re-counted repeatedly and only genuinely redundant repeats are charged as waste.
+
 ## [1.15.5] - 2026-08-17
 
 ### Fixed
