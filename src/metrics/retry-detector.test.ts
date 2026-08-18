@@ -109,7 +109,7 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
   });
 
-  it('estimates tokens wasted from input/output sizes', () => {
+  it('estimates tokens wasted from only the repeats, not the whole group', () => {
     const detector = new RetryDetector();
 
     detector.recordToolCall(
@@ -123,23 +123,74 @@ describe('RetryDetector', () => {
     );
 
     expect(alert).not.toBeNull();
-    // 3 calls × (400 + 600) bytes / 4 bytes per token = 750
-    expect(alert!.tokensWastedEstimate).toBe(750);
+    // The first call is necessary work, not waste — only the 2 repeats are
+    // charged: 2 calls × (400 + 600) bytes / 4 bytes per token = 500.
+    expect(alert!.tokensWastedEstimate).toBe(500);
   });
 
-  it('does not fire duplicate alerts for the same window position', () => {
+  it('does not re-fire for the exact same offending call group when an unrelated call arrives', () => {
     const detector = new RetryDetector();
 
     detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
     detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
     detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(1);
 
-    // 4th call in same streak — should not re-fire for same dedup key
-    const result = detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
-    // A new window position may trigger a new alert (4 calls in last 5)
-    // but total should be limited
-    expect(detector.getMetrics().totalAlertsEmitted).toBeLessThanOrEqual(2);
-    void result;
+    // A call to a different tool shifts the window but leaves the same 3
+    // Bash calls as the offending group — this must not re-count them.
+    detector.recordToolCall(makeRecord({ toolName: 'Read', success: true }));
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(1);
+  });
+
+  it('fires again once a genuinely new occurrence joins the offending group', () => {
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(1);
+
+    // A 4th failing Bash call is genuinely new information, worth its own alert.
+    detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(2);
+  });
+
+  it('does not flag genuinely different calls of a tool with no metadata extractor', () => {
+    // A tool outside extractInputMeta()'s switch (e.g. PowerShell, WebFetch,
+    // a third-party MCP tool) carries no tool-specific fields, so every call
+    // used to serialize identically regardless of how different the real
+    // inputs were.
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(
+      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
+    );
+    detector.recordToolCall(
+      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'cccc3333dddd4444' }),
+    );
+    const result = detector.recordToolCall(
+      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'eeee5555ffff6666' }),
+    );
+
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('still detects genuine identical retries of a tool with no metadata extractor', () => {
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(
+      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
+    );
+    detector.recordToolCall(
+      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
+    );
+    const result = detector.recordToolCall(
+      makeRecord({ toolName: 'WebFetch', success: true, inputHash: 'aaaa1111bbbb2222' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.similarity).toBe(1);
   });
 
   it('reset clears all state', () => {

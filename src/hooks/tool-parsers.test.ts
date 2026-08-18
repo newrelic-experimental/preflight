@@ -222,6 +222,35 @@ describe('parseToolSpecificFields', () => {
     });
   });
 
+  describe('PowerShell parser', () => {
+    // PowerShell is a real, first-party Claude Code tool on native Windows —
+    // auto-enabled without Git Bash, opt-in via CLAUDE_CODE_USE_POWERSHELL_TOOL
+    // elsewhere (code.claude.com/docs/en/tools-reference, /setup, /env-vars).
+    // It carries the same command/description/timeout/run_in_background input
+    // shape as Bash, so it should get the same parsing.
+    it('extracts command and description, same as Bash', () => {
+      const input = { command: 'Get-Process', description: 'List processes' };
+      const fields = parseToolSpecificFields('PowerShell', input, undefined);
+
+      expect(fields.command).toBe('Get-Process');
+      expect(fields.commandDescription).toBe('List processes');
+    });
+
+    it('extracts timeout and run_in_background', () => {
+      const input = { command: 'npm start', timeout: 30000, run_in_background: true };
+      const fields = parseToolSpecificFields('PowerShell', input, undefined);
+
+      expect(fields.commandTimeout).toBe(30000);
+      expect(fields.runInBackground).toBe(true);
+    });
+
+    it('attaches bashCategory / bashLeading from the same classifier as Bash', () => {
+      const fields = parseToolSpecificFields('PowerShell', { command: 'git status' }, undefined);
+      expect(fields.bashCategory).toBe('git');
+      expect(fields.bashLeading).toBe('git');
+    });
+  });
+
   describe('Grep parser', () => {
     it('extracts pattern, grepPath, and outputMode', () => {
       const input = { pattern: 'TODO', path: '/src', output_mode: 'content' };
