@@ -185,4 +185,51 @@ describe('BudgetTracker', () => {
 
     jest.useRealTimers();
   });
+
+  it('seedFiredThresholdsFromSessionTotal marks thresholds already implied by a restored total as fired, without emitting alerts', () => {
+    const events: unknown[] = [];
+    const t = new BudgetTracker({
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+      onThreshold: (e) => events.push(e),
+    });
+
+    // Simulate CostTracker.seedFromPersisted() having just restored an 85%-spent total.
+    t.seedFiredThresholdsFromSessionTotal(8.5);
+    expect(events).toHaveLength(0); // no alert emitted for pre-existing spend
+
+    // A tiny bit of NEW spend should not re-fire the 50%/80% thresholds already seeded.
+    t.updateCost(8.6, 0, 0);
+    expect(events).toHaveLength(0);
+
+    // Crossing 100% for the first time (session-scoped) should still fire.
+    t.updateCost(10.1, 0, 0);
+    expect(events).toHaveLength(1);
+    expect((events[0] as { thresholdPct: number }).thresholdPct).toBe(100);
+  });
+
+  it('seedFiredThresholdsFromSessionTotal is a no-op when there is no session budget configured', () => {
+    const t = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+    });
+    expect(() => t.seedFiredThresholdsFromSessionTotal(1000)).not.toThrow();
+    expect(t.getStatus().session.pctUsed).toBeNull();
+  });
+
+  it('seedFiredThresholdsFromSessionTotal below every threshold marks nothing as fired', () => {
+    const events: unknown[] = [];
+    const t = new BudgetTracker({
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: null,
+      weeklyBudgetUsd: null,
+      onThreshold: (e) => events.push(e),
+    });
+    t.seedFiredThresholdsFromSessionTotal(1); // 10% — below the 50% floor
+    t.updateCost(5.1, 0, 0); // now crosses 50% for the first time
+    expect(events).toHaveLength(1);
+    expect((events[0] as { thresholdPct: number }).thresholdPct).toBe(50);
+  });
 });

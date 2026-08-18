@@ -41,6 +41,19 @@ export interface EfficiencyScoreOptions {
   readonly speedBaselineLinesPerSecond?: number;
 }
 
+/**
+ * Input shape for `EfficiencyScorer.seedFromPersisted()` — a previous
+ * process's last checkpoint of `getSessionAverage()` for this same session,
+ * built directly from `FullSessionSummary.efficiencyScore` +
+ * `.efficiencyScoreComponents` + `.efficiencyScoreSampleCount`
+ * (session-store.ts).
+ */
+export interface EfficiencyScoreSeed {
+  readonly score: number;
+  readonly components: EfficiencyScoreComponents;
+  readonly sampleCount: number;
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -66,6 +79,18 @@ export class EfficiencyScorer implements Resettable {
 
   private readonly scores: EfficiencyScore[] = [];
   private lastEmittedIndex = 0;
+
+  // Weighted seed from a previous process's last checkpoint for this same
+  // session — see seedFromPersisted()'s doc comment. The persisted
+  // checkpoint is already itself an average (not raw per-task scores), so
+  // seeding accumulates a weighted contribution (value * sampleCount) rather
+  // than raw per-task totals like CostTracker.seedFromPersisted() does.
+  private seededScoreSum = 0;
+  private seededSpeedSum = 0;
+  private seededCorrectnessSum = 0;
+  private seededAutonomySum = 0;
+  private seededFirstAttemptSum = 0;
+  private seededSampleCount = 0;
 
   constructor(options?: EfficiencyScoreOptions) {
     this.speedWeight = options?.speedWeight ?? DEFAULT_SPEED_WEIGHT;
@@ -108,16 +133,39 @@ export class EfficiencyScorer implements Resettable {
   }
 
   /**
+   * Seeds a weighted contribution to the session average from a previous
+   * process's last checkpoint for this same session — same restart-recovery
+   * problem as `CostTracker.seedFromPersisted()`/`ModelUsageTracker.seedFromPersisted()`,
+   * but adapted for a tracker whose own persisted checkpoint is already an
+   * average rather than raw per-task data — the per-task score list isn't
+   * reconstructable from a checkpoint, only the average is.
+   *
+   * Adds to current totals rather than overwriting, so callers must invoke
+   * this at most once per (re)adopted session id, before any real activity
+   * for that id has reached this tracker.
+   */
+  seedFromPersisted(seed: EfficiencyScoreSeed): void {
+    if (seed.sampleCount <= 0) return;
+    this.seededScoreSum += seed.score * seed.sampleCount;
+    this.seededSpeedSum += seed.components.speed * seed.sampleCount;
+    this.seededCorrectnessSum += seed.components.correctness * seed.sampleCount;
+    this.seededAutonomySum += seed.components.autonomy * seed.sampleCount;
+    this.seededFirstAttemptSum += seed.components.firstAttemptQuality * seed.sampleCount;
+    this.seededSampleCount += seed.sampleCount;
+  }
+
+  /**
    * Session-wide rolling average across all scored tasks.
    */
   getSessionAverage(): EfficiencyScore | null {
-    if (this.scores.length === 0) return null;
+    const n = this.scores.length + this.seededSampleCount;
+    if (n === 0) return null;
 
-    let totalScore = 0;
-    let totalSpeed = 0;
-    let totalCorrectness = 0;
-    let totalAutonomy = 0;
-    let totalFirstAttempt = 0;
+    let totalScore = this.seededScoreSum;
+    let totalSpeed = this.seededSpeedSum;
+    let totalCorrectness = this.seededCorrectnessSum;
+    let totalAutonomy = this.seededAutonomySum;
+    let totalFirstAttempt = this.seededFirstAttemptSum;
 
     for (const s of this.scores) {
       totalScore += s.score;
@@ -126,8 +174,6 @@ export class EfficiencyScorer implements Resettable {
       totalAutonomy += s.components.autonomy;
       totalFirstAttempt += s.components.firstAttemptQuality;
     }
-
-    const n = this.scores.length;
 
     return {
       score: Math.round((totalScore / n) * 1000) / 1000,
@@ -140,6 +186,17 @@ export class EfficiencyScorer implements Resettable {
       taskId: 'session-average',
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Effective sample count behind getSessionAverage() — fresh scores plus
+   * any seeded weight from a previous process's checkpoint. Distinct from
+   * getScores().length, which is fresh-only and would silently drop or
+   * under-weight seeded history if used to persist the sample count that
+   * pairs with getSessionAverage()'s seed-inclusive score.
+   */
+  getSessionSampleCount(): number {
+    return this.scores.length + this.seededSampleCount;
   }
 
   /**
@@ -196,6 +253,12 @@ export class EfficiencyScorer implements Resettable {
   reset(_sessionId: string): void {
     this.scores.length = 0;
     this.lastEmittedIndex = 0;
+    this.seededScoreSum = 0;
+    this.seededSpeedSum = 0;
+    this.seededCorrectnessSum = 0;
+    this.seededAutonomySum = 0;
+    this.seededFirstAttemptSum = 0;
+    this.seededSampleCount = 0;
   }
 
   // ---------------------------------------------------------------------------

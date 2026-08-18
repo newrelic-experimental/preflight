@@ -55,6 +55,52 @@ export interface TaskMetrics {
   readonly averageTaskDurationMs: number | null;
   readonly averageToolCallsPerTask: number | null;
   readonly completedTasks: AiCodingTask[];
+  /**
+   * Pre-restart file/line/test/build/agent-spawn totals recovered by
+   * `seedFromPersisted()`, folded in by `buildSessionSummary()` alongside
+   * the totals it derives from `completedTasks` (session-store.ts). null
+   * when nothing has been seeded. Deliberately NOT represented as a
+   * synthetic entry inside `completedTasks` itself — that would skew
+   * `averageTaskDurationMs`/`averageToolCallsPerTask` above (both derived
+   * from `completedTasks.length`) and has no real `toolCalls` list to
+   * attach — the per-task tool-call list isn't reconstructable from a
+   * scalar checkpoint.
+   */
+  readonly seededAggregate: TaskSeedAggregate | null;
+}
+
+/** See `TaskMetrics.seededAggregate`'s doc comment. */
+export interface TaskSeedAggregate {
+  readonly filesRead: string[];
+  readonly filesModified: string[];
+  readonly linesAdded: number;
+  readonly linesRemoved: number;
+  readonly testsRun: number;
+  readonly testsPassed: number;
+  readonly buildRun: number;
+  readonly buildPassed: number;
+  readonly agentSpawns: number;
+}
+
+/**
+ * Input shape for `TaskDetector.seedFromPersisted()` — built from a
+ * previous process's last `FullSessionSummary` checkpoint for this same
+ * session by `buildTaskDetectorSeed()` (task-detector-seed.ts). Kept as a
+ * separate type/file rather than importing `FullSessionSummary` directly
+ * into this file, which would create a circular import (session-store.ts
+ * already imports from this file).
+ */
+export interface TaskDetectorSeed {
+  readonly filesRead: readonly string[];
+  readonly filesModified: readonly string[];
+  readonly linesAdded: number;
+  readonly linesRemoved: number;
+  readonly testsRun: number;
+  readonly testsPassed: number;
+  readonly buildRun: number;
+  readonly buildPassed: number;
+  readonly agentSpawns: number;
+  readonly taskCount: number;
 }
 
 export interface TaskDetectorOptions {
@@ -209,6 +255,19 @@ export class TaskDetector implements Resettable {
   private lifetimeCompletedCount = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Additive seed from a previous process's last checkpoint for this same
+  // session — see seedFromPersisted()'s doc comment for why these are kept
+  // separate from `completedTasks` rather than added as a synthetic entry.
+  private readonly seededFilesRead = new Set<string>();
+  private readonly seededFilesModified = new Set<string>();
+  private seededLinesAdded = 0;
+  private seededLinesRemoved = 0;
+  private seededTestsRun = 0;
+  private seededTestsPassed = 0;
+  private seededBuildRun = 0;
+  private seededBuildPassed = 0;
+  private seededAgentSpawns = 0;
+
   // Cost/token snapshots at task start for computing deltas
   private costAtTaskStart = 0;
   private tokensAtTaskStart = 0;
@@ -283,6 +342,41 @@ export class TaskDetector implements Resettable {
     return this.closeCurrentTask(timestamp);
   }
 
+  /**
+   * Seeds cumulative file/line/test/build/agent-spawn totals (plus the
+   * lifetime completed-task count) from a previous process's last
+   * checkpoint for this same session — same restart-recovery problem as
+   * `CostTracker.seedFromPersisted()`. See `TaskMetrics.seededAggregate`'s
+   * doc comment for why this doesn't touch `completedTasks` directly.
+   *
+   * Adds to current totals rather than overwriting, so callers must invoke
+   * this at most once per (re)adopted session id, before any real activity
+   * for that id has reached this tracker.
+   */
+  seedFromPersisted(seed: TaskDetectorSeed): void {
+    const hasAnything =
+      seed.filesRead.length > 0 ||
+      seed.filesModified.length > 0 ||
+      seed.linesAdded !== 0 ||
+      seed.linesRemoved !== 0 ||
+      seed.testsRun !== 0 ||
+      seed.buildRun !== 0 ||
+      seed.agentSpawns !== 0 ||
+      seed.taskCount !== 0;
+    if (!hasAnything) return;
+
+    for (const f of seed.filesRead) this.seededFilesRead.add(f);
+    for (const f of seed.filesModified) this.seededFilesModified.add(f);
+    this.seededLinesAdded += seed.linesAdded;
+    this.seededLinesRemoved += seed.linesRemoved;
+    this.seededTestsRun += seed.testsRun;
+    this.seededTestsPassed += seed.testsPassed;
+    this.seededBuildRun += seed.buildRun;
+    this.seededBuildPassed += seed.buildPassed;
+    this.seededAgentSpawns += seed.agentSpawns;
+    this.lifetimeCompletedCount += seed.taskCount;
+  }
+
   getMetrics(): TaskMetrics {
     const completed = this.completedTasks;
 
@@ -300,6 +394,15 @@ export class TaskDetector implements Resettable {
       avgToolCalls = Math.round((totalToolCalls / completed.length) * 100) / 100;
     }
 
+    const hasSeededAggregate =
+      this.seededFilesRead.size > 0 ||
+      this.seededFilesModified.size > 0 ||
+      this.seededLinesAdded !== 0 ||
+      this.seededLinesRemoved !== 0 ||
+      this.seededTestsRun !== 0 ||
+      this.seededBuildRun !== 0 ||
+      this.seededAgentSpawns !== 0;
+
     return {
       totalTasksCompleted: this.lifetimeCompletedCount,
       currentTaskActive: this.activeTask !== null,
@@ -307,6 +410,19 @@ export class TaskDetector implements Resettable {
       averageTaskDurationMs: avgDuration,
       averageToolCallsPerTask: avgToolCalls,
       completedTasks: [...completed],
+      seededAggregate: hasSeededAggregate
+        ? {
+            filesRead: [...this.seededFilesRead],
+            filesModified: [...this.seededFilesModified],
+            linesAdded: this.seededLinesAdded,
+            linesRemoved: this.seededLinesRemoved,
+            testsRun: this.seededTestsRun,
+            testsPassed: this.seededTestsPassed,
+            buildRun: this.seededBuildRun,
+            buildPassed: this.seededBuildPassed,
+            agentSpawns: this.seededAgentSpawns,
+          }
+        : null,
     };
   }
 
@@ -331,6 +447,15 @@ export class TaskDetector implements Resettable {
     this.costAtTaskStart = 0;
     this.tokensAtTaskStart = 0;
     this.lifetimeCompletedCount = 0;
+    this.seededFilesRead.clear();
+    this.seededFilesModified.clear();
+    this.seededLinesAdded = 0;
+    this.seededLinesRemoved = 0;
+    this.seededTestsRun = 0;
+    this.seededTestsPassed = 0;
+    this.seededBuildRun = 0;
+    this.seededBuildPassed = 0;
+    this.seededAgentSpawns = 0;
   }
 
   dispose(): void {

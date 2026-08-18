@@ -155,6 +155,15 @@ export class QualityProxyTracker {
   private lastEditTurn = 0;
   private lastEditSuccess = false;
 
+  // Additive seed from a previous process's last checkpoint for this same
+  // session — see seedFromPersisted()'s doc comment for why. Kept separate
+  // from `events` rather than pushed in as synthetic entries: `events` feeds
+  // computeTurnBuckets()/detectDegradation(), which need real turn numbers a
+  // persisted aggregate count can't provide (see FullSessionSummary.qualityProxy's
+  // doc comment for the same caveat). Only the aggregate counts/rates below
+  // are recoverable this way.
+  private seededCounts: QualityProxyRawCounts = { ...ZERO_QUALITY_PROXY_COUNTS };
+
   constructor(options?: QualityProxyOptions) {
     this.bucketSize = options?.bucketSize ?? DEFAULT_BUCKET_SIZE;
     this.maxEvents = options?.maxEvents ?? DEFAULT_MAX_EVENTS;
@@ -217,19 +226,47 @@ export class QualityProxyTracker {
     }
   }
 
+  /**
+   * Seeds cumulative raw signal counts from a previous process's last
+   * checkpoint for this same session — mirrors
+   * `ModelUsageTracker.seedFromPersisted()`, which has the identical
+   * in-memory-only, resets-on-restart problem: a process restart mid-session
+   * (sleep, closing a terminal, `claude --resume`, a crash) otherwise
+   * silently discards every diff/test/backtrack/self-correction signal a
+   * now-dead prior process already observed.
+   *
+   * Adds to current counts rather than overwriting, so callers must invoke
+   * this at most once per (re)adopted session id, before any real activity
+   * for that id has reached this tracker.
+   */
+  seedFromPersisted(counts: QualityProxyRawCounts): void {
+    if (counts.totalSignals === 0) return;
+    this.seededCounts = {
+      totalSignals: this.seededCounts.totalSignals + counts.totalSignals,
+      diffApplyCleanCount: this.seededCounts.diffApplyCleanCount + counts.diffApplyCleanCount,
+      diffFailCount: this.seededCounts.diffFailCount + counts.diffFailCount,
+      testPassCount: this.seededCounts.testPassCount + counts.testPassCount,
+      testFailCount: this.seededCounts.testFailCount + counts.testFailCount,
+      backtrackCount: this.seededCounts.backtrackCount + counts.backtrackCount,
+      selfCorrectionCount: this.seededCounts.selfCorrectionCount + counts.selfCorrectionCount,
+    };
+  }
+
   // Raw per-session counts only — no derived rates. This is the shape
   // persisted onto FullSessionSummary.qualityProxy (session-store.ts) so a
   // session file never stores a stale derived rate; rates are always
   // recomputed at read time via getMetrics()/combineQualityProxyRawCounts().
   getRawCounts(): QualityProxyRawCounts {
     return {
-      totalSignals: this.events.length,
-      diffApplyCleanCount: this.countBySignal('diff_applied_clean'),
-      diffFailCount: this.countBySignal('diff_failed'),
-      testPassCount: this.countBySignal('test_pass'),
-      testFailCount: this.countBySignal('test_fail'),
-      backtrackCount: this.countBySignal('backtrack'),
-      selfCorrectionCount: this.countBySignal('self_correction'),
+      totalSignals: this.events.length + this.seededCounts.totalSignals,
+      diffApplyCleanCount:
+        this.countBySignal('diff_applied_clean') + this.seededCounts.diffApplyCleanCount,
+      diffFailCount: this.countBySignal('diff_failed') + this.seededCounts.diffFailCount,
+      testPassCount: this.countBySignal('test_pass') + this.seededCounts.testPassCount,
+      testFailCount: this.countBySignal('test_fail') + this.seededCounts.testFailCount,
+      backtrackCount: this.countBySignal('backtrack') + this.seededCounts.backtrackCount,
+      selfCorrectionCount:
+        this.countBySignal('self_correction') + this.seededCounts.selfCorrectionCount,
     };
   }
 
@@ -276,6 +313,7 @@ export class QualityProxyTracker {
     this.lastEditFile = null;
     this.lastEditTurn = 0;
     this.lastEditSuccess = false;
+    this.seededCounts = { ...ZERO_QUALITY_PROXY_COUNTS };
   }
 
   private addEvent(signal: QualitySignal, turnNumber: number, toolName: string): void {

@@ -197,6 +197,70 @@ describe('QualityProxyTracker', () => {
       expect.anything(),
     );
   });
+
+  it('seedFromPersisted adds persisted raw counts into getRawCounts()', () => {
+    const tracker = new QualityProxyTracker();
+    tracker.recordToolCall(makeRecord({ toolName: 'Edit', filePath: '/a.ts', success: true }));
+
+    tracker.seedFromPersisted({
+      totalSignals: 4,
+      diffApplyCleanCount: 2,
+      diffFailCount: 1,
+      testPassCount: 1,
+      testFailCount: 0,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+    });
+
+    const counts = tracker.getRawCounts();
+    expect(counts.totalSignals).toBe(5); // 1 live diff_applied_clean + 4 seeded
+    expect(counts.diffApplyCleanCount).toBe(3); // 1 live + 2 seeded
+    expect(counts.diffFailCount).toBe(1);
+    expect(counts.testPassCount).toBe(1);
+  });
+
+  it('seedFromPersisted is additive across multiple calls (repeated rehydration guard upstream)', () => {
+    const tracker = new QualityProxyTracker();
+    tracker.seedFromPersisted({
+      totalSignals: 1,
+      diffApplyCleanCount: 1,
+      diffFailCount: 0,
+      testPassCount: 0,
+      testFailCount: 0,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+    });
+    tracker.seedFromPersisted({
+      totalSignals: 1,
+      diffApplyCleanCount: 1,
+      diffFailCount: 0,
+      testPassCount: 0,
+      testFailCount: 0,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+    });
+    expect(tracker.getRawCounts().diffApplyCleanCount).toBe(2);
+  });
+
+  it('seeded counts feed diffApplyRate/testPassRate via getMetrics()', () => {
+    const tracker = new QualityProxyTracker();
+    tracker.seedFromPersisted({
+      totalSignals: 4,
+      diffApplyCleanCount: 3,
+      diffFailCount: 1,
+      testPassCount: 0,
+      testFailCount: 0,
+      backtrackCount: 0,
+      selfCorrectionCount: 0,
+    });
+    expect(tracker.getMetrics().diffApplyRate).toBe(0.75);
+  });
+
+  it('is a no-op when the persisted counts are all zero', () => {
+    const tracker = new QualityProxyTracker();
+    tracker.seedFromPersisted(ZERO_QUALITY_PROXY_COUNTS);
+    expect(tracker.getRawCounts()).toEqual(ZERO_QUALITY_PROXY_COUNTS);
+  });
 });
 
 describe('QualityProxyTracker.getRawCounts', () => {

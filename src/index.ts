@@ -72,6 +72,7 @@ import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector } from './metrics/task-detector.js';
+import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
@@ -1084,11 +1085,17 @@ async function main(): Promise<void> {
     const localSessionAggregator = new LocalSessionAggregator();
     const repoNameResolver = new RepoNameResolver();
 
+    const budgetTracker = new BudgetTracker({
+      sessionBudgetUsd: config.sessionBudgetUsd,
+      dailyBudgetUsd: config.dailyBudgetUsd,
+      weeklyBudgetUsd: config.weeklyBudgetUsd,
+    });
+
     // Recover a resumed session's pre-restart cost/token totals — see
     // CostTracker.seedFromPersisted()'s doc comment for the bug this fixes.
-    // Also seeds ModelUsageTracker, which has the identical in-memory-only,
-    // resets-on-restart problem for its own per-model breakdown — without
-    // this, its numbers would stay inconsistent with (short of) CostTracker's
+    // Also seeds ModelUsageTracker and BudgetTracker, which have the identical
+    // in-memory-only, resets-on-restart problem for their own metrics — without
+    // this, their numbers would stay inconsistent with (short of) CostTracker's
     // now-correct session total after a restart.
     // Guarded per-id (not a single fired-once flag) because adoptRealSessionId
     // below can call this again for a *different* id after a pending->real
@@ -1102,7 +1109,28 @@ async function main(): Promise<void> {
         const persisted = sessionStore!.loadSession(sessionId);
         if (!persisted) return;
         costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+        budgetTracker.seedFiredThresholdsFromSessionTotal(
+          costTracker.getMetrics().sessionTotalCostUsd ?? 0,
+        );
         modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
+        qualityProxyTracker.seedFromPersisted(persisted.qualityProxy);
+        // Non-null: taskDetector is assigned unconditionally earlier in this
+        // same setup path (see line ~980), before rehydrateTrackersIfResumed
+        // can be invoked — same pattern as the other `taskDetector!` use
+        // below, needed because its declared type stays `| undefined` for
+        // callers outside this path.
+        taskDetector!.seedFromPersisted(buildTaskDetectorSeed(persisted));
+        if (
+          persisted.efficiencyScore !== null &&
+          persisted.efficiencyScoreComponents &&
+          (persisted.efficiencyScoreSampleCount ?? 0) > 0
+        ) {
+          efficiencyScorer.seedFromPersisted({
+            score: persisted.efficiencyScore,
+            components: persisted.efficiencyScoreComponents,
+            sampleCount: persisted.efficiencyScoreSampleCount ?? 0,
+          });
+        }
         logger.info('Rehydrated trackers from a prior checkpoint for this session', {
           sessionId,
           estimatedCostUsd: persisted.estimatedCostUsd,
@@ -1334,12 +1362,6 @@ async function main(): Promise<void> {
     const sessionStartMs = Date.now();
 
     const liveBus = new LiveEventBus();
-
-    const budgetTracker = new BudgetTracker({
-      sessionBudgetUsd: config.sessionBudgetUsd,
-      dailyBudgetUsd: config.dailyBudgetUsd,
-      weeklyBudgetUsd: config.weeklyBudgetUsd,
-    });
 
     // Construct AuditTrailManager once and share it across NrIngestManager and the
     // DashboardServer. In local mode there is no NrIngestManager, but the dashboard

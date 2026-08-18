@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The GitHub Copilot adapter now captures tool calls via VS Code's native agent hooks (Preview)** instead of self-reported data, giving full session and tool-call visibility for Copilot Chat users, matching the other full-hooks platforms.
 - **Copilot sessions can now report token-exact cost** by reading VS Code's Copilot Chat debug log instead of estimating cost from content size. This requires enabling VS Code's `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting and reloading the window — see the Copilot section of `docs/ADAPTERS.md` for setup steps. Without it, cost falls back to estimation as before.
 
+## [1.15.5] - 2026-08-17
+
+### Fixed
+
+- **A resumed session's file/line/test/build/agent-spawn counts, quality-proxy signal counts, and efficiency-score average no longer reset to zero when the MCP server process restarts mid-session** — closing and reopening a terminal, a laptop sleep/wake, `claude --resume`, or a crash all restart the process. These are the same restart-recovery gap fixed for cost/token totals and per-model/per-workflow-run breakdowns in 1.15.4, now closed for the remaining stateful trackers found in that same audit.
+- **Session-budget threshold alerts (50%/80%/100%) no longer re-fire after a process restart.** Once the fix above correctly restores a session's pre-restart spend immediately on restart, the budget tracker now also recognizes any threshold that total already implies as already-fired, instead of alerting again for spend that isn't new.
+
 ## [1.15.4] - 2026-08-14
 
 ### Fixed

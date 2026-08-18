@@ -607,3 +607,75 @@ describe('scores cap (MAX_SCORES = 1000)', () => {
     expect(recorded).toHaveLength(5); // only t2, not t1 again
   });
 });
+
+// ---------------------------------------------------------------------------
+// seedFromPersisted
+// ---------------------------------------------------------------------------
+
+describe('seedFromPersisted', () => {
+  it('blends a weighted seeded average into getSessionAverage()', () => {
+    const scorer = new EfficiencyScorer();
+    // Seed represents 4 pre-restart tasks averaging score=0.8.
+    scorer.seedFromPersisted({
+      score: 0.8,
+      components: { speed: 0.9, correctness: 0.7, autonomy: 1, firstAttemptQuality: 0.6 },
+      sampleCount: 4,
+    });
+    // One fresh task scoring 0 across the board post-restart.
+    scorer.computeScore(
+      makeTask({ linesChanged: 0, testsRun: 0, testsPassed: 0, askedUserQuestions: 10 }),
+    );
+
+    const avg = scorer.getSessionAverage();
+    expect(avg).not.toBeNull();
+    // Weighted: (0.8*4 + freshScore*1) / 5 — assert via the same math the
+    // fresh task's own computeScore() result reports, rather than a second
+    // hardcoded literal, so this test can't drift from computeScore()'s own
+    // formula.
+    const fresh = scorer.getScores()[0]!;
+    expect(avg!.score).toBeCloseTo((0.8 * 4 + fresh.score * 1) / 5, 6);
+    expect(avg!.components.speed).toBeCloseTo((0.9 * 4 + fresh.components.speed * 1) / 5, 6);
+  });
+
+  it('returns the seed unweighted-by-fresh-data average when no fresh tasks have been scored yet', () => {
+    const scorer = new EfficiencyScorer();
+    scorer.seedFromPersisted({
+      score: 0.65,
+      components: { speed: 0.5, correctness: 0.6, autonomy: 0.7, firstAttemptQuality: 0.8 },
+      sampleCount: 2,
+    });
+    const avg = scorer.getSessionAverage();
+    expect(avg!.score).toBeCloseTo(0.65, 6);
+    expect(avg!.components).toEqual({
+      speed: 0.5,
+      correctness: 0.6,
+      autonomy: 0.7,
+      firstAttemptQuality: 0.8,
+    });
+  });
+
+  it('is additive across multiple calls', () => {
+    const scorer = new EfficiencyScorer();
+    scorer.seedFromPersisted({
+      score: 1,
+      components: { speed: 1, correctness: 1, autonomy: 1, firstAttemptQuality: 1 },
+      sampleCount: 1,
+    });
+    scorer.seedFromPersisted({
+      score: 0,
+      components: { speed: 0, correctness: 0, autonomy: 0, firstAttemptQuality: 0 },
+      sampleCount: 1,
+    });
+    expect(scorer.getSessionAverage()!.score).toBeCloseTo(0.5, 6);
+  });
+
+  it('is a no-op for a zero sampleCount', () => {
+    const scorer = new EfficiencyScorer();
+    scorer.seedFromPersisted({
+      score: 1,
+      components: { speed: 1, correctness: 1, autonomy: 1, firstAttemptQuality: 1 },
+      sampleCount: 0,
+    });
+    expect(scorer.getSessionAverage()).toBeNull();
+  });
+});

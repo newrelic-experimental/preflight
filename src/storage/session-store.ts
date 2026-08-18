@@ -22,7 +22,7 @@ import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
-import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
@@ -106,6 +106,28 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensCacheCreation: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
+  /**
+   * Number of individual task scores that fed `efficiencyScore` at save
+   * time — captured from `EfficiencyScorer.getSessionSampleCount()`, which
+   * includes any weight seeded from an earlier restart's checkpoint (not
+   * just fresh-this-process scores). Lets a resumed session re-seed a
+   * weighted average via `EfficiencyScorer.seedFromPersisted()` instead of
+   * losing every pre-restart task's contribution to it. Optional (unlike
+   * most fields on this interface) so the many existing test factories
+   * building `FullSessionSummary` literals don't all need updating for an
+   * additive field — read with `?? 0` at the point of use. 0/absent for
+   * pre-fix session files and for sessions with no scored tasks.
+   */
+  readonly efficiencyScoreSampleCount?: number;
+  /**
+   * Component breakdown backing `efficiencyScore` at save time, captured
+   * from `EfficiencyScorer.getSessionAverage()?.components`. Persisted
+   * alongside `efficiencyScoreSampleCount` so a re-seeded average's
+   * component breakdown is exact, not just its top-level score. Optional
+   * for the same reason as `efficiencyScoreSampleCount` above. null/absent
+   * for pre-fix session files and for sessions with no scored tasks.
+   */
+  readonly efficiencyScoreComponents?: EfficiencyScoreComponents | null;
   readonly antiPatterns: PersistedAntiPattern[];
   readonly taskCount: number;
   readonly taskSuccessRate: number | null;
@@ -572,6 +594,21 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       totalAgentSpawns += task.subAgentsSpawned;
       allToolCalls.push(...task.toolCalls);
     }
+
+    // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
+    // — see TaskMetrics.seededAggregate's doc comment for why these can't be
+    // represented as a synthetic entry in completedTasks above.
+    if (taskMetrics.seededAggregate) {
+      for (const f of taskMetrics.seededAggregate.filesRead) allFilesRead.add(f);
+      for (const f of taskMetrics.seededAggregate.filesModified) allFilesModified.add(f);
+      totalLinesAdded += taskMetrics.seededAggregate.linesAdded;
+      totalLinesRemoved += taskMetrics.seededAggregate.linesRemoved;
+      totalTestsRun += taskMetrics.seededAggregate.testsRun;
+      totalTestsPassed += taskMetrics.seededAggregate.testsPassed;
+      totalBuildsRun += taskMetrics.seededAggregate.buildRun;
+      totalBuildsPassed += taskMetrics.seededAggregate.buildPassed;
+      totalAgentSpawns += taskMetrics.seededAggregate.agentSpawns;
+    }
   }
 
   // Anti-pattern analysis
@@ -647,6 +684,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     tokensCacheCreation: costMetrics?.totalCacheCreationTokens ?? 0,
     cacheSavingsUsd: costMetrics?.totalCacheSavingsUsd ?? 0,
     efficiencyScore: efficiencyAvg?.score ?? null,
+    efficiencyScoreSampleCount: efficiencyScorer?.getSessionSampleCount() ?? 0,
+    efficiencyScoreComponents: efficiencyAvg?.components ?? null,
     antiPatterns,
     taskCount: (taskMetrics?.totalTasksCompleted ?? 0) + (taskMetrics?.currentTaskActive ? 1 : 0),
     taskSuccessRate,
@@ -739,6 +778,8 @@ interface SerializedFullSessionSummary {
   readonly tokensCacheCreation?: unknown;
   readonly cacheSavingsUsd?: unknown;
   readonly efficiencyScore?: unknown;
+  readonly efficiencyScoreSampleCount?: unknown;
+  readonly efficiencyScoreComponents?: Record<string, unknown>;
   readonly antiPatterns?: Array<Record<string, unknown>>;
   readonly taskCount?: unknown;
   readonly taskSuccessRate?: unknown;
@@ -897,6 +938,26 @@ export function deserializeFullSessionSummary(
     };
   })();
 
+  const efficiencyScoreComponents: EfficiencyScoreComponents | null = (() => {
+    const c = obj.efficiencyScoreComponents;
+    if (typeof c !== 'object' || c === null) return null;
+    const r = c as Record<string, unknown>;
+    if (
+      typeof r.speed !== 'number' ||
+      typeof r.correctness !== 'number' ||
+      typeof r.autonomy !== 'number' ||
+      typeof r.firstAttemptQuality !== 'number'
+    ) {
+      return null;
+    }
+    return {
+      speed: r.speed,
+      correctness: r.correctness,
+      autonomy: r.autonomy,
+      firstAttemptQuality: r.firstAttemptQuality,
+    };
+  })();
+
   return {
     sessionId:
       typeof obj.sessionId === 'string' && obj.sessionId.length > 0 ? obj.sessionId : 'unknown',
@@ -931,6 +992,9 @@ export function deserializeFullSessionSummary(
     tokensCacheCreation: typeof obj.tokensCacheCreation === 'number' ? obj.tokensCacheCreation : 0,
     cacheSavingsUsd: typeof obj.cacheSavingsUsd === 'number' ? obj.cacheSavingsUsd : 0,
     efficiencyScore: typeof obj.efficiencyScore === 'number' ? obj.efficiencyScore : null,
+    efficiencyScoreSampleCount:
+      typeof obj.efficiencyScoreSampleCount === 'number' ? obj.efficiencyScoreSampleCount : 0,
+    efficiencyScoreComponents,
     antiPatterns,
     taskCount: typeof obj.taskCount === 'number' ? obj.taskCount : 0,
     taskSuccessRate: typeof obj.taskSuccessRate === 'number' ? obj.taskSuccessRate : null,
