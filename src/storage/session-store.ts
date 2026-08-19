@@ -223,6 +223,16 @@ export function mergeSummaries(
     return out;
   };
   const union = (a: string[] = [], b: string[] = []): string[] => [...new Set([...a, ...b])];
+  const mergeCostByWorkflowRunId = (
+    a: Record<string, Record<string, number>> = {},
+    b: Record<string, Record<string, number>> = {},
+  ): Record<string, Record<string, number>> => {
+    const out: Record<string, Record<string, number>> = { ...a };
+    for (const [runId, dayCosts] of Object.entries(b)) {
+      out[runId] = mergeCounts(out[runId], dayCosts);
+    }
+    return out;
+  };
 
   const modelBreakdown: Record<string, ModelBreakdownEntry> = { ...existing.modelBreakdown };
   for (const [model, entry] of Object.entries(incoming.modelBreakdown ?? {})) {
@@ -299,6 +309,26 @@ export function mergeSummaries(
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
     cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
     efficiencyScore: incoming.efficiencyScore ?? existing.efficiencyScore,
+    // These two back efficiencyScore above and must never regress to a
+    // zeroed/nulled value just because the OTHER side of this merge never
+    // seeded them (e.g. a process that resolved its session id via the
+    // cwd-only fallback, which skips seedFromPersisted() — see
+    // rehydrateTrackersIfResumed() in src/index.ts). Before this fix they
+    // fell through to `...incoming` unconditionally, so a plain shutdown
+    // save could silently overwrite a real, positive sample count/component
+    // breakdown with 0/null while leaving the score itself unmerged above —
+    // a self-inconsistent record that can never re-seed on the next restart
+    // (src/index.ts's rehydration gate requires sampleCount > 0).
+    efficiencyScoreSampleCount: maxNum(
+      existing.efficiencyScoreSampleCount,
+      incoming.efficiencyScoreSampleCount,
+    ),
+    efficiencyScoreComponents:
+      incoming.efficiencyScoreComponents ?? existing.efficiencyScoreComponents ?? null,
+    costByWorkflowRunId: mergeCostByWorkflowRunId(
+      existing.costByWorkflowRunId,
+      incoming.costByWorkflowRunId,
+    ),
     taskCount: maxNum(existing.taskCount, incoming.taskCount),
     taskSuccessRate: incoming.taskSuccessRate ?? existing.taskSuccessRate,
     toolSuccessRate: incoming.toolSuccessRate ?? existing.toolSuccessRate,

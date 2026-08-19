@@ -2536,4 +2536,50 @@ describe('saveSession cross-process merge', () => {
     expect(loaded?.toolCallCount).toBe(5);
     expect(loaded?.toolBreakdown).toEqual({ Bash: 5 });
   });
+
+  it('does not erase a real efficiencyScore/sampleCount/components/costByWorkflowRunId when a later write never seeded them', () => {
+    // Simulates a process that resolved its session id via the cwd-only
+    // fallback (rehydrateTrackersIfResumed() is skipped for that path in
+    // src/index.ts) writing an unseeded shutdown save over a checkpoint that
+    // already had a real efficiency score recorded.
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'dddd1111-2222-4333-8444-555566667777';
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        efficiencyScore: 0.82,
+        efficiencyScoreSampleCount: 5,
+        efficiencyScoreComponents: {
+          speed: 0.8,
+          correctness: 0.9,
+          autonomy: 0.7,
+          firstAttemptQuality: 0.85,
+        },
+        costByWorkflowRunId: { 'run-1': { '2026-03-01': 1.5 } },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        toolCallCount: 20,
+        efficiencyScore: null,
+        efficiencyScoreSampleCount: 0,
+        efficiencyScoreComponents: null,
+        costByWorkflowRunId: {},
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.toolCallCount).toBe(20);
+    expect(loaded?.efficiencyScore).toBe(0.82);
+    expect(loaded?.efficiencyScoreSampleCount).toBe(5);
+    expect(loaded?.efficiencyScoreComponents).toEqual({
+      speed: 0.8,
+      correctness: 0.9,
+      autonomy: 0.7,
+      firstAttemptQuality: 0.85,
+    });
+    expect(loaded?.costByWorkflowRunId).toEqual({ 'run-1': { '2026-03-01': 1.5 } });
+  });
 });
