@@ -223,6 +223,39 @@ export function mergeSummaries(
     return out;
   };
   const union = (a: string[] = [], b: string[] = []): string[] => [...new Set([...a, ...b])];
+  // efficiencyScore/efficiencyScoreSampleCount/efficiencyScoreComponents must
+  // always come from the SAME side, atomically — EfficiencyScorer.
+  // seedFromPersisted() treats sampleCount as a weight multiplier
+  // (score * sampleCount), not just a display field, so merging the three
+  // independently (e.g. taking the newer score but the max sampleCount) can
+  // attach a thin/unrelated sample count to a completely different score,
+  // radically over- or under-weighting it on the next re-seed. When only one
+  // side has a real score, that side wins outright (this is what makes an
+  // unseeded write never erase a real prior score). When both do, the side
+  // with the larger sampleCount wins — the more statistically meaningful one.
+  const mergeEfficiencyScoreTriple = (
+    existing: FullSessionSummary,
+    incoming: FullSessionSummary,
+  ): Pick<
+    FullSessionSummary,
+    'efficiencyScore' | 'efficiencyScoreSampleCount' | 'efficiencyScoreComponents'
+  > => {
+    const existingHasScore = existing.efficiencyScore !== null;
+    const incomingHasScore = incoming.efficiencyScore !== null;
+    const winner =
+      existingHasScore && incomingHasScore
+        ? (incoming.efficiencyScoreSampleCount ?? 0) >= (existing.efficiencyScoreSampleCount ?? 0)
+          ? incoming
+          : existing
+        : incomingHasScore
+          ? incoming
+          : existing;
+    return {
+      efficiencyScore: winner.efficiencyScore,
+      efficiencyScoreSampleCount: winner.efficiencyScoreSampleCount ?? 0,
+      efficiencyScoreComponents: winner.efficiencyScoreComponents ?? null,
+    };
+  };
   const mergeCostByWorkflowRunId = (
     a: Record<string, Record<string, number>> = {},
     b: Record<string, Record<string, number>> = {},
@@ -308,23 +341,7 @@ export function mergeSummaries(
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
     cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
-    efficiencyScore: incoming.efficiencyScore ?? existing.efficiencyScore,
-    // These two back efficiencyScore above and must never regress to a
-    // zeroed/nulled value just because the OTHER side of this merge never
-    // seeded them (e.g. a process that resolved its session id via the
-    // cwd-only fallback, which skips seedFromPersisted() — see
-    // rehydrateTrackersIfResumed() in src/index.ts). Before this fix they
-    // fell through to `...incoming` unconditionally, so a plain shutdown
-    // save could silently overwrite a real, positive sample count/component
-    // breakdown with 0/null while leaving the score itself unmerged above —
-    // a self-inconsistent record that can never re-seed on the next restart
-    // (src/index.ts's rehydration gate requires sampleCount > 0).
-    efficiencyScoreSampleCount: maxNum(
-      existing.efficiencyScoreSampleCount,
-      incoming.efficiencyScoreSampleCount,
-    ),
-    efficiencyScoreComponents:
-      incoming.efficiencyScoreComponents ?? existing.efficiencyScoreComponents ?? null,
+    ...mergeEfficiencyScoreTriple(existing, incoming),
     costByWorkflowRunId: mergeCostByWorkflowRunId(
       existing.costByWorkflowRunId,
       incoming.costByWorkflowRunId,

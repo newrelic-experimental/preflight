@@ -2582,4 +2582,54 @@ describe('saveSession cross-process merge', () => {
     });
     expect(loaded?.costByWorkflowRunId).toEqual({ 'run-1': { '2026-03-01': 1.5 } });
   });
+
+  it('merges the efficiencyScore/sampleCount/components triple atomically when BOTH sides have a real score', () => {
+    // sampleCount is a weight multiplier for EfficiencyScorer.seedFromPersisted()
+    // (score * sampleCount), not just a display field — taking the score from
+    // one side and the (larger) sampleCount from the other would attach a
+    // thin sample's score to a much larger weight, corrupting every future
+    // re-seed. The larger-sampleCount side's full triple must win together.
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'eeee1111-2222-4333-8444-555566667777';
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        efficiencyScore: 0.8,
+        efficiencyScoreSampleCount: 50,
+        efficiencyScoreComponents: {
+          speed: 0.8,
+          correctness: 0.8,
+          autonomy: 0.8,
+          firstAttemptQuality: 0.8,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        toolCallCount: 20,
+        efficiencyScore: 0.4,
+        efficiencyScoreSampleCount: 3,
+        efficiencyScoreComponents: {
+          speed: 0.4,
+          correctness: 0.4,
+          autonomy: 0.4,
+          firstAttemptQuality: 0.4,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    // The 50-sample side wins outright — score AND sampleCount AND
+    // components together — not a mix of the two sides' fields.
+    expect(loaded?.efficiencyScore).toBe(0.8);
+    expect(loaded?.efficiencyScoreSampleCount).toBe(50);
+    expect(loaded?.efficiencyScoreComponents).toEqual({
+      speed: 0.8,
+      correctness: 0.8,
+      autonomy: 0.8,
+      firstAttemptQuality: 0.8,
+    });
+  });
 });
