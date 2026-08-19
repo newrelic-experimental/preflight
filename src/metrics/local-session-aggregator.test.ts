@@ -123,11 +123,14 @@ describe('LocalSessionAggregator', () => {
 
   it('tracks success rate and modified files', () => {
     const agg = new LocalSessionAggregator();
-    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'edit', timestamp: 1, filePath: '/a.ts' });
-    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'edit', timestamp: 2, filePath: '/a.ts' });
+    // toolName here is the canonical (already-mapped) name — recordToolCall
+    // receives the same rawRecord TaskDetector does, and TaskDetector's own
+    // Read-vs-Write/Edit gating (task-detector.ts) requires this shape.
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Edit', timestamp: 1, filePath: '/a.ts' });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Edit', timestamp: 2, filePath: '/a.ts' });
     agg.recordToolCall({
       sessionId: REAL_ID,
-      toolName: 'edit',
+      toolName: 'Edit',
       timestamp: 3,
       filePath: '/b.ts',
       success: false,
@@ -136,6 +139,16 @@ describe('LocalSessionAggregator', () => {
     const [summary] = summariesOf(agg);
     expect(summary?.filesModified).toEqual(['/a.ts', '/b.ts']);
     expect(summary?.toolSuccessRate).toBeCloseTo(2 / 3);
+  });
+
+  it('classifies a Read call as filesRead, not filesModified — a read-only exploration session must not look like it edited files', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1, filePath: '/c.ts' });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Write', timestamp: 2, filePath: '/d.ts' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.filesRead).toEqual(['/c.ts']);
+    expect(summary?.filesModified).toEqual(['/d.ts']);
   });
 
   it('carries the outcome through so periodic saves are not marked completed', () => {

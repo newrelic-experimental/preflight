@@ -48,6 +48,7 @@ export interface LocalSessionRollup {
   endTime: number;
   toolCallCount: number;
   toolBreakdown: Record<string, number>;
+  filesRead: Set<string>;
   filesModified: Set<string>;
   cwd: string | null;
   timeline: ReplayTimelineEntry[];
@@ -207,6 +208,7 @@ export class LocalSessionAggregator {
         endTime: timestamp,
         toolCallCount: 0,
         toolBreakdown: {},
+        filesRead: new Set(),
         filesModified: new Set(),
         cwd: null,
         timeline: [],
@@ -257,8 +259,18 @@ export class LocalSessionAggregator {
       const target = gitCommandTargetDir(record.command, record.cwd as string | undefined);
       if (target) this.gitTargetDirs.add(target);
     }
+    // Matches TaskDetector's Read-vs-Write/Edit split (task-detector.ts) —
+    // without gating by tool, a read-only exploration session would come
+    // back as filesModified: [...everything it opened], which misclassifies
+    // it in cost-per-outcome (classifySessionOutcome branches on
+    // filesModified.length > 0) and, once merged into a real engine's own
+    // accurate list via mergeSummaries()'s union, permanently pollutes it.
     if (typeof record.filePath === 'string' && record.filePath.length > 0) {
-      rollup.filesModified.add(record.filePath);
+      if (tool === 'Read') {
+        rollup.filesRead.add(record.filePath);
+      } else if (tool === 'Write' || tool === 'Edit') {
+        rollup.filesModified.add(record.filePath);
+      }
     }
 
     // Persisting the per-call timeline is what lets a restarted process replay
@@ -363,7 +375,7 @@ export class LocalSessionAggregator {
         toolBreakdown: { ...rollup.toolBreakdown },
         developer: context.developer,
         model: models.length === 1 ? models[0] : null,
-        filesRead: [],
+        filesRead: [...rollup.filesRead],
         filesModified: [...rollup.filesModified],
         timeline: rollup.timeline.length > 0 ? [...rollup.timeline] : undefined,
         // These three fields are what let the dashboard rebuild its
