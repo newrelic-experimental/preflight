@@ -12,7 +12,14 @@
  * task-level data into a single FullSessionSummary.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
@@ -336,18 +343,20 @@ export class SessionStore {
       mkdirSync(this.sessionsDir, { recursive: true, mode: 0o700 });
     }
 
-    const startDate = new Date(summary.startTime);
-    if (!isFinite(startDate.getTime())) {
-      throw new Error(`Invalid startTime for session ${summary.sessionId}: ${summary.startTime}`);
-    }
-    const date = startDate.toISOString().slice(0, 10);
-    const filename = `${date}_${summary.sessionId}.json`;
-    const filepath = resolve(this.sessionsDir, filename);
-    if (!filepath.startsWith(this.sessionsDir + sep)) {
-      throw new Error(`Session path escaped storage directory: ${filepath}`);
-    }
+    // Look up any existing file for this sessionId BEFORE deciding the
+    // filename — by sessionId alone, not by today's date-prefixed path. A
+    // session can already have a file under an EARLIER date than this
+    // write's own startTime computes (e.g. a `--local`/synthetic-owner
+    // process rolling up a session it only started observing after a date
+    // boundary — see LocalSessionAggregator). Deciding the filename from
+    // `summary.startTime` alone before merging, then merging in whatever
+    // file happens to share the sessionId regardless of date, wrote the
+    // merged (inflated, since counters take the max) result to a NEW file
+    // while leaving the OLD file on disk untouched — the session then
+    // appeared twice in history with overlapping, double-counted totals.
+    const existingWithPath = this.loadSessionWithPath(summary.sessionId);
 
-    // A second process saving under the same sessionId+date (e.g. two MCP
+    // A second process saving under the same sessionId (e.g. two MCP
     // servers both resumed/forked against one real session ID) would
     // otherwise silently overwrite the first save with no error.
     //
@@ -359,38 +368,64 @@ export class SessionStore {
     // non-empty one; other collisions keep the previous last-write-wins
     // behaviour with a warning.
     let toWrite: FullSessionSummary = summary;
-    if (existsSync(filepath)) {
-      const existing = this.loadSession(summary.sessionId);
-      const existingCalls = existing?.toolCallCount ?? 0;
+    if (existingWithPath) {
+      const { summary: existing } = existingWithPath;
+      const existingCalls = existing.toolCallCount ?? 0;
       if (existingCalls > 0 && (summary.toolCallCount ?? 0) === 0) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
-          filename,
         });
         return;
       }
-      if (existing) {
-        // Two processes legitimately share one session id: the CLI/editor
-        // spawns an MCP engine that owns the session natively, while a
-        // `--local` dashboard adopts the same id from the session-by-cwd
-        // breadcrumb. Each sees only part of the picture — the engine has the
-        // token/model events, the dashboard has the aggregated hook activity —
-        // so plain last-write-wins let whichever wrote last erase the other's
-        // data, which is how a fully recorded session could come back with
-        // modelBreakdown {} and a lower toolCallCount. Merge non-destructively
-        // instead: counters take the max (they only ever grow, so max never
-        // regresses and never double-counts overlapping views).
-        toWrite = mergeSummaries(existing, summary);
-      }
+      // Two processes legitimately share one session id: the CLI/editor
+      // spawns an MCP engine that owns the session natively, while a
+      // `--local` dashboard adopts the same id from the session-by-cwd
+      // breadcrumb. Each sees only part of the picture — the engine has the
+      // token/model events, the dashboard has the aggregated hook activity —
+      // so plain last-write-wins let whichever wrote last erase the other's
+      // data, which is how a fully recorded session could come back with
+      // modelBreakdown {} and a lower toolCallCount. Merge non-destructively
+      // instead: counters take the max (they only ever grow, so max never
+      // regresses and never double-counts overlapping views).
+      toWrite = mergeSummaries(existing, summary);
+    }
+
+    // The filename is derived from the merged (earliest) startTime, not the
+    // incoming write's own — mergeSummaries() takes Math.min() of the two,
+    // so this is normally the existing file's own date; recomputing here
+    // keeps the filename consistent with what's actually written.
+    const startDate = new Date(toWrite.startTime);
+    if (!isFinite(startDate.getTime())) {
+      throw new Error(`Invalid startTime for session ${toWrite.sessionId}: ${toWrite.startTime}`);
+    }
+    const date = startDate.toISOString().slice(0, 10);
+    const filename = `${date}_${toWrite.sessionId}.json`;
+    const filepath = resolve(this.sessionsDir, filename);
+    if (!filepath.startsWith(this.sessionsDir + sep)) {
+      throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
     try {
       writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
-      logger.debug('Session saved', { sessionId: summary.sessionId, filename });
+      // The merge landed on a different filename than where the existing
+      // record lived (a date-rollover case) — remove the now-superseded
+      // file so the session isn't left duplicated across two files.
+      if (existingWithPath && existingWithPath.filepath !== filepath) {
+        try {
+          unlinkSync(existingWithPath.filepath);
+        } catch (err) {
+          logger.warn('Failed to remove superseded session file after merge', {
+            sessionId: toWrite.sessionId,
+            stalePath: existingWithPath.filepath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
-        sessionId: summary.sessionId,
+        sessionId: toWrite.sessionId,
         filename,
         error: message,
       });
@@ -398,20 +433,28 @@ export class SessionStore {
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
+    return this.loadSessionWithPath(sessionId)?.summary ?? null;
+  }
+
+  /** Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename. */
+  private loadSessionWithPath(
+    sessionId: string,
+  ): { summary: FullSessionSummary; filepath: string } | null {
     if (!existsSync(this.sessionsDir)) return null;
 
     for (const file of readdirSync(this.sessionsDir)) {
       if (!file.endsWith('.json')) continue;
       if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
 
+      const filepath = join(this.sessionsDir, file);
       try {
-        const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
+        const raw = readFileSync(filepath, 'utf-8');
         const session = deserializeSession(raw);
         if (session === null) {
           logger.warn('Failed to deserialize session file', { file });
           return null;
         }
-        return session;
+        return { summary: session, filepath };
       } catch {
         logger.warn('Failed to read session file', { file });
       }

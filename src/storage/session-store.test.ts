@@ -2503,4 +2503,37 @@ describe('saveSession cross-process merge', () => {
       'model-b',
     ]);
   });
+
+  it('merges into one file instead of duplicating when a later write computes an earlier date than an existing file', () => {
+    // A `--local`/synthetic-owner process rolling up a session it only
+    // started observing after a date boundary computes its own startTime
+    // from the first event *it* saw — which can be a different calendar
+    // day than a prior save for the same real session id.
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'cccc1111-2222-4333-8444-555566667777';
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        startTime: new Date('2026-03-01T10:00:00Z').getTime(),
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        startTime: new Date('2026-03-02T09:00:00Z').getTime(),
+        toolCallCount: 3,
+        toolBreakdown: { Bash: 3 },
+      }),
+    );
+
+    const files = readdirSync(join(tmpDir, 'sessions')).filter((f) => f.includes(id));
+    expect(files).toEqual(['2026-03-01_cccc1111-2222-4333-8444-555566667777.json']);
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.toolCallCount).toBe(5);
+    expect(loaded?.toolBreakdown).toEqual({ Bash: 5 });
+  });
 });
