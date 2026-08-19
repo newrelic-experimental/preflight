@@ -343,7 +343,11 @@ describe('collector-script', () => {
   // VS Code Copilot agent hooks send the uniform PreToolUse/PostToolUse envelope
   // but with VS Code's own tool names and camelCase tool_input keys — both deltas
   // documented in the hooks FAQ (code.visualstudio.com/docs/copilot/customization/hooks).
-  // Copilot CLI sends the same events with lowerCamelCase names (preToolUse).
+  // Note: Copilot CLI's own native lowerCamelCase hook config (preToolUse) is a
+  // DIFFERENT, incompatible payload shape with no hook_event_name field at all
+  // (confirmed against GitHub's hooks reference) — it is not what's exercised
+  // below. The Copilot CLI/SDK adapter (copilot-sdk) instead requires the
+  // PascalCase PreToolUse/PostToolUse config, which sends this same envelope.
   describe('processHook() — VS Code Copilot hooks', () => {
     function makeCopilotPreToolUse(overrides?: Record<string, unknown>): string {
       return JSON.stringify({
@@ -436,7 +440,7 @@ describe('collector-script', () => {
       expect(event.outputSize).toBeGreaterThan(0);
     });
 
-    it('accepts Copilot CLI lowerCamelCase event names', () => {
+    it('accepts a lowerCamelCase hook_event_name value (case-insensitive dispatch, e.g. for Kiro)', () => {
       processHook(makeCopilotPreToolUse({ hook_event_name: 'preToolUse' }));
 
       const events = readBufferEvents();

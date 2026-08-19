@@ -37,5 +37,5 @@ npm run format:check       # Prettier
 
 ## Copilot / VS Code specifics
 
-- VS Code Copilot supports lifecycle hooks in `.github/hooks/*.json` with a Claude-compatible `PreToolUse`/`PostToolUse` stdin contract. This repo ships [.github/hooks/preflight.json](./.github/hooks/preflight.json), which dogfoods `preflight-collector` for contributors who have Preflight installed (it silently no-ops otherwise).
+- Both VS Code Copilot Chat and the GitHub Copilot CLI/SDK runtime read lifecycle hooks from `.github/hooks/*.json` with a Claude-compatible `PreToolUse`/`PostToolUse` stdin contract (each host documents that same repo-relative location independently). This repo ships [.github/hooks/preflight.json](./.github/hooks/preflight.json), which dogfoods `preflight-collector` for contributors on either host who have Preflight installed (it silently no-ops otherwise).
 - Note for adapter work: [docs/ADAPTERS.md](./docs/ADAPTERS.md) classifies Copilot as `full-hooks` via VS Code agent hooks (uniform PreToolUse/PostToolUse envelope, camelCase `tool_input` keys, VS Code tool names). The legacy HTTP-push path (user-supplied extension → localhost:9847) remains as a fallback. Any adapter change must follow the sourcing rule (cite Copilot's own docs or source).

@@ -61,9 +61,11 @@ const COPILOT_EVENT_TYPE_MAP: Record<string, string> = {
  * in microsoft/vscode `extensions/copilot/src/extension/tools/common/toolNames.ts`.
  * `editFiles` appears in the hooks reference example payloads
  * (https://code.visualstudio.com/docs/agents/reference/hooks-reference).
- * Copilot CLI shares this hook format per the same FAQ. Names without a clear
- * canonical correspondence (semantic_search, get_errors, ...) are deliberately
- * left unmapped so the original name is preserved downstream.
+ * This map is VS Code-specific — the GitHub Copilot CLI/SDK runtime is a
+ * separate adapter (copilot-sdk) with its own tool-name vocabulary. Names
+ * without a clear canonical correspondence (semantic_search, get_errors,
+ * ...) are deliberately left unmapped so the original name is preserved
+ * downstream.
  */
 const COPILOT_TOOL_MAP: Record<string, string> = {
   read_file: 'Read',
@@ -111,8 +113,8 @@ export class CopilotAdapter implements PlatformAdapter {
   readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
-    // Tool calls arrive via VS Code / Copilot CLI agent hooks (collector
-    // script), or legacy HTTP push from a Copilot-compatible extension.
+    // Tool calls arrive via VS Code agent hooks (collector script), or
+    // legacy HTTP push from a Copilot-compatible extension.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -164,6 +166,7 @@ export class CopilotAdapter implements PlatformAdapter {
       '1. Create a hooks file — user-level ~/.copilot/hooks/preflight.json (applies to',
       '   all workspaces) or workspace-level .github/hooks/preflight.json:',
       '   {',
+      '     "version": 1,',
       '     "hooks": {',
       '       "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],',
       '       "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]',
@@ -176,8 +179,9 @@ export class CopilotAdapter implements PlatformAdapter {
       '2. Ensure preflight-collector is on PATH (npm install -g @newrelic/preflight).',
       '3. Register the Preflight MCP server for nr_observe_* tools with env',
       '   MCP_CLIENT=copilot, NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID.',
-      '4. Copilot CLI supports the same hooks with lowerCamelCase event names',
-      '   (preToolUse/postToolUse) — the collector accepts both.',
+      '4. For the GitHub Copilot CLI/SDK runtime instead of VS Code, use the',
+      "   copilot-sdk adapter's own setup — Copilot CLI's native lowerCamelCase",
+      '   hooks are not compatible with this adapter.',
       'Legacy fallback: a Copilot-compatible extension may instead push events to',
       'http://localhost:9847 ("preflight.endpoint" in VS Code settings).',
     ].join('\n');

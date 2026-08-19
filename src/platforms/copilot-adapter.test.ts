@@ -300,7 +300,7 @@ describe('CopilotAdapter', () => {
     });
   });
 
-  describe('hooks capture (VS Code / Copilot CLI)', () => {
+  describe('hooks capture (VS Code)', () => {
     it('declares full-hooks visibility', () => {
       expect(adapter.visibilityLevel).toBe('full-hooks');
     });

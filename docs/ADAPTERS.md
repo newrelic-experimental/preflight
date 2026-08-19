@@ -544,7 +544,7 @@ Antigravity's hook payloads have **no field naming the event type at all** — `
 
 ## GitHub Copilot (`copilot`)
 
-**Mechanism:** VS Code agent hooks ([code.visualstudio.com/docs/copilot/customization/hooks](https://code.visualstudio.com/docs/copilot/customization/hooks), Preview) — `PreToolUse`/`PostToolUse` (plus 6 other lifecycle events) fire on every built-in tool call and pass JSON on stdin with the uniform `hook_event_name`/`tool_name`/`tool_input`/`tool_use_id`/`session_id` envelope, parsed by `collector-script.ts`'s uniform branch. Copilot CLI supports the same hooks with lowerCamelCase event names (`preToolUse`), which survive the collector's case normalization. VS Code also reads Claude-format hook files (`~/.claude/settings.json`) by default via `chat.hookFilesLocations`, so a `preflight install` done for Claude Code is picked up by VS Code Copilot automatically (matchers are parsed but ignored; Preflight's matcher is empty anyway).
+**Mechanism:** VS Code agent hooks ([code.visualstudio.com/docs/copilot/customization/hooks](https://code.visualstudio.com/docs/copilot/customization/hooks), Preview) — `PreToolUse`/`PostToolUse` (plus 6 other lifecycle events) fire on every built-in tool call and pass JSON on stdin with the uniform `hook_event_name`/`tool_name`/`tool_input`/`tool_use_id`/`session_id` envelope, parsed by `collector-script.ts`'s uniform branch. This section covers **VS Code Copilot Chat only** — for the GitHub Copilot CLI/SDK runtime, see the "GitHub Copilot SDK" (`copilot-sdk`) section below, not this one: Copilot CLI's native lowerCamelCase hook config (`preToolUse`) emits a different, incompatible payload shape with no `hook_event_name` field at all (confirmed against GitHub's own hooks reference), so it does **not** "just work" against this adapter's PascalCase-only setup — only the PascalCase `PreToolUse`/`PostToolUse` config the `copilot-sdk` section documents is supported for that host. VS Code also reads Claude-format hook files (`~/.claude/settings.json`) by default via `chat.hookFilesLocations`, so a `preflight install` done for Claude Code is picked up by VS Code Copilot automatically (matchers are parsed but ignored; Preflight's matcher is empty anyway).
 
 **Documented deltas from Claude Code (hooks FAQ, same page):**
 
@@ -571,6 +571,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 1. Create a hooks file — user-level `~/.copilot/hooks/preflight.json` (applies to all workspaces) or workspace-level `.github/hooks/preflight.json` (both are documented hook locations in VS Code's location table):
    ```json
    {
+     "version": 1,
      "hooks": {
        "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],
        "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]
@@ -581,7 +582,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`).
 3. Register the Preflight MCP server for `nr_observe_*` tools with env `MCP_CLIENT=copilot`, `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`.
 4. For token-exact cost, add `"github.copilot.chat.agentDebugLog.fileLogging.enabled": true` to VS Code User `settings.json` and reload the window (see **Required setting** above). Not needed for tool-call/session telemetry, only for exact cost.
-5. Copilot CLI: same hook config, lowerCamelCase event names — no extra steps.
+5. For the GitHub Copilot CLI/SDK runtime instead of VS Code, use the `copilot-sdk` adapter's own setup (see the "GitHub Copilot SDK" section below) — Copilot CLI's native lowerCamelCase hooks are not compatible with this adapter.
 
 **Legacy fallback (HTTP push):** the previous integration path remains — a Copilot-compatible VS Code extension pushing events to `http://localhost:9847` (`"preflight.endpoint"` in VS Code settings), with the `file_edit`/`file_open`/`file_create`/`file_delete`/`terminal_command`/`task` event vocabulary. Preflight only receives what such an extension chooses to send; treat that path's fidelity as bounded by the extension.
 
