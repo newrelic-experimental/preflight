@@ -30,7 +30,29 @@ export class PlatformRegistry {
     logger.debug('Registered platform adapter', { platform: adapter.platformName });
   }
 
+  /**
+   * Explicit configuration (MCP_CLIENT / NEW_RELIC_AI_PLATFORM naming an
+   * adapter's own platformName) always wins over an ambient signal, even one
+   * matched by an earlier-registered adapter. Every adapter's isSupported()
+   * checks process.env.MCP_CLIENT === '<its own platformName>' (and usually
+   * NEW_RELIC_AI_PLATFORM too) alongside its ambient checks, with equal
+   * weight — so without this, an ambient signal inherited from a launching
+   * process (e.g. CLAUDE_CODE_VERSION) can outrank an explicit config for a
+   * different platform purely because that adapter registers first.
+   */
   detect(): PlatformAdapter | null {
+    const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+    if (explicitPlatform) {
+      const explicitMatch = this.adapters.find((a) => a.platformName === explicitPlatform);
+      if (explicitMatch?.isSupported()) {
+        this.active = explicitMatch;
+        logger.info('Detected platform (explicit config)', {
+          platform: explicitMatch.platformName,
+        });
+        return explicitMatch;
+      }
+    }
+
     for (const adapter of this.adapters) {
       if (adapter.isSupported()) {
         this.active = adapter;

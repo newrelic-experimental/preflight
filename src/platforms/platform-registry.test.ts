@@ -225,6 +225,25 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('claude-code');
     });
 
+    it('prefers an explicit MCP_CLIENT match over an earlier-registered adapter matched by ambient signal', () => {
+      process.env.CLAUDE_CODE_VERSION = '1.2.3'; // ambient — ClaudeCodeAdapter registers first
+      process.env.MCP_CLIENT = 'copilot'; // explicit — CopilotAdapter registers later
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('copilot');
+    });
+
+    it('falls back to ambient-signal registration order when no explicit MCP_CLIENT/NEW_RELIC_AI_PLATFORM is set', () => {
+      process.env.CLAUDE_CODE_VERSION = '1.2.3';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('claude-code');
+    });
+
     it('selects Copilot adapter when Copilot platform env is set', () => {
       process.env.NEW_RELIC_AI_PLATFORM = 'copilot';
       const registry = createDefaultRegistry();

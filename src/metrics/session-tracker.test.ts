@@ -501,6 +501,37 @@ describe('SessionTracker', () => {
       expect(v.max).toBe(200);
     });
   });
+
+  describe('seedFromPersisted()', () => {
+    it('adds persisted toolCallCount and bashCommandCount to live counters', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ toolName: 'Read' }));
+      tracker.recordToolCall(makeRecord({ toolName: 'Bash' }));
+
+      tracker.seedFromPersisted({ toolCallCount: 6, bashCommandCount: 3 });
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(8); // 2 live + 6 seeded
+      expect(metrics.bashCommandsRun).toBe(4); // 1 live + 3 seeded
+    });
+
+    it('is a no-op for an all-zero seed', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+      tracker.seedFromPersisted({ toolCallCount: 0, bashCommandCount: 0 });
+
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+    });
+
+    it('seeds correctly even with no prior live activity', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.seedFromPersisted({ toolCallCount: 5, bashCommandCount: 2 });
+      const metrics = tracker.getMetrics();
+      expect(metrics.toolCallCount).toBe(5);
+      expect(metrics.bashCommandsRun).toBe(2);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -6,8 +6,11 @@
  *      session UUID from the `linkScanPath` field's filename. Instant; used
  *      by background-job MCPs.
  *   2. PPID breadcrumb at `<storage>/session-by-ppid/<process.ppid>.txt` —
- *      written by the hook collector on every tool call. Precise: no
- *      cross-session collision risk when it resolves.
+ *      written by the hook collector on every tool call. Precise as long as
+ *      the OS hasn't recycled the PPID to an unrelated process since the
+ *      breadcrumb was written — resolveFromBreadcrumb() guards against that
+ *      by rejecting a breadcrumb older than the resolving process's own
+ *      start time (see its doc comment).
  *   3. cwd breadcrumb at `<storage>/session-by-cwd/<sanitized-cwd>.txt` —
  *      also written by the hook collector on every tool call, keyed by the
  *      project directory instead of a PID. Fallback for platforms where the
@@ -24,7 +27,7 @@
  * one up.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../shared/index.js';
@@ -105,14 +108,39 @@ export function resolveFromJobDir(claudeJobDir: string | null | undefined): stri
 /**
  * Try to resolve the session_id synchronously from the PPID breadcrumb file.
  * Returns the validated session_id or null.
+ *
+ * Rejects a breadcrumb whose mtime predates `processStartMs` (defaults to
+ * this process's own wall-clock start time). Without this, a breadcrumb keyed
+ * on a PID the OS has since recycled — the PPID this process shares with an
+ * unrelated PRIOR process — silently resolves to that prior process's
+ * session_id, weeks after it ended. gcStaleBreadcrumbs() can't catch this: it
+ * only checks whether the PID is alive, and a recycled PID always is.
  */
 export function resolveFromBreadcrumb(
   storagePath: string,
   ppid: number | undefined,
+  processStartMs: number = Date.now() - process.uptime() * 1000,
 ): string | null {
   if (typeof ppid !== 'number' || ppid <= 0) return null;
   const breadcrumbPath = resolve(storagePath, 'session-by-ppid', `${ppid}.txt`);
   if (!existsSync(breadcrumbPath)) return null;
+
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(breadcrumbPath).mtimeMs;
+  } catch (err) {
+    logger.debug('Breadcrumb file unstatable', { error: String(err) });
+    return null;
+  }
+  if (mtimeMs < processStartMs) {
+    logger.debug('Rejecting stale ppid breadcrumb (predates process start)', {
+      ppid,
+      mtimeMs,
+      processStartMs,
+    });
+    return null;
+  }
+
   let raw: string;
   try {
     raw = readFileSync(breadcrumbPath, 'utf-8');

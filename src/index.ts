@@ -1109,6 +1109,10 @@ async function main(): Promise<void> {
         const persisted = sessionStore!.loadSession(sessionId);
         if (!persisted) return;
         costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+        sessionTracker!.seedFromPersisted({
+          toolCallCount: persisted.toolCallCount,
+          bashCommandCount: persisted.bashCommandCount,
+        });
         budgetTracker.seedFiredThresholdsFromSessionTotal(
           costTracker.getMetrics().sessionTotalCostUsd ?? 0,
         );

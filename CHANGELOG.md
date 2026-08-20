@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.2] - 2026-08-20
+
+### Fixed
+
+- **A resumed session's tool-call and Bash-command counts no longer under-report after the MCP server process restarts mid-session.** These two counters previously stayed in-memory only and reset to zero on restart, same class of bug as the cost/token restart-recovery fixes in earlier releases.
+- **An MCP process on native Windows can no longer resolve to a completely unrelated session from days or weeks earlier.** The session-id breadcrumb keyed on a shared parent process ID could be silently reused once the OS recycled that PID for an unrelated process; a breadcrumb older than the resolving process's own start time is now rejected instead of trusted.
+- **Platform detection no longer misattributes a session to the wrong AI coding assistant when more than one is installed.** An explicit platform configuration (e.g. registering the MCP server for GitHub Copilot) is now always honored over an inherited ambient signal from an unrelated installed tool, regardless of adapter registration order.
+- **Very long-lived or heavily-resumed sessions can no longer have older token-usage turns double-counted after certain project-rename recovery scenarios.** The in-memory dedup mechanism that guards against redelivered lines was previously shared globally across every active session; it's now scoped per session so one session's activity can no longer evict another's dedup history.
+
 ## [1.16.1] - 2026-08-20
 
 ### Fixed

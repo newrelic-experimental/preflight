@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -105,6 +105,33 @@ describe('session-resolver', () => {
       mkdirSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
       writeFileSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`), 'has spaces');
       expect(resolveFromBreadcrumb(tmpDir, ppid)).toBeNull();
+    });
+
+    it('rejects a breadcrumb whose mtime predates the given process start time', () => {
+      const ppid = 4242;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      const breadcrumbPath = resolve(breadcrumbDir, `${ppid}.txt`);
+      writeFileSync(breadcrumbPath, 'sess-stale-leftover');
+
+      // Simulate the breadcrumb having been written well before "now" by
+      // backdating its mtime, then asking for a process that started later.
+      const oldMs = Date.now() - 60_000;
+      utimesSync(breadcrumbPath, oldMs / 1000, oldMs / 1000);
+
+      const processStartMs = Date.now(); // this "process" started after the breadcrumb was written
+      expect(resolveFromBreadcrumb(tmpDir, ppid, processStartMs)).toBeNull();
+    });
+
+    it('accepts a breadcrumb whose mtime is at or after the given process start time', () => {
+      const ppid = 4243;
+      const breadcrumbDir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(breadcrumbDir, { recursive: true });
+      const breadcrumbPath = resolve(breadcrumbDir, `${ppid}.txt`);
+      writeFileSync(breadcrumbPath, 'sess-fresh');
+
+      const processStartMs = Date.now() - 60_000; // this "process" started well before the write
+      expect(resolveFromBreadcrumb(tmpDir, ppid, processStartMs)).toBe('sess-fresh');
     });
   });
 

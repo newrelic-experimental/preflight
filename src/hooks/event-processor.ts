@@ -133,6 +133,75 @@ const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_PENDING = 2_000;
 
+/**
+ * Fixed-capacity FIFO dedup set for one session/agent's own event stream.
+ * Extracted out of a single global ring (see DedupRingRegistry) so one
+ * scope's dedup keys can never evict another's.
+ */
+class DedupRing {
+  private readonly seen = new Set<string>();
+  private readonly order: string[] = [];
+
+  constructor(private readonly capacity: number) {}
+
+  /** Returns true if `key` was already seen (and does nothing further); otherwise records it and returns false. */
+  hasAndAdd(key: string): boolean {
+    if (this.seen.has(key)) return true;
+    this.seen.add(key);
+    this.order.push(key);
+    if (this.order.length > this.capacity) {
+      const evicted = this.order.shift();
+      if (evicted !== undefined) this.seen.delete(evicted);
+    }
+    return false;
+  }
+}
+
+/**
+ * LRU-bounded registry of per-scope DedupRings, keyed by session/agent id —
+ * mirrors ContextTrackerRegistry's eviction pattern (src/metrics/context-tracker.ts).
+ * A scope that goes quiet for a while eventually gets evicted entirely, so a
+ * burst of short-lived scopes can't grow this registry without bound while a
+ * long-lived scope's own ring keeps its full per-scope capacity regardless of
+ * how many OTHER scopes are active.
+ *
+ * Exported (unlike DedupRing) so tests can exercise the maxScopes eviction
+ * path directly with a small value — mirroring how ContextTrackerRegistry's
+ * own `{ maxSessions }` option is tested — rather than only through
+ * HookEventProcessor's fixed production values.
+ */
+export class DedupRingRegistry {
+  private readonly rings = new Map<string, DedupRing>();
+
+  constructor(
+    private readonly maxScopes: number,
+    private readonly perScopeCapacity: number,
+  ) {}
+
+  /** Returns true if `dedupKey` was already seen within `scopeKey`'s own ring. */
+  hasAndAdd(scopeKey: string, dedupKey: string): boolean {
+    let ring = this.rings.get(scopeKey);
+    if (ring) {
+      // Move to end for LRU ordering.
+      this.rings.delete(scopeKey);
+      this.rings.set(scopeKey, ring);
+    } else {
+      if (this.rings.size >= this.maxScopes) {
+        const oldest = this.rings.keys().next().value;
+        if (oldest !== undefined) this.rings.delete(oldest);
+      }
+      ring = new DedupRing(this.perScopeCapacity);
+      this.rings.set(scopeKey, ring);
+    }
+    return ring.hasAndAdd(dedupKey);
+  }
+
+  /** Number of scopes currently tracked — test seam for eviction assertions. */
+  get scopeCount(): number {
+    return this.rings.size;
+  }
+}
+
 export class HookEventProcessor {
   private store: LocalStore;
   private readonly pollIntervalMs: number;
@@ -147,12 +216,13 @@ export class HookEventProcessor {
   private readonly onWorkflowRun: ((event: WorkflowRunEvent) => void) | null;
   private readonly platformAdapter: PlatformAdapter;
   /**
-   * Dedup ring of `(agentId, messageId)` for recent subagent turns. Cursor
-   * recovery may re-read a line after a crash mid-write; double-counting would
-   * be silent, so we drop on the seen-set (capped at 4096 to bound memory).
+   * Per-agent dedup rings for recent subagent turns (scoped by agentId, one
+   * DedupRing per agent, LRU-bounded across agents). Cursor recovery may
+   * re-read a line after a crash mid-write; double-counting would be silent,
+   * so we drop on the seen-set. Was previously one global ring shared across
+   * every agent — see DedupRingRegistry's doc comment for why that's wrong.
    */
-  private readonly subagentDedup = new Set<string>();
-  private readonly subagentDedupOrder: string[] = [];
+  private readonly subagentDedupRegistry = new DedupRingRegistry(50, 4096);
   /**
    * Dedup ring of `(workflowRunId, timestamp)` for recent workflow_run
    * events, mirroring subagentDedup above. This path only matters for
@@ -167,15 +237,15 @@ export class HookEventProcessor {
   private readonly workflowRunDedup = new Set<string>();
   private readonly workflowRunDedupOrder: string[] = [];
   /**
-   * Dedup ring of `sessionId|messageId` for recent parent-transcript token
-   * events, mirroring subagentDedup above. `ParentTranscriptWatcher` tails the
-   * main transcript via a durable byte cursor and can re-deliver a line after
-   * a crash mid-emit; without this, that redelivery double-counts cost. Only
-   * applied when messageId is present — events without one (defensive; any
-   * other/future producer) pass through unchanged, unaffected by this ring.
+   * Per-session dedup rings for recent parent-transcript token events (scoped
+   * by sessionId), mirroring subagentDedupRegistry above. ParentTranscriptWatcher
+   * tails the main transcript via a durable byte cursor and can re-deliver a
+   * line after a crash mid-emit, or after a rename-triggered cursor reset;
+   * without this, that redelivery double-counts cost. Only applied when
+   * messageId is present — events without one (defensive; any other/future
+   * producer) pass through unchanged, unaffected by this ring.
    */
-  private readonly tokenDedup = new Set<string>();
-  private readonly tokenDedupOrder: string[] = [];
+  private readonly tokenDedupRegistry = new DedupRingRegistry(50, 4096);
 
   private readonly pending: Map<string, PreHookEvent> = new Map();
   private readonly maxPendingEvents: number;
@@ -451,14 +521,8 @@ export class HookEventProcessor {
     if (!this.onTokenEvent) return;
 
     if (typeof event.messageId === 'string' && event.messageId.length > 0) {
-      const dedupKey = `${event.sessionId ?? ''}|${event.messageId}`;
-      if (this.tokenDedup.has(dedupKey)) return;
-      this.tokenDedup.add(dedupKey);
-      this.tokenDedupOrder.push(dedupKey);
-      if (this.tokenDedupOrder.length > 4096) {
-        const evicted = this.tokenDedupOrder.shift();
-        if (evicted) this.tokenDedup.delete(evicted);
-      }
+      const scopeKey = event.sessionId ?? '';
+      if (this.tokenDedupRegistry.hasAndAdd(scopeKey, event.messageId)) return;
     }
 
     const tokenEvent: TokenEvent = {
@@ -576,14 +640,7 @@ export class HookEventProcessor {
     const agentId = event.agentId ?? '';
     const messageId = event.messageId ?? '';
     if (!agentId || !messageId) return;
-    const dedupKey = `${agentId}|${messageId}`;
-    if (this.subagentDedup.has(dedupKey)) return;
-    this.subagentDedup.add(dedupKey);
-    this.subagentDedupOrder.push(dedupKey);
-    if (this.subagentDedupOrder.length > 4096) {
-      const evicted = this.subagentDedupOrder.shift();
-      if (evicted) this.subagentDedup.delete(evicted);
-    }
+    if (this.subagentDedupRegistry.hasAndAdd(agentId, messageId)) return;
 
     const turn: SubagentTurnEvent = {
       timestampMs:

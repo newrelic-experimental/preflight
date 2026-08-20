@@ -104,6 +104,24 @@ export function computeDurationStats(durations: number[]): DurationStats {
   };
 }
 
+/**
+ * Pre-restart totals to fold into a freshly-started process's SessionTracker
+ * for a resumed session — mirrors CostTracker.seedFromPersisted()'s pattern
+ * (see that file's doc comment for why this exists: SessionStore.mergeSummaries()
+ * merges scalar counters via Math.max(), which under-reports when pre- and
+ * post-restart activity are disjoint rather than overlapping).
+ *
+ * Only toolCallCount and bashCommandCount are seeded here — SessionTracker's
+ * other counters that end up on FullSessionSummary (linesAdded, linesRemoved,
+ * testRunCount/testPassCount, buildRunCount/buildPassCount) are sourced from
+ * TaskDetector's seededAggregate instead (see buildSessionSummary() in
+ * session-store.ts) and are already seeded there.
+ */
+export interface SessionTrackerSeed {
+  readonly toolCallCount: number;
+  readonly bashCommandCount: number;
+}
+
 // ---------------------------------------------------------------------------
 // SessionTracker
 // ---------------------------------------------------------------------------
@@ -322,6 +340,17 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.adoptSessionId() requires a non-empty sessionId');
     }
     this.sessionId = sessionId;
+  }
+
+  /**
+   * Fold a resumed session's pre-restart toolCallCount/bashCommandCount into
+   * this (freshly-started) process's live counters. See SessionTrackerSeed's
+   * doc comment for why this exists.
+   */
+  seedFromPersisted(seed: SessionTrackerSeed): void {
+    if (seed.toolCallCount === 0 && seed.bashCommandCount === 0) return;
+    this.toolCallCount += seed.toolCallCount;
+    this.bashCommandsRun += seed.bashCommandCount;
   }
 
   reset(sessionId: string): void {

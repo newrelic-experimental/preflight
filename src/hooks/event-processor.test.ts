@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from '../storage/local-store.js';
-import { HookEventProcessor } from './event-processor.js';
+import { HookEventProcessor, DedupRingRegistry } from './event-processor.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import type { HookEvent, PreHookEvent, PostHookEvent, ToolCallRecord } from '../storage/types.js';
 
@@ -797,6 +797,82 @@ describe('HookEventProcessor', () => {
       processor.processEvents([tokenEvent, { ...tokenEvent }]);
 
       expect(tokenEvents).toHaveLength(2);
+    });
+
+    it("does not let one session evict another session's dedup entries", () => {
+      const tokenEvents: unknown[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onTokenEvent: (event) => {
+          tokenEvents.push(event);
+        },
+      });
+
+      const makeTokenEvent = (sessionId: string, messageId: string): HookEvent => ({
+        mode: 'token',
+        tool: '',
+        timestamp: 5000,
+        inputTokens: 100,
+        outputTokens: 20,
+        model: 'claude-opus-4-6',
+        sessionId,
+        messageId,
+      });
+
+      // Session A delivers a handful of token events, including 'a-0'.
+      for (let i = 0; i < 10; i++) {
+        processor.processEvents([makeTokenEvent('session-a', `a-${i}`)]);
+      }
+
+      // Session B alone delivers more unique messageIds than the OLD global
+      // ring's total 4096-entry cap. Under the old single shared ring, this
+      // would have evicted session A's 'a-0' long before B finished, purely
+      // because A and B shared one FIFO order array.
+      for (let i = 0; i < 4100; i++) {
+        processor.processEvents([makeTokenEvent('session-b', `b-${i}`)]);
+      }
+
+      // Re-delivering session A's first messageId (a re-read after a crash
+      // mid-write, the scenario this ring exists for) must still be
+      // recognized as a duplicate and dropped, not accepted as new — proving
+      // session B's growth never touched session A's own ring.
+      tokenEvents.length = 0;
+      processor.processEvents([makeTokenEvent('session-a', 'a-0')]);
+      expect(tokenEvents).toHaveLength(0);
+    });
+  });
+
+  describe('DedupRingRegistry', () => {
+    it('evicts the least-recently-used scope once maxScopes is exceeded', () => {
+      const registry = new DedupRingRegistry(2, 10);
+
+      expect(registry.hasAndAdd('a', 'k1')).toBe(false); // creates scope 'a'
+      expect(registry.hasAndAdd('b', 'k1')).toBe(false); // creates scope 'b'
+      expect(registry.scopeCount).toBe(2);
+
+      // A third distinct scope exceeds maxScopes (2) — the least-recently-used
+      // scope ('a', the oldest, untouched since its first insert) gets evicted.
+      expect(registry.hasAndAdd('c', 'k1')).toBe(false);
+      expect(registry.scopeCount).toBe(2);
+
+      // 'b' survived the eviction (it's newer than 'a') and still remembers
+      // its own key — checking an EXISTING scope never itself triggers
+      // eviction, so this assertion doesn't disturb the registry further.
+      expect(registry.hasAndAdd('b', 'k1')).toBe(true);
+    });
+
+    it('touching an existing scope refreshes its LRU position', () => {
+      const registry = new DedupRingRegistry(2, 10);
+      registry.hasAndAdd('a', 'k1');
+      registry.hasAndAdd('b', 'k1');
+      // Touch 'a' again so 'b' becomes the least-recently-used scope instead.
+      registry.hasAndAdd('a', 'k2');
+
+      registry.hasAndAdd('c', 'k1'); // exceeds maxScopes — evicts 'b', not 'a'
+
+      expect(registry.hasAndAdd('a', 'k1')).toBe(true); // 'a' survived, key still known
+      expect(registry.hasAndAdd('b', 'k1')).toBe(false); // 'b' was evicted, key forgotten
     });
   });
 

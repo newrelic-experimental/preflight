@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import {
@@ -1392,6 +1392,27 @@ describe('collector-script', () => {
       // The mtime may or may not change depending on filesystem — the key
       // assertion is correctness; the perf claim is documented separately.
       expect(typeof firstStat).toBe('number');
+    });
+
+    it('refreshes mtime on the short-circuit path so an active session never goes stale', () => {
+      writePpidBreadcrumb('sess-active');
+      const ppid = process.ppid;
+      const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
+
+      // Simulate this breadcrumb having gone quiet for a while (e.g. no hook
+      // fired since before an MCP server restart) by backdating its mtime.
+      const oldMs = Date.now() - 60_000;
+      utimesSync(breadcrumbPath, oldMs / 1000, oldMs / 1000);
+      expect(statSync(breadcrumbPath).mtimeMs).toBeLessThan(Date.now() - 30_000);
+
+      // A subsequent hook call with the SAME session_id (content unchanged,
+      // short-circuit path) must still bump mtime — otherwise
+      // resolveFromBreadcrumb()'s staleness check (session-resolver.ts)
+      // would reject this breadcrumb forever after any MCP restart that
+      // keeps the same ppid and session_id.
+      writePpidBreadcrumb('sess-active');
+      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-active');
+      expect(statSync(breadcrumbPath).mtimeMs).toBeGreaterThan(Date.now() - 5_000);
     });
 
     it('processHook() drops the breadcrumb on every fire (idempotent overwrite)', () => {

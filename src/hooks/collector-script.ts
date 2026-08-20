@@ -19,6 +19,7 @@ import {
   closeSync,
   mkdirSync,
   existsSync,
+  utimesSync,
   constants as fsConstants,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -242,10 +243,25 @@ function writePpidBreadcrumb(sessionId: string): void {
     let wroteAny = false;
     for (const pid of pids) {
       const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
-      // Short-circuit: no write needed if content already matches.
+      // Short-circuit: no content rewrite needed if it already matches, but
+      // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
+      // rejects a breadcrumb older than the reading process's own start
+      // time, so an actively-hooked session's breadcrumb must keep looking
+      // fresh across an MCP server restart (same ppid, same session_id,
+      // content genuinely unchanged) or that restart would permanently lose
+      // ppid-based resolution for the rest of the session. A breadcrumb from
+      // a session that's actually over stops getting touched here (nothing
+      // calls this with its old ppid+session_id again), so it still goes
+      // stale and gets rejected exactly as intended.
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+            const now = new Date();
+            try {
+              utimesSync(breadcrumbPath, now, now);
+            } catch {
+              // Best-effort — an unwritable mtime doesn't block the session.
+            }
             wroteAny = true;
             continue;
           }
