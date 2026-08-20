@@ -1396,6 +1396,11 @@ export function createApiHandler(
     // the cache-hit assertions in api-handler.test.ts.
     const overlappingTodaySessions =
       deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+    // Local-day key for "today", shared by the persisted-session loop below and
+    // the live top-up further down. Sessions persisted with per-day cost buckets
+    // (costByDayUsd) let us sum a session's REAL today-spend instead of
+    // pro-rating its lifetime estimatedCostUsd by a timeline.
+    const todayKey = localDateKey(now);
     for (const raw of overlappingTodaySessions) {
       const s = raw as {
         sessionId?: string;
@@ -1403,6 +1408,9 @@ export function createApiHandler(
         endTime: number;
         estimatedCostUsd: number | null;
         subagentCostUsd?: number;
+        costByDayUsd?: Record<string, number>;
+        subagentCostByDayUsd?: Record<string, number>;
+        toolCallCount?: number;
         tokensInput?: number;
         tokensCacheRead?: number;
         tokensCacheCreation?: number;
@@ -1429,14 +1437,48 @@ export function createApiHandler(
           }
         }
       }
-      totalCostUsd += todayPortionOfSessionCost(s, now);
-      // (2b) subagent-only portion of the same session, same pro-rating.
-      // This is what makes the "subagent spend" KPI cross-session: each
-      // `--stdio` process persists its own subagentCostUsd, so summing it
-      // here (rather than reading only THIS process's live CostTracker)
-      // picks up subagent activity that happened in any concurrent session.
+      // Cost attributed to TODAY. Prefer the session's persisted per-day
+      // bucket — authoritative, since each token event was bucketed by its real
+      // transcript timestamp. For older session files without buckets, fall back to
+      // pro-rating the lifetime estimatedCostUsd by the timeline — EXCEPT a
+      // session with cost but ZERO attributable activity (no tool calls AND no
+      // subagent spend) is an unverifiable re-read artifact: its
+      // estimatedCostUsd is a cumulative lifetime total that may include a
+      // resumed transcript's month of cache-read tokens re-read in one pass, and
+      // todayPortionRatio returns 1.0 for its entirely-today window, dumping the
+      // whole total onto today (the observed $248/$863 phantoms, which had
+      // toolCallCount 0 and subagentCostUsd 0). Bias toward trust and contribute
+      // 0; the real per-day figure is recovered once the session re-persists
+      // WITH day buckets. Note: an EMPTY timeline alone is NOT the signal — a
+      // legitimate subagent-only session has an empty PARENT timeline (subagent
+      // tool calls are not in it) yet real subagentCostUsd, so the guard keys on
+      // subagent spend too, never zeroing genuine cross-session subagent work.
+      const hasNoAttributableActivity =
+        (s.toolCallCount ?? 0) === 0 &&
+        (s.subagentCostUsd ?? 0) === 0 &&
+        !(Array.isArray(s.timeline) && s.timeline.length > 0);
       const ratio = todayPortionRatio(s, now);
-      subagentUsd += (s.subagentCostUsd ?? 0) * ratio;
+      totalCostUsd +=
+        s.costByDayUsd !== undefined
+          ? (s.costByDayUsd[todayKey] ?? 0)
+          : hasNoAttributableActivity
+            ? 0
+            : todayPortionOfSessionCost(s, now);
+      // (2b) subagent-only portion of the same session. Day-bucket-first, else
+      // pro-rate — applying the same phantom guard explicitly rather than
+      // relying on hasNoAttributableActivity's subagentCostUsd===0 term to
+      // zero this out implicitly (that held today, but shouldn't be a silent
+      // invariant across two separate expressions). This is what makes the
+      // KPI cross-session: each `--stdio` process persists its own subagent
+      // cost, so summing it here (rather than reading only THIS process's
+      // live CostTracker) picks up subagent activity from any concurrent
+      // session.
+      subagentUsd +=
+        s.subagentCostByDayUsd !== undefined
+          ? (s.subagentCostByDayUsd[todayKey] ?? 0)
+          : hasNoAttributableActivity
+            ? 0
+            : (s.subagentCostUsd ?? 0) * ratio;
       // Cache token/dollar sums below carry the same unguarded overlap
       // characteristic subagentUsd/totalCostUsd already have on this line:
       // a session that's concurrently live in ANOTHER process (so
@@ -1482,7 +1524,9 @@ export function createApiHandler(
     const liveIsUnscopedAggregator = isUnscopedAggregatorSessionId(liveSid);
 
     if (!liveAlreadyPersisted && !liveIsUnscopedAggregator) {
-      const todayKey = localDateKey(now);
+      // Reuses `todayKey` from the enclosing scope (declared above the
+      // persisted-session loop) so the persisted-loop and this live top-up can
+      // never split onto two independently-derived day keys.
       const liveTodayUsd = deps.costTracker?.getCostForDay?.(todayKey) ?? null;
       if (typeof liveTodayUsd === 'number') {
         totalCostUsd += liveTodayUsd;

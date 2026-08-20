@@ -139,7 +139,7 @@ describe('instructionPromptHash field', () => {
     expect(roundTripped.instructionPromptHash).toBe('hash-xyz');
   });
 
-  it('deserializeFullSessionSummary defaults instructionPromptHash to null when field is missing (pre-fix session files)', () => {
+  it('deserializeFullSessionSummary defaults instructionPromptHash to null when the field is missing', () => {
     const summary = makeSummary();
     const raw = JSON.parse(JSON.stringify(summary)) as Record<string, unknown>;
     delete raw.instructionPromptHash;
@@ -1275,6 +1275,8 @@ describe('buildSessionSummary', () => {
       subagentCostUsd: 0.021,
       parentCostUsd: 0.029,
       costByWorkflowRunId: {},
+      costByDayUsd: {},
+      subagentCostByDayUsd: {},
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
       sessionTracker,
@@ -1311,6 +1313,8 @@ describe('buildSessionSummary', () => {
       subagentCostUsd: 0.021,
       parentCostUsd: 0.029,
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
+      costByDayUsd: { '2026-08-14': 0.05 },
+      subagentCostByDayUsd: {},
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
       sessionTracker,
@@ -1428,7 +1432,7 @@ describe('buildSessionSummary', () => {
     expect(result.subagentCostUsd).toBe(0.0345);
   });
 
-  it('deserializeFullSessionSummary defaults subagentCostUsd to 0 for pre-fix session files', () => {
+  it('deserializeFullSessionSummary defaults subagentCostUsd to 0 when the field is missing', () => {
     const raw = {
       sessionId: 'sess-old',
       startTime: 1_700_000_000_000,
@@ -1457,7 +1461,7 @@ describe('buildSessionSummary', () => {
     });
   });
 
-  it('deserializeFullSessionSummary defaults costByWorkflowRunId to {} for pre-fix session files', () => {
+  it('deserializeFullSessionSummary defaults costByWorkflowRunId to {} when the field is missing', () => {
     const raw = {
       sessionId: 'sess-old',
       startTime: 1_700_000_000_000,
@@ -1468,6 +1472,69 @@ describe('buildSessionSummary', () => {
     };
     const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
     expect(result.costByWorkflowRunId).toEqual({});
+  });
+
+  it('deserializeFullSessionSummary round-trips costByDayUsd / subagentCostByDayUsd', () => {
+    const raw = {
+      sessionId: 'sess-day-buckets',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      costByDayUsd: { '2026-08-17': 245.0, '2026-08-18': 5.0 },
+      subagentCostByDayUsd: { '2026-08-18': 1.5 },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByDayUsd).toEqual({ '2026-08-17': 245.0, '2026-08-18': 5.0 });
+    expect(result.subagentCostByDayUsd).toEqual({ '2026-08-18': 1.5 });
+  });
+
+  it('deserializeFullSessionSummary leaves day-bucket maps undefined when the fields are missing', () => {
+    // Undefined (not {}) so the aggregate route can distinguish "old file, fall
+    // back to timeline pro-rate" from "new file that genuinely spent $0 today".
+    const raw = {
+      sessionId: 'sess-old',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByDayUsd).toBeUndefined();
+    expect(result.subagentCostByDayUsd).toBeUndefined();
+  });
+
+  it('deserializeFullSessionSummary drops non-numeric values inside the day-bucket maps', () => {
+    const raw = {
+      sessionId: 'sess-malformed-day',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      costByDayUsd: { '2026-08-18': 5.0, '2026-08-17': 'nope', bad: null },
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByDayUsd).toEqual({ '2026-08-18': 5.0 });
+  });
+
+  it('deserializeFullSessionSummary treats an array costByDayUsd as absent (undefined), not a {0:..} map', () => {
+    // typeof [] === 'object'; without an Array guard a corrupt array would
+    // become { '0': 5 } (defined) and wrongly take the day-bucket branch in the
+    // aggregate route (reading $0 today) instead of falling back to pro-rating.
+    const raw = {
+      sessionId: 'sess-array-day',
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_003_600_000,
+      durationMs: 3_600_000,
+      toolCallCount: 5,
+      developer: 'dev',
+      costByDayUsd: [5.0, 6.0],
+    };
+    const result = deserializeFullSessionSummary(raw as unknown as Record<string, unknown>);
+    expect(result.costByDayUsd).toBeUndefined();
   });
 
   it('deserializeFullSessionSummary drops non-numeric values inside costByWorkflowRunId rather than throwing', () => {

@@ -290,6 +290,58 @@ describe('CostTracker', () => {
     });
   });
 
+  describe('getMetrics() per-day cost buckets', () => {
+    // These maps are persisted onto the session summary so the dashboard's
+    // "Spend Today" can sum a session's real today-bucket instead of pro-rating
+    // its lifetime total. They must reflect the same day-attribution the live
+    // getCostForDay()/getSubagentCostForDay() accessors use.
+    it('exposes costByDayUsd / subagentCostByDayUsd bucketed by transcript timestamp', () => {
+      const tracker = new CostTracker();
+      const now = Date.now();
+      const todayKey = localDateKey(now);
+      // A day well within the 48h late-arrival window so it is NOT dropped.
+      const earlierMs = now - 12 * 60 * 60 * 1000;
+      const earlierKey = localDateKey(earlierMs);
+
+      // Parent spend today.
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 100_000, totalTokens: 100_000 }),
+        'claude-sonnet-4',
+        { timestampMs: now } satisfies TokenRecordContext,
+      );
+      // Subagent spend today.
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 50_000, outputTokens: 50_000, totalTokens: 100_000 }),
+        'claude-sonnet-4',
+        { agentId: 'agent-1', timestampMs: now } satisfies TokenRecordContext,
+      );
+      // Parent spend earlier (distinct day when run near midnight; otherwise
+      // same key — either way the accessor and the map must agree).
+      tracker.recordTokenUsage(
+        makeUsage({ inputTokens: 30_000, totalTokens: 30_000 }),
+        'claude-sonnet-4',
+        { timestampMs: earlierMs } satisfies TokenRecordContext,
+      );
+
+      const m = tracker.getMetrics();
+      // The serialized map must agree with the live per-day accessors.
+      expect(m.costByDayUsd[todayKey]).toBeCloseTo(tracker.getCostForDay(todayKey), 6);
+      expect(m.costByDayUsd[earlierKey]).toBeCloseTo(tracker.getCostForDay(earlierKey), 6);
+      expect(m.subagentCostByDayUsd[todayKey]).toBeCloseTo(
+        tracker.getSubagentCostForDay(todayKey),
+        6,
+      );
+      // Subagent bucket is strictly less than the all-in bucket for the same day.
+      expect(m.subagentCostByDayUsd[todayKey]).toBeLessThan(m.costByDayUsd[todayKey]!);
+    });
+
+    it('returns empty day maps for a tracker with no activity', () => {
+      const m = new CostTracker().getMetrics();
+      expect(m.costByDayUsd).toEqual({});
+      expect(m.subagentCostByDayUsd).toEqual({});
+    });
+  });
+
   describe('costPerFileModified', () => {
     it('computes $0.50/file for $2.00 cost and 4 files', () => {
       const sessionTracker = new SessionTracker('test-session');
@@ -1127,7 +1179,7 @@ function makeSeed(overrides?: Partial<CostTrackerSeed>): CostTrackerSeed {
 }
 
 describe('seedFromPersisted()', () => {
-  it('adds seeded totals into a fresh tracker — reproduces the pre-fix bug directly', () => {
+  it('restores a fresh tracker from a persisted checkpoint at realistic multi-day scale', () => {
     const tracker = new CostTracker();
 
     tracker.seedFromPersisted(

@@ -2380,6 +2380,150 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.totalCostUsd).toBe(0);
   });
 
+  // Regression: a resumed multi-day session persists a LIFETIME estimatedCostUsd
+  // (e.g. a month of cache-read tokens ≈ $250) but only spent a little today.
+  // "Spend Today" must sum the session's real today-bucket (costByDayUsd), not
+  // the lifetime total. Before the fix, a timeline-less session pro-rated to
+  // ratio 1.0 and dumped its whole lifetime onto today (the $248/$863 phantoms).
+  it('sums a persisted session today-bucket, not its lifetime estimatedCostUsd', async () => {
+    const now = Date.now();
+    const startMs = localStartOfDay();
+    const todayKey = localDateKey(now);
+    const yesterdayKey = localDateKey(startMs - 1);
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'resumed-1',
+            startTime: startMs + 10_000,
+            endTime: startMs + 70_000,
+            // Lifetime cumulative — most of it spent on prior days.
+            estimatedCostUsd: 250.0,
+            subagentCostUsd: 0,
+            costByDayUsd: { [yesterdayKey]: 245.0, [todayKey]: 5.0 },
+            subagentCostByDayUsd: {},
+            // No tool-call activity recorded today (the phantom shape).
+            timeline: [],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number };
+    // Today's bucket only — NOT the $250 lifetime, NOT 0.
+    expect(parsed.totalCostUsd).toBeCloseTo(5.0, 6);
+  });
+
+  // Phantom guard: a session file without day buckets (no costByDayUsd) with
+  // cost but ZERO attributable activity — no tool calls, no timeline, no
+  // subagent spend — is an unverifiable re-read artifact. Its estimatedCostUsd
+  // is a lifetime total, and todayPortionRatio returns 1.0 for its
+  // entirely-today window, dumping the whole lifetime onto today (the observed
+  // $248/$863 phantoms, which had toolCallCount 0 and subagentCostUsd 0). It
+  // must contribute 0; the real figure is recovered once the session
+  // re-persists with day buckets.
+  it('excludes a zero-activity session cost from today when it has no day buckets (unverifiable re-read artifact)', async () => {
+    const startMs = localStartOfDay();
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'phantom-1',
+            startTime: startMs + 10_000,
+            endTime: startMs + 70_000,
+            estimatedCostUsd: 248.83,
+            // No day buckets (no costByDayUsd), with zero activity signals of any kind.
+            toolCallCount: 0,
+            subagentCostUsd: 0,
+            timeline: [],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number };
+    expect(parsed.totalCostUsd).toBe(0);
+  });
+
+  // A legitimate cross-session subagent-only session has an EMPTY parent
+  // timeline (subagent tool calls are not in it) yet real subagentCostUsd — it
+  // must NOT be treated as a phantom. The guard keys on subagent spend, so this
+  // session's cost pro-rates normally on both the total and subagent lines.
+  it('still counts a subagent-only session without day buckets (empty timeline, real subagent cost)', async () => {
+    const startMs = localStartOfDay();
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'subagent-only',
+            startTime: startMs + 10_000,
+            endTime: startMs + 70_000,
+            estimatedCostUsd: 3.0,
+            subagentCostUsd: 3.0,
+            toolCallCount: 0,
+            timeline: [],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number; subagentUsd: number };
+    // Entirely-today window → ratio 1.0 → full 3.0 on both lines.
+    expect(parsed.totalCostUsd).toBeCloseTo(3.0, 6);
+    expect(parsed.subagentUsd).toBeCloseTo(3.0, 6);
+  });
+
+  // Guard: a session without day buckets that DID record tool-call activity
+  // today still pro-rates its cost as before.
+  it('still pro-rates a session cost when it has no day buckets but has timeline activity', async () => {
+    const startMs = localStartOfDay();
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'legit-prefix-1',
+            startTime: startMs + 10_000,
+            endTime: startMs + 70_000,
+            estimatedCostUsd: 0.5,
+            timeline: [
+              { timestamp: startMs + 20_000, durationMs: 50, toolName: 'Read', success: true },
+              { timestamp: startMs + 40_000, durationMs: 60, toolName: 'Edit', success: true },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number };
+    // Both timeline entries are today → ratio 1.0 → full 0.5.
+    expect(parsed.totalCostUsd).toBeCloseTo(0.5, 6);
+  });
+
   it('reports today-scoped subagent spend without double-counting the total', async () => {
     const handler = createApiHandler({
       localStore: { peekAllBuffers: () => [] },
@@ -2412,6 +2556,40 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.totalCostUsd).toBeCloseTo(9, 3);
     // Subagent KPI is the today-scoped portion (6), not the cumulative 99.
     expect(parsed.subagentUsd).toBeCloseTo(6, 3);
+  });
+
+  // A NEW-format session with day buckets contributes exactly its today-bucket
+  // for both total and subagent, even with an empty timeline.
+  it('uses day buckets for subagent spend regardless of timeline presence', async () => {
+    const startMs = localStartOfDay();
+    const todayKey = localDateKey(Date.now());
+    const yesterdayKey = localDateKey(startMs - 1);
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'bucketed-sub',
+            startTime: startMs + 10_000,
+            endTime: startMs + 70_000,
+            estimatedCostUsd: 250.0,
+            subagentCostUsd: 200.0,
+            costByDayUsd: { [yesterdayKey]: 245.0, [todayKey]: 5.0 },
+            subagentCostByDayUsd: { [yesterdayKey]: 196.0, [todayKey]: 4.0 },
+            timeline: [],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { totalCostUsd: number; subagentUsd: number };
+    expect(parsed.totalCostUsd).toBeCloseTo(5.0, 6);
+    expect(parsed.subagentUsd).toBeCloseTo(4.0, 6);
   });
 
   it('does not add its own live today-portion when the live session id is an unscoped aggregator (--local/proxy)', async () => {
@@ -2601,7 +2779,6 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(status()).toBe(200);
     const parsed = JSON.parse(body()) as { toolCallCount: number };
     // 200 persisted timeline entries + 5 buffer post events = 205.
-    // Pre-fix this returned 5.
     expect(parsed.toolCallCount).toBe(205);
   });
 

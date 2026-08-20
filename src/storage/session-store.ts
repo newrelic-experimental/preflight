@@ -102,10 +102,26 @@ export interface FullSessionSummary extends SessionSummary {
   readonly estimatedCostUsd: number | null;
   /**
    * Portion of estimatedCostUsd attributed to subagent (ctx.agentId) calls —
-   * see CostMetrics.subagentCostUsd. 0 for pre-fix session files (subagent
-   * cost was never tracked) and for sessions with no subagent activity.
+   * see CostMetrics.subagentCostUsd. 0 for an older session summary written
+   * before subagent cost was tracked, and for sessions with no subagent
+   * activity.
    */
   readonly subagentCostUsd: number;
+  /**
+   * Total cost bucketed by local-day key (`YYYY-MM-DD`), mirrored from
+   * `CostMetrics.costByDayUsd`. The dashboard's "Spend Today" aggregate sums
+   * `costByDayUsd[todayKey]` across sessions — the authoritative today-figure —
+   * instead of pro-rating `estimatedCostUsd` (a lifetime cumulative total) by a
+   * tool-call timeline, which over-attributes a resumed multi-day session's
+   * whole cost to one day. Optional: absent on a session summary written
+   * before this field existed, which falls back to the timeline pro-rate
+   * path in the aggregate route.
+   */
+  readonly costByDayUsd?: Record<string, number>;
+  /** Subagent-attributed cost by local-day key; today-scoped counterpart to
+   * `subagentCostUsd`. Optional for the same backward-compat reason as
+   * `costByDayUsd`. */
+  readonly subagentCostByDayUsd?: Record<string, number>;
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
@@ -122,8 +138,9 @@ export interface FullSessionSummary extends SessionSummary {
    * losing every pre-restart task's contribution to it. Optional (unlike
    * most fields on this interface) so the many existing test factories
    * building `FullSessionSummary` literals don't all need updating for an
-   * additive field — read with `?? 0` at the point of use. 0/absent for
-   * pre-fix session files and for sessions with no scored tasks.
+   * additive field — read with `?? 0` at the point of use. 0/absent for an
+   * older session summary written before this field existed, and for
+   * sessions with no scored tasks.
    */
   readonly efficiencyScoreSampleCount?: number;
   /**
@@ -132,7 +149,8 @@ export interface FullSessionSummary extends SessionSummary {
    * alongside `efficiencyScoreSampleCount` so a re-seeded average's
    * component breakdown is exact, not just its top-level score. Optional
    * for the same reason as `efficiencyScoreSampleCount` above. null/absent
-   * for pre-fix session files and for sessions with no scored tasks.
+   * for an older session summary written before this field existed, and
+   * for sessions with no scored tasks.
    */
   readonly efficiencyScoreComponents?: EfficiencyScoreComponents | null;
   readonly antiPatterns: PersistedAntiPattern[];
@@ -153,7 +171,8 @@ export interface FullSessionSummary extends SessionSummary {
    * time from the full in-memory ToolCallRecord[] — the only point where
    * outputSizeBytes (needed for unused-output detection) is still available;
    * it is never persisted anywhere else, including `timeline` above. null
-   * for pre-fix session files and for sessions with no tool calls.
+   * for an older session summary written before this field existed, and
+   * for sessions with no tool calls.
    */
   readonly toolSelectionMetrics: ToolSelectionSummary | null;
   /**
@@ -161,7 +180,8 @@ export interface FullSessionSummary extends SessionSummary {
    * Captured once at save time from ModelUsageTracker.getRawBreakdown(). Raw
    * counters only, no derived ratios — see ModelUsageTracker.combineBreakdowns
    * for why ratios are always recomputed at read time instead of persisted.
-   * `{}` for pre-fix session files and for sessions with no token events.
+   * `{}` for an older session summary written before this field existed,
+   * and for sessions with no token events.
    */
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
   /**
@@ -169,7 +189,8 @@ export interface FullSessionSummary extends SessionSummary {
    * day key — the exact shape `CostMetrics.costByWorkflowRunId` already
    * produces. Captured once at save time so a resumed session's per-run
    * spend survives a process restart (see CostTracker.seedFromPersisted()).
-   * `{}` for pre-fix session files and for sessions with no workflow runs.
+   * `{}` for an older session summary written before this field existed,
+   * and for sessions with no workflow runs.
    */
   readonly costByWorkflowRunId: Record<string, Record<string, number>>;
   /**
@@ -177,8 +198,9 @@ export interface FullSessionSummary extends SessionSummary {
    * time from QualityProxyTracker.getRawCounts(). Raw counts only, no derived
    * rates — see combineQualityProxyRawCounts for why rates are always
    * recomputed at read time instead of persisted. All-zero
-   * (ZERO_QUALITY_PROXY_COUNTS) for pre-fix session files and for sessions
-   * with no quality signals. Nested (not top-level) specifically to avoid
+   * (ZERO_QUALITY_PROXY_COUNTS) for an older session summary written before
+   * this field existed, and for sessions with no quality signals. Nested
+   * (not top-level) specifically to avoid
    * colliding with the unrelated top-level testPassCount/testRunCount fields
    * above (total task test runs, not quality-proxy test signals).
    */
@@ -767,6 +789,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     buildPassCount: totalBuildsPassed,
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
+    costByDayUsd: costMetrics?.costByDayUsd ?? {},
+    subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     tokensInput: costMetrics?.totalInputTokens ?? 0,
     tokensOutput: costMetrics?.totalOutputTokens ?? 0,
     tokensThinking: costMetrics?.totalThinkingTokens ?? 0,
@@ -861,6 +885,8 @@ interface SerializedFullSessionSummary {
   readonly buildPassCount?: unknown;
   readonly estimatedCostUsd?: unknown;
   readonly subagentCostUsd?: unknown;
+  readonly costByDayUsd?: unknown;
+  readonly subagentCostByDayUsd?: unknown;
   readonly tokensInput?: unknown;
   readonly tokensOutput?: unknown;
   readonly tokensThinking?: unknown;
@@ -887,6 +913,26 @@ interface SerializedFullSessionSummary {
   readonly modelBreakdown?: Record<string, unknown>;
   readonly costByWorkflowRunId?: Record<string, unknown>;
   readonly qualityProxy?: Record<string, unknown>;
+}
+
+/**
+ * Parse an untrusted value into a `Record<string, number>`, dropping any
+ * non-finite or non-numeric entries. Used to hydrate the per-day cost maps
+ * (`costByDayUsd` / `subagentCostByDayUsd`) from disk. Returns undefined when
+ * the value is absent or not an object, so a session summary that predates
+ * these keys leaves the field undefined and falls through to the aggregate
+ * route's timeline pro-rate fallback.
+ */
+function parseNumberRecord(value: unknown): Record<string, number> | undefined {
+  // Reject arrays too (typeof [] === 'object'): a corrupt `costByDayUsd: [5]`
+  // must yield undefined so the aggregate route falls through to the timeline
+  // pro-rate path, not a bogus `{ '0': 5 }` map that silently reads as $0 today.
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
 }
 
 /**
@@ -1075,6 +1121,8 @@ export function deserializeFullSessionSummary(
     buildPassCount: typeof obj.buildPassCount === 'number' ? obj.buildPassCount : 0,
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
     subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
+    costByDayUsd: parseNumberRecord(obj.costByDayUsd),
+    subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,

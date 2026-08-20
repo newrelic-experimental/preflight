@@ -96,6 +96,16 @@ interface ParsedParentTurn {
 interface CursorState {
   readonly bytePos: number;
   readonly partialLine: string;
+  /**
+   * The resolved transcript path this byte offset belongs to. The cursor file
+   * is keyed by sessionId alone, but the canonical file for a sessionId can
+   * switch (repo rename → newest-mtime copy under a different project dir). A
+   * byte offset from the previous file is meaningless against the new one, so
+   * `processFile` resets to a fresh cursor when this differs from the file it
+   * is about to read. Undefined for a cursor file written before this field
+   * existed (no reset — it keeps its existing offset, exactly as before).
+   */
+  readonly path?: string;
 }
 
 export interface ParentTranscriptWatcherHealth {
@@ -220,7 +230,17 @@ export class ParentTranscriptWatcher {
    * derived from cwd, since a cwd-derived dashed dir name breaks under git
    * worktrees (the same reason collector-script.ts's retired getTranscriptPath()
    * preferred the hook's transcript_path field, which this watcher has no
-   * access to). Cached after first success.
+   * access to).
+   *
+   * When the sessionId exists under more than one project dir (a repo rename
+   * leaves the old dir's copy behind), pick the newest-mtime copy — the same
+   * canonical-selection rule discoverUnfiltered() uses — rather than the first
+   * arbitrary readdir match, which was nondeterministic and could freeze onto
+   * the stale copy. Cached after first success for poll-loop efficiency; a
+   * rename that occurs AFTER this cache is warmed is followed on the next
+   * process restart (the path-aware cursor then resets cleanly onto the new
+   * file). Mid-session re-resolution is intentionally not attempted here to
+   * avoid flip-flopping between two concurrently-touched copies.
    */
   private resolveScopedPath(): string | null {
     if (this.cachedScopedPath && existsSync(this.cachedScopedPath)) {
@@ -235,18 +255,26 @@ export class ParentTranscriptWatcher {
       this.recordError(err);
       return null;
     }
+    let best: { path: string; mtimeMs: number } | null = null;
     for (const project of entries) {
       const candidate = join(this.projectsDir, project, `${sessionId}.jsonl`);
       try {
-        if (statSync(candidate).isFile()) {
-          this.cachedScopedPath = candidate;
-          return candidate;
+        const st = statSync(candidate);
+        if (!st.isFile()) continue;
+        if (
+          best === null ||
+          st.mtimeMs > best.mtimeMs ||
+          (st.mtimeMs === best.mtimeMs && candidate < best.path)
+        ) {
+          best = { path: candidate, mtimeMs: st.mtimeMs };
         }
       } catch {
         /* not in this project dir */
       }
     }
-    return null; // not created yet — Claude Code creates it lazily on first message
+    if (best === null) return null; // not created yet — Claude Code creates it lazily
+    this.cachedScopedPath = best.path;
+    return best.path;
   }
 
   /**
@@ -257,8 +285,7 @@ export class ParentTranscriptWatcher {
    * cursor file.
    */
   private discoverUnfiltered(): Array<{ path: string; sessionId: string }> {
-    const out: Array<{ path: string; sessionId: string }> = [];
-    if (!existsSync(this.projectsDir)) return out;
+    if (!existsSync(this.projectsDir)) return [];
     const cutoffMs = Date.now() - this.discoveryHours * 60 * 60 * 1000;
     const liveOwnedSessionIds = this.localStore?.getActiveSessionIdsFromHeartbeats() ?? null;
 
@@ -267,8 +294,18 @@ export class ParentTranscriptWatcher {
       projectEntries = readdirSync(this.projectsDir);
     } catch (err) {
       this.recordError(err);
-      return out;
+      return [];
     }
+    // The same sessionId can exist under MORE THAN ONE project dir — Claude Code
+    // creates a new project-slug directory when a repo is renamed/moved, and the
+    // old dir's `<sessionId>.jsonl` lingers with divergent content. Since the
+    // byte cursor is keyed by sessionId alone (cursorPath), reading two files
+    // for one sessionId would apply one file's byte offset to the other's
+    // unrelated bytes — re-parsing mismatched turns and inflating token/cost
+    // totals (observed: a resumed session double-counted across two project
+    // dirs). Keep only the newest-mtime copy per sessionId: after a rename the
+    // stale dir stops being written, so newest === the active, canonical file.
+    const canonicalBySession = new Map<string, { path: string; mtimeMs: number }>();
     for (const project of projectEntries) {
       const projectPath = join(this.projectsDir, project);
       let entries: string[];
@@ -290,8 +327,23 @@ export class ParentTranscriptWatcher {
           continue;
         }
         if (!st.isFile() || st.mtimeMs < cutoffMs) continue;
-        out.push({ path, sessionId });
+        const existing = canonicalBySession.get(sessionId);
+        // Newest mtime wins; on an exact mtime tie (mtime-preserving
+        // copy/restore, coarse-resolution FS, same-second writes) break
+        // deterministically by lexicographically-smallest path so the choice
+        // is stable across platforms/runs rather than following readdir order.
+        if (
+          existing === undefined ||
+          st.mtimeMs > existing.mtimeMs ||
+          (st.mtimeMs === existing.mtimeMs && path < existing.path)
+        ) {
+          canonicalBySession.set(sessionId, { path, mtimeMs: st.mtimeMs });
+        }
       }
+    }
+    const out: Array<{ path: string; sessionId: string }> = [];
+    for (const [sessionId, { path }] of canonicalBySession) {
+      out.push({ path, sessionId });
     }
     return out;
   }
@@ -310,7 +362,19 @@ export class ParentTranscriptWatcher {
     }
 
     const cursorPath = this.cursorPath(sessionId);
-    const startCursor = this.readCursor(cursorPath);
+    const persisted = this.readCursor(cursorPath);
+    // If the canonical copy for this sessionId switched project dirs since the
+    // last poll (repo rename → newest-mtime copy now wins in discovery), the
+    // persisted byte offset belongs to the OLD file and is meaningless against
+    // this one. Start fresh so the new file is read from the top; the
+    // event-processor dedupes any shared-history turns by (sessionId,
+    // messageId), and day-bucketing attributes each re-read turn to its real
+    // transcript-timestamp day, so "spend today" is unaffected.
+    const switchedFile = persisted.path !== undefined && persisted.path !== path;
+    const startCursor: CursorState = switchedFile
+      ? { bytePos: 0, partialLine: '', path }
+      : persisted;
+    if (switchedFile) this.partialByPath.delete(path);
     if (startCursor.bytePos >= size) return;
 
     const remaining = size - startCursor.bytePos;
@@ -394,7 +458,7 @@ export class ParentTranscriptWatcher {
       this.appendToParentBuffer(sessionId, event);
     }
 
-    this.writeCursor(cursorPath, nextBytePos, newPartial);
+    this.writeCursor(cursorPath, nextBytePos, newPartial, path);
     if (newPartial.length > 0) {
       this.partialByPath.set(path, newPartial);
     } else {
@@ -480,20 +544,28 @@ export class ParentTranscriptWatcher {
       const bytePos =
         typeof parsed.bytePos === 'number' && parsed.bytePos >= 0 ? parsed.bytePos : 0;
       const partialLine = typeof parsed.partialLine === 'string' ? parsed.partialLine : '';
-      return { bytePos, partialLine };
+      const path = typeof parsed.path === 'string' ? parsed.path : undefined;
+      return { bytePos, partialLine, path };
     } catch {
       return { bytePos: 0, partialLine: '' };
     }
   }
 
-  private writeCursor(cursorPath: string, bytePos: number, partialLine: string): void {
+  private writeCursor(
+    cursorPath: string,
+    bytePos: number,
+    partialLine: string,
+    sourcePath: string,
+  ): void {
     try {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
       const dir = dirname(cursorPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine }), { mode: 0o600 });
+      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
+        mode: 0o600,
+      });
     } catch (err) {
       this.recordError(err);
     }

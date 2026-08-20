@@ -112,8 +112,7 @@ export class InstructionDriftTracker {
     } catch (err) {
       // File gone/unreadable by the time we process this event — no signal,
       // but log at debug level since this can also mean permission-denied
-      // or an EISDIR (unlike the pre-fix code, which never touched the
-      // filesystem here at all).
+      // or an EISDIR, not just a missing file.
       logger.debug('Could not hash instruction file', { filePath, error: String(err) });
       return;
     }

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.1] - 2026-08-20
+
+### Fixed
+
+- **"Spend Today" no longer inflates to wildly untrustworthy totals for a resumed multi-day session.** A session's cost is now summed from its actual per-day spend instead of pro-rating its full lifetime cost by a tool-call timeline — which previously attributed a resumed session's entire multi-week cumulative cost to a single day whenever it had no timeline to pro-rate against.
+- **Token and cost totals are no longer double-counted for a session that continues after its underlying project folder is renamed or moved.** The transcript watchers now read only the newest copy of a session's transcript when more than one exists on disk, instead of applying one copy's read position to the other's unrelated content.
+
 ## [1.16.0] - 2026-08-12
 
 ### Added

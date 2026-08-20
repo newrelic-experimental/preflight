@@ -228,6 +228,83 @@ describe('SubagentWatcher', () => {
       expect(tokenLines).toHaveLength(1);
     });
 
+    it('REGRESSION: dedupes one (sessionId, agentId) across two project dirs, reading only the newest copy', () => {
+      // Repo-rename scenario, subagent side: the same session's subagent
+      // transcript exists under two project-slug dirs. The per-agent cursor is
+      // keyed by (parentSessionId, agentId) alone, so reading both copies
+      // cross-contaminates the cursor and double-counts subagent spend. Only
+      // the newest-mtime copy must be read.
+      const staleAgent = agentJsonl; // under project-slug (from beforeEach)
+      const newDir = join(projectsDir, 'project-new-slug', PARENT_SESSION, 'subagents');
+      mkdirSync(newDir, { recursive: true });
+      const activeAgent = join(newDir, `agent-${AGENT_ID}.jsonl`);
+      writeFileSync(
+        staleAgent,
+        makeAssistantLine({ messageId: 'msg_STALE', inputTokens: 9 }) + '\n',
+      );
+      writeFileSync(
+        activeAgent,
+        makeAssistantLine({ messageId: 'msg_ACTIVE', inputTokens: 111 }) + '\n',
+      );
+      const older = Date.now() / 1000 - 60;
+      const newer = Date.now() / 1000;
+      utimesSync(staleAgent, older, older);
+      utimesSync(activeAgent, newer, newer);
+
+      const watcher = new SubagentWatcher({ storagePath, projectsDir });
+      watcher.poll();
+      const buf = readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8');
+      const tokenLines = buf
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.mode === 'subagent_token');
+      expect(tokenLines).toHaveLength(1);
+      expect(tokenLines[0].messageId).toBe('msg_ACTIVE');
+      expect(tokenLines[0].inputTokens).toBe(111);
+    });
+
+    it('REGRESSION: resets the (sessionId,agentId) cursor when the canonical copy switches project dirs mid-stream', () => {
+      // Poll 1 tails a LARGE agent transcript under the old slug (cursor advances
+      // to a large bytePos, path=old). A repo rename then makes a SMALLER copy
+      // under a new slug the newest. Without a path-aware cursor reset the stale
+      // bytePos >= the new file's size, so processFile early-returns and drops
+      // every post-rename subagent turn.
+      const staleAgent = agentJsonl; // project-slug (from beforeEach)
+      const newDir = join(projectsDir, 'project-new-slug', PARENT_SESSION, 'subagents');
+      mkdirSync(newDir, { recursive: true });
+      const activeAgent = join(newDir, `agent-${AGENT_ID}.jsonl`);
+
+      writeFileSync(staleAgent, makeAssistantLine({ messageId: 'msg_OLD', padBytes: 4096 }) + '\n');
+      const t0 = Date.now() / 1000 - 60;
+      utimesSync(staleAgent, t0, t0);
+
+      const watcher = new SubagentWatcher({ storagePath, projectsDir });
+      watcher.poll();
+      const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+      const idsAfter1 = readFileSync(bufPath, 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.mode === 'subagent_token')
+        .map((l) => l.messageId);
+      expect(idsAfter1).toEqual(['msg_OLD']);
+
+      // Rename: new slug's copy is small and strictly newer.
+      writeFileSync(activeAgent, makeAssistantLine({ messageId: 'msg_AFTER_RENAME' }) + '\n');
+      const t1 = Date.now() / 1000;
+      utimesSync(activeAgent, t1, t1);
+
+      watcher.poll();
+      const idsAfter2 = readFileSync(bufPath, 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.mode === 'subagent_token')
+        .map((l) => l.messageId);
+      expect(idsAfter2).toContain('msg_AFTER_RENAME');
+    });
+
     it("skips a session whose --stdio owner is alive, so it doesn't race that session's own scoped watcher over the same cursor file", () => {
       writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
       // A live heartbeat means a --stdio process already owns and tails this
@@ -605,10 +682,9 @@ describe('SubagentWatcher', () => {
 
   it('emits a line larger than MAX_BYTES_PER_POLL exactly once and bounds memory under sustained polling', () => {
     // A single assistant turn whose serialized JSONL exceeds 64 KiB (here ~200
-    // KiB via padding). Under the pre-fix code this never emitted and leaked
-    // ~64 KiB per poll. Under the fix the cursor advances each poll, the line
-    // emits once its terminating newline is reached, and further polls are
-    // no-ops.
+    // KiB via padding). The cursor advances each poll regardless of whether a
+    // full line was read, so the line emits once its terminating newline is
+    // reached, and further polls are no-ops.
     const bigLine = makeAssistantLine({ messageId: 'msg_big', padBytes: 200 * 1024 });
     expect(Buffer.byteLength(bigLine)).toBeGreaterThan(64 * 1024);
     writeFileSync(agentJsonl, bigLine + '\n');
@@ -639,11 +715,11 @@ describe('SubagentWatcher', () => {
   });
 
   it('keeps the persisted partial bounded for a never-terminated giant blob across many polls', () => {
-    // A file that is one enormous un-terminated token (no '\n' ever). This is
-    // the pathological case: the pre-fix code grew the partial without bound.
-    // The fix caps the retained partial at MAX_PARTIAL_LINE_BYTES (1 MiB) and
-    // drops the line, so the persisted partial can never exceed the cap (plus
-    // one chunk), no matter how long we poll.
+    // A file that is one enormous un-terminated token (no '\n' ever) — the
+    // pathological case for an unbounded partial-line buffer. The retained
+    // partial is capped at MAX_PARTIAL_LINE_BYTES (1 MiB) and the line is
+    // dropped once it exceeds that, so the persisted partial can never exceed
+    // the cap (plus one chunk), no matter how long we poll.
     const blob = 'x'.repeat(5 * 1024 * 1024); // 5 MiB, no newline
     writeFileSync(agentJsonl, blob);
 
