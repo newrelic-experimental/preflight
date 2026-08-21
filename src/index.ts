@@ -16,6 +16,7 @@ import { LiveEventBus } from './dashboard/index.js';
 import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
 import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { WorkflowStore } from './dashboard/workflow-store.js';
+import { isCopilotSdkExtensionMissing } from './hooks/copilot-sdk-extension-health.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
@@ -1476,6 +1477,13 @@ async function main(): Promise<void> {
         alertEvaluationInterval.unref?.();
       }
 
+      // Platform is env-derived and fixed for this process's lifetime —
+      // resolve it once here rather than inside observabilityHealth's
+      // getSnapshot() closure below, which fires on every dashboard poll
+      // (10-30s) and would otherwise re-run full platform detection (and
+      // its info-level log line) on every single request.
+      const activePlatformName = createDefaultRegistry().getActive().platformName;
+
       dashboardServer = new DashboardServer({
         port: config.dashboard.port,
         host: config.dashboard.host,
@@ -1596,6 +1604,7 @@ async function main(): Promise<void> {
                 watcherDisabledReason,
                 copilotDebugLoggingDisabled:
                   activeCopilotUsageWatcher?.getHealth().debugLoggingLikelyDisabled ?? false,
+                copilotSdkExtensionMissing: isCopilotSdkExtensionMissing(activePlatformName),
               };
             },
           },

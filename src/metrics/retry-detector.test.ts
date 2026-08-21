@@ -176,6 +176,94 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
   });
 
+  it('does not flag distinct PowerShell calls whose shared session metadata dominates the serialized envelope', () => {
+    // Reproduces a real false positive: every field below except
+    // command/bashLeading/commandDescription/inputHash is identical across
+    // all 4 calls, same as a real session's PowerShell calls sharing one
+    // cwd/transcriptPath/permissionMode and near-constant classifier fields
+    // from extractInputMeta().
+    const detector = new RetryDetector();
+    const constant = {
+      toolName: 'PowerShell',
+      success: true,
+      cwd: 'C:\\Users\\dev\\preflight_test',
+      transcriptPath:
+        'C:\\Users\\dev\\.claude\\projects\\C--Users-dev-preflight-test\\d5be26f9-abcd.jsonl',
+      permissionMode: 'auto',
+      isTestCommand: false,
+      isBuildCommand: false,
+      isLintCommand: false,
+      bashCategory: 'shell-other',
+      bashDestructive: false,
+      bashNetwork: false,
+      commandTimeout: 600000,
+    };
+    const calls = [
+      {
+        command: 'Get-Date -Format o',
+        bashLeading: 'Get-Date',
+        commandDescription: 'Get current date/time',
+        inputHash: 'a1b2c3d4e5f60718',
+      },
+      {
+        command: '$PSVersionTable.PSVersion.ToString()',
+        bashLeading: '$PSVersionTable.PSVersion.ToString',
+        commandDescription: 'Get PowerShell version',
+        inputHash: 'b2c3d4e5f6071829',
+      },
+      {
+        command: '(Get-ChildItem -Path $PWD -File | Measure-Object).Count',
+        bashLeading: 'Get-ChildItem',
+        commandDescription: 'Count files in cwd',
+        inputHash: 'c3d4e5f60718293a',
+      },
+      {
+        command: '[System.Environment]::OSVersion.VersionString',
+        bashLeading: '[System.Environment]::OSVersion.VersionString',
+        commandDescription: 'Get OS version',
+        inputHash: 'd4e5f60718293a4b',
+      },
+    ];
+
+    let result = null;
+    for (const call of calls) {
+      result = detector.recordToolCall(makeRecord({ ...constant, ...call }));
+    }
+
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('does not conflate two different sessions running the same command once cwd/transcriptPath are stripped', () => {
+    const detector = new RetryDetector();
+    const sessionA = {
+      sessionId: 'session-a',
+      cwd: '/Users/dev/repo-a',
+      transcriptPath: '/tmp/a.jsonl',
+    };
+    const sessionB = {
+      sessionId: 'session-b',
+      cwd: '/Users/dev/repo-b',
+      transcriptPath: '/tmp/b.jsonl',
+    };
+
+    detector.recordToolCall(
+      makeRecord({ ...sessionA, toolName: 'Bash', command: 'npm test', success: true }),
+    );
+    detector.recordToolCall(
+      makeRecord({ ...sessionB, toolName: 'Bash', command: 'npm test', success: true }),
+    );
+    const result = detector.recordToolCall(
+      makeRecord({ ...sessionA, toolName: 'Bash', command: 'npm test', success: true }),
+    );
+
+    // Only 2 of these 3 calls belong to session-a — below minOccurrences (3)
+    // once correctly scoped per session, even though all 3 share toolName
+    // and identical command text with cwd/transcriptPath now stripped.
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
   it('still detects genuine identical retries of a tool with no metadata extractor', () => {
     const detector = new RetryDetector();
 

@@ -82,6 +82,21 @@ const GH_COMMAND_RE = /\bgh\s+/;
 // Extract PR number from gh commands
 const GH_PR_NUMBER_RE = /\bgh\s+pr\s+\w+\s+(\d+)/;
 
+/**
+ * GitHub MCP server tool names confirmed via live-account NRQL evidence
+ * to reach Preflight as first-class AiToolCall events with these exact
+ * `tool` values,
+ * but never counted by the PR metric because recordToolCall() only inspects
+ * `record.command` — which MCP tool calls never carry. Deliberately limited
+ * to the two names the issue's own evidence covers; other GitHub-MCP PR
+ * tools (merge_pull_request, etc.) are unconfirmed and out of scope pending
+ * their own evidence.
+ */
+const MCP_PR_TOOL_ACTION: Record<string, PrEvent['action']> = {
+  create_pull_request: 'create',
+  update_pull_request: 'edit',
+};
+
 // hydrateGitLog()'s dedup window, used only against a hook-observed commit
 // event (one with no hash in its command text): `git log`'s %ct has 1-second
 // resolution and a hook-observed commit event's timestamp is recorded when
@@ -392,6 +407,16 @@ export class GitEfficiencyTracker {
     // Track build/test commands for "verify before push" metric
     if (record.isTestCommand || record.isBuildCommand) {
       this.lastBuildOrTestTimestamp = record.timestamp;
+    }
+
+    // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
+    // update_pull_request) carry no `command` field, so they'd otherwise be
+    // silently dropped by the guard below. See MCP_PR_TOOL_ACTION's doc
+    // comment. No confirmed PR-number field exists for these — prNumber is
+    // null, unlike the gh-CLI path below which extracts it from command text.
+    const mcpPrAction = MCP_PR_TOOL_ACTION[record.toolName];
+    if (mcpPrAction) {
+      this.prEvents.push({ timestamp: record.timestamp, action: mcpPrAction, prNumber: null });
     }
 
     const rawCommand = record.command as string | undefined;

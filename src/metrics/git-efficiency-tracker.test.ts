@@ -1273,6 +1273,29 @@ describe('GitEfficiencyTracker', () => {
       // commit the tracker ever saw.
       expect(metrics.prMetrics.avgTimeToCreateMs).toBe(7_500);
     });
+
+    it('counts a create_pull_request MCP tool call even with no command field', () => {
+      tracker.recordToolCall(makeRecord({ toolName: 'create_pull_request', command: undefined }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(1);
+    });
+
+    it('counts an update_pull_request MCP tool call as prsUpdated', () => {
+      tracker.recordToolCall(makeRecord({ toolName: 'update_pull_request', command: undefined }));
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.prsUpdated).toBe(1);
+    });
+
+    it('does not double-count a gh pr create Bash call as also being an MCP PR event', () => {
+      tracker.recordToolCall(
+        makeRecord({ toolName: 'Bash', command: 'gh pr create --title "Add feature"' }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(1);
+    });
   });
 
   describe('hydration entry points', () => {

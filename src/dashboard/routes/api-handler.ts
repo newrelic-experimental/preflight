@@ -318,6 +318,15 @@ export interface ObservabilityHealthSnapshot {
    * Optional/absent for non-Copilot deployments and older snapshot producers.
    */
   readonly copilotDebugLoggingDisabled?: boolean;
+  /**
+   * True when the active platform is the GitHub Copilot SDK/CLI runtime and
+   * its optional token-exact-cost extension isn't at its documented install
+   * path (~/.copilot/extensions/preflight/extension.mjs) — the extension was
+   * likely never copied. Doesn't catch every failure cause (see
+   * copilot-sdk-extension-health.ts's doc comment). Optional/absent for
+   * non-copilot-sdk deployments and older snapshot producers.
+   */
+  readonly copilotSdkExtensionMissing?: boolean;
 }
 
 export interface ApiHandlerDeps {

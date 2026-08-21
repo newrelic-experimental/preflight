@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.3] - 2026-08-21
+
+### Added
+
+- **A GitHub Copilot SDK usage-capture extension that was never installed at its documented path is now reported via the observability-health API** instead of failing silently to a log file no one normally checks. Mirrors the existing signal for the VS Code Copilot Chat integration's equivalent gap.
+
+### Fixed
+
+- **`nr_observe_get_git_efficiency`'s PR metrics no longer undercount pull requests created or edited through the GitHub MCP server's tools** (`create_pull_request`, `update_pull_request`) rather than the `gh` CLI. These tool calls were already captured by Preflight but were previously ignored by the PR metric entirely.
+- **`nr_observe_get_retry_alerts` no longer flags genuinely distinct, successful tool calls as thrashing when they share the same working directory, transcript, and permission mode.** Session-constant metadata fields were previously compared for similarity alongside the actual command content, pulling unrelated calls into a false-positive band just above the detection threshold.
+
 ## [1.16.2] - 2026-08-20
 
 ### Fixed
