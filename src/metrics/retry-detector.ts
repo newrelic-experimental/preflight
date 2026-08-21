@@ -156,16 +156,24 @@ export class RetryDetector implements Resettable {
     const window = this.recentCalls.slice(-this.windowSize);
     if (window.length < this.minOccurrences) return null;
 
-    // Group calls by tool name within the window
-    const byTool = new Map<string, ToolCallRecord[]>();
+    // Group calls by tool name AND session — a shared RetryDetector instance
+    // in --local mode processes every concurrently-live session's calls
+    // (HookEventProcessor's drainAllSessions), so grouping by tool name
+    // alone let two different sessions running the same ordinary command
+    // (e.g. both running `npm test`) collapse into one group and risk a
+    // false thrashing alert now that serializeInput() no longer includes
+    // cwd/transcriptPath to distinguish them.
+    const byToolAndSession = new Map<string, ToolCallRecord[]>();
     for (const call of window) {
-      const arr = byTool.get(call.toolName) ?? [];
+      const key = `${call.toolName}|${call.sessionId ?? ''}`;
+      const arr = byToolAndSession.get(key) ?? [];
       arr.push(call);
-      byTool.set(call.toolName, arr);
+      byToolAndSession.set(key, arr);
     }
 
-    for (const [toolName, calls] of byTool) {
+    for (const calls of byToolAndSession.values()) {
       if (calls.length < this.minOccurrences) continue;
+      const toolName = calls[0]!.toolName;
 
       // Check: either all failed, or inputs are highly similar
       const allFailed = calls.every((c) => !c.success);
@@ -237,17 +245,28 @@ export class RetryDetector implements Resettable {
   // Excludes per-call metadata that varies even when the actual tool
   // input/arguments are identical (timestamps, ids, sizes, error details) —
   // without stripping these, every call would serialize as "different" and
-  // similarity would never detect a genuine repeated-input retry.
+  // similarity would never detect a genuine repeated-input retry. Also
+  // excludes fields that are constant or near-constant *within a session*
+  // regardless of how different two calls' real inputs are: cwd and
+  // transcriptPath never change within a session, permissionMode rarely
+  // does, and extractInputMeta()'s boolean/enum classifier fields
+  // (isTestCommand/isBuildCommand/isLintCommand/bashCategory/
+  // bashDestructive/bashNetwork) are identical for any two "ordinary" shell
+  // commands. Left in place, these dominate the serialized string and pull
+  // genuinely distinct calls' similarity up into a false-positive band just
+  // above the default 0.8 threshold.
   //
   // inputHash is kept, deliberately not stripped: it's a hash of the FULL raw
   // tool input, computed for every call regardless of tool name, unlike the
   // narrowed per-tool fields extractInputMeta()/parseToolSpecificFields() only
   // populate for a known subset of tools. Without it, a call to any tool
-  // outside that subset (PowerShell, WebFetch, a third-party MCP tool, ...)
-  // serializes to just `{toolName}` — identical for every call regardless of
-  // how different the real inputs were, so it always scored similarity 1.0.
-  // A genuine repeat still hashes identically, so real-retry detection is
-  // unaffected.
+  // outside that subset (WebFetch, a third-party MCP tool, ...) serializes to just
+  // `{toolName}` — identical for every call regardless of how different the
+  // real inputs were, so it always scored similarity 1.0. A genuine repeat
+  // still hashes identically, so real-retry detection is unaffected. Removing
+  // it would reopen the earlier no-metadata-extractor regression this project
+  // already fixed once; stripping the near-constant fields above is
+  // sufficient on its own without touching inputHash.
   private serializeInput(record: ToolCallRecord): string {
     const {
       id: _id,
@@ -260,6 +279,15 @@ export class RetryDetector implements Resettable {
       inputSizeBytes: _is,
       outputSizeBytes: _os,
       toolUseId: _tu,
+      cwd: _cwd,
+      transcriptPath: _tp,
+      permissionMode: _pm,
+      isTestCommand: _itc,
+      isBuildCommand: _ibc,
+      isLintCommand: _ilc,
+      bashCategory: _bc,
+      bashDestructive: _bdes,
+      bashNetwork: _bnet,
       ...rest
     } = record;
     try {
