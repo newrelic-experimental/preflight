@@ -1423,7 +1423,7 @@ Thrashing and retry detection alerts within a sliding window.
 
 **Data source:** `RetryDetector`
 
-**How it works:** Tracks repeated tool calls with identical or highly similar inputs (Levenshtein similarity ≥ 0.8) within a rolling window (default: 5 calls). Fires an alert when the same input appears 3+ times consecutively. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
+**How it works:** Tracks repeated tool calls with identical or highly similar inputs (similarity ≥ 0.8, via Levenshtein distance or exact input-hash match) within a rolling window (default: 5 calls). Fires an alert when the same input appears 3+ times consecutively. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
 
 **Requires:** `RetryDetector`
 

@@ -234,6 +234,64 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
   });
 
+  it('does not flag genuinely different calls to a parser-less tool whose random hashes coincidentally overlap under Levenshtein comparison', () => {
+    // A tool outside extractInputMeta()'s switch (a third-party MCP tool
+    // here) serializes to just `{toolName, inputHash}`. With a realistic
+    // (long) tool name, unrelated 16-hex-char hashes still share enough
+    // characters by chance for Levenshtein similarity to land above the 0.8
+    // threshold if inputHash is Levenshtein-compared directly instead of by
+    // equality — verified at 0.8561 against that direct-comparison approach.
+    const detector = new RetryDetector();
+    const toolName = 'mcp__plugin_context7_context7__resolve-library-id';
+    const hashes = ['a1b2c3d4e5f60718', 'f00dfeed12345678', '13579bdf2468ace0', '0badc0de55aa11ff'];
+
+    let result = null;
+    for (const inputHash of hashes) {
+      result = detector.recordToolCall(makeRecord({ toolName, success: true, inputHash }));
+    }
+
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('still detects near-identical (not byte-identical) retries of a tool with real parser fields, even when every call has a distinct inputHash', () => {
+    // A parser-rich tool's genuine near-identical retries (varying only the
+    // test filter, e.g. re-running the same suite with different -t flags)
+    // must not be capped by inputHash — inputHash differs on every call
+    // here (it always does for non-identical real input), same as
+    // production traffic. Verified numerically: 0.9091 group similarity
+    // under the gated formula, comfortably above the 0.8 default threshold.
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        success: true,
+        command: 'npm test -- src/retry-detector.test.ts',
+        inputHash: 'bbbb2222cccc0001',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        success: true,
+        command: 'npm test -- src/retry-detector.test.ts -t foo',
+        inputHash: 'bbbb2222cccc0002',
+      }),
+    );
+    const result = detector.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        success: true,
+        command: 'npm test -- src/retry-detector.test.ts -t bar',
+        inputHash: 'bbbb2222cccc0003',
+      }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.similarity).toBeGreaterThanOrEqual(0.8);
+  });
+
   it('does not conflate two different sessions running the same command once cwd/transcriptPath are stripped', () => {
     const detector = new RetryDetector();
     const sessionA = {

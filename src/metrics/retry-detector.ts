@@ -3,7 +3,9 @@
  * where the same tool is either failing repeatedly or being called with
  * near-identical input, both signs of retrying the same broken approach
  * instead of changing strategy. Similarity between calls is measured with
- * Levenshtein distance over each call's serialized (non-metadata) fields.
+ * Levenshtein distance over each call's serialized (non-metadata) fields,
+ * falling back to exact-match equality on a raw input hash only when those
+ * fields carry no signal of their own (see computeGroupSimilarity()).
  */
 
 import type { MetricAggregator } from '../shared/index.js';
@@ -232,10 +234,30 @@ export class RetryDetector implements Resettable {
     let totalSimilarity = 0;
     let comparisons = 0;
 
-    // Compare each pair against the first (reference) input
+    // Compare each pair against the first (reference) input. When the
+    // non-hash fields already carry a discriminating signal (Levenshtein
+    // similarity < 1 — real parser-populated content differs, e.g. Edit's
+    // command text or Bash's command string), trust that signal alone;
+    // inputHash contributes nothing here, so a tool with rich parser
+    // fields keeps its pre-existing near-identical (not just
+    // byte-identical) retry detection.
+    //
+    // Only when the non-hash fields carry NO signal at all (similarity
+    // exactly 1 — every remaining field is identical, which for a
+    // parser-less tool means the serialized string reduced to just
+    // `{toolName}`) does inputHash's binary equality take over: 1 when
+    // both calls' hashes match (a genuine retry), 0 when they don't.
+    // Levenshtein-comparing the hash itself creates a false-positive floor
+    // there, because unrelated random hex strings still share characters
+    // by chance. See serializeInput()'s doc comment.
     const reference = inputs[0];
+    const referenceHash = calls[0].inputHash;
     for (let i = 1; i < inputs.length; i++) {
-      totalSimilarity += normalizedLevenshteinSimilarity(reference, inputs[i]);
+      const levenshteinSimilarity = normalizedLevenshteinSimilarity(reference, inputs[i]);
+      const hashSimilarity = referenceHash === calls[i].inputHash ? 1 : 0;
+      const combinedSimilarity =
+        levenshteinSimilarity === 1 ? hashSimilarity : levenshteinSimilarity;
+      totalSimilarity += combinedSimilarity;
       comparisons++;
     }
 
@@ -256,17 +278,27 @@ export class RetryDetector implements Resettable {
   // genuinely distinct calls' similarity up into a false-positive band just
   // above the default 0.8 threshold.
   //
-  // inputHash is kept, deliberately not stripped: it's a hash of the FULL raw
-  // tool input, computed for every call regardless of tool name, unlike the
-  // narrowed per-tool fields extractInputMeta()/parseToolSpecificFields() only
-  // populate for a known subset of tools. Without it, a call to any tool
-  // outside that subset (WebFetch, a third-party MCP tool, ...) serializes to just
-  // `{toolName}` — identical for every call regardless of how different the
-  // real inputs were, so it always scored similarity 1.0. A genuine repeat
-  // still hashes identically, so real-retry detection is unaffected. Removing
-  // it would reopen the earlier no-metadata-extractor regression this project
-  // already fixed once; stripping the near-constant fields above is
-  // sufficient on its own without touching inputHash.
+  // inputHash is also excluded here, but NOT dropped from similarity scoring
+  // entirely — computeGroupSimilarity() falls back to comparing it by
+  // equality, but ONLY when the fields above give it nothing else to work
+  // with (see that method's comment for the exact condition). inputHash is
+  // a hash of the FULL raw tool input, computed for every call regardless
+  // of tool name, unlike the narrowed per-tool fields
+  // extractInputMeta()/parseToolSpecificFields() only populate for a known
+  // subset of tools; for a tool outside that subset (a third-party MCP
+  // tool, ...) the remaining serialized string is just `{toolName}` —
+  // identical for every call. Levenshtein-comparing inputHash directly used
+  // to compensate for that, but two *unrelated* 16-hex-char hashes still
+  // share enough characters by chance for Levenshtein similarity to land
+  // above the 0.8 threshold once the boilerplate JSON/toolName padding
+  // dilutes the comparison. Equality doesn't have that floor: two unrelated
+  // hashes essentially never match (contributes 0), while a genuine repeat
+  // still hashes identically (contributes 1) — real-retry detection for
+  // parser-less tools is unaffected. Gating this on the fields above having
+  // no signal of their own also means a tool WITH rich parser fields (Edit,
+  // Bash, ...) never has its near-identical-but-not-byte-identical retry
+  // detection capped by an unrelated hash comparison — only a parser-less
+  // tool's calls ever reach the gate condition in practice.
   private serializeInput(record: ToolCallRecord): string {
     const {
       id: _id,
@@ -288,6 +320,7 @@ export class RetryDetector implements Resettable {
       bashCategory: _bc,
       bashDestructive: _bdes,
       bashNetwork: _bnet,
+      inputHash: _ih,
       ...rest
     } = record;
     try {
