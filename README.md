@@ -98,6 +98,13 @@ When prompted, pick a mode:
 
 Restart your AI tool — hooks and the MCP server load at session start. Every tool call is captured automatically. Open **http://localhost:7777** to watch your session live.
 
+> **Using Claude Code?** You can skip the npm install above and add Preflight as a [Claude Code plugin](docs/PLUGIN.md) instead:
+>
+> ```
+> /plugin marketplace add newrelic-experimental/preflight
+> /plugin install newrelic-preflight@newrelic-preflight-marketplace
+> ```
+
 ---
 
 ## Works With
