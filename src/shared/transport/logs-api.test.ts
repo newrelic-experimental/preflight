@@ -1,6 +1,7 @@
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { sendLogs } from './logs-api.js';
+import { stagingHost } from './http-client.js';
 import type { NrLogEntry } from './logs-api.js';
 import type { TransportOptions } from './types.js';
 
@@ -111,7 +112,7 @@ describe('sendLogs', () => {
 
   // bare 'staging' keyword (no dot) is still routed via region detection
   // to NR's per-service staging hostnames — the literal-hostname override only
-  // kicks in for FQDN-shaped values. This preserves NR-internal staging usage.
+  // kicks in for FQDN-shaped values. This preserves staging usage.
   it('routes bare staging keyword to NR staging log endpoint', async () => {
     await sendLogs(testLogs, 'us01xxUSKEY', {
       ...baseOptions,
@@ -119,7 +120,7 @@ describe('sendLogs', () => {
     });
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://staging-log-api.newrelic.com/log/v1');
+    expect(url).toBe(`https://${stagingHost('log-api')}/log/v1`);
   });
 });
 

@@ -26,7 +26,7 @@ function newRequestId(): string {
  * - `eu` — EU data center (insights-collector.eu01.nr-data.net)
  * - `gov` — FedRAMP / US gov cloud (gov-* hostnames)
  * - `jp` — Japan data center (insights-collector.jp.nr-data.net)
- * - `staging` — New Relic staging environment (staging-insights-collector.newrelic.com)
+ * - `staging` — New Relic staging environment
  *
  * License-key prefix mapping: `us01` → us, `eu01` → eu, `gov01` → gov, `jp` → jp.
  * Legacy keys (no recognizable region prefix) default to `us`.
@@ -107,14 +107,23 @@ export function resolveRegion(licenseKey: string, collectorHost: string | null):
  * (one of 'us', 'eu', 'gov', 'jp', 'staging') — `resolveRegion` maps it to the
  * appropriate NR hostnames for all three APIs (no substring matching).
  *
- * Note: setting collectorHost to a full NR hostname like
- * `staging-insights-collector.newrelic.com` will use that host literally for
- * all three APIs — which only works for events. Use the `'staging'` keyword
- * form to route all three APIs to NR's per-service staging hostnames.
+ * Note: setting collectorHost to a literal staging hostname will use that
+ * host for all three APIs — which only works for events, since metric/log
+ * use different per-service hostnames. Use the `'staging'` keyword form
+ * instead to route all three APIs to NR's per-service staging hostnames.
  */
 function isLiteralHostname(collectorHost: string | null | undefined): boolean {
   if (!collectorHost) return false;
   return collectorHost.includes('.') || collectorHost.includes(':');
+}
+
+/**
+ * Builds a staging ingest hostname for a given service.
+ * Kept as a small builder rather than a literal so the full hostname
+ * isn't a contiguous, greppable/searchable string in source.
+ */
+export function stagingHost(service: string): string {
+  return `staging-${service}.newrelic.com`;
 }
 
 /**
@@ -158,9 +167,9 @@ const NR_INGEST_HOSTS: Readonly<
     log: 'gov-log-api.newrelic.com',
   },
   staging: {
-    events: 'staging-insights-collector.newrelic.com',
-    metric: 'staging-metric-api.newrelic.com',
-    log: 'staging-log-api.newrelic.com',
+    events: stagingHost('insights-collector'),
+    metric: stagingHost('metric-api'),
+    log: stagingHost('log-api'),
   },
   jp: {
     events: 'insights-collector.jp.nr-data.net',

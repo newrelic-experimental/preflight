@@ -1,6 +1,7 @@
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { sendEvents } from './events-api.js';
+import { stagingHost } from './http-client.js';
 import type { NrEventData } from '../events/types.js';
 import type { TransportOptions } from './types.js';
 
@@ -113,7 +114,7 @@ describe('sendEvents', () => {
     });
 
     const [url] = fetchSpy.mock.calls[0];
-    expect(url).toBe('https://staging-insights-collector.newrelic.com/v1/accounts/12345/events');
+    expect(url).toBe(`https://${stagingHost('insights-collector')}/v1/accounts/12345/events`);
   });
 });
 

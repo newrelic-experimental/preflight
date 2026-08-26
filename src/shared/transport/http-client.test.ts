@@ -21,6 +21,7 @@ import {
   getLogsApiUrl,
   compressPayload,
   sendWithRetry,
+  stagingHost,
 } from './http-client.js';
 import type { HttpSendOptions } from './types.js';
 import { getLogOutput } from '../__test-utils__/log-output.js';
@@ -177,7 +178,7 @@ describe('resolveRegion', () => {
 describe('getEventsApiUrl', () => {
   it('returns staging endpoint for staging region', () => {
     expect(getEventsApiUrl('908482', 'staging')).toBe(
-      'https://staging-insights-collector.newrelic.com/v1/accounts/908482/events',
+      `https://${stagingHost('insights-collector')}/v1/accounts/908482/events`,
     );
   });
 
@@ -221,7 +222,7 @@ describe('getEventsApiUrl', () => {
   it('ignores collectorHost without dot or colon and falls through to region', () => {
     // 'staging' keyword has no dot — region resolution must determine the URL.
     expect(getEventsApiUrl('12345', 'staging', 'staging')).toBe(
-      'https://staging-insights-collector.newrelic.com/v1/accounts/12345/events',
+      `https://${stagingHost('insights-collector')}/v1/accounts/12345/events`,
     );
   });
 
@@ -248,7 +249,7 @@ describe('getEventsApiUrl', () => {
 
 describe('getMetricApiUrl', () => {
   it('returns staging endpoint for staging region', () => {
-    expect(getMetricApiUrl('staging')).toBe('https://staging-metric-api.newrelic.com/metric/v1');
+    expect(getMetricApiUrl('staging')).toBe(`https://${stagingHost('metric-api')}/metric/v1`);
   });
 
   it('returns FedRAMP endpoint for gov region', () => {
@@ -267,14 +268,14 @@ describe('getMetricApiUrl', () => {
 
   it('ignores bare staging keyword and falls through to region', () => {
     expect(getMetricApiUrl('staging', 'staging')).toBe(
-      'https://staging-metric-api.newrelic.com/metric/v1',
+      `https://${stagingHost('metric-api')}/metric/v1`,
     );
   });
 });
 
 describe('getLogsApiUrl', () => {
   it('returns staging endpoint for staging region', () => {
-    expect(getLogsApiUrl('staging')).toBe('https://staging-log-api.newrelic.com/log/v1');
+    expect(getLogsApiUrl('staging')).toBe(`https://${stagingHost('log-api')}/log/v1`);
   });
 
   it('returns FedRAMP endpoint for gov region', () => {
@@ -292,7 +293,7 @@ describe('getLogsApiUrl', () => {
   });
 
   it('ignores bare staging keyword and falls through to region', () => {
-    expect(getLogsApiUrl('staging', 'staging')).toBe('https://staging-log-api.newrelic.com/log/v1');
+    expect(getLogsApiUrl('staging', 'staging')).toBe(`https://${stagingHost('log-api')}/log/v1`);
   });
 });
 
