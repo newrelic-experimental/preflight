@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Preflight is now available as a [Kiro Power](docs/KIRO_POWER.md)** (`kiro-power/`) — install it from Kiro's Powers panel to add the `nr_observe_*` MCP query tools without manually editing `~/.kiro/settings/mcp.json`. Ships in Kiro's Agent Plugins format (`plugin.json` + `mcp.json` + two Agent Skills: `setup` for first-run onboarding, `observability` for the tool catalog). Kiro Powers can't bundle hooks or executables, so automatic tool-call capture stays a documented one-time step (`npm install -g @newrelic/preflight` for the `preflight-collector` bin, plus a `.kiro/hooks/preflight-observability.json` entry) rather than something the Power installs itself — see `docs/KIRO_POWER.md` and the corresponding addition to `KiroAdapter.getHookInstallInstructions()`.
+
 ## [1.21.0] - 2026-09-01
 
 ### Added

@@ -264,6 +264,11 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
    ```
 2. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
 
+Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md) — it
+provisions the same MCP server without manually editing `mcp.json`, plus a
+documented step for wiring Kiro's native `.kiro/hooks/` system
+([kiro.dev/docs/hooks/](https://kiro.dev/docs/hooks/)) for automatic capture.
+
 ---
 
 ## Factory Droid (`droid`)
