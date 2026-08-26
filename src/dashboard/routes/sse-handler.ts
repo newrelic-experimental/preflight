@@ -63,9 +63,8 @@ export function createSseHandler(
     if (replaySeq >= 0) {
       // Replay buffered events with global seq > lastSeq, using the bus's
       // own seq for the frame id. This keeps replay and live frames in the
-      // same numbering namespace — where a per-connection
-      // counter caused reconnect to either miss events or replay
-      // pre-connection history.
+      // same numbering namespace — a per-connection counter would cause
+      // reconnect to either miss events or replay pre-connection history.
       for (const entry of bus.replayFrom(replaySeq)) {
         const sid = extractSessionId(entry.payload);
         if (filterSessionId !== null && sid !== undefined && sid !== filterSessionId) {
