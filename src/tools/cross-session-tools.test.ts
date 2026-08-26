@@ -127,6 +127,10 @@ describe('getNerdgraphUrl', () => {
     expect(getNerdgraphUrl(null)).toBe('https://api.newrelic.com/graphql');
   });
 
+  it('returns staging endpoint', () => {
+    expect(getNerdgraphUrl('staging')).toBe('https://staging-api.newrelic.com/graphql');
+  });
+
   it('returns EU endpoint', () => {
     expect(getNerdgraphUrl('eu')).toBe('https://api.eu.newrelic.com/graphql');
   });

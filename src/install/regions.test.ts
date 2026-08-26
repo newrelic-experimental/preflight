@@ -7,8 +7,8 @@ import {
 } from './regions.js';
 
 describe('REGIONS', () => {
-  it('is ordered us, eu, gov, jp', () => {
-    expect(REGIONS.map((r) => r.key)).toEqual(['us', 'eu', 'gov', 'jp']);
+  it('is ordered us, eu, staging, gov, jp', () => {
+    expect(REGIONS.map((r) => r.key)).toEqual(['us', 'eu', 'staging', 'gov', 'jp']);
   });
 });
 
@@ -30,6 +30,7 @@ describe('getRegion', () => {
     expect(getRegion('jp').nerdgraphUrl).toBe('https://api.jp.newrelic.com/graphql');
     expect(getRegion('gov').eventsApiHost).toBe('gov-insights-collector.newrelic.com');
     expect(getRegion('gov').nerdgraphUrl).toBe('https://api.newrelic.com/graphql');
+    expect(getRegion('staging').eventsApiHost).toBe('staging-insights-collector.newrelic.com');
   });
 });
 
@@ -41,6 +42,12 @@ describe('getRegionByDeployFlags', () => {
   it('returns eu when eu is set', () => {
     expect(getRegionByDeployFlags({ eu: true }).nerdgraphUrl).toBe(
       'https://api.eu.newrelic.com/graphql',
+    );
+  });
+
+  it('returns staging when staging is set', () => {
+    expect(getRegionByDeployFlags({ staging: true }).nerdgraphUrl).toBe(
+      'https://staging-api.newrelic.com/graphql',
     );
   });
 

@@ -1102,6 +1102,11 @@ describe('buildConfig nrApiKey and collectorHost', () => {
     const result = buildConfig({}, { ...base, collectorHost: 'eu' });
     expect(result.collectorHost).toBe('eu');
   });
+
+  it('writes collectorHost staging when provided', () => {
+    const result = buildConfig({}, { ...base, collectorHost: 'staging' });
+    expect(result.collectorHost).toBe('staging');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1191,14 +1196,14 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('eu');
   });
 
-  it('defaults to jp when license key starts with jp', async () => {
-    answers('cloud', '12345', 'jpxx-license', '', '', 'tester', '', '', '', 'n');
+  it('writes collectorHost staging when staging selected', async () => {
+    answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
     const written = JSON.parse(writtenJson) as Record<string, unknown>;
-    expect(written.collectorHost).toBe('jp');
+    expect(written.collectorHost).toBe('staging');
   });
 
   it('writes collectorHost gov when FedRAMP selected', async () => {
@@ -1221,6 +1226,16 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('jp');
   });
 
+  it('defaults to jp when license key starts with jp', async () => {
+    answers('cloud', '12345', 'jpxx-license', '', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
+    const written = JSON.parse(writtenJson) as Record<string, unknown>;
+    expect(written.collectorHost).toBe('jp');
+  });
+
   it('includes --eu in deploy commands when EU is selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'eu', '', 'tester', '', '', '', 'n');
 
@@ -1228,6 +1243,15 @@ describe('setupWizard environment and nrApiKey steps', () => {
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('--eu');
+  });
+
+  it('includes --staging in deploy commands when staging is selected', async () => {
+    answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--staging');
   });
 
   it('includes --jp in deploy commands when Japan is selected', async () => {
@@ -1239,18 +1263,19 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(output).toContain('--jp');
   });
 
-  it('does not include --eu or --jp in deploy commands when US is selected', async () => {
+  it('does not include --eu, --staging, or --jp in deploy commands when US is selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'us', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).not.toContain('--eu');
+    expect(output).not.toContain('--staging');
     expect(output).not.toContain('--jp');
   });
 
-  it('falls back to default env on unrecognized input', async () => {
-    // Typo or garbage input should fall back to the default env
+  it('falls back to default env on unrecognized input rather than silently picking staging', async () => {
+    // Typo or garbage input should not silently route to staging
     answers('cloud', '12345', 'NRLIC-test', 'nope', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
@@ -1336,7 +1361,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
   });
 
   it('does not warn for legacy keys with no region prefix', async () => {
-    answers('cloud', '12345', 'NRLIC-legacykey', 'us', '', 'tester', '', '', '', 'n');
+    answers('cloud', '12345', 'NRLIC-legacykey', 'staging', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 

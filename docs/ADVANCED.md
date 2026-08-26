@@ -199,16 +199,17 @@ If you have existing NR telemetry but no local session files — for example, be
 ```bash
 NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   npm run backfill:sessions -- \
-  --developer <your-name> [--days 90] [--dry-run]
+  --developer <your-name> [--days 90] [--dry-run] [--staging]
 ```
 
 The script queries NR for your past sessions, reconstructs session summaries, writes them to `~/.newrelic-preflight/sessions/`, and regenerates weekly summaries. Sessions already present locally are skipped. Run `--dry-run` first to preview what would be written.
 
-| Flag          | What it does                                        |
-| ------------- | --------------------------------------------------- |
-| `--developer` | Required. The developer name to query sessions for. |
-| `--days`      | How far back to look. Default: 30.                  |
-| `--dry-run`   | Preview output without writing any files.           |
+| Flag          | What it does                                             |
+| ------------- | -------------------------------------------------------- |
+| `--developer` | Required. The developer name to query sessions for.      |
+| `--days`      | How far back to look. Default: 30.                       |
+| `--dry-run`   | Preview output without writing any files.                |
+| `--staging`   | Target the staging NR environment instead of production. |
 
 ---
 
@@ -245,6 +246,7 @@ terraform apply
 | `account_id`                    | Yes      | —       | New Relic account ID                                           |
 | `api_key`                       | Yes      | —       | User API key (`NRAK-...`)                                      |
 | `region`                        | No       | `US`    | `US` or `EU`                                                   |
+| `staging`                       | No       | `false` | Target staging environment (`staging-api.newrelic.com`)        |
 | `developer`                     | No       | `""`    | Developer name — enables personal alert conditions when set    |
 | `personal_daily_cost_usd`       | No       | `10`    | Personal daily cost alert threshold (USD)                      |
 | `personal_session_cost_usd`     | No       | `5`     | Personal per-session cost alert threshold (USD)                |

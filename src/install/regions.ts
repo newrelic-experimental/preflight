@@ -7,7 +7,7 @@
  * compiler-enforced sync.
  */
 
-export type RegionKey = 'us' | 'eu' | 'gov' | 'jp';
+export type RegionKey = 'us' | 'eu' | 'staging' | 'gov' | 'jp';
 
 export interface RegionDefinition {
   readonly key: RegionKey;
@@ -16,11 +16,11 @@ export interface RegionDefinition {
   readonly eventsApiHost: string;
   readonly nerdgraphUrl: string;
   readonly licenseKeyPrefix: string | null;
-  readonly cliFlag: '--eu' | '--jp' | null;
+  readonly cliFlag: '--eu' | '--staging' | '--jp' | null;
 }
 
 // Order is load-bearing: setup-wizard's regenerated region menu numbers its
-// options 1-4 by this array's index.
+// options 1-5 by this array's index.
 export const REGIONS: readonly RegionDefinition[] = [
   {
     key: 'us',
@@ -39,6 +39,15 @@ export const REGIONS: readonly RegionDefinition[] = [
     nerdgraphUrl: 'https://api.eu.newrelic.com/graphql',
     licenseKeyPrefix: 'eu01',
     cliFlag: '--eu',
+  },
+  {
+    key: 'staging',
+    menuLabel: 'Staging',
+    displayHost: 'staging-api.newrelic.com',
+    eventsApiHost: 'staging-insights-collector.newrelic.com',
+    nerdgraphUrl: 'https://staging-api.newrelic.com/graphql',
+    licenseKeyPrefix: null,
+    cliFlag: '--staging',
   },
   {
     key: 'gov',
@@ -67,7 +76,12 @@ export function getRegion(key: string | null | undefined): RegionDefinition {
   return REGIONS.find((r) => r.key === key) ?? REGIONS[0]!;
 }
 
-export function getRegionByDeployFlags(opts: { eu?: boolean; jp?: boolean }): RegionDefinition {
+export function getRegionByDeployFlags(opts: {
+  staging?: boolean;
+  eu?: boolean;
+  jp?: boolean;
+}): RegionDefinition {
+  if (opts.staging) return getRegion('staging');
   if (opts.eu) return getRegion('eu');
   if (opts.jp) return getRegion('jp');
   return getRegion('us');

@@ -108,6 +108,19 @@ describe('sendLogs', () => {
   // covered directly (and more thoroughly) in http-client.test.ts's URL
   // builder tests — this wrapper only needs to prove the dot-in-host case
   // wires through correctly.
+
+  // bare 'staging' keyword (no dot) is still routed via region detection
+  // to NR's per-service staging hostnames — the literal-hostname override only
+  // kicks in for FQDN-shaped values. This preserves NR-internal staging usage.
+  it('routes bare staging keyword to NR staging log endpoint', async () => {
+    await sendLogs(testLogs, 'us01xxUSKEY', {
+      ...baseOptions,
+      collectorHost: 'staging',
+    });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe('https://staging-log-api.newrelic.com/log/v1');
+  });
 });
 
 // ---------------------------------------------------------------------------

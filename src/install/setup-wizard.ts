@@ -18,13 +18,13 @@ import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
+import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 import {
   REGIONS,
   getRegion,
   suggestRegionFromLicenseKey,
   detectRegionFromLicenseKeyStrict,
 } from './regions.js';
-import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 
 const CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
 const ALERT_RULES_DEST = resolve(DEFAULT_STORAGE_PATH, 'alerts', 'rules.json');
@@ -288,11 +288,13 @@ export async function runSetupWizard(): Promise<void> {
             ? 'us'
             : envRaw === '2' || envRaw === 'eu'
               ? 'eu'
-              : envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov'
-                ? 'gov'
-                : envRaw === '4' || envRaw === 'jp' || envRaw === 'japan'
-                  ? 'jp'
-                  : defaultEnv;
+              : envRaw === '3' || envRaw === 'staging'
+                ? 'staging'
+                : envRaw === '4' || envRaw === 'fedramp' || envRaw === 'gov'
+                  ? 'gov'
+                  : envRaw === '5' || envRaw === 'jp' || envRaw === 'japan'
+                    ? 'jp'
+                    : defaultEnv;
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
       // Warn if license key prefix contradicts selected environment.

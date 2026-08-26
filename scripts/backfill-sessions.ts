@@ -9,7 +9,7 @@
  *
  * Usage:
  *   NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
- *     npx tsx scripts/backfill-sessions.ts --developer <name> [--days 90] [--dry-run]
+ *     npx tsx scripts/backfill-sessions.ts --developer <name> [--days 90] [--dry-run] [--staging]
  *
  * Requires a New Relic User API key (NRAK-...), not a license key.
  *
@@ -34,7 +34,7 @@ import type { FullSessionSummary } from '../src/storage/session-store.js';
 import { normalizeDeveloperName } from '../src/config.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../src/metrics/quality-proxy-tracker.js';
 
-const NERDGRAPH_URL = 'https://api.newrelic.com/graphql';
+let NERDGRAPH_URL = 'https://api.newrelic.com/graphql';
 
 // ---------------------------------------------------------------------------
 // Minimal NerdGraph NRQL client
@@ -80,6 +80,12 @@ async function runNrql(
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
+  const staging = args.includes('--staging');
+
+  if (staging) {
+    NERDGRAPH_URL = 'https://staging-api.newrelic.com/graphql';
+    process.stdout.write('Targeting staging API: https://staging-api.newrelic.com/graphql\n');
+  }
 
   const devIdx = args.indexOf('--developer');
   const developerRaw = devIdx !== -1 ? (args[devIdx + 1] ?? null) : null;

@@ -40,6 +40,12 @@ describe('getEventsApiUrl', () => {
     );
   });
 
+  it('returns staging endpoint', () => {
+    expect(getEventsApiUrl('12345', 'staging')).toBe(
+      'https://staging-insights-collector.newrelic.com/v1/accounts/12345/events',
+    );
+  });
+
   it('returns gov endpoint', () => {
     expect(getEventsApiUrl('12345', 'gov')).toBe(
       'https://gov-insights-collector.newrelic.com/v1/accounts/12345/events',
@@ -66,6 +72,10 @@ describe('getNerdgraphUrl', () => {
 
   it('returns EU endpoint', () => {
     expect(getNerdgraphUrl('eu')).toBe('https://api.eu.newrelic.com/graphql');
+  });
+
+  it('returns staging endpoint', () => {
+    expect(getNerdgraphUrl('staging')).toBe('https://staging-api.newrelic.com/graphql');
   });
 
   it('returns US endpoint for gov (no distinct gov NerdGraph URL)', () => {
