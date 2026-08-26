@@ -7,6 +7,8 @@
  * compiler-enforced sync.
  */
 
+import { stagingHost } from '../shared/transport/http-client.js';
+
 export type RegionKey = 'us' | 'eu' | 'staging' | 'gov' | 'jp';
 
 export interface RegionDefinition {
@@ -20,7 +22,8 @@ export interface RegionDefinition {
 }
 
 // Order is load-bearing: setup-wizard's regenerated region menu numbers its
-// options 1-5 by this array's index.
+// options 1-4 by this array's index. Staging is deliberately NOT included
+// here — see STAGING_REGION below.
 export const REGIONS: readonly RegionDefinition[] = [
   {
     key: 'us',
@@ -39,15 +42,6 @@ export const REGIONS: readonly RegionDefinition[] = [
     nerdgraphUrl: 'https://api.eu.newrelic.com/graphql',
     licenseKeyPrefix: 'eu01',
     cliFlag: '--eu',
-  },
-  {
-    key: 'staging',
-    menuLabel: 'Staging',
-    displayHost: 'staging-api.newrelic.com',
-    eventsApiHost: 'staging-insights-collector.newrelic.com',
-    nerdgraphUrl: 'https://staging-api.newrelic.com/graphql',
-    licenseKeyPrefix: null,
-    cliFlag: '--staging',
   },
   {
     key: 'gov',
@@ -72,8 +66,28 @@ export const REGIONS: readonly RegionDefinition[] = [
   },
 ];
 
+// Resolvable via the deploy-CLI --staging flag and the setup wizard's
+// --staging flag, but deliberately excluded from REGIONS so it never
+// appears in the interactive environment menu or the license-key
+// auto-detect loop — the flag stays available for NR-employee onboarding
+// without advertising an NR-internal hostname to the general public by
+// default.
+const STAGING_REGION: RegionDefinition = {
+  key: 'staging',
+  menuLabel: 'Staging',
+  displayHost: stagingHost('api'),
+  eventsApiHost: stagingHost('insights-collector'),
+  nerdgraphUrl: `https://${stagingHost('api')}/graphql`,
+  licenseKeyPrefix: null,
+  cliFlag: '--staging',
+};
+
 export function getRegion(key: string | null | undefined): RegionDefinition {
-  return REGIONS.find((r) => r.key === key) ?? REGIONS[0]!;
+  return (
+    REGIONS.find((r) => r.key === key) ??
+    (key === STAGING_REGION.key ? STAGING_REGION : undefined) ??
+    REGIONS[0]!
+  );
 }
 
 export function getRegionByDeployFlags(opts: {

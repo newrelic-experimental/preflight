@@ -1196,14 +1196,33 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('eu');
   });
 
-  it('writes collectorHost staging when staging selected', async () => {
+  it('does not select staging when the word "staging" is typed interactively', async () => {
+    // Staging is intentionally unreachable from the interactive prompt — neither
+    // by number nor by typing the keyword. Falls back to the US default, same
+    // as any other unrecognized input.
     answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
     const written = JSON.parse(writtenJson) as Record<string, unknown>;
+    expect(Object.keys(written)).not.toContain('collectorHost');
+  });
+
+  it('--staging flag pre-selects staging and skips the environment question', async () => {
+    // One fewer prompt than the interactive flow above — no environment
+    // question is asked at all.
+    answers('cloud', '12345', 'NRLIC-test', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard({ staging: true });
+
+    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
+    const written = JSON.parse(writtenJson) as Record<string, unknown>;
     expect(written.collectorHost).toBe('staging');
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--staging flag');
+    expect(output).not.toContain('Which environment?');
   });
 
   it('writes collectorHost gov when FedRAMP selected', async () => {
@@ -1245,13 +1264,22 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(output).toContain('--eu');
   });
 
-  it('includes --staging in deploy commands when staging is selected', async () => {
-    answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
+  it('includes --staging in deploy commands when the --staging flag was used', async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard({ staging: true });
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--staging');
+  });
+
+  it('never prints "Staging" in the interactive environment menu', async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    expect(output).toContain('--staging');
+    expect(output).not.toContain('Staging');
   });
 
   it('includes --jp in deploy commands when Japan is selected', async () => {

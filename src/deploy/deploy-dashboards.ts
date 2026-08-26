@@ -12,6 +12,7 @@ import { resolve, sep } from 'node:path';
 
 import { normalizeDeveloperName } from '../config.js';
 import { getRegionByDeployFlags } from '../install/regions.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 import { resolveDataDir } from './data-paths.js';
 
 export const CREATE_MUTATION = `
@@ -381,7 +382,7 @@ export async function runDeployDashboards(opts: DashboardDeployOptions): Promise
   }
 
   if (opts.staging) {
-    out.write('Targeting staging API: https://staging-api.newrelic.com/graphql\n');
+    out.write(`Targeting staging API: https://${stagingHost('api')}/graphql\n`);
   } else if (opts.eu) {
     out.write('Targeting EU API: https://api.eu.newrelic.com/graphql\n');
   } else if (opts.jp) {

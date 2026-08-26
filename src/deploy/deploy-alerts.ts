@@ -18,6 +18,7 @@ import type {
 import { DEFAULT_PERSONAL_THRESHOLDS } from '../alerts/types.js';
 import { normalizeDeveloperName } from '../config.js';
 import { getRegionByDeployFlags } from '../install/regions.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 import { resolveDataDir } from './data-paths.js';
 
 export const CREATE_POLICY_MUTATION = `
@@ -434,7 +435,7 @@ export async function runDeployAlerts(opts: AlertsDeployOptions): Promise<number
   }
 
   if (opts.staging) {
-    out.write('Targeting staging API: https://staging-api.newrelic.com/graphql\n');
+    out.write(`Targeting staging API: https://${stagingHost('api')}/graphql\n`);
   } else if (opts.eu) {
     out.write('Targeting EU API: https://api.eu.newrelic.com/graphql\n');
   } else if (opts.jp) {

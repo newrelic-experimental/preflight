@@ -21,7 +21,7 @@ variable "region" {
 }
 
 variable "staging" {
-  description = "Target NR staging environment (staging-one.newrelic.com). Overrides nerdgraph_api_url."
+  description = "Target the New Relic staging environment. Overrides nerdgraph_api_url."
   type        = bool
   default     = false
 }

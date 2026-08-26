@@ -189,7 +189,7 @@ function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
   return fallback;
 }
 
-export async function runSetupWizard(): Promise<void> {
+export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<void> {
   migrateStoragePath(true);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   // Safety net: process.exit() bypasses finally blocks but still runs 'exit' handlers.
@@ -268,33 +268,40 @@ export async function runSetupWizard(): Promise<void> {
         process.exit(1);
       }
 
-      // Step 2b: Environment / region
+      // Step 2b: Environment / region. --staging pre-selects the region and
+      // skips this question entirely — staging is never shown in the menu
+      // or matched against typed input, to avoid advertising an NR-internal
+      // hostname to the general public by default.
       const existingCollectorHost =
         typeof existing.collectorHost === 'string' ? existing.collectorHost : null;
       const autoEnv = suggestRegionFromLicenseKey(licenseKey);
       const defaultEnv = existingCollectorHost ?? autoEnv;
-      print('Environment:');
-      const menuLabelWidth = Math.max(...REGIONS.map((r) => r.menuLabel.length));
-      REGIONS.forEach((region, i) => {
-        print(`  ${i + 1}) ${region.menuLabel.padEnd(menuLabelWidth)} — ${region.displayHost}`);
-      });
-      const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
-        .trim()
-        .toLowerCase();
-      const resolvedEnv =
-        envRaw === '' || envRaw === defaultEnv
-          ? defaultEnv
-          : envRaw === '1' || envRaw === 'us'
-            ? 'us'
-            : envRaw === '2' || envRaw === 'eu'
-              ? 'eu'
-              : envRaw === '3' || envRaw === 'staging'
-                ? 'staging'
-                : envRaw === '4' || envRaw === 'fedramp' || envRaw === 'gov'
+      let resolvedEnv: string;
+      if (opts.staging) {
+        resolvedEnv = 'staging';
+        print('Environment: Staging (--staging flag)');
+      } else {
+        print('Environment:');
+        const menuLabelWidth = Math.max(...REGIONS.map((r) => r.menuLabel.length));
+        REGIONS.forEach((region, i) => {
+          print(`  ${i + 1}) ${region.menuLabel.padEnd(menuLabelWidth)} — ${region.displayHost}`);
+        });
+        const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
+          .trim()
+          .toLowerCase();
+        resolvedEnv =
+          envRaw === '' || envRaw === defaultEnv
+            ? defaultEnv
+            : envRaw === '1' || envRaw === 'us'
+              ? 'us'
+              : envRaw === '2' || envRaw === 'eu'
+                ? 'eu'
+                : envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov'
                   ? 'gov'
-                  : envRaw === '5' || envRaw === 'jp' || envRaw === 'japan'
+                  : envRaw === '4' || envRaw === 'jp' || envRaw === 'japan'
                     ? 'jp'
                     : defaultEnv;
+      }
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
       // Warn if license key prefix contradicts selected environment.

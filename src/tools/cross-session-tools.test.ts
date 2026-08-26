@@ -6,6 +6,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 jest.mock('../security/index.js', () => ({ validateSsrfUrl: jest.fn() }));
 
 import { validateSsrfUrl } from '../security/index.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -128,7 +129,7 @@ describe('getNerdgraphUrl', () => {
   });
 
   it('returns staging endpoint', () => {
-    expect(getNerdgraphUrl('staging')).toBe('https://staging-api.newrelic.com/graphql');
+    expect(getNerdgraphUrl('staging')).toBe(`https://${stagingHost('api')}/graphql`);
   });
 
   it('returns EU endpoint', () => {

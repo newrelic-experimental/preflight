@@ -33,6 +33,7 @@ import {
 import type { FullSessionSummary } from '../src/storage/session-store.js';
 import { normalizeDeveloperName } from '../src/config.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../src/metrics/quality-proxy-tracker.js';
+import { stagingHost } from '../src/shared/transport/http-client.js';
 
 let NERDGRAPH_URL = 'https://api.newrelic.com/graphql';
 
@@ -83,8 +84,8 @@ async function main(): Promise<void> {
   const staging = args.includes('--staging');
 
   if (staging) {
-    NERDGRAPH_URL = 'https://staging-api.newrelic.com/graphql';
-    process.stdout.write('Targeting staging API: https://staging-api.newrelic.com/graphql\n');
+    NERDGRAPH_URL = `https://${stagingHost('api')}/graphql`;
+    process.stdout.write(`Targeting staging API: ${NERDGRAPH_URL}\n`);
   }
 
   const devIdx = args.indexOf('--developer');

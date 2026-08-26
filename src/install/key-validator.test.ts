@@ -12,6 +12,7 @@ import {
   getEventsApiUrl,
   getNerdgraphUrl,
 } from './key-validator.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 
 afterEach(() => {
   jest.mocked(validateSsrfUrl).mockReset();
@@ -42,7 +43,7 @@ describe('getEventsApiUrl', () => {
 
   it('returns staging endpoint', () => {
     expect(getEventsApiUrl('12345', 'staging')).toBe(
-      'https://staging-insights-collector.newrelic.com/v1/accounts/12345/events',
+      `https://${stagingHost('insights-collector')}/v1/accounts/12345/events`,
     );
   });
 
@@ -75,7 +76,7 @@ describe('getNerdgraphUrl', () => {
   });
 
   it('returns staging endpoint', () => {
-    expect(getNerdgraphUrl('staging')).toBe('https://staging-api.newrelic.com/graphql');
+    expect(getNerdgraphUrl('staging')).toBe(`https://${stagingHost('api')}/graphql`);
   });
 
   it('returns US endpoint for gov (no distinct gov NerdGraph URL)', () => {

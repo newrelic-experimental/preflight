@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
@@ -541,7 +541,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--update', 'update existing dashboards in-place (matched by name)')
       .option('--teardown', 'delete deployed dashboards (matched by name)')
       .option('--print', 'print dashboard JSON with accountIds filled in (no API key required)')
-      .option('--staging', 'target the New Relic staging API')
+      .addOption(new Option('--staging', 'target the New Relic staging API').hideHelp())
       .option('--eu', 'target the New Relic EU API')
       .option('--jp', 'target the New Relic Japan API')
       .option(
@@ -574,7 +574,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--dry-run', 'print the policy + conditions that would be created and exit')
       .option('--teardown', 'delete the alert policy and all its conditions')
       .option('--update', 'sync conditions on an existing policy in place (matched by name)')
-      .option('--staging', 'target the New Relic staging API')
+      .addOption(new Option('--staging', 'target the New Relic staging API').hideHelp())
       .option('--eu', 'target the New Relic EU API')
       .option('--jp', 'target the New Relic Japan API')
       .option('--developer <name>', 'deploy a personal alert policy scoped to <name>')

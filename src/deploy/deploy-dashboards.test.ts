@@ -7,6 +7,7 @@ import {
   injectDeveloperDefault,
   escapeLuceneValue,
 } from './deploy-dashboards.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 
 describe('escapeLuceneValue', () => {
   it('escapes backslashes before single quotes', () => {
@@ -465,7 +466,7 @@ describe('runDeployDashboards', () => {
       fetchImpl,
       stdout: out,
     });
-    expect(calls[0].url).toBe('https://staging-api.newrelic.com/graphql');
+    expect(calls[0].url).toBe(`https://${stagingHost('api')}/graphql`);
   });
 
   it('--jp targets Japan API URL', async () => {
