@@ -3,7 +3,12 @@ import * as rlMod from 'node:readline/promises';
 import { join } from 'node:path';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
-import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
+import {
+  buildConfig,
+  runSetupWizard,
+  copyStarterAlertRules,
+  resolveEnvironmentChoice,
+} from './setup-wizard.js';
 import * as scheduleMod from './schedule.js';
 import * as keyValidator from './key-validator.js';
 import * as cliMod from './cli.js';
@@ -264,6 +269,42 @@ describe('defaultStarterRulesSource fallback (via runSetupWizard)', () => {
       checkedPaths.some((p) => p.endsWith(join('opt', 'examples', 'local-alert-rules.json'))),
     ).toBe(true);
     void output;
+  });
+});
+
+describe('resolveEnvironmentChoice', () => {
+  it('returns the default when the answer is blank', () => {
+    expect(resolveEnvironmentChoice('', 'us')).toBe('us');
+  });
+
+  it('returns the default when the answer repeats the default', () => {
+    expect(resolveEnvironmentChoice('eu', 'eu')).toBe('eu');
+  });
+
+  it('maps numbered menu positions to region keys', () => {
+    expect(resolveEnvironmentChoice('1', 'us')).toBe('us');
+    expect(resolveEnvironmentChoice('2', 'us')).toBe('eu');
+    expect(resolveEnvironmentChoice('3', 'us')).toBe('gov');
+    expect(resolveEnvironmentChoice('4', 'us')).toBe('jp');
+  });
+
+  it('maps region keys and their aliases', () => {
+    expect(resolveEnvironmentChoice('us', 'eu')).toBe('us');
+    expect(resolveEnvironmentChoice('eu', 'us')).toBe('eu');
+    expect(resolveEnvironmentChoice('gov', 'us')).toBe('gov');
+    expect(resolveEnvironmentChoice('fedramp', 'us')).toBe('gov');
+    expect(resolveEnvironmentChoice('jp', 'us')).toBe('jp');
+    expect(resolveEnvironmentChoice('japan', 'us')).toBe('jp');
+  });
+
+  it('falls back to the default for unrecognized input, including the literal word "staging"', () => {
+    expect(resolveEnvironmentChoice('nope', 'us')).toBe('us');
+    expect(resolveEnvironmentChoice('5', 'us')).toBe('us');
+    expect(resolveEnvironmentChoice('staging', 'us')).toBe('us');
+  });
+
+  it('preserves an existing staging default on a blank answer (not a new interactive selection)', () => {
+    expect(resolveEnvironmentChoice('', 'staging')).toBe('staging');
   });
 });
 
@@ -1102,6 +1143,11 @@ describe('buildConfig nrApiKey and collectorHost', () => {
     const result = buildConfig({}, { ...base, collectorHost: 'eu' });
     expect(result.collectorHost).toBe('eu');
   });
+
+  it('writes collectorHost staging when provided', () => {
+    const result = buildConfig({}, { ...base, collectorHost: 'staging' });
+    expect(result.collectorHost).toBe('staging');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1191,14 +1237,33 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('eu');
   });
 
-  it('defaults to jp when license key starts with jp', async () => {
-    answers('cloud', '12345', 'jpxx-license', '', '', 'tester', '', '', '', 'n');
+  it('does not select staging when the word "staging" is typed interactively', async () => {
+    // Staging is intentionally unreachable from the interactive prompt — neither
+    // by number nor by typing the keyword. Falls back to the US default, same
+    // as any other unrecognized input.
+    answers('cloud', '12345', 'NRLIC-test', 'staging', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
     const written = JSON.parse(writtenJson) as Record<string, unknown>;
-    expect(written.collectorHost).toBe('jp');
+    expect(Object.keys(written)).not.toContain('collectorHost');
+  });
+
+  it('--staging flag pre-selects staging and skips the environment question', async () => {
+    // One fewer prompt than the interactive flow above — no environment
+    // question is asked at all.
+    answers('cloud', '12345', 'NRLIC-test', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard({ staging: true });
+
+    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
+    const written = JSON.parse(writtenJson) as Record<string, unknown>;
+    expect(written.collectorHost).toBe('staging');
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--staging flag');
+    expect(output).not.toContain('Which environment?');
   });
 
   it('writes collectorHost gov when FedRAMP selected', async () => {
@@ -1221,6 +1286,16 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(written.collectorHost).toBe('jp');
   });
 
+  it('defaults to jp when license key starts with jp', async () => {
+    answers('cloud', '12345', 'jpxx-license', '', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const writtenJson = mockedFs.writeFileSync.mock.calls[0][1] as string;
+    const written = JSON.parse(writtenJson) as Record<string, unknown>;
+    expect(written.collectorHost).toBe('jp');
+  });
+
   it('includes --eu in deploy commands when EU is selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'eu', '', 'tester', '', '', '', 'n');
 
@@ -1228,6 +1303,24 @@ describe('setupWizard environment and nrApiKey steps', () => {
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('--eu');
+  });
+
+  it('includes --staging in deploy commands when the --staging flag was used', async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard({ staging: true });
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--staging');
+  });
+
+  it('never prints "Staging" in the interactive environment menu', async () => {
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'n');
+
+    await runSetupWizard();
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).not.toContain('Staging');
   });
 
   it('includes --jp in deploy commands when Japan is selected', async () => {
@@ -1239,18 +1332,19 @@ describe('setupWizard environment and nrApiKey steps', () => {
     expect(output).toContain('--jp');
   });
 
-  it('does not include --eu or --jp in deploy commands when US is selected', async () => {
+  it('does not include --eu, --staging, or --jp in deploy commands when US is selected', async () => {
     answers('cloud', '12345', 'NRLIC-test', 'us', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).not.toContain('--eu');
+    expect(output).not.toContain('--staging');
     expect(output).not.toContain('--jp');
   });
 
-  it('falls back to default env on unrecognized input', async () => {
-    // Typo or garbage input should fall back to the default env
+  it('falls back to default env on unrecognized input rather than silently picking staging', async () => {
+    // Typo or garbage input should not silently route to staging
     answers('cloud', '12345', 'NRLIC-test', 'nope', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
@@ -1336,7 +1430,7 @@ describe('setupWizard environment and nrApiKey steps', () => {
   });
 
   it('does not warn for legacy keys with no region prefix', async () => {
-    answers('cloud', '12345', 'NRLIC-legacykey', 'us', '', 'tester', '', '', '', 'n');
+    answers('cloud', '12345', 'NRLIC-legacykey', 'staging', '', 'tester', '', '', '', 'n');
 
     await runSetupWizard();
 

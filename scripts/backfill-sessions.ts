@@ -9,7 +9,7 @@
  *
  * Usage:
  *   NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
- *     npx tsx scripts/backfill-sessions.ts --developer <name> [--days 90] [--dry-run]
+ *     npx tsx scripts/backfill-sessions.ts --developer <name> [--days 90] [--dry-run] [--staging]
  *
  * Requires a New Relic User API key (NRAK-...), not a license key.
  *
@@ -22,6 +22,7 @@
 
 import 'dotenv/config';
 
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../src/storage/session-store.js';
@@ -33,8 +34,7 @@ import {
 import type { FullSessionSummary } from '../src/storage/session-store.js';
 import { normalizeDeveloperName } from '../src/config.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../src/metrics/quality-proxy-tracker.js';
-
-const NERDGRAPH_URL = 'https://api.newrelic.com/graphql';
+import { stagingHost } from '../src/shared/transport/http-client.js';
 
 // ---------------------------------------------------------------------------
 // Minimal NerdGraph NRQL client
@@ -55,12 +55,17 @@ interface NrqlResponse {
   errors?: Array<{ message: string }>;
 }
 
+export function resolveNerdgraphUrl(staging: boolean): string {
+  return staging ? `https://${stagingHost('api')}/graphql` : 'https://api.newrelic.com/graphql';
+}
+
 async function runNrql(
   apiKey: string,
   accountId: number,
   query: string,
+  nerdgraphUrl: string,
 ): Promise<Record<string, unknown>[]> {
-  const resp = await fetch(NERDGRAPH_URL, {
+  const resp = await fetch(nerdgraphUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'API-Key': apiKey },
     body: JSON.stringify({ query: NRQL_QUERY, variables: { accountId, query } }),
@@ -80,6 +85,11 @@ async function runNrql(
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
+  const staging = args.includes('--staging');
+  const nerdgraphUrl = resolveNerdgraphUrl(staging);
+  if (staging) {
+    process.stdout.write(`Targeting staging API: ${nerdgraphUrl}\n`);
+  }
 
   const devIdx = args.indexOf('--developer');
   const developerRaw = devIdx !== -1 ? (args[devIdx + 1] ?? null) : null;
@@ -165,6 +175,7 @@ async function main(): Promise<void> {
       accountId,
       `SELECT count(*) AS toolCallCount FROM AiToolCall WHERE ${devFilter} ` +
         `SINCE '${week.sinceStr}' UNTIL '${week.untilStr}' FACET session_id LIMIT MAX`,
+      nerdgraphUrl,
     );
     for (const row of rows) {
       const sessionId = String(row['session_id'] ?? '');
@@ -193,6 +204,7 @@ async function main(): Promise<void> {
     accountId,
     `SELECT count(*) AS toolCount FROM AiToolCall WHERE ${devFilter} ` +
       `SINCE ${since} FACET session_id, tool LIMIT MAX`,
+    nerdgraphUrl,
   );
   const toolBreakdowns = new Map<string, Record<string, number>>();
   for (const row of toolRows) {
@@ -211,6 +223,7 @@ async function main(): Promise<void> {
     accountId,
     `SELECT filter(count(*), WHERE success = true) AS successCount, count(*) AS totalCount ` +
       `FROM AiToolCall WHERE ${devFilter} SINCE ${since} FACET session_id LIMIT MAX`,
+    nerdgraphUrl,
   );
   const successRates = new Map<string, number>();
   for (const row of successRows) {
@@ -232,6 +245,7 @@ async function main(): Promise<void> {
       `sum(tests_run) AS testRunCount, sum(tests_passed) AS testPassCount, ` +
       `sum(build_run) AS buildRunCount, sum(build_passed) AS buildPassCount ` +
       `FROM AiCodingTask WHERE ${devFilter} SINCE ${since} FACET session_id LIMIT MAX`,
+    nerdgraphUrl,
   );
   type TaskAgg = {
     estimatedCostUsd: number;
@@ -268,6 +282,7 @@ async function main(): Promise<void> {
     accountId,
     `SELECT count(*) AS patternCount FROM AiAntiPattern WHERE ${devFilter} ` +
       `SINCE ${since} FACET session_id, type LIMIT MAX`,
+    nerdgraphUrl,
   );
   const antiPatterns = new Map<string, Array<{ type: string; count: number }>>();
   for (const row of antiPatternRows) {
@@ -286,6 +301,7 @@ async function main(): Promise<void> {
     accountId,
     `FROM Metric SELECT average(ai.efficiency.score) AS efficiencyScore ` +
       `WHERE ${devFilter} SINCE ${since} FACET session_id LIMIT MAX`,
+    nerdgraphUrl,
   );
   const efficiencyScores = new Map<string, number>();
   for (const row of efficiencyRows) {
@@ -356,6 +372,7 @@ async function main(): Promise<void> {
       outcome: 'completed',
       toolSelectionMetrics: null, // not recoverable from NR event data
       modelBreakdown: {}, // not recoverable from NR event data
+      costByWorkflowRunId: {}, // not recoverable from NR event data
       qualityProxy: ZERO_QUALITY_PROXY_COUNTS,
     };
 
@@ -403,7 +420,22 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error('Fatal:', err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// Uses process.argv[1] rather than import.meta.url to avoid tripping ts-jest's
+// module-syntax check when this file is imported for unit testing — same
+// pattern as src/deploy/data-paths.ts and src/install/setup-wizard.ts.
+export function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry).endsWith(join('scripts', 'backfill-sessions.ts'));
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  main().catch((err: unknown) => {
+    console.error('Fatal:', err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+}

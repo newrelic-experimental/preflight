@@ -26,6 +26,7 @@ import {
   DEFAULT_PENDING_CONFIRMATION_CAP_MS,
   startRetentionSweep,
   startMaintenanceGc,
+  dispatchSubcommand,
 } from './index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import type { LocalStore } from './storage/index.js';
@@ -1573,4 +1574,34 @@ describe('stdio integration', () => {
       rmSync(tmpProjectCwd, { recursive: true, force: true });
     }
   }, 30000);
+});
+
+describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {
+  async function expectHelpHidesStaging(sub: 'deploy-dashboards' | 'deploy-alerts'): Promise<void> {
+    const exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation((_code?: string | number | null): never => {
+        throw new Error(`exit:${_code}`);
+      });
+    const chunks: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+    try {
+      await expect(dispatchSubcommand(['node', 'preflight', sub, '--help'])).rejects.toThrow();
+    } finally {
+      expect(chunks.join('')).not.toContain('--staging');
+      stdoutSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  }
+
+  it('deploy-dashboards --help does not list --staging', async () => {
+    await expectHelpHidesStaging('deploy-dashboards');
+  });
+
+  it('deploy-alerts --help does not list --staging', async () => {
+    await expectHelpHidesStaging('deploy-alerts');
+  });
 });

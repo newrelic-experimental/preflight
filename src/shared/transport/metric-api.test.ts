@@ -1,6 +1,7 @@
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { sendMetrics } from './metric-api.js';
+import { stagingHost } from './http-client.js';
 import type { NrMetric, TransportOptions } from './types.js';
 
 const gunzipAsync = promisify(gunzip);
@@ -103,6 +104,19 @@ describe('sendMetrics', () => {
 
     const [url] = fetchSpy.mock.calls[0];
     expect(url).toBe('https://metric-api.eu.newrelic.com/metric/v1');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Staging region routes to staging metric endpoint
+  // ---------------------------------------------------------------------------
+  it('routes to staging endpoint when collectorHost contains staging', async () => {
+    await sendMetrics(testMetrics, 'us01xxUSKEY', {
+      ...baseOptions,
+      collectorHost: 'staging',
+    });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`https://${stagingHost('metric-api')}/metric/v1`);
   });
 
   // ---------------------------------------------------------------------------

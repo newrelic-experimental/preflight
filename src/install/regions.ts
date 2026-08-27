@@ -7,7 +7,9 @@
  * compiler-enforced sync.
  */
 
-export type RegionKey = 'us' | 'eu' | 'gov' | 'jp';
+import { stagingHost } from '../shared/transport/http-client.js';
+
+export type RegionKey = 'us' | 'eu' | 'staging' | 'gov' | 'jp';
 
 export interface RegionDefinition {
   readonly key: RegionKey;
@@ -16,11 +18,12 @@ export interface RegionDefinition {
   readonly eventsApiHost: string;
   readonly nerdgraphUrl: string;
   readonly licenseKeyPrefix: string | null;
-  readonly cliFlag: '--eu' | '--jp' | null;
+  readonly cliFlag: '--eu' | '--staging' | '--jp' | null;
 }
 
 // Order is load-bearing: setup-wizard's regenerated region menu numbers its
-// options 1-4 by this array's index.
+// options 1-4 by this array's index. Staging is deliberately NOT included
+// here — see STAGING_REGION below.
 export const REGIONS: readonly RegionDefinition[] = [
   {
     key: 'us',
@@ -63,11 +66,35 @@ export const REGIONS: readonly RegionDefinition[] = [
   },
 ];
 
+// Resolvable via the deploy-CLI --staging flag and the setup wizard's
+// --staging flag, but deliberately excluded from REGIONS so it's never
+// listed in the interactive environment menu or matched by the
+// license-key auto-detect loop — reachable only by passing the flag
+// explicitly.
+const STAGING_REGION: RegionDefinition = {
+  key: 'staging',
+  menuLabel: 'Staging',
+  displayHost: stagingHost('api'),
+  eventsApiHost: stagingHost('insights-collector'),
+  nerdgraphUrl: `https://${stagingHost('api')}/graphql`,
+  licenseKeyPrefix: null,
+  cliFlag: '--staging',
+};
+
 export function getRegion(key: string | null | undefined): RegionDefinition {
-  return REGIONS.find((r) => r.key === key) ?? REGIONS[0]!;
+  return (
+    REGIONS.find((r) => r.key === key) ??
+    (key === STAGING_REGION.key ? STAGING_REGION : undefined) ??
+    REGIONS[0]!
+  );
 }
 
-export function getRegionByDeployFlags(opts: { eu?: boolean; jp?: boolean }): RegionDefinition {
+export function getRegionByDeployFlags(opts: {
+  staging?: boolean;
+  eu?: boolean;
+  jp?: boolean;
+}): RegionDefinition {
+  if (opts.staging) return getRegion('staging');
   if (opts.eu) return getRegion('eu');
   if (opts.jp) return getRegion('jp');
   return getRegion('us');

@@ -7,6 +7,7 @@ import {
   injectDeveloperDefault,
   escapeLuceneValue,
 } from './deploy-dashboards.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 
 describe('escapeLuceneValue', () => {
   it('escapes backslashes before single quotes', () => {
@@ -154,6 +155,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: true,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -173,6 +175,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -193,6 +196,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -204,16 +208,17 @@ describe('runDeployDashboards', () => {
     expect(out.text()).toContain('NEW_RELIC_API_KEY');
   });
 
-  it('rejects --teardown + --update', async () => {
+  it('rejects --staging + --eu', async () => {
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     process.env.NEW_RELIC_API_KEY = 'NRAK-test';
     const out = new CapturedStdout();
     const code = await runDeployDashboards({
       all: false,
-      update: true,
-      teardown: true,
+      update: false,
+      teardown: false,
       print: false,
-      eu: false,
+      staging: true,
+      eu: true,
       jp: false,
       developer: null,
       file: 'sample.json',
@@ -233,8 +238,30 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: true,
       jp: true,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      stdout: out,
+    });
+    expect(code).toBe(1);
+    expect(out.text()).toContain('mutually exclusive');
+  });
+
+  it('rejects --teardown + --update', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const out = new CapturedStdout();
+    const code = await runDeployDashboards({
+      all: false,
+      update: true,
+      teardown: true,
+      print: false,
+      staging: false,
+      eu: false,
+      jp: false,
       developer: null,
       file: 'sample.json',
       dataDir,
@@ -263,6 +290,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -276,36 +304,6 @@ describe('runDeployDashboards', () => {
     expect(calls[0].url).toBe('https://api.newrelic.com/graphql');
     expect(calls[0].body.query).toContain('dashboardCreate');
     expect(out.text()).toContain('GUID: GUID-1');
-  });
-
-  it('--jp targets Japan API URL', async () => {
-    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
-    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
-    const { fetch: fetchImpl, calls } = makeFetchMock([
-      {
-        data: {
-          dashboardCreate: {
-            entityResult: { guid: 'GUID-JP', name: 'Test Dashboard' },
-            errors: null,
-          },
-        },
-      },
-    ]);
-    const out = new CapturedStdout();
-    await runDeployDashboards({
-      all: false,
-      update: false,
-      teardown: false,
-      print: false,
-      eu: false,
-      jp: true,
-      developer: null,
-      file: 'sample.json',
-      dataDir,
-      fetchImpl,
-      stdout: out,
-    });
-    expect(calls[0].url).toBe('https://api.jp.newrelic.com/graphql');
   });
 
   it('--all reads every JSON file in the data dir', async () => {
@@ -325,6 +323,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -367,6 +366,7 @@ describe('runDeployDashboards', () => {
       update: true,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -405,6 +405,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: true,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -431,6 +432,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: true,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -441,6 +443,61 @@ describe('runDeployDashboards', () => {
     });
     expect(code).toBe(0);
     expect(out.text()).toContain('No dashboard named');
+  });
+
+  it('--staging targets staging API URL', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const { fetch: fetchImpl, calls } = makeFetchMock([
+      { data: { dashboardCreate: { entityResult: { guid: 'G', name: 'Test Dashboard' } } } },
+    ]);
+    const out = new CapturedStdout();
+    await runDeployDashboards({
+      all: false,
+      update: false,
+      teardown: false,
+      print: false,
+      staging: true,
+      eu: false,
+      jp: false,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      fetchImpl,
+      stdout: out,
+    });
+    expect(calls[0].url).toBe(`https://${stagingHost('api')}/graphql`);
+  });
+
+  it('--jp targets Japan API URL', async () => {
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_API_KEY = 'NRAK-test';
+    const { fetch: fetchImpl, calls } = makeFetchMock([
+      {
+        data: {
+          dashboardCreate: {
+            entityResult: { guid: 'GUID-JP', name: 'Test Dashboard' },
+            errors: null,
+          },
+        },
+      },
+    ]);
+    const out = new CapturedStdout();
+    await runDeployDashboards({
+      all: false,
+      update: false,
+      teardown: false,
+      print: false,
+      staging: false,
+      eu: false,
+      jp: true,
+      developer: null,
+      file: 'sample.json',
+      dataDir,
+      fetchImpl,
+      stdout: out,
+    });
+    expect(calls[0].url).toBe('https://api.jp.newrelic.com/graphql');
   });
 
   it('throws when NerdGraph returns errors with null data (HTTP 200)', async () => {
@@ -455,6 +512,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -484,6 +542,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -505,6 +564,7 @@ describe('runDeployDashboards', () => {
       update: false,
       teardown: false,
       print: false,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,
@@ -530,6 +590,7 @@ describe('resolveDataDir (via runDeployDashboards default path)', () => {
       update: false,
       teardown: false,
       print: true,
+      staging: false,
       eu: false,
       jp: false,
       developer: null,

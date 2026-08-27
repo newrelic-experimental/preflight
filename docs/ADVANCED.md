@@ -245,6 +245,7 @@ terraform apply
 | `account_id`                    | Yes      | —       | New Relic account ID                                           |
 | `api_key`                       | Yes      | —       | User API key (`NRAK-...`)                                      |
 | `region`                        | No       | `US`    | `US` or `EU`                                                   |
+| `staging`                       | No       | `false` | Target the New Relic staging environment                       |
 | `developer`                     | No       | `""`    | Developer name — enables personal alert conditions when set    |
 | `personal_daily_cost_usd`       | No       | `10`    | Personal daily cost alert threshold (USD)                      |
 | `personal_session_cost_usd`     | No       | `5`     | Personal per-session cost alert threshold (USD)                |

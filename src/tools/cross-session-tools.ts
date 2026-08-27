@@ -16,6 +16,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 import { validateSsrfUrl } from '../security/index.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 import type { SessionStore } from '../storage/session-store.js';
 import { formatSlackDigest } from '../digest/digest-formatter.js';
 import { sendSlackDigest } from '../digest/digest-sender.js';
@@ -37,6 +38,7 @@ import {
 } from './tool-registry.js';
 
 export function getNerdgraphUrl(collectorHost: string | null): string {
+  if (collectorHost === 'staging') return `https://${stagingHost('api')}/graphql`;
   if (collectorHost === 'eu') return 'https://api.eu.newrelic.com/graphql';
   if (collectorHost === 'jp') return 'https://api.jp.newrelic.com/graphql';
   return 'https://api.newrelic.com/graphql';

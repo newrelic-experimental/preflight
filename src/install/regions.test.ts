@@ -5,9 +5,10 @@ import {
   detectRegionFromLicenseKeyStrict,
   suggestRegionFromLicenseKey,
 } from './regions.js';
+import { stagingHost } from '../shared/transport/http-client.js';
 
 describe('REGIONS', () => {
-  it('is ordered us, eu, gov, jp', () => {
+  it('is ordered us, eu, gov, jp — staging deliberately excluded', () => {
     expect(REGIONS.map((r) => r.key)).toEqual(['us', 'eu', 'gov', 'jp']);
   });
 });
@@ -31,6 +32,14 @@ describe('getRegion', () => {
     expect(getRegion('gov').eventsApiHost).toBe('gov-insights-collector.newrelic.com');
     expect(getRegion('gov').nerdgraphUrl).toBe('https://api.newrelic.com/graphql');
   });
+
+  it('resolves staging fully despite it being excluded from REGIONS', () => {
+    const staging = getRegion('staging');
+    expect(staging.key).toBe('staging');
+    expect(staging.eventsApiHost).toBe(stagingHost('insights-collector'));
+    expect(staging.nerdgraphUrl).toBe(`https://${stagingHost('api')}/graphql`);
+    expect(staging.cliFlag).toBe('--staging');
+  });
 });
 
 describe('getRegionByDeployFlags', () => {
@@ -41,6 +50,12 @@ describe('getRegionByDeployFlags', () => {
   it('returns eu when eu is set', () => {
     expect(getRegionByDeployFlags({ eu: true }).nerdgraphUrl).toBe(
       'https://api.eu.newrelic.com/graphql',
+    );
+  });
+
+  it('returns staging when staging is set', () => {
+    expect(getRegionByDeployFlags({ staging: true }).nerdgraphUrl).toBe(
+      `https://${stagingHost('api')}/graphql`,
     );
   });
 

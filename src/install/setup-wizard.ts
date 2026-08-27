@@ -18,13 +18,13 @@ import { writeJsonFile } from './json-utils.js';
 import { installSchedule, installDashboardDaemon, resolveBinaryPath } from './schedule.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateLicenseKey, validateApiKey } from './key-validator.js';
+import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 import {
   REGIONS,
   getRegion,
   suggestRegionFromLicenseKey,
   detectRegionFromLicenseKeyStrict,
 } from './regions.js';
-import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
 
 const CONFIG_PATH = resolve(DEFAULT_STORAGE_PATH, 'config.json');
 const ALERT_RULES_DEST = resolve(DEFAULT_STORAGE_PATH, 'alerts', 'rules.json');
@@ -189,7 +189,19 @@ function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
   return fallback;
 }
 
-export async function runSetupWizard(): Promise<void> {
+// Maps the environment prompt's raw answer (numbered menu position, region
+// key, or one of its aliases) to a region key. staging is deliberately
+// unreachable here — see the caller's comment.
+export function resolveEnvironmentChoice(envRaw: string, defaultEnv: string): string {
+  if (envRaw === '' || envRaw === defaultEnv) return defaultEnv;
+  if (envRaw === '1' || envRaw === 'us') return 'us';
+  if (envRaw === '2' || envRaw === 'eu') return 'eu';
+  if (envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov') return 'gov';
+  if (envRaw === '4' || envRaw === 'jp' || envRaw === 'japan') return 'jp';
+  return defaultEnv;
+}
+
+export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<void> {
   migrateStoragePath(true);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   // Safety net: process.exit() bypasses finally blocks but still runs 'exit' handlers.
@@ -268,31 +280,28 @@ export async function runSetupWizard(): Promise<void> {
         process.exit(1);
       }
 
-      // Step 2b: Environment / region
+      // Step 2b: Environment / region. --staging pre-selects the region and
+      // skips this question entirely — staging is never shown in the menu
+      // or matched against typed input; it's reachable only via the flag.
       const existingCollectorHost =
         typeof existing.collectorHost === 'string' ? existing.collectorHost : null;
       const autoEnv = suggestRegionFromLicenseKey(licenseKey);
       const defaultEnv = existingCollectorHost ?? autoEnv;
-      print('Environment:');
-      const menuLabelWidth = Math.max(...REGIONS.map((r) => r.menuLabel.length));
-      REGIONS.forEach((region, i) => {
-        print(`  ${i + 1}) ${region.menuLabel.padEnd(menuLabelWidth)} — ${region.displayHost}`);
-      });
-      const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
-        .trim()
-        .toLowerCase();
-      const resolvedEnv =
-        envRaw === '' || envRaw === defaultEnv
-          ? defaultEnv
-          : envRaw === '1' || envRaw === 'us'
-            ? 'us'
-            : envRaw === '2' || envRaw === 'eu'
-              ? 'eu'
-              : envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov'
-                ? 'gov'
-                : envRaw === '4' || envRaw === 'jp' || envRaw === 'japan'
-                  ? 'jp'
-                  : defaultEnv;
+      let resolvedEnv: string;
+      if (opts.staging) {
+        resolvedEnv = 'staging';
+        print('Environment: Staging (--staging flag)');
+      } else {
+        print('Environment:');
+        const menuLabelWidth = Math.max(...REGIONS.map((r) => r.menuLabel.length));
+        REGIONS.forEach((region, i) => {
+          print(`  ${i + 1}) ${region.menuLabel.padEnd(menuLabelWidth)} — ${region.displayHost}`);
+        });
+        const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
+          .trim()
+          .toLowerCase();
+        resolvedEnv = resolveEnvironmentChoice(envRaw, defaultEnv);
+      }
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
       // Warn if license key prefix contradicts selected environment.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
@@ -72,8 +72,8 @@ import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { TaskDetector } from './metrics/task-detector.js';
 import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
+import { TaskDetector } from './metrics/task-detector.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
@@ -541,6 +541,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--update', 'update existing dashboards in-place (matched by name)')
       .option('--teardown', 'delete deployed dashboards (matched by name)')
       .option('--print', 'print dashboard JSON with accountIds filled in (no API key required)')
+      .addOption(new Option('--staging', 'target the New Relic staging API').hideHelp())
       .option('--eu', 'target the New Relic EU API')
       .option('--jp', 'target the New Relic Japan API')
       .option(
@@ -558,6 +559,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           update: opts.update === true,
           teardown: opts.teardown === true,
           print: opts.print === true,
+          staging: opts.staging === true,
           eu: opts.eu === true,
           jp: opts.jp === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
@@ -572,6 +574,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--dry-run', 'print the policy + conditions that would be created and exit')
       .option('--teardown', 'delete the alert policy and all its conditions')
       .option('--update', 'sync conditions on an existing policy in place (matched by name)')
+      .addOption(new Option('--staging', 'target the New Relic staging API').hideHelp())
       .option('--eu', 'target the New Relic EU API')
       .option('--jp', 'target the New Relic Japan API')
       .option('--developer <name>', 'deploy a personal alert policy scoped to <name>')
@@ -581,6 +584,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           dryRun: opts.dryRun === true,
           teardown: opts.teardown === true,
           update: opts.update === true,
+          staging: opts.staging === true,
           eu: opts.eu === true,
           jp: opts.jp === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
