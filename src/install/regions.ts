@@ -67,11 +67,10 @@ export const REGIONS: readonly RegionDefinition[] = [
 ];
 
 // Resolvable via the deploy-CLI --staging flag and the setup wizard's
-// --staging flag, but deliberately excluded from REGIONS so it never
-// appears in the interactive environment menu or the license-key
-// auto-detect loop — the flag stays available for NR-employee onboarding
-// without advertising an NR-internal hostname to the general public by
-// default.
+// --staging flag, but deliberately excluded from REGIONS so it's never
+// listed in the interactive environment menu or matched by the
+// license-key auto-detect loop — reachable only by passing the flag
+// explicitly.
 const STAGING_REGION: RegionDefinition = {
   key: 'staging',
   menuLabel: 'Staging',

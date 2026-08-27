@@ -270,8 +270,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
 
       // Step 2b: Environment / region. --staging pre-selects the region and
       // skips this question entirely — staging is never shown in the menu
-      // or matched against typed input, to avoid advertising an NR-internal
-      // hostname to the general public by default.
+      // or matched against typed input; it's reachable only via the flag.
       const existingCollectorHost =
         typeof existing.collectorHost === 'string' ? existing.collectorHost : null;
       const autoEnv = suggestRegionFromLicenseKey(licenseKey);
