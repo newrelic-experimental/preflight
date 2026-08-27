@@ -3,7 +3,12 @@ import * as rlMod from 'node:readline/promises';
 import { join } from 'node:path';
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
-import { buildConfig, runSetupWizard, copyStarterAlertRules } from './setup-wizard.js';
+import {
+  buildConfig,
+  runSetupWizard,
+  copyStarterAlertRules,
+  resolveEnvironmentChoice,
+} from './setup-wizard.js';
 import * as scheduleMod from './schedule.js';
 import * as keyValidator from './key-validator.js';
 import * as cliMod from './cli.js';
@@ -264,6 +269,42 @@ describe('defaultStarterRulesSource fallback (via runSetupWizard)', () => {
       checkedPaths.some((p) => p.endsWith(join('opt', 'examples', 'local-alert-rules.json'))),
     ).toBe(true);
     void output;
+  });
+});
+
+describe('resolveEnvironmentChoice', () => {
+  it('returns the default when the answer is blank', () => {
+    expect(resolveEnvironmentChoice('', 'us')).toBe('us');
+  });
+
+  it('returns the default when the answer repeats the default', () => {
+    expect(resolveEnvironmentChoice('eu', 'eu')).toBe('eu');
+  });
+
+  it('maps numbered menu positions to region keys', () => {
+    expect(resolveEnvironmentChoice('1', 'us')).toBe('us');
+    expect(resolveEnvironmentChoice('2', 'us')).toBe('eu');
+    expect(resolveEnvironmentChoice('3', 'us')).toBe('gov');
+    expect(resolveEnvironmentChoice('4', 'us')).toBe('jp');
+  });
+
+  it('maps region keys and their aliases', () => {
+    expect(resolveEnvironmentChoice('us', 'eu')).toBe('us');
+    expect(resolveEnvironmentChoice('eu', 'us')).toBe('eu');
+    expect(resolveEnvironmentChoice('gov', 'us')).toBe('gov');
+    expect(resolveEnvironmentChoice('fedramp', 'us')).toBe('gov');
+    expect(resolveEnvironmentChoice('jp', 'us')).toBe('jp');
+    expect(resolveEnvironmentChoice('japan', 'us')).toBe('jp');
+  });
+
+  it('falls back to the default for unrecognized input, including the literal word "staging"', () => {
+    expect(resolveEnvironmentChoice('nope', 'us')).toBe('us');
+    expect(resolveEnvironmentChoice('5', 'us')).toBe('us');
+    expect(resolveEnvironmentChoice('staging', 'us')).toBe('us');
+  });
+
+  it('preserves an existing staging default on a blank answer (not a new interactive selection)', () => {
+    expect(resolveEnvironmentChoice('', 'staging')).toBe('staging');
   });
 });
 

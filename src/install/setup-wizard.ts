@@ -189,6 +189,18 @@ function parseModeAnswer(raw: string, fallback: WizardMode): WizardMode {
   return fallback;
 }
 
+// Maps the environment prompt's raw answer (numbered menu position, region
+// key, or one of its aliases) to a region key. staging is deliberately
+// unreachable here — see the caller's comment.
+export function resolveEnvironmentChoice(envRaw: string, defaultEnv: string): string {
+  if (envRaw === '' || envRaw === defaultEnv) return defaultEnv;
+  if (envRaw === '1' || envRaw === 'us') return 'us';
+  if (envRaw === '2' || envRaw === 'eu') return 'eu';
+  if (envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov') return 'gov';
+  if (envRaw === '4' || envRaw === 'jp' || envRaw === 'japan') return 'jp';
+  return defaultEnv;
+}
+
 export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<void> {
   migrateStoragePath(true);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -288,18 +300,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
         const envRaw = (await rl.question(`Which environment? [${defaultEnv}]: `))
           .trim()
           .toLowerCase();
-        resolvedEnv =
-          envRaw === '' || envRaw === defaultEnv
-            ? defaultEnv
-            : envRaw === '1' || envRaw === 'us'
-              ? 'us'
-              : envRaw === '2' || envRaw === 'eu'
-                ? 'eu'
-                : envRaw === '3' || envRaw === 'fedramp' || envRaw === 'gov'
-                  ? 'gov'
-                  : envRaw === '4' || envRaw === 'jp' || envRaw === 'japan'
-                    ? 'jp'
-                    : defaultEnv;
+        resolvedEnv = resolveEnvironmentChoice(envRaw, defaultEnv);
       }
       collectorHost = resolvedEnv === 'us' ? null : resolvedEnv;
 
