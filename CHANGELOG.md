@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-08-26
+
+### Changed
+
+- **Structural cleanup to CLI configuration and shared transport code.** Minor adjustments to the setup wizard's environment-selection flow and several install/deploy code paths.
+
 ## [1.16.4] - 2026-08-24
 
 ### Fixed
