@@ -90,7 +90,7 @@ describe('resolveRegion', () => {
   // outage is a worse failure mode than an occasional region misroute — and for
   // these keys we have no evidence they are non-US.
   it('returns us and warns for unrecognized region-shaped prefix', () => {
-    // juki330's real-world key: ca06 matches the shape but is a valid US key
+    // ca06 matches the shape but is a real-world US key with an unrecognized prefix
     expect(resolveRegion('ca06xxNRALUSERKEY', null)).toBe('us');
     expect(resolveRegion('apac01xxSOMEKEY', null)).toBe('us');
     expect(resolveRegion('xx99xxSOMEKEY', null)).toBe('us');
