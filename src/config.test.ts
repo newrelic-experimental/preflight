@@ -45,6 +45,10 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_AI_ORG_ID;
   delete process.env.NEW_RELIC_API_KEY;
   delete process.env.NR_AI_MODE;
+  // Most fixtures below set credentials without asserting on mode; an explicit
+  // 'cloud' here keeps them exercising that behavior as before mode became
+  // fail-closed. Tests of mode resolution itself override or delete this.
+  process.env.NR_AI_MODE = 'cloud';
   delete process.env.NR_AI_DASHBOARD_PORT;
   delete process.env.NR_AI_DASHBOARD_HOST;
   delete process.env.NR_AI_DASHBOARD_OPEN;
@@ -1248,12 +1252,11 @@ describe('developer sanitization via loadMcpConfig()', () => {
 });
 
 describe('mode field', () => {
-  it("defaults to 'cloud' when unset", () => {
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
-    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+  it("defaults to 'local' when unset and no credentials are configured", () => {
+    delete process.env.NR_AI_MODE;
     const configPath = writeConfigFile({});
     const config = loadMcpConfig({ config: configPath });
-    expect(config.mode).toBe('cloud');
+    expect(config.mode).toBe('local');
   });
 
   it('reads mode from NR_AI_MODE env var', () => {
@@ -1275,6 +1278,7 @@ describe('mode field', () => {
   });
 
   it('file value wins when env var unset', () => {
+    delete process.env.NR_AI_MODE;
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
     const configPath = writeConfigFile({ mode: 'both' });
@@ -1350,6 +1354,37 @@ describe('licenseKey gating', () => {
     expect(() => loadMcpConfig({ config: configPath })).toThrow(
       /Config file validation failed.*mode.*Invalid option: expected one of "cloud"\|"local"\|"both"/,
     );
+  });
+});
+
+describe('mode fail-closed: licenseKey without explicit mode', () => {
+  it('throws when licenseKey is in the config file and mode is unset', () => {
+    delete process.env.NR_AI_MODE;
+    const configPath = writeConfigFile({ licenseKey: 'file-key-123' });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(/no explicit mode/);
+  });
+
+  it('throws when NEW_RELIC_LICENSE_KEY env is set and mode is unset', () => {
+    delete process.env.NR_AI_MODE;
+    process.env.NEW_RELIC_LICENSE_KEY = 'env-key-1234567890';
+    const configPath = writeConfigFile({});
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(/no explicit mode/);
+  });
+
+  it("still resolves 'cloud' when the file sets mode explicitly alongside licenseKey", () => {
+    delete process.env.NR_AI_MODE;
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ mode: 'cloud', licenseKey: 'file-key-123' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.mode).toBe('cloud');
+  });
+
+  it("resolves 'local' without throwing when NR_AI_MODE=local and licenseKey is present", () => {
+    process.env.NR_AI_MODE = 'local';
+    process.env.NEW_RELIC_LICENSE_KEY = 'env-key-1234567890';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.mode).toBe('local');
   });
 });
 

@@ -40,6 +40,7 @@ jest.mock('../config.js', () => ({
     errors: [],
     warnings: [],
   })),
+  loadMcpConfig: jest.fn(() => ({ mode: 'local' })),
   DEFAULT_STORAGE_PATH: '/test-home/.newrelic-preflight',
 }));
 
@@ -106,6 +107,7 @@ const mockedPlatform = nodeOs.platform as jest.Mock;
 const mockedGetDaemonStatus = schedule.getDashboardDaemonStatus as jest.Mock;
 const mockedFindExecutableNodeDir = schedule.findExecutableNodeDir as jest.Mock;
 const mockedValidateConfig = config.validateConfigFile as jest.Mock;
+const mockedLoadMcpConfig = config.loadMcpConfig as jest.Mock;
 const mockedDetectSettingsPath = installHelper.detectSettingsPath as jest.Mock;
 const mockedIsWsl = platform.isWsl as jest.Mock;
 
@@ -136,6 +138,7 @@ describe('runDiagnostics', () => {
       errors: [],
       warnings: [],
     });
+    mockedLoadMcpConfig.mockReturnValue({ mode: 'local' });
     mockedDetectSettingsPath.mockReturnValue('/test-home/.claude/settings.json');
     mockedIsWsl.mockReturnValue(false);
     mockFetch.mockImplementation(async () => {
@@ -199,6 +202,57 @@ describe('runDiagnostics', () => {
       const checks = await runDiagnostics(makeOpts());
       const c = checks.find((x) => x.check === 'Config valid')!;
       expect(c.status).toBe('ok');
+    });
+  });
+
+  describe('Check: Telemetry mode', () => {
+    it('reports the resolved mode and env as its source', async () => {
+      process.env.NR_AI_MODE = 'both';
+      mockedLoadMcpConfig.mockReturnValue({ mode: 'both' });
+      const checks = await runDiagnostics(makeOpts());
+      delete process.env.NR_AI_MODE;
+      const c = checks.find((x) => x.check === 'Telemetry mode')!;
+      expect(c.status).toBe('ok');
+      expect(c.detail).toBe("Resolved to 'both' (source: env NR_AI_MODE)");
+    });
+
+    it('reports the config file as the source when mode came from there', async () => {
+      mockedValidateConfig.mockReturnValue({
+        fileExists: true,
+        malformed: false,
+        mode: 'cloud',
+        errors: [],
+        warnings: [],
+      });
+      mockedLoadMcpConfig.mockReturnValue({ mode: 'cloud' });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Telemetry mode')!;
+      expect(c.status).toBe('ok');
+      expect(c.detail).toBe("Resolved to 'cloud' (source: config file)");
+    });
+
+    it('reports the local default as the source when neither env nor file set a mode', async () => {
+      mockedLoadMcpConfig.mockReturnValue({ mode: 'local' });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Telemetry mode')!;
+      expect(c.status).toBe('ok');
+      expect(c.detail).toBe("Resolved to 'local' (source: default (local))");
+    });
+
+    it('surfaces the fail-closed licenseKey-without-mode error as a diagnostic finding, not a crash', async () => {
+      mockedLoadMcpConfig.mockImplementation(() => {
+        throw new Error(
+          'Config has a licenseKey but no explicit mode. Telemetry export is opt-in: ' +
+            'set "mode": "cloud" (or "both") in the config file, set NR_AI_MODE, or ' +
+            'remove the credentials for local-only use. Previous versions implicitly ' +
+            'defaulted to cloud.',
+        );
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Telemetry mode')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('no explicit mode');
+      expect(c.fix).toBeTruthy();
     });
   });
 
@@ -804,9 +858,9 @@ describe('runDiagnostics', () => {
         throw new Error('registry file is corrupt');
       });
       const checks = await runDiagnostics({ configPath: '/tmp/does-not-exist.json' });
-      // All 10 checks must still be present — one throwing dependency must not
+      // All 11 checks must still be present — one throwing dependency must not
       // take down the rest of the diagnostic run.
-      expect(checks).toHaveLength(10);
+      expect(checks).toHaveLength(11);
       const check = checks.find((c) => c.check === 'Local instances');
       expect(check?.status).toBe('warn');
       expect(check?.detail).toContain('registry file is corrupt');
@@ -855,8 +909,8 @@ describe('runDiagnostics', () => {
     });
   });
 
-  it('returns exactly 10 checks on macOS', async () => {
+  it('returns exactly 11 checks on macOS', async () => {
     const checks = await runDiagnostics(makeOpts());
-    expect(checks).toHaveLength(10);
+    expect(checks).toHaveLength(11);
   });
 });

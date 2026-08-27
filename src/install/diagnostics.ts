@@ -7,7 +7,7 @@ import { checkNodeVersion, MIN_SUPPORTED_NODE_MAJOR } from './node-version-check
 import { isNewerVersion, fetchLatestNpmVersion } from './npm-version-check.js';
 import { VERSION } from '../version.js';
 
-import { validateConfigFile, DEFAULT_STORAGE_PATH } from '../config.js';
+import { validateConfigFile, loadMcpConfig, DEFAULT_STORAGE_PATH } from '../config.js';
 import { getDashboardDaemonStatus, findExecutableNodeDir } from './schedule.js';
 import {
   detectSettingsPath,
@@ -35,6 +35,8 @@ type DiagnosticsContext = {
   // used verbatim as the skip detail so the message is accurate for each cause
   // (absent file, config errors, local mode, missing licenseKey).
   readonly nrSkipReason: string | null;
+  // Raw file.mode, for checkTelemetryMode's source reporting — see validateConfigFile.
+  readonly fileMode: string | undefined;
 };
 
 function checkConfigValid(
@@ -100,8 +102,39 @@ function checkConfigValid(
 
   return {
     check,
-    context: { storagePath, nrSkipReason },
+    context: { storagePath, nrSkipReason, fileMode: validation.mode },
   };
+}
+
+// Reports the mode the running server would actually resolve — via the real
+// loader, not a re-derived approximation — plus which of env/file/default
+// produced it. Also the only place a licenseKey-without-explicit-mode config
+// (loadMcpConfig's fail-closed throw, see config.ts) surfaces to `doctor`
+// instead of crashing it with a stack trace.
+function checkTelemetryMode(configPath: string, fileMode: string | undefined): DiagnosticCheck {
+  const envMode = process.env.NR_AI_MODE;
+  const source =
+    envMode !== undefined && envMode !== ''
+      ? 'env NR_AI_MODE'
+      : fileMode !== undefined
+        ? 'config file'
+        : 'default (local)';
+  try {
+    const resolved = loadMcpConfig({ config: configPath });
+    return {
+      check: 'Telemetry mode',
+      status: 'ok',
+      detail: `Resolved to '${resolved.mode}' (source: ${source})`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      check: 'Telemetry mode',
+      status: 'fail',
+      detail: message,
+      fix: 'Fix the fields listed above, then restart.',
+    };
+  }
 }
 
 function checkDaemon(): DiagnosticCheck[] {
@@ -597,6 +630,7 @@ export async function runDiagnostics(opts?: {
 }): Promise<DiagnosticCheck[]> {
   const configPath = opts?.configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
   const { check: configCheck, context } = checkConfigValid(configPath, opts?.storagePath);
+  const modeCheck = checkTelemetryMode(configPath, context.fileMode);
 
   const settingsPaths: string[] = [detectSettingsPath('user')];
   if (isWsl()) {
@@ -606,6 +640,7 @@ export async function runDiagnostics(opts?: {
 
   return [
     configCheck,
+    modeCheck,
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),
     checkHooksWired(settingsPaths, opts?.platform),

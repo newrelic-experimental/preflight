@@ -192,15 +192,16 @@ export default {
   //
   // `mode` controls what destinations receive your AI-coding telemetry:
   //
-  //   'cloud' — (default) ship every event to New Relic. Existing behaviour.
+  //   'cloud' — ship every event to New Relic. Existing behaviour.
   //             Requires `licenseKey` and `accountId`.
-  //   'local' — keep all data on your machine. The MCP server boots an
+  //   'local' — (default) keep all data on your machine. The MCP server boots an
   //             embedded HTTP dashboard at http://127.0.0.1:7777 and does
   //             NOT send anything to NR. `licenseKey` is optional.
   //   'both'  — do both. Useful as a transition aid.
   //
   // Env: NR_AI_MODE
-  // Default: "cloud"
+  // Default: "local" — a licenseKey with no explicit mode is rejected at
+  // startup (opt-in export), not silently treated as cloud.
   // mode: 'cloud',
   //
   // dashboard: {
