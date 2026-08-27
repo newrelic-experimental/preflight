@@ -1,6 +1,8 @@
 interface HookEventBase {
   readonly tool: string;
   readonly timestamp: number;
+  /** True originating platform, stamped by collector-script.ts at write time. */
+  readonly platform?: string;
 }
 
 /**

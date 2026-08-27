@@ -27,6 +27,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
+import { createDefaultRegistry } from '../platforms/index.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -994,6 +995,15 @@ function processHook(raw: string): void {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
+  // Stamp the true originating platform at write time, using this hook
+  // invocation's own environment (MCP_CLIENT etc.) — this is the only point
+  // in the pipeline that reliably reflects the real host, since whichever
+  // process later drains the buffer (e.g. --local's unscoped drain of an
+  // unowned session, see LocalSessionAggregator) may have detected a
+  // completely different platform for itself. isSupported() across all
+  // adapters is env-var-only (no file reads), matching this file's
+  // lightweight-collector design constraint.
+  event.platform = createDefaultRegistry().getActive().platformName;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
 
   // Write to buffer — wrapped in try/catch for resilience.

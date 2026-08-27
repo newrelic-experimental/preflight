@@ -967,11 +967,18 @@ export class NrIngestManager {
   }
 
   ingestToolCall(record: ToolCallRecord, auditRecord?: AuditRecord): void {
-    // Buffer event for NR Events API
+    // Buffer event for NR Events API. Prefer the record's own sessionId over
+    // this process's sessionTraceId: a scoped engine's own records always
+    // carry a sessionId matching its sessionTraceId anyway, but a record
+    // drained on behalf of an unowned session (e.g. --local's unscoped
+    // drainAllSessions, or a proxy client's own connection) carries its
+    // true, more specific sessionId — without this, every such record was
+    // silently re-attributed to this process's own session_id, making the
+    // real session's activity unqueryable under its own id.
     const event = toolCallToNrEvent(record, {
       developer: this.developer,
       appName: this.appName,
-      sessionTraceId: this.sessionTraceId,
+      sessionTraceId: record.sessionId ?? this.sessionTraceId,
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
@@ -983,15 +990,13 @@ export class NrIngestManager {
 
     this.scheduler.addEvent(event);
 
-    // Record per-call metrics for NR Metric API. Proxy calls carry their own
-    // per-connection sessionId (see ProxyManager.resolveSessionId) — prefer
-    // it over the process-wide sessionTraceId so metrics from concurrent
-    // proxy clients don't all collapse onto one fake session. Non-proxy
-    // records keep using sessionTraceId unchanged.
+    // Record per-call metrics for NR Metric API. Prefer the record's own
+    // sessionId (see the comment on the AiToolCall event above) — this also
+    // covers proxy calls' own per-connection sessionId (see
+    // ProxyManager.resolveSessionId), so metrics from concurrent proxy
+    // clients don't all collapse onto one fake session.
     const tool = record.toolName;
-    const sessionId = isProxyToolCall(record)
-      ? (record.sessionId ?? this.sessionTraceId)
-      : this.sessionTraceId;
+    const sessionId = record.sessionId ?? this.sessionTraceId;
     const teamDims: Record<string, string> = {};
     if (this.teamId) teamDims.team_id = this.teamId;
     if (this.projectId) teamDims.project_id = this.projectId;
@@ -1020,7 +1025,7 @@ export class NrIngestManager {
       const proxyEvent = proxyToolCallToNrEvent(record, {
         developer: this.developer,
         appName: this.appName,
-        sessionTraceId: this.sessionTraceId,
+        sessionTraceId: record.sessionId ?? this.sessionTraceId,
         teamId: this.teamId,
         projectId: this.projectId,
         orgId: this.orgId,

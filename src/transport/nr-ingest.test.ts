@@ -463,7 +463,7 @@ describe('NrIngestManager', () => {
       expect(attrs.session_id).toBe('proxy-conn-xyz');
     });
 
-    it('still tags non-proxy tool call metrics with sessionTraceId (regression guard)', async () => {
+    it("tags non-proxy tool call metrics with the record's own sessionId when present", async () => {
       const manager = new NrIngestManager(makeIngestOptions({ sessionTraceId: 'proxy-trace-id' }));
 
       manager.ingestToolCall(makeRecord({ sessionId: 'hook-session-001' }));
@@ -476,7 +476,7 @@ describe('NrIngestManager', () => {
       >;
       const callCountMetric = sentMetrics.find((m) => m.name === 'ai.tool.call_count')!;
       const attrs = callCountMetric.attributes as Record<string, unknown>;
-      expect(attrs.session_id).toBe('proxy-trace-id');
+      expect(attrs.session_id).toBe('hook-session-001');
     });
   });
 
@@ -1454,12 +1454,28 @@ describe('session trace ID propagation', () => {
     expect(event.session_id).toBe(TRACE_ID);
   });
 
-  it('NrIngestManager.ingestToolCall: emits sessionTraceId as session_id on AiToolCall event', async () => {
+  it("NrIngestManager.ingestToolCall: prefers the record's own sessionId as session_id on AiToolCall event", async () => {
     const manager = new NrIngestManager({
       ...makeIngestOptions(),
       sessionTraceId: TRACE_ID,
     });
-    manager.ingestToolCall(makeRecord({ sessionId: 'old-id' }));
+    manager.ingestToolCall(makeRecord({ sessionId: 'record-own-id' }));
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const toolCallEvent = sentEvents.find((e) => e.eventType === 'AiToolCall');
+    expect(toolCallEvent?.session_id).toBe('record-own-id');
+  });
+
+  it('NrIngestManager.ingestToolCall: falls back to sessionTraceId as session_id when the record has no sessionId', async () => {
+    const manager = new NrIngestManager({
+      ...makeIngestOptions(),
+      sessionTraceId: TRACE_ID,
+    });
+    manager.ingestToolCall(makeRecord({ sessionId: null }));
     manager.start();
     await manager.stop();
 

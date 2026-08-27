@@ -449,6 +449,7 @@ export class HookEventProcessor {
           errorType: 'timeout',
           ...(evicted.inputSize !== undefined && { inputSizeBytes: evicted.inputSize }),
           ...(evicted.inputHash !== undefined && { inputHash: evicted.inputHash }),
+          ...(evicted.platform !== undefined && { platform: evicted.platform }),
           ...toolFields,
         });
       }
@@ -494,6 +495,9 @@ export class HookEventProcessor {
         ...(preEvent.permissionMode !== undefined && {
           permissionMode: preEvent.permissionMode,
         }),
+        ...((preEvent.platform ?? event.platform) !== undefined && {
+          platform: preEvent.platform ?? event.platform,
+        }),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -511,6 +515,7 @@ export class HookEventProcessor {
         success: event.success ?? true,
         ...(event.error !== undefined && { error: event.error }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
+        ...(event.platform !== undefined && { platform: event.platform }),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -580,6 +585,7 @@ export class HookEventProcessor {
         errorType: 'timeout',
         ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
         ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
+        ...(event.platform !== undefined && { platform: event.platform }),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -600,6 +606,7 @@ export class HookEventProcessor {
         errorType: 'timeout',
         ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
         ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
+        ...(event.platform !== undefined && { platform: event.platform }),
         ...toolFields,
       };
       this.emitRecord(record);
