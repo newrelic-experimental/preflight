@@ -262,6 +262,22 @@ export interface SessionDetail {
   readonly durationMs?: number;
   readonly estimatedCostUsd?: number | null;
   readonly model?: string | null;
+  // Per-model request/token/cost counters for this session. Present when the
+  // session used one or more models — when it used more than one (a
+  // mid-session model switch, e.g. via /model), `model` above only reflects
+  // whichever model was current at read time, so the UI should prefer this
+  // for display when it has more than one key.
+  readonly modelBreakdown?: Readonly<
+    Record<
+      string,
+      {
+        readonly requestCount: number;
+        readonly totalInputTokens: number;
+        readonly totalOutputTokens: number;
+        readonly totalCostUsd: number;
+      }
+    >
+  >;
   readonly outcome?: string;
   readonly toolBreakdown?: Record<string, number>;
   readonly filesRead?: string[];

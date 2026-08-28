@@ -2944,6 +2944,13 @@ export function createApiHandler(
             const costMetrics = deps.costTracker?.getMetrics();
             const costUsd = costMetrics?.sessionTotalCostUsd ?? null;
             const model = costMetrics?.model ?? null;
+            // Per-model breakdown so the UI can show every model used this
+            // session, not just the last one seen (`model` above collapses a
+            // mid-session model switch to whichever model was current at
+            // read time). Persisted sessions already carry this via
+            // FullSessionSummary.modelBreakdown — mirror it here so the live
+            // branch renders the same way.
+            const modelBreakdown = deps.modelUsageTracker?.getRawBreakdown();
             const antiPatterns: PersistedAntiPattern[] = deps.antiPatternDetector
               ? toPersistedAntiPatterns(deps.antiPatternDetector.getCurrentPatterns())
               : [];
@@ -2960,6 +2967,7 @@ export function createApiHandler(
               toolCallCount: live.toolCallCount,
               estimatedCostUsd: costUsd,
               model,
+              modelBreakdown,
               outcome: 'in progress',
               toolBreakdown: live.toolCallCountByTool,
               antiPatterns,

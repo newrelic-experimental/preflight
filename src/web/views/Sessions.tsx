@@ -873,6 +873,21 @@ function SessionTimeline({
   const durationLabel = data.durationMs != null ? formatDuration(data.durationMs) : null;
   const entries = data.timeline ?? [];
   const first = entries.length > 0 ? entries[0]!.timestamp : 0;
+  // Models used this session, most-called first. Falls back to the single
+  // `model` field when no breakdown is present (older persisted sessions,
+  // or the cross-process live branch, predate `modelBreakdown`). A session
+  // that switched models mid-run (e.g. via /model) has more than one entry
+  // here even though `model` only reflects whichever was current at read
+  // time.
+  const modelBreakdownEntries = Object.entries(data.modelBreakdown ?? {});
+  const modelsUsed =
+    modelBreakdownEntries.length > 0
+      ? modelBreakdownEntries
+          .sort((a, b) => b[1].requestCount - a[1].requestCount)
+          .map(([model]) => model)
+      : data.model
+        ? [data.model]
+        : [];
 
   if (entries.length === 0 && breakdownEntries.length === 0) {
     return (
@@ -924,10 +939,20 @@ function SessionTimeline({
       </div>
 
       <div className="grid grid-cols-3 gap-2 mb-4 text-xs">
-        {data.model && (
+        {modelsUsed.length > 0 && (
           <div className="bg-surface-3 rounded-lg p-2.5">
-            <Eyebrow>Model</Eyebrow>
-            <div className="font-mono">{data.model}</div>
+            <Eyebrow>{modelsUsed.length > 1 ? `Models (${modelsUsed.length})` : 'Model'}</Eyebrow>
+            {modelsUsed.length > 1 ? (
+              <div className="flex flex-col gap-0.5 mt-0.5">
+                {modelsUsed.map((m) => (
+                  <div key={m} className="font-mono text-[11px] truncate" title={m}>
+                    {m}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="font-mono">{modelsUsed[0]}</div>
+            )}
           </div>
         )}
         {data.estimatedCostUsd != null && (

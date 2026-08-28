@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.1] - 2026-08-28
+
+### Fixed
+
+- **The session detail view's Model card now shows every model used during a session, not just the last one.** A session that switched models partway through (for example, via `/model`) previously showed only whichever model happened to be active when the view loaded.
+
 ## [1.18.0] - 2026-08-28
 
 ### Added

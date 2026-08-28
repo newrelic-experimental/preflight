@@ -487,6 +487,76 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(parsed.outcome).toBe('in progress');
   });
 
+  it('includes modelBreakdown for the current live session when modelUsageTracker is present', async () => {
+    const tracker = new ModelUsageTracker();
+    tracker.recordUsage('claude-sonnet-5', 1000, 500, 3.2);
+    tracker.recordUsage('claude-opus-5', 200, 100, 1.5);
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () =>
+          ({
+            sessionId: 'sess-live-1',
+            sessionName: null,
+            sessionNameSource: null,
+            sessionStartTime: Date.now() - 1_000,
+            sessionDurationMs: 1_000,
+            toolCallCount: 2,
+            toolCallCountByTool: {},
+            toolCallTimeline: [],
+          }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      modelUsageTracker: tracker,
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-live-1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { modelBreakdown: unknown };
+    expect(parsed.modelBreakdown).toEqual(tracker.getRawBreakdown());
+    expect(Object.keys(parsed.modelBreakdown as object)).toEqual([
+      'claude-sonnet-5',
+      'claude-opus-5',
+    ]);
+  });
+
+  it('omits modelBreakdown for the current live session when modelUsageTracker is absent', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () =>
+          ({
+            sessionId: 'sess-live-2',
+            sessionName: null,
+            sessionNameSource: null,
+            sessionStartTime: Date.now() - 1_000,
+            sessionDurationMs: 1_000,
+            toolCallCount: 0,
+            toolCallCountByTool: {},
+            toolCallTimeline: [],
+          }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-live-2' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { modelBreakdown?: unknown };
+    expect(parsed.modelBreakdown).toBeUndefined();
+  });
+
   it('attaches qualityProxy (derived from persisted raw counts) to a persisted session with real signals', async () => {
     const fakeSession = {
       sessionId: 'sess-quality-1',
