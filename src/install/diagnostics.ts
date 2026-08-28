@@ -132,7 +132,7 @@ function checkTelemetryMode(configPath: string, fileMode: string | undefined): D
       check: 'Telemetry mode',
       status: 'fail',
       detail: message,
-      fix: 'Fix the fields listed above, then restart.',
+      fix: 'Apply the remedy named in the message, then re-run doctor.',
     };
   }
 }
