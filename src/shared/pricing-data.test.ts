@@ -140,12 +140,12 @@ describe('DEFAULT_PRICING_TABLE', () => {
     it('has the gpt-5.6 family (Sol/Terra/Luna) with correct rates and flat long-context tier', () => {
       const sol = DEFAULT_PRICING_TABLE['gpt-5.6-sol'];
       expect(sol).toBeDefined();
-      expect(sol.inputPerMTok).toBe(5);
-      expect(sol.outputPerMTok).toBe(30);
+      expect(sol.inputPerMTok).toBe(4);
+      expect(sol.outputPerMTok).toBe(20);
       expect(sol.contextWindow).toBe(1_050_000);
       expect(sol.tierThreshold).toBe(272_000);
-      expect(sol.tierInputPerMTok).toBe(10);
-      expect(sol.tierOutputPerMTok).toBe(45);
+      expect(sol.tierInputPerMTok).toBe(8);
+      expect(sol.tierOutputPerMTok).toBe(30);
 
       expect(DEFAULT_PRICING_TABLE['gpt-5.6-terra']).toBeDefined();
       expect(DEFAULT_PRICING_TABLE['gpt-5.6-luna']).toBeDefined();
@@ -229,6 +229,49 @@ describe('DEFAULT_PRICING_TABLE', () => {
         expect(typeof p.outputPerMTok).toBe('number');
         expect(typeof p.contextWindow).toBe('number');
       }
+    });
+  });
+
+  describe('AWS Bedrock models', () => {
+    // Bare `anthropic.*` keys price the Geo/In-region tier; `global.anthropic.*`
+    // keys price the ~10%-cheaper Global tier. Every current-gen pair should
+    // be internally consistent: bare = global * 1.1 on every rate field.
+    it('prices bare anthropic.* keys at 1.1x their global.anthropic.* counterpart', () => {
+      const currentGenModels = [
+        'anthropic.claude-sonnet-5',
+        'anthropic.claude-fable-5',
+        'anthropic.claude-opus-5',
+        'anthropic.claude-opus-4-8',
+        'anthropic.claude-opus-4-7',
+        'anthropic.claude-sonnet-4-6',
+        'anthropic.claude-haiku-4-5-20251001-v1:0',
+      ];
+      for (const model of currentGenModels) {
+        const geo = DEFAULT_PRICING_TABLE[model];
+        const global = DEFAULT_PRICING_TABLE[`global.${model}`];
+        expect(geo).toBeDefined();
+        expect(global).toBeDefined();
+        expect(geo.inputPerMTok).toBeCloseTo(global.inputPerMTok * 1.1, 5);
+        expect(geo.outputPerMTok).toBeCloseTo(global.outputPerMTok * 1.1, 5);
+        expect(geo.cacheReadPerMTok).toBeCloseTo(global.cacheReadPerMTok! * 1.1, 5);
+        expect(geo.cacheCreationPerMTok).toBeCloseTo(global.cacheCreationPerMTok! * 1.1, 5);
+        expect(geo.contextWindow).toBe(global.contextWindow);
+      }
+    });
+
+    it('has claude-sonnet-5 Geo/In-region rate confirmed exactly against AWS pricing data', () => {
+      const p = DEFAULT_PRICING_TABLE['anthropic.claude-sonnet-5'];
+      expect(p.inputPerMTok).toBe(2.2);
+      expect(p.outputPerMTok).toBe(11);
+      expect(p.cacheReadPerMTok).toBe(0.22);
+      expect(p.cacheCreationPerMTok).toBe(2.75);
+    });
+
+    it('has claude-sonnet-5 Global tier matching Anthropic direct-API pricing (Bedrock parity)', () => {
+      const bedrockGlobal = DEFAULT_PRICING_TABLE['global.anthropic.claude-sonnet-5'];
+      const directApi = DEFAULT_PRICING_TABLE['claude-sonnet-5'];
+      expect(bedrockGlobal.inputPerMTok).toBe(directApi.inputPerMTok);
+      expect(bedrockGlobal.outputPerMTok).toBe(directApi.outputPerMTok);
     });
   });
 

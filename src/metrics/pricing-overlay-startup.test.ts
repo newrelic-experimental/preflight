@@ -3,34 +3,20 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initPricing, resolveModelPricing } from '../shared/pricing.js';
-import {
-  applyGapFilledOverlay,
-  resolveCopilotPricingOverlayPath,
-} from './copilot-pricing-overlay.js';
+import { applyGapFilledOverlay, resolvePricingOverlayPath } from './pricing-overlay.js';
 
-describe('copilot pricing overlay integration', () => {
+describe('pricing overlay integration', () => {
   afterEach(() => {
     // Reset the process-wide singleton so this test doesn't leak state into
     // others (initPricing() mutates a shared default table).
     initPricing(null);
   });
 
-  it('resolves previously-unresolvable Copilot model ids once the overlay is applied', () => {
-    expect(resolveModelPricing('raptor-mini')).toBeNull();
-
-    const overlayPath = resolveCopilotPricingOverlayPath();
+  it('loads the real bundled overlay file (via its resolved path) without disturbing vendored entries', () => {
+    const overlayPath = resolvePricingOverlayPath();
     expect(overlayPath).not.toBeNull();
     initPricing(overlayPath);
 
-    expect(resolveModelPricing('raptor-mini')).toMatchObject({
-      inputPerMTok: 0.25,
-      outputPerMTok: 2,
-      cacheReadPerMTok: 0.025,
-    });
-  });
-
-  it('does not disturb existing vendored entries', () => {
-    initPricing(resolveCopilotPricingOverlayPath());
     expect(resolveModelPricing('claude-opus-4-8')).toMatchObject({
       inputPerMTok: 5,
       outputPerMTok: 25,

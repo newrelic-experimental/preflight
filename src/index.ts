@@ -41,7 +41,7 @@ import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
-import { applyCopilotPricingOverlay } from './metrics/copilot-pricing-overlay.js';
+import { applyPricingOverlay } from './metrics/pricing-overlay.js';
 import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
 import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
 import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
@@ -897,7 +897,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyCopilotPricingOverlay(config.customPricingFile);
+      applyPricingOverlay(config.customPricingFile);
 
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
@@ -943,7 +943,7 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
-      applyCopilotPricingOverlay(config.customPricingFile);
+      applyPricingOverlay(config.customPricingFile);
 
       // --local has no owning Claude Code session — derive a deterministic
       // identifier so the rest of the codebase can rely on a non-empty

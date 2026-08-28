@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.1] - 2026-08-28
+
+### Changed
+
+- **The bundled Copilot pricing gap-fill overlay is now a general-purpose pricing overlay** (`pricing-overlay/`, previously `copilot-pricing/`). Its previous entries (`grok-4.5`, `raptor-mini`, and other Copilot-visible models) are now part of the built-in pricing table directly, so the overlay itself sits unused until a future model needs a gap-fill — no change to the cost calculated for any model.
+- Bumped several dependencies (testing, linting, and build tooling) to their latest compatible versions, plus two transitive `overrides` pins (`js-yaml`, `nanoid`). No user-visible behavior change.
+
 ## [1.17.0] - 2026-08-26
 
 ### Changed

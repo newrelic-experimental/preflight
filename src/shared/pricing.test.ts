@@ -404,6 +404,21 @@ describe('resolveModelPricing', () => {
     expect(gemini20!.inputPerMTok).toBeGreaterThan(0);
   });
 
+  // AWS Bedrock geo cross-region inference profile IDs (us./eu./au./jp.)
+  // route via exact-match alias to the bare `anthropic.*` key's Geo/In-region
+  // pricing; `global.anthropic.*` is a distinct real key priced ~10% cheaper.
+  it('resolves Bedrock regional-prefix aliases to the same pricing as the bare in-region key', () => {
+    const bare = resolveModelPricing('anthropic.claude-sonnet-5');
+    const usProfile = resolveModelPricing('us.anthropic.claude-sonnet-5');
+    const euProfile = resolveModelPricing('eu.anthropic.claude-sonnet-5');
+    expect(usProfile).toEqual(bare);
+    expect(euProfile).toEqual(bare);
+
+    const global = resolveModelPricing('global.anthropic.claude-sonnet-5');
+    expect(global).not.toBeNull();
+    expect(global!.inputPerMTok).toBeLessThan(bare!.inputPerMTok);
+  });
+
   // 13. Reverse prefix does not match unrelated models
   it('does not false-match via reverse prefix on unrelated models', () => {
     const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
