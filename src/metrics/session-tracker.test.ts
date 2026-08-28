@@ -377,6 +377,166 @@ describe('SessionTracker', () => {
       tracker.reset('new-session');
       expect(tracker.getMetrics().sessionName).toBeNull();
     });
+
+    it("reports the cwd fallback via sessionNameSource === 'cwd'", () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/my-app' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('my-app');
+      expect(metrics.sessionNameSource).toBe('cwd');
+    });
+
+    it('has a null source when no name has been derived', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord());
+      expect(tracker.getMetrics().sessionNameSource).toBeNull();
+    });
+  });
+
+  describe('setAuthoritativeName()', () => {
+    it('sets the name and its source', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setAuthoritativeName('session naming logic', 'ai-title');
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('session naming logic');
+      expect(metrics.sessionNameSource).toBe('ai-title');
+    });
+
+    it('wins over the streaming cwd fallback regardless of call order', () => {
+      const tracker = new SessionTracker('test-session');
+      // cwd first, then authoritative
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
+      tracker.setAuthoritativeName('user title', 'user');
+      // subsequent tool calls with a cwd must NOT override the authoritative name
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/other-repo' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('user title');
+      expect(metrics.sessionNameSource).toBe('user');
+    });
+
+    it('suppresses the cwd fallback when set before any tool call', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setAuthoritativeName('auto name', 'auto');
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('auto name');
+      expect(metrics.sessionNameSource).toBe('auto');
+    });
+
+    it('ignores an empty name', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
+      tracker.setAuthoritativeName('', 'ai-title');
+      // unchanged: still the cwd-derived name, and the fallback stays active
+      expect(tracker.getMetrics().sessionName).toBe('preflight');
+      expect(tracker.getMetrics().sessionNameSource).toBe('cwd');
+    });
+
+    it('is cleared on reset()', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setAuthoritativeName('user title', 'user');
+      tracker.reset('new-session');
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBeNull();
+      expect(metrics.sessionNameSource).toBeNull();
+      // After reset the streaming fallback is active again.
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
+      expect(tracker.getMetrics().sessionName).toBe('preflight');
+      expect(tracker.getMetrics().sessionNameSource).toBe('cwd');
+    });
+
+    it('returns true when it (re)names and false on a no-op', () => {
+      const tracker = new SessionTracker('test-session');
+      // First set: null -> ai-title is a real change.
+      expect(tracker.setAuthoritativeName('a title', 'ai-title')).toBe(true);
+      // Same name + source again: nothing moved.
+      expect(tracker.setAuthoritativeName('a title', 'ai-title')).toBe(false);
+      // Refined text at the same source: a real change.
+      expect(tracker.setAuthoritativeName('refined title', 'ai-title')).toBe(true);
+      // Empty name is always ignored (no change).
+      expect(tracker.setAuthoritativeName('', 'user')).toBe(false);
+    });
+
+    // --- Phase 2 freshness: re-resolution may upgrade, never downgrade ---
+
+    it('upgrades the name as a better source arrives (cwd -> auto -> ai-title -> user)', () => {
+      const tracker = new SessionTracker('test-session');
+      // Streaming cwd fallback first.
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/preflight' }));
+      expect(tracker.getMetrics().sessionName).toBe('preflight');
+      expect(tracker.getMetrics().sessionNameSource).toBe('cwd');
+      // Each better source replaces the previous.
+      expect(tracker.setAuthoritativeName('auto guess', 'auto')).toBe(true);
+      expect(tracker.getMetrics().sessionNameSource).toBe('auto');
+      expect(tracker.setAuthoritativeName('refined title', 'ai-title')).toBe(true);
+      expect(tracker.getMetrics().sessionNameSource).toBe('ai-title');
+      expect(tracker.setAuthoritativeName('human named it', 'user')).toBe(true);
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('human named it');
+      expect(metrics.sessionNameSource).toBe('user');
+    });
+
+    it('never downgrades a user name to auto or cwd', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setAuthoritativeName('human named it', 'user');
+      // A later re-resolve that fell back to auto/cwd (e.g. the job-state file
+      // disappeared) must be refused rather than demote the user name.
+      expect(tracker.setAuthoritativeName('auto guess', 'auto')).toBe(false);
+      expect(tracker.setAuthoritativeName('cwd basename', 'cwd')).toBe(false);
+      const metrics = tracker.getMetrics();
+      expect(metrics.sessionName).toBe('human named it');
+      expect(metrics.sessionNameSource).toBe('user');
+      // The streaming fallback stays suppressed too.
+      tracker.recordToolCall(makeRecord({ cwd: '/Users/dev/projects/other-repo' }));
+      expect(tracker.getMetrics().sessionName).toBe('human named it');
+    });
+
+    it('does not downgrade an ai-title to auto', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setAuthoritativeName('refined title', 'ai-title');
+      expect(tracker.setAuthoritativeName('auto guess', 'auto')).toBe(false);
+      expect(tracker.getMetrics().sessionName).toBe('refined title');
+      expect(tracker.getMetrics().sessionNameSource).toBe('ai-title');
+    });
+  });
+
+  // --- Phase 3: session intent (first prompt), captured gated + redacted ---
+  describe('setSessionIntent()', () => {
+    it('defaults to null (no intent captured)', () => {
+      const tracker = new SessionTracker('test-session');
+      expect(tracker.getMetrics().sessionIntent).toBeNull();
+    });
+
+    it('stores the intent surfaced via getMetrics()', () => {
+      const tracker = new SessionTracker('test-session');
+      // The caller (index.ts) owns the recordContent gate + redaction; the
+      // tracker stores the already-safe string it is handed.
+      tracker.setSessionIntent('how are we naming sessions now?');
+      expect(tracker.getMetrics().sessionIntent).toBe('how are we naming sessions now?');
+    });
+
+    it('treats null or empty as cleared', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setSessionIntent('some intent');
+      tracker.setSessionIntent('');
+      expect(tracker.getMetrics().sessionIntent).toBeNull();
+      tracker.setSessionIntent('some intent');
+      tracker.setSessionIntent(null);
+      expect(tracker.getMetrics().sessionIntent).toBeNull();
+    });
+
+    it('is independent of the session name (a name never implies an intent)', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setAuthoritativeName('session naming logic', 'ai-title');
+      expect(tracker.getMetrics().sessionIntent).toBeNull();
+    });
+
+    it('is cleared on reset()', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.setSessionIntent('how are we naming sessions now?');
+      tracker.reset('new-session');
+      expect(tracker.getMetrics().sessionIntent).toBeNull();
+    });
   });
 
   describe('adoptSessionId()', () => {

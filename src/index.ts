@@ -10,7 +10,7 @@ import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
 import type { McpServerConfig } from './config.js';
-import { DEFAULT_STORAGE_PATH, loadMcpConfig } from './config.js';
+import { DEFAULT_STORAGE_PATH, loadMcpConfig, redactSensitive } from './config.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
 import { LiveEventBus } from './dashboard/index.js';
 import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
@@ -22,10 +22,13 @@ import { HookEventProcessor } from './hooks/index.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import {
   isSyntheticSessionId,
+  readJobState,
+  readTranscriptTitle,
   resolveFromBreadcrumb,
   resolveFromCwd,
   resolveFromJobDir,
   resolveSessionId,
+  resolveSessionName,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
 import { SubagentWatcher } from './hooks/subagent-watcher.js';
@@ -1031,6 +1034,76 @@ async function main(): Promise<void> {
     // Unconditional in every mode — decoupled from whether the `--local`
     // dashboard wins its port bind (see startMaintenanceGc()'s doc comment).
     maintenanceGcInterval = startMaintenanceGc({ localStore, liveSessionRegistry });
+
+    // Resolve the authoritative, human-readable session name for a real session
+    // id and push it into both trackers, so their streaming cwd-basename
+    // fallback only fills in when no better name exists (authoritative wins).
+    // Reads Claude Code's own name sources — the background-job state file and
+    // the transcript's last ai-title (see resolveSessionName's precedence).
+    // Best-effort and cheap; any failure just leaves the streaming fallback in
+    // place. A no-op for synthetic ids (local-/proxy-/pending-*), which own no
+    // single transcript. Called both here (eager synchronous resolution) and
+    // from adoptRealSessionId (pending -> real transition and PPID correction),
+    // so the name is refreshed against whichever id ends up being authoritative.
+    const applyAuthoritativeSessionName = (sessionId: string): void => {
+      if (isSyntheticSessionId(sessionId)) return;
+      try {
+        const cwd = process.cwd();
+        // `intent` (the first user prompt) from the job state is SENSITIVE
+        // content, so readJobState only populates it when recordContent is
+        // enabled (config.recordContent is already force-disabled under
+        // highSecurity upstream — never bypass). resolveSessionName still uses
+        // only name/nameSource, which are display labels; the intent is
+        // surfaced separately as session_intent below.
+        const jobState = readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
+          recordContent: config?.recordContent ?? false,
+        });
+        const transcriptTitle = readTranscriptTitle({ sessionId });
+        const resolved = resolveSessionName({ jobState, transcriptTitle, cwd });
+        if (!resolved) return;
+        // Redact ONCE, before the name reaches either tracker, so it stays
+        // redacted in in-memory tracker state and every downstream sink is
+        // covered: the MCP tool responses, the persisted summaries, AND the
+        // dashboard HTTP reads (which read the tracker/registry name directly
+        // and do NOT redact on their own). The `ai-title` source is already
+        // redacted at readTranscriptTitle; the `user`/`auto` job-state names
+        // and the cwd basename are raw until here — redacting all of them
+        // makes the existing tool/persist redaction idempotent and harmless.
+        const safeName = redactSensitive(resolved.name);
+        // Both trackers enforce the no-downgrade invariant internally
+        // (shouldReplaceSessionName), so re-resolving on the persist/shutdown
+        // path can only upgrade or refresh the name — never demote a better
+        // one. `changed` reflects whether SessionTracker actually (re)named,
+        // so the periodic re-resolve stays quiet unless something moved.
+        const changed = sessionTracker?.setAuthoritativeName(safeName, resolved.source) ?? false;
+        liveSessionRegistry?.setAuthoritativeName(sessionId, safeName, resolved.source);
+        // Phase 3: surface the originating intent (first prompt) as
+        // session_intent. jobState.intent is already null unless recordContent
+        // is enabled (gated in readJobState); redact before it reaches the
+        // tracker so every downstream sink (tool response, persisted summary)
+        // stays redacted. When content recording is off, this is a no-op and
+        // session_intent stays null everywhere.
+        if (jobState?.intent) {
+          sessionTracker?.setSessionIntent(redactSensitive(jobState.intent));
+        }
+        if (changed) {
+          logger.info('Resolved authoritative session name', {
+            source: resolved.source,
+            name: safeName,
+          });
+        }
+      } catch (err) {
+        logger.debug('Authoritative session name resolution failed (continuing)', {
+          error: String(err),
+        });
+      }
+    };
+
+    // Eager synchronous stdio path: when the id was resolved up front (job dir
+    // / ppid / cwd breadcrumb), name it now. Provisional (pending-*) and
+    // --local ids are synthetic, so this is a no-op for them — the provisional
+    // window is named later via adoptRealSessionId once its real id resolves.
+    if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -2165,6 +2238,15 @@ async function main(): Promise<void> {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
         transcriptMessageTracker.refresh();
+        // Phase 2 freshness: re-read Claude Code's own name sources (job-state
+        // title + transcript ai-title) right before building the summary, so a
+        // title refined after the first exchange — or a name a human assigns
+        // mid-session — wins over the first-prompt guess in the persisted/
+        // shutdown snapshot. Runs on both the periodic checkpoint and the
+        // terminal save (both flow through here). setAuthoritativeName enforces
+        // the no-downgrade invariant, so this can only upgrade or refresh —
+        // never demote a user name to auto/cwd. A no-op for synthetic ids.
+        applyAuthoritativeSessionName(sessionTraceId);
         const summary = buildSessionSummary({
           sessionTracker,
           costTracker,
@@ -2451,6 +2533,11 @@ async function main(): Promise<void> {
       }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);
+      // Now that the real id (and thus its transcript path) is known, resolve
+      // and apply the authoritative name. On a correction this re-resolves
+      // against the corrected id's own transcript, replacing any name derived
+      // for the previously-adopted (wrong) id.
+      applyAuthoritativeSessionName(realId);
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own

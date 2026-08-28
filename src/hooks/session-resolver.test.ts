@@ -11,7 +11,15 @@ import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
   watchPpidBreadcrumb,
+  readJobState,
+  readTranscriptTitle,
+  findLastAiTitleInText,
+  resolveSessionName,
+  sessionNameSourceRank,
+  shouldReplaceSessionName,
+  sanitizeCwdForFilename,
 } from './session-resolver.js';
+import { redactSensitive } from '../config.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -497,5 +505,334 @@ describe('isUnscopedAggregatorSessionId', () => {
 
   it('returns false for undefined', () => {
     expect(isUnscopedAggregatorSessionId(undefined)).toBe(false);
+  });
+});
+
+describe('sanitizeCwdForFilename', () => {
+  it('replaces backslash, forward slash, and colon with "-"', () => {
+    expect(sanitizeCwdForFilename('/Users/dev/projects/app')).toBe('-Users-dev-projects-app');
+    expect(sanitizeCwdForFilename('C:\\Users\\dev\\app')).toBe('C--Users-dev-app');
+  });
+});
+
+describe('readJobState', () => {
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let jobDir: string;
+
+  beforeEach(() => {
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jobDir = resolve(tmpdir(), `nr-jobstate-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(jobDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+    if (existsSync(jobDir)) rmSync(jobDir, { recursive: true, force: true });
+  });
+
+  it('returns null when the dir is null/undefined/empty or state.json is missing', () => {
+    expect(readJobState(null)).toBeNull();
+    expect(readJobState(undefined)).toBeNull();
+    expect(readJobState('')).toBeNull();
+    expect(readJobState(jobDir)).toBeNull();
+  });
+
+  it('returns null when state.json is invalid JSON', () => {
+    writeFileSync(resolve(jobDir, 'state.json'), 'not json');
+    expect(readJobState(jobDir)).toBeNull();
+  });
+
+  it('reads name, nameSource, and an explicit sessionId, gating intent behind recordContent', () => {
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({
+        sessionId: 'abc-123-def',
+        name: 'refactor auth flow',
+        nameSource: 'user',
+        intent: 'please refactor the auth flow',
+        linkScanPath: '/somewhere/other-uuid.jsonl',
+      }),
+    );
+    // Default (no recordContent) and recordContent:false both keep the
+    // sensitive intent null; only recordContent:true surfaces it.
+    expect(readJobState(jobDir)).toEqual({
+      sessionId: 'abc-123-def',
+      name: 'refactor auth flow',
+      nameSource: 'user',
+      intent: null,
+    });
+    expect(readJobState(jobDir, { recordContent: false })).toEqual({
+      sessionId: 'abc-123-def',
+      name: 'refactor auth flow',
+      nameSource: 'user',
+      intent: null,
+    });
+    expect(readJobState(jobDir, { recordContent: true })).toEqual({
+      sessionId: 'abc-123-def',
+      name: 'refactor auth flow',
+      nameSource: 'user',
+      intent: 'please refactor the auth flow',
+    });
+  });
+
+  it('falls back to the linkScanPath UUID when no explicit sessionId field', () => {
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ name: 'x', nameSource: 'auto', linkScanPath: '/dir/link-uuid.jsonl' }),
+    );
+    expect(readJobState(jobDir)?.sessionId).toBe('link-uuid');
+  });
+
+  it('normalizes an invalid nameSource, empty name, and empty intent to null', () => {
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ sessionId: 'sess-1', name: '', nameSource: 'bogus', intent: '' }),
+    );
+    // recordContent:true so the empty-string intent is normalized to null by
+    // the length check, not merely suppressed by the recordContent gate.
+    expect(readJobState(jobDir, { recordContent: true })).toEqual({
+      sessionId: 'sess-1',
+      name: null,
+      nameSource: null,
+      intent: null,
+    });
+  });
+});
+
+describe('findLastAiTitleInText', () => {
+  it('returns the LAST ai-title when several are present', () => {
+    const text = [
+      '{"type":"user","text":"hi"}',
+      '{"type":"ai-title","aiTitle":"first guess"}',
+      '{"type":"assistant","text":"work"}',
+      '{"type":"ai-title","aiTitle":"refined title"}',
+      '',
+    ].join('\n');
+    expect(findLastAiTitleInText(text, true)).toBe('refined title');
+  });
+
+  it('ignores non-ai-title records (e.g. agent-name)', () => {
+    const text = [
+      '{"type":"ai-title","aiTitle":"the title"}',
+      '{"type":"agent-name","agentName":"explorer"}',
+      '',
+    ].join('\n');
+    expect(findLastAiTitleInText(text, true)).toBe('the title');
+  });
+
+  it('skips malformed JSON lines', () => {
+    const text = ['{"type":"ai-title","aiTitle":"good"}', 'this is not json', ''].join('\n');
+    expect(findLastAiTitleInText(text, true)).toBe('good');
+  });
+
+  it('skips the partial leading fragment when firstFragmentComplete is false', () => {
+    // The leading fragment is a truncated ai-title whose start is unread; it
+    // must be ignored, yielding null (no complete ai-title follows it).
+    const text = 'e":"ai-title","aiTitle":"truncated"}\n{"type":"user","text":"hi"}\n';
+    expect(findLastAiTitleInText(text, false)).toBeNull();
+  });
+
+  it('returns null when no ai-title is present', () => {
+    expect(findLastAiTitleInText('{"type":"user","text":"hi"}\n', true)).toBeNull();
+  });
+});
+
+describe('readTranscriptTitle', () => {
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let projectsDir: string;
+  // Deliberately contains a dot (a worktree/hidden dir) so the slug below
+  // exercises the dot-replacement that the OLD cwd-derived path missed.
+  const cwd = '/Users/dev/projects/.worktrees/preflight';
+  const sessionId = 'sess-transcript-1';
+
+  // Build the fixture under a Claude-Code-style slug that REPLACES dots (which
+  // our breadcrumb sanitizer does not) — the transcript is located by matching
+  // <sessionId>.jsonl across slugs, so the exact slug must not matter.
+  const slug = cwd.replace(/[\\/:.]/g, '-');
+  const writeTranscript = (content: string): void => {
+    const dir = resolve(projectsDir, slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, `${sessionId}.jsonl`), content);
+  };
+
+  beforeEach(() => {
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    projectsDir = resolve(
+      tmpdir(),
+      `nr-transcript-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(projectsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+    if (existsSync(projectsDir)) rmSync(projectsDir, { recursive: true, force: true });
+  });
+
+  it('returns null when the transcript file is missing', () => {
+    expect(readTranscriptTitle({ projectsDir, sessionId })).toBeNull();
+  });
+
+  it('returns null for an invalid sessionId (never builds a path)', () => {
+    expect(readTranscriptTitle({ projectsDir, sessionId: 'has spaces' })).toBeNull();
+  });
+
+  it('returns the last ai-title, locating the transcript by sessionId under a dot-replacing slug', () => {
+    writeTranscript(
+      [
+        '{"type":"ai-title","aiTitle":"first title","sessionId":"sess-transcript-1"}',
+        '{"type":"assistant","message":{"content":[]}}',
+        '{"type":"ai-title","aiTitle":"session naming logic","sessionId":"sess-transcript-1"}',
+        '{"type":"agent-name","agentName":"explorer","sessionId":"sess-transcript-1"}',
+        '',
+      ].join('\n'),
+    );
+    expect(readTranscriptTitle({ projectsDir, sessionId })).toBe('session naming logic');
+  });
+
+  it('finds the last ai-title even when it sits many chunks back from EOF', () => {
+    // Put the ai-title near the top, then >200KB of filler after it so the
+    // reverse chunk scan (64KB chunks) must cross several boundaries to reach
+    // it — exercises the partial-line carry between chunks.
+    const filler = `${'{"type":"assistant","message":{"content":[]}}'}\n`.repeat(5000);
+    writeTranscript(`{"type":"ai-title","aiTitle":"deep title"}\n${filler}`);
+    expect(readTranscriptTitle({ projectsDir, sessionId })).toBe('deep title');
+  });
+
+  it('returns null when the only ai-title is beyond the bounded scan window', () => {
+    // ai-title at the very start, followed by >1MB of filler (past
+    // TRANSCRIPT_TITLE_MAX_SCAN_BYTES) — the bounded scan stops before reaching it.
+    const filler = `${'{"type":"assistant","message":{"content":[]}}'}\n`.repeat(30_000);
+    writeTranscript(`{"type":"ai-title","aiTitle":"too far back"}\n${filler}`);
+    expect(readTranscriptTitle({ projectsDir, sessionId })).toBeNull();
+  });
+
+  it('redacts the returned title', () => {
+    const raw = 'debugging AKIAIOSFODNN7EXAMPLE key';
+    writeTranscript(`{"type":"ai-title","aiTitle":${JSON.stringify(raw)}}\n`);
+    // The reader must apply redactSensitive on the way out — assert against it
+    // directly so the test tracks whatever DEFAULT_REDACTION_PATTERNS match.
+    expect(readTranscriptTitle({ projectsDir, sessionId })).toBe(redactSensitive(raw));
+  });
+});
+
+describe('resolveSessionName', () => {
+  it('returns null when nothing is usable', () => {
+    expect(resolveSessionName({})).toBeNull();
+    expect(resolveSessionName({ jobState: null, transcriptTitle: null, cwd: null })).toBeNull();
+  });
+
+  it('1: a user-authored job-state name wins over everything', () => {
+    expect(
+      resolveSessionName({
+        jobState: { sessionId: 's', name: 'human name', nameSource: 'user', intent: null },
+        transcriptTitle: 'ai title',
+        cwd: '/Users/dev/projects/app',
+      }),
+    ).toEqual({ name: 'human name', source: 'user' });
+  });
+
+  it('2: the transcript ai-title wins over an auto job-state name and cwd', () => {
+    expect(
+      resolveSessionName({
+        jobState: { sessionId: 's', name: 'auto name', nameSource: 'auto', intent: null },
+        transcriptTitle: 'ai title',
+        cwd: '/Users/dev/projects/app',
+      }),
+    ).toEqual({ name: 'ai title', source: 'ai-title' });
+  });
+
+  it('3: an auto job-state name wins over cwd when there is no user name or ai-title', () => {
+    expect(
+      resolveSessionName({
+        jobState: { sessionId: 's', name: 'auto name', nameSource: 'auto', intent: null },
+        transcriptTitle: null,
+        cwd: '/Users/dev/projects/app',
+      }),
+    ).toEqual({ name: 'auto name', source: 'auto' });
+  });
+
+  it('4: falls back to the cwd basename', () => {
+    expect(resolveSessionName({ cwd: '/Users/dev/projects/my-app' })).toEqual({
+      name: 'my-app',
+      source: 'cwd',
+    });
+  });
+
+  it('4: a degenerate cwd basename falls through to null (streaming fallback can do better)', () => {
+    expect(resolveSessionName({ cwd: '/tmp' })).toBeNull();
+    expect(resolveSessionName({ cwd: '/var' })).toBeNull();
+  });
+
+  it('4: the degenerate-cwd guard is case-insensitive', () => {
+    // Exercises the DEGENERATE_NAMES.has(base.toLowerCase()) lowering branch.
+    expect(resolveSessionName({ cwd: '/TMP' })).toBeNull();
+    expect(resolveSessionName({ cwd: '/Users/dev/VAR' })).toBeNull();
+  });
+
+  it('1: a user nameSource with an empty name falls through to the next tier', () => {
+    // nameSource is 'user' but name is empty → tier 1 must not fire; the
+    // transcript ai-title should win instead.
+    expect(
+      resolveSessionName({
+        jobState: { sessionId: 's', name: '', nameSource: 'user', intent: null },
+        transcriptTitle: 'ai title',
+        cwd: '/Users/dev/projects/app',
+      }),
+    ).toEqual({ name: 'ai title', source: 'ai-title' });
+  });
+
+  it('does not use a job-state name whose nameSource is null', () => {
+    // name present but nameSource unknown/null → skip to next tier (cwd here).
+    expect(
+      resolveSessionName({
+        jobState: { sessionId: 's', name: 'unlabeled', nameSource: null, intent: null },
+        cwd: '/Users/dev/projects/app',
+      }),
+    ).toEqual({ name: 'app', source: 'cwd' });
+  });
+});
+
+describe('sessionNameSourceRank', () => {
+  it('ranks sources most-trusted-first, mirroring resolveSessionName precedence', () => {
+    expect(sessionNameSourceRank('user')).toBe(0);
+    expect(sessionNameSourceRank('ai-title')).toBe(1);
+    expect(sessionNameSourceRank('auto')).toBe(2);
+    expect(sessionNameSourceRank('cwd')).toBe(3);
+    // Strictly ordered: user < ai-title < auto < cwd.
+    expect(sessionNameSourceRank('user')).toBeLessThan(sessionNameSourceRank('ai-title'));
+    expect(sessionNameSourceRank('ai-title')).toBeLessThan(sessionNameSourceRank('auto'));
+    expect(sessionNameSourceRank('auto')).toBeLessThan(sessionNameSourceRank('cwd'));
+  });
+});
+
+describe('shouldReplaceSessionName', () => {
+  it('always accepts when the session is not yet named (current === null)', () => {
+    expect(shouldReplaceSessionName(null, 'cwd')).toBe(true);
+    expect(shouldReplaceSessionName(null, 'user')).toBe(true);
+  });
+
+  it('accepts an upgrade to a more-trusted source', () => {
+    expect(shouldReplaceSessionName('cwd', 'auto')).toBe(true);
+    expect(shouldReplaceSessionName('auto', 'ai-title')).toBe(true);
+    expect(shouldReplaceSessionName('ai-title', 'user')).toBe(true);
+    // And the full jump end-to-end.
+    expect(shouldReplaceSessionName('cwd', 'user')).toBe(true);
+  });
+
+  it('accepts a refresh at the same source (equal rank)', () => {
+    expect(shouldReplaceSessionName('ai-title', 'ai-title')).toBe(true);
+    expect(shouldReplaceSessionName('user', 'user')).toBe(true);
+    expect(shouldReplaceSessionName('cwd', 'cwd')).toBe(true);
+  });
+
+  it('refuses a downgrade to a less-trusted source', () => {
+    // The load-bearing invariant: a user name is never demoted.
+    expect(shouldReplaceSessionName('user', 'ai-title')).toBe(false);
+    expect(shouldReplaceSessionName('user', 'auto')).toBe(false);
+    expect(shouldReplaceSessionName('user', 'cwd')).toBe(false);
+    expect(shouldReplaceSessionName('ai-title', 'auto')).toBe(false);
+    expect(shouldReplaceSessionName('ai-title', 'cwd')).toBe(false);
+    expect(shouldReplaceSessionName('auto', 'cwd')).toBe(false);
   });
 });

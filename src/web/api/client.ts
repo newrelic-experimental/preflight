@@ -40,6 +40,11 @@ export interface AntiPattern {
   readonly suggestion: string;
 }
 
+// Which source produced a session's display name, mirroring the server's
+// SessionNameSource (src/hooks/session-resolver.ts). Declared locally so the
+// web bundle never imports server code; keep the union in sync with the server.
+export type SessionNameSource = 'user' | 'ai-title' | 'auto' | 'cwd';
+
 // Real server type also has `sessionId`/`sessionName`/`liveSessions`/many more
 // counters (see SessionTracker.getMetrics() + efficiencyScore/liveSessions
 // added by the route). Declared fully so every current and future consumer
@@ -47,6 +52,10 @@ export interface AntiPattern {
 export interface SessionCurrentResponse {
   readonly sessionId: string;
   readonly sessionName: string | null;
+  // Lets the UI distinguish an authoritative user/ai-title/auto name from a
+  // cwd-basename fallback (null when unnamed). Matches session_name_source in
+  // the MCP tool response and the persisted summaries.
+  readonly sessionNameSource: SessionNameSource | null;
   readonly sessionStartTime: number;
   readonly sessionDurationMs: number;
   readonly toolCallCount: number;

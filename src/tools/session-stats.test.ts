@@ -140,6 +140,29 @@ describe('handleGetSessionStats()', () => {
 
     expect(stats.avg_tool_duration_ms).toBe(0);
   });
+
+  it('surfaces session_name (redacted), session_name_source, and session_intent (redacted)', () => {
+    const tracker = new SessionTracker('name-session');
+    // Names/intent can contain secret-shaped text; the tool boundary must redact
+    // both before they leave the process.
+    tracker.setAuthoritativeName('proj AKIAIOSFODNN7EXAMPLE', 'ai-title');
+    tracker.setSessionIntent('deploy with AKIAIOSFODNN7EXAMPLE now');
+
+    const stats = JSON.parse(handleGetSessionStats(tracker).content[0].text);
+
+    expect(stats.session_name_source).toBe('ai-title');
+    expect(stats.session_name).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(stats.session_name).toContain('[REDACTED]');
+    expect(stats.session_intent).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(stats.session_intent).toContain('[REDACTED]');
+  });
+
+  it('reports null session_name_source and session_intent when unset', () => {
+    const tracker = new SessionTracker('bare-session');
+    const stats = JSON.parse(handleGetSessionStats(tracker).content[0].text);
+    expect(stats.session_name_source).toBeNull();
+    expect(stats.session_intent).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

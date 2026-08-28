@@ -16,6 +16,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { createLogger } from '../shared/index.js';
+import { redactSensitive } from '../config.js';
 import { VERSION } from '../version.js';
 
 const logger = createLogger('session-stats');
@@ -169,7 +170,13 @@ export function handleGetSessionStats(sessionTracker: SessionTracker, sessionTra
   const stats = {
     session_trace_id: sessionTraceId ?? null,
     session_id: metrics.sessionId,
-    session_name: metrics.sessionName ?? null,
+    // The name can be an ai-title or a user-given title (not just a directory
+    // basename), so redact before it leaves the process.
+    session_name: metrics.sessionName ? redactSensitive(metrics.sessionName) : null,
+    session_name_source: metrics.sessionNameSource ?? null,
+    // Intent is SENSITIVE content; non-null only when recordContent was on at
+    // capture. Redact again (idempotent) before it leaves the process.
+    session_intent: metrics.sessionIntent ? redactSensitive(metrics.sessionIntent) : null,
     session_duration_ms: metrics.sessionDurationMs,
     tool_calls: metrics.toolCallCount,
     tool_calls_by_type: metrics.toolCallCountByTool,

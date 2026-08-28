@@ -9,6 +9,11 @@
 import { basename } from 'node:path';
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import {
+  DEGENERATE_NAMES,
+  shouldReplaceSessionName,
+  type SessionNameSource,
+} from '../hooks/session-resolver.js';
 import { computePercentile } from './percentile.js';
 import type { Resettable } from './tracker-contracts.js';
 
@@ -34,6 +39,16 @@ export interface TimelineEntry {
 export interface SessionMetrics {
   sessionId: string;
   sessionName: string | null;
+  /** Which source produced `sessionName` (see SessionNameSource), or null when unnamed. */
+  sessionNameSource: SessionNameSource | null;
+  /**
+   * The session's originating intent (the first user prompt), or null. This is
+   * SENSITIVE content: it is populated ONLY when `recordContent` is enabled
+   * (force-disabled under highSecurity upstream) and is always redacted before
+   * being stored. Null whenever content recording is off. See
+   * `setSessionIntent`.
+   */
+  sessionIntent: string | null;
   sessionStartTime: number;
   sessionDurationMs: number;
   toolCallCount: number;
@@ -129,6 +144,15 @@ export interface SessionTrackerSeed {
 export class SessionTracker implements Resettable {
   private sessionId: string;
   private sessionName: string | null = null;
+  private sessionNameSource: SessionNameSource | null = null;
+  private sessionIntent: string | null = null;
+  /**
+   * True once an authoritative name (resolved at startup from the job state
+   * file or transcript title) has been set via `setAuthoritativeName`. While
+   * true, the streaming cwd-basename derivation in `recordToolCall` is
+   * suppressed — the authoritative name always wins.
+   */
+  private authoritativeName = false;
   private sessionStartTime: number;
 
   private toolCallCount = 0;
@@ -161,14 +185,17 @@ export class SessionTracker implements Resettable {
   recordToolCall(record: ToolCallRecord): void {
     this.toolCallCount++;
 
-    // Derive session name from cwd; prefer a later, more meaningful name if the
-    // current one is a degenerate system directory (tmp, var, usr, etc.).
-    const DEGENERATE_NAMES = new Set(['tmp', 'temp', 'var', 'usr', 'opt', 'home', '.', '..', '']);
-    if (typeof record.cwd === 'string' && record.cwd.length > 0) {
+    // FALLBACK naming only: an authoritative name (job-state title or
+    // transcript ai-title, resolved once at startup) always wins, so skip the
+    // cwd derivation entirely once one is set. Otherwise derive from cwd,
+    // preferring a later, more meaningful name if the current one is a
+    // degenerate system directory (tmp, var, usr, etc.).
+    if (!this.authoritativeName && typeof record.cwd === 'string' && record.cwd.length > 0) {
       const name = basename(record.cwd);
       if (name.length > 0 && name !== '.' && name !== '..') {
         if (this.sessionName === null || DEGENERATE_NAMES.has(this.sessionName.toLowerCase())) {
           this.sessionName = name;
+          this.sessionNameSource = 'cwd';
         }
       }
     }
@@ -284,6 +311,8 @@ export class SessionTracker implements Resettable {
     return {
       sessionId: this.sessionId,
       sessionName: this.sessionName,
+      sessionNameSource: this.sessionNameSource,
+      sessionIntent: this.sessionIntent,
       sessionStartTime: this.sessionStartTime,
       sessionDurationMs: Date.now() - this.sessionStartTime,
       toolCallCount: this.toolCallCount,
@@ -334,6 +363,47 @@ export class SessionTracker implements Resettable {
     aggregator.record('ai.session.unique_files_written', this.filesWritten.size);
   }
 
+  /**
+   * Set the authoritative session name (from the job-state title or the
+   * transcript ai-title, per `resolveSessionName`'s precedence). Overrides any
+   * name the streaming cwd fallback may have set, and suppresses that fallback
+   * for the rest of the session. Ignores empty names. The name is a display
+   * LABEL; callers redact it at each sink.
+   *
+   * Called both once at startup AND repeatedly on the persist/shutdown path
+   * (Phase 2 freshness), so a refined `ai-title` — or a name a human later
+   * assigns — replaces the first-prompt guess. `shouldReplaceSessionName`
+   * enforces the no-downgrade invariant: a strictly-less-trusted source (e.g.
+   * a `cwd` re-resolve arriving after a `user` name was set) is refused rather
+   * than allowed to demote the better name.
+   *
+   * Returns true only when the stored name or source actually changed, so the
+   * caller can log a genuine (re)naming without spamming on every no-op
+   * re-resolve.
+   */
+  setAuthoritativeName(name: string, source: SessionNameSource): boolean {
+    if (typeof name !== 'string' || name.length === 0) return false;
+    if (!shouldReplaceSessionName(this.sessionNameSource, source)) return false;
+    const changed = this.sessionName !== name || this.sessionNameSource !== source;
+    this.sessionName = name;
+    this.sessionNameSource = source;
+    this.authoritativeName = true;
+    return changed;
+  }
+
+  /**
+   * Set the session's originating intent (the first user prompt).
+   *
+   * The caller owns the content gate and redaction: this must only be called
+   * with an already-redacted string, and only when `recordContent` is enabled
+   * (force-disabled under highSecurity upstream — never bypass). A null/empty
+   * value clears it. Because the intent is stable across a session (it is the
+   * first prompt), re-calling on the persist/shutdown path is idempotent.
+   */
+  setSessionIntent(intent: string | null): void {
+    this.sessionIntent = intent && intent.length > 0 ? intent : null;
+  }
+
   /** Update the session ID in place without clearing any accumulated metrics. */
   adoptSessionId(sessionId: string): void {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -359,6 +429,9 @@ export class SessionTracker implements Resettable {
     }
     this.sessionId = sessionId;
     this.sessionName = null;
+    this.sessionNameSource = null;
+    this.sessionIntent = null;
+    this.authoritativeName = false;
     this.sessionStartTime = Date.now();
     this.toolCallCount = 0;
     this.toolErrorCount = 0;

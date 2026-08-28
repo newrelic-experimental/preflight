@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-08-28
+
+### Added
+
+- **Sessions are now named from Claude Code's own per-session titles** — a human-given name or Claude's auto-generated title — instead of just the project directory, so sessions in the same repo no longer all show up under one identical, uninformative name. Falls back to the directory name when no title is available yet, and a name only ever gets replaced by an equally or more trustworthy one.
+- **When content recording is enabled, each session's originating prompt is now available** as `session_intent` through the MCP tools, redacted the same way as all other captured content. Off by default, and never exposed on the local dashboard.
+
 ## [1.17.1] - 2026-08-28
 
 ### Changed

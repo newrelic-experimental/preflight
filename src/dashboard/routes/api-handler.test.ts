@@ -6762,3 +6762,90 @@ describe('computeCrossProcessLiveSessionIds', () => {
     expect(ids).toEqual([]);
   });
 });
+
+describe('api-handler — session_intent is never exposed on the HTTP surface', () => {
+  // session_intent (the first user prompt) is SENSITIVE content: captured only
+  // under recordContent, redacted, and persisted for the MCP tools + 0o600 disk
+  // summary — but the dashboard HTTP surface is broader, so every route that
+  // returns a session must drop it. These guard against a regression that would
+  // silently leak intent while every other assertion stays green.
+  const INTENT = 'redacted first prompt text';
+
+  const summaryWithIntent = {
+    sessionId: 'sess-intent-1',
+    startTime: Date.now() - 5000,
+    toolCallCount: 10,
+    developer: 'alice',
+    sessionName: 'my session',
+    sessionNameSource: 'ai-title',
+    sessionIntent: INTENT,
+  };
+
+  it('GET /api/session/current strips sessionIntent from live metrics', async () => {
+    const handler = createApiHandler({
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'sess-intent-1', toolCallCount: 3, sessionIntent: INTENT }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/session/current' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect('sessionIntent' in parsed).toBe(false);
+  });
+
+  it('GET /api/session/today strips sessionIntent from each summary', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [summaryWithIntent],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/session/today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed.length).toBe(1);
+    expect('sessionIntent' in parsed[0]!).toBe(false);
+    // the non-sensitive fields still come through
+    expect(parsed[0]!.sessionName).toBe('my session');
+  });
+
+  it('GET /api/sessions strips sessionIntent from the slimmed list', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadAllSessions: () => [summaryWithIntent],
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed.length).toBe(1);
+    expect('sessionIntent' in parsed[0]!).toBe(false);
+  });
+
+  it('GET /api/sessions/:id strips sessionIntent from the detail response', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-intent-1' ? summaryWithIntent : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-intent-1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Record<string, unknown>;
+    expect('sessionIntent' in parsed).toBe(false);
+    expect(parsed.sessionName).toBe('my session');
+  });
+});

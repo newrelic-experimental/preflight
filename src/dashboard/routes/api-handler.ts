@@ -5,6 +5,7 @@ import { normalizeDeveloperName, redactSensitive } from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
+  type SessionNameSource,
 } from '../../hooks/session-resolver.js';
 import {
   localDateKey,
@@ -275,9 +276,34 @@ function toLiveWorkflowDetail(live: LiveWorkflowRunDetail): {
   return { run, agents, topology: live.topology ?? null };
 }
 
+/**
+ * Persisted-summary fields that must never reach the dashboard HTTP surface.
+ * `sessionIntent` (the first user prompt) is SENSITIVE content — it is captured
+ * only under recordContent, redacted, and persisted for the MCP tools + the
+ * 0o600 on-disk summary, but the HTTP surface is strictly broader than that
+ * file, so every route that returns a persisted summary must drop it. Keep this
+ * the single place the exclusion is declared.
+ */
+const DASHBOARD_OMITTED_SUMMARY_FIELDS: ReadonlySet<string> = new Set(['sessionIntent']);
+
+/**
+ * Shallow-copy a persisted session summary for an HTTP response, dropping every
+ * field in `DASHBOARD_OMITTED_SUMMARY_FIELDS`. Route all summary-returning
+ * dashboard endpoints through this so a content field can never leak by being
+ * spread verbatim.
+ */
+function toDashboardSummary(summary: FullSessionSummary): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(summary)) {
+    if (!DASHBOARD_OMITTED_SUMMARY_FIELDS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
 interface LiveSessionMetrics {
   readonly sessionId: string;
   readonly sessionName: string | null;
+  readonly sessionNameSource: SessionNameSource | null;
   readonly sessionStartTime: number;
   readonly sessionDurationMs: number;
   readonly toolCallCount: number;
@@ -523,6 +549,10 @@ export interface ApiHandlerDeps {
     // default to the most-recently-active session. Older fakes / mocks that
     // don't implement it still work — `?.` falls back to undefined.
     getLastActivity?: (sessionId: string) => number | null;
+    // Optional for the same reason: lets the session-list/detail surfaces
+    // report which source produced the name (see SessionNameSource). Callers
+    // use `getSessionNameSource?.(id) ?? null` so partial mocks fall back safely.
+    getSessionNameSource?: (sessionId: string) => SessionNameSource | null;
   };
   readonly concurrencyTracker?: {
     getConcurrentCount: () => number;
@@ -1058,12 +1088,21 @@ export function createApiHandler(
     // no tasks have been scored yet (or when the scorer wasn't wired in).
     const efficiencyScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;
     const liveSessions = computeCrossProcessLiveSessionIds(deps);
-    jsonOk(res, { ...deps.sessionTracker.getMetrics(), efficiencyScore, liveSessions });
+    // getMetrics() returns the full SessionMetrics at runtime (LiveSessionMetrics
+    // is a curated subset type). session_intent (the first prompt) is SENSITIVE
+    // content and is deliberately NOT exposed on the dashboard HTTP surface — it
+    // lives only on the MCP tool responses and persisted summaries (both
+    // redacted). Strip it from the shallow copy before spreading it into the
+    // response rather than emitting the whole metrics object verbatim.
+    const { sessionIntent, ...metricsForResponse } =
+      deps.sessionTracker.getMetrics() as LiveSessionMetrics & { sessionIntent?: unknown };
+    void sessionIntent;
+    jsonOk(res, { ...metricsForResponse, efficiencyScore, liveSessions });
   });
 
   routes.set('GET /api/session/today', (_req, res) => {
     if (!deps.sessionStore) return unavailable(res, 'sessionStore');
-    jsonOk(res, deps.sessionStore.loadTodaySessions());
+    jsonOk(res, deps.sessionStore.loadTodaySessions().map(toDashboardSummary));
   });
 
   routes.set('GET /api/sessions', (req, res) => {
@@ -1107,6 +1146,7 @@ export function createApiHandler(
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
+          sessionNameSource: live.sessionNameSource ?? null,
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
@@ -1153,6 +1193,7 @@ export function createApiHandler(
           sliced.push({
             sessionId: id,
             sessionName: deps.liveSessionRegistry.getSessionName(id),
+            sessionNameSource: deps.liveSessionRegistry.getSessionNameSource?.(id) ?? null,
             startTime: sessionStart,
             durationMs: lastActivityTs != null ? Math.max(0, lastActivityTs - sessionStart) : 0,
             toolCallCount: stats?.count ?? 0,
@@ -1171,7 +1212,9 @@ export function createApiHandler(
       const o = s as Record<string, unknown>;
       const out: Record<string, unknown> = {};
       for (const k of Object.keys(o)) {
-        if (!HEAVY_FIELDS.has(k)) out[k] = o[k];
+        // Drop heavy fields the list view never renders AND sensitive content
+        // fields (session_intent) that must not reach the HTTP surface.
+        if (!HEAVY_FIELDS.has(k) && !DASHBOARD_OMITTED_SUMMARY_FIELDS.has(k)) out[k] = o[k];
       }
       return out;
     });
@@ -1219,6 +1262,7 @@ export function createApiHandler(
       return {
         sessionId: id,
         sessionName: deps.liveSessionRegistry?.getSessionName(id) ?? null,
+        sessionNameSource: deps.liveSessionRegistry?.getSessionNameSource?.(id) ?? null,
         startTime: stats?.firstTs ?? lastActivity,
         lastActivity,
       };
@@ -2871,7 +2915,10 @@ export function createApiHandler(
           const quality = combineQualityProxyRawCounts([
             session.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS,
           ]);
-          const responseBody: Record<string, unknown> = { ...session };
+          // toDashboardSummary drops sensitive content fields (session_intent)
+          // that must not reach the HTTP surface; the detail view augments the
+          // remaining fields below.
+          const responseBody: Record<string, unknown> = toDashboardSummary(session);
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
           // The persisted shape's key is `toolSelectionMetrics`, but
           // Sessions.tsx's SessionTimeline reads `toolSelectionScore` —
@@ -2907,6 +2954,7 @@ export function createApiHandler(
             jsonOk(res, {
               sessionId: live.sessionId,
               sessionName: live.sessionName ?? null,
+              sessionNameSource: live.sessionNameSource ?? null,
               startTime: live.sessionStartTime,
               durationMs: live.sessionDurationMs,
               toolCallCount: live.toolCallCount,
@@ -2984,6 +3032,7 @@ export function createApiHandler(
           jsonOk(res, {
             sessionId,
             sessionName: deps.liveSessionRegistry?.getSessionName(sessionId) ?? null,
+            sessionNameSource: deps.liveSessionRegistry?.getSessionNameSource?.(sessionId) ?? null,
             startTime,
             durationMs: lastTs - startTime,
             toolCallCount: records.length,
