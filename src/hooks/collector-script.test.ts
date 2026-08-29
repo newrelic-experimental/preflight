@@ -87,6 +87,19 @@ function makePostToolUseFailure(overrides?: Record<string, unknown>): string {
   });
 }
 
+function makeStopFailure(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'abc123',
+    transcript_path: '/Users/test/.claude/projects/test/abc123.jsonl',
+    cwd: '/Users/test/project',
+    hook_event_name: 'StopFailure',
+    error: 'rate_limit',
+    error_details: '429 Too Many Requests',
+    last_assistant_message: 'API Error: Rate limit reached',
+    ...overrides,
+  });
+}
+
 function makeGeminiBeforeTool(overrides?: Record<string, unknown>): string {
   return JSON.stringify({
     hook_event_name: 'BeforeTool',
@@ -513,6 +526,71 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.error).not.toContain('sk-1234567890abcdef');
       expect(event.error).toContain('[REDACTED]');
+    });
+  });
+
+  describe('processHook() — StopFailure', () => {
+    it('writes an api_failure event with the raw errorType', () => {
+      processHook(makeStopFailure());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('api_failure');
+      expect(event.errorType).toBe('rate_limit');
+      expect(event.sessionId).toBe('abc123');
+    });
+
+    it('includes redacted error_details and last_assistant_message when recordContent=true', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeStopFailure());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toBe('429 Too Many Requests');
+      expect(event.lastAssistantMessage).toBe('API Error: Rate limit reached');
+    });
+
+    it('omits error_details and last_assistant_message when recordContent=false', () => {
+      processHook(makeStopFailure());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toBeUndefined();
+      expect(event.lastAssistantMessage).toBeUndefined();
+    });
+
+    it('redacts sensitive information in error_details and last_assistant_message', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(
+        makeStopFailure({
+          error_details: 'Authorization failed: Bearer eyJhbGciOiJIUzI1NiJ9.token.signature',
+          last_assistant_message: 'Failed: API_KEY = sk-1234567890abcdef',
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toContain('[REDACTED]');
+      expect(event.errorDetails).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+      expect(event.lastAssistantMessage).toContain('[REDACTED]');
+      expect(event.lastAssistantMessage).not.toContain('sk-1234567890abcdef');
+    });
+
+    it('JSON.stringifies a non-string error_details', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeStopFailure({ error_details: { code: 429, message: 'Too Many Requests' } }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toBe('{"code":429,"message":"Too Many Requests"}');
+    });
+
+    it('defaults errorType to "unknown" when error is missing', () => {
+      processHook(makeStopFailure({ error: undefined }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorType).toBe('unknown');
     });
   });
 

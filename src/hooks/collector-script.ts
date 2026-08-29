@@ -343,6 +343,13 @@ interface HookInput {
   transcript_path?: string;
   error?: string;
   is_interrupt?: boolean;
+  // StopFailure (code.claude.com/docs/en/hooks.md) reuses `error` above for its
+  // closed error-type enum and adds these two free-text fields: error_details
+  // ("when available", no strict type — string or an object to JSON.stringify)
+  // and last_assistant_message (the raw API error text shown to the user, NOT
+  // Claude's conversational output as it is for Stop/SubagentStop).
+  error_details?: unknown;
+  last_assistant_message?: string;
   // Cursor (https://cursor.com/docs/agent/hooks) sends a different field
   // vocabulary per hook type instead of the uniform tool_name/tool_input
   // Claude Code and Kiro use. conversation_id is Cursor's closest analog to
@@ -984,6 +991,36 @@ function processHook(raw: string): void {
       toolUseId: String(data.stepIdx),
       ...(typeof data.error === 'string' && data.error !== '' && { error: redact(data.error) }),
     };
+  } else if (eventName === 'stopfailure') {
+    // Fires once per turn when a model-API call ultimately fails after
+    // Claude Code's own internal retries are exhausted
+    // (code.claude.com/docs/en/hooks.md). Pure notification — no decision
+    // control. `data.error` here is the 10-value closed error-type enum
+    // (rate_limit | overloaded | authentication_failed | ... | unknown),
+    // mapped downstream to ApiErrorType by
+    // metrics/api-failure-tracker.ts#mapClaudeCodeErrorType — never mapped
+    // here, since storage/types.ts must not depend on that module.
+    event = {
+      mode: 'api_failure' as const,
+      errorType: data.error ?? 'unknown',
+      timestamp,
+    };
+
+    // error_details/last_assistant_message are free-text "content" — same
+    // sensitivity class as tool input/output content — unlike errorType
+    // (a safe closed enum), so both are gated behind recordContent.
+    if (recordContent) {
+      if (data.error_details !== undefined) {
+        const details =
+          typeof data.error_details === 'string'
+            ? data.error_details
+            : JSON.stringify(data.error_details);
+        event.errorDetails = redact(truncate(details, maxContentLen));
+      }
+      if (typeof data.last_assistant_message === 'string') {
+        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+      }
+    }
   } else {
     // Unknown hook event — ignore silently
     return;

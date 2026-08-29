@@ -37,7 +37,7 @@ import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
-import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
+import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
@@ -1023,11 +1023,12 @@ async function main(): Promise<void> {
     });
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
-    // ApiFailureTracker is instantiated but never fed: recordRequest()/recordFailure()
-    // require visibility into model-API-level traffic (LLM provider rate limits,
-    // timeouts, auth errors), which is not observable in either stdio mode (hooks
-    // only see Claude Code's own tool calls) or proxy mode (which forwards to MCP
-    // servers, not the model API). Kept dormant for a future LLM-facing proxy.
+    // Fed via Claude Code's StopFailure hook (see the onApiFailure callback on
+    // eventProcessor below) through recordFailure(). recordRequest() still has
+    // no caller — request-level latency/throughput stays unobservable — and
+    // recordFailure()'s tokensInFlight/recoveryMs/retryCount/totalRequests
+    // inputs stay at their "unknown" defaults for the same reason. See
+    // api-failure-tracker.ts's API_FAILURE_PARTIAL_DATA_NOTE for the full story.
     const apiFailureTracker = new ApiFailureTracker();
     liveSessionRegistry = new LiveSessionRegistry();
     liveSessionRegistry.startSampling();
@@ -1582,6 +1583,7 @@ async function main(): Promise<void> {
           },
           antiPatternDetector,
           retryDetector,
+          apiFailureTracker,
           instructionDriftTracker,
           decisionTracker,
           turnCostAttributor,
@@ -1787,6 +1789,7 @@ async function main(): Promise<void> {
         costTracker,
         efficiencyScorer,
         feedbackCollector,
+        apiFailureTracker,
         turnCostAttributor,
         sessionTraceId,
       });
@@ -2232,6 +2235,30 @@ async function main(): Promise<void> {
             : {}),
         });
       },
+      onApiFailure: (frame) => {
+        if (!config) return;
+        const errorType = mapClaudeCodeErrorType(frame.rawErrorType);
+        // Prefer a model already learned from real token events over the
+        // config default, mirroring the estimateModel fallback above.
+        const model = costTracker.getMetrics().model ?? config.model ?? 'unknown';
+        const turnNumber = turnTracker.getCurrentTurnNumber();
+        // totalTurnsInSession is left unspecified: there is no reliable
+        // "total turns for this session" figure available at failure time
+        // (the session may still be ongoing), and recordFailure() already
+        // defaults it sensibly for sessionPhase bucketing.
+        const duringToolExecution = eventProcessor !== undefined && eventProcessor.pendingCount > 0;
+        apiFailureTracker.recordFailure({
+          errorType,
+          model,
+          turnNumber,
+          // Unobservable from StopFailure; see api-failure-tracker.ts's note constant.
+          tokensInFlight: 0,
+          // Known, not a placeholder: StopFailure only fires after Claude
+          // Code's own retries are exhausted with no successful recovery.
+          recoverySucceeded: false,
+          duringToolExecution,
+        });
+      },
     });
 
     persistSession = (opts?: { periodic?: boolean }) => {
@@ -2611,6 +2638,7 @@ async function main(): Promise<void> {
           costTracker,
           efficiencyScorer,
           feedbackCollector,
+          apiFailureTracker,
           turnCostAttributor,
           sessionTraceId: realId,
         });
@@ -2930,6 +2958,14 @@ async function main(): Promise<void> {
       const proxyLocalStore = new LocalStore(config.storagePath);
       proxyLocalStore.initialize();
 
+      // Proxy mode never constructs a HookEventProcessor, so nothing ever
+      // calls recordFailure() on this instance (StopFailure is a Claude
+      // Code-side hook, not something proxied traffic can surface) — passed
+      // in anyway so NrIngestManager's emitMetrics() call is uniform across
+      // modes, legitimately reporting zero failures rather than being asked
+      // to handle a missing tracker.
+      const apiFailureTracker = new ApiFailureTracker();
+
       nrIngest = new NrIngestManager({
         licenseKey: config.licenseKey,
         transportOptions: {
@@ -2945,6 +2981,7 @@ async function main(): Promise<void> {
         localStore: proxyLocalStore,
         eventHarvestIntervalMs: config.harvestIntervalMs.events,
         metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
+        apiFailureTracker,
         sessionTraceId,
         // Proxy mode has no single coherent session — sessionTracker above is
         // never fed per-client activity, so the ai.session.* gauges would

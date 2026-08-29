@@ -15,6 +15,7 @@ import {
 } from '../../lib/date.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
+import type { ApiFailureMetrics } from '../../metrics/api-failure-tracker.js';
 import type { BudgetStatus } from '../../metrics/budget-tracker.js';
 import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
@@ -450,6 +451,7 @@ export interface ApiHandlerDeps {
     getTotalAntiPatternWaste: () => number;
   };
   readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
+  readonly apiFailureTracker?: { getMetrics: () => ApiFailureMetrics };
   readonly instructionDriftTracker?: { getMetrics: () => InstructionDriftMetrics };
   readonly decisionTracker?: { getMetrics: (sessionId?: string) => DecisionTreeMetrics };
   readonly turnCostAttributor?: { getMetrics: (sessionId?: string) => CostAttributionMetrics };
@@ -1811,6 +1813,11 @@ export function createApiHandler(
   routes.set('GET /api/retry-alerts', (_req, res) => {
     if (!deps.retryDetector) return unavailable(res, 'retryDetector');
     jsonOk(res, deps.retryDetector.getMetrics());
+  });
+
+  routes.set('GET /api/api-failures', (_req, res) => {
+    if (!deps.apiFailureTracker) return unavailable(res, 'apiFailureTracker');
+    jsonOk(res, deps.apiFailureTracker.getMetrics());
   });
 
   routes.set('GET /api/instruction-drift', (_req, res) => {

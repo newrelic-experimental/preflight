@@ -26,6 +26,7 @@ import type { AntiPattern } from '../metrics/anti-patterns.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
+import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -777,6 +778,30 @@ describe('NrIngestManager', () => {
       >;
       const feedbackMetrics = sentMetrics.filter((m) => m.name === 'ai.feedback.count');
       expect(feedbackMetrics).toHaveLength(1);
+    });
+
+    it('emits ai.api.failures_total on stop when an apiFailureTracker is provided', async () => {
+      const sessionTracker = new SessionTracker('api-failure-session');
+      const apiFailureTracker = new ApiFailureTracker();
+      apiFailureTracker.recordFailure({
+        errorType: 'rate_limit',
+        model: 'claude-sonnet-5',
+        turnNumber: 1,
+        tokensInFlight: 0,
+        recoverySucceeded: false,
+      });
+
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTracker, apiFailureTracker }));
+
+      manager.start();
+      await manager.stop();
+
+      expect(mockSendMetrics).toHaveBeenCalled();
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const failureMetrics = sentMetrics.filter((m) => m.name === 'ai.api.failures_total');
+      expect(failureMetrics).toHaveLength(1);
     });
 
     it('emitSessionGauges is a no-op after stop()', async () => {

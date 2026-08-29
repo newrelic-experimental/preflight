@@ -22,6 +22,7 @@ import type {
   TokenHookEvent,
   SubagentTokenHookEvent,
   ObservabilityHealthHookEvent,
+  ApiFailureHookEvent,
   ToolCallRecord,
   TokenEvent,
   SubagentTokenEvent,
@@ -73,6 +74,8 @@ export interface HookEventProcessorOptions {
   onSubagentToken?: (event: SubagentTokenEvent) => void;
   /** Fires for every `mode: 'workflow_run'` line; errors swallowed. */
   onWorkflowRun?: (event: WorkflowRunEvent) => void;
+  /** Fires for every `mode: 'api_failure'` line; errors swallowed. */
+  onApiFailure?: (event: ApiFailureFrame) => void;
   /**
    * Adapter used to map each platform's raw tool names (e.g. Kiro's `fs_read`)
    * to Preflight's canonical vocabulary (`Read`) before pairing/emitting.
@@ -123,6 +126,21 @@ export interface ObservabilityHealthFrame {
   readonly fingerprint?: string;
   readonly workflowRunId?: string;
   readonly costSelfCheckDeltaPct?: number;
+}
+
+/**
+ * Wire-shape data extracted from a `mode: 'api_failure'` entry. `rawErrorType`
+ * is deliberately kept as Claude Code's raw error string (e.g. 'overloaded'),
+ * NOT mapped to `ApiErrorType` — this file must not depend on `metrics/`, so
+ * mapping happens downstream in the callback wiring, mirroring how
+ * `ObservabilityHealthFrame` stays domain-agnostic too.
+ */
+export interface ApiFailureFrame {
+  readonly timestamp: number;
+  readonly sessionId: string | null;
+  readonly rawErrorType: string;
+  readonly errorDetails?: string;
+  readonly lastAssistantMessage?: string;
 }
 
 function numAttr(v: unknown): number {
@@ -214,6 +232,7 @@ export class HookEventProcessor {
   private readonly onObservabilityHealth: ((event: ObservabilityHealthFrame) => void) | null;
   private readonly onSubagentToken: ((event: SubagentTokenEvent) => void) | null;
   private readonly onWorkflowRun: ((event: WorkflowRunEvent) => void) | null;
+  private readonly onApiFailure: ((event: ApiFailureFrame) => void) | null;
   private readonly platformAdapter: PlatformAdapter;
   /**
    * Per-agent dedup rings for recent subagent turns (scoped by agentId, one
@@ -268,6 +287,7 @@ export class HookEventProcessor {
     this.onObservabilityHealth = options.onObservabilityHealth ?? null;
     this.onSubagentToken = options.onSubagentToken ?? null;
     this.onWorkflowRun = options.onWorkflowRun ?? null;
+    this.onApiFailure = options.onApiFailure ?? null;
     this.platformAdapter = options.platformAdapter ?? createDefaultRegistry().getActive();
 
     this.boundBeforeExit = () => {
@@ -376,6 +396,8 @@ export class HookEventProcessor {
           this.handleObservabilityHealthEvent(event);
         } else if (event.mode === 'workflow_run') {
           this.handleWorkflowRunEvent(event);
+        } else if (event.mode === 'api_failure') {
+          this.handleApiFailureEvent(event);
         }
       } catch (err) {
         logger.warn('Error processing hook event', {
@@ -742,6 +764,29 @@ export class HookEventProcessor {
       this.onObservabilityHealth(frame);
     } catch (err) {
       logger.warn('onObservabilityHealth callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleApiFailureEvent(event: ApiFailureHookEvent): void {
+    if (!this.onApiFailure) return;
+    const frame: ApiFailureFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      sessionId: event.sessionId ?? null,
+      rawErrorType: event.errorType,
+      ...(typeof event.errorDetails === 'string' ? { errorDetails: event.errorDetails } : {}),
+      ...(typeof event.lastAssistantMessage === 'string'
+        ? { lastAssistantMessage: event.lastAssistantMessage }
+        : {}),
+    };
+    try {
+      this.onApiFailure(frame);
+    } catch (err) {
+      logger.warn('onApiFailure callback failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

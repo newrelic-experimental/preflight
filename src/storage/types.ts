@@ -84,9 +84,26 @@ export interface ObservabilityHealthHookEvent extends HookEventBase {
 }
 
 /**
+ * Emitted by Claude Code's StopFailure hook when a turn ends because the
+ * model-API call ultimately failed after Claude Code's own internal retries
+ * are exhausted (code.claude.com/docs/en/hooks.md). `errorType` is the raw
+ * Claude Code error string (e.g. 'rate_limit') — not yet mapped to
+ * `ApiErrorType`; that mapping happens downstream in
+ * `metrics/api-failure-tracker.ts`, which this file must not depend on.
+ */
+export interface ApiFailureHookEvent extends HookEventBase {
+  readonly mode: 'api_failure';
+  readonly sessionId?: string;
+  readonly errorType: string;
+  readonly errorDetails?: string;
+  readonly lastAssistantMessage?: string;
+}
+
+/**
  * Buffer line discriminated union. `pre`/`post`/`token` are the original
  * collector modes. `subagent_token`, `workflow_run`, and
  * `observability_health` are emitted by the SubagentWatcher / WorkflowWatcher.
+ * `api_failure` is emitted by the collector for Claude Code's StopFailure hook.
  */
 export type HookEvent =
   | PreHookEvent
@@ -94,7 +111,8 @@ export type HookEvent =
   | TokenHookEvent
   | SubagentTokenHookEvent
   | WorkflowRunEvent
-  | ObservabilityHealthHookEvent;
+  | ObservabilityHealthHookEvent
+  | ApiFailureHookEvent;
 
 export interface TokenEvent {
   readonly mode: 'token';

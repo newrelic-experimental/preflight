@@ -1235,6 +1235,43 @@ describe('api-handler GET /api/retry-alerts', () => {
   });
 });
 
+describe('api-handler GET /api/api-failures', () => {
+  it('returns 503 when apiFailureTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/api-failures' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns api failure metrics as JSON', async () => {
+    const fakeMetrics = {
+      totalFailures: 2,
+      byErrorType: { rate_limit: 2 },
+      byModel: {},
+      bySessionPhase: { early: 0, middle: 2, late: 0 },
+      totalTokensLost: 0,
+      totalEstimatedCostLostUsd: 0,
+      meanTimeToRecoveryMs: null,
+      throttleAlerts: [],
+      recentFailures: [],
+      dataAvailable: true,
+      note: 'partial data',
+    };
+    const handler = createApiHandler({
+      apiFailureTracker: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['apiFailureTracker'],
+    });
+    const req = { method: 'GET', url: '/api/api-failures' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+});
+
 describe('api-handler GET /api/instruction-drift', () => {
   it('returns 503 when instructionDriftTracker is missing', async () => {
     const handler = createApiHandler({});

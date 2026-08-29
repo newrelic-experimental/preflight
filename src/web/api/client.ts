@@ -1227,6 +1227,71 @@ export interface InstructionDriftResponse {
 export const fetchInstructionDrift = (): Promise<InstructionDriftResponse> =>
   getJson<InstructionDriftResponse>('/api/instruction-drift');
 
+// Mirrors ApiFailureTracker's own shapes (src/metrics/api-failure-tracker.ts)
+// verbatim — this file has no import wired to server-side tracker types, so
+// every response shape here is re-declared rather than imported, same as
+// QualityProxyMetrics above.
+export type ApiErrorType =
+  | 'rate_limit'
+  | 'timeout'
+  | 'connection_error'
+  | 'server_error'
+  | 'context_length_exceeded'
+  | 'authentication'
+  | 'unknown';
+
+export type SessionPhase = 'early' | 'middle' | 'late';
+
+export interface ApiFailureEvent {
+  readonly errorType: ApiErrorType;
+  readonly model: string;
+  readonly timestamp: number;
+  readonly turnNumber: number;
+  readonly tokensInFlight: number;
+  readonly recoveryMs: number | null;
+  readonly retryCount: number;
+  readonly recoverySucceeded: boolean | null;
+  readonly sessionPhase: SessionPhase;
+  readonly duringToolExecution: boolean;
+}
+
+export interface ModelReliabilityScorecard {
+  readonly model: string;
+  readonly totalRequests: number;
+  readonly failureCount: number;
+  readonly failureRate: number | null;
+  readonly throttleCount: number;
+  readonly throttleFrequency: number | null;
+  readonly meanRecoveryMs: number | null;
+  readonly p95LatencyMs: number | null;
+  readonly tokensLost: number;
+  readonly estimatedCostLostUsd: number;
+}
+
+export interface ThrottleAlert {
+  readonly model: string;
+  readonly count: number;
+  readonly windowMinutes: number;
+  readonly timestamp: number;
+}
+
+export interface ApiFailureMetrics {
+  readonly totalFailures: number;
+  readonly byErrorType: Readonly<Record<ApiErrorType, number>>;
+  readonly byModel: Readonly<Record<string, ModelReliabilityScorecard>>;
+  readonly bySessionPhase: Readonly<Record<SessionPhase, number>>;
+  readonly totalTokensLost: number;
+  readonly totalEstimatedCostLostUsd: number;
+  readonly meanTimeToRecoveryMs: number | null;
+  readonly throttleAlerts: readonly ThrottleAlert[];
+  readonly recentFailures: readonly ApiFailureEvent[];
+  readonly dataAvailable: boolean;
+  readonly note: string;
+}
+
+export const fetchApiFailures = (): Promise<ApiFailureMetrics> =>
+  getJson<ApiFailureMetrics>('/api/api-failures');
+
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
@@ -1240,6 +1305,7 @@ export const qk = {
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
+  apiFailures: ['api-failures'] as const,
   recommendations: ['recommendations'] as const,
   claudeMdImpact: ['claudemd-impact'] as const,
   collaborationProfile: ['collaboration-profile'] as const,

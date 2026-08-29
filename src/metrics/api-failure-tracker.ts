@@ -17,6 +17,56 @@ export type ApiErrorType =
   | 'authentication'
   | 'unknown';
 
+/**
+ * Maps the raw `error` string from Claude Code's StopFailure hook onto this
+ * tracker's `ApiErrorType` buckets. StopFailure's `error` field is documented
+ * as exactly these 10 values: rate_limit | overloaded | authentication_failed
+ * | oauth_org_not_allowed | billing_error | invalid_request | model_not_found
+ * | server_error | max_output_tokens | unknown.
+ * See https://code.claude.com/docs/en/hooks.md
+ *
+ * Mapping choices:
+ * - `overloaded` -> 'server_error': Anthropic's overloaded_error is a
+ *   transient 5xx-class condition, not distinct from a generic server error.
+ * - `authentication_failed`, `oauth_org_not_allowed`, `billing_error` ->
+ *   'authentication': billing_error has no dedicated bucket in this enum
+ *   (adding one is out of scope); 'authentication' is the closest existing
+ *   access/billing-denied bucket.
+ * - `invalid_request`, `model_not_found` -> 'unknown': both are client-side
+ *   config/request bugs, not transient operational-reliability signals.
+ * - `max_output_tokens` -> 'context_length_exceeded': the closest existing
+ *   "hit a token limit" bucket, even though this is specifically an
+ *   output-token cap being hit, not the model's input context window
+ *   overflowing.
+ * - Any other string, or a value that isn't one of the 10 above -> 'unknown'.
+ *
+ * `timeout` and `connection_error` are never produced by this mapping —
+ * StopFailure only fires after Claude Code's own retry logic has already
+ * exhausted transport-level failures, so its raw `error` enum has no value
+ * corresponding to either bucket. That's expected, not a gap to fill.
+ */
+export function mapClaudeCodeErrorType(raw: string): ApiErrorType {
+  switch (raw) {
+    case 'rate_limit':
+      return 'rate_limit';
+    case 'overloaded':
+    case 'server_error':
+      return 'server_error';
+    case 'authentication_failed':
+    case 'oauth_org_not_allowed':
+    case 'billing_error':
+      return 'authentication';
+    case 'max_output_tokens':
+      return 'context_length_exceeded';
+    case 'invalid_request':
+    case 'model_not_found':
+    case 'unknown':
+      return 'unknown';
+    default:
+      return 'unknown';
+  }
+}
+
 export type SessionPhase = 'early' | 'middle' | 'late';
 
 export interface ApiFailureEvent {
@@ -83,8 +133,8 @@ const DEFAULT_THROTTLE_WINDOW_MINUTES = 10;
 const DEFAULT_MAX_EVENTS = 500;
 const DEFAULT_COST_PER_TOKEN_USD = 0.000003;
 
-const API_FAILURE_DATA_UNAVAILABLE_NOTE =
-  "Model-API-level failure data (rate limits, timeouts, auth errors from the LLM provider itself) is not observable in Preflight's current architecture. Neither Claude Code hook events nor proxy mode see raw model-API traffic — proxy mode forwards requests to MCP servers, not to the model API. All-zero fields below reflect this limitation, not an absence of real failures.";
+const API_FAILURE_PARTIAL_DATA_NOTE =
+  "Failures are captured via Claude Code's StopFailure hook, which fires only once per turn, on a fully-failed turn, after Claude Code's own retries are exhausted — so recoverySucceeded is always false for every recorded event, and recoveryMs/retryCount are always null/0 rather than measured. tokensInFlight is always 0 (this hook carries no token data), so totalTokensLost and totalEstimatedCostLostUsd are not meaningful. Fields derived from totalRequests (failureRate, throttleFrequency, p95LatencyMs) require recordRequest() calls that nothing in this codebase currently makes — model-API request-level latency/throughput has no observable source in stdio or proxy mode — so they stay null/0; real visibility into those would require a future LLM-facing proxy.";
 
 // ---------------------------------------------------------------------------
 // ApiFailureTracker
@@ -200,8 +250,12 @@ export class ApiFailureTracker {
       meanTimeToRecoveryMs: meanRecovery,
       throttleAlerts: this.throttleAlerts,
       recentFailures: this.events.slice(-20),
-      dataAvailable: false,
-      note: API_FAILURE_DATA_UNAVAILABLE_NOTE,
+      // Once StopFailure is wired up to call recordFailure() (a later stage),
+      // totalFailures/byErrorType/bySessionPhase are real observed data —
+      // zero failures then means "no failures happened," not "we can't see
+      // them." See API_FAILURE_PARTIAL_DATA_NOTE for what's still unavailable.
+      dataAvailable: true,
+      note: API_FAILURE_PARTIAL_DATA_NOTE,
     };
   }
 

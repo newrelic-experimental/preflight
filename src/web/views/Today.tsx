@@ -49,6 +49,8 @@ import {
   type ContextEfficiencyResponse,
   fetchComputeWaste,
   fetchQualityProxy,
+  fetchApiFailures,
+  type ApiFailureMetrics,
   fetchToolSelectionScore,
   fetchConcurrency,
   fetchActivityHeatmap,
@@ -580,6 +582,7 @@ export function Today(): JSX.Element {
 
           <AnimatedCard index={3} className="grid grid-cols-3 gap-3 mb-3">
             <QualityProxyPanel />
+            <ApiFailurePanel />
             <ToolSelectionPanel />
             <LatencyPanel aggregate={aggregate} />
             <ComputeWastePanel />
@@ -768,6 +771,60 @@ function QualityProxyPanel(): JSX.Element {
           </div>
           {data.degradationDetected && (
             <div className="text-accent-amber text-xs mt-2">&#9888; Quality degrading</div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+function ApiFailurePanel(): JSX.Element {
+  const { data } = useQuery<ApiFailureMetrics>({
+    queryKey: qk.apiFailures,
+    queryFn: fetchApiFailures,
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
+
+  const errorTypeEntries = data?.byErrorType
+    ? Object.entries(data.byErrorType).filter(([, count]) => count > 0)
+    : [];
+  const throttleAlerts = data?.throttleAlerts ?? [];
+
+  return (
+    <Card padding="sm" className="h-full">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>API Failures</Eyebrow>
+        <InfoTooltip text="Turns that failed outright after Claude Code's own retries were exhausted, captured via its StopFailure hook." />
+      </div>
+      {!data || data.totalFailures === 0 ? (
+        <EmptyState
+          icon="radar"
+          title="No API failures"
+          subtitle="Reflects Claude Code's own StopFailure hook, not proxy-mode traffic."
+        />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-ink-muted">Total </span>
+              <span className="text-accent-amber">{data.totalFailures}</span>
+            </div>
+            <div>
+              <span className="text-ink-muted">Throttle alerts </span>
+              <span className={throttleAlerts.length > 0 ? 'text-accent-amber' : ''}>
+                {throttleAlerts.length}
+              </span>
+            </div>
+          </div>
+          {errorTypeEntries.length > 0 && (
+            <div className="text-[10px] text-ink-subtle mt-1">
+              {errorTypeEntries.map(([type, count]) => `${type}: ${count}`).join(', ')}
+            </div>
+          )}
+          {throttleAlerts.length > 0 && (
+            <div className="text-accent-amber text-xs mt-2">
+              &#9888; Rate-limit throttling detected
+            </div>
           )}
         </>
       )}

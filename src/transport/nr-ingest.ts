@@ -31,6 +31,7 @@ import type { AntiPattern } from '../metrics/anti-patterns.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
@@ -101,6 +102,8 @@ export interface NrIngestOptions {
   efficiencyScorer?: EfficiencyScorer;
   /** Feedback collector for emitting ai.feedback.count metrics. */
   feedbackCollector?: FeedbackCollector;
+  /** API failure tracker for emitting ai.api.* metrics. */
+  apiFailureTracker?: ApiFailureTracker;
   teamId?: string | null;
   projectId?: string | null;
   orgId?: string | null;
@@ -803,6 +806,7 @@ export class NrIngestManager {
   private readonly costTracker?: CostTracker;
   private readonly efficiencyScorer?: EfficiencyScorer;
   private readonly feedbackCollector?: FeedbackCollector;
+  private readonly apiFailureTracker?: ApiFailureTracker;
   readonly auditTrail: AuditTrailManager;
   private readonly developer: string;
   private readonly appName: string;
@@ -833,6 +837,7 @@ export class NrIngestManager {
     this.costTracker = options.costTracker;
     this.efficiencyScorer = options.efficiencyScorer;
     this.feedbackCollector = options.feedbackCollector;
+    this.apiFailureTracker = options.apiFailureTracker;
     this.turnCostAttributor = options.turnCostAttributor;
     this.auditTrail =
       options.auditTrail ??
@@ -1286,7 +1291,12 @@ export class NrIngestManager {
 
     // Emit cost and efficiency metrics with developer dimension so Team View
     // FACET developer queries return per-developer breakdowns.
-    if (this.costTracker || this.efficiencyScorer || this.feedbackCollector) {
+    if (
+      this.costTracker ||
+      this.efficiencyScorer ||
+      this.feedbackCollector ||
+      this.apiFailureTracker
+    ) {
       const developer = this.developer;
       const scheduler = this.scheduler;
       const devAggregator = new DeveloperAttributedMetricAggregator((name, value, attrs) => {
@@ -1301,6 +1311,7 @@ export class NrIngestManager {
       this.costTracker?.emitMetrics(devAggregator);
       this.efficiencyScorer?.emitMetrics(devAggregator);
       this.feedbackCollector?.emitMetrics(devAggregator);
+      this.apiFailureTracker?.emitMetrics(devAggregator);
     }
 
     // Emit aggregated proxy metrics

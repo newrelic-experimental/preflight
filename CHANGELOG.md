@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.2] - 2026-08-28
+
+### Added
+
+- **A new "API Failures" dashboard panel and `nr_observe_get_api_failures` MCP tool report model-API failures observed via Claude Code's `StopFailure` hook** — turns that failed outright after Claude Code's own retries were exhausted, broken down by error type (rate limit, server error, authentication, context length exceeded) with throttle-rate alerts when a model repeatedly rate-limits in a short window. Token loss, recovery time, and retry-count fields remain unavailable, since the `StopFailure` hook does not carry that data.
+
 ## [1.18.1] - 2026-08-28
 
 ### Fixed

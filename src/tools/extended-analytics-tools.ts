@@ -103,7 +103,7 @@ export const QUALITY_PROXY_TOOL = {
 export const API_FAILURES_TOOL = {
   name: 'nr_observe_get_api_failures',
   description:
-    "Get API failure tracking: per-model reliability scorecards, tokens lost, cost impact, throttle alerts, and mean time to recovery. LIMITATION: model-API-level failure data is not observable in Preflight's current architecture (see the note field in the response) — this tool currently always returns empty/zero metrics.",
+    "Get API failure tracking: per-model reliability scorecards, tokens lost, cost impact, throttle alerts, and mean time to recovery. Failures are captured via Claude Code's StopFailure hook, so totalFailures/byErrorType/bySessionPhase reflect real observed failures. LIMITATION: token loss, recovery time, retry count, and totalRequests-derived fields (failureRate, throttleFrequency, p95LatencyMs) remain unavailable or always zero -- StopFailure carries no token/retry data, and nothing currently calls recordRequest() (see the note field in the response).",
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };

@@ -2241,3 +2241,129 @@ describe('Today view — Cost by Tool panel', () => {
     expect(screen.getByText('Based on 30% of session cost')).toBeInTheDocument();
   });
 });
+
+describe('Today view — API Failures panel', () => {
+  beforeEach(() => {
+    // todayTotalUsd must be nonzero, or Today's `noActivityToday` short-circuit
+    // (see Today.tsx) replaces the whole KPI/panel grid — including this
+    // panel — with the top-level "No activity yet today" empty state,
+    // regardless of what /api/api-failures returns.
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const zeroByErrorType = {
+    rate_limit: 0,
+    timeout: 0,
+    connection_error: 0,
+    server_error: 0,
+    context_length_exceeded: 0,
+    authentication: 0,
+    unknown: 0,
+  };
+
+  it('shows the empty state when there are no failures', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/api-failures')) {
+        return new Response(
+          JSON.stringify({
+            totalFailures: 0,
+            byErrorType: zeroByErrorType,
+            byModel: {},
+            bySessionPhase: { early: 0, middle: 0, late: 0 },
+            totalTokensLost: 0,
+            totalEstimatedCostLostUsd: 0,
+            meanTimeToRecoveryMs: null,
+            throttleAlerts: [],
+            recentFailures: [],
+            dataAvailable: true,
+            note: '',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText('No API failures')).toBeInTheDocument();
+  });
+
+  it('shows failure count and error-type breakdown when failures exist', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/api-failures')) {
+        return new Response(
+          JSON.stringify({
+            totalFailures: 3,
+            byErrorType: { ...zeroByErrorType, rate_limit: 2, server_error: 1 },
+            byModel: {},
+            bySessionPhase: { early: 1, middle: 1, late: 1 },
+            totalTokensLost: 0,
+            totalEstimatedCostLostUsd: 0,
+            meanTimeToRecoveryMs: null,
+            throttleAlerts: [],
+            recentFailures: [],
+            dataAvailable: true,
+            note: '',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText('rate_limit: 2, server_error: 1')).toBeInTheDocument();
+    expect(screen.getByText('API Failures')).toBeInTheDocument();
+  });
+
+  it('shows a throttle-alert warning line when throttleAlerts is non-empty', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/api-failures')) {
+        return new Response(
+          JSON.stringify({
+            totalFailures: 4,
+            byErrorType: { ...zeroByErrorType, rate_limit: 4 },
+            byModel: {},
+            bySessionPhase: { early: 0, middle: 0, late: 4 },
+            totalTokensLost: 0,
+            totalEstimatedCostLostUsd: 0,
+            meanTimeToRecoveryMs: null,
+            throttleAlerts: [
+              { model: 'claude-sonnet-5', count: 3, windowMinutes: 10, timestamp: Date.now() },
+            ],
+            recentFailures: [],
+            dataAvailable: true,
+            note: '',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    expect(await screen.findByText(/Rate-limit throttling detected/)).toBeInTheDocument();
+  });
+});
