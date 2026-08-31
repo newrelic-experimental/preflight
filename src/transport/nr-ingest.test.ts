@@ -3,6 +3,7 @@ import {
   toolCallToNrEvent,
   codingTaskToNrEvent,
   antiPatternToNrEvent,
+  retryAlertToNrEvent,
   proxyToolCallToNrEvent,
   workflowRunToNrEvent,
   scriptWorkflowRunToNrEvent,
@@ -23,6 +24,7 @@ import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import type { ThrashingAlert } from '../metrics/retry-detector.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
@@ -98,6 +100,19 @@ function makePattern(overrides?: Partial<AntiPattern>): AntiPattern {
     type: 'thrashing',
     tokensWasted: 0,
     suggestion: 'Consider reviewing your approach before retrying',
+    ...overrides,
+  };
+}
+
+function makeThrashingAlert(overrides?: Partial<ThrashingAlert>): ThrashingAlert {
+  return {
+    toolName: 'Bash',
+    occurrences: 3,
+    windowSize: 5,
+    similarity: 1,
+    tokensWastedEstimate: 42,
+    timestamp: 1_700_000_000_000,
+    sessionId: 'sess-001',
     ...overrides,
   };
 }
@@ -1422,6 +1437,117 @@ describe('NrIngestManager.ingestAntiPattern()', () => {
     const types = patternEvents.map((e) => e.type);
     expect(types).toContain('thrashing');
     expect(types).toContain('re_reading');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// retryAlertToNrEvent()
+// ---------------------------------------------------------------------------
+
+describe('retryAlertToNrEvent()', () => {
+  it('serializes required fields', () => {
+    const alert = makeThrashingAlert();
+    const event = retryAlertToNrEvent(alert, {
+      developer: 'dev1',
+      appName: 'my-app',
+      sessionId: 'trace-id',
+      platform: 'claude-code',
+    });
+
+    expect(event.eventType).toBe('AiRetryAlert');
+    expect(event.tool_name).toBe('Bash');
+    expect(event.occurrences).toBe(3);
+    expect(event.window_size).toBe(5);
+    expect(event.similarity).toBe(1);
+    expect(event.tokens_wasted).toBe(42);
+    expect(event.developer).toBe('dev1');
+    expect(event.app_name).toBe('my-app');
+    expect(event.platform).toBe('claude-code');
+    expect(event.timestamp).toBe(1_700_000_000_000);
+  });
+
+  it('session_id comes from attrs.sessionId, not alert.sessionId', () => {
+    // Same single-source-of-truth convention as antiPatternToNrEvent — see
+    // "NrIngestManager.ingestRetryAlert: sessionTraceId takes precedence
+    // over alert.sessionId" below for why.
+    const alert = makeThrashingAlert({ sessionId: 'alert-own-session' });
+    const event = retryAlertToNrEvent(alert, {
+      developer: 'd',
+      appName: 'a',
+      sessionId: 'trace-id',
+    });
+
+    expect(event.session_id).toBe('trace-id');
+  });
+
+  it('omits session_id when attrs.sessionId is undefined', () => {
+    const event = retryAlertToNrEvent(makeThrashingAlert(), {
+      developer: 'd',
+      appName: 'a',
+    });
+
+    expect(event).not.toHaveProperty('session_id');
+  });
+
+  it('defaults platform to claude-code when not provided', () => {
+    const event = retryAlertToNrEvent(makeThrashingAlert(), {
+      developer: 'd',
+      appName: 'a',
+    });
+
+    expect(event.platform).toBe('claude-code');
+  });
+
+  it('includes team/project/org attribution when provided', () => {
+    const event = retryAlertToNrEvent(makeThrashingAlert(), {
+      developer: 'd',
+      appName: 'a',
+      teamId: 'team-1',
+      projectId: 'proj-1',
+      orgId: 'org-1',
+    });
+
+    expect(event.team_id).toBe('team-1');
+    expect(event.project_id).toBe('proj-1');
+    expect(event.org_id).toBe('org-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NrIngestManager.ingestRetryAlert()
+// ---------------------------------------------------------------------------
+
+describe('NrIngestManager.ingestRetryAlert()', () => {
+  it('queues an AiRetryAlert event that is flushed on stop()', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestRetryAlert(makeThrashingAlert(), { platform: 'claude-code' });
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const retryEvent = sentEvents.find((e) => e.eventType === 'AiRetryAlert');
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent!.tool_name).toBe('Bash');
+  });
+
+  it('sessionTraceId takes precedence over alert.sessionId', async () => {
+    const manager = new NrIngestManager({
+      ...makeIngestOptions(),
+      sessionTraceId: 'the-trace-id',
+    });
+
+    manager.ingestRetryAlert(makeThrashingAlert({ sessionId: 'a-different-session' }));
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const retryEvent = sentEvents.find((e) => e.eventType === 'AiRetryAlert');
+    expect(retryEvent?.session_id).toBe('the-trace-id');
   });
 });
 

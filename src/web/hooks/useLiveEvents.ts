@@ -93,6 +93,7 @@ export function useLiveEvents(url: string = '/sse'): void {
       es.addEventListener('tool-call', onToolCall as EventListener);
       es.addEventListener('cost-update', onCost as EventListener);
       es.addEventListener('anti-pattern', onAnti as EventListener);
+      es.addEventListener('retry-alert', onRetryAlert as EventListener);
       es.addEventListener('alert', onAlert as EventListener);
       es.addEventListener('context-update', onContext as EventListener);
       es.addEventListener('heartbeat', onHeartbeat as EventListener);
@@ -119,6 +120,13 @@ export function useLiveEvents(url: string = '/sse'): void {
     const onAnti = (e: MessageEvent): void => {
       try {
         useLiveStore.getState().pushAntiPattern(JSON.parse(e.data));
+      } catch {
+        /* ignore malformed */
+      }
+    };
+    const onRetryAlert = (e: MessageEvent): void => {
+      try {
+        useLiveStore.getState().pushRetryAlert(JSON.parse(e.data));
       } catch {
         /* ignore malformed */
       }
@@ -174,6 +182,7 @@ export function useLiveEvents(url: string = '/sse'): void {
         es.removeEventListener('tool-call', onToolCall as EventListener);
         es.removeEventListener('cost-update', onCost as EventListener);
         es.removeEventListener('anti-pattern', onAnti as EventListener);
+        es.removeEventListener('retry-alert', onRetryAlert as EventListener);
         es.removeEventListener('alert', onAlert as EventListener);
         es.removeEventListener('context-update', onContext as EventListener);
         es.removeEventListener('heartbeat', onHeartbeat as EventListener);

@@ -1778,6 +1778,7 @@ describe('Today view — Compute Waste panel', () => {
       recentToolCalls: [],
       cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
       antiPatterns: [],
+      retryAlerts: [],
       firingAlerts: new Map(),
       dismissedAlerts: new Set(),
     });
@@ -1865,6 +1866,67 @@ describe('Today view — Compute Waste panel', () => {
     renderToday();
     expect(await screen.findByText(/retry: ~200/)).toBeInTheDocument();
     expect(screen.getByText(/anti-pattern: ~400/)).toBeInTheDocument();
+  });
+
+  it('shows the top contributing session when by_session is present', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/compute-waste')) {
+        return new Response(
+          JSON.stringify({
+            total_tokens_wasted: 900,
+            retry_tokens_wasted: 900,
+            anti_pattern_tokens_wasted: 0,
+            breakdown: [],
+            by_session: [{ session_id: 'abcdef1234567890', tokens_wasted: 900, alert_count: 3 }],
+            status: 'moderate',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    // liveSessions resolves to [] under the generic mock above, so
+    // sessionPillLabel falls back to the truncated session id.
+    expect(await screen.findByText(/top session: abcdef12/)).toBeInTheDocument();
+  });
+
+  it('shows the most recent retry alert live, ahead of the next REST poll', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/compute-waste')) {
+        return new Response(
+          JSON.stringify({
+            total_tokens_wasted: 300,
+            retry_tokens_wasted: 300,
+            anti_pattern_tokens_wasted: 0,
+            breakdown: [],
+            status: 'moderate',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    useLiveStore.setState({
+      retryAlerts: [{ sessionId: 'sess-a', toolName: 'Bash', occurrences: 4, tokensWasted: 300 }],
+    });
+
+    renderToday();
+    await screen.findByText(/~300 wasted tokens/);
+    expect(screen.getByText('Bash')).toBeInTheDocument();
+    expect(screen.getByText(/retried 4×/)).toBeInTheDocument();
+    // liveSessions resolves to [] under the generic mock above, so
+    // sessionPillLabel falls back to the raw session id (already ≤8 chars).
+    expect(screen.getByText(/Session: sess-a/)).toBeInTheDocument();
   });
 });
 

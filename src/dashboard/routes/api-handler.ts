@@ -45,7 +45,7 @@ import {
   ZERO_QUALITY_PROXY_COUNTS,
 } from '../../metrics/quality-proxy-tracker.js';
 import type { Recommendation } from '../../metrics/recommendation-engine.js';
-import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
+import type { RetryDetectorMetrics, RetrySessionBreakdown } from '../../metrics/retry-detector.js';
 import type {
   ToolSelectionMetrics,
   ToolSelectionSummary,
@@ -595,6 +595,24 @@ function unavailable(res: ServerResponse, what: string): void {
     'content-length': String(Buffer.byteLength(payload)),
   });
   res.end(payload);
+}
+
+// Formats RetryDetector's pre-aggregated by-session breakdown (a --local
+// dashboard process's single RetryDetector drains every session's buffer,
+// see ThrashingAlert's sessionId doc in retry-detector.ts) for the JSON API
+// shape this route has always returned. RetryDetector itself owns grouping
+// and the 'unknown' sentinel for sessionless alerts now — this is a thin
+// shape adapter, not a groupBy.
+function retryAlertsBySession(
+  bySession: Readonly<Record<string, RetrySessionBreakdown>> | undefined,
+): Array<{ session_id: string; tokens_wasted: number; alert_count: number }> {
+  return Object.entries(bySession ?? {})
+    .map(([session_id, v]) => ({
+      session_id,
+      tokens_wasted: v.tokensWasted,
+      alert_count: v.alertCount,
+    }))
+    .sort((a, b) => b.tokens_wasted - a.tokens_wasted);
 }
 
 const MAX_BODY_BYTES = 64 * 1024; // 64 KB — generous for any settings payload
@@ -1812,7 +1830,11 @@ export function createApiHandler(
 
   routes.set('GET /api/retry-alerts', (_req, res) => {
     if (!deps.retryDetector) return unavailable(res, 'retryDetector');
-    jsonOk(res, deps.retryDetector.getMetrics());
+    // Destructure out the raw bySession map — by_session below is its
+    // formatted replacement, so leaving both in the response would just
+    // duplicate the same data under two different shapes/cases.
+    const { bySession, ...metrics } = deps.retryDetector.getMetrics();
+    jsonOk(res, { ...metrics, by_session: retryAlertsBySession(bySession) });
   });
 
   routes.set('GET /api/api-failures', (_req, res) => {
@@ -1880,6 +1902,10 @@ export function createApiHandler(
       retry_tokens_wasted: retryTokensWasted,
       anti_pattern_tokens_wasted: antiPatternTokensWasted,
       breakdown,
+      // Anti-pattern waste has no per-session breakdown yet — AntiPattern
+      // objects don't carry a sessionId (see ThrashingAlert for the retry
+      // side, which now does). This only ever attributes the retry portion.
+      by_session: retryAlertsBySession(deps.retryDetector.getMetrics().bySession),
       status,
     });
   });

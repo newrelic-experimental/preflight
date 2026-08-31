@@ -26,12 +26,24 @@ export interface ThrashingAlert {
   readonly similarity: number;
   readonly tokensWastedEstimate: number;
   readonly timestamp: number;
+  /**
+   * The Claude Code session that produced the flagged calls. `null` when the
+   * underlying ToolCallRecords carry no session id (legacy/proxy-originated
+   * records) — callers should treat that as "unattributed", not "session A".
+   */
+  readonly sessionId: string | null;
+}
+
+export interface RetrySessionBreakdown {
+  readonly tokensWasted: number;
+  readonly alertCount: number;
 }
 
 export interface RetryDetectorMetrics {
   readonly alerts: readonly ThrashingAlert[];
   readonly totalTokensWasted: number;
   readonly totalAlertsEmitted: number;
+  readonly bySession: Readonly<Record<string, RetrySessionBreakdown>>;
 }
 
 export interface RetryDetectorOptions {
@@ -53,6 +65,23 @@ const DEFAULT_SIMILARITY_THRESHOLD = 0.8;
 // recordEstimatedTokens). Only used here to estimate wasted tokens for
 // reporting, not for billing, so the approximation is acceptable.
 const BYTES_PER_TOKEN_ESTIMATE = 4;
+// Bounds memory for a long-running --local process — mirrors
+// TurnCostAttributor's MAX_TURNS bound for the same failure mode.
+const MAX_ALERTS = 200;
+// Mirrors ContextTrackerRegistry/TurnCostAttributor's session-churn bound so
+// this map doesn't grow unboundedly as distinct session ids accumulate over
+// a long-running process's lifetime.
+const DEFAULT_MAX_SESSIONS = 50;
+// firedKeys grows by one entry per uniquely-fired alert group and is never
+// touched again after insertion (unlike bySession, which re-touches an
+// existing key on every repeat alert) — a FIFO cap mirroring MAX_ALERTS is
+// enough to bound it for the same long-running-process failure mode.
+const MAX_FIRED_KEYS = MAX_ALERTS;
+// Single owner of this sentinel — api-handler.ts's retryAlertsBySession()
+// used to own this convention locally; it now reads the pre-aggregated
+// bySession map this class maintains, so this is the one place that decides
+// how a sessionless alert rolls up.
+const UNKNOWN_SESSION_KEY = 'unknown';
 
 // ---------------------------------------------------------------------------
 // Levenshtein similarity
@@ -111,6 +140,8 @@ export class RetryDetector implements Resettable {
   private readonly recentCalls: ToolCallRecord[] = [];
   private readonly alerts: ThrashingAlert[] = [];
   private totalTokensWasted = 0;
+  private totalAlertsEmitted = 0;
+  private readonly bySession = new Map<string, RetrySessionBreakdown>();
   // Track which tool+window combos already fired to avoid spamming
   private readonly firedKeys = new Set<string>();
 
@@ -136,13 +167,14 @@ export class RetryDetector implements Resettable {
     return {
       alerts: this.alerts,
       totalTokensWasted: this.totalTokensWasted,
-      totalAlertsEmitted: this.alerts.length,
+      totalAlertsEmitted: this.totalAlertsEmitted,
+      bySession: Object.fromEntries(this.bySession),
     };
   }
 
   emitMetrics(aggregator: MetricAggregator): void {
-    if (this.alerts.length > 0) {
-      aggregator.record('ai.retry.alerts_total', this.alerts.length);
+    if (this.totalAlertsEmitted > 0) {
+      aggregator.record('ai.retry.alerts_total', this.totalAlertsEmitted);
       aggregator.record('ai.retry.tokens_wasted', this.totalTokensWasted);
     }
   }
@@ -151,6 +183,8 @@ export class RetryDetector implements Resettable {
     this.recentCalls.length = 0;
     this.alerts.length = 0;
     this.totalTokensWasted = 0;
+    this.totalAlertsEmitted = 0;
+    this.bySession.clear();
     this.firedKeys.clear();
   }
 
@@ -196,6 +230,10 @@ export class RetryDetector implements Resettable {
         .join(',')}`;
       if (this.firedKeys.has(dedupeKey)) continue;
       this.firedKeys.add(dedupeKey);
+      if (this.firedKeys.size > MAX_FIRED_KEYS) {
+        const oldest = this.firedKeys.keys().next().value;
+        if (oldest !== undefined) this.firedKeys.delete(oldest);
+      }
 
       const tokensWasted = this.estimateTokensWasted(calls);
       const alert: ThrashingAlert = {
@@ -205,10 +243,16 @@ export class RetryDetector implements Resettable {
         similarity,
         tokensWastedEstimate: tokensWasted,
         timestamp: Date.now(),
+        sessionId: calls[0]!.sessionId ?? null,
       };
 
       this.alerts.push(alert);
+      if (this.alerts.length > MAX_ALERTS) {
+        this.alerts.shift();
+      }
+      this.totalAlertsEmitted++;
       this.totalTokensWasted += tokensWasted;
+      this.recordSessionBreakdown(alert.sessionId ?? UNKNOWN_SESSION_KEY, tokensWasted);
 
       logger.warn('Thrashing detected', {
         tool: toolName,
@@ -225,6 +269,27 @@ export class RetryDetector implements Resettable {
     }
 
     return null;
+  }
+
+  // Same touch-then-evict LRU shape as TurnCostAttributor's
+  // getOrCreateSession — moving a touched key to the end of the Map keeps
+  // eviction below a real LRU (evicts the least-recently-touched session,
+  // not just the least-recently-created one).
+  private recordSessionBreakdown(sessionKey: string, tokensWasted: number): void {
+    const existing = this.bySession.get(sessionKey);
+    if (existing) {
+      this.bySession.delete(sessionKey);
+      this.bySession.set(sessionKey, {
+        tokensWasted: existing.tokensWasted + tokensWasted,
+        alertCount: existing.alertCount + 1,
+      });
+      return;
+    }
+    if (this.bySession.size >= DEFAULT_MAX_SESSIONS) {
+      const oldest = this.bySession.keys().next().value;
+      if (oldest !== undefined) this.bySession.delete(oldest);
+    }
+    this.bySession.set(sessionKey, { tokensWasted, alertCount: 1 });
   }
 
   private computeGroupSimilarity(calls: ToolCallRecord[]): number {

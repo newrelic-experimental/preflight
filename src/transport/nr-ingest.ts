@@ -28,6 +28,7 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js'
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import type { ThrashingAlert } from '../metrics/retry-detector.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
@@ -748,6 +749,50 @@ export function antiPatternToNrEvent(
   return event;
 }
 
+/**
+ * Convert a ThrashingAlert into a flat NR event object.
+ *
+ * session_id comes from `attrs.sessionId` (the ingesting process's resolved
+ * sessionTraceId) — the same single-source-of-truth convention every other
+ * ingest*() method uses (see ingestAntiPattern, ingestToolCall). This is
+ * deliberately NOT `alert.sessionId`: that field exists for in-process
+ * attribution (the --local dashboard's per-session breakdown, which drains
+ * every session's buffer into one RetryDetector) and is a different concern
+ * from "which process is reporting this event to NR".
+ */
+export function retryAlertToNrEvent(
+  alert: ThrashingAlert,
+  attrs: {
+    developer: string;
+    appName: string;
+    sessionId?: string;
+    platform?: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiRetryAlert',
+    timestamp: alert.timestamp,
+    tool_name: alert.toolName,
+    occurrences: alert.occurrences,
+    window_size: alert.windowSize,
+    similarity: alert.similarity,
+    tokens_wasted: alert.tokensWastedEstimate,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform: attrs.platform ?? 'claude-code',
+  };
+
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+  if (attrs.sessionId != null) event.session_id = attrs.sessionId;
+
+  return event;
+}
+
 // ---------------------------------------------------------------------------
 // Retry classification
 // ---------------------------------------------------------------------------
@@ -1168,6 +1213,19 @@ export class NrIngestManager {
       projectId: this.projectId,
       orgId: this.orgId,
       detectedAt: context.detectedAt,
+    });
+    this.scheduler.addEvent(event);
+  }
+
+  ingestRetryAlert(alert: ThrashingAlert, context: { platform?: string } = {}): void {
+    const event = retryAlertToNrEvent(alert, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionId: this.sessionTraceId,
+      platform: context.platform,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
     });
     this.scheduler.addEvent(event);
   }

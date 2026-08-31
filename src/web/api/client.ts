@@ -322,6 +322,14 @@ export interface ComputeWasteResponse {
     readonly tokens_wasted: number;
     readonly instances: number;
   }>;
+  // Attributes retry_tokens_wasted back to the session(s) that caused it —
+  // anti-pattern waste has no per-session attribution yet, so this only ever
+  // covers the retry portion. Sorted descending by tokens_wasted.
+  readonly by_session: ReadonlyArray<{
+    readonly session_id: string;
+    readonly tokens_wasted: number;
+    readonly alert_count: number;
+  }>;
   readonly status: 'clean' | 'moderate' | 'needs_attention';
 }
 
