@@ -1982,7 +1982,23 @@ async function main(): Promise<void> {
         contextWindowTracker.recordToolCall(rawRecord);
         contextTracker.recordToolCall(rawRecord);
         latencyTracker.recordToolCall(rawRecord);
-        retryDetector.recordToolCall(rawRecord);
+        const thrashingAlert = retryDetector.recordToolCall(rawRecord);
+        if (thrashingAlert) {
+          capturedNrIngest?.ingestRetryAlert(thrashingAlert, {
+            platform: typeof rawRecord.platform === 'string' ? rawRecord.platform : undefined,
+          });
+          liveBus.emit('retry-alert', {
+            // alert.sessionId (not sessionTraceId) — see RetryDetector's
+            // session-grouping comment: in --local mode this process's own
+            // RetryDetector drains every session's buffer, so only the
+            // alert's own sessionId can be trusted to name the offending one.
+            sessionId: thrashingAlert.sessionId ?? undefined,
+            toolName: thrashingAlert.toolName,
+            occurrences: thrashingAlert.occurrences,
+            tokensWasted: thrashingAlert.tokensWastedEstimate,
+            ts: thrashingAlert.timestamp,
+          });
+        }
         qualityProxyTracker.recordToolCall(rawRecord);
         const turnId = turnTracker.recordToolCall(rawRecord);
         const turnNumber = turnTracker.getCurrentTurnNumber();

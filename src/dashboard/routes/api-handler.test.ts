@@ -1206,7 +1206,7 @@ describe('api-handler GET /api/retry-alerts', () => {
     expect(status()).toBe(503);
   });
 
-  it('returns retry detector metrics as JSON', async () => {
+  it('returns retry detector metrics as JSON, plus a by_session breakdown', async () => {
     const fakeMetrics = {
       alerts: [
         {
@@ -1216,10 +1216,12 @@ describe('api-handler GET /api/retry-alerts', () => {
           similarity: 0.9,
           tokensWastedEstimate: 750,
           timestamp: 1700000000000,
+          sessionId: 'sess-a',
         },
       ],
       totalTokensWasted: 750,
       totalAlertsEmitted: 1,
+      bySession: { 'sess-a': { tokensWasted: 750, alertCount: 1 } },
     };
     const handler = createApiHandler({
       retryDetector: { getMetrics: () => fakeMetrics } as unknown as Parameters<
@@ -1231,7 +1233,47 @@ describe('api-handler GET /api/retry-alerts', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(headers()['content-type']).toMatch(/application\/json/);
-    expect(JSON.parse(body())).toEqual(fakeMetrics);
+    const parsed = JSON.parse(body()) as Record<string, unknown>;
+    // The raw camelCase bySession map must not leak into the response
+    // alongside its formatted by_session replacement — same data, two shapes.
+    expect(parsed.bySession).toBeUndefined();
+    const { bySession: _bySession, ...expectedMetrics } = fakeMetrics;
+    expect(parsed).toEqual({
+      ...expectedMetrics,
+      by_session: [{ session_id: 'sess-a', tokens_wasted: 750, alert_count: 1 }],
+    });
+  });
+
+  it('groups by_session across multiple sessions, sorted by tokens wasted', async () => {
+    const fakeMetrics = {
+      alerts: [
+        { toolName: 'Bash', tokensWastedEstimate: 100, sessionId: 'sess-a' },
+        { toolName: 'Bash', tokensWastedEstimate: 900, sessionId: 'sess-b' },
+        { toolName: 'Read', tokensWastedEstimate: 50, sessionId: 'sess-a' },
+        { toolName: 'Read', tokensWastedEstimate: 10, sessionId: null },
+      ],
+      totalTokensWasted: 1060,
+      totalAlertsEmitted: 4,
+      bySession: {
+        'sess-a': { tokensWasted: 150, alertCount: 2 },
+        'sess-b': { tokensWasted: 900, alertCount: 1 },
+        unknown: { tokensWasted: 10, alertCount: 1 },
+      },
+    };
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+    });
+    const req = { method: 'GET', url: '/api/retry-alerts' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const json = JSON.parse(body()) as { by_session: Array<Record<string, unknown>> };
+    expect(json.by_session).toEqual([
+      { session_id: 'sess-b', tokens_wasted: 900, alert_count: 1 },
+      { session_id: 'sess-a', tokens_wasted: 150, alert_count: 2 },
+      { session_id: 'unknown', tokens_wasted: 10, alert_count: 1 },
+    ]);
   });
 });
 
@@ -1451,6 +1493,27 @@ describe('api-handler GET /api/compute-waste', () => {
     expect(json.anti_pattern_tokens_wasted).toBe(200);
     expect(json.status).toBe('clean');
     expect((json.breakdown as unknown[]).length).toBe(1);
+  });
+
+  it('includes a by_session breakdown sourced from the retry detector alerts', async () => {
+    const handler = createApiHandler({
+      retryDetector: {
+        getMetrics: () => ({
+          totalTokensWasted: 300,
+          alerts: [{ toolName: 'Bash', tokensWastedEstimate: 300, sessionId: 'sess-a' }],
+          bySession: { 'sess-a': { tokensWasted: 300, alertCount: 1 } },
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['retryDetector'],
+      antiPatternDetector: {
+        getCurrentPatterns: () => [],
+        getTotalAntiPatternWaste: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const json = JSON.parse(body()) as { by_session: Array<Record<string, unknown>> };
+    expect(json.by_session).toEqual([{ session_id: 'sess-a', tokens_wasted: 300, alert_count: 1 }]);
   });
 
   it('returns needs_attention when totalTokensWasted >= 2000', async () => {

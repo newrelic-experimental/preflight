@@ -72,11 +72,20 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
 
 ### 1. Install
 
+**npm (all platforms):**
+
 ```bash
 npm install -g @newrelic/preflight
 ```
 
 > **Using [Smithery](https://smithery.ai)?** Installing Preflight from the Smithery MCP registry wires up the MCP server for you, but Smithery has no mechanism to write Claude Code hooks. After install, ask Claude Code to call the `nr_observe_install_hooks` MCP tool (it will offer to do this automatically once `nr_observe_health` reports `setup_required: true`), then restart Claude Code to activate monitoring.
+
+**Homebrew (macOS):**
+
+```bash
+brew tap newrelic-experimental/preflight
+brew install preflight
+```
 
 ### 2. Run setup
 
