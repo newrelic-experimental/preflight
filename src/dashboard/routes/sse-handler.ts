@@ -10,8 +10,9 @@ const HEARTBEAT_MS = 30_000;
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 // Narrow a payload to its sessionId field if present. ToolCall, AntiPattern,
-// CostUpdate, and ContextUpdate all expose `sessionId: string`; AlertEvent has
-// it as `sessionId?: string`. HeartbeatEvent has none (and is unfiltered).
+// CostUpdate, and ContextUpdate all expose `sessionId: string`; AlertEvent
+// and RetryAlertEvent have it as `sessionId?: string`. HeartbeatEvent has
+// none (and is unfiltered).
 function extractSessionId(payload: LiveEventMap[LiveEventName]): string | undefined {
   if (payload && typeof payload === 'object' && 'sessionId' in payload) {
     const sid = payload.sessionId;
@@ -98,12 +99,14 @@ export function createSseHandler(
       'tool-call': onAny('tool-call'),
       'cost-update': onAny('cost-update'),
       'anti-pattern': onAny('anti-pattern'),
+      'retry-alert': onAny('retry-alert'),
       'context-update': onAny('context-update'),
       alert: onAny('alert'),
     } as const;
     bus.onWithSeq('tool-call', handlers['tool-call']);
     bus.onWithSeq('cost-update', handlers['cost-update']);
     bus.onWithSeq('anti-pattern', handlers['anti-pattern']);
+    bus.onWithSeq('retry-alert', handlers['retry-alert']);
     bus.onWithSeq('context-update', handlers['context-update']);
     bus.onWithSeq('alert', handlers['alert']);
 
@@ -125,6 +128,7 @@ export function createSseHandler(
       bus.offWithSeq('tool-call', handlers['tool-call']);
       bus.offWithSeq('cost-update', handlers['cost-update']);
       bus.offWithSeq('anti-pattern', handlers['anti-pattern']);
+      bus.offWithSeq('retry-alert', handlers['retry-alert']);
       bus.offWithSeq('context-update', handlers['context-update']);
       bus.offWithSeq('alert', handlers['alert']);
     };

@@ -127,6 +127,11 @@ interface ComputeWasteApiResponse {
     readonly tokens_wasted: number;
     readonly instances: number;
   }>;
+  readonly by_session?: ReadonlyArray<{
+    readonly session_id: string;
+    readonly tokens_wasted: number;
+    readonly alert_count: number;
+  }>;
   readonly status: 'clean' | 'moderate' | 'needs_attention';
 }
 
@@ -585,7 +590,7 @@ export function Today(): JSX.Element {
             <ApiFailurePanel />
             <ToolSelectionPanel />
             <LatencyPanel aggregate={aggregate} />
-            <ComputeWastePanel />
+            <ComputeWastePanel liveSessions={liveSessions ?? []} />
             <ModelUsagePanel />
             <CacheHealthPanel aggregate={aggregate} />
             <div className="col-span-3">
@@ -1113,14 +1118,22 @@ function CacheHealthPanel({
   );
 }
 
-function ComputeWastePanel(): JSX.Element | null {
+function ComputeWastePanel({
+  liveSessions,
+}: {
+  liveSessions: LiveSessionEntry[];
+}): JSX.Element | null {
   const { data, isPending } = useQuery<ComputeWasteApiResponse>({
     queryKey: qk.computeWaste,
     queryFn: fetchComputeWaste as () => Promise<ComputeWasteApiResponse>,
     retry: false,
   });
+  const retryAlerts = useLiveStore((s) => s.retryAlerts);
 
   if (isPending || !data || typeof data.total_tokens_wasted !== 'number') return null;
+
+  const latestRetryAlert = retryAlerts[retryAlerts.length - 1] ?? null;
+  const topSession = data.by_session?.[0] ?? null;
 
   const statusColor =
     data.status === 'clean'
@@ -1156,10 +1169,29 @@ function ComputeWastePanel(): JSX.Element | null {
         retry: ~{data.retry_tokens_wasted.toLocaleString()} · anti-pattern: ~
         {data.anti_pattern_tokens_wasted.toLocaleString()}
       </div>
+      {topSession !== null && (
+        <div className="text-[10px] text-ink-subtle/70 mt-0.5">
+          top session: {sessionPillLabel(topSession.session_id, liveSessions)} (~
+          {topSession.tokens_wasted.toLocaleString()})
+        </div>
+      )}
       {topOffender !== null && (
         <div className="text-[10px] font-medium text-accent-amber mb-1">
           {topOffender.type.replace(/_/g, ' ')} · ~{topOffender.tokens_wasted.toLocaleString()}{' '}
           tokens
+        </div>
+      )}
+      {latestRetryAlert !== null && (
+        <div className="text-[10px] mb-1">
+          <Pill tone="warning" size="sm" className="mr-1">
+            {latestRetryAlert.toolName}
+          </Pill>
+          <span className="text-ink-muted">retried {latestRetryAlert.occurrences}× </span>
+          {latestRetryAlert.sessionId && (
+            <Pill tone="neutral" size="sm" className="ml-1">
+              Session: {sessionPillLabel(latestRetryAlert.sessionId, liveSessions)}
+            </Pill>
+          )}
         </div>
       )}
       <div className="text-[10px] text-ink-subtle/70 leading-snug">
