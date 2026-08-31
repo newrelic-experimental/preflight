@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.4] - 2026-08-31
+
+### Added
+
+- **The Compute Waste card now shows the most recent retry-thrashing alert live**, ahead of the next `/api/compute-waste` poll — matching the live treatment anti-pattern alerts already had.
+
+### Fixed
+
+- **Retry-thrashing compute waste is now attributed to the session that caused it.** The Compute Waste card's underlying `RetryDetector` drains every session's buffer in `--local` mode, so a large wasted-token number previously had no way to tell which session was responsible — two unrelated sessions retrying the same tool could also blend into one false alert. `/api/compute-waste` and `/api/retry-alerts` now include a per-session breakdown, and the Compute Waste card shows the top contributing session.
+- **`RetryDetector`'s internal buffers are now bounded** for a long-running `--local` process — the alert list, per-session breakdown, and dedupe tracking all previously grew without limit.
+
 ## [1.18.3] - 2026-08-30
 
 ### Added

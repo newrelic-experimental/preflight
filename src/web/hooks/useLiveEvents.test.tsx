@@ -45,6 +45,7 @@ describe('useLiveEvents', () => {
       recentToolCalls: [],
       cost: null,
       antiPatterns: [],
+      retryAlerts: [],
       firingAlerts: new Map(),
       dismissedAlerts: new Set(),
     });
@@ -115,6 +116,20 @@ describe('useLiveEvents', () => {
       });
     });
     expect(useLiveStore.getState().antiPatterns).toHaveLength(1);
+  });
+
+  it('routes retry-alert to pushRetryAlert', () => {
+    renderHook(() => useLiveEvents());
+    act(() => {
+      FakeEventSource.instances[0].emit('retry-alert', {
+        sessionId: 'sess-A',
+        toolName: 'Bash',
+        occurrences: 3,
+        tokensWasted: 42,
+      });
+    });
+    expect(useLiveStore.getState().retryAlerts).toHaveLength(1);
+    expect(useLiveStore.getState().retryAlerts[0].tokensWasted).toBe(42);
   });
 
   describe('REST hydration of anti-patterns', () => {

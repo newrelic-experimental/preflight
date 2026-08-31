@@ -30,6 +30,13 @@ export interface AntiPatternEvent {
   readonly count: number;
 }
 
+export interface RetryAlertEvent {
+  readonly sessionId?: string;
+  readonly toolName: string;
+  readonly occurrences: number;
+  readonly tokensWasted: number;
+}
+
 // Mirror of the AlertEvent shape from src/dashboard/live-event-bus.ts, minus
 // its optional `sessionId` — alerts aren't session-scoped client-side (every
 // firing alert is shown regardless of which session triggered it). Kept
@@ -93,6 +100,7 @@ interface LiveState {
   readonly recentToolCalls: ToolCallEvent[];
   readonly cost: CostUpdateEvent | null;
   readonly antiPatterns: AntiPatternEvent[];
+  readonly retryAlerts: RetryAlertEvent[];
   readonly contextBySession: Map<string, ContextUpdateEvent>;
   readonly firingAlerts: Map<string, AlertEvent>;
   readonly dismissedAlerts: Set<string>;
@@ -111,6 +119,7 @@ interface LiveState {
   pushToolCall(e: ToolCallEvent): void;
   setCost(c: CostUpdateEvent): void;
   pushAntiPattern(e: AntiPatternEvent): void;
+  pushRetryAlert(e: RetryAlertEvent): void;
   setContext(c: ContextUpdateEvent): void;
   addOrUpdateAlert(e: AlertEvent): void;
   clearAlert(id: string): void;
@@ -135,6 +144,7 @@ interface LiveState {
 
 const RECENT_CAP = 20;
 const ANTI_CAP = 10;
+const RETRY_CAP = 10;
 
 const WORKFLOW_CAP = 50;
 
@@ -143,6 +153,7 @@ export const useLiveStore = create<LiveState>((set) => ({
   recentToolCalls: [],
   cost: null,
   antiPatterns: [],
+  retryAlerts: [],
   contextBySession: new Map(),
   firingAlerts: new Map(),
   dismissedAlerts: new Set(),
@@ -171,6 +182,7 @@ export const useLiveStore = create<LiveState>((set) => ({
         activeSessionId: id,
         recentToolCalls: s.recentToolCalls.filter((t) => matchOrUnknown(t.sessionId)),
         antiPatterns: s.antiPatterns.filter((a) => matchOrUnknown(a.sessionId)),
+        retryAlerts: s.retryAlerts.filter((a) => matchOrUnknown(a.sessionId)),
         cost: s.cost && matchOrUnknown(s.cost.sessionId) ? s.cost : null,
       };
     }),
@@ -203,6 +215,12 @@ export const useLiveStore = create<LiveState>((set) => ({
     set((s) => {
       const next = [...s.antiPatterns, e];
       return { antiPatterns: next.length > ANTI_CAP ? next.slice(next.length - ANTI_CAP) : next };
+    }),
+
+  pushRetryAlert: (e) =>
+    set((s) => {
+      const next = [...s.retryAlerts, e];
+      return { retryAlerts: next.length > RETRY_CAP ? next.slice(next.length - RETRY_CAP) : next };
     }),
 
   addOrUpdateAlert: (e) =>
