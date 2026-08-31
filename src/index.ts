@@ -3,6 +3,7 @@ import 'dotenv/config';
 
 import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
 import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
@@ -108,6 +109,7 @@ import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
 import type { CliOptions } from './types.js';
+import { HomelabAccumulator, HomelabForwarder } from './homelab/index.js';
 import { VERSION } from './version.js';
 
 export { loadMcpConfig, redactSensitive } from './config.js';
@@ -489,6 +491,7 @@ export function startDashboardRepoll(opts: DashboardRepollOptions): NodeJS.Timeo
 const SUBCOMMAND_NAMES = [
   'deploy-dashboards',
   'deploy-alerts',
+  'server',
   'install',
   'uninstall',
   'setup',
@@ -502,9 +505,9 @@ type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
 
 // Install-CLI subcommands — a subset of SUBCOMMAND_NAMES routed to runInstallCli.
 // Derived from SUBCOMMAND_NAMES to ensure a single source of truth: deploy-*
-// commands are excluded and handled by the commander path in dispatchSubcommand.
+// and server commands are excluded and handled by the commander path in dispatchSubcommand.
 const INSTALL_CLI_SUBCOMMANDS = SUBCOMMAND_NAMES.filter(
-  (s) => s !== 'deploy-dashboards' && s !== 'deploy-alerts',
+  (s) => s !== 'deploy-dashboards' && s !== 'deploy-alerts' && s !== 'server',
 ) as readonly string[];
 
 function isSubcommand(value: string | undefined): value is SubcommandName {
@@ -569,6 +572,90 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           file: file ?? null,
         });
         process.exitCode = code;
+      });
+  } else if (sub === 'server') {
+    program
+      .command('server')
+      .description(
+        'Start Preflight in homelab server mode — receives events forwarded from remote clients and accumulates them to disk (no dashboard yet — see docs/homelab.md)',
+      )
+      .option(
+        '--port <port>',
+        'Port to bind to (default: 7777 or NEW_RELIC_AI_HOMELAB_SERVER_PORT)',
+      )
+      .option(
+        '--token <token>',
+        'Bearer token for /ingest auth (default: NEW_RELIC_AI_HOMELAB_TOKEN)',
+      )
+      .option(
+        '--bind <address>',
+        'Bind address (default: 0.0.0.0 or NEW_RELIC_AI_HOMELAB_BIND_ADDRESS)',
+      )
+      .option('--config <path>', 'Path to config file')
+      .action(async (opts: { port?: string; token?: string; bind?: string; config?: string }) => {
+        if (opts.port) process.env.NEW_RELIC_AI_HOMELAB_SERVER_PORT = opts.port;
+        if (opts.token) process.env.NEW_RELIC_AI_HOMELAB_TOKEN = opts.token;
+        if (opts.bind) process.env.NEW_RELIC_AI_HOMELAB_BIND_ADDRESS = opts.bind;
+        // server mode never needs cloud credentials — force local so loadMcpConfig
+        // doesn't require licenseKey/accountId.
+        process.env.NR_AI_MODE = 'local';
+
+        const config = loadConfigOrDie({ config: opts.config });
+
+        const token = config.homelabToken;
+        if (!token) {
+          process.stderr.write(
+            '[preflight] error: homelab server requires a token. Set --token or NEW_RELIC_AI_HOMELAB_TOKEN.\n',
+          );
+          process.exit(1);
+        }
+
+        const accumulator = new HomelabAccumulator({ storagePath: config.storagePath });
+        accumulator.start();
+
+        const bus = new LiveEventBus();
+        const dashboardServer = new DashboardServer({
+          port: config.homelabServer.port,
+          host: config.homelabServer.bindAddress,
+          bus,
+          serverMode: true,
+          ingestHandler: (authHeader, body) => {
+            const expected = `Bearer ${token}`;
+            const isAuthed =
+              authHeader !== undefined &&
+              authHeader.length === expected.length &&
+              timingSafeEqual(Buffer.from(authHeader), Buffer.from(expected));
+            if (!isAuthed) return 401;
+            const result = accumulator.handleIngest(body);
+            return result === 'ok' ? 204 : 400;
+          },
+        });
+
+        await dashboardServer.start();
+        logger.info('Homelab server ready', {
+          port: config.homelabServer.port,
+          bind: config.homelabServer.bindAddress,
+        });
+
+        // Keep the action (and therefore program.parseAsync) alive until a
+        // signal fires — without this, the action returns immediately and
+        // dispatchSubcommand exits the process.
+        await new Promise<void>((resolve) => {
+          let shutting = false;
+          const shutdown = async (): Promise<void> => {
+            if (shutting) return;
+            shutting = true;
+            accumulator.stop();
+            await dashboardServer.stop();
+            resolve();
+          };
+          process.on('SIGTERM', () => {
+            void shutdown();
+          });
+          process.on('SIGINT', () => {
+            void shutdown();
+          });
+        });
       });
   } else {
     program
@@ -781,6 +868,8 @@ async function main(): Promise<void> {
     pendingConfirmationCapTimer.unref?.();
   };
 
+  let homelabForwarder: HomelabForwarder | null = null;
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
@@ -841,6 +930,7 @@ async function main(): Promise<void> {
         nrIngest ? nrIngest.stop() : Promise.resolve(),
         mcpServer ? mcpServer.close() : Promise.resolve(),
         proxyManager ? proxyManager.stop() : Promise.resolve(),
+        homelabForwarder ? homelabForwarder.stop() : Promise.resolve(),
       ]);
       for (const r of stopResults) {
         if (r.status === 'rejected') {
@@ -1796,6 +1886,28 @@ async function main(): Promise<void> {
       capturedNrIngest = nrIngest;
     }
 
+    // Start homelab forwarder if configured. Construction validates
+    // homelabServerUrl (scheme + cloud-metadata-endpoint check) and can
+    // throw — caught here so a bad/malicious URL only disables forwarding,
+    // matching the "forwarding failures are non-fatal" contract in
+    // docs/homelab.md, rather than crashing MCP startup.
+    if (config.homelabServerUrl && config.homelabToken) {
+      try {
+        homelabForwarder = new HomelabForwarder({
+          serverUrl: config.homelabServerUrl,
+          token: config.homelabToken,
+          developer: config.developer,
+          sessionId: sessionTraceId ?? 'unknown',
+        });
+        homelabForwarder.start();
+      } catch (err) {
+        homelabForwarder = null;
+        logger.error('Homelab forwarder failed to start — continuing without it', {
+          error: String(err),
+        });
+      }
+    }
+
     const capturedAlertEngine = alertEngine;
     const capturedAlertSnapshotCollector = alertSnapshotCollector;
     budgetTracker.setOnThreshold((event) => {
@@ -2057,6 +2169,7 @@ async function main(): Promise<void> {
             });
           }
         }
+        homelabForwarder?.enqueue(record);
       },
       onTokenEvent: (tokenEvent) => {
         if (!costTracker || !config) return;

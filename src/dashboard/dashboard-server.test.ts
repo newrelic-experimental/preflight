@@ -455,6 +455,17 @@ describe('DashboardServer Host validation', () => {
     const addr = await server.start();
     expect(await requestWithHost(addr.port, '[::1]:abc.evil.com')).toBe(403);
   });
+
+  it('serverMode accepts a non-loopback Host header that would otherwise be rejected', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      serverMode: true,
+    });
+    const addr = await server.start();
+    expect(await requestWithHost(addr.port, 'evil.example.com')).toBe(200);
+  });
 });
 
 describe('DashboardServer SSE shutdown', () => {

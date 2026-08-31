@@ -49,6 +49,10 @@ beforeEach(() => {
   delete process.env.NR_AI_DASHBOARD_HOST;
   delete process.env.NR_AI_DASHBOARD_OPEN;
   delete process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
+  delete process.env.NEW_RELIC_AI_HOMELAB_URL;
+  delete process.env.NEW_RELIC_AI_HOMELAB_TOKEN;
+  delete process.env.NEW_RELIC_AI_HOMELAB_SERVER_PORT;
+  delete process.env.NEW_RELIC_AI_HOMELAB_BIND_ADDRESS;
 });
 
 afterEach(() => {
@@ -1991,5 +1995,99 @@ describe('validateConfigFile()', () => {
     writeFileSync(resolve(tmpDir, 'nostorage.json'), JSON.stringify({ mode: 'local' }));
     const result = validateConfigFile(resolve(tmpDir, 'nostorage.json'));
     expect(result.storagePath).toBeUndefined();
+  });
+});
+
+describe('homelab config fields', () => {
+  it('defaults homelabServerUrl and homelabToken to null', () => {
+    const configPath = writeConfigFile({ mode: 'local' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServerUrl).toBeNull();
+    expect(config.homelabToken).toBeNull();
+  });
+
+  it('reads homelabServerUrl from env var', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_URL = 'http://homelab:7777';
+    process.env.NEW_RELIC_AI_HOMELAB_TOKEN = 'test-token';
+    const configPath = writeConfigFile({ mode: 'local' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServerUrl).toBe('http://homelab:7777');
+  });
+
+  it('reads homelabToken from env var', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_TOKEN = 'my-secret';
+    const configPath = writeConfigFile({ mode: 'local' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabToken).toBe('my-secret');
+  });
+
+  it('reads homelabServerUrl and homelabToken from config file', () => {
+    const configPath = writeConfigFile({
+      mode: 'local',
+      homelabServerUrl: 'http://mybox:7777',
+      homelabToken: 'file-secret',
+    });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServerUrl).toBe('http://mybox:7777');
+    expect(config.homelabToken).toBe('file-secret');
+  });
+
+  it('env var overrides config file for homelabServerUrl', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_URL = 'http://env-box:7777';
+    process.env.NEW_RELIC_AI_HOMELAB_TOKEN = 'test-token';
+    const configPath = writeConfigFile({
+      mode: 'local',
+      homelabServerUrl: 'http://file-box:7777',
+      homelabToken: 'file-token',
+    });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServerUrl).toBe('http://env-box:7777');
+  });
+
+  it('throws when homelabServerUrl is set without homelabToken', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_URL = 'http://homelab:7777';
+    const configPath = writeConfigFile({ mode: 'local' });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      'homelabServerUrl is set but homelabToken is missing. Set NEW_RELIC_AI_HOMELAB_TOKEN.',
+    );
+  });
+
+  it('throws when homelabServerUrl has invalid scheme', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_URL = 'file:///etc/passwd';
+    process.env.NEW_RELIC_AI_HOMELAB_TOKEN = 'some-token';
+    const configPath = writeConfigFile({ mode: 'local' });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /homelabServerUrl must use http: or https:/,
+    );
+  });
+
+  it('throws when homelabServerUrl is not a valid URL', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_URL = 'not-a-url';
+    process.env.NEW_RELIC_AI_HOMELAB_TOKEN = 'some-token';
+    const configPath = writeConfigFile({ mode: 'local' });
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /homelabServerUrl is not a valid URL/,
+    );
+  });
+
+  it('defaults homelabServer.port to 7777 and bindAddress to 0.0.0.0', () => {
+    const configPath = writeConfigFile({ mode: 'local' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServer.port).toBe(7777);
+    expect(config.homelabServer.bindAddress).toBe('0.0.0.0');
+  });
+
+  it('reads homelabServer.port from env var', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_SERVER_PORT = '8080';
+    const configPath = writeConfigFile({ mode: 'local' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServer.port).toBe(8080);
+  });
+
+  it('reads homelabServer.bindAddress from env var', () => {
+    process.env.NEW_RELIC_AI_HOMELAB_BIND_ADDRESS = '192.168.1.100';
+    const configPath = writeConfigFile({ mode: 'local' });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.homelabServer.bindAddress).toBe('192.168.1.100');
   });
 });

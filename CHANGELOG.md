@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.3] - 2026-08-30
+
+### Added
+
+- **A `preflight server` subcommand runs Preflight in homelab mode** — a lightweight standalone server that accepts tool-call events forwarded from remote Preflight instances (bearer-token authenticated over `/ingest`) and accumulates them into standard session-store files on disk. Remote instances forward events via a new `homelabServerUrl`/`homelabToken` config pair (or `NEW_RELIC_AI_HOMELAB_URL`/`NEW_RELIC_AI_HOMELAB_TOKEN`), buffering in the background so a forwarding failure never blocks local observability. A Docker Compose setup and operator docs cover running the server continuously. Viewing the aggregated data through a shared dashboard is not yet implemented — see [homelab.md](../docs/homelab.md) for current scope.
+- **`HomelabForwarder` validates its configured server URL before connecting** — it allows private LAN destinations (that's the whole point of homelab server mode), but refuses to connect to cloud metadata endpoints or a resolved address that turns out to be one, and only accepts `http:`/`https:`. A bad or malicious `homelabServerUrl` just disables forwarding with a logged warning instead of crashing MCP startup.
+
 ## [1.18.2] - 2026-08-28
 
 ### Added

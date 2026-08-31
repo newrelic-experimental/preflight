@@ -78,6 +78,34 @@ describe('createSsrfSafeLookup', () => {
     expect(result.err?.message).toContain('private or loopback');
   });
 
+  it('with allowPrivateNetworks, resolves a hostname that DNS resolves to a private LAN address', async () => {
+    mockedLookup.mockImplementation(
+      (_hostname: string, _opts: unknown, cb: (...args: unknown[]) => void) => {
+        cb(null, [{ address: '192.168.1.100', family: 4 }]);
+      },
+    );
+
+    const lookup = createSsrfSafeLookup('test', { allowPrivateNetworks: true });
+    const result = await callLookup(lookup, 'homelab.local', true);
+
+    expect(result.err).toBeNull();
+    expect(result.address).toEqual([{ address: '192.168.1.100', family: 4 }]);
+  });
+
+  it('with allowPrivateNetworks, still rejects a hostname that DNS resolves to the metadata IP', async () => {
+    mockedLookup.mockImplementation(
+      (_hostname: string, _opts: unknown, cb: (...args: unknown[]) => void) => {
+        cb(null, [{ address: '169.254.169.254', family: 4 }]);
+      },
+    );
+
+    const lookup = createSsrfSafeLookup('test', { allowPrivateNetworks: true });
+    const result = await callLookup(lookup, 'rebind-to-metadata.example', true);
+
+    expect(result.err).not.toBeNull();
+    expect(result.err?.message).toContain('cloud metadata service endpoint');
+  });
+
   it('rejects when ANY resolved address is blocked, even if another is safe', async () => {
     mockedLookup.mockImplementation(
       (_hostname: string, _opts: unknown, cb: (...args: unknown[]) => void) => {
@@ -138,9 +166,13 @@ describe('validateSsrfUrl', () => {
     );
   });
 
-  it('rejects the 169.254.169.254 metadata IP (caught by the link-local block)', () => {
+  it('rejects the 169.254.169.254 metadata IP (explicit metadata-IP blocklist, not just the link-local range)', () => {
+    // Listed explicitly in BLOCKED_METADATA_IPS (not just caught incidentally
+    // by the link-local range) so it stays blocked even under
+    // allowPrivateNetworks, which skips that range — see the dedicated
+    // allowPrivateNetworks tests below.
     expect(() => validateSsrfUrl('test', new URL('http://169.254.169.254/'))).toThrow(
-      /private or loopback/,
+      /cloud metadata service endpoint/,
     );
   });
 
@@ -170,5 +202,69 @@ describe('validateSsrfUrl', () => {
     expect(() => validateSsrfUrl('test', new URL('ftp://127.0.0.1/'))).toThrow(
       /scheme "ftp:" is not allowed/,
     );
+  });
+});
+
+describe('validateSsrfUrl with allowPrivateNetworks', () => {
+  it('allows an RFC-1918 private address', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://192.168.1.100:7777/'), {
+        allowPrivateNetworks: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it('allows a loopback address', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://127.0.0.1:7777/'), { allowPrivateNetworks: true }),
+    ).not.toThrow();
+  });
+
+  it('still rejects the 169.254.169.254 metadata IP', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://169.254.169.254/'), { allowPrivateNetworks: true }),
+    ).toThrow(/cloud metadata service endpoint/);
+  });
+
+  it('still rejects the 100.100.100.200 metadata IP', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://100.100.100.200/'), { allowPrivateNetworks: true }),
+    ).toThrow(/cloud metadata service endpoint/);
+  });
+
+  it('still rejects a metadata FQDN', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://metadata.google.internal/'), {
+        allowPrivateNetworks: true,
+      }),
+    ).toThrow(/cloud metadata service endpoint/);
+  });
+
+  it('still rejects a decimal-integer-encoded metadata IP (numeric bypass of the metadata check)', () => {
+    // 2852039166 decimal-encodes 169.254.169.254 — must still be blocked even
+    // though the general private/loopback numeric-encoding check is skipped.
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://2852039166/'), { allowPrivateNetworks: true }),
+    ).toThrow(/cloud metadata service endpoint/);
+  });
+
+  it('still rejects an IPv4-mapped-IPv6 encoding of the metadata IP', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('http://[::ffff:169.254.169.254]/'), {
+        allowPrivateNetworks: true,
+      }),
+    ).toThrow(/mapped cloud metadata service IPv4 address/);
+  });
+
+  it('still rejects a disallowed scheme', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('ftp://192.168.1.100/'), { allowPrivateNetworks: true }),
+    ).toThrow(/scheme "ftp:" is not allowed/);
+  });
+
+  it('still allows a safe public https URL', () => {
+    expect(() =>
+      validateSsrfUrl('test', new URL('https://example.com/'), { allowPrivateNetworks: true }),
+    ).not.toThrow();
   });
 });

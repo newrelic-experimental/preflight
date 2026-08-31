@@ -1605,3 +1605,15 @@ describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () =
     await expectHelpHidesStaging('deploy-alerts');
   });
 });
+
+describe('preflight server subcommand', () => {
+  // Not automated: starting the full CLI dispatch (env var wiring, config
+  // load, DashboardServer boot, /ingest auth against the real token) is out
+  // of scope for this port. Only the Host-header bypass this subcommand
+  // relies on is covered by an automated test — 'serverMode accepts a
+  // non-loopback Host header...' in dashboard-server.test.ts. Everything
+  // else here — including this endpoint — is exercised only by the manual
+  // smoke test in docs/homelab.md. it.todo (rather than a placeholder
+  // assertion) so this doesn't silently report as a passing test.
+  it.todo('responds to GET /api/health with 200');
+});
