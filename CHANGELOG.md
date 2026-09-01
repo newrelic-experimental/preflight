@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-09-01
+
+### Added
+
+- **Preflight can now be installed directly as a Claude Code plugin** — `/plugin marketplace add newrelic-experimental/preflight` sets up hooks and the MCP server without a separate npm install or build step.
+
 ## [1.24.0] - 2026-09-01
 
 ### Added
