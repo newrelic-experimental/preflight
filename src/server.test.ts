@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createServer, NrMcpServer } from './server.js';
 import { AuditTrailManager } from './security/audit-trail.js';
 
@@ -35,6 +35,13 @@ describe('NrMcpServer', () => {
     const server = createServer();
     await expect(server.close()).resolves.toBeUndefined();
   });
+
+  it('notifyToolListChanged() resolves rather than throwing when not connected', async () => {
+    const server = createServer();
+    // Startup calls this without awaiting; a disconnected or unsupporting
+    // client must never take the server down.
+    await expect(server.notifyToolListChanged()).resolves.toBeUndefined();
+  });
 });
 
 describe('MCP protocol via InMemoryTransport', () => {
@@ -53,6 +60,29 @@ describe('MCP protocol via InMemoryTransport', () => {
   afterEach(async () => {
     await client.close();
     await server.close();
+  });
+
+  it('advertises tools.listChanged to the client', async () => {
+    // Load-bearing: when session_id can't resolve synchronously the server
+    // first exposes only the pending tool set and swaps in the full set a
+    // moment later. Clients cache tools/list from initialization, so without
+    // this capability a client that listed during that window keeps the
+    // pending tools for the whole connection — observed on Kiro, which showed
+    // only health/install_hooks/get_config for an entire session.
+    expect(client.getServerCapabilities()?.tools).toMatchObject({ listChanged: true });
+  });
+
+  it('delivers a tools/list_changed notification to the client', async () => {
+    let notified = 0;
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      notified++;
+    });
+
+    await server.notifyToolListChanged();
+    // Delivery is async over the transport; give it a turn to arrive.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(notified).toBe(1);
   });
 
   it('responds to tools/list with health and install_hooks tools when no trackers configured', async () => {

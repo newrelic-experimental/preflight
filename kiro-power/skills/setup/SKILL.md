@@ -91,5 +91,12 @@ fill in real values in the user's own local install. Tell the user to fully
 quit and relaunch Kiro so the change is picked up, then verify with
 `nr_observe_get_config`.
 
+Leave `NEW_RELIC_AI_PLATFORM: "kiro"` in that `env` block alone. Kiro exposes
+no ambient environment variable that identifies it, so without this the
+platform auto-detection falls through to the generic MCP adapter, Kiro's tool
+names are never normalized, and every file/edit/shell metric silently reports
+zero while the raw tool-call count still looks correct. Verify with
+`nr_observe_get_config` that `platform` reads `kiro`, not `generic-mcp`.
+
 Do not repeat this setup on every message — only run it once per Kiro
 workspace, or when the user explicitly asks to check Preflight's setup.
