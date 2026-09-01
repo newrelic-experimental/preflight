@@ -1,52 +1,39 @@
-import { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { IncomingMessage, ServerResponse } from 'node:http';
+import type { McpServerConfig } from '../../config.js';
+import { normalizeDeveloperName, redactSensitive } from '../../config.js';
+import {
+  isSyntheticSessionId,
+  isUnscopedAggregatorSessionId,
+  type SessionNameSource,
+} from '../../hooks/session-resolver.js';
 import {
   localDateKey,
   localStartOfDay,
   todayPortionOfSessionCost,
   todayPortionRatio,
 } from '../../lib/date.js';
-import { redactSensitive, normalizeDeveloperName } from '../../config.js';
-import {
-  isSyntheticSessionId,
-  isUnscopedAggregatorSessionId,
-} from '../../hooks/session-resolver.js';
-import { handleSendDigest } from '../../tools/cross-session-tools.js';
-import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
-import type { McpServerConfig } from '../../config.js';
+import type { AntiPattern } from '../../metrics/anti-patterns.js';
+import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
+import type { ApiFailureMetrics } from '../../metrics/api-failure-tracker.js';
+import type { BudgetStatus } from '../../metrics/budget-tracker.js';
+import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
+import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
+import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
+import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
+import type { CostForecast } from '../../metrics/cost-forecast.js';
+import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import {
   attributeSessionCosts,
   type SessionLikeForCostOutcome,
 } from '../../metrics/cost-per-outcome.js';
-import { getIsoWeekId } from '../../storage/weekly-summary.js';
-import { analyzeReplayTimeline } from './replay-analyzer.js';
-import type { AntiPatternSegment } from './replay-analyzer.js';
-import { computeLatencyPercentiles } from './latency-percentiles.js';
-import type { LatencySample, AggregateLatencyMetrics } from './latency-percentiles.js';
-import { computeCacheHealth } from './cache-health-aggregate.js';
-import type { CacheHealthTotals, AggregateCacheHealth } from './cache-health-aggregate.js';
-import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
-import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
-import type {
-  FullSessionSummary,
-  SessionFileInfo,
-  PersistedAntiPattern,
-} from '../../storage/session-store.js';
-import { toPersistedAntiPatterns } from '../../storage/session-store.js';
-import type { WorkflowRunRow, WorkflowAgentRow } from '../workflow-store.js';
-import type {
-  SubagentTimeline,
-  AgentCall,
-  LiveWorkflowRunDetail,
-} from '../subagent-timeline-store.js';
-import type { CostForecast } from '../../metrics/cost-forecast.js';
-import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
-import type { AlertEvent } from '../live-event-bus.js';
-import type { BudgetStatus } from '../../metrics/budget-tracker.js';
-import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
-import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
-import type { Recommendation } from '../../metrics/recommendation-engine.js';
+import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
+import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
+import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
+import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
+import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
+import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -54,27 +41,42 @@ import type {
 } from '../../metrics/quality-proxy-tracker.js';
 import {
   combineQualityProxyRawCounts,
-  ZERO_QUALITY_PROXY_COUNTS,
   QualityProxyTracker,
+  ZERO_QUALITY_PROXY_COUNTS,
 } from '../../metrics/quality-proxy-tracker.js';
+import type { Recommendation } from '../../metrics/recommendation-engine.js';
+import type { RetryDetectorMetrics, RetrySessionBreakdown } from '../../metrics/retry-detector.js';
 import type {
   ToolSelectionMetrics,
   ToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { toToolSelectionSummary } from '../../metrics/tool-selection-scorer.js';
-import type { ModelUsageMetrics, ModelBreakdownEntry } from '../../metrics/model-usage-tracker.js';
-import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
-import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
-import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
-import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
-import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
-import type { AntiPattern } from '../../metrics/anti-patterns.js';
-import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
-import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
-import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
-import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import type { CostAttributionMetrics } from '../../metrics/turn-cost-attributor.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
+import type {
+  FullSessionSummary,
+  PersistedAntiPattern,
+  SessionFileInfo,
+} from '../../storage/session-store.js';
+import { toPersistedAntiPatterns } from '../../storage/session-store.js';
+import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
+import { getIsoWeekId } from '../../storage/weekly-summary.js';
+import { handleSendDigest } from '../../tools/cross-session-tools.js';
+import type { AlertEvent } from '../live-event-bus.js';
+import type {
+  AgentCall,
+  LiveWorkflowRunDetail,
+  SubagentTimeline,
+} from '../subagent-timeline-store.js';
+import type { WorkflowAgentRow, WorkflowRunRow } from '../workflow-store.js';
+import type { AggregateCacheHealth, CacheHealthTotals } from './cache-health-aggregate.js';
+import { computeCacheHealth } from './cache-health-aggregate.js';
+import type { AggregateLatencyMetrics, LatencySample } from './latency-percentiles.js';
+import { computeLatencyPercentiles } from './latency-percentiles.js';
+import type { AntiPatternSegment } from './replay-analyzer.js';
+import { analyzeReplayTimeline } from './replay-analyzer.js';
+import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -275,9 +277,34 @@ function toLiveWorkflowDetail(live: LiveWorkflowRunDetail): {
   return { run, agents, topology: live.topology ?? null };
 }
 
+/**
+ * Persisted-summary fields that must never reach the dashboard HTTP surface.
+ * `sessionIntent` (the first user prompt) is SENSITIVE content — it is captured
+ * only under recordContent, redacted, and persisted for the MCP tools + the
+ * 0o600 on-disk summary, but the HTTP surface is strictly broader than that
+ * file, so every route that returns a persisted summary must drop it. Keep this
+ * the single place the exclusion is declared.
+ */
+const DASHBOARD_OMITTED_SUMMARY_FIELDS: ReadonlySet<string> = new Set(['sessionIntent']);
+
+/**
+ * Shallow-copy a persisted session summary for an HTTP response, dropping every
+ * field in `DASHBOARD_OMITTED_SUMMARY_FIELDS`. Route all summary-returning
+ * dashboard endpoints through this so a content field can never leak by being
+ * spread verbatim.
+ */
+function toDashboardSummary(summary: FullSessionSummary): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(summary)) {
+    if (!DASHBOARD_OMITTED_SUMMARY_FIELDS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
 interface LiveSessionMetrics {
   readonly sessionId: string;
   readonly sessionName: string | null;
+  readonly sessionNameSource: SessionNameSource | null;
   readonly sessionStartTime: number;
   readonly sessionDurationMs: number;
   readonly toolCallCount: number;
@@ -310,6 +337,23 @@ export interface ObservabilityHealthSnapshot {
    * actively wrong advice when the real cause is `'mode_mismatch'`.
    */
   readonly watcherDisabledReason: 'env_var' | 'mode_mismatch' | null;
+  /**
+   * True when the Copilot usage watcher is running but found a VS Code
+   * workspaceStorage root with no `debug-logs` directory — i.e. the
+   * off-by-default `github.copilot.chat.agentDebugLog.fileLogging.enabled`
+   * setting is not enabled, so token-exact Copilot cost is unavailable.
+   * Optional/absent for non-Copilot deployments and older snapshot producers.
+   */
+  readonly copilotDebugLoggingDisabled?: boolean;
+  /**
+   * True when the active platform is the GitHub Copilot SDK/CLI runtime and
+   * its optional token-exact-cost extension isn't at its documented install
+   * path (~/.copilot/extensions/preflight/extension.mjs) — the extension was
+   * likely never copied. Doesn't catch every failure cause (see
+   * copilot-sdk-extension-health.ts's doc comment). Optional/absent for
+   * non-copilot-sdk deployments and older snapshot producers.
+   */
+  readonly copilotSdkExtensionMissing?: boolean;
 }
 
 export interface ApiHandlerDeps {
@@ -407,6 +451,7 @@ export interface ApiHandlerDeps {
     getTotalAntiPatternWaste: () => number;
   };
   readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
+  readonly apiFailureTracker?: { getMetrics: () => ApiFailureMetrics };
   readonly instructionDriftTracker?: { getMetrics: () => InstructionDriftMetrics };
   readonly decisionTracker?: { getMetrics: (sessionId?: string) => DecisionTreeMetrics };
   readonly turnCostAttributor?: { getMetrics: (sessionId?: string) => CostAttributionMetrics };
@@ -506,6 +551,10 @@ export interface ApiHandlerDeps {
     // default to the most-recently-active session. Older fakes / mocks that
     // don't implement it still work — `?.` falls back to undefined.
     getLastActivity?: (sessionId: string) => number | null;
+    // Optional for the same reason: lets the session-list/detail surfaces
+    // report which source produced the name (see SessionNameSource). Callers
+    // use `getSessionNameSource?.(id) ?? null` so partial mocks fall back safely.
+    getSessionNameSource?: (sessionId: string) => SessionNameSource | null;
   };
   readonly concurrencyTracker?: {
     getConcurrentCount: () => number;
@@ -546,6 +595,24 @@ function unavailable(res: ServerResponse, what: string): void {
     'content-length': String(Buffer.byteLength(payload)),
   });
   res.end(payload);
+}
+
+// Formats RetryDetector's pre-aggregated by-session breakdown (a --local
+// dashboard process's single RetryDetector drains every session's buffer,
+// see ThrashingAlert's sessionId doc in retry-detector.ts) for the JSON API
+// shape this route has always returned. RetryDetector itself owns grouping
+// and the 'unknown' sentinel for sessionless alerts now — this is a thin
+// shape adapter, not a groupBy.
+function retryAlertsBySession(
+  bySession: Readonly<Record<string, RetrySessionBreakdown>> | undefined,
+): Array<{ session_id: string; tokens_wasted: number; alert_count: number }> {
+  return Object.entries(bySession ?? {})
+    .map(([session_id, v]) => ({
+      session_id,
+      tokens_wasted: v.tokensWasted,
+      alert_count: v.alertCount,
+    }))
+    .sort((a, b) => b.tokens_wasted - a.tokens_wasted);
 }
 
 const MAX_BODY_BYTES = 64 * 1024; // 64 KB — generous for any settings payload
@@ -1041,12 +1108,21 @@ export function createApiHandler(
     // no tasks have been scored yet (or when the scorer wasn't wired in).
     const efficiencyScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;
     const liveSessions = computeCrossProcessLiveSessionIds(deps);
-    jsonOk(res, { ...deps.sessionTracker.getMetrics(), efficiencyScore, liveSessions });
+    // getMetrics() returns the full SessionMetrics at runtime (LiveSessionMetrics
+    // is a curated subset type). session_intent (the first prompt) is SENSITIVE
+    // content and is deliberately NOT exposed on the dashboard HTTP surface — it
+    // lives only on the MCP tool responses and persisted summaries (both
+    // redacted). Strip it from the shallow copy before spreading it into the
+    // response rather than emitting the whole metrics object verbatim.
+    const { sessionIntent, ...metricsForResponse } =
+      deps.sessionTracker.getMetrics() as LiveSessionMetrics & { sessionIntent?: unknown };
+    void sessionIntent;
+    jsonOk(res, { ...metricsForResponse, efficiencyScore, liveSessions });
   });
 
   routes.set('GET /api/session/today', (_req, res) => {
     if (!deps.sessionStore) return unavailable(res, 'sessionStore');
-    jsonOk(res, deps.sessionStore.loadTodaySessions());
+    jsonOk(res, deps.sessionStore.loadTodaySessions().map(toDashboardSummary));
   });
 
   routes.set('GET /api/sessions', (req, res) => {
@@ -1090,6 +1166,7 @@ export function createApiHandler(
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
+          sessionNameSource: live.sessionNameSource ?? null,
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
@@ -1136,6 +1213,7 @@ export function createApiHandler(
           sliced.push({
             sessionId: id,
             sessionName: deps.liveSessionRegistry.getSessionName(id),
+            sessionNameSource: deps.liveSessionRegistry.getSessionNameSource?.(id) ?? null,
             startTime: sessionStart,
             durationMs: lastActivityTs != null ? Math.max(0, lastActivityTs - sessionStart) : 0,
             toolCallCount: stats?.count ?? 0,
@@ -1154,7 +1232,9 @@ export function createApiHandler(
       const o = s as Record<string, unknown>;
       const out: Record<string, unknown> = {};
       for (const k of Object.keys(o)) {
-        if (!HEAVY_FIELDS.has(k)) out[k] = o[k];
+        // Drop heavy fields the list view never renders AND sensitive content
+        // fields (session_intent) that must not reach the HTTP surface.
+        if (!HEAVY_FIELDS.has(k) && !DASHBOARD_OMITTED_SUMMARY_FIELDS.has(k)) out[k] = o[k];
       }
       return out;
     });
@@ -1202,6 +1282,7 @@ export function createApiHandler(
       return {
         sessionId: id,
         sessionName: deps.liveSessionRegistry?.getSessionName(id) ?? null,
+        sessionNameSource: deps.liveSessionRegistry?.getSessionNameSource?.(id) ?? null,
         startTime: stats?.firstTs ?? lastActivity,
         lastActivity,
       };
@@ -1388,6 +1469,11 @@ export function createApiHandler(
     // the cache-hit assertions in api-handler.test.ts.
     const overlappingTodaySessions =
       deps.sessionStore?.loadSessionsOverlappingToday?.() ?? todaySessions;
+    // Local-day key for "today", shared by the persisted-session loop below and
+    // the live top-up further down. Sessions persisted with per-day cost buckets
+    // (costByDayUsd) let us sum a session's REAL today-spend instead of
+    // pro-rating its lifetime estimatedCostUsd by a timeline.
+    const todayKey = localDateKey(now);
     for (const raw of overlappingTodaySessions) {
       const s = raw as {
         sessionId?: string;
@@ -1395,6 +1481,9 @@ export function createApiHandler(
         endTime: number;
         estimatedCostUsd: number | null;
         subagentCostUsd?: number;
+        costByDayUsd?: Record<string, number>;
+        subagentCostByDayUsd?: Record<string, number>;
+        toolCallCount?: number;
         tokensInput?: number;
         tokensCacheRead?: number;
         tokensCacheCreation?: number;
@@ -1421,14 +1510,48 @@ export function createApiHandler(
           }
         }
       }
-      totalCostUsd += todayPortionOfSessionCost(s, now);
-      // (2b) subagent-only portion of the same session, same pro-rating.
-      // This is what makes the "subagent spend" KPI cross-session: each
-      // `--stdio` process persists its own subagentCostUsd, so summing it
-      // here (rather than reading only THIS process's live CostTracker)
-      // picks up subagent activity that happened in any concurrent session.
+      // Cost attributed to TODAY. Prefer the session's persisted per-day
+      // bucket — authoritative, since each token event was bucketed by its real
+      // transcript timestamp. For older session files without buckets, fall back to
+      // pro-rating the lifetime estimatedCostUsd by the timeline — EXCEPT a
+      // session with cost but ZERO attributable activity (no tool calls AND no
+      // subagent spend) is an unverifiable re-read artifact: its
+      // estimatedCostUsd is a cumulative lifetime total that may include a
+      // resumed transcript's month of cache-read tokens re-read in one pass, and
+      // todayPortionRatio returns 1.0 for its entirely-today window, dumping the
+      // whole total onto today (the observed $248/$863 phantoms, which had
+      // toolCallCount 0 and subagentCostUsd 0). Bias toward trust and contribute
+      // 0; the real per-day figure is recovered once the session re-persists
+      // WITH day buckets. Note: an EMPTY timeline alone is NOT the signal — a
+      // legitimate subagent-only session has an empty PARENT timeline (subagent
+      // tool calls are not in it) yet real subagentCostUsd, so the guard keys on
+      // subagent spend too, never zeroing genuine cross-session subagent work.
+      const hasNoAttributableActivity =
+        (s.toolCallCount ?? 0) === 0 &&
+        (s.subagentCostUsd ?? 0) === 0 &&
+        !(Array.isArray(s.timeline) && s.timeline.length > 0);
       const ratio = todayPortionRatio(s, now);
-      subagentUsd += (s.subagentCostUsd ?? 0) * ratio;
+      totalCostUsd +=
+        s.costByDayUsd !== undefined
+          ? (s.costByDayUsd[todayKey] ?? 0)
+          : hasNoAttributableActivity
+            ? 0
+            : todayPortionOfSessionCost(s, now);
+      // (2b) subagent-only portion of the same session. Day-bucket-first, else
+      // pro-rate — applying the same phantom guard explicitly rather than
+      // relying on hasNoAttributableActivity's subagentCostUsd===0 term to
+      // zero this out implicitly (that held today, but shouldn't be a silent
+      // invariant across two separate expressions). This is what makes the
+      // KPI cross-session: each `--stdio` process persists its own subagent
+      // cost, so summing it here (rather than reading only THIS process's
+      // live CostTracker) picks up subagent activity from any concurrent
+      // session.
+      subagentUsd +=
+        s.subagentCostByDayUsd !== undefined
+          ? (s.subagentCostByDayUsd[todayKey] ?? 0)
+          : hasNoAttributableActivity
+            ? 0
+            : (s.subagentCostUsd ?? 0) * ratio;
       // Cache token/dollar sums below carry the same unguarded overlap
       // characteristic subagentUsd/totalCostUsd already have on this line:
       // a session that's concurrently live in ANOTHER process (so
@@ -1474,7 +1597,9 @@ export function createApiHandler(
     const liveIsUnscopedAggregator = isUnscopedAggregatorSessionId(liveSid);
 
     if (!liveAlreadyPersisted && !liveIsUnscopedAggregator) {
-      const todayKey = localDateKey(now);
+      // Reuses `todayKey` from the enclosing scope (declared above the
+      // persisted-session loop) so the persisted-loop and this live top-up can
+      // never split onto two independently-derived day keys.
       const liveTodayUsd = deps.costTracker?.getCostForDay?.(todayKey) ?? null;
       if (typeof liveTodayUsd === 'number') {
         totalCostUsd += liveTodayUsd;
@@ -1705,7 +1830,16 @@ export function createApiHandler(
 
   routes.set('GET /api/retry-alerts', (_req, res) => {
     if (!deps.retryDetector) return unavailable(res, 'retryDetector');
-    jsonOk(res, deps.retryDetector.getMetrics());
+    // Destructure out the raw bySession map — by_session below is its
+    // formatted replacement, so leaving both in the response would just
+    // duplicate the same data under two different shapes/cases.
+    const { bySession, ...metrics } = deps.retryDetector.getMetrics();
+    jsonOk(res, { ...metrics, by_session: retryAlertsBySession(bySession) });
+  });
+
+  routes.set('GET /api/api-failures', (_req, res) => {
+    if (!deps.apiFailureTracker) return unavailable(res, 'apiFailureTracker');
+    jsonOk(res, deps.apiFailureTracker.getMetrics());
   });
 
   routes.set('GET /api/instruction-drift', (_req, res) => {
@@ -1768,6 +1902,10 @@ export function createApiHandler(
       retry_tokens_wasted: retryTokensWasted,
       anti_pattern_tokens_wasted: antiPatternTokensWasted,
       breakdown,
+      // Anti-pattern waste has no per-session breakdown yet — AntiPattern
+      // objects don't carry a sessionId (see ThrashingAlert for the retry
+      // side, which now does). This only ever attributes the retry portion.
+      by_session: retryAlertsBySession(deps.retryDetector.getMetrics().bySession),
       status,
     });
   });
@@ -1813,8 +1951,17 @@ export function createApiHandler(
   });
 
   routes.set('GET /api/latency', (_req, res) => {
-    if (!deps.latencyTracker) return unavailable(res, 'latencyTracker');
-    jsonOk(res, deps.latencyTracker.getMetrics());
+    // Percentiles come from today's rehydrated samples (persisted timelines +
+    // live buffers) rather than this process's tracker, which only ever sees
+    // the calls made since it started. slowestCalls has no persisted
+    // counterpart, so it stays live-only.
+    const today = getTodayAggregatePayload(Date.now()).latency;
+    const live = deps.latencyTracker?.getMetrics();
+    jsonOk(res, {
+      overall: today.overall,
+      byTool: today.byTool,
+      slowestCalls: live?.slowestCalls ?? [],
+    });
   });
 
   routes.set('GET /api/model-usage', (_req, res) => {
@@ -2801,7 +2948,10 @@ export function createApiHandler(
           const quality = combineQualityProxyRawCounts([
             session.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS,
           ]);
-          const responseBody: Record<string, unknown> = { ...session };
+          // toDashboardSummary drops sensitive content fields (session_intent)
+          // that must not reach the HTTP surface; the detail view augments the
+          // remaining fields below.
+          const responseBody: Record<string, unknown> = toDashboardSummary(session);
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
           // The persisted shape's key is `toolSelectionMetrics`, but
           // Sessions.tsx's SessionTimeline reads `toolSelectionScore` —
@@ -2827,6 +2977,13 @@ export function createApiHandler(
             const costMetrics = deps.costTracker?.getMetrics();
             const costUsd = costMetrics?.sessionTotalCostUsd ?? null;
             const model = costMetrics?.model ?? null;
+            // Per-model breakdown so the UI can show every model used this
+            // session, not just the last one seen (`model` above collapses a
+            // mid-session model switch to whichever model was current at
+            // read time). Persisted sessions already carry this via
+            // FullSessionSummary.modelBreakdown — mirror it here so the live
+            // branch renders the same way.
+            const modelBreakdown = deps.modelUsageTracker?.getRawBreakdown();
             const antiPatterns: PersistedAntiPattern[] = deps.antiPatternDetector
               ? toPersistedAntiPatterns(deps.antiPatternDetector.getCurrentPatterns())
               : [];
@@ -2837,11 +2994,13 @@ export function createApiHandler(
             jsonOk(res, {
               sessionId: live.sessionId,
               sessionName: live.sessionName ?? null,
+              sessionNameSource: live.sessionNameSource ?? null,
               startTime: live.sessionStartTime,
               durationMs: live.sessionDurationMs,
               toolCallCount: live.toolCallCount,
               estimatedCostUsd: costUsd,
               model,
+              modelBreakdown,
               outcome: 'in progress',
               toolBreakdown: live.toolCallCountByTool,
               antiPatterns,
@@ -2914,6 +3073,7 @@ export function createApiHandler(
           jsonOk(res, {
             sessionId,
             sessionName: deps.liveSessionRegistry?.getSessionName(sessionId) ?? null,
+            sessionNameSource: deps.liveSessionRegistry?.getSessionNameSource?.(sessionId) ?? null,
             startTime,
             durationMs: lastTs - startTime,
             toolCallCount: records.length,

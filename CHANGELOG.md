@@ -5,6 +5,146 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] - 2026-09-01
+
+### Added
+
+- **A new `companionMode` setting prevents double-counting cost and token metrics when an org also enables Claude Code's built-in OTel export.** With it on, Preflight's own cost gauges are suppressed and cost-bearing events are tagged for reconciliation instead of dropped, so a blended "org AI spend" dashboard reflects the true total rather than counting each session twice.
+
+## [1.23.0] - 2026-09-01
+
+### Added
+
+- **The inbound OTLP receiver now enriches protobuf-encoded payloads, not just JSON** — `application/x-protobuf` bodies (the default for most OTel SDKs, including Claude Code's own) are decoded, tagged with session/repo context, and re-encoded, matching what the JSON path already did. A payload using OTLP schema fields newer than the receiver's vendored descriptor loses those unrecognized fields on re-encode; a payload that fails to decode is forwarded unmodified rather than dropped.
+
+## [1.22.0] - 2026-09-01
+
+### Added
+
+- **Tool-call telemetry now distinguishes user rejections, auto-mode policy denials, and mid-run interrupts from a generic timeout** — `error_type` gains `rejected`, `denied`, and `interrupted` values (previously all three exported as `timeout`), enabling acceptance-rate analysis for Edit/Write tools. Wires Claude Code's `PermissionRequest`/`PermissionDenied` hooks alongside the existing ones; after upgrading, `preflight doctor`'s hooks-wired check will report a failure until `preflight install` is re-run to register the two new hooks.
+
+## [1.21.0] - 2026-09-01
+
+### Added
+
+- **Git activity — commits, pushes, force-pushes, and PR create/merge outcomes — is now exported to New Relic as `ai.git.*` metrics**, tagged with the same developer/team/project attribution as cost and efficiency metrics.
+
+## [1.20.0] - 2026-09-01
+
+### Added
+
+- **Every NR event Preflight sends now carries an `event_version` field**, giving NRQL dashboards and alerts a stable way to detect and branch on schema changes going forward.
+
+## [1.19.0] - 2026-08-31
+
+### Fixed
+
+- **Configs with New Relic credentials but no explicit `mode` now fail to start with a clear error instead of silently sending telemetry.** The config loader previously defaulted to `cloud` whenever a license key was present without an explicit `mode`, contradicting the project's local-first, offline-by-default default; it now requires an explicit `mode` in that case, and defaults to `local` when no credentials are configured. `preflight doctor` also reports the resolved telemetry mode and where it came from.
+
+## [1.18.6] - 2026-09-01
+
+### Fixed
+
+- **Using the safe force-push variants `git push --force-with-lease` and `git push --force-if-includes` no longer triggers a critical destructive-command security alert.** The audit trail's pattern matched on the `--force` prefix alone, so these safe forms were flagged the same as a plain `--force`, contradicting documented behavior; the underlying `git push --force` and `git push -f` cases are still flagged.
+
+## [1.18.5] - 2026-09-01
+
+### Fixed
+
+- **Copilot (and other hook-based platforms') sessions drained through `--local` now reach New Relic when cloud credentials are configured**, and are tagged with their real originating platform instead of always being recorded as Claude Code — previously `--local` unconditionally skipped cloud sending and every hook-sourced event lost its true platform and session attribution.
+
+## [1.18.4] - 2026-08-31
+
+### Added
+
+- **The Compute Waste card now shows the most recent retry-thrashing alert live**, ahead of the next `/api/compute-waste` poll — matching the live treatment anti-pattern alerts already had.
+
+### Fixed
+
+- **Retry-thrashing compute waste is now attributed to the session that caused it.** The Compute Waste card's underlying `RetryDetector` drains every session's buffer in `--local` mode, so a large wasted-token number previously had no way to tell which session was responsible — two unrelated sessions retrying the same tool could also blend into one false alert. `/api/compute-waste` and `/api/retry-alerts` now include a per-session breakdown, and the Compute Waste card shows the top contributing session.
+- **`RetryDetector`'s internal buffers are now bounded** for a long-running `--local` process — the alert list, per-session breakdown, and dedupe tracking all previously grew without limit.
+
+## [1.18.3] - 2026-08-30
+
+### Added
+
+- **A `preflight server` subcommand runs Preflight in homelab mode** — a lightweight standalone server that accepts tool-call events forwarded from remote Preflight instances (bearer-token authenticated over `/ingest`) and accumulates them into standard session-store files on disk. Remote instances forward events via a new `homelabServerUrl`/`homelabToken` config pair (or `NEW_RELIC_AI_HOMELAB_URL`/`NEW_RELIC_AI_HOMELAB_TOKEN`), buffering in the background so a forwarding failure never blocks local observability. A Docker Compose setup and operator docs cover running the server continuously. Viewing the aggregated data through a shared dashboard is not yet implemented — see [homelab.md](../docs/homelab.md) for current scope.
+- **`HomelabForwarder` validates its configured server URL before connecting** — it allows private LAN destinations (that's the whole point of homelab server mode), but refuses to connect to cloud metadata endpoints or a resolved address that turns out to be one, and only accepts `http:`/`https:`. A bad or malicious `homelabServerUrl` just disables forwarding with a logged warning instead of crashing MCP startup.
+
+## [1.18.2] - 2026-08-28
+
+### Added
+
+- **A new "API Failures" dashboard panel and `nr_observe_get_api_failures` MCP tool report model-API failures observed via Claude Code's `StopFailure` hook** — turns that failed outright after Claude Code's own retries were exhausted, broken down by error type (rate limit, server error, authentication, context length exceeded) with throttle-rate alerts when a model repeatedly rate-limits in a short window. Token loss, recovery time, and retry-count fields remain unavailable, since the `StopFailure` hook does not carry that data.
+
+## [1.18.1] - 2026-08-28
+
+### Fixed
+
+- **The session detail view's Model card now shows every model used during a session, not just the last one.** A session that switched models partway through (for example, via `/model`) previously showed only whichever model happened to be active when the view loaded.
+
+## [1.18.0] - 2026-08-28
+
+### Added
+
+- **Sessions are now named from Claude Code's own per-session titles** — a human-given name or Claude's auto-generated title — instead of just the project directory, so sessions in the same repo no longer all show up under one identical, uninformative name. Falls back to the directory name when no title is available yet, and a name only ever gets replaced by an equally or more trustworthy one.
+- **When content recording is enabled, each session's originating prompt is now available** as `session_intent` through the MCP tools, redacted the same way as all other captured content. Off by default, and never exposed on the local dashboard.
+
+## [1.17.1] - 2026-08-28
+
+### Changed
+
+- **The bundled Copilot pricing gap-fill overlay is now a general-purpose pricing overlay** (`pricing-overlay/`, previously `copilot-pricing/`). Its previous entries (`grok-4.5`, `raptor-mini`, and other Copilot-visible models) are now part of the built-in pricing table directly, so the overlay itself sits unused until a future model needs a gap-fill — no change to the cost calculated for any model.
+- Bumped several dependencies (testing, linting, and build tooling) to their latest compatible versions, plus two transitive `overrides` pins (`js-yaml`, `nanoid`). No user-visible behavior change.
+
+## [1.17.0] - 2026-08-26
+
+### Changed
+
+- **Structural cleanup to CLI configuration and shared transport code.** Minor adjustments to the setup wizard's environment-selection flow and several install/deploy code paths.
+
+## [1.16.4] - 2026-08-24
+
+### Fixed
+
+- **`nr_observe_get_retry_alerts` no longer flags genuinely distinct, successful calls to a third-party MCP tool (or any tool with no built-in input parser) as thrashing.** The similarity check previously Levenshtein-compared each call's full input hash directly; two unrelated hashes still share enough characters by chance to land above the detection threshold once a handful of calls accumulate. The hash is now compared by exact-match equality instead, which still catches genuine identical-input retries without the false-positive floor.
+
+## [1.16.3] - 2026-08-21
+
+### Added
+
+- **A GitHub Copilot SDK usage-capture extension that was never installed at its documented path is now reported via the observability-health API** instead of failing silently to a log file no one normally checks. Mirrors the existing signal for the VS Code Copilot Chat integration's equivalent gap.
+
+### Fixed
+
+- **`nr_observe_get_git_efficiency`'s PR metrics no longer undercount pull requests created or edited through the GitHub MCP server's tools** (`create_pull_request`, `update_pull_request`) rather than the `gh` CLI. These tool calls were already captured by Preflight but were previously ignored by the PR metric entirely.
+- **`nr_observe_get_retry_alerts` no longer flags genuinely distinct, successful tool calls as thrashing when they share the same working directory, transcript, and permission mode.** Session-constant metadata fields were previously compared for similarity alongside the actual command content, pulling unrelated calls into a false-positive band just above the detection threshold.
+
+## [1.16.2] - 2026-08-20
+
+### Fixed
+
+- **A resumed session's tool-call and Bash-command counts no longer under-report after the MCP server process restarts mid-session.** These two counters previously stayed in-memory only and reset to zero on restart, same class of bug as the cost/token restart-recovery fixes in earlier releases.
+- **An MCP process on native Windows can no longer resolve to a completely unrelated session from days or weeks earlier.** The session-id breadcrumb keyed on a shared parent process ID could be silently reused once the OS recycled that PID for an unrelated process; a breadcrumb older than the resolving process's own start time is now rejected instead of trusted.
+- **Platform detection no longer misattributes a session to the wrong AI coding assistant when more than one is installed.** An explicit platform configuration (e.g. registering the MCP server for GitHub Copilot) is now always honored over an inherited ambient signal from an unrelated installed tool, regardless of adapter registration order.
+- **Very long-lived or heavily-resumed sessions can no longer have older token-usage turns double-counted after certain project-rename recovery scenarios.** The in-memory dedup mechanism that guards against redelivered lines was previously shared globally across every active session; it's now scoped per session so one session's activity can no longer evict another's dedup history.
+
+## [1.16.1] - 2026-08-20
+
+### Fixed
+
+- **"Spend Today" no longer inflates to wildly untrustworthy totals for a resumed multi-day session.** A session's cost is now summed from its actual per-day spend instead of pro-rating its full lifetime cost by a tool-call timeline — which previously attributed a resumed session's entire multi-week cumulative cost to a single day whenever it had no timeline to pro-rate against.
+- **Token and cost totals are no longer double-counted for a session that continues after its underlying project folder is renamed or moved.** The transcript watchers now read only the newest copy of a session's transcript when more than one exists on disk, instead of applying one copy's read position to the other's unrelated content.
+
+## [1.16.0] - 2026-08-12
+
+### Added
+
+- **The GitHub Copilot adapter now captures tool calls via VS Code's native agent hooks (Preview)** instead of self-reported data, giving full session and tool-call visibility for Copilot Chat users, matching the other full-hooks platforms.
+- **Copilot sessions can now report token-exact cost** by reading VS Code's Copilot Chat debug log instead of estimating cost from content size. This requires enabling VS Code's `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting and reloading the window — see the Copilot section of `docs/ADAPTERS.md` for setup steps. Without it, cost falls back to estimation as before.
+- **New platform: GitHub Copilot CLI/SDK (`copilot-sdk`)**, distinct from the VS Code Copilot Chat adapter above — full-hooks tool-call capture via the same hook envelope, plus optional token-exact cost through a small bundled Copilot SDK extension that subscribes to the runtime's `assistant.usage` event. See the "GitHub Copilot SDK" section of `docs/ADAPTERS.md` for setup.
+- **Bundled pricing overlay for Copilot-visible models missing from the vendored pricing table** (e.g. `grok-4.5`, `raptor-mini`, several `kimi`/`mai-code` variants), which previously resolved to `$0` cost. Applied automatically at startup unless a custom pricing file is configured — see `copilot-pricing/README.md` for the gap-fill contract and known limitations.
+
 ## [1.15.6] - 2026-08-18
 
 ### Fixed

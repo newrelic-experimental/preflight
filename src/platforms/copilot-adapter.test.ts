@@ -1,6 +1,6 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { CopilotAdapter, parseCopilotUsageResponse } from './copilot-adapter.js';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { CopilotToolCallEvent } from './copilot-adapter.js';
+import { CopilotAdapter, parseCopilotUsageResponse } from './copilot-adapter.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
@@ -273,6 +273,43 @@ describe('CopilotAdapter', () => {
 
     it('returns "Unknown" for an unrecognized event type', () => {
       expect(adapter.mapToolName('totally_made_up_type')).toBe('Unknown');
+    });
+
+    // VS Code agent hook payloads carry VS Code's own tool names in tool_name
+    // (toolNames.ts in microsoft/vscode; camelCase/tool-name deltas documented in
+    // the hooks FAQ at code.visualstudio.com/docs/copilot/customization/hooks).
+    it.each([
+      ['read_file', 'Read'],
+      ['create_file', 'Write'],
+      ['replace_string_in_file', 'Edit'],
+      ['multi_replace_string_in_file', 'Edit'],
+      ['insert_edit_into_file', 'Edit'],
+      ['apply_patch', 'Edit'],
+      ['edit_files', 'Edit'],
+      ['editFiles', 'Edit'],
+      ['run_in_terminal', 'Bash'],
+      ['grep_search', 'Grep'],
+      ['file_search', 'Glob'],
+      ['list_dir', 'Glob'],
+      ['runSubagent', 'Agent'],
+      ['search_subagent', 'Agent'],
+      ['explore_subagent', 'Agent'],
+      ['execution_subagent', 'Agent'],
+    ])('maps VS Code hook tool name %s to %s', (raw, canonical) => {
+      expect(adapter.mapToolName(raw)).toBe(canonical);
+    });
+  });
+
+  describe('hooks capture (VS Code)', () => {
+    it('declares full-hooks visibility', () => {
+      expect(adapter.visibilityLevel).toBe('full-hooks');
+    });
+
+    it('install instructions cover the native hook config surfaces', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('~/.copilot/hooks');
+      expect(instructions).toContain('.github/hooks');
+      expect(instructions).toContain('preflight-collector');
     });
   });
 });

@@ -7,6 +7,7 @@ import {
   writeFileSync,
   existsSync,
   appendFileSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -140,6 +141,71 @@ describe('ParentTranscriptWatcher', () => {
     const events = readTokenEvents();
     expect(events).toHaveLength(2);
     expect(events[1]!.messageId).toBe('msg_2');
+  });
+
+  it('REGRESSION: dedupes one sessionId across two project dirs, reading only the newest copy', () => {
+    // Repo-rename scenario: Claude Code creates a new project-slug dir when a
+    // repo moves, leaving the old dir's <sessionId>.jsonl behind with divergent
+    // content. The byte cursor is keyed by sessionId alone, so reading BOTH
+    // copies applies one file's offset to the other's unrelated bytes and
+    // double-counts token/cost totals. Unfiltered (--local) discovery must keep
+    // only the newest-mtime (active) copy.
+    const dirOld = join(projectsDir, 'project-old-slug');
+    const dirNew = join(projectsDir, 'project-new-slug');
+    mkdirSync(dirOld, { recursive: true });
+    mkdirSync(dirNew, { recursive: true });
+    const fileOld = join(dirOld, `${SESSION_ID}.jsonl`);
+    const fileNew = join(dirNew, `${SESSION_ID}.jsonl`);
+    writeFileSync(fileOld, makeAssistantLine({ messageId: 'msg_STALE', inputTokens: 9 }) + '\n');
+    writeFileSync(fileNew, makeAssistantLine({ messageId: 'msg_ACTIVE', inputTokens: 111 }) + '\n');
+    // Force the "new" slug's copy to be strictly newer than the stale one.
+    const older = new Date(Date.now() - 60_000);
+    const newer = new Date();
+    utimesSync(fileOld, older, older);
+    utimesSync(fileNew, newer, newer);
+
+    // Unfiltered mode (no parentSessionId) — the --local dashboard path.
+    const watcher = new ParentTranscriptWatcher({ storagePath, projectsDir });
+    watcher.poll();
+    const events = readTokenEvents();
+    // Exactly one turn, from the active copy — the stale copy is never read.
+    expect(events).toHaveLength(1);
+    expect(events[0]!.messageId).toBe('msg_ACTIVE');
+    expect(events[0]!.inputTokens).toBe(111);
+  });
+
+  it('REGRESSION: resets the sessionId-keyed cursor when the canonical copy switches project dirs mid-stream', () => {
+    // Poll 1 tails a LARGE transcript under the old slug (cursor advances to a
+    // large bytePos, path=old). A repo rename then makes a SMALLER transcript
+    // under a new slug the newest copy. Without a path-aware cursor reset, the
+    // stale large bytePos is >= the new file's size, so processFile early-returns
+    // (`startCursor.bytePos >= size`) and silently drops ALL post-rename turns.
+    const dirOld = join(projectsDir, 'project-old-slug');
+    const dirNew = join(projectsDir, 'project-new-slug');
+    mkdirSync(dirOld, { recursive: true });
+    mkdirSync(dirNew, { recursive: true });
+    const fileOld = join(dirOld, `${SESSION_ID}.jsonl`);
+    const fileNew = join(dirNew, `${SESSION_ID}.jsonl`);
+
+    // Old copy is large (padded) so its cursor bytePos exceeds the new copy's size.
+    writeFileSync(fileOld, makeAssistantLine({ messageId: 'msg_OLD', padBytes: 4096 }) + '\n');
+    const t0 = new Date(Date.now() - 60_000);
+    utimesSync(fileOld, t0, t0);
+
+    const watcher = new ParentTranscriptWatcher({ storagePath, projectsDir });
+    watcher.poll();
+    expect(readTokenEvents().map((e) => e.messageId)).toEqual(['msg_OLD']);
+
+    // Rename: new slug's copy is small and strictly newer.
+    writeFileSync(fileNew, makeAssistantLine({ messageId: 'msg_AFTER_RENAME' }) + '\n');
+    const t1 = new Date();
+    utimesSync(fileNew, t1, t1);
+
+    watcher.poll();
+    const ids = readTokenEvents().map((e) => e.messageId);
+    // The post-rename turn is captured (cursor reset to 0 for the new file),
+    // not dropped by a stale large offset.
+    expect(ids).toContain('msg_AFTER_RENAME');
   });
 
   it('REGRESSION: captures every turn in a tool-call / text-only / tool-call sequence, not just the last', () => {

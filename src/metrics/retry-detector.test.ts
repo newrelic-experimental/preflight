@@ -99,6 +99,62 @@ describe('RetryDetector', () => {
     expect(result!.similarity).toBeGreaterThanOrEqual(0.8);
   });
 
+  it('tags the alert with the sessionId of the offending calls', () => {
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    const result = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.sessionId).toBe('sess-a');
+  });
+
+  it('does not blend two different sessions failing on the same tool into one alert', () => {
+    // Simulates the --local aggregator process, which drains every session's
+    // buffer into one stream: two unrelated sessions each failing Bash twice
+    // must not look like one session failing it four times.
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    const result = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }),
+    );
+
+    // Window is [a, b, a, b] — 2 occurrences per session, below the default
+    // threshold of 3, so neither session's calls should fire on their own.
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('attributes each session correctly when both cross the threshold', () => {
+    const detector = new RetryDetector({ windowSize: 6 });
+
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }));
+    const aThird = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }),
+    );
+
+    expect(aThird).not.toBeNull();
+    expect(aThird!.sessionId).toBe('sess-a');
+    expect(aThird!.occurrences).toBe(3);
+
+    const bThird = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }),
+    );
+
+    expect(bThird).not.toBeNull();
+    expect(bThird!.sessionId).toBe('sess-b');
+    expect(bThird!.occurrences).toBe(3);
+  });
+
   it('does not alert when tools are different', () => {
     const detector = new RetryDetector();
 
@@ -176,6 +232,152 @@ describe('RetryDetector', () => {
     expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
   });
 
+  it('does not flag distinct PowerShell calls whose shared session metadata dominates the serialized envelope', () => {
+    // Reproduces a real false positive: every field below except
+    // command/bashLeading/commandDescription/inputHash is identical across
+    // all 4 calls, same as a real session's PowerShell calls sharing one
+    // cwd/transcriptPath/permissionMode and near-constant classifier fields
+    // from extractInputMeta().
+    const detector = new RetryDetector();
+    const constant = {
+      toolName: 'PowerShell',
+      success: true,
+      cwd: 'C:\\Users\\dev\\preflight_test',
+      transcriptPath:
+        'C:\\Users\\dev\\.claude\\projects\\C--Users-dev-preflight-test\\d5be26f9-abcd.jsonl',
+      permissionMode: 'auto',
+      isTestCommand: false,
+      isBuildCommand: false,
+      isLintCommand: false,
+      bashCategory: 'shell-other',
+      bashDestructive: false,
+      bashNetwork: false,
+      commandTimeout: 600000,
+    };
+    const calls = [
+      {
+        command: 'Get-Date -Format o',
+        bashLeading: 'Get-Date',
+        commandDescription: 'Get current date/time',
+        inputHash: 'a1b2c3d4e5f60718',
+      },
+      {
+        command: '$PSVersionTable.PSVersion.ToString()',
+        bashLeading: '$PSVersionTable.PSVersion.ToString',
+        commandDescription: 'Get PowerShell version',
+        inputHash: 'b2c3d4e5f6071829',
+      },
+      {
+        command: '(Get-ChildItem -Path $PWD -File | Measure-Object).Count',
+        bashLeading: 'Get-ChildItem',
+        commandDescription: 'Count files in cwd',
+        inputHash: 'c3d4e5f60718293a',
+      },
+      {
+        command: '[System.Environment]::OSVersion.VersionString',
+        bashLeading: '[System.Environment]::OSVersion.VersionString',
+        commandDescription: 'Get OS version',
+        inputHash: 'd4e5f60718293a4b',
+      },
+    ];
+
+    let result = null;
+    for (const call of calls) {
+      result = detector.recordToolCall(makeRecord({ ...constant, ...call }));
+    }
+
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('does not flag genuinely different calls to a parser-less tool whose random hashes coincidentally overlap under Levenshtein comparison', () => {
+    // A tool outside extractInputMeta()'s switch (a third-party MCP tool
+    // here) serializes to just `{toolName, inputHash}`. With a realistic
+    // (long) tool name, unrelated 16-hex-char hashes still share enough
+    // characters by chance for Levenshtein similarity to land above the 0.8
+    // threshold if inputHash is Levenshtein-compared directly instead of by
+    // equality — verified at 0.8561 against that direct-comparison approach.
+    const detector = new RetryDetector();
+    const toolName = 'mcp__plugin_context7_context7__resolve-library-id';
+    const hashes = ['a1b2c3d4e5f60718', 'f00dfeed12345678', '13579bdf2468ace0', '0badc0de55aa11ff'];
+
+    let result = null;
+    for (const inputHash of hashes) {
+      result = detector.recordToolCall(makeRecord({ toolName, success: true, inputHash }));
+    }
+
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('still detects near-identical (not byte-identical) retries of a tool with real parser fields, even when every call has a distinct inputHash', () => {
+    // A parser-rich tool's genuine near-identical retries (varying only the
+    // test filter, e.g. re-running the same suite with different -t flags)
+    // must not be capped by inputHash — inputHash differs on every call
+    // here (it always does for non-identical real input), same as
+    // production traffic. Verified numerically: 0.9091 group similarity
+    // under the gated formula, comfortably above the 0.8 default threshold.
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        success: true,
+        command: 'npm test -- src/retry-detector.test.ts',
+        inputHash: 'bbbb2222cccc0001',
+      }),
+    );
+    detector.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        success: true,
+        command: 'npm test -- src/retry-detector.test.ts -t foo',
+        inputHash: 'bbbb2222cccc0002',
+      }),
+    );
+    const result = detector.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        success: true,
+        command: 'npm test -- src/retry-detector.test.ts -t bar',
+        inputHash: 'bbbb2222cccc0003',
+      }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.similarity).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('does not conflate two different sessions running the same command once cwd/transcriptPath are stripped', () => {
+    const detector = new RetryDetector();
+    const sessionA = {
+      sessionId: 'session-a',
+      cwd: '/Users/dev/repo-a',
+      transcriptPath: '/tmp/a.jsonl',
+    };
+    const sessionB = {
+      sessionId: 'session-b',
+      cwd: '/Users/dev/repo-b',
+      transcriptPath: '/tmp/b.jsonl',
+    };
+
+    detector.recordToolCall(
+      makeRecord({ ...sessionA, toolName: 'Bash', command: 'npm test', success: true }),
+    );
+    detector.recordToolCall(
+      makeRecord({ ...sessionB, toolName: 'Bash', command: 'npm test', success: true }),
+    );
+    const result = detector.recordToolCall(
+      makeRecord({ ...sessionA, toolName: 'Bash', command: 'npm test', success: true }),
+    );
+
+    // Only 2 of these 3 calls belong to session-a — below minOccurrences (3)
+    // once correctly scoped per session, even though all 3 share toolName
+    // and identical command text with cwd/transcriptPath now stripped.
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
   it('still detects genuine identical retries of a tool with no metadata extractor', () => {
     const detector = new RetryDetector();
 
@@ -205,6 +407,63 @@ describe('RetryDetector', () => {
     expect(metrics.alerts).toHaveLength(0);
     expect(metrics.totalTokensWasted).toBe(0);
     expect(metrics.totalAlertsEmitted).toBe(0);
+  });
+
+  it('tracks a running bySession breakdown incrementally, keyed by session id', () => {
+    const detector = new RetryDetector();
+    // Session A: one thrashing episode (3 failed Bash calls).
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    // Sessionless calls (undefined sessionId) roll up under 'unknown': one thrashing episode.
+    detector.recordToolCall(makeRecord({ sessionId: undefined, toolName: 'Read', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: undefined, toolName: 'Read', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: undefined, toolName: 'Read', success: false }));
+
+    const metrics = detector.getMetrics();
+    expect(metrics.totalAlertsEmitted).toBe(2);
+    expect(Object.keys(metrics.bySession).sort()).toEqual(['sess-a', 'unknown']);
+    expect(metrics.bySession['sess-a']?.alertCount).toBe(1);
+    expect(metrics.bySession['unknown']?.alertCount).toBe(1);
+  });
+
+  it('caps the alerts buffer at 200 while totalAlertsEmitted keeps counting past it', () => {
+    const detector = new RetryDetector({ windowSize: 3, minOccurrences: 3 });
+    // Every call from the 3rd onward re-fires a distinct alert: the sliding
+    // 3-window's own call-id set changes on every push (ids are random per
+    // makeRecord call), so the dedupe key never repeats. 203 calls -> 201
+    // alerts fired, well past the 200 cap — this also exercises firedKeys'
+    // own FIFO eviction under heavy load without needing a direct accessor:
+    // a bug there (e.g. an off-by-one that lets an evicted key block a
+    // legitimate re-fire, or double-counts) would surface as a wrong
+    // totalAlertsEmitted below.
+    const CALLS = 203;
+    for (let i = 0; i < CALLS; i++) {
+      detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    }
+
+    const metrics = detector.getMetrics();
+    expect(metrics.totalAlertsEmitted).toBe(CALLS - 2);
+    expect(metrics.alerts).toHaveLength(200);
+    expect(metrics.alerts.length).toBeLessThan(metrics.totalAlertsEmitted);
+  });
+
+  it('evicts the least-recently-touched session once bySession exceeds its 50-session cap', () => {
+    const detector = new RetryDetector({ windowSize: 3, minOccurrences: 3 });
+    // One thrashing episode per session, sessions 0..50 (51 distinct
+    // sessions) — session 0 should be evicted once session 50 pushes the
+    // map past its cap.
+    for (let i = 0; i <= 50; i++) {
+      const sessionId = `sess-${i}`;
+      detector.recordToolCall(makeRecord({ sessionId, toolName: 'Bash', success: false }));
+      detector.recordToolCall(makeRecord({ sessionId, toolName: 'Bash', success: false }));
+      detector.recordToolCall(makeRecord({ sessionId, toolName: 'Bash', success: false }));
+    }
+
+    const metrics = detector.getMetrics();
+    expect(Object.keys(metrics.bySession)).toHaveLength(50);
+    expect(metrics.bySession['sess-0']).toBeUndefined();
+    expect(metrics.bySession['sess-50']).toBeDefined();
   });
 
   it('respects custom window size', () => {

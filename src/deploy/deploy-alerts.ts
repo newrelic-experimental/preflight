@@ -17,8 +17,9 @@ import type {
 } from '../alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from '../alerts/types.js';
 import { normalizeDeveloperName } from '../config.js';
-import { resolveDataDir } from './data-paths.js';
 import { getRegionByDeployFlags } from '../install/regions.js';
+import { stagingHost } from '../shared/transport/http-client.js';
+import { resolveDataDir } from './data-paths.js';
 
 export const CREATE_POLICY_MUTATION = `
 mutation CreateAlertPolicy($accountId: Int!, $name: String!, $incidentPreference: AlertsIncidentPreference!) {
@@ -139,6 +140,7 @@ export interface AlertsDeployOptions {
   readonly dryRun: boolean;
   readonly teardown: boolean;
   readonly update: boolean;
+  readonly staging: boolean;
   readonly eu: boolean;
   readonly jp: boolean;
   readonly developer: string | null;
@@ -422,16 +424,19 @@ export async function runDeployAlerts(opts: AlertsDeployOptions): Promise<number
   const out: OutputStream = opts.stdout ?? process.stdout;
   const fetchImpl: typeof fetch = opts.fetchImpl ?? fetch;
 
+  if ([opts.staging, opts.eu, opts.jp].filter(Boolean).length > 1) {
+    out.write('Error: --staging, --eu, and --jp are mutually exclusive.\n');
+    return 1;
+  }
+
   if ([opts.dryRun, opts.teardown, opts.update].filter(Boolean).length > 1) {
     out.write('Error: --dry-run, --teardown, and --update are mutually exclusive.\n');
     return 1;
   }
-  if (opts.eu && opts.jp) {
-    out.write('Error: --eu and --jp are mutually exclusive.\n');
-    return 1;
-  }
 
-  if (opts.eu) {
+  if (opts.staging) {
+    out.write(`Targeting staging API: https://${stagingHost('api')}/graphql\n`);
+  } else if (opts.eu) {
     out.write('Targeting EU API: https://api.eu.newrelic.com/graphql\n');
   } else if (opts.jp) {
     out.write('Targeting Japan API: https://api.jp.newrelic.com/graphql\n');

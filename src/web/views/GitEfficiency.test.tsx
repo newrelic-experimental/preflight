@@ -319,3 +319,33 @@ describe('GitEfficiency view — hero KPIs and gated sections', () => {
     expect(await screen.findByText('Destructive Operations')).toBeInTheDocument();
   });
 });
+
+describe('GitEfficiency view — Recent Git Activity ordering', () => {
+  it('orders rows newest first regardless of insertion order', async () => {
+    // The API serves epoch millis, not ISO strings.
+    const base = new Date().setHours(9, 0, 0, 0);
+    renderGitEfficiency({
+      ...BASE_DATA,
+      gitCommandTimeline: [
+        { type: 'diff', timestamp: base, command: 'git diff', success: true, durationMs: null },
+        {
+          type: 'push',
+          timestamp: base + 7_200_000,
+          command: 'git push',
+          success: true,
+          durationMs: null,
+        },
+        {
+          type: 'log',
+          timestamp: base + 3_600_000,
+          command: 'git log',
+          success: true,
+          durationMs: null,
+        },
+      ],
+    });
+    await screen.findByText('Recent Git Activity');
+    const order = screen.getAllByText(/^git (diff|push|log)$/).map((el) => el.textContent?.trim());
+    expect(order).toEqual(['git push', 'git log', 'git diff']);
+  });
+});

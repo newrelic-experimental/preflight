@@ -12,11 +12,18 @@
  * task-level data into a single FullSessionSummary.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
-import { isSyntheticSessionId } from '../hooks/session-resolver.js';
+import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
 import type { SessionSummary, ReplayTimelineEntry } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -80,6 +87,14 @@ export function toPersistedAntiPatterns(patterns: readonly AntiPattern[]): Persi
 
 export interface FullSessionSummary extends SessionSummary {
   readonly sessionName: string | null;
+  /** Which source produced `sessionName` (see SessionNameSource), or null. */
+  readonly sessionNameSource: SessionNameSource | null;
+  /**
+   * The session's originating intent (first user prompt), redacted, or null.
+   * SENSITIVE content: only ever non-null when recordContent was enabled at
+   * capture time (force-disabled under highSecurity). See SessionMetrics.
+   */
+  readonly sessionIntent: string | null;
   readonly repoName: string | null;
   readonly model: string | null;
   readonly toolBreakdown: Record<string, number>;
@@ -95,10 +110,26 @@ export interface FullSessionSummary extends SessionSummary {
   readonly estimatedCostUsd: number | null;
   /**
    * Portion of estimatedCostUsd attributed to subagent (ctx.agentId) calls —
-   * see CostMetrics.subagentCostUsd. 0 for pre-fix session files (subagent
-   * cost was never tracked) and for sessions with no subagent activity.
+   * see CostMetrics.subagentCostUsd. 0 for an older session summary written
+   * before subagent cost was tracked, and for sessions with no subagent
+   * activity.
    */
   readonly subagentCostUsd: number;
+  /**
+   * Total cost bucketed by local-day key (`YYYY-MM-DD`), mirrored from
+   * `CostMetrics.costByDayUsd`. The dashboard's "Spend Today" aggregate sums
+   * `costByDayUsd[todayKey]` across sessions — the authoritative today-figure —
+   * instead of pro-rating `estimatedCostUsd` (a lifetime cumulative total) by a
+   * tool-call timeline, which over-attributes a resumed multi-day session's
+   * whole cost to one day. Optional: absent on a session summary written
+   * before this field existed, which falls back to the timeline pro-rate
+   * path in the aggregate route.
+   */
+  readonly costByDayUsd?: Record<string, number>;
+  /** Subagent-attributed cost by local-day key; today-scoped counterpart to
+   * `subagentCostUsd`. Optional for the same backward-compat reason as
+   * `costByDayUsd`. */
+  readonly subagentCostByDayUsd?: Record<string, number>;
   readonly tokensInput: number;
   readonly tokensOutput: number;
   readonly tokensThinking: number;
@@ -115,8 +146,9 @@ export interface FullSessionSummary extends SessionSummary {
    * losing every pre-restart task's contribution to it. Optional (unlike
    * most fields on this interface) so the many existing test factories
    * building `FullSessionSummary` literals don't all need updating for an
-   * additive field — read with `?? 0` at the point of use. 0/absent for
-   * pre-fix session files and for sessions with no scored tasks.
+   * additive field — read with `?? 0` at the point of use. 0/absent for an
+   * older session summary written before this field existed, and for
+   * sessions with no scored tasks.
    */
   readonly efficiencyScoreSampleCount?: number;
   /**
@@ -125,7 +157,8 @@ export interface FullSessionSummary extends SessionSummary {
    * alongside `efficiencyScoreSampleCount` so a re-seeded average's
    * component breakdown is exact, not just its top-level score. Optional
    * for the same reason as `efficiencyScoreSampleCount` above. null/absent
-   * for pre-fix session files and for sessions with no scored tasks.
+   * for an older session summary written before this field existed, and
+   * for sessions with no scored tasks.
    */
   readonly efficiencyScoreComponents?: EfficiencyScoreComponents | null;
   readonly antiPatterns: PersistedAntiPattern[];
@@ -146,7 +179,8 @@ export interface FullSessionSummary extends SessionSummary {
    * time from the full in-memory ToolCallRecord[] — the only point where
    * outputSizeBytes (needed for unused-output detection) is still available;
    * it is never persisted anywhere else, including `timeline` above. null
-   * for pre-fix session files and for sessions with no tool calls.
+   * for an older session summary written before this field existed, and
+   * for sessions with no tool calls.
    */
   readonly toolSelectionMetrics: ToolSelectionSummary | null;
   /**
@@ -154,7 +188,8 @@ export interface FullSessionSummary extends SessionSummary {
    * Captured once at save time from ModelUsageTracker.getRawBreakdown(). Raw
    * counters only, no derived ratios — see ModelUsageTracker.combineBreakdowns
    * for why ratios are always recomputed at read time instead of persisted.
-   * `{}` for pre-fix session files and for sessions with no token events.
+   * `{}` for an older session summary written before this field existed,
+   * and for sessions with no token events.
    */
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
   /**
@@ -162,7 +197,8 @@ export interface FullSessionSummary extends SessionSummary {
    * day key — the exact shape `CostMetrics.costByWorkflowRunId` already
    * produces. Captured once at save time so a resumed session's per-run
    * spend survives a process restart (see CostTracker.seedFromPersisted()).
-   * `{}` for pre-fix session files and for sessions with no workflow runs.
+   * `{}` for an older session summary written before this field existed,
+   * and for sessions with no workflow runs.
    */
   readonly costByWorkflowRunId: Record<string, Record<string, number>>;
   /**
@@ -170,8 +206,9 @@ export interface FullSessionSummary extends SessionSummary {
    * time from QualityProxyTracker.getRawCounts(). Raw counts only, no derived
    * rates — see combineQualityProxyRawCounts for why rates are always
    * recomputed at read time instead of persisted. All-zero
-   * (ZERO_QUALITY_PROXY_COUNTS) for pre-fix session files and for sessions
-   * with no quality signals. Nested (not top-level) specifically to avoid
+   * (ZERO_QUALITY_PROXY_COUNTS) for an older session summary written before
+   * this field existed, and for sessions with no quality signals. Nested
+   * (not top-level) specifically to avoid
    * colliding with the unrelated top-level testPassCount/testRunCount fields
    * above (total task test runs, not quality-proxy test signals).
    */
@@ -192,6 +229,186 @@ export interface ListSessionsOptions {
 // ---------------------------------------------------------------------------
 // SessionStore
 // ---------------------------------------------------------------------------
+
+/**
+ * Combine two views of the same session so neither writer can lose the other's
+ * data. Counters take the max rather than the sum: the two processes observe
+ * overlapping (not disjoint) slices of one session, so summing would inflate
+ * and taking the incoming value alone would regress.
+ */
+export function mergeSummaries(
+  existing: FullSessionSummary,
+  incoming: FullSessionSummary,
+): FullSessionSummary {
+  const maxNum = (a: unknown, b: unknown): number =>
+    Math.max(typeof a === 'number' ? a : 0, typeof b === 'number' ? b : 0);
+  const maxNullable = (a: number | null, b: number | null): number | null =>
+    a === null && b === null ? null : Math.max(a ?? 0, b ?? 0);
+  const mergeCounts = (
+    a: Record<string, number> = {},
+    b: Record<string, number> = {},
+  ): Record<string, number> => {
+    const out: Record<string, number> = { ...a };
+    for (const [k, v] of Object.entries(b)) out[k] = Math.max(out[k] ?? 0, v);
+    return out;
+  };
+  const union = (a: string[] = [], b: string[] = []): string[] => [...new Set([...a, ...b])];
+  // efficiencyScore/efficiencyScoreSampleCount/efficiencyScoreComponents must
+  // always come from the SAME side, atomically — EfficiencyScorer.
+  // seedFromPersisted() treats sampleCount as a weight multiplier
+  // (score * sampleCount), not just a display field, so merging the three
+  // independently (e.g. taking the newer score but the max sampleCount) can
+  // attach a thin/unrelated sample count to a completely different score,
+  // radically over- or under-weighting it on the next re-seed. When only one
+  // side has a real score, that side wins outright (this is what makes an
+  // unseeded write never erase a real prior score). When both do, the side
+  // with the larger sampleCount wins — the more statistically meaningful one.
+  const mergeEfficiencyScoreTriple = (
+    existing: FullSessionSummary,
+    incoming: FullSessionSummary,
+  ): Pick<
+    FullSessionSummary,
+    'efficiencyScore' | 'efficiencyScoreSampleCount' | 'efficiencyScoreComponents'
+  > => {
+    const existingHasScore = existing.efficiencyScore !== null;
+    const incomingHasScore = incoming.efficiencyScore !== null;
+    const winner =
+      existingHasScore && incomingHasScore
+        ? (incoming.efficiencyScoreSampleCount ?? 0) >= (existing.efficiencyScoreSampleCount ?? 0)
+          ? incoming
+          : existing
+        : incomingHasScore
+          ? incoming
+          : existing;
+    return {
+      efficiencyScore: winner.efficiencyScore,
+      efficiencyScoreSampleCount: winner.efficiencyScoreSampleCount ?? 0,
+      efficiencyScoreComponents: winner.efficiencyScoreComponents ?? null,
+    };
+  };
+  const mergeCostByWorkflowRunId = (
+    a: Record<string, Record<string, number>> = {},
+    b: Record<string, Record<string, number>> = {},
+  ): Record<string, Record<string, number>> => {
+    const out: Record<string, Record<string, number>> = { ...a };
+    for (const [runId, dayCosts] of Object.entries(b)) {
+      out[runId] = mergeCounts(out[runId], dayCosts);
+    }
+    return out;
+  };
+
+  const modelBreakdown: Record<string, ModelBreakdownEntry> = { ...existing.modelBreakdown };
+  for (const [model, entry] of Object.entries(incoming.modelBreakdown ?? {})) {
+    const prev = modelBreakdown[model];
+    modelBreakdown[model] = prev
+      ? {
+          requestCount: Math.max(prev.requestCount, entry.requestCount),
+          totalInputTokens: Math.max(prev.totalInputTokens, entry.totalInputTokens),
+          totalOutputTokens: Math.max(prev.totalOutputTokens, entry.totalOutputTokens),
+          totalCostUsd: Math.max(prev.totalCostUsd, entry.totalCostUsd),
+        }
+      : entry;
+  }
+
+  const qa = existing.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS;
+  const qb = incoming.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS;
+  const qualityProxy: QualityProxyRawCounts = {
+    totalSignals: maxNum(qa.totalSignals, qb.totalSignals),
+    diffApplyCleanCount: maxNum(qa.diffApplyCleanCount, qb.diffApplyCleanCount),
+    diffFailCount: maxNum(qa.diffFailCount, qb.diffFailCount),
+    testPassCount: maxNum(qa.testPassCount, qb.testPassCount),
+    testFailCount: maxNum(qa.testFailCount, qb.testFailCount),
+    backtrackCount: maxNum(qa.backtrackCount, qb.backtrackCount),
+    selfCorrectionCount: maxNum(qa.selfCorrectionCount, qb.selfCorrectionCount),
+  };
+
+  // Keep whichever tool-selection score saw more of the session; it is scored
+  // from an ordered record list that cannot be meaningfully merged field-wise.
+  const toolSelectionMetrics =
+    (incoming.toolSelectionMetrics?.totalCalls ?? 0) >=
+    (existing.toolSelectionMetrics?.totalCalls ?? 0)
+      ? (incoming.toolSelectionMetrics ?? existing.toolSelectionMetrics)
+      : existing.toolSelectionMetrics;
+
+  const timeline =
+    (incoming.timeline?.length ?? 0) >= (existing.timeline?.length ?? 0)
+      ? incoming.timeline
+      : existing.timeline;
+
+  const startTime = Math.min(
+    existing.startTime || incoming.startTime,
+    incoming.startTime || existing.startTime,
+  );
+  const endTime = maxNum(existing.endTime, incoming.endTime);
+
+  return {
+    ...existing,
+    ...incoming,
+    startTime,
+    endTime,
+    durationMs: Math.max(0, endTime - startTime),
+    toolCallCount: maxNum(existing.toolCallCount, incoming.toolCallCount),
+    sessionName: incoming.sessionName ?? existing.sessionName,
+    // Tie the source to whichever name won above so a name/source desync can't
+    // arise (incoming spreads a null source alongside a null name). The
+    // in-process tracker already enforces the no-downgrade invariant on
+    // `incoming`, so taking incoming's name+source when present is safe.
+    sessionNameSource: incoming.sessionName
+      ? incoming.sessionNameSource
+      : existing.sessionNameSource,
+    // Never clobber a previously-captured intent with a later intent-less write
+    // (e.g. a checkpoint saved before the name/intent was resolved, or a run
+    // with recordContent off).
+    sessionIntent: incoming.sessionIntent ?? existing.sessionIntent,
+    repoName: incoming.repoName ?? existing.repoName,
+    model: incoming.model ?? existing.model,
+    platform: incoming.platform ?? existing.platform,
+    instructionPromptHash: incoming.instructionPromptHash ?? existing.instructionPromptHash,
+    toolBreakdown: mergeCounts(existing.toolBreakdown, incoming.toolBreakdown),
+    filesRead: union(existing.filesRead, incoming.filesRead),
+    filesModified: union(existing.filesModified, incoming.filesModified),
+    linesAdded: maxNum(existing.linesAdded, incoming.linesAdded),
+    linesRemoved: maxNum(existing.linesRemoved, incoming.linesRemoved),
+    bashCommandCount: maxNum(existing.bashCommandCount, incoming.bashCommandCount),
+    testRunCount: maxNum(existing.testRunCount, incoming.testRunCount),
+    testPassCount: maxNum(existing.testPassCount, incoming.testPassCount),
+    buildRunCount: maxNum(existing.buildRunCount, incoming.buildRunCount),
+    buildPassCount: maxNum(existing.buildPassCount, incoming.buildPassCount),
+    estimatedCostUsd: maxNullable(existing.estimatedCostUsd, incoming.estimatedCostUsd),
+    subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
+    tokensInput: maxNum(existing.tokensInput, incoming.tokensInput),
+    tokensOutput: maxNum(existing.tokensOutput, incoming.tokensOutput),
+    tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
+    tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
+    tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
+    cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
+    ...mergeEfficiencyScoreTriple(existing, incoming),
+    costByWorkflowRunId: mergeCostByWorkflowRunId(
+      existing.costByWorkflowRunId,
+      incoming.costByWorkflowRunId,
+    ),
+    taskCount: maxNum(existing.taskCount, incoming.taskCount),
+    taskSuccessRate: incoming.taskSuccessRate ?? existing.taskSuccessRate,
+    toolSuccessRate: incoming.toolSuccessRate ?? existing.toolSuccessRate,
+    contextCompressions: maxNum(existing.contextCompressions, incoming.contextCompressions),
+    agentSpawns: maxNum(existing.agentSpawns, incoming.agentSpawns),
+    userMessages: maxNum(existing.userMessages, incoming.userMessages),
+    assistantMessages: maxNum(existing.assistantMessages, incoming.assistantMessages),
+    userCorrections: maxNum(existing.userCorrections, incoming.userCorrections),
+    antiPatterns:
+      (incoming.antiPatterns?.length ?? 0) >= (existing.antiPatterns?.length ?? 0)
+        ? incoming.antiPatterns
+        : existing.antiPatterns,
+    outcome:
+      incoming.outcome === 'completed' || existing.outcome !== 'completed'
+        ? incoming.outcome
+        : existing.outcome,
+    ...(timeline ? { timeline } : {}),
+    toolSelectionMetrics,
+    modelBreakdown,
+    qualityProxy,
+  };
+}
 
 export class SessionStore {
   private readonly sessionsDir: string;
@@ -214,39 +431,89 @@ export class SessionStore {
       mkdirSync(this.sessionsDir, { recursive: true, mode: 0o700 });
     }
 
-    const startDate = new Date(summary.startTime);
+    // Look up any existing file for this sessionId BEFORE deciding the
+    // filename — by sessionId alone, not by today's date-prefixed path. A
+    // session can already have a file under an EARLIER date than this
+    // write's own startTime computes (e.g. a `--local`/synthetic-owner
+    // process rolling up a session it only started observing after a date
+    // boundary — see LocalSessionAggregator). Deciding the filename from
+    // `summary.startTime` alone before merging, then merging in whatever
+    // file happens to share the sessionId regardless of date, wrote the
+    // merged (inflated, since counters take the max) result to a NEW file
+    // while leaving the OLD file on disk untouched — the session then
+    // appeared twice in history with overlapping, double-counted totals.
+    const existingWithPath = this.loadSessionWithPath(summary.sessionId);
+
+    // A second process saving under the same sessionId (e.g. two MCP
+    // servers both resumed/forked against one real session ID) would
+    // otherwise silently overwrite the first save with no error.
+    //
+    // Guard the destructive case: a short-lived process that adopts an
+    // existing session ID (resolved from the session-by-cwd breadcrumb) but
+    // never observed any hook activity would replace a fully recorded session
+    // with an all-zero summary, erasing tool calls, tokens and cost from the
+    // dashboard on the next refresh. Never let an empty summary clobber a
+    // non-empty one; other collisions keep the previous last-write-wins
+    // behaviour with a warning.
+    let toWrite: FullSessionSummary = summary;
+    if (existingWithPath) {
+      const { summary: existing } = existingWithPath;
+      const existingCalls = existing.toolCallCount ?? 0;
+      if (existingCalls > 0 && (summary.toolCallCount ?? 0) === 0) {
+        logger.warn('Refusing to overwrite recorded session with an empty summary', {
+          sessionId: summary.sessionId,
+        });
+        return;
+      }
+      // Two processes legitimately share one session id: the CLI/editor
+      // spawns an MCP engine that owns the session natively, while a
+      // `--local` dashboard adopts the same id from the session-by-cwd
+      // breadcrumb. Each sees only part of the picture — the engine has the
+      // token/model events, the dashboard has the aggregated hook activity —
+      // so plain last-write-wins let whichever wrote last erase the other's
+      // data, which is how a fully recorded session could come back with
+      // modelBreakdown {} and a lower toolCallCount. Merge non-destructively
+      // instead: counters take the max (they only ever grow, so max never
+      // regresses and never double-counts overlapping views).
+      toWrite = mergeSummaries(existing, summary);
+    }
+
+    // The filename is derived from the merged (earliest) startTime, not the
+    // incoming write's own — mergeSummaries() takes Math.min() of the two,
+    // so this is normally the existing file's own date; recomputing here
+    // keeps the filename consistent with what's actually written.
+    const startDate = new Date(toWrite.startTime);
     if (!isFinite(startDate.getTime())) {
-      throw new Error(`Invalid startTime for session ${summary.sessionId}: ${summary.startTime}`);
+      throw new Error(`Invalid startTime for session ${toWrite.sessionId}: ${toWrite.startTime}`);
     }
     const date = startDate.toISOString().slice(0, 10);
-    const filename = `${date}_${summary.sessionId}.json`;
+    const filename = `${date}_${toWrite.sessionId}.json`;
     const filepath = resolve(this.sessionsDir, filename);
     if (!filepath.startsWith(this.sessionsDir + sep)) {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
 
-    // A second process saving under the same sessionId+date (e.g. two MCP
-    // servers both resumed/forked against one real session ID) would
-    // otherwise silently overwrite the first save with no error. This
-    // warning makes that cross-process collision visible instead of a
-    // silent last-write-wins; the overwrite itself is unchanged.
-    if (existsSync(filepath)) {
-      logger.warn(
-        'Overwriting existing session file — possible cross-process sessionId collision',
-        {
-          sessionId: summary.sessionId,
-          filename,
-        },
-      );
-    }
-
     try {
-      writeFileSync(filepath, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
-      logger.debug('Session saved', { sessionId: summary.sessionId, filename });
+      writeFileSync(filepath, JSON.stringify(toWrite, null, 2) + '\n', { mode: 0o600 });
+      // The merge landed on a different filename than where the existing
+      // record lived (a date-rollover case) — remove the now-superseded
+      // file so the session isn't left duplicated across two files.
+      if (existingWithPath && existingWithPath.filepath !== filepath) {
+        try {
+          unlinkSync(existingWithPath.filepath);
+        } catch (err) {
+          logger.warn('Failed to remove superseded session file after merge', {
+            sessionId: toWrite.sessionId,
+            stalePath: existingWithPath.filepath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
-        sessionId: summary.sessionId,
+        sessionId: toWrite.sessionId,
         filename,
         error: message,
       });
@@ -254,20 +521,28 @@ export class SessionStore {
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
+    return this.loadSessionWithPath(sessionId)?.summary ?? null;
+  }
+
+  /** Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename. */
+  private loadSessionWithPath(
+    sessionId: string,
+  ): { summary: FullSessionSummary; filepath: string } | null {
     if (!existsSync(this.sessionsDir)) return null;
 
     for (const file of readdirSync(this.sessionsDir)) {
       if (!file.endsWith('.json')) continue;
       if (parseSessionFilename(file)?.sessionId !== sessionId) continue;
 
+      const filepath = join(this.sessionsDir, file);
       try {
-        const raw = readFileSync(join(this.sessionsDir, file), 'utf-8');
+        const raw = readFileSync(filepath, 'utf-8');
         const session = deserializeSession(raw);
         if (session === null) {
           logger.warn('Failed to deserialize session file', { file });
           return null;
         }
-        return session;
+        return { summary: session, filepath };
       } catch {
         logger.warn('Failed to read session file', { file });
       }
@@ -512,6 +787,14 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   return {
     sessionId: sessionMetrics.sessionId,
     sessionName: sessionMetrics.sessionName ? redactSensitive(sessionMetrics.sessionName) : null,
+    // Source is an enum label (not user content) — persisted unredacted.
+    sessionNameSource: sessionMetrics.sessionNameSource ?? null,
+    // Intent is SENSITIVE content; the tracker only holds a value when
+    // recordContent was on, and it is already redacted there. Redact again
+    // (idempotent) so persistence is safe regardless of caller.
+    sessionIntent: sessionMetrics.sessionIntent
+      ? redactSensitive(sessionMetrics.sessionIntent)
+      : null,
     repoName: sources.repoName ? redactSensitive(sources.repoName) : null,
     startTime: sessionMetrics.sessionStartTime,
     endTime: now,
@@ -533,6 +816,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     buildPassCount: totalBuildsPassed,
     estimatedCostUsd: costMetrics?.sessionTotalCostUsd ?? null,
     subagentCostUsd: costMetrics?.subagentCostUsd ?? 0,
+    costByDayUsd: costMetrics?.costByDayUsd ?? {},
+    subagentCostByDayUsd: costMetrics?.subagentCostByDayUsd ?? {},
     tokensInput: costMetrics?.totalInputTokens ?? 0,
     tokensOutput: costMetrics?.totalOutputTokens ?? 0,
     tokensThinking: costMetrics?.totalThinkingTokens ?? 0,
@@ -608,6 +893,8 @@ function formatDate(date: Date): string {
 interface SerializedFullSessionSummary {
   readonly sessionId?: unknown;
   readonly sessionName?: unknown;
+  readonly sessionNameSource?: unknown;
+  readonly sessionIntent?: unknown;
   readonly repoName?: unknown;
   readonly startTime?: unknown;
   readonly endTime?: unknown;
@@ -627,6 +914,8 @@ interface SerializedFullSessionSummary {
   readonly buildPassCount?: unknown;
   readonly estimatedCostUsd?: unknown;
   readonly subagentCostUsd?: unknown;
+  readonly costByDayUsd?: unknown;
+  readonly subagentCostByDayUsd?: unknown;
   readonly tokensInput?: unknown;
   readonly tokensOutput?: unknown;
   readonly tokensThinking?: unknown;
@@ -653,6 +942,26 @@ interface SerializedFullSessionSummary {
   readonly modelBreakdown?: Record<string, unknown>;
   readonly costByWorkflowRunId?: Record<string, unknown>;
   readonly qualityProxy?: Record<string, unknown>;
+}
+
+/**
+ * Parse an untrusted value into a `Record<string, number>`, dropping any
+ * non-finite or non-numeric entries. Used to hydrate the per-day cost maps
+ * (`costByDayUsd` / `subagentCostByDayUsd`) from disk. Returns undefined when
+ * the value is absent or not an object, so a session summary that predates
+ * these keys leaves the field undefined and falls through to the aggregate
+ * route's timeline pro-rate fallback.
+ */
+function parseNumberRecord(value: unknown): Record<string, number> | undefined {
+  // Reject arrays too (typeof [] === 'object'): a corrupt `costByDayUsd: [5]`
+  // must yield undefined so the aggregate route falls through to the timeline
+  // pro-rate path, not a bogus `{ '0': 5 }` map that silently reads as $0 today.
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
 }
 
 /**
@@ -818,6 +1127,14 @@ export function deserializeFullSessionSummary(
     sessionId:
       typeof obj.sessionId === 'string' && obj.sessionId.length > 0 ? obj.sessionId : 'unknown',
     sessionName: typeof obj.sessionName === 'string' ? obj.sessionName : null,
+    sessionNameSource:
+      obj.sessionNameSource === 'user' ||
+      obj.sessionNameSource === 'ai-title' ||
+      obj.sessionNameSource === 'auto' ||
+      obj.sessionNameSource === 'cwd'
+        ? obj.sessionNameSource
+        : null,
+    sessionIntent: typeof obj.sessionIntent === 'string' ? obj.sessionIntent : null,
     repoName: typeof obj.repoName === 'string' ? obj.repoName : null,
     startTime: typeof obj.startTime === 'number' ? obj.startTime : 0,
     endTime: typeof obj.endTime === 'number' ? obj.endTime : 0,
@@ -841,6 +1158,8 @@ export function deserializeFullSessionSummary(
     buildPassCount: typeof obj.buildPassCount === 'number' ? obj.buildPassCount : 0,
     estimatedCostUsd: typeof obj.estimatedCostUsd === 'number' ? obj.estimatedCostUsd : null,
     subagentCostUsd: typeof obj.subagentCostUsd === 'number' ? obj.subagentCostUsd : 0,
+    costByDayUsd: parseNumberRecord(obj.costByDayUsd),
+    subagentCostByDayUsd: parseNumberRecord(obj.subagentCostByDayUsd),
     tokensInput: typeof obj.tokensInput === 'number' ? obj.tokensInput : 0,
     tokensOutput: typeof obj.tokensOutput === 'number' ? obj.tokensOutput : 0,
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,

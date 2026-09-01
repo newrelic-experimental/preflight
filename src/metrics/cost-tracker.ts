@@ -82,6 +82,20 @@ export interface CostMetrics {
    * Shape: `{ [runId]: { [dayKey]: usd } }`
    */
   readonly costByWorkflowRunId: Record<string, Record<string, number>>;
+  /**
+   * Total cost bucketed by local-day key (`YYYY-MM-DD`). Each token event is
+   * attributed to the day it was actually recorded in (by transcript
+   * timestamp, not read time), so this is the authoritative "how much did this
+   * session spend on day X" source. Persisted onto the session summary so the
+   * dashboard's "Spend Today" can sum a session's real today-bucket instead of
+   * pro-rating its lifetime `sessionTotalCostUsd` by a tool-call timeline —
+   * which mis-attributes a resumed multi-day session's whole cumulative cost to
+   * a single day when it has no timeline to pro-rate against.
+   */
+  readonly costByDayUsd: Record<string, number>;
+  /** Subagent-attributed cost bucketed by local-day key; today-scoped
+   * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
+  readonly subagentCostByDayUsd: Record<string, number>;
 }
 
 /**
@@ -532,6 +546,8 @@ export class CostTracker implements Resettable {
       subagentCostUsd: this.subagentCostUsd,
       parentCostUsd: this.parentCostUsd,
       costByWorkflowRunId,
+      costByDayUsd: Object.fromEntries(this.costByDayUsd),
+      subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
     };
   }
 

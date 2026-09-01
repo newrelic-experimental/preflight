@@ -29,6 +29,16 @@ export interface AntiPatternEvent {
   readonly count: number;
 }
 
+export interface RetryAlertEvent {
+  // Optional — a ThrashingAlert's own sessionId can be null when the
+  // underlying ToolCallRecords carried no session id.
+  readonly sessionId?: string;
+  readonly toolName: string;
+  readonly occurrences: number;
+  readonly tokensWasted: number;
+  readonly ts: number;
+}
+
 export interface HeartbeatEvent {
   readonly ts: number;
 }
@@ -109,21 +119,22 @@ export type LiveEventMap = {
   'tool-call': ToolCallEvent;
   'cost-update': CostUpdateEvent;
   'anti-pattern': AntiPatternEvent;
+  'retry-alert': RetryAlertEvent;
   'context-update': ContextUpdateEvent;
   heartbeat: HeartbeatEvent;
   alert: AlertEvent;
   // Forward-declared, not yet wired: nothing calls bus.emit() for these three
   // event names today, and src/dashboard/routes/sse-handler.ts only
   // subscribes ('on'/'onWithSeq') 'tool-call', 'cost-update', 'anti-pattern',
-  // 'context-update', and 'alert' — 'heartbeat' isn't a bus subscription at
-  // all; sse-handler generates it locally via its own setInterval. Reconnecting
-  // clients would still see buffered instances via replayFrom() (which streams
-  // every buffered type regardless of subscription), but a live client
-  // connected when one of these first fires would silently miss it. Before
-  // wiring an emitter for any of these three, also add the matching
-  // bus.on(...)/bus.onWithSeq(...) subscription (and SSE frame forwarding) in
-  // sse-handler.ts — see its 'tool-call'/'cost-update'/etc. wiring for the
-  // pattern to follow.
+  // 'retry-alert', 'context-update', and 'alert' — 'heartbeat' isn't a bus
+  // subscription at all; sse-handler generates it locally via its own
+  // setInterval. Reconnecting clients would still see buffered instances via
+  // replayFrom() (which streams every buffered type regardless of
+  // subscription), but a live client connected when one of these first fires
+  // would silently miss it. Before wiring an emitter for any of these three,
+  // also add the matching bus.on(...)/bus.onWithSeq(...) subscription (and
+  // SSE frame forwarding) in sse-handler.ts — see its 'tool-call'/
+  // 'cost-update'/etc. wiring for the pattern to follow.
   'subagent-turn': SubagentTurnEvent;
   'workflow-run': WorkflowRunLiveEvent;
   'observability-health': ObservabilityHealthEvent;
@@ -166,11 +177,12 @@ export class LiveEventBus {
 
   constructor(opts: LiveEventBusOptions = {}) {
     this.bufferSize = opts.replayBufferSize ?? DEFAULT_BUFFER_SIZE;
-    // Each SSE connection adds 5 listeners (tool-call, cost-update,
-    // anti-pattern, context-update, alert), each registered under its own
-    // event name. setMaxListeners() caps the count per event name, not in
-    // aggregate, so the real headroom is 200 concurrent connections —
-    // comfortable margin for parallel test runs and bursty client reconnects.
+    // Each SSE connection adds 6 listeners (tool-call, cost-update,
+    // anti-pattern, retry-alert, context-update, alert), each registered
+    // under its own event name. setMaxListeners() caps the count per event
+    // name, not in aggregate, so the real headroom is 200 concurrent
+    // connections — comfortable margin for parallel test runs and bursty
+    // client reconnects.
     this.emitter.setMaxListeners(200);
   }
 

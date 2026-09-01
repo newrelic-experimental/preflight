@@ -1,4 +1,11 @@
-import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
+import type { MetricAggregator } from '../shared/index.js';
+import { redactSensitive } from '../config.js';
+import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import {
+  gitCommandTargetDir,
+  RepoNameResolver,
+  stripHeredocBodies,
+} from './local-session-aggregator.js';
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
@@ -76,6 +83,21 @@ const GH_COMMAND_RE = /\bgh\s+/;
 // Extract PR number from gh commands
 const GH_PR_NUMBER_RE = /\bgh\s+pr\s+\w+\s+(\d+)/;
 
+/**
+ * GitHub MCP server tool names confirmed via live-account NRQL evidence
+ * to reach Preflight as first-class AiToolCall events with these exact
+ * `tool` values,
+ * but never counted by the PR metric because recordToolCall() only inspects
+ * `record.command` — which MCP tool calls never carry. Deliberately limited
+ * to the two names the issue's own evidence covers; other GitHub-MCP PR
+ * tools (merge_pull_request, etc.) are unconfirmed and out of scope pending
+ * their own evidence.
+ */
+const MCP_PR_TOOL_ACTION: Record<string, PrEvent['action']> = {
+  create_pull_request: 'create',
+  update_pull_request: 'edit',
+};
+
 // hydrateGitLog()'s dedup window, used only against a hook-observed commit
 // event (one with no hash in its command text): `git log`'s %ct has 1-second
 // resolution and a hook-observed commit event's timestamp is recorded when
@@ -118,6 +140,12 @@ export interface GitEvent {
   readonly command?: string;
   readonly success: boolean;
   readonly durationMs: number | null;
+  /** `owner/name` of the repo this event belongs to, when known. */
+  readonly repo?: string | null;
+  /** Commit subject line, for events hydrated from `git log`. */
+  readonly subject?: string | null;
+  /** Browsable URL for the commit, when the remote could be mapped. */
+  readonly url?: string | null;
 }
 
 export type GitEventType =
@@ -351,6 +379,8 @@ export class GitEfficiencyTracker {
   private commitsBehindMain: number | null = null;
   private quickConflictResolutions = 0;
   private prEvents: PrEvent[] = [];
+  private firstCommitTimestamp: number | null = null;
+  private readonly repoResolver = new RepoNameResolver();
   private repoContext: RepoContext = {
     repoName: null,
     branch: null,
@@ -380,8 +410,21 @@ export class GitEfficiencyTracker {
       this.lastBuildOrTestTimestamp = record.timestamp;
     }
 
-    const command = record.command as string | undefined;
-    if (!command) return;
+    // MCP tool calls (e.g. the GitHub MCP server's create_pull_request /
+    // update_pull_request) carry no `command` field, so they'd otherwise be
+    // silently dropped by the guard below. See MCP_PR_TOOL_ACTION's doc
+    // comment. No confirmed PR-number field exists for these — prNumber is
+    // null, unlike the gh-CLI path below which extracts it from command text.
+    const mcpPrAction = MCP_PR_TOOL_ACTION[record.toolName];
+    if (mcpPrAction) {
+      this.prEvents.push({ timestamp: record.timestamp, action: mcpPrAction, prNumber: null });
+    }
+
+    const rawCommand = record.command as string | undefined;
+    if (!rawCommand) return;
+    // Classify on the command *minus* any inline script bodies: a heredoc that
+    // merely mentions git words is not a git operation.
+    const command = stripHeredocBodies(rawCommand);
 
     // Track GitHub CLI PR commands. Split on shell separators first so a
     // `gh` invocation chained after a `git` command (e.g. `git push && gh pr
@@ -481,7 +524,15 @@ export class GitEfficiencyTracker {
     };
   }
 
-  hydrateGitLog(commits: readonly { timestamp: number; hash: string }[]): void {
+  hydrateGitLog(
+    commits: readonly {
+      timestamp: number;
+      hash: string;
+      repo?: string | null;
+      subject?: string | null;
+      url?: string | null;
+    }[],
+  ): void {
     for (const commit of commits) {
       if (!commit.hash) continue;
       const event: GitEvent = {
@@ -490,6 +541,9 @@ export class GitEfficiencyTracker {
         command: `git commit (${commit.hash})`,
         success: true,
         durationMs: null,
+        repo: commit.repo ?? null,
+        subject: commit.subject ?? null,
+        url: commit.url ?? null,
       };
       // Only add if we don't already have this commit tracked. Against an
       // existing hydrated event (one carrying its own real hash), match by
@@ -701,6 +755,19 @@ export class GitEfficiencyTracker {
     };
   }
 
+  // Each count below blends hook-observed events with events hydrated from
+  // `git log`/PR-CLI history at session start — the two paths are already
+  // deduped upstream (see hydrateGitLog()'s isDuplicate check), so there is
+  // no separate hook-observed-vs-hydrated split to emit here.
+  emitMetrics(aggregator: MetricAggregator): void {
+    const metrics = this.getMetrics();
+    aggregator.record('ai.git.commit_count', metrics.commitCount);
+    aggregator.record('ai.git.push_count', metrics.pushCount);
+    aggregator.record('ai.git.force_push_count', metrics.forcePushes);
+    aggregator.record('ai.git.pr_created', metrics.prMetrics.created);
+    aggregator.record('ai.git.pr_merged', metrics.prMetrics.merged);
+  }
+
   reset(_sessionId: string): void {
     this.events = [];
     this.conflictRecords = [];
@@ -752,9 +819,16 @@ export class GitEfficiencyTracker {
   private classifyGitCommand(command: string, record: ToolCallRecord): GitEvent {
     const base = {
       timestamp: record.timestamp,
-      command,
+      // The command is now surfaced in the dashboard's Detail column, so
+      // redact it: a git remote URL can carry an embedded access token.
+      command: redactSensitive(command),
       success: record.success,
       durationMs: record.durationMs,
+      // Live git events previously carried no repo at all, so the dashboard
+      // showed "—" for everything except commits hydrated from git log.
+      repo: this.repoResolver.resolve(
+        gitCommandTargetDir(command, record.cwd as string | undefined),
+      ),
     };
 
     const output = (record.error as string) ?? '';

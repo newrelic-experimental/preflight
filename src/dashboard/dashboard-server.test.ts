@@ -26,6 +26,31 @@ describe('DashboardServer', () => {
     expect(addr.port).toBeGreaterThan(0);
   });
 
+  it('keeps sockets alive longer than the UI poll interval, with headersTimeout above it', async () => {
+    // Node's 5s default closed idle sockets while the browser was still
+    // reusing them, so polled requests hung "(pending)" forever.
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+    });
+    await server.start();
+    const raw = (server as unknown as { server: http.Server }).server;
+    expect(raw.keepAliveTimeout).toBeGreaterThanOrEqual(60_000);
+    expect(raw.headersTimeout).toBeGreaterThan(raw.keepAliveTimeout);
+  });
+
+  it('marks API responses no-store so the browser cannot serve stale metrics', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
   it('responds 404 to unknown paths', async () => {
     server = new DashboardServer({
       port: 0,
@@ -429,6 +454,17 @@ describe('DashboardServer Host validation', () => {
     server = new DashboardServer({ port: 0, host: '127.0.0.1', bus: new LiveEventBus() });
     const addr = await server.start();
     expect(await requestWithHost(addr.port, '[::1]:abc.evil.com')).toBe(403);
+  });
+
+  it('serverMode accepts a non-loopback Host header that would otherwise be rejected', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      serverMode: true,
+    });
+    const addr = await server.start();
+    expect(await requestWithHost(addr.port, 'evil.example.com')).toBe(200);
   });
 });
 

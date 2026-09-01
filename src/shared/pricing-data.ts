@@ -42,18 +42,71 @@ export const MODEL_ALIASES: Record<string, string> = {
   // this file aliased 'gpt-5' -> 'gpt-5.5', which over-billed real `gpt-5`
   // calls by several times ($1.25/$10 actual vs $5/$30 aliased).
   'gpt-5.6': 'gpt-5.6-sol',
+
+  // AWS Bedrock geo cross-region inference profile IDs. These are a
+  // different kind of alias than the family-name shortcuts above — each is
+  // a real, literal AWS inference-profile ID, routed here because AWS bills
+  // every region below identically to the bare `anthropic.*` "in-region"
+  // key it points at (see the Bedrock section's tier comment in
+  // DEFAULT_PRICING_TABLE for the pricing rationale). Not verified that
+  // every region is an actual valid profile for every model — AWS's
+  // regional rollout varies per model, but an alias for a region AWS
+  // doesn't actually offer is simply unreachable in practice, not a source
+  // of mispricing.
+  'us.anthropic.claude-sonnet-5': 'anthropic.claude-sonnet-5',
+  'eu.anthropic.claude-sonnet-5': 'anthropic.claude-sonnet-5',
+  'au.anthropic.claude-sonnet-5': 'anthropic.claude-sonnet-5',
+  'jp.anthropic.claude-sonnet-5': 'anthropic.claude-sonnet-5',
+  'us.anthropic.claude-fable-5': 'anthropic.claude-fable-5',
+  'eu.anthropic.claude-fable-5': 'anthropic.claude-fable-5',
+  'au.anthropic.claude-fable-5': 'anthropic.claude-fable-5',
+  'jp.anthropic.claude-fable-5': 'anthropic.claude-fable-5',
+  'us.anthropic.claude-opus-5': 'anthropic.claude-opus-5',
+  'eu.anthropic.claude-opus-5': 'anthropic.claude-opus-5',
+  'au.anthropic.claude-opus-5': 'anthropic.claude-opus-5',
+  'jp.anthropic.claude-opus-5': 'anthropic.claude-opus-5',
+  'us.anthropic.claude-opus-4-8': 'anthropic.claude-opus-4-8',
+  'eu.anthropic.claude-opus-4-8': 'anthropic.claude-opus-4-8',
+  'au.anthropic.claude-opus-4-8': 'anthropic.claude-opus-4-8',
+  'jp.anthropic.claude-opus-4-8': 'anthropic.claude-opus-4-8',
+  'us.anthropic.claude-opus-4-7': 'anthropic.claude-opus-4-7',
+  'eu.anthropic.claude-opus-4-7': 'anthropic.claude-opus-4-7',
+  'au.anthropic.claude-opus-4-7': 'anthropic.claude-opus-4-7',
+  'jp.anthropic.claude-opus-4-7': 'anthropic.claude-opus-4-7',
+  'us.anthropic.claude-sonnet-4-6': 'anthropic.claude-sonnet-4-6',
+  'eu.anthropic.claude-sonnet-4-6': 'anthropic.claude-sonnet-4-6',
+  'au.anthropic.claude-sonnet-4-6': 'anthropic.claude-sonnet-4-6',
+  'jp.anthropic.claude-sonnet-4-6': 'anthropic.claude-sonnet-4-6',
+  'us.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
+  'eu.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
+  'au.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
+  'jp.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
 };
 
 // ---------------------------------------------------------------------------
 // Built-in pricing table — USD per million tokens
 //
-// Rates last verified against vendor public pricing pages on 2026-08-14:
+// Rates last verified against vendor public pricing pages on 2026-08-27:
 //   - Anthropic   https://www.anthropic.com/pricing, docs.claude.com
 //   - Google      https://ai.google.dev/gemini-api/docs/pricing
 //   - OpenAI      https://platform.openai.com/docs/pricing, /docs/models
 //   - Cohere      https://cohere.com/pricing, docs.cohere.com
 //   - Mistral     https://mistral.ai/pricing, docs.mistral.ai
 //   - Bedrock     https://aws.amazon.com/bedrock/pricing/
+//
+// A handful of entries (marked individually below) are instead sourced from
+// GitHub Copilot's own pricing page, verified 2026-08-27:
+//   - GitHub Copilot  https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+// Copilot's per-token pricing is a verified passthrough of each underlying
+// vendor's own direct-API list price, not a Copilot-specific markup —
+// cross-checked against this table's existing claude-opus-4-8, claude-sonnet-5,
+// gpt-5.4, and gpt-5.5 entries, all exact matches. It's used here only for
+// models a primary vendor page doesn't directly document (or that don't have
+// one at all, e.g. GitHub's own fine-tuned Raptor mini). contextWindow on
+// these entries is a non-billing-critical best-effort default (not used in
+// calculateCost()'s pricing math, only validated as a positive integer) —
+// unlike the rest of this table, it is NOT verified against a per-model
+// context-limit source, since Copilot's pricing page doesn't publish one.
 //
 // When updating rates, bump the date above so consumers can tell at a glance
 // how stale the built-in table is. Pricing changes on these pages are usually
@@ -274,19 +327,28 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // fully SHUT DOWN per ai.google.dev/gemini-api/docs/models (not just
   // deprecated). Same rate, kept below for historical-cost backfill of any
   // consumer still recording events against the old ID.
+  //
+  // This model and gemini-3-flash-preview below support thinking, and
+  // Google bills thinking tokens at the output rate — unlike output,
+  // thinking is NOT a subset of it (extractGeminiTokens() reports
+  // thoughtsTokenCount as a separate addend), so thinkingPerMTok must be
+  // set explicitly or reasoning spend is silently billed at $0.
   'gemini-3.1-flash-lite': {
     inputPerMTok: 0.25,
     outputPerMTok: 1.5,
+    thinkingPerMTok: 1.5,
     contextWindow: 1_000_000,
   },
   'gemini-3.1-flash-lite-preview': {
     inputPerMTok: 0.25,
     outputPerMTok: 1.5,
+    thinkingPerMTok: 1.5,
     contextWindow: 1_000_000,
   },
   'gemini-3-flash-preview': {
     inputPerMTok: 0.5,
     outputPerMTok: 3,
+    thinkingPerMTok: 3,
     contextWindow: 1_000_000,
   },
 
@@ -307,9 +369,12 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     thinkingPerMTok: 2.5,
     contextWindow: 1_000_000,
   },
+  // Thinking-capable — see the thinkingPerMTok note on gemini-3.1-flash-lite
+  // above; same reasoning applies here.
   'gemini-2.5-flash-lite': {
     inputPerMTok: 0.1,
     outputPerMTok: 0.4,
+    thinkingPerMTok: 0.4,
     contextWindow: 1_000_000,
   },
 
@@ -355,14 +420,20 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // cacheCreationTokens to 0 (OpenAI's usage shape has no cache-write
   // count), so a cacheCreationPerMTok here would be dead data until that
   // extractor gains a field for it.
+  // $4/$20 is promotional pricing per OpenAI's own model page: "a 20%
+  // reduction in input pricing and a 33% reduction in output pricing"
+  // versus GPT-5.5 ($5/$30), "available at least through November 21,
+  // 2026." OpenAI does not state what the reverted/list rate would be
+  // after that date, or a "% off" figure for Sol itself — re-check
+  // against the live model page once that date passes.
   'gpt-5.6-sol': {
-    inputPerMTok: 5,
-    outputPerMTok: 30,
-    cacheReadPerMTok: 0.5,
+    inputPerMTok: 4,
+    outputPerMTok: 20,
+    cacheReadPerMTok: 0.4,
     contextWindow: 1_050_000,
     tierThreshold: 272_000,
-    tierInputPerMTok: 10,
-    tierOutputPerMTok: 45,
+    tierInputPerMTok: 8,
+    tierOutputPerMTok: 30,
   },
   'gpt-5.6-terra': {
     inputPerMTok: 2,
@@ -389,6 +460,24 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     inputPerMTok: 1.25,
     outputPerMTok: 10,
     cacheReadPerMTok: 0.125,
+    contextWindow: 400_000,
+  },
+  // OpenAI publishes this directly (platform.openai.com/docs/models/gpt-5-mini)
+  // — no longer sourced from GitHub Copilot's pricing page. contextWindow is
+  // 400,000, not 128,000: that figure is this model's max OUTPUT tokens, not
+  // its context window — an earlier revision conflated the two.
+  'gpt-5-mini': {
+    inputPerMTok: 0.25,
+    outputPerMTok: 2,
+    cacheReadPerMTok: 0.025,
+    contextWindow: 400_000,
+  },
+  // OpenAI publishes this directly too (platform.openai.com/docs/models/gpt-5.3-codex)
+  // — no longer sourced from GitHub Copilot's pricing page.
+  'gpt-5.3-codex': {
+    inputPerMTok: 1.75,
+    outputPerMTok: 14,
+    cacheReadPerMTok: 0.175,
     contextWindow: 400_000,
   },
   // Prior-generation flagship, superseded by gpt-5.6-sol above but still
@@ -432,34 +521,45 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- OpenAI (legacy) ----
+  // gpt-4o/-mini and their dated snapshots below all publish a cached-input
+  // rate (~50% off list, notably less generous than the ~90% discount on
+  // newer models) — cacheReadPerMTok was previously omitted on all of them,
+  // which meant computeCost()'s `?? 0` fallback priced cached reads as
+  // free and overstated cache savings.
   'gpt-4o': {
     inputPerMTok: 2.5,
     outputPerMTok: 10,
+    cacheReadPerMTok: 1.25,
     contextWindow: 128_000,
   },
   'gpt-4o-mini': {
     inputPerMTok: 0.15,
     outputPerMTok: 0.6,
+    cacheReadPerMTok: 0.075,
     contextWindow: 128_000,
   },
   'gpt-4o-2024-11-20': {
     inputPerMTok: 2.5,
     outputPerMTok: 10,
+    cacheReadPerMTok: 1.25,
     contextWindow: 128_000,
   },
   'gpt-4o-2024-08-06': {
     inputPerMTok: 2.5,
     outputPerMTok: 10,
+    cacheReadPerMTok: 1.25,
     contextWindow: 128_000,
   },
   'gpt-4o-mini-2024-07-18': {
     inputPerMTok: 0.15,
     outputPerMTok: 0.6,
+    cacheReadPerMTok: 0.075,
     contextWindow: 128_000,
   },
   o1: {
     inputPerMTok: 15,
     outputPerMTok: 60,
+    cacheReadPerMTok: 7.5,
     // No thinkingPerMTok: OpenAI bills reasoning tokens as part of
     // completion_tokens at outputPerMTok. The extractor sets thinkingTokens
     // from completion_tokens_details.reasoning_tokens as an informational
@@ -493,11 +593,13 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   'o3-mini': {
     inputPerMTok: 1.1,
     outputPerMTok: 4.4,
+    cacheReadPerMTok: 0.55,
     contextWindow: 200_000,
   },
   'o4-mini': {
     inputPerMTok: 1.1,
     outputPerMTok: 4.4,
+    cacheReadPerMTok: 0.275,
     contextWindow: 200_000,
   },
   'gpt-4-turbo': {
@@ -522,49 +624,121 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   // no field for the 1-hour rate, which would need a schema change to model.
   // $2/$10 is Anthropic's standing Sonnet 5 price on Bedrock too — not
   // introductory. See the direct-API claude-sonnet-5 comment above.
+  //
+  // Bare `anthropic.*` keys below (and the `us./eu./au./jp.` regional-prefix
+  // aliases in MODEL_ALIASES) price the "Geo and In-region Cross-region
+  // Inference" tier — AWS bills these two identically. The `global.*` keys
+  // further down price the separate, ~10%-cheaper "Global Cross-region
+  // Inference" tier. On Bedrock a bare `anthropic.*` ID is genuinely the
+  // in-region on-demand ID (confirmed real and directly invocable for this
+  // generation — no date/version suffix required, unlike the legacy models
+  // below), so pricing it at the global rate (an earlier revision did this)
+  // was a real bug, not just a rounding choice.
+  //
+  // Geo/in-region rate = 1.1x the global rate, confirmed exactly on
+  // claude-sonnet-5 via AWS's own per-SKU pricing data ($2.2/$11/cw$2.75/
+  // cr$0.22 vs. global's $2/$10/cw$2.5/cr$0.2) and independently corroborated
+  // as AWS's documented flat ~10% policy (not model-specific) on the
+  // global-cross-region-inference docs page. The other 6 models' geo rates
+  // below are DERIVED via that same 1.1x multiplier, not independently
+  // re-verified per model — re-confirm against AWS's pricing data in the
+  // next full audit pass if this table's accuracy is ever in question.
   'anthropic.claude-sonnet-5': {
+    inputPerMTok: 2.2,
+    outputPerMTok: 11,
+    cacheReadPerMTok: 0.22,
+    cacheCreationPerMTok: 2.75,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-fable-5': {
+    inputPerMTok: 11,
+    outputPerMTok: 55,
+    cacheReadPerMTok: 1.1,
+    cacheCreationPerMTok: 13.75,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-opus-5': {
+    inputPerMTok: 5.5,
+    outputPerMTok: 27.5,
+    cacheReadPerMTok: 0.55,
+    cacheCreationPerMTok: 6.875,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-opus-4-8': {
+    inputPerMTok: 5.5,
+    outputPerMTok: 27.5,
+    cacheReadPerMTok: 0.55,
+    cacheCreationPerMTok: 6.875,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-opus-4-7': {
+    inputPerMTok: 5.5,
+    outputPerMTok: 27.5,
+    cacheReadPerMTok: 0.55,
+    cacheCreationPerMTok: 6.875,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-sonnet-4-6': {
+    inputPerMTok: 3.3,
+    outputPerMTok: 16.5,
+    cacheReadPerMTok: 0.33,
+    cacheCreationPerMTok: 4.125,
+    contextWindow: 1_000_000,
+  },
+  'anthropic.claude-haiku-4-5-20251001-v1:0': {
+    inputPerMTok: 1.1,
+    outputPerMTok: 5.5,
+    cacheReadPerMTok: 0.11,
+    cacheCreationPerMTok: 1.375,
+    contextWindow: 200_000,
+  },
+  // Global Cross-region Inference tier for the same 7 current-gen models
+  // above — ~10% cheaper, see the tier comment there. Real, directly
+  // invocable Bedrock model IDs (confirmed via AWS's model-card pages), not
+  // this table's own naming convention.
+  'global.anthropic.claude-sonnet-5': {
     inputPerMTok: 2,
     outputPerMTok: 10,
     cacheReadPerMTok: 0.2,
     cacheCreationPerMTok: 2.5,
     contextWindow: 1_000_000,
   },
-  'anthropic.claude-fable-5': {
+  'global.anthropic.claude-fable-5': {
     inputPerMTok: 10,
     outputPerMTok: 50,
     cacheReadPerMTok: 1,
     cacheCreationPerMTok: 12.5,
     contextWindow: 1_000_000,
   },
-  'anthropic.claude-opus-5': {
+  'global.anthropic.claude-opus-5': {
     inputPerMTok: 5,
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
-  'anthropic.claude-opus-4-8': {
+  'global.anthropic.claude-opus-4-8': {
     inputPerMTok: 5,
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
-  'anthropic.claude-opus-4-7': {
+  'global.anthropic.claude-opus-4-7': {
     inputPerMTok: 5,
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
     cacheCreationPerMTok: 6.25,
     contextWindow: 1_000_000,
   },
-  'anthropic.claude-sonnet-4-6': {
+  'global.anthropic.claude-sonnet-4-6': {
     inputPerMTok: 3,
     outputPerMTok: 15,
     cacheReadPerMTok: 0.3,
     cacheCreationPerMTok: 3.75,
     contextWindow: 1_000_000,
   },
-  'anthropic.claude-haiku-4-5-20251001-v1:0': {
+  'global.anthropic.claude-haiku-4-5-20251001-v1:0': {
     inputPerMTok: 1,
     outputPerMTok: 5,
     cacheReadPerMTok: 0.1,
@@ -787,5 +961,67 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     inputPerMTok: 0.3,
     outputPerMTok: 0.6,
     contextWindow: 4_096,
+  },
+
+  // ---- xAI ----
+  // Sourced from GitHub Copilot's pricing page (see the file-level comment
+  // above) — xAI has no separate public per-token pricing page of its own.
+  'grok-4.5': {
+    inputPerMTok: 2,
+    outputPerMTok: 6,
+    cacheReadPerMTok: 0.5,
+    contextWindow: 1_000_000,
+    // ModelPricing has no tiered cache-read field, so the long-context
+    // tier's doubled cached-input rate ($1 vs the $0.5 base rate above)
+    // cannot be represented — the base (lower) cache rate is used at every
+    // tier. Not fixable without a schema change; known and accepted.
+    tierThreshold: 200_000,
+    tierMode: 'flat',
+    tierInputPerMTok: 4,
+    tierOutputPerMTok: 12,
+  },
+
+  // ---- Moonshot AI ----
+  // Sourced from GitHub Copilot's pricing page (see the file-level comment
+  // above) — Moonshot AI has no separate public per-token pricing page.
+  'kimi-k2.7-code': {
+    inputPerMTok: 0.95,
+    outputPerMTok: 4,
+    cacheReadPerMTok: 0.19,
+    contextWindow: 256_000,
+  },
+  'kimi-k3': {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    cacheReadPerMTok: 0.3,
+    contextWindow: 256_000,
+  },
+
+  // ---- Microsoft (MAI-Code) ----
+  // Sourced from GitHub Copilot's pricing page (see the file-level comment
+  // above) — Microsoft has no separate public per-token pricing page for
+  // the MAI-Code family.
+  'mai-code-1-flash': {
+    inputPerMTok: 0.75,
+    outputPerMTok: 4.5,
+    cacheReadPerMTok: 0.075,
+    contextWindow: 128_000,
+  },
+  'mai-code-1.1-flash': {
+    inputPerMTok: 0.2,
+    outputPerMTok: 1.2,
+    cacheReadPerMTok: 0.02,
+    contextWindow: 128_000,
+  },
+
+  // ---- GitHub (Copilot fine-tuned) ----
+  // Raptor mini is GitHub's own fine-tuned model, billed only through
+  // Copilot — there is no vendor page to source it from other than Copilot's
+  // own pricing page (see the file-level comment above).
+  'raptor-mini': {
+    inputPerMTok: 0.25,
+    outputPerMTok: 2,
+    cacheReadPerMTok: 0.025,
+    contextWindow: 128_000,
   },
 };

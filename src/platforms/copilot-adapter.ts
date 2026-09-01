@@ -51,6 +51,41 @@ const COPILOT_EVENT_TYPE_MAP: Record<string, string> = {
   task: 'Bash',
 };
 
+/**
+ * Maps VS Code Copilot tool names (carried in hook `tool_name`) to the
+ * normalized Claude Code tool vocabulary. VS Code agent hooks send VS Code's
+ * own tool names, not Claude Code's — documented in the hooks FAQ
+ * (https://code.visualstudio.com/docs/copilot/customization/hooks, "Tool
+ * names: ... VS Code uses tool names like `create_file` and
+ * `replace_string_in_file`"). The full name inventory is the `ToolName` enum
+ * in microsoft/vscode `extensions/copilot/src/extension/tools/common/toolNames.ts`.
+ * `editFiles` appears in the hooks reference example payloads
+ * (https://code.visualstudio.com/docs/agents/reference/hooks-reference).
+ * This map is VS Code-specific — the GitHub Copilot CLI/SDK runtime is a
+ * separate adapter (copilot-sdk) with its own tool-name vocabulary. Names
+ * without a clear canonical correspondence (semantic_search, get_errors,
+ * ...) are deliberately left unmapped so the original name is preserved
+ * downstream.
+ */
+const COPILOT_TOOL_MAP: Record<string, string> = {
+  read_file: 'Read',
+  create_file: 'Write',
+  replace_string_in_file: 'Edit',
+  multi_replace_string_in_file: 'Edit',
+  insert_edit_into_file: 'Edit',
+  apply_patch: 'Edit',
+  edit_files: 'Edit',
+  editFiles: 'Edit',
+  run_in_terminal: 'Bash',
+  grep_search: 'Grep',
+  file_search: 'Glob',
+  list_dir: 'Glob',
+  runSubagent: 'Agent',
+  search_subagent: 'Agent',
+  explore_subagent: 'Agent',
+  execution_subagent: 'Agent',
+};
+
 export interface CopilotUsageRecord {
   readonly day: string;
   readonly total_suggestions_count?: number;
@@ -70,12 +105,16 @@ export function parseCopilotUsageResponse(raw: unknown): CopilotUsageRecord[] {
 
 export class CopilotAdapter implements PlatformAdapter {
   readonly platformName = 'copilot';
-  readonly visibilityLevel = 'self-reported' as const;
+  // Full-hooks since VS Code agent hooks (PreToolUse/PostToolUse et al.,
+  // https://code.visualstudio.com/docs/copilot/customization/hooks) fire on
+  // every built-in tool call and are parsed by collector-script.ts's uniform
+  // branch. The HTTP-push extension path below remains as a legacy fallback.
+  readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = { instructionFilePaths: [] as const };
 
   async initialize(_config: PlatformConfig): Promise<void> {
-    // Copilot does not use MCP natively. Data arrives from
-    // a Copilot VS Code extension via HTTP.
+    // Tool calls arrive via VS Code agent hooks (collector script), or
+    // legacy HTTP push from a Copilot-compatible extension.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -106,7 +145,9 @@ export class CopilotAdapter implements PlatformAdapter {
   }
 
   mapToolName(platformToolName: string): string {
-    return COPILOT_EVENT_TYPE_MAP[platformToolName] ?? 'Unknown';
+    return (
+      COPILOT_TOOL_MAP[platformToolName] ?? COPILOT_EVENT_TYPE_MAP[platformToolName] ?? 'Unknown'
+    );
   }
 
   getSessionMetadata(): PlatformSessionMetadata {
@@ -121,12 +162,28 @@ export class CopilotAdapter implements PlatformAdapter {
 
   getHookInstallInstructions(): string {
     return [
-      'GitHub Copilot Observability Setup:',
-      '1. Set NEW_RELIC_AI_PLATFORM=copilot in your environment',
-      '2. Set NEW_RELIC_LICENSE_KEY and NEW_RELIC_ACCOUNT_ID',
-      '3. Configure your Copilot extension to forward events to http://localhost:9847',
-      '   (Set "preflight.endpoint" to "http://localhost:9847" in VS Code settings)',
-      '4. Note: tool call timing is approximate (inferred from VS Code event timestamps)',
+      'GitHub Copilot Observability Setup (VS Code agent hooks):',
+      '1. Create a hooks file — user-level ~/.copilot/hooks/preflight.json (applies to',
+      '   all workspaces) or workspace-level .github/hooks/preflight.json:',
+      '   {',
+      '     "version": 1,',
+      '     "hooks": {',
+      '       "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],',
+      '       "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]',
+      '     }',
+      '   }',
+      '   (VS Code also reads Claude-format hooks from ~/.claude/settings.json by',
+      '   default — if preflight hooks are installed there for Claude Code, either',
+      '   rely on those or disable that location via chat.hookFilesLocations to',
+      '   avoid double capture.)',
+      '2. Ensure preflight-collector is on PATH (npm install -g @newrelic/preflight).',
+      '3. Register the Preflight MCP server for nr_observe_* tools with env',
+      '   MCP_CLIENT=copilot, NEW_RELIC_LICENSE_KEY, NEW_RELIC_ACCOUNT_ID.',
+      '4. For the GitHub Copilot CLI/SDK runtime instead of VS Code, use the',
+      "   copilot-sdk adapter's own setup — Copilot CLI's native lowerCamelCase",
+      '   hooks are not compatible with this adapter.',
+      'Legacy fallback: a Copilot-compatible extension may instead push events to',
+      'http://localhost:9847 ("preflight.endpoint" in VS Code settings).',
     ].join('\n');
   }
 

@@ -736,7 +736,7 @@ function handleInstall(options: {
   }
 
   print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
-  print('  - Added PreToolUse and PostToolUse hooks');
+  print('  - Added PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied hooks');
   print(`✓ MCP server registered: ${mcpPath}`);
   print('  - Added preflight MCP server');
 
@@ -1305,10 +1305,11 @@ export function createInstallProgram(): Command {
     .description(
       'Interactive first-run setup: configure New Relic keys, install hooks, and deploy dashboards',
     )
-    .action(async () => {
+    .addOption(new Option('--staging', 'pre-select the New Relic staging environment').hideHelp())
+    .action(async (opts: Record<string, unknown>) => {
       try {
         const { runSetupWizard } = await import('./setup-wizard.js');
-        await runSetupWizard();
+        await runSetupWizard({ staging: opts.staging === true });
       } catch (err) {
         print(`\n✗ Setup failed: ${errMsg(err)}`);
         process.exitCode = 1;

@@ -27,6 +27,7 @@ describe('liveStore', () => {
       recentToolCalls: [],
       cost: null,
       antiPatterns: [],
+      retryAlerts: [],
       firingAlerts: new Map(),
       dismissedAlerts: new Set(),
       activeSessionId: null,
@@ -74,6 +75,16 @@ describe('liveStore', () => {
     const s = useLiveStore.getState();
     expect(s.antiPatterns.length).toBe(10);
     expect(s.antiPatterns[0].target).toBe('f5.ts');
+  });
+
+  it('pushRetryAlert appends and caps to last 10', () => {
+    const push = useLiveStore.getState().pushRetryAlert;
+    for (let i = 0; i < 15; i++) {
+      push({ toolName: 'Bash', occurrences: 3, tokensWasted: i });
+    }
+    const s = useLiveStore.getState();
+    expect(s.retryAlerts.length).toBe(10);
+    expect(s.retryAlerts[0].tokensWasted).toBe(5);
   });
 });
 
@@ -212,6 +223,7 @@ describe('liveStore — setActiveSession', () => {
       recentToolCalls: [],
       cost: null,
       antiPatterns: [],
+      retryAlerts: [],
       firingAlerts: new Map(),
       dismissedAlerts: new Set(),
       activeSessionId: null,
@@ -227,17 +239,21 @@ describe('liveStore — setActiveSession', () => {
     expect(useLiveStore.getState().activeSessionId).toBe('sess-A');
   });
 
-  it('clears tool calls and anti-patterns from non-matching sessions on switch', () => {
-    const { pushToolCall, pushAntiPattern, setActiveSession } = useLiveStore.getState();
+  it('clears tool calls, anti-patterns, and retry alerts from non-matching sessions on switch', () => {
+    const { pushToolCall, pushAntiPattern, pushRetryAlert, setActiveSession } =
+      useLiveStore.getState();
     pushToolCall({ id: 'a', sessionId: 'sess-A', tool: 'Read', durationMs: 1, costUsd: 0, ts: 1 });
     pushToolCall({ id: 'b', sessionId: 'sess-B', tool: 'Read', durationMs: 1, costUsd: 0, ts: 2 });
     pushAntiPattern({ sessionId: 'sess-A', type: 'thrashing', target: 'a.ts', count: 1 });
     pushAntiPattern({ sessionId: 'sess-B', type: 'rereading', target: 'b.ts', count: 2 });
+    pushRetryAlert({ sessionId: 'sess-A', toolName: 'Bash', occurrences: 3, tokensWasted: 10 });
+    pushRetryAlert({ sessionId: 'sess-B', toolName: 'Read', occurrences: 4, tokensWasted: 20 });
 
     setActiveSession('sess-A');
     const s = useLiveStore.getState();
     expect(s.recentToolCalls.map((t) => t.id)).toEqual(['a']);
     expect(s.antiPatterns.map((a) => a.target)).toEqual(['a.ts']);
+    expect(s.retryAlerts.map((a) => a.tokensWasted)).toEqual([10]);
   });
 
   it('clears cost from a non-matching session on switch', () => {

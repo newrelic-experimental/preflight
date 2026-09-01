@@ -10,6 +10,7 @@ jest.mock('./schedule.js', () => ({
 
 import { resolveBinaryPath } from './schedule.js';
 import { writeJsonFile, readJsonFileStrict } from './json-utils.js';
+import { mergeSettings } from './install-helper.js';
 import { installHooksHeadless } from './headless-install.js';
 
 const mockResolveBinaryPath = resolveBinaryPath as jest.MockedFunction<typeof resolveBinaryPath>;
@@ -49,7 +50,15 @@ describe('installHooksHeadless()', () => {
     expect(result.status).toBe('installed');
   });
 
-  it('returns already_installed when hooks are already present', () => {
+  it('returns already_installed when all four hooks are already present', () => {
+    const settingsPath = join(tmpDir, 'settings.json');
+    writeJsonFile(settingsPath, mergeSettings({}), tmpDir);
+
+    const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
+    expect(result.status).toBe('already_installed');
+  });
+
+  it('upgrades a pre/post-only install by adding the permission hooks', () => {
     const settingsPath = join(tmpDir, 'settings.json');
     const pre = [
       { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }] },
@@ -60,7 +69,12 @@ describe('installHooksHeadless()', () => {
     writeJsonFile(settingsPath, { hooks: { PreToolUse: pre, PostToolUse: post } }, tmpDir);
 
     const result = installHooksHeadless({ _settingsPathOverride: settingsPath });
-    expect(result.status).toBe('already_installed');
+    expect(result.status).toBe('installed');
+
+    const written = readJsonFileStrict(settingsPath);
+    const hooks = written.hooks as Record<string, unknown[]>;
+    expect(hooks.PermissionRequest).toHaveLength(1);
+    expect(hooks.PermissionDenied).toHaveLength(1);
   });
 
   it('returns error when settings directory is not writable', () => {

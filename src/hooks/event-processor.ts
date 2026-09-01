@@ -7,6 +7,9 @@
  *
  * Handles orphans:
  *   - Pre events without a post within orphanTimeoutMs → timeout record
+ *   - Permission-requested pre events (PermissionRequest seen, then nothing —
+ *     Claude Code fires no hook event for an interactive user rejection)
+ *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
  *   - Post events without a matching pre → record with durationMs: null
  */
 
@@ -19,9 +22,12 @@ import type {
   HookEvent,
   PreHookEvent,
   PostHookEvent,
+  PermissionRequestHookEvent,
+  PermissionDeniedHookEvent,
   TokenHookEvent,
   SubagentTokenHookEvent,
   ObservabilityHealthHookEvent,
+  ApiFailureHookEvent,
   ToolCallRecord,
   TokenEvent,
   SubagentTokenEvent,
@@ -73,6 +79,8 @@ export interface HookEventProcessorOptions {
   onSubagentToken?: (event: SubagentTokenEvent) => void;
   /** Fires for every `mode: 'workflow_run'` line; errors swallowed. */
   onWorkflowRun?: (event: WorkflowRunEvent) => void;
+  /** Fires for every `mode: 'api_failure'` line; errors swallowed. */
+  onApiFailure?: (event: ApiFailureFrame) => void;
   /**
    * Adapter used to map each platform's raw tool names (e.g. Kiro's `fs_read`)
    * to Preflight's canonical vocabulary (`Read`) before pairing/emitting.
@@ -125,13 +133,112 @@ export interface ObservabilityHealthFrame {
   readonly costSelfCheckDeltaPct?: number;
 }
 
+/**
+ * Wire-shape data extracted from a `mode: 'api_failure'` entry. `rawErrorType`
+ * is deliberately kept as Claude Code's raw error string (e.g. 'overloaded'),
+ * NOT mapped to `ApiErrorType` — this file must not depend on `metrics/`, so
+ * mapping happens downstream in the callback wiring, mirroring how
+ * `ObservabilityHealthFrame` stays domain-agnostic too.
+ */
+export interface ApiFailureFrame {
+  readonly timestamp: number;
+  readonly sessionId: string | null;
+  readonly rawErrorType: string;
+  readonly errorDetails?: string;
+  readonly lastAssistantMessage?: string;
+}
+
 function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
+// Permission prompts legitimately dwell — a user thinking for 90 seconds is
+// common, while an approval arriving after 5 minutes is rare enough to accept
+// as a post-without-pre record instead.
+const PERMISSION_REQUESTED_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_PENDING = 2_000;
+
+/**
+ * Lifecycle of a pre event awaiting its completion. `awaiting_post` is the
+ * normal path; `permission_requested` means Claude Code asked the user to
+ * approve this call — a rejection fires no further hook event, so an entry
+ * that expires in this phase is classified 'rejected' rather than 'timeout'.
+ */
+interface PendingEntry {
+  readonly event: PreHookEvent;
+  readonly phase: 'awaiting_post' | 'permission_requested';
+}
+
+/**
+ * Fixed-capacity FIFO dedup set for one session/agent's own event stream.
+ * Extracted out of a single global ring (see DedupRingRegistry) so one
+ * scope's dedup keys can never evict another's.
+ */
+class DedupRing {
+  private readonly seen = new Set<string>();
+  private readonly order: string[] = [];
+
+  constructor(private readonly capacity: number) {}
+
+  /** Returns true if `key` was already seen (and does nothing further); otherwise records it and returns false. */
+  hasAndAdd(key: string): boolean {
+    if (this.seen.has(key)) return true;
+    this.seen.add(key);
+    this.order.push(key);
+    if (this.order.length > this.capacity) {
+      const evicted = this.order.shift();
+      if (evicted !== undefined) this.seen.delete(evicted);
+    }
+    return false;
+  }
+}
+
+/**
+ * LRU-bounded registry of per-scope DedupRings, keyed by session/agent id —
+ * mirrors ContextTrackerRegistry's eviction pattern (src/metrics/context-tracker.ts).
+ * A scope that goes quiet for a while eventually gets evicted entirely, so a
+ * burst of short-lived scopes can't grow this registry without bound while a
+ * long-lived scope's own ring keeps its full per-scope capacity regardless of
+ * how many OTHER scopes are active.
+ *
+ * Exported (unlike DedupRing) so tests can exercise the maxScopes eviction
+ * path directly with a small value — mirroring how ContextTrackerRegistry's
+ * own `{ maxSessions }` option is tested — rather than only through
+ * HookEventProcessor's fixed production values.
+ */
+export class DedupRingRegistry {
+  private readonly rings = new Map<string, DedupRing>();
+
+  constructor(
+    private readonly maxScopes: number,
+    private readonly perScopeCapacity: number,
+  ) {}
+
+  /** Returns true if `dedupKey` was already seen within `scopeKey`'s own ring. */
+  hasAndAdd(scopeKey: string, dedupKey: string): boolean {
+    let ring = this.rings.get(scopeKey);
+    if (ring) {
+      // Move to end for LRU ordering.
+      this.rings.delete(scopeKey);
+      this.rings.set(scopeKey, ring);
+    } else {
+      if (this.rings.size >= this.maxScopes) {
+        const oldest = this.rings.keys().next().value;
+        if (oldest !== undefined) this.rings.delete(oldest);
+      }
+      ring = new DedupRing(this.perScopeCapacity);
+      this.rings.set(scopeKey, ring);
+    }
+    return ring.hasAndAdd(dedupKey);
+  }
+
+  /** Number of scopes currently tracked — test seam for eviction assertions. */
+  get scopeCount(): number {
+    return this.rings.size;
+  }
+}
 
 export class HookEventProcessor {
   private store: LocalStore;
@@ -145,14 +252,16 @@ export class HookEventProcessor {
   private readonly onObservabilityHealth: ((event: ObservabilityHealthFrame) => void) | null;
   private readonly onSubagentToken: ((event: SubagentTokenEvent) => void) | null;
   private readonly onWorkflowRun: ((event: WorkflowRunEvent) => void) | null;
+  private readonly onApiFailure: ((event: ApiFailureFrame) => void) | null;
   private readonly platformAdapter: PlatformAdapter;
   /**
-   * Dedup ring of `(agentId, messageId)` for recent subagent turns. Cursor
-   * recovery may re-read a line after a crash mid-write; double-counting would
-   * be silent, so we drop on the seen-set (capped at 4096 to bound memory).
+   * Per-agent dedup rings for recent subagent turns (scoped by agentId, one
+   * DedupRing per agent, LRU-bounded across agents). Cursor recovery may
+   * re-read a line after a crash mid-write; double-counting would be silent,
+   * so we drop on the seen-set. Was previously one global ring shared across
+   * every agent — see DedupRingRegistry's doc comment for why that's wrong.
    */
-  private readonly subagentDedup = new Set<string>();
-  private readonly subagentDedupOrder: string[] = [];
+  private readonly subagentDedupRegistry = new DedupRingRegistry(50, 4096);
   /**
    * Dedup ring of `(workflowRunId, timestamp)` for recent workflow_run
    * events, mirroring subagentDedup above. This path only matters for
@@ -167,17 +276,17 @@ export class HookEventProcessor {
   private readonly workflowRunDedup = new Set<string>();
   private readonly workflowRunDedupOrder: string[] = [];
   /**
-   * Dedup ring of `sessionId|messageId` for recent parent-transcript token
-   * events, mirroring subagentDedup above. `ParentTranscriptWatcher` tails the
-   * main transcript via a durable byte cursor and can re-deliver a line after
-   * a crash mid-emit; without this, that redelivery double-counts cost. Only
-   * applied when messageId is present — events without one (defensive; any
-   * other/future producer) pass through unchanged, unaffected by this ring.
+   * Per-session dedup rings for recent parent-transcript token events (scoped
+   * by sessionId), mirroring subagentDedupRegistry above. ParentTranscriptWatcher
+   * tails the main transcript via a durable byte cursor and can re-deliver a
+   * line after a crash mid-emit, or after a rename-triggered cursor reset;
+   * without this, that redelivery double-counts cost. Only applied when
+   * messageId is present — events without one (defensive; any other/future
+   * producer) pass through unchanged, unaffected by this ring.
    */
-  private readonly tokenDedup = new Set<string>();
-  private readonly tokenDedupOrder: string[] = [];
+  private readonly tokenDedupRegistry = new DedupRingRegistry(50, 4096);
 
-  private readonly pending: Map<string, PreHookEvent> = new Map();
+  private readonly pending: Map<string, PendingEntry> = new Map();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -198,6 +307,7 @@ export class HookEventProcessor {
     this.onObservabilityHealth = options.onObservabilityHealth ?? null;
     this.onSubagentToken = options.onSubagentToken ?? null;
     this.onWorkflowRun = options.onWorkflowRun ?? null;
+    this.onApiFailure = options.onApiFailure ?? null;
     this.platformAdapter = options.platformAdapter ?? createDefaultRegistry().getActive();
 
     this.boundBeforeExit = () => {
@@ -300,12 +410,18 @@ export class HookEventProcessor {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
           this.handlePostEvent(event);
+        } else if (event.mode === 'permission_request') {
+          this.handlePermissionRequestEvent(event);
+        } else if (event.mode === 'permission_denied') {
+          this.handlePermissionDeniedEvent(event);
         } else if (event.mode === 'subagent_token') {
           this.handleSubagentTokenEvent(event);
         } else if (event.mode === 'observability_health') {
           this.handleObservabilityHealthEvent(event);
         } else if (event.mode === 'workflow_run') {
           this.handleWorkflowRunEvent(event);
+        } else if (event.mode === 'api_failure') {
+          this.handleApiFailureEvent(event);
         }
       } catch (err) {
         logger.warn('Error processing hook event', {
@@ -350,8 +466,8 @@ export class HookEventProcessor {
       // Named to avoid shared/redact.ts's SECRET_KEY_RE (which matches any key
       // name containing "key") — that would silently blank this diagnostic value.
       let evictedPairingId: string | undefined;
-      for (const [key, pendingEvent] of this.pending) {
-        if (now - pendingEvent.timestamp >= this.orphanTimeoutMs) {
+      for (const [key, entry] of this.pending) {
+        if (now - entry.event.timestamp >= this.pendingTtlMs(entry)) {
           evictedPairingId = key;
           break;
         }
@@ -365,25 +481,59 @@ export class HookEventProcessor {
       if (evictedPairingId) {
         const evicted = this.pending.get(evictedPairingId)!;
         this.pending.delete(evictedPairingId);
-        // Emit a synthetic timeout record so the eviction is visible in metrics,
+        // Emit a synthetic orphan record so the eviction is visible in metrics,
         // matching the behavior of sweepOrphans() and flushPending().
-        const toolFields = parseToolSpecificFields(evicted.tool, evicted.toolInput, undefined);
-        this.emitRecord({
-          id: randomUUID(),
-          sessionId: evicted.sessionId ?? null,
-          toolName: evicted.tool,
-          toolUseId: evicted.toolUseId ?? evictedPairingId,
-          timestamp: evicted.timestamp,
-          durationMs: null,
-          success: false,
-          errorType: 'timeout',
-          ...(evicted.inputSize !== undefined && { inputSizeBytes: evicted.inputSize }),
-          ...(evicted.inputHash !== undefined && { inputHash: evicted.inputHash }),
-          ...toolFields,
-        });
+        this.emitUnpairedPreRecord(evictedPairingId, evicted);
       }
     }
-    this.pending.set(this.pairingKey(event), event);
+    this.pending.set(this.pairingKey(event), { event, phase: 'awaiting_post' });
+  }
+
+  private handlePermissionRequestEvent(event: PermissionRequestHookEvent): void {
+    const entry = this.pending.get(event.toolUseId);
+    if (entry === undefined) {
+      logger.debug('Permission request without a pending pre — dropped', {
+        tool: event.tool,
+        toolUseId: event.toolUseId,
+      });
+      return;
+    }
+    this.pending.set(event.toolUseId, { event: entry.event, phase: 'permission_requested' });
+  }
+
+  private handlePermissionDeniedEvent(event: PermissionDeniedHookEvent): void {
+    const entry = this.pending.get(event.toolUseId);
+    if (entry === undefined) {
+      logger.debug('Permission denied without a pending pre — dropped', {
+        tool: event.tool,
+        toolUseId: event.toolUseId,
+      });
+      return;
+    }
+    this.pending.delete(event.toolUseId);
+
+    const pre = entry.event;
+    const toolFields = parseToolSpecificFields(pre.tool, pre.toolInput, undefined);
+    this.emitRecord({
+      id: randomUUID(),
+      sessionId: pre.sessionId ?? event.sessionId ?? null,
+      toolName: pre.tool,
+      toolUseId: pre.toolUseId ?? event.toolUseId,
+      timestamp: pre.timestamp,
+      // null, not denial latency — durationMs means execution time and the
+      // tool never executed, same convention as swept orphans.
+      durationMs: null,
+      success: false,
+      errorType: 'denied',
+      ...(event.deniedReason !== undefined && { error: event.deniedReason }),
+      ...(pre.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
+      ...(pre.inputHash !== undefined && { inputHash: pre.inputHash }),
+      ...(pre.cwd !== undefined && { cwd: pre.cwd }),
+      ...(pre.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
+      ...(pre.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
+      ...(pre.platform !== undefined && { platform: pre.platform }),
+      ...toolFields,
+    });
   }
 
   private handlePostEvent(event: PostHookEvent): void {
@@ -395,7 +545,7 @@ export class HookEventProcessor {
       toolUseId ??
       this.findOldestPendingKey(event.tool) ??
       `${event.tool}:${event.timestamp}:${randomUUID()}`;
-    const preEvent = this.pending.get(key);
+    const preEvent = this.pending.get(key)?.event;
     this.pending.delete(key);
 
     if (preEvent) {
@@ -413,6 +563,7 @@ export class HookEventProcessor {
         timestamp: preEvent.timestamp,
         durationMs: Math.max(0, event.timestamp - preEvent.timestamp),
         success: event.success ?? true,
+        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
         ...(event.error !== undefined && { error: event.error }),
         ...(preEvent.inputSize !== undefined && { inputSizeBytes: preEvent.inputSize }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
@@ -423,6 +574,9 @@ export class HookEventProcessor {
         }),
         ...(preEvent.permissionMode !== undefined && {
           permissionMode: preEvent.permissionMode,
+        }),
+        ...((preEvent.platform ?? event.platform) !== undefined && {
+          platform: preEvent.platform ?? event.platform,
         }),
         ...toolFields,
       };
@@ -439,8 +593,10 @@ export class HookEventProcessor {
         timestamp: event.timestamp,
         durationMs: null,
         success: event.success ?? true,
+        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
         ...(event.error !== undefined && { error: event.error }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
+        ...(event.platform !== undefined && { platform: event.platform }),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -451,14 +607,8 @@ export class HookEventProcessor {
     if (!this.onTokenEvent) return;
 
     if (typeof event.messageId === 'string' && event.messageId.length > 0) {
-      const dedupKey = `${event.sessionId ?? ''}|${event.messageId}`;
-      if (this.tokenDedup.has(dedupKey)) return;
-      this.tokenDedup.add(dedupKey);
-      this.tokenDedupOrder.push(dedupKey);
-      if (this.tokenDedupOrder.length > 4096) {
-        const evicted = this.tokenDedupOrder.shift();
-        if (evicted) this.tokenDedup.delete(evicted);
-      }
+      const scopeKey = event.sessionId ?? '';
+      if (this.tokenDedupRegistry.hasAndAdd(scopeKey, event.messageId)) return;
     }
 
     const tokenEvent: TokenEvent = {
@@ -490,55 +640,63 @@ export class HookEventProcessor {
     }
   }
 
+  /**
+   * How long a pending entry may dwell before it's flushed as an orphan.
+   * Permission-requested entries wait out the longer TTL — the user is being
+   * asked, and prompts dwell far longer than a healthy tool execution.
+   */
+  private pendingTtlMs(entry: PendingEntry): number {
+    return entry.phase === 'permission_requested'
+      ? PERMISSION_REQUESTED_TIMEOUT_MS
+      : this.orphanTimeoutMs;
+  }
+
+  /**
+   * Emit the record for a pending pre that will never pair: a swept orphan,
+   * a capacity eviction, or a shutdown flush. The phase decides the
+   * classification — a permission-requested entry expired because the user
+   * never approved ('rejected'); a bare entry expired because the tool never
+   * reported back ('timeout').
+   */
+  private emitUnpairedPreRecord(key: string, entry: PendingEntry): void {
+    const event = entry.event;
+    const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
+    this.emitRecord({
+      id: randomUUID(),
+      sessionId: event.sessionId ?? null,
+      toolName: event.tool,
+      toolUseId: event.toolUseId ?? key,
+      timestamp: event.timestamp,
+      durationMs: null,
+      success: false,
+      errorType: entry.phase === 'permission_requested' ? 'rejected' : 'timeout',
+      ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
+      ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
+      ...(event.platform !== undefined && { platform: event.platform }),
+      ...toolFields,
+    });
+  }
+
   private sweepOrphans(): void {
     const now = Date.now();
     const expired: string[] = [];
 
-    for (const [key, event] of this.pending) {
-      if (now - event.timestamp >= this.orphanTimeoutMs) {
+    for (const [key, entry] of this.pending) {
+      if (now - entry.event.timestamp >= this.pendingTtlMs(entry)) {
         expired.push(key);
       }
     }
 
     for (const key of expired) {
-      const event = this.pending.get(key)!;
+      const entry = this.pending.get(key)!;
       this.pending.delete(key);
-
-      const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
-      const record: ToolCallRecord = {
-        id: randomUUID(),
-        sessionId: event.sessionId ?? null,
-        toolName: event.tool,
-        toolUseId: event.toolUseId ?? key,
-        timestamp: event.timestamp,
-        durationMs: null,
-        success: false,
-        errorType: 'timeout',
-        ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
-        ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
-        ...toolFields,
-      };
-      this.emitRecord(record);
+      this.emitUnpairedPreRecord(key, entry);
     }
   }
 
   private flushPending(): void {
-    for (const [key, event] of this.pending) {
-      const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
-      const record: ToolCallRecord = {
-        id: randomUUID(),
-        sessionId: event.sessionId ?? null,
-        toolName: event.tool,
-        toolUseId: event.toolUseId ?? key,
-        timestamp: event.timestamp,
-        durationMs: null,
-        success: false,
-        errorType: 'timeout',
-        ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
-        ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
-        ...toolFields,
-      };
-      this.emitRecord(record);
+    for (const [key, entry] of this.pending) {
+      this.emitUnpairedPreRecord(key, entry);
     }
     this.pending.clear();
   }
@@ -554,7 +712,8 @@ export class HookEventProcessor {
   private findOldestPendingKey(tool: string): string | undefined {
     let oldestKey: string | undefined;
     let oldestTimestamp = Infinity;
-    for (const [k, v] of this.pending) {
+    for (const [k, entry] of this.pending) {
+      const v = entry.event;
       // Only match fallback-keyed entries (format: "Tool:timestamp:uuid") — skip
       // entries keyed by their real toolUseId so a no-toolUseId post event doesn't
       // steal a slot that belongs to a later post event that carries that toolUseId.
@@ -576,14 +735,7 @@ export class HookEventProcessor {
     const agentId = event.agentId ?? '';
     const messageId = event.messageId ?? '';
     if (!agentId || !messageId) return;
-    const dedupKey = `${agentId}|${messageId}`;
-    if (this.subagentDedup.has(dedupKey)) return;
-    this.subagentDedup.add(dedupKey);
-    this.subagentDedupOrder.push(dedupKey);
-    if (this.subagentDedupOrder.length > 4096) {
-      const evicted = this.subagentDedupOrder.shift();
-      if (evicted) this.subagentDedup.delete(evicted);
-    }
+    if (this.subagentDedupRegistry.hasAndAdd(agentId, messageId)) return;
 
     const turn: SubagentTurnEvent = {
       timestampMs:
@@ -685,6 +837,29 @@ export class HookEventProcessor {
       this.onObservabilityHealth(frame);
     } catch (err) {
       logger.warn('onObservabilityHealth callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleApiFailureEvent(event: ApiFailureHookEvent): void {
+    if (!this.onApiFailure) return;
+    const frame: ApiFailureFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      sessionId: event.sessionId ?? null,
+      rawErrorType: event.errorType,
+      ...(typeof event.errorDetails === 'string' ? { errorDetails: event.errorDetails } : {}),
+      ...(typeof event.lastAssistantMessage === 'string'
+        ? { lastAssistantMessage: event.lastAssistantMessage }
+        : {}),
+    };
+    try {
+      this.onApiFailure(frame);
+    } catch (err) {
+      logger.warn('onApiFailure callback failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

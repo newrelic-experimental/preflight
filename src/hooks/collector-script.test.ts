@@ -1,22 +1,22 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync, readFileSync, statSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
 import {
-  processHook,
-  redact,
+  _procFs,
+  _stdinFs,
+  getBufferPath,
+  getLinuxAncestorPids,
+  getRecordContent,
   hashInput,
+  processHook,
+  readStdinSync,
+  redact,
   sizeOf,
   truncate,
-  getRecordContent,
-  getBufferPath,
-  writePpidBreadcrumb,
   writeCwdBreadcrumb,
-  getLinuxAncestorPids,
-  _procFs,
-  readStdinSync,
-  _stdinFs,
+  writePpidBreadcrumb,
 } from './collector-script.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -83,6 +83,19 @@ function makePostToolUseFailure(overrides?: Record<string, unknown>): string {
     is_interrupt: false,
     cwd: '/projects/test',
     permission_mode: 'default',
+    ...overrides,
+  });
+}
+
+function makeStopFailure(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'abc123',
+    transcript_path: '/Users/test/.claude/projects/test/abc123.jsonl',
+    cwd: '/Users/test/project',
+    hook_event_name: 'StopFailure',
+    error: 'rate_limit',
+    error_details: '429 Too Many Requests',
+    last_assistant_message: 'API Error: Rate limit reached',
     ...overrides,
   });
 }
@@ -184,6 +197,26 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.sessionId).toBe('sess-001');
       expect(event.toolUseId).toBe('toolu_abc123');
+    });
+
+    it('stamps event.platform from MCP_CLIENT when explicitly set', () => {
+      process.env.MCP_CLIENT = 'copilot-sdk';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('copilot-sdk');
+    });
+
+    it('stamps event.platform from NEW_RELIC_AI_PLATFORM when MCP_CLIENT is absent', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'cursor';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('cursor');
+    });
+
+    it('leaves event.platform unset for a genuine Claude Code hook with no explicit platform override', () => {
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBeUndefined();
     });
 
     it('captures transcript_path as transcriptPath', () => {
@@ -340,6 +373,116 @@ describe('collector-script', () => {
     });
   });
 
+  // VS Code Copilot agent hooks send the uniform PreToolUse/PostToolUse envelope
+  // but with VS Code's own tool names and camelCase tool_input keys — both deltas
+  // documented in the hooks FAQ (code.visualstudio.com/docs/copilot/customization/hooks).
+  // Note: Copilot CLI's own native lowerCamelCase hook config (preToolUse) is a
+  // DIFFERENT, incompatible payload shape with no hook_event_name field at all
+  // (confirmed against GitHub's hooks reference) — it is not what's exercised
+  // below. The Copilot CLI/SDK adapter (copilot-sdk) instead requires the
+  // PascalCase PreToolUse/PostToolUse config, which sends this same envelope.
+  describe('processHook() — VS Code Copilot hooks', () => {
+    function makeCopilotPreToolUse(overrides?: Record<string, unknown>): string {
+      return JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'create_file',
+        tool_input: { filePath: '/src/new.ts', content: 'line1\nline2' },
+        tool_use_id: 'toolu_copilot_1',
+        session_id: 'copilot-sess-001',
+        cwd: '/projects/test',
+        timestamp: '2026-08-07T00:00:00.000Z',
+        ...overrides,
+      });
+    }
+
+    it('captures camelCase filePath as the common file_path meta field', () => {
+      processHook(makeCopilotPreToolUse());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const toolInput = events[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.file_path).toBe('/src/new.ts');
+    });
+
+    it('extracts Write-style content metadata for create_file', () => {
+      processHook(makeCopilotPreToolUse());
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.content).toBeUndefined();
+      expect(toolInput.contentLength).toBe(11);
+      expect(toolInput.lineCount).toBe(2);
+    });
+
+    it('extracts Edit-style metadata from replace_string_in_file camelCase fields', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          tool_name: 'replace_string_in_file',
+          tool_input: { filePath: '/src/a.ts', oldString: 'aaa\nbbb', newString: '' },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.oldStringLength).toBe(7);
+      expect(toolInput.oldLineCount).toBe(2);
+      expect(toolInput.newStringLength).toBe(0);
+      expect(toolInput.isDelete).toBe(true);
+    });
+
+    it('counts replacements for multi_replace_string_in_file', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          tool_name: 'multi_replace_string_in_file',
+          tool_input: {
+            replacements: [
+              { filePath: '/a.ts', oldString: 'x', newString: 'y' },
+              { filePath: '/b.ts', oldString: 'p', newString: 'q' },
+            ],
+          },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.replacementsCount).toBe(2);
+    });
+
+    it('extracts Bash-style command metadata for run_in_terminal', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          tool_name: 'run_in_terminal',
+          tool_input: { command: 'npm test', explanation: 'Run tests', isBackground: false },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).toBe('npm test');
+      expect(toolInput.description).toBe('Run tests');
+      expect(toolInput.run_in_background).toBe(false);
+    });
+
+    it('handles a plain-string tool_response on PostToolUse', () => {
+      processHook(
+        makeCopilotPreToolUse({
+          hook_event_name: 'PostToolUse',
+          tool_response: 'File edited successfully',
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.mode).toBe('post');
+      expect(event.success).toBe(true);
+      expect(event.outputSize).toBeGreaterThan(0);
+    });
+
+    it('accepts a lowerCamelCase hook_event_name value (case-insensitive dispatch, e.g. for Kiro)', () => {
+      processHook(makeCopilotPreToolUse({ hook_event_name: 'preToolUse' }));
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.mode).toBe('pre');
+      expect(events[0]!.tool).toBe('create_file');
+    });
+  });
+
   describe('processHook() — PostToolUse', () => {
     it('writes a valid post event with success=true', () => {
       processHook(makePostToolUse());
@@ -403,6 +546,155 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.error).not.toContain('sk-1234567890abcdef');
       expect(event.error).toContain('[REDACTED]');
+    });
+  });
+
+  describe('processHook() — StopFailure', () => {
+    it('writes an api_failure event with the raw errorType', () => {
+      processHook(makeStopFailure());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('api_failure');
+      expect(event.errorType).toBe('rate_limit');
+      expect(event.sessionId).toBe('abc123');
+    });
+
+    it('includes redacted error_details and last_assistant_message when recordContent=true', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeStopFailure());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toBe('429 Too Many Requests');
+      expect(event.lastAssistantMessage).toBe('API Error: Rate limit reached');
+    });
+
+    it('omits error_details and last_assistant_message when recordContent=false', () => {
+      processHook(makeStopFailure());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toBeUndefined();
+      expect(event.lastAssistantMessage).toBeUndefined();
+    });
+
+    it('redacts sensitive information in error_details and last_assistant_message', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(
+        makeStopFailure({
+          error_details: 'Authorization failed: Bearer eyJhbGciOiJIUzI1NiJ9.token.signature',
+          last_assistant_message: 'Failed: API_KEY = sk-1234567890abcdef',
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toContain('[REDACTED]');
+      expect(event.errorDetails).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+      expect(event.lastAssistantMessage).toContain('[REDACTED]');
+      expect(event.lastAssistantMessage).not.toContain('sk-1234567890abcdef');
+    });
+
+    it('JSON.stringifies a non-string error_details', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeStopFailure({ error_details: { code: 429, message: 'Too Many Requests' } }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorDetails).toBe('{"code":429,"message":"Too Many Requests"}');
+    });
+
+    it('defaults errorType to "unknown" when error is missing', () => {
+      processHook(makeStopFailure({ error: undefined }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.errorType).toBe('unknown');
+    });
+  });
+
+  describe('processHook() — PermissionRequest / PermissionDenied', () => {
+    it('writes a permission_request event with toolUseId and sessionId', () => {
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf build' },
+          tool_use_id: 'toolu_perm1',
+          session_id: 'sess-001',
+          prompt_id: 'prompt-001',
+          cwd: '/projects/test',
+          permission_mode: 'default',
+        }),
+      );
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('permission_request');
+      expect(event.tool).toBe('Bash');
+      expect(event.toolUseId).toBe('toolu_perm1');
+      expect(event.sessionId).toBe('sess-001');
+      expect(event.timestamp).toEqual(expect.any(Number));
+    });
+
+    it('writes a permission_denied event carrying a redacted deniedReason', () => {
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionDenied',
+          tool_name: 'Bash',
+          tool_use_id: 'toolu_perm2',
+          session_id: 'sess-001',
+          denied_reason: 'Blocked by policy: Bearer eyJhbGciOiJIUzI1NiJ9.token.signature',
+        }),
+      );
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('permission_denied');
+      expect(event.tool).toBe('Bash');
+      expect(event.toolUseId).toBe('toolu_perm2');
+      expect(event.deniedReason).toContain('Blocked by policy');
+      expect(event.deniedReason).toContain('[REDACTED]');
+      expect(event.deniedReason).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    });
+
+    it('drops a permission event with no tool_use_id without crashing', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          session_id: 'sess-001',
+        }),
+      );
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionDenied',
+          tool_name: 'Bash',
+          tool_use_id: '',
+          session_id: 'sess-001',
+        }),
+      );
+
+      expect(readBufferEvents()).toHaveLength(0);
+      expect(stderrWriteSpy).toHaveBeenCalledTimes(2);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('never writes hook decision output to stdout', () => {
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_use_id: 'toolu_perm3',
+          session_id: 'sess-001',
+        }),
+      );
+
+      expect(stdoutSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -1284,6 +1576,27 @@ describe('collector-script', () => {
       expect(typeof firstStat).toBe('number');
     });
 
+    it('refreshes mtime on the short-circuit path so an active session never goes stale', () => {
+      writePpidBreadcrumb('sess-active');
+      const ppid = process.ppid;
+      const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
+
+      // Simulate this breadcrumb having gone quiet for a while (e.g. no hook
+      // fired since before an MCP server restart) by backdating its mtime.
+      const oldMs = Date.now() - 60_000;
+      utimesSync(breadcrumbPath, oldMs / 1000, oldMs / 1000);
+      expect(statSync(breadcrumbPath).mtimeMs).toBeLessThan(Date.now() - 30_000);
+
+      // A subsequent hook call with the SAME session_id (content unchanged,
+      // short-circuit path) must still bump mtime — otherwise
+      // resolveFromBreadcrumb()'s staleness check (session-resolver.ts)
+      // would reject this breadcrumb forever after any MCP restart that
+      // keeps the same ppid and session_id.
+      writePpidBreadcrumb('sess-active');
+      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-active');
+      expect(statSync(breadcrumbPath).mtimeMs).toBeGreaterThan(Date.now() - 5_000);
+    });
+
     it('processHook() drops the breadcrumb on every fire (idempotent overwrite)', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
@@ -1539,17 +1852,90 @@ describe('collector-script', () => {
       expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
     });
 
-    it('re-throws non-EACCES /dev/stdin errors without falling back to the fd', () => {
+    it('falls back to the inherited stdin fd when /dev/stdin is a socket (ENXIO)', () => {
+      // Reproduces VS Code Copilot Chat's hook spawn: an Electron/Node parent
+      // backs a `stdio: 'pipe'` child with a socketpair rather than a FIFO,
+      // and open() on a unix socket via /proc/self/fd fails with ENXIO even
+      // though the inherited fd 0 reads normally.
       Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
       const calls: Array<string | number> = [];
       _stdinFs.readFileSync = (pathOrFd) => {
         calls.push(pathOrFd);
-        const err = new Error("ENOENT: no such file or directory, open '/dev/stdin'");
-        (err as NodeJS.ErrnoException).code = 'ENOENT';
+        if (pathOrFd === '/dev/stdin') {
+          const err = new Error("ENXIO: no such device or address, open '/dev/stdin'");
+          (err as NodeJS.ErrnoException).code = 'ENXIO';
+          throw err;
+        }
+        return '{"hook_event_name":"PreToolUse"}';
+      };
+      expect(readStdinSync()).toBe('{"hook_event_name":"PreToolUse"}');
+      expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
+    });
+
+    it('propagates the error when the fd fallback also fails', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      const calls: Array<string | number> = [];
+      _stdinFs.readFileSync = (pathOrFd) => {
+        calls.push(pathOrFd);
+        const err = new Error('EBADF: bad file descriptor, read');
+        (err as NodeJS.ErrnoException).code = 'EBADF';
         throw err;
       };
-      expect(() => readStdinSync()).toThrow('ENOENT');
-      expect(calls).toEqual(['/dev/stdin']);
+      expect(() => readStdinSync()).toThrow('EBADF');
+      expect(calls).toEqual(['/dev/stdin', process.stdin.fd]);
+    });
+  });
+
+  describe('collector-script — GitHub Copilot CLI tool_result payloads', () => {
+    // The Copilot CLI puts the tool outcome under `tool_result` with a
+    // `result_type` string, not under `tool_response` with a `success` boolean.
+    // Verified against real CLI hook payloads captured on v1.0.78.
+    const makeCopilotCliPost = (overrides: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        session_id: 'cc25c3e5-5475-4c5b-861b-dc5637fd04da',
+        cwd: '/home/dev/project',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hi', description: 'Echo' },
+        tool_result: { result_type: 'success', text_result_for_llm: 'hi\n' },
+        ...overrides,
+      });
+
+    it('records a non-zero outputSize from tool_result', () => {
+      processHook(makeCopilotCliPost());
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].mode).toBe('post');
+      expect(events[0].outputSize).toBeGreaterThan(0);
+    });
+
+    it('treats result_type "success" as a successful call', () => {
+      processHook(makeCopilotCliPost());
+      expect(readBufferEvents()[0].success).toBe(true);
+    });
+
+    it('treats result_type "failure" as a failed call', () => {
+      processHook(
+        makeCopilotCliPost({
+          tool_result: { result_type: 'failure', text_result_for_llm: 'boom' },
+        }),
+      );
+      expect(readBufferEvents()[0].success).toBe(false);
+    });
+
+    it('still prefers tool_response when both fields are present', () => {
+      processHook(
+        makeCopilotCliPost({
+          tool_response: { success: false },
+          tool_result: { result_type: 'success' },
+        }),
+      );
+      expect(readBufferEvents()[0].success).toBe(false);
+    });
+
+    it('defaults to success when neither field carries an outcome', () => {
+      processHook(makeCopilotCliPost({ tool_result: { text_result_for_llm: 'hi' } }));
+      expect(readBufferEvents()[0].success).toBe(true);
     });
   });
 

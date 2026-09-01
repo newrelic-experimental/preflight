@@ -1,22 +1,23 @@
 import { createLogger } from '../shared/index.js';
-import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
-import { ClaudeCodeAdapter } from './claude-code-adapter.js';
-import { CursorAdapter } from './cursor-adapter.js';
-import { WindsurfAdapter } from './windsurf-adapter.js';
-import { CopilotAdapter } from './copilot-adapter.js';
-import { ZedAdapter } from './zed-adapter.js';
-import { ContinueAdapter } from './continue-adapter.js';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
-import { KiroAdapter } from './kiro-adapter.js';
-import { DroidAdapter } from './droid-adapter.js';
-import { GeminiCliAdapter } from './gemini-cli-adapter.js';
+import { AntigravityAdapter } from './antigravity-adapter.js';
+import { ClaudeCodeAdapter } from './claude-code-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
-import { OpencodeAdapter } from './opencode-adapter.js';
-import { KiloCodeAdapter } from './kilo-code-adapter.js';
-import { PiAdapter } from './pi-adapter.js';
-import { AntigravityAdapter } from './antigravity-adapter.js';
+import { ContinueAdapter } from './continue-adapter.js';
+import { CopilotAdapter } from './copilot-adapter.js';
+import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
+import { CursorAdapter } from './cursor-adapter.js';
+import { DroidAdapter } from './droid-adapter.js';
+import { GeminiCliAdapter } from './gemini-cli-adapter.js';
 import { GenericMcpAdapter } from './generic-mcp-adapter.js';
+import { KiloCodeAdapter } from './kilo-code-adapter.js';
+import { KiroAdapter } from './kiro-adapter.js';
+import { OpencodeAdapter } from './opencode-adapter.js';
+import { PiAdapter } from './pi-adapter.js';
+import type { PlatformAdapter, PlatformVisibilityLevel } from './types.js';
+import { WindsurfAdapter } from './windsurf-adapter.js';
+import { ZedAdapter } from './zed-adapter.js';
 
 const logger = createLogger('platform-registry');
 
@@ -29,7 +30,29 @@ export class PlatformRegistry {
     logger.debug('Registered platform adapter', { platform: adapter.platformName });
   }
 
+  /**
+   * Explicit configuration (MCP_CLIENT / NEW_RELIC_AI_PLATFORM naming an
+   * adapter's own platformName) always wins over an ambient signal, even one
+   * matched by an earlier-registered adapter. Every adapter's isSupported()
+   * checks process.env.MCP_CLIENT === '<its own platformName>' (and usually
+   * NEW_RELIC_AI_PLATFORM too) alongside its ambient checks, with equal
+   * weight — so without this, an ambient signal inherited from a launching
+   * process (e.g. CLAUDE_CODE_VERSION) can outrank an explicit config for a
+   * different platform purely because that adapter registers first.
+   */
   detect(): PlatformAdapter | null {
+    const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+    if (explicitPlatform) {
+      const explicitMatch = this.adapters.find((a) => a.platformName === explicitPlatform);
+      if (explicitMatch?.isSupported()) {
+        this.active = explicitMatch;
+        logger.info('Detected platform (explicit config)', {
+          platform: explicitMatch.platformName,
+        });
+        return explicitMatch;
+      }
+    }
+
     for (const adapter of this.adapters) {
       if (adapter.isSupported()) {
         this.active = adapter;
@@ -65,6 +88,7 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new CursorAdapter());
   registry.register(new WindsurfAdapter());
   registry.register(new CopilotAdapter());
+  registry.register(new CopilotSdkAdapter());
   registry.register(new ZedAdapter());
   registry.register(new ContinueAdapter());
   registry.register(new AmazonQAdapter());

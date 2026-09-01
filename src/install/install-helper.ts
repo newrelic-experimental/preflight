@@ -20,12 +20,42 @@ const HOOK_MATCHER = '';
 const MCP_SERVER_KEY = 'newrelic-preflight';
 const MCP_SERVER_COMMAND = 'preflight';
 const COLLECTOR_COMMAND = 'preflight-collector';
+
+/** Every Claude Code hook event this installer registers (and must be able to remove). */
+export const HOOK_EVENT_TYPES = [
+  'PreToolUse',
+  'PostToolUse',
+  'PermissionRequest',
+  'PermissionDenied',
+  'StopFailure',
+] as const;
+export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];
+
+// The collector ignores this argv marker (it dispatches on the payload's
+// hook_event_name) — it exists so hook commands are identifiable in settings
+// files, and NR_HOOK_RE below recognizes exactly this vocabulary.
+const HOOK_SUBCOMMANDS = {
+  PreToolUse: 'pre-tool',
+  PostToolUse: 'post-tool',
+  PermissionRequest: 'permission-request',
+  PermissionDenied: 'permission-denied',
+  StopFailure: 'stop-failure',
+} as const satisfies Record<HookEventType, string>;
+
+/**
+ * Alternation of every subcommand marker, for embedding in regexes that must
+ * recognize any hook command this installer writes. Derived from
+ * HOOK_SUBCOMMANDS so a new hook event can never be registered without the
+ * uninstaller and diagnostics recognizing it.
+ */
+export const HOOK_SUBCOMMAND_PATTERN = Object.values(HOOK_SUBCOMMANDS).join('|');
+
 // Matches the hook commands this installer writes, in both bare-name and
 // absolute-path forms (quoted or unquoted):
 //   preflight-collector pre-tool
-//   /abs/path/preflight-collector pre-tool
-//   "/quoted/path/preflight-collector" pre-tool
-export const NR_HOOK_RE = /preflight-collector"?\s+(?:pre|post)-tool/;
+//   /abs/path/preflight-collector permission-request
+//   "/quoted/path/preflight-collector" post-tool
+export const NR_HOOK_RE = new RegExp(`preflight-collector"?\\s+(?:${HOOK_SUBCOMMAND_PATTERN})`);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,10 +71,7 @@ export interface HookEntry {
   hooks: HookCommand[];
 }
 
-export interface HookEntries {
-  PreToolUse: HookEntry[];
-  PostToolUse: HookEntry[];
-}
+export type HookEntries = Record<HookEventType, HookEntry[]>;
 
 export interface McpServerConfig {
   command: string;
@@ -64,29 +91,37 @@ export function generateHookEntries(
   binPath?: string | null,
   options?: { platform?: PlatformTarget },
 ): HookEntries {
-  let pre: string;
-  let post: string;
+  let collectorInvocation: string;
 
   if (options?.platform === 'wsl-windows-cc') {
     // Windows Claude Code runs hooks via wsl.exe — call the WSL binary through interop.
     // Quote the path so cmd.exe doesn't split on spaces (e.g. /home/john doe/...).
     const collectorPath = binPath ? join(dirname(binPath), COLLECTOR_COMMAND) : COLLECTOR_COMMAND;
     const quotedPath = collectorPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    pre = `wsl.exe -e "${quotedPath}" pre-tool`;
-    post = `wsl.exe -e "${quotedPath}" post-tool`;
+    collectorInvocation = `wsl.exe -e "${quotedPath}"`;
   } else {
     // Quote the path so shells with sh -c don't split on spaces (e.g. /Users/John Doe/...).
     // Hook commands use preflight-collector (lightweight, <5ms budget).
-    const bin = binPath
+    collectorInvocation = binPath
       ? `"${join(dirname(binPath), COLLECTOR_COMMAND).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
       : COLLECTOR_COMMAND;
-    pre = `${bin} pre-tool`;
-    post = `${bin} post-tool`;
   }
 
+  const entryFor = (hookType: HookEventType): HookEntry[] => [
+    {
+      matcher: HOOK_MATCHER,
+      hooks: [{ type: 'command', command: `${collectorInvocation} ${HOOK_SUBCOMMANDS[hookType]}` }],
+    },
+  ];
   return {
-    PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: pre }] }],
-    PostToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: post }] }],
+    PreToolUse: entryFor('PreToolUse'),
+    PostToolUse: entryFor('PostToolUse'),
+    PermissionRequest: entryFor('PermissionRequest'),
+    PermissionDenied: entryFor('PermissionDenied'),
+    // StopFailure is its own top-level settings.json hooks key, distinct from
+    // "Stop" — see code.claude.com/docs/en/hooks.md ("once per turn:
+    // UserPromptSubmit, Stop, and StopFailure" are three separate hook events).
+    StopFailure: entryFor('StopFailure'),
   };
 }
 
@@ -199,19 +234,25 @@ function filterNrObserveEntries(entries: unknown[]): unknown[] {
 }
 
 /**
- * Returns true when settingsContent contains both a PreToolUse and PostToolUse
- * entry that match the NR hook pattern (NR_HOOK_RE).
+ * Returns true when settingsContent contains an NR-pattern (NR_HOOK_RE) entry
+ * for every hook event type this installer registers. False for a pre-upgrade
+ * install carrying only PreToolUse/PostToolUse, so install paths gated on
+ * this re-run their merge and add the missing permission hooks.
  * Pure — no file I/O.
+ *
+ * Deliberately does NOT check StopFailure: broadening what counts as "hooks
+ * installed" would change behavior for existing users, which is a scope cut
+ * for this PR, not an oversight — don't "fix" this without re-reading why.
  */
 export function areHooksInstalled(settingsContent: Record<string, unknown>): boolean {
   const hooks = settingsContent.hooks;
   if (typeof hooks !== 'object' || hooks === null) return false;
   const h = hooks as Record<string, unknown>;
 
-  const preArr = Array.isArray(h.PreToolUse) ? (h.PreToolUse as unknown[]) : [];
-  const postArr = Array.isArray(h.PostToolUse) ? (h.PostToolUse as unknown[]) : [];
-
-  return preArr.some(entryContainsNrObserve) && postArr.some(entryContainsNrObserve);
+  return HOOK_EVENT_TYPES.every((hookType) => {
+    const arr = h[hookType];
+    return Array.isArray(arr) && arr.some(entryContainsNrObserve);
+  });
 }
 
 /**
@@ -231,12 +272,16 @@ export function readAndCheckHooks(settingsPath?: string): boolean {
 // Zod schemas — validate existing file shapes before merging
 // ---------------------------------------------------------------------------
 
-// Hooks: only require that PreToolUse/PostToolUse are arrays — individual
-// entries may come from other tools in any shape, so we don't validate them.
+// Hooks: only require that the hook-event keys we write are arrays —
+// individual entries may come from other tools in any shape, so we don't
+// validate them.
 const HooksFieldSchema = z
   .object({
     PreToolUse: z.array(z.unknown()).optional(),
     PostToolUse: z.array(z.unknown()).optional(),
+    PermissionRequest: z.array(z.unknown()).optional(),
+    PermissionDenied: z.array(z.unknown()).optional(),
+    StopFailure: z.array(z.unknown()).optional(),
   })
   .passthrough();
 const SettingsSchema = z.object({ hooks: HooksFieldSchema.optional() }).passthrough();
@@ -275,7 +320,7 @@ export function mergeSettings(
       ? { ...(result.hooks as Record<string, unknown>) }
       : {};
 
-  for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
+  for (const hookType of HOOK_EVENT_TYPES) {
     const existingArr = Array.isArray(hooks[hookType]) ? [...(hooks[hookType] as unknown[])] : [];
 
     if (binPath !== null && binPath !== undefined) {
@@ -358,7 +403,7 @@ export function removeSettings(existing: Record<string, unknown>): Record<string
   if (typeof result.hooks === 'object' && result.hooks !== null) {
     const hooks = { ...(result.hooks as Record<string, unknown>) };
 
-    for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
+    for (const hookType of HOOK_EVENT_TYPES) {
       if (Array.isArray(hooks[hookType])) {
         const filtered = filterNrObserveEntries(hooks[hookType] as unknown[]);
         if (filtered.length > 0) {

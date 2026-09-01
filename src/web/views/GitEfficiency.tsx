@@ -58,6 +58,19 @@ function formatEventType(type: string): string {
   return type.replace(/_/g, ' ');
 }
 
+/** Time-only for today's events; date-prefixed for older ones so the ordering reads correctly. */
+function formatEventTime(timestamp: number): string {
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return '—';
+  const time = d.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+}
+
 function ScoreRing({ score }: { score: number | null }): JSX.Element {
   if (score === null) {
     return (
@@ -559,22 +572,22 @@ export function GitEfficiency(): JSX.Element {
                 <tr>
                   <th className="text-left p-2">Time</th>
                   <th className="text-left p-2">Type</th>
+                  <th className="text-left p-2">Repo</th>
+                  <th className="text-left p-2">Detail</th>
                   <th className="text-left p-2">Duration</th>
                   <th className="text-left p-2">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {[...data.gitCommandTimeline]
-                  .reverse()
+                  // Hydrated commits are appended after live events, so
+                  // insertion order isn't chronological — sort explicitly.
+                  .sort((a, b) => b.timestamp - a.timestamp)
                   .slice(0, 30)
                   .map((e) => (
                     <tr key={`${e.type}-${e.timestamp}`} className="border-t border-border-subtle">
-                      <td className="p-2 tabular-nums text-ink-subtle">
-                        {new Date(e.timestamp).toLocaleTimeString(undefined, {
-                          hour: 'numeric',
-                          minute: '2-digit',
-                          second: '2-digit',
-                        })}
+                      <td className="p-2 tabular-nums text-ink-subtle whitespace-nowrap">
+                        {formatEventTime(e.timestamp)}
                       </td>
                       <td className="p-2">
                         <span
@@ -582,6 +595,28 @@ export function GitEfficiency(): JSX.Element {
                         >
                           {formatEventType(e.type)}
                         </span>
+                      </td>
+                      <td className="p-2 text-ink-subtle whitespace-nowrap">
+                        {e.repo ? e.repo.split('/').pop() : '—'}
+                      </td>
+                      <td
+                        className="p-2 max-w-xs truncate"
+                        title={e.subject ?? e.command ?? undefined}
+                      >
+                        {e.url ? (
+                          <a
+                            href={e.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-accent-blue hover:underline"
+                          >
+                            {e.subject ?? 'view commit'}
+                          </a>
+                        ) : (
+                          // Live git events carry no commit subject, but the
+                          // command itself is the useful detail for them.
+                          (e.subject ?? e.command ?? '—')
+                        )}
                       </td>
                       <td className="p-2 tabular-nums text-ink-subtle">{formatMs(e.durationMs)}</td>
                       <td className="p-2">

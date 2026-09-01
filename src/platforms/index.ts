@@ -8,6 +8,7 @@ export { ClaudeCodeAdapter } from './claude-code-adapter.js';
 export { CursorAdapter } from './cursor-adapter.js';
 export { WindsurfAdapter } from './windsurf-adapter.js';
 export { CopilotAdapter } from './copilot-adapter.js';
+export { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
 export type { CopilotToolCallEvent, CopilotUsageRecord } from './copilot-adapter.js';
 export { parseCopilotUsageResponse } from './copilot-adapter.js';
 export { ZedAdapter } from './zed-adapter.js';

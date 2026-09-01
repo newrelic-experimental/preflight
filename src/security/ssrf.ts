@@ -12,8 +12,14 @@ const BLOCKED_METADATA_FQDNS = new Set([
   'ec2.amazonaws.com',
 ]);
 
-// Cloud metadata service IPs that are not covered by RFC-1918 or link-local blocks.
-const BLOCKED_METADATA_IPS = new Set(['100.100.100.200']);
+// Cloud metadata service IPs, checked unconditionally (independent of
+// BLOCKED_HOST_RE / allowPrivateNetworks below). 169.254.169.254 (AWS/GCP/Azure
+// IMDS) is also covered by BLOCKED_HOST_RE's link-local range in strict mode,
+// but is listed here too so it stays blocked even when allowPrivateNetworks
+// skips that range for a legitimately-private-destination caller.
+// 100.100.100.200 (Alibaba Cloud) isn't in any RFC-1918/link-local range, so
+// it has no other coverage.
+const BLOCKED_METADATA_IPS = new Set(['100.100.100.200', '169.254.169.254']);
 
 // Matches loopback, RFC-1918 private ranges, link-local (169.254/16), and
 // IPv4 multicast (224.0.0.0/4, i.e. 224–239.x.x.x).
@@ -109,7 +115,21 @@ function canonicalizeNumericIP(host: string): string | null {
   return null;
 }
 
-export function validateSsrfUrl(label: string, url: URL): void {
+export interface SsrfValidationOptions {
+  /**
+   * Skip the private/loopback/link-local/multicast range check
+   * (`BLOCKED_HOST_RE`) — for a client whose whole purpose is reaching a
+   * self-hosted destination on the caller's own LAN (e.g. HomelabForwarder).
+   * Cloud metadata endpoints (FQDN and IP, including numeric-encoding
+   * bypasses of them) and the scheme check are still always enforced —
+   * there is no legitimate reason for any such client to reach those.
+   * Defaults to false so every existing caller keeps today's strict
+   * behavior unchanged.
+   */
+  readonly allowPrivateNetworks?: boolean;
+}
+
+export function validateSsrfUrl(label: string, url: URL, opts?: SsrfValidationOptions): void {
   if (!ALLOWED_SCHEMES.has(url.protocol)) {
     throw new Error(`${label}: scheme "${url.protocol}" is not allowed; use http: or https:`);
   }
@@ -131,6 +151,26 @@ export function validateSsrfUrl(label: string, url: URL): void {
 
   // Canonicalize and check numeric IP encodings (decimal, octal, hex)
   const canonicalIP = canonicalizeNumericIP(hostname);
+  if (canonicalIP && BLOCKED_METADATA_IPS.has(canonicalIP)) {
+    throw new Error(
+      `${label}: host "${url.hostname}" is a numeric encoding of a cloud metadata service endpoint`,
+    );
+  }
+
+  // Explicitly check IPv4-mapped IPv6 addresses by extracting the embedded IPv4 —
+  // computed here (ahead of the allowPrivateNetworks short-circuit below) so an
+  // IPv6-mapped encoding of a metadata IP (e.g. ::ffff:169.254.169.254) can't
+  // bypass the metadata check that a caller opted out of the private-range
+  // check for.
+  const embeddedIPv4 = extractIPv4FromMappedIPv6(hostname);
+  if (embeddedIPv4 && BLOCKED_METADATA_IPS.has(embeddedIPv4)) {
+    throw new Error(
+      `${label}: host "${url.hostname}" contains a mapped cloud metadata service IPv4 address`,
+    );
+  }
+
+  if (opts?.allowPrivateNetworks) return;
+
   if (canonicalIP && BLOCKED_HOST_RE.test(canonicalIP)) {
     throw new Error(
       `${label}: host "${url.hostname}" is a numeric encoding of a private or loopback address`,
@@ -141,8 +181,6 @@ export function validateSsrfUrl(label: string, url: URL): void {
     throw new Error(`${label}: host "${url.hostname}" resolves to a private or loopback address`);
   }
 
-  // Explicitly check IPv4-mapped IPv6 addresses by extracting and validating the embedded IPv4
-  const embeddedIPv4 = extractIPv4FromMappedIPv6(hostname);
   if (embeddedIPv4 && BLOCKED_HOST_RE.test(embeddedIPv4)) {
     throw new Error(`${label}: host "${url.hostname}" contains a private or loopback IPv4 address`);
   }
@@ -165,7 +203,7 @@ export function validateSsrfUrl(label: string, url: URL): void {
  * — confirmed empirically. This still honors `options.all: false` for
  * correctness against any other caller of the `LookupFunction` contract.
  */
-export function createSsrfSafeLookup(label: string): LookupFunction {
+export function createSsrfSafeLookup(label: string, opts?: SsrfValidationOptions): LookupFunction {
   return (hostname, options, callback) => {
     dnsLookup(
       hostname,
@@ -182,7 +220,7 @@ export function createSsrfSafeLookup(label: string): LookupFunction {
         for (const { address, family } of addresses) {
           const hostForCheck = family === 6 ? `[${address}]` : address;
           try {
-            validateSsrfUrl(label, new URL(`http://${hostForCheck}`));
+            validateSsrfUrl(label, new URL(`http://${hostForCheck}`), opts);
           } catch (validationErr) {
             callback(validationErr as Error, '');
             return;

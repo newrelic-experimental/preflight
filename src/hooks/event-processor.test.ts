@@ -3,9 +3,16 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from '../storage/local-store.js';
-import { HookEventProcessor } from './event-processor.js';
+import { HookEventProcessor, DedupRingRegistry } from './event-processor.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
-import type { HookEvent, PreHookEvent, PostHookEvent, ToolCallRecord } from '../storage/types.js';
+import type {
+  HookEvent,
+  PermissionDeniedHookEvent,
+  PermissionRequestHookEvent,
+  PreHookEvent,
+  PostHookEvent,
+  ToolCallRecord,
+} from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -72,6 +79,33 @@ function makeFailureEvent(overrides?: Partial<Omit<PostHookEvent, 'mode'>>): Pos
     isInterrupt: false,
     toolUseId: 'toolu_002',
     sessionId: 'sess-001',
+    ...overrides,
+  };
+}
+
+function makePermissionRequestEvent(
+  overrides?: Partial<Omit<PermissionRequestHookEvent, 'mode'>>,
+): PermissionRequestHookEvent {
+  return {
+    mode: 'permission_request',
+    tool: 'Read',
+    timestamp: 1001,
+    toolUseId: 'toolu_001',
+    sessionId: 'sess-001',
+    ...overrides,
+  };
+}
+
+function makePermissionDeniedEvent(
+  overrides?: Partial<Omit<PermissionDeniedHookEvent, 'mode'>>,
+): PermissionDeniedHookEvent {
+  return {
+    mode: 'permission_denied',
+    tool: 'Read',
+    timestamp: 1002,
+    toolUseId: 'toolu_001',
+    sessionId: 'sess-001',
+    deniedReason: 'Blocked by permission rules',
     ...overrides,
   };
 }
@@ -371,6 +405,235 @@ describe('HookEventProcessor', () => {
 
       const tools = records.map((r) => r.toolName).sort();
       expect(tools).toEqual(['Read', 'Write']);
+    });
+  });
+
+  describe('permission lifecycle — denied', () => {
+    it('completes a pending pre as errorType "denied" on PermissionDenied (auto mode, no request)', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'Bash', toolUseId: 'toolu_d1', timestamp: 1000 }),
+        makePermissionDeniedEvent({ toolUseId: 'toolu_d1', timestamp: 1005 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record.toolName).toBe('Bash');
+      expect(record.toolUseId).toBe('toolu_d1');
+      expect(record.success).toBe(false);
+      expect(record.errorType).toBe('denied');
+      expect(record.error).toBe('Blocked by permission rules');
+      expect(record.durationMs).toBeNull();
+      expect(processor.pendingCount).toBe(0);
+    });
+
+    it('completes a permission-requested pre as "denied" (request → denied)', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_d2', timestamp: 1000 }),
+        makePermissionRequestEvent({ toolUseId: 'toolu_d2', timestamp: 1001 }),
+        makePermissionDeniedEvent({ toolUseId: 'toolu_d2', timestamp: 1010 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('denied');
+      expect(processor.pendingCount).toBe(0);
+    });
+
+    it('drops a PermissionDenied without a pending pre — no synthesized record', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([makePermissionDeniedEvent({ toolUseId: 'toolu_unmatched' })]);
+
+      expect(records).toHaveLength(0);
+      expect(processor.pendingCount).toBe(0);
+    });
+
+    it('carries cwd, transcriptPath, permissionMode, and platform from the pre-event onto the denied record', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({
+          toolUseId: 'toolu_d3',
+          timestamp: 1000,
+          cwd: '/projects/test',
+          transcriptPath: '/tmp/fake-transcript.jsonl',
+          permissionMode: 'default',
+          platform: 'claude-code',
+        }),
+        makePermissionDeniedEvent({ toolUseId: 'toolu_d3', timestamp: 1005 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record.cwd).toBe('/projects/test');
+      expect(record.transcriptPath).toBe('/tmp/fake-transcript.jsonl');
+      expect(record.permissionMode).toBe('default');
+      expect(record.platform).toBe('claude-code');
+    });
+  });
+
+  describe('permission lifecycle — rejection inferred from sweep', () => {
+    it('drops a PermissionRequest without a pending pre', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([makePermissionRequestEvent({ toolUseId: 'toolu_unmatched' })]);
+
+      expect(records).toHaveLength(0);
+      expect(processor.pendingCount).toBe(0);
+    });
+
+    it('sweeps a bare orphan as "timeout" at the 60s TTL, unchanged', () => {
+      jest.useFakeTimers();
+      try {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        processor.processEvents([makePreEvent({ toolUseId: 'toolu_bare', timestamp: Date.now() })]);
+
+        jest.advanceTimersByTime(59_000);
+        expect(records).toHaveLength(0);
+
+        jest.advanceTimersByTime(2_000);
+        expect(records).toHaveLength(1);
+        expect(records[0]!.errorType).toBe('timeout');
+        expect(records[0]!.success).toBe(false);
+        processor.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('sweeps a permission-requested orphan as "rejected" only after the 5-minute TTL', () => {
+      jest.useFakeTimers();
+      try {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        processor.processEvents([
+          makePreEvent({ tool: 'Bash', toolUseId: 'toolu_rej', timestamp: Date.now() }),
+          makePermissionRequestEvent({ toolUseId: 'toolu_rej', timestamp: Date.now() }),
+        ]);
+
+        // Outlives the plain 60s orphan TTL — the prompt is still open.
+        jest.advanceTimersByTime(61_000);
+        expect(records).toHaveLength(0);
+
+        jest.advanceTimersByTime(240_000);
+        expect(records).toHaveLength(1);
+        const record = records[0]!;
+        expect(record.errorType).toBe('rejected');
+        expect(record.success).toBe(false);
+        expect(record.durationMs).toBeNull();
+        expect(record.toolName).toBe('Bash');
+        processor.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('handles an approval later than the TTL as a post-without-pre record', () => {
+      jest.useFakeTimers();
+      try {
+        const processor = new HookEventProcessor({ store, onRecord, pollIntervalMs: 1000 });
+        processor.start();
+        processor.processEvents([
+          makePreEvent({ toolUseId: 'toolu_late', timestamp: Date.now() }),
+          makePermissionRequestEvent({ toolUseId: 'toolu_late', timestamp: Date.now() }),
+        ]);
+
+        jest.advanceTimersByTime(301_000);
+        expect(records).toHaveLength(1);
+        expect(records[0]!.errorType).toBe('rejected');
+
+        // The user approves after the sweep — the post arrives with no pending pre.
+        processor.processEvents([
+          makePostEvent({ toolUseId: 'toolu_late', timestamp: Date.now() }),
+        ]);
+
+        expect(records).toHaveLength(2);
+        const lateRecord = records[1]!;
+        expect(lateRecord.toolUseId).toBe('toolu_late');
+        expect(lateRecord.durationMs).toBeNull();
+        expect(lateRecord.success).toBe(true);
+        processor.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('stop() flushes a permission-requested entry as "rejected", not "timeout"', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_flush', timestamp: 1000 }),
+        makePermissionRequestEvent({ toolUseId: 'toolu_flush', timestamp: 1001 }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('rejected');
+    });
+
+    it('pairs normally when the user approves within the TTL — the common case', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'Bash', toolUseId: 'toolu_approved', timestamp: 1000 }),
+        makePermissionRequestEvent({ toolUseId: 'toolu_approved', timestamp: 1001 }),
+        makePostEvent({ toolUseId: 'toolu_approved', timestamp: 1500 }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record.toolName).toBe('Bash');
+      expect(record.success).toBe(true);
+      expect(record.errorType).toBeUndefined();
+      expect(record.durationMs).toBe(500);
+      expect(processor.pendingCount).toBe(0);
+    });
+  });
+
+  describe('PostToolUseFailure with is_interrupt', () => {
+    it('classifies a paired interrupt failure as errorType "interrupted"', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'Bash', toolUseId: 'toolu_int', timestamp: 1000 }),
+        makeFailureEvent({ toolUseId: 'toolu_int', timestamp: 1500, isInterrupt: true }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record.errorType).toBe('interrupted');
+      expect(record.success).toBe(false);
+      expect(record.error).toBe('Command exited with non-zero status code 1');
+      expect(record.durationMs).toBe(500);
+    });
+
+    it('leaves errorType unset for a non-interrupt failure', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ tool: 'Bash', toolUseId: 'toolu_fail', timestamp: 1000 }),
+        makeFailureEvent({ toolUseId: 'toolu_fail', timestamp: 1500, isInterrupt: false }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBeUndefined();
+      expect(records[0]!.success).toBe(false);
+    });
+
+    it('classifies an orphaned interrupt failure as "interrupted" too', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makeFailureEvent({ toolUseId: 'toolu_orphan_int', timestamp: 1500, isInterrupt: true }),
+      ]);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('interrupted');
+      expect(records[0]!.durationMs).toBeNull();
     });
   });
 
@@ -798,6 +1061,82 @@ describe('HookEventProcessor', () => {
 
       expect(tokenEvents).toHaveLength(2);
     });
+
+    it("does not let one session evict another session's dedup entries", () => {
+      const tokenEvents: unknown[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onTokenEvent: (event) => {
+          tokenEvents.push(event);
+        },
+      });
+
+      const makeTokenEvent = (sessionId: string, messageId: string): HookEvent => ({
+        mode: 'token',
+        tool: '',
+        timestamp: 5000,
+        inputTokens: 100,
+        outputTokens: 20,
+        model: 'claude-opus-4-6',
+        sessionId,
+        messageId,
+      });
+
+      // Session A delivers a handful of token events, including 'a-0'.
+      for (let i = 0; i < 10; i++) {
+        processor.processEvents([makeTokenEvent('session-a', `a-${i}`)]);
+      }
+
+      // Session B alone delivers more unique messageIds than the OLD global
+      // ring's total 4096-entry cap. Under the old single shared ring, this
+      // would have evicted session A's 'a-0' long before B finished, purely
+      // because A and B shared one FIFO order array.
+      for (let i = 0; i < 4100; i++) {
+        processor.processEvents([makeTokenEvent('session-b', `b-${i}`)]);
+      }
+
+      // Re-delivering session A's first messageId (a re-read after a crash
+      // mid-write, the scenario this ring exists for) must still be
+      // recognized as a duplicate and dropped, not accepted as new — proving
+      // session B's growth never touched session A's own ring.
+      tokenEvents.length = 0;
+      processor.processEvents([makeTokenEvent('session-a', 'a-0')]);
+      expect(tokenEvents).toHaveLength(0);
+    });
+  });
+
+  describe('DedupRingRegistry', () => {
+    it('evicts the least-recently-used scope once maxScopes is exceeded', () => {
+      const registry = new DedupRingRegistry(2, 10);
+
+      expect(registry.hasAndAdd('a', 'k1')).toBe(false); // creates scope 'a'
+      expect(registry.hasAndAdd('b', 'k1')).toBe(false); // creates scope 'b'
+      expect(registry.scopeCount).toBe(2);
+
+      // A third distinct scope exceeds maxScopes (2) — the least-recently-used
+      // scope ('a', the oldest, untouched since its first insert) gets evicted.
+      expect(registry.hasAndAdd('c', 'k1')).toBe(false);
+      expect(registry.scopeCount).toBe(2);
+
+      // 'b' survived the eviction (it's newer than 'a') and still remembers
+      // its own key — checking an EXISTING scope never itself triggers
+      // eviction, so this assertion doesn't disturb the registry further.
+      expect(registry.hasAndAdd('b', 'k1')).toBe(true);
+    });
+
+    it('touching an existing scope refreshes its LRU position', () => {
+      const registry = new DedupRingRegistry(2, 10);
+      registry.hasAndAdd('a', 'k1');
+      registry.hasAndAdd('b', 'k1');
+      // Touch 'a' again so 'b' becomes the least-recently-used scope instead.
+      registry.hasAndAdd('a', 'k2');
+
+      registry.hasAndAdd('c', 'k1'); // exceeds maxScopes — evicts 'b', not 'a'
+
+      expect(registry.hasAndAdd('a', 'k1')).toBe(true); // 'a' survived, key still known
+      expect(registry.hasAndAdd('b', 'k1')).toBe(false); // 'b' was evicted, key forgotten
+    });
   });
 
   describe('replaceStore()', () => {
@@ -1138,6 +1477,118 @@ describe('HookEventProcessor', () => {
       });
 
       expect(() => processor.processEvents([makeWorkflowRunEvent()])).not.toThrow();
+    });
+  });
+
+  describe('mode: api_failure', () => {
+    it('routes mode:api_failure entries through onApiFailure with the raw error type unmapped', () => {
+      const frames: import('./event-processor.js').ApiFailureFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'api_failure',
+          tool: 'api_failure',
+          errorType: 'overloaded',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      // rawErrorType must stay the raw Claude Code string — mapping to ApiErrorType
+      // happens downstream, not in event-processor.ts.
+      expect(frames[0].rawErrorType).toBe('overloaded');
+      expect(frames[0].sessionId).toBe('s1');
+      expect(frames[0].timestamp).toBe(1700000000000);
+    });
+
+    it('carries errorDetails and lastAssistantMessage through when present', () => {
+      const frames: import('./event-processor.js').ApiFailureFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'api_failure',
+          tool: 'api_failure',
+          errorType: 'rate_limit',
+          errorDetails: '429 Too Many Requests',
+          lastAssistantMessage: 'API Error: Rate limit reached',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].errorDetails).toBe('429 Too Many Requests');
+      expect(frames[0].lastAssistantMessage).toBe('API Error: Rate limit reached');
+    });
+
+    it('defaults sessionId to null when absent', () => {
+      const frames: import('./event-processor.js').ApiFailureFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'api_failure',
+          tool: 'api_failure',
+          errorType: 'unknown',
+          timestamp: 1700000000000,
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].sessionId).toBeNull();
+    });
+
+    it('swallows errors from a throwing onApiFailure callback', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: () => {
+          throw new Error('boom');
+        },
+      });
+
+      expect(() =>
+        processor.processEvents([
+          {
+            mode: 'api_failure',
+            tool: 'api_failure',
+            errorType: 'rate_limit',
+            timestamp: 1700000000000,
+            sessionId: 's1',
+          } as HookEvent,
+        ]),
+      ).not.toThrow();
+    });
+
+    it('is a no-op when onApiFailure is not configured', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      expect(() =>
+        processor.processEvents([
+          {
+            mode: 'api_failure',
+            tool: 'api_failure',
+            errorType: 'rate_limit',
+            timestamp: 1700000000000,
+          } as HookEvent,
+        ]),
+      ).not.toThrow();
+      expect(records).toHaveLength(0);
     });
   });
 

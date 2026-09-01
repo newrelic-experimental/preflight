@@ -1,138 +1,152 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
+import { Command, Option } from 'commander';
 import { readFileSync, realpathSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
-import { Command } from 'commander';
-import { createLogger } from './shared/index.js';
-import { VERSION } from './version.js';
-import { checkNodeVersion } from './install/node-version-check.js';
-import { createServer } from './server.js';
-import { loadMcpConfig, DEFAULT_STORAGE_PATH } from './config.js';
+import { AlertLog } from './alerts/alert-log.js';
+import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
+import { LocalAlertEngine } from './alerts/local-alert-engine.js';
+import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
+import { OsNotifier } from './alerts/os-notifier.js';
 import type { McpServerConfig } from './config.js';
-import { ProxyManager } from './proxy/index.js';
-import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
-import { LocalStore } from './storage/index.js';
-import type { ToolCallRecord } from './storage/types.js';
-import {
-  SessionStore,
-  buildSessionSummary,
-  sessionSummaryToDriftRecord,
-} from './storage/session-store.js';
-import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
-import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
+import { DEFAULT_STORAGE_PATH, loadMcpConfig, redactSensitive } from './config.js';
+import { DashboardServer } from './dashboard/dashboard-server.js';
+import { LiveEventBus } from './dashboard/index.js';
+import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
+import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
+import { WorkflowStore } from './dashboard/workflow-store.js';
+import { isCopilotSdkExtensionMissing } from './hooks/copilot-sdk-extension-health.js';
+import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
-import { SessionTracker } from './metrics/session-tracker.js';
-import { CostTracker } from './metrics/cost-tracker.js';
-import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
-import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
-import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
-import { BudgetTracker } from './metrics/budget-tracker.js';
-import { TaskDetector } from './metrics/task-detector.js';
+import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
+import {
+  isSyntheticSessionId,
+  readJobState,
+  readTranscriptTitle,
+  resolveFromBreadcrumb,
+  resolveFromCwd,
+  resolveFromJobDir,
+  resolveSessionId,
+  resolveSessionName,
+  watchPpidBreadcrumb,
+} from './hooks/session-resolver.js';
+import { SubagentWatcher } from './hooks/subagent-watcher.js';
+import { WorkflowWatcher } from './hooks/workflow-watcher.js';
+import { migrateStoragePath } from './install/migrate.js';
+import { checkNodeVersion } from './install/node-version-check.js';
+import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
-import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { TrendAnalyzer } from './metrics/trend-analyzer.js';
-import { CollaborationProfiler } from './metrics/collaboration-profile.js';
+import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
+import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
-import { createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
-import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
-import { PersonalCoach } from './metrics/personal-coach.js';
-import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
-import { RecommendationEngine } from './metrics/recommendation-engine.js';
-import { ContextWindowTracker } from './metrics/context-window-tracker.js';
-import { LatencyTracker } from './metrics/latency-tracker.js';
-import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
-import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
-import { RetryDetector } from './metrics/retry-detector.js';
+import { CollaborationProfiler } from './metrics/collaboration-profile.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
-import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
+import { ContextWindowTracker } from './metrics/context-window-tracker.js';
+import { applyPricingOverlay } from './metrics/pricing-overlay.js';
+import { buildCostForecastFromInputs } from './metrics/cost-forecast.js';
+import { CostPerOutcomeAnalyzer } from './metrics/cost-per-outcome.js';
+import { buildCostTrackerSeed } from './metrics/cost-tracker-seed.js';
+import { CostTracker } from './metrics/cost-tracker.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
-import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
-import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
-import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
-import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
-import { ApiFailureTracker } from './metrics/api-failure-tracker.js';
-import { LiveSessionRegistry } from './metrics/live-session-registry.js';
-import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
-import { TurnTracker } from './metrics/turn-tracker.js';
+import { EfficiencyScorer } from './metrics/efficiency-score.js';
+import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
-import type { RepoContext } from './metrics/git-efficiency-tracker.js';
-import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
-import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
-import { SubagentWatcher } from './hooks/subagent-watcher.js';
-import { WorkflowWatcher } from './hooks/workflow-watcher.js';
-import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
-import { WorkflowStore } from './dashboard/workflow-store.js';
-import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
-import { NrIngestManager } from './transport/nr-ingest.js';
-import type { TokenUsage } from './shared/index.js';
-import { AuditTrailManager } from './security/audit-trail.js';
-import { LiveEventBus } from './dashboard/index.js';
-import { DashboardServer } from './dashboard/dashboard-server.js';
-import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
-import { LocalAlertEngine } from './alerts/local-alert-engine.js';
-import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
-import { AlertLog } from './alerts/alert-log.js';
-import { OsNotifier } from './alerts/os-notifier.js';
-import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
-import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
-import { FeedbackCollector } from './tools/workflow-tools.js';
-import { registerTools, registerPendingTools } from './tools/session-stats.js';
-import type { ConfigSummary } from './tools/session-stats.js';
+import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
+import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
+import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
+import { LatencyTracker } from './metrics/latency-tracker.js';
+import { LiveSessionRegistry } from './metrics/live-session-registry.js';
 import {
-  resolveSessionId,
-  resolveFromJobDir,
-  resolveFromBreadcrumb,
-  resolveFromCwd,
-  isSyntheticSessionId,
-  watchPpidBreadcrumb,
-} from './hooks/session-resolver.js';
+  collectCommitsAcrossRepos,
+  LocalSessionAggregator,
+  RepoNameResolver,
+  resolveAuthorEmail,
+} from './metrics/local-session-aggregator.js';
+import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
+import { PersonalCoach } from './metrics/personal-coach.js';
+import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
+import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
+import { RecommendationEngine } from './metrics/recommendation-engine.js';
+import { RetryDetector } from './metrics/retry-detector.js';
+import { SessionTracker } from './metrics/session-tracker.js';
+import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
+import { buildTaskDetectorSeed } from './metrics/task-detector-seed.js';
+import { TaskDetector } from './metrics/task-detector.js';
+import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
+import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
+import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
+import { TurnTracker } from './metrics/turn-tracker.js';
+import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
+import { createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
+import { ProxyManager } from './proxy/index.js';
+import { AuditTrailManager } from './security/audit-trail.js';
+import { createServer } from './server.js';
+import type { TokenUsage } from './shared/index.js';
+import { createLogger } from './shared/index.js';
+import { LocalStore } from './storage/index.js';
+import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
+import {
+  buildSessionSummary,
+  SessionStore,
+  sessionSummaryToDriftRecord,
+} from './storage/session-store.js';
+import type { ToolCallRecord } from './storage/types.js';
+import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
+import type { ConfigSummary } from './tools/session-stats.js';
+import { registerPendingTools, registerTools } from './tools/session-stats.js';
+import { FeedbackCollector } from './tools/workflow-tools.js';
 import { initMcpTracer } from './tracing/mcp-tracer.js';
 import { SessionSpan } from './tracing/session-span.js';
 import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
+import { NrIngestManager } from './transport/nr-ingest.js';
 import type { CliOptions } from './types.js';
-import { migrateStoragePath } from './install/migrate.js';
+import { HomelabAccumulator, HomelabForwarder } from './homelab/index.js';
+import { VERSION } from './version.js';
 
-export { VERSION };
-export { NrMcpServer, createServer } from './server.js';
 export { loadMcpConfig, redactSensitive } from './config.js';
 export type { McpServerConfig } from './config.js';
-export { LocalStore } from './storage/index.js';
-export type { HookEvent, SessionSummary, AuditEntry } from './storage/index.js';
-export type { CliOptions, ServerOptions } from './types.js';
-export { ProxyManager } from './proxy/index.js';
-export type { ProxyToolCallRecord, ProxyRequestRecord, UpstreamConfig } from './proxy/index.js';
 export {
-  ClaudeCodeAdapter,
-  CursorAdapter,
-  WindsurfAdapter,
-  CopilotAdapter,
-  ZedAdapter,
-  ContinueAdapter,
   AmazonQAdapter,
-  parseCopilotUsageResponse,
-  GenericMcpAdapter,
-  validateReportToolCallInput,
-  REPORT_TOOL_CALL_TOOL,
-  REPORT_SESSION_START_TOOL,
-  REPORT_SESSION_END_TOOL,
-  PlatformRegistry,
+  ClaudeCodeAdapter,
+  ContinueAdapter,
+  CopilotAdapter,
   createDefaultRegistry,
+  CursorAdapter,
+  GenericMcpAdapter,
+  parseCopilotUsageResponse,
+  PlatformRegistry,
+  REPORT_SESSION_END_TOOL,
+  REPORT_SESSION_START_TOOL,
+  REPORT_TOOL_CALL_TOOL,
+  validateReportToolCallInput,
+  WindsurfAdapter,
+  ZedAdapter,
 } from './platforms/index.js';
 export type {
   NormalizedToolCall,
+  PlatformAdapter,
   PlatformConfig,
   PlatformSessionMetadata,
-  PlatformAdapter,
-  ReportToolCallInput,
-  ReportSessionStartInput,
   ReportSessionEndInput,
+  ReportSessionStartInput,
+  ReportToolCallInput,
 } from './platforms/index.js';
+export { ProxyManager } from './proxy/index.js';
+export type { ProxyRequestRecord, ProxyToolCallRecord, UpstreamConfig } from './proxy/index.js';
+export { createServer, NrMcpServer } from './server.js';
+export { LocalStore } from './storage/index.js';
+export type { AuditEntry, HookEvent, SessionSummary } from './storage/index.js';
+export type { CliOptions, ServerOptions } from './types.js';
+export { VERSION };
 
 const logger = createLogger('mcp-cli');
 
@@ -477,6 +491,7 @@ export function startDashboardRepoll(opts: DashboardRepollOptions): NodeJS.Timeo
 const SUBCOMMAND_NAMES = [
   'deploy-dashboards',
   'deploy-alerts',
+  'server',
   'install',
   'uninstall',
   'setup',
@@ -484,14 +499,15 @@ const SUBCOMMAND_NAMES = [
   'update',
   'schedule',
   'doctor',
+  'local',
 ] as const;
 type SubcommandName = (typeof SUBCOMMAND_NAMES)[number];
 
 // Install-CLI subcommands — a subset of SUBCOMMAND_NAMES routed to runInstallCli.
 // Derived from SUBCOMMAND_NAMES to ensure a single source of truth: deploy-*
-// commands are excluded and handled by the commander path in dispatchSubcommand.
+// and server commands are excluded and handled by the commander path in dispatchSubcommand.
 const INSTALL_CLI_SUBCOMMANDS = SUBCOMMAND_NAMES.filter(
-  (s) => s !== 'deploy-dashboards' && s !== 'deploy-alerts',
+  (s) => s !== 'deploy-dashboards' && s !== 'deploy-alerts' && s !== 'server',
 ) as readonly string[];
 
 function isSubcommand(value: string | undefined): value is SubcommandName {
@@ -531,6 +547,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--update', 'update existing dashboards in-place (matched by name)')
       .option('--teardown', 'delete deployed dashboards (matched by name)')
       .option('--print', 'print dashboard JSON with accountIds filled in (no API key required)')
+      .addOption(new Option('--staging', 'target the New Relic staging API').hideHelp())
       .option('--eu', 'target the New Relic EU API')
       .option('--jp', 'target the New Relic Japan API')
       .option(
@@ -548,12 +565,97 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           update: opts.update === true,
           teardown: opts.teardown === true,
           print: opts.print === true,
+          staging: opts.staging === true,
           eu: opts.eu === true,
           jp: opts.jp === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
           file: file ?? null,
         });
         process.exitCode = code;
+      });
+  } else if (sub === 'server') {
+    program
+      .command('server')
+      .description(
+        'Start Preflight in homelab server mode — receives events forwarded from remote clients and accumulates them to disk (no dashboard yet — see docs/homelab.md)',
+      )
+      .option(
+        '--port <port>',
+        'Port to bind to (default: 7777 or NEW_RELIC_AI_HOMELAB_SERVER_PORT)',
+      )
+      .option(
+        '--token <token>',
+        'Bearer token for /ingest auth (default: NEW_RELIC_AI_HOMELAB_TOKEN)',
+      )
+      .option(
+        '--bind <address>',
+        'Bind address (default: 0.0.0.0 or NEW_RELIC_AI_HOMELAB_BIND_ADDRESS)',
+      )
+      .option('--config <path>', 'Path to config file')
+      .action(async (opts: { port?: string; token?: string; bind?: string; config?: string }) => {
+        if (opts.port) process.env.NEW_RELIC_AI_HOMELAB_SERVER_PORT = opts.port;
+        if (opts.token) process.env.NEW_RELIC_AI_HOMELAB_TOKEN = opts.token;
+        if (opts.bind) process.env.NEW_RELIC_AI_HOMELAB_BIND_ADDRESS = opts.bind;
+        // server mode never needs cloud credentials — force local so loadMcpConfig
+        // doesn't require licenseKey/accountId.
+        process.env.NR_AI_MODE = 'local';
+
+        const config = loadConfigOrDie({ config: opts.config });
+
+        const token = config.homelabToken;
+        if (!token) {
+          process.stderr.write(
+            '[preflight] error: homelab server requires a token. Set --token or NEW_RELIC_AI_HOMELAB_TOKEN.\n',
+          );
+          process.exit(1);
+        }
+
+        const accumulator = new HomelabAccumulator({ storagePath: config.storagePath });
+        accumulator.start();
+
+        const bus = new LiveEventBus();
+        const dashboardServer = new DashboardServer({
+          port: config.homelabServer.port,
+          host: config.homelabServer.bindAddress,
+          bus,
+          serverMode: true,
+          ingestHandler: (authHeader, body) => {
+            const expected = `Bearer ${token}`;
+            const isAuthed =
+              authHeader !== undefined &&
+              authHeader.length === expected.length &&
+              timingSafeEqual(Buffer.from(authHeader), Buffer.from(expected));
+            if (!isAuthed) return 401;
+            const result = accumulator.handleIngest(body);
+            return result === 'ok' ? 204 : 400;
+          },
+        });
+
+        await dashboardServer.start();
+        logger.info('Homelab server ready', {
+          port: config.homelabServer.port,
+          bind: config.homelabServer.bindAddress,
+        });
+
+        // Keep the action (and therefore program.parseAsync) alive until a
+        // signal fires — without this, the action returns immediately and
+        // dispatchSubcommand exits the process.
+        await new Promise<void>((resolve) => {
+          let shutting = false;
+          const shutdown = async (): Promise<void> => {
+            if (shutting) return;
+            shutting = true;
+            accumulator.stop();
+            await dashboardServer.stop();
+            resolve();
+          };
+          process.on('SIGTERM', () => {
+            void shutdown();
+          });
+          process.on('SIGINT', () => {
+            void shutdown();
+          });
+        });
       });
   } else {
     program
@@ -562,6 +664,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
       .option('--dry-run', 'print the policy + conditions that would be created and exit')
       .option('--teardown', 'delete the alert policy and all its conditions')
       .option('--update', 'sync conditions on an existing policy in place (matched by name)')
+      .addOption(new Option('--staging', 'target the New Relic staging API').hideHelp())
       .option('--eu', 'target the New Relic EU API')
       .option('--jp', 'target the New Relic Japan API')
       .option('--developer <name>', 'deploy a personal alert policy scoped to <name>')
@@ -571,6 +674,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
           dryRun: opts.dryRun === true,
           teardown: opts.teardown === true,
           update: opts.update === true,
+          staging: opts.staging === true,
           eu: opts.eu === true,
           jp: opts.jp === true,
           developer: typeof opts.developer === 'string' ? opts.developer : null,
@@ -727,6 +831,7 @@ async function main(): Promise<void> {
   let activeSubagentWatcher: SubagentWatcher | null = null;
   let activeWorkflowWatcher: WorkflowWatcher | null = null;
   let activeParentTranscriptWatcher: ParentTranscriptWatcher | null = null;
+  let activeCopilotUsageWatcher: CopilotUsageWatcher | null = null;
   // Aborts the async resolveSessionId polling loop when shutdown fires so
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
@@ -762,6 +867,8 @@ async function main(): Promise<void> {
     }, getPendingConfirmationCapMs());
     pendingConfirmationCapTimer.unref?.();
   };
+
+  let homelabForwarder: HomelabForwarder | null = null;
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -815,6 +922,7 @@ async function main(): Promise<void> {
       activeSubagentWatcher?.stop();
       activeWorkflowWatcher?.stop();
       activeParentTranscriptWatcher?.stop();
+      activeCopilotUsageWatcher?.stop();
       liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
@@ -822,6 +930,7 @@ async function main(): Promise<void> {
         nrIngest ? nrIngest.stop() : Promise.resolve(),
         mcpServer ? mcpServer.close() : Promise.resolve(),
         proxyManager ? proxyManager.stop() : Promise.resolve(),
+        homelabForwarder ? homelabForwarder.stop() : Promise.resolve(),
       ]);
       for (const r of stopResults) {
         if (r.status === 'rejected') {
@@ -881,6 +990,8 @@ async function main(): Promise<void> {
         process.exit(0);
       }
 
+      applyPricingOverlay(config.customPricingFile);
+
       const fromJobDir = resolveFromJobDir(process.env.CLAUDE_JOB_DIR ?? null);
       const fromPpid = fromJobDir ? null : resolveFromBreadcrumb(config.storagePath, process.ppid);
       const fromCwd =
@@ -916,14 +1027,33 @@ async function main(): Promise<void> {
         }
       }
     } else {
-      // --local: force local mode so config validation skips cloud credentials.
-      process.env.NR_AI_MODE = 'local';
-      config = loadConfigOrDie(options);
+      // --local: try normal config resolution first, so a config file that
+      // already sets mode: 'cloud'/'both' with real credentials still gets
+      // cloud ingest from --local — previously this branch unconditionally
+      // forced mode: 'local', which silently dropped any activity --local
+      // drained on behalf of an unowned session (e.g. a Copilot chat with no
+      // dedicated owning --stdio engine): captured and shown in the local
+      // dashboard, but never forwarded to New Relic even when the user had
+      // configured real credentials. Only fall back to forcing local mode
+      // when credentials are genuinely absent, preserving the original
+      // intent of letting --local run without requiring cloud credentials.
+      try {
+        config = loadConfigOrDie(options);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/Missing required configuration: (licenseKey|accountId)/.test(msg)) {
+          throw err;
+        }
+        process.env.NR_AI_MODE = 'local';
+        config = loadConfigOrDie(options);
+      }
 
       if (!config.enabled) {
         logger.info('Server disabled via config — exiting');
         process.exit(0);
       }
+
+      applyPricingOverlay(config.customPricingFile);
 
       // --local has no owning Claude Code session — derive a deterministic
       // identifier so the rest of the codebase can rely on a non-empty
@@ -1000,17 +1130,88 @@ async function main(): Promise<void> {
     });
     const toolSelectionScorer = new ToolSelectionScorer();
     const qualityProxyTracker = new QualityProxyTracker();
-    // ApiFailureTracker is instantiated but never fed: recordRequest()/recordFailure()
-    // require visibility into model-API-level traffic (LLM provider rate limits,
-    // timeouts, auth errors), which is not observable in either stdio mode (hooks
-    // only see Claude Code's own tool calls) or proxy mode (which forwards to MCP
-    // servers, not the model API). Kept dormant for a future LLM-facing proxy.
+    // Fed via Claude Code's StopFailure hook (see the onApiFailure callback on
+    // eventProcessor below) through recordFailure(). recordRequest() still has
+    // no caller — request-level latency/throughput stays unobservable — and
+    // recordFailure()'s tokensInFlight/recoveryMs/retryCount/totalRequests
+    // inputs stay at their "unknown" defaults for the same reason. See
+    // api-failure-tracker.ts's API_FAILURE_PARTIAL_DATA_NOTE for the full story.
     const apiFailureTracker = new ApiFailureTracker();
     liveSessionRegistry = new LiveSessionRegistry();
     liveSessionRegistry.startSampling();
     // Unconditional in every mode — decoupled from whether the `--local`
     // dashboard wins its port bind (see startMaintenanceGc()'s doc comment).
     maintenanceGcInterval = startMaintenanceGc({ localStore, liveSessionRegistry });
+
+    // Resolve the authoritative, human-readable session name for a real session
+    // id and push it into both trackers, so their streaming cwd-basename
+    // fallback only fills in when no better name exists (authoritative wins).
+    // Reads Claude Code's own name sources — the background-job state file and
+    // the transcript's last ai-title (see resolveSessionName's precedence).
+    // Best-effort and cheap; any failure just leaves the streaming fallback in
+    // place. A no-op for synthetic ids (local-/proxy-/pending-*), which own no
+    // single transcript. Called both here (eager synchronous resolution) and
+    // from adoptRealSessionId (pending -> real transition and PPID correction),
+    // so the name is refreshed against whichever id ends up being authoritative.
+    const applyAuthoritativeSessionName = (sessionId: string): void => {
+      if (isSyntheticSessionId(sessionId)) return;
+      try {
+        const cwd = process.cwd();
+        // `intent` (the first user prompt) from the job state is SENSITIVE
+        // content, so readJobState only populates it when recordContent is
+        // enabled (config.recordContent is already force-disabled under
+        // highSecurity upstream — never bypass). resolveSessionName still uses
+        // only name/nameSource, which are display labels; the intent is
+        // surfaced separately as session_intent below.
+        const jobState = readJobState(process.env.CLAUDE_JOB_DIR ?? null, {
+          recordContent: config?.recordContent ?? false,
+        });
+        const transcriptTitle = readTranscriptTitle({ sessionId });
+        const resolved = resolveSessionName({ jobState, transcriptTitle, cwd });
+        if (!resolved) return;
+        // Redact ONCE, before the name reaches either tracker, so it stays
+        // redacted in in-memory tracker state and every downstream sink is
+        // covered: the MCP tool responses, the persisted summaries, AND the
+        // dashboard HTTP reads (which read the tracker/registry name directly
+        // and do NOT redact on their own). The `ai-title` source is already
+        // redacted at readTranscriptTitle; the `user`/`auto` job-state names
+        // and the cwd basename are raw until here — redacting all of them
+        // makes the existing tool/persist redaction idempotent and harmless.
+        const safeName = redactSensitive(resolved.name);
+        // Both trackers enforce the no-downgrade invariant internally
+        // (shouldReplaceSessionName), so re-resolving on the persist/shutdown
+        // path can only upgrade or refresh the name — never demote a better
+        // one. `changed` reflects whether SessionTracker actually (re)named,
+        // so the periodic re-resolve stays quiet unless something moved.
+        const changed = sessionTracker?.setAuthoritativeName(safeName, resolved.source) ?? false;
+        liveSessionRegistry?.setAuthoritativeName(sessionId, safeName, resolved.source);
+        // Phase 3: surface the originating intent (first prompt) as
+        // session_intent. jobState.intent is already null unless recordContent
+        // is enabled (gated in readJobState); redact before it reaches the
+        // tracker so every downstream sink (tool response, persisted summary)
+        // stays redacted. When content recording is off, this is a no-op and
+        // session_intent stays null everywhere.
+        if (jobState?.intent) {
+          sessionTracker?.setSessionIntent(redactSensitive(jobState.intent));
+        }
+        if (changed) {
+          logger.info('Resolved authoritative session name', {
+            source: resolved.source,
+            name: safeName,
+          });
+        }
+      } catch (err) {
+        logger.debug('Authoritative session name resolution failed (continuing)', {
+          error: String(err),
+        });
+      }
+    };
+
+    // Eager synchronous stdio path: when the id was resolved up front (job dir
+    // / ppid / cwd breadcrumb), name it now. Provisional (pending-*) and
+    // --local ids are synthetic, so this is a no-op for them — the provisional
+    // window is named later via adoptRealSessionId once its real id resolves.
+    if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor();
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -1062,6 +1263,14 @@ async function main(): Promise<void> {
     const currentSessionId = sessionTracker.getMetrics().sessionId;
     let currentRepoName: string | null = null;
 
+    // An unscoped process (--local, or a provisional --stdio window) drains
+    // every unowned buffer and folds it into trackers keyed by its own
+    // synthetic id, which persistSession() skips — so without this rollup the
+    // sessions it observes are never written to disk at all. See
+    // local-session-aggregator.ts for why that hits Copilot but not Claude Code.
+    const localSessionAggregator = new LocalSessionAggregator();
+    const repoNameResolver = new RepoNameResolver();
+
     const budgetTracker = new BudgetTracker({
       sessionBudgetUsd: config.sessionBudgetUsd,
       dailyBudgetUsd: config.dailyBudgetUsd,
@@ -1086,6 +1295,10 @@ async function main(): Promise<void> {
         const persisted = sessionStore!.loadSession(sessionId);
         if (!persisted) return;
         costTracker.seedFromPersisted(buildCostTrackerSeed(persisted));
+        sessionTracker!.seedFromPersisted({
+          toolCallCount: persisted.toolCallCount,
+          bashCommandCount: persisted.bashCommandCount,
+        });
         budgetTracker.seedFiredThresholdsFromSessionTotal(
           costTracker.getMetrics().sessionTotalCostUsd ?? 0,
         );
@@ -1200,23 +1413,44 @@ async function main(): Promise<void> {
     // repo history to get an accurate commit count for today.
     // spawnSync with ENOENT doesn't throw — it returns { status: null, error: Error }.
     // The status === 0 guard handles unavailable-git without a try/catch.
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const logResult = spawnSync(
-      'git',
-      ['log', `--since=${todayStr}T00:00:00Z`, '--format=%H %ct'],
-      GIT_OPTS,
-    );
-    if (logResult.status === 0 && logResult.stdout !== null) {
-      const commits = logResult.stdout
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const [hash, epochStr] = line.split(' ');
-          return { hash: hash ?? '', timestamp: parseInt(epochStr ?? '0', 10) * 1000 };
-        });
-      gitEfficiencyTracker.hydrateGitLog(commits);
-    }
+    //
+    // Repos are collected from an explicit NR_AI_GIT_REPOS list plus every repo
+    // root seen in observed session cwds, rather than relying on this process's
+    // own cwd. A dashboard started in one repo would otherwise report that
+    // repo's history no matter which repos are actually being worked in — and,
+    // with no --author filter, count other contributors' commits as the user's.
+    const gitAuthorEmail = resolveAuthorEmail(process.cwd());
+    const configuredRepoRoots = (process.env.NR_AI_GIT_REPOS ?? '')
+      .split(/[,:]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+    const collectRepoRoots = (): string[] => {
+      const roots = new Set<string>();
+      const selfRoot = repoNameResolver.root(process.cwd());
+      if (selfRoot) roots.add(selfRoot);
+      for (const dir of configuredRepoRoots) {
+        const root = repoNameResolver.root(dir);
+        if (root) roots.add(root);
+      }
+      for (const cwd of localSessionAggregator.cwds()) {
+        const root = repoNameResolver.root(cwd);
+        if (root) roots.add(root);
+      }
+      return [...roots];
+    };
+
+    const hydrateGitCommits = (): void => {
+      // Recomputed per call so a long-lived dashboard rolls over at midnight
+      // instead of reporting "today" relative to the day it was started.
+      const since = new Date().toISOString().slice(0, 10);
+      const commits = collectCommitsAcrossRepos(collectRepoRoots(), since, gitAuthorEmail);
+      if (commits.length > 0) gitEfficiencyTracker.hydrateGitLog(commits);
+    };
+
+    hydrateGitCommits();
+    const gitHydrationInterval = setInterval(hydrateGitCommits, 5 * 60_000);
+    gitHydrationInterval.unref();
 
     // Branch divergence from the real default branch — how far ahead/behind
     // are we? The dashboard polls this every 5s, implying a live number, but
@@ -1328,7 +1562,12 @@ async function main(): Promise<void> {
       localStore,
     });
 
-    const dashboardEnabled = config.mode === 'local' || config.mode === 'both';
+    // options.local always gets a dashboard, regardless of what config.mode
+    // resolves to — the try/catch above only forces mode: 'local' when cloud
+    // credentials are absent, so `--local` combined with an explicit
+    // `mode: 'cloud'` config (real credentials present) would otherwise skip
+    // the dashboard the user explicitly asked for by passing --local.
+    const dashboardEnabled = options.local || config.mode === 'local' || config.mode === 'both';
     let alertEngine: LocalAlertEngine | undefined;
     let alertSnapshotCollector: AlertSnapshotCollector | undefined;
     let alertLog: AlertLog | undefined;
@@ -1428,6 +1667,13 @@ async function main(): Promise<void> {
         alertEvaluationInterval.unref?.();
       }
 
+      // Platform is env-derived and fixed for this process's lifetime —
+      // resolve it once here rather than inside observabilityHealth's
+      // getSnapshot() closure below, which fires on every dashboard poll
+      // (10-30s) and would otherwise re-run full platform detection (and
+      // its info-level log line) on every single request.
+      const activePlatformName = createDefaultRegistry().getActive().platformName;
+
       dashboardServer = new DashboardServer({
         port: config.dashboard.port,
         host: config.dashboard.host,
@@ -1449,6 +1695,7 @@ async function main(): Promise<void> {
           },
           antiPatternDetector,
           retryDetector,
+          apiFailureTracker,
           instructionDriftTracker,
           decisionTracker,
           turnCostAttributor,
@@ -1546,6 +1793,9 @@ async function main(): Promise<void> {
                 watcherDisabledByLock: stats?.watcherDisabledByLock ?? false,
                 costSelfCheckDeltaPct: null,
                 watcherDisabledReason,
+                copilotDebugLoggingDisabled:
+                  activeCopilotUsageWatcher?.getHealth().debugLoggingLikelyDisabled ?? false,
+                copilotSdkExtensionMissing: isCopilotSdkExtensionMissing(activePlatformName),
               };
             },
           },
@@ -1643,6 +1893,7 @@ async function main(): Promise<void> {
         teamId: config.teamId,
         projectId: config.projectId,
         orgId: config.orgId,
+        companionMode: config.companionMode,
         sessionTracker,
         localStore,
         auditTrail,
@@ -1651,10 +1902,34 @@ async function main(): Promise<void> {
         costTracker,
         efficiencyScorer,
         feedbackCollector,
+        apiFailureTracker,
+        gitEfficiencyTracker,
         turnCostAttributor,
         sessionTraceId,
       });
       capturedNrIngest = nrIngest;
+    }
+
+    // Start homelab forwarder if configured. Construction validates
+    // homelabServerUrl (scheme + cloud-metadata-endpoint check) and can
+    // throw — caught here so a bad/malicious URL only disables forwarding,
+    // matching the "forwarding failures are non-fatal" contract in
+    // docs/homelab.md, rather than crashing MCP startup.
+    if (config.homelabServerUrl && config.homelabToken) {
+      try {
+        homelabForwarder = new HomelabForwarder({
+          serverUrl: config.homelabServerUrl,
+          token: config.homelabToken,
+          developer: config.developer,
+          sessionId: sessionTraceId ?? 'unknown',
+        });
+        homelabForwarder.start();
+      } catch (err) {
+        homelabForwarder = null;
+        logger.error('Homelab forwarder failed to start — continuing without it', {
+          error: String(err),
+        });
+      }
     }
 
     const capturedAlertEngine = alertEngine;
@@ -1709,6 +1984,7 @@ async function main(): Promise<void> {
 
         sessionTracker.recordToolCall(rawRecord);
         taskDetector.recordToolCall(rawRecord);
+        localSessionAggregator.recordToolCall(rawRecord);
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
@@ -1730,7 +2006,23 @@ async function main(): Promise<void> {
         contextWindowTracker.recordToolCall(rawRecord);
         contextTracker.recordToolCall(rawRecord);
         latencyTracker.recordToolCall(rawRecord);
-        retryDetector.recordToolCall(rawRecord);
+        const thrashingAlert = retryDetector.recordToolCall(rawRecord);
+        if (thrashingAlert) {
+          capturedNrIngest?.ingestRetryAlert(thrashingAlert, {
+            platform: typeof rawRecord.platform === 'string' ? rawRecord.platform : undefined,
+          });
+          liveBus.emit('retry-alert', {
+            // alert.sessionId (not sessionTraceId) — see RetryDetector's
+            // session-grouping comment: in --local mode this process's own
+            // RetryDetector drains every session's buffer, so only the
+            // alert's own sessionId can be trusted to name the offending one.
+            sessionId: thrashingAlert.sessionId ?? undefined,
+            toolName: thrashingAlert.toolName,
+            occurrences: thrashingAlert.occurrences,
+            tokensWasted: thrashingAlert.tokensWastedEstimate,
+            ts: thrashingAlert.timestamp,
+          });
+        }
         qualityProxyTracker.recordToolCall(rawRecord);
         const turnId = turnTracker.recordToolCall(rawRecord);
         const turnNumber = turnTracker.getCurrentTurnNumber();
@@ -1917,6 +2209,7 @@ async function main(): Promise<void> {
             });
           }
         }
+        homelabForwarder?.enqueue(record);
       },
       onTokenEvent: (tokenEvent) => {
         if (!costTracker || !config) return;
@@ -1938,6 +2231,15 @@ async function main(): Promise<void> {
           tokenEvent.outputTokens,
           breakdown.totalUsd,
         );
+        localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
+          timestamp: tokenEvent.timestamp,
+          costUsd: breakdown.totalUsd,
+          model: tokenEvent.model,
+          inputTokens: tokenEvent.inputTokens,
+          outputTokens: tokenEvent.outputTokens,
+          cacheReadTokens: tokenEvent.cacheReadTokens,
+          cacheCreationTokens: tokenEvent.cacheCreationTokens,
+        });
         contextCompositionTracker.recordTokenEvent(tokenEvent);
 
         const ctxSnapshot = contextTracker.recordTurn(tokenEvent);
@@ -2036,6 +2338,15 @@ async function main(): Promise<void> {
           workflowRunId: turn.workflowRunId,
           agentId: turn.agentId,
         });
+        // Subagent turns are real model requests and cost real money, so they
+        // belong in the model breakdown too — recording them only in the cost
+        // tracker left Model Usage blind to every subagent-only session.
+        modelUsageTracker.recordUsage(
+          turn.model,
+          turn.inputTokens,
+          turn.outputTokens,
+          breakdown.totalUsd,
+        );
         // Pricing miss → usd:null on the wire; we recompute here so
         // the breakdown view distinguishes "0 because pricing absent" from
         // "0 because the turn truly had zero cost".
@@ -2077,12 +2388,45 @@ async function main(): Promise<void> {
             : {}),
         });
       },
+      onApiFailure: (frame) => {
+        if (!config) return;
+        const errorType = mapClaudeCodeErrorType(frame.rawErrorType);
+        // Prefer a model already learned from real token events over the
+        // config default, mirroring the estimateModel fallback above.
+        const model = costTracker.getMetrics().model ?? config.model ?? 'unknown';
+        const turnNumber = turnTracker.getCurrentTurnNumber();
+        // totalTurnsInSession is left unspecified: there is no reliable
+        // "total turns for this session" figure available at failure time
+        // (the session may still be ongoing), and recordFailure() already
+        // defaults it sensibly for sessionPhase bucketing.
+        const duringToolExecution = eventProcessor !== undefined && eventProcessor.pendingCount > 0;
+        apiFailureTracker.recordFailure({
+          errorType,
+          model,
+          turnNumber,
+          // Unobservable from StopFailure; see api-failure-tracker.ts's note constant.
+          tokensInFlight: 0,
+          // Known, not a placeholder: StopFailure only fires after Claude
+          // Code's own retries are exhausted with no successful recovery.
+          recoverySucceeded: false,
+          duringToolExecution,
+        });
+      },
     });
 
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
         transcriptMessageTracker.refresh();
+        // Phase 2 freshness: re-read Claude Code's own name sources (job-state
+        // title + transcript ai-title) right before building the summary, so a
+        // title refined after the first exchange — or a name a human assigns
+        // mid-session — wins over the first-prompt guess in the persisted/
+        // shutdown snapshot. Runs on both the periodic checkpoint and the
+        // terminal save (both flow through here). setAuthoritativeName enforces
+        // the no-downgrade invariant, so this can only upgrade or refresh —
+        // never demote a user name to auto/cwd. A no-op for synthetic ids.
+        applyAuthoritativeSessionName(sessionTraceId);
         const summary = buildSessionSummary({
           sessionTracker,
           costTracker,
@@ -2114,9 +2458,26 @@ async function main(): Promise<void> {
         // real session id is still being resolved).
         const isSyntheticId = isSyntheticSessionId(summary.sessionId);
         if (isSyntheticId) {
+          // This process owns no real session of its own, but it has been
+          // draining other sessions' buffers destructively — so if it returns
+          // here without writing them, those events are simply lost. Persist
+          // each real session it observed instead.
+          const rollups = localSessionAggregator.toSummaries({
+            developer: config.developer ?? 'unknown',
+            platform: eventProcessor?.activePlatform,
+            outcome: opts?.periodic ? 'in progress' : 'completed',
+            toolSelectionScorer,
+            repoResolver: repoNameResolver,
+          });
+          for (const rollup of rollups) {
+            sessionStore.saveSession(
+              rollup as unknown as Parameters<typeof sessionStore.saveSession>[0],
+            );
+          }
           if (!opts?.periodic) {
-            logger.info('Skipping synthetic session JSON persistence', {
+            logger.info('Persisted observed sessions on behalf of synthetic owner', {
               sessionId: summary.sessionId,
+              persistedSessions: rollups.length,
             });
           }
           return;
@@ -2188,6 +2549,12 @@ async function main(): Promise<void> {
     // the exact regression this divergence avoids.
     const parentTranscriptWatcherEnabled =
       process.env['NR_AI_ENABLE_PARENT_TRANSCRIPT_WATCHER'] !== '0';
+    // CopilotUsageWatcher is the Copilot analog of ParentTranscriptWatcher
+    // (token-exact cost from VS Code's Copilot debug logs) and follows the
+    // same always-run rationale: it feeds the primary cost signal, so it is
+    // gated only by its own opt-out. It no-ops cheaply when no VS Code
+    // workspaceStorage dirs exist.
+    const copilotUsageWatcherEnabled = process.env['NR_AI_ENABLE_COPILOT_USAGE_WATCHER'] !== '0';
 
     // Construct + start the watchers for a given session id. In `--stdio` mode
     // the watchers filter discovered transcript dirs by `parentSessionId`; in
@@ -2217,6 +2584,17 @@ async function main(): Promise<void> {
         });
         activeParentTranscriptWatcher.start();
         logger.info('ParentTranscriptWatcher started', {
+          parentSessionId: isStdioWatcher ? watcherSessionId : null,
+        });
+      }
+      if (copilotUsageWatcherEnabled) {
+        activeCopilotUsageWatcher = new CopilotUsageWatcher({
+          storagePath: config!.storagePath,
+          parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          localStore,
+        });
+        activeCopilotUsageWatcher.start();
+        logger.info('CopilotUsageWatcher started', {
           parentSessionId: isStdioWatcher ? watcherSessionId : null,
         });
       }
@@ -2290,6 +2668,10 @@ async function main(): Promise<void> {
         activeParentTranscriptWatcher.stop();
         activeParentTranscriptWatcher = null;
       }
+      if (activeCopilotUsageWatcher) {
+        activeCopilotUsageWatcher.stop();
+        activeCopilotUsageWatcher = null;
+      }
       if (activeSubagentWatcher) {
         activeSubagentWatcher.stop();
         activeSubagentWatcher = null;
@@ -2331,6 +2713,11 @@ async function main(): Promise<void> {
       }
       sessionTraceId = realId;
       sessionTracker!.adoptSessionId(realId);
+      // Now that the real id (and thus its transcript path) is known, resolve
+      // and apply the authoritative name. On a correction this re-resolves
+      // against the corrected id's own transcript, replacing any name derived
+      // for the previously-adopted (wrong) id.
+      applyAuthoritativeSessionName(realId);
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
@@ -2396,6 +2783,7 @@ async function main(): Promise<void> {
           teamId: config!.teamId,
           projectId: config!.projectId,
           orgId: config!.orgId,
+          companionMode: config!.companionMode,
           sessionTracker: sessionTracker!,
           localStore: realLocalStore,
           auditTrail,
@@ -2404,6 +2792,8 @@ async function main(): Promise<void> {
           costTracker,
           efficiencyScorer,
           feedbackCollector,
+          apiFailureTracker,
+          gitEfficiencyTracker,
           turnCostAttributor,
           sessionTraceId: realId,
         });
@@ -2675,6 +3065,13 @@ async function main(): Promise<void> {
         }
       }
     } else {
+      // nrIngest is only constructed above when config.mode !== 'local' (see
+      // the try/catch at this branch's start) — i.e. only when real
+      // credentials are configured. Starting it here is what actually lets
+      // --local forward the unowned sessions it drains (see the comment on
+      // that try/catch): constructing NrIngestManager alone queues events
+      // in memory but never sends them until .start() runs its harvest loop.
+      nrIngest?.start();
       logger.info('Server running in local dashboard mode (Ctrl+C to stop)');
       // DashboardServer HTTP listener keeps the process alive.
       // SIGINT/SIGTERM are handled by the global shutdown handler registered above.
@@ -2723,6 +3120,14 @@ async function main(): Promise<void> {
       const proxyLocalStore = new LocalStore(config.storagePath);
       proxyLocalStore.initialize();
 
+      // Proxy mode never constructs a HookEventProcessor, so nothing ever
+      // calls recordFailure() on this instance (StopFailure is a Claude
+      // Code-side hook, not something proxied traffic can surface) — passed
+      // in anyway so NrIngestManager's emitMetrics() call is uniform across
+      // modes, legitimately reporting zero failures rather than being asked
+      // to handle a missing tracker.
+      const apiFailureTracker = new ApiFailureTracker();
+
       nrIngest = new NrIngestManager({
         licenseKey: config.licenseKey,
         transportOptions: {
@@ -2734,10 +3139,12 @@ async function main(): Promise<void> {
         teamId: config.teamId,
         projectId: config.projectId,
         orgId: config.orgId,
+        companionMode: config.companionMode,
         sessionTracker: new SessionTracker(sessionTraceId),
         localStore: proxyLocalStore,
         eventHarvestIntervalMs: config.harvestIntervalMs.events,
         metricHarvestIntervalMs: config.harvestIntervalMs.metrics,
+        apiFailureTracker,
         sessionTraceId,
         // Proxy mode has no single coherent session — sessionTracker above is
         // never fed per-client activity, so the ai.session.* gauges would

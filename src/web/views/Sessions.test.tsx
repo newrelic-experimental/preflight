@@ -234,6 +234,71 @@ describe('Sessions view', () => {
     expect(screen.getByText('completed')).toBeInTheDocument();
   });
 
+  it('renders every model in the Model card when modelBreakdown has more than one entry, most-called first', async () => {
+    const detail = {
+      sessionId: 's1',
+      model: 'claude-opus-5',
+      modelBreakdown: {
+        'claude-opus-5': {
+          requestCount: 2,
+          totalInputTokens: 100,
+          totalOutputTokens: 50,
+          totalCostUsd: 0.5,
+        },
+        'claude-sonnet-5': {
+          requestCount: 8,
+          totalInputTokens: 400,
+          totalOutputTokens: 200,
+          totalCostUsd: 1.5,
+        },
+      },
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    const { container } = renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByText('Models (2)')).toBeInTheDocument();
+    expect(screen.getByText('claude-sonnet-5')).toBeInTheDocument();
+    expect(screen.getByText('claude-opus-5')).toBeInTheDocument();
+    // Most-called model (claude-sonnet-5, 8 requests) renders before the
+    // last-seen one (claude-opus-5, `model` above, only 2 requests).
+    const text = container.textContent ?? '';
+    expect(text.indexOf('claude-sonnet-5')).toBeLessThan(text.indexOf('claude-opus-5'));
+  });
+
+  it('renders the single-model layout unchanged when modelBreakdown has exactly one entry', async () => {
+    const detail = {
+      sessionId: 's1',
+      model: 'claude-sonnet-5',
+      modelBreakdown: {
+        'claude-sonnet-5': {
+          requestCount: 5,
+          totalInputTokens: 200,
+          totalOutputTokens: 100,
+          totalCostUsd: 1,
+        },
+      },
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByText('Model')).toBeInTheDocument();
+    expect(screen.queryByText(/Models \(/)).toBeNull();
+    expect(screen.getByText('claude-sonnet-5')).toBeInTheDocument();
+  });
+
+  it('falls back to data.model when modelBreakdown is absent or empty', async () => {
+    const detail = {
+      sessionId: 's1',
+      model: 'claude-sonnet-5',
+      modelBreakdown: {},
+      timeline: [{ timestamp: 1_000, toolName: 'Read', durationMs: 120, success: true }],
+    };
+    renderSessions(SAMPLE_LIST, { s1: detail });
+    await waitFor(() => expect(screen.getAllByText('Read').length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByText('Model')).toBeInTheDocument();
+    expect(screen.getByText('claude-sonnet-5')).toBeInTheDocument();
+  });
+
   it('renders a Files Read list from data.filesRead, truncated to the last two path segments', async () => {
     const detail = {
       sessionId: 's1',

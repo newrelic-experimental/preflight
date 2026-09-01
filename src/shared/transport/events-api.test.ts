@@ -1,6 +1,7 @@
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { sendEvents } from './events-api.js';
+import { stagingHost } from './http-client.js';
 import type { NrEventData } from '../events/types.js';
 import type { TransportOptions } from './types.js';
 
@@ -104,6 +105,17 @@ describe('sendEvents', () => {
   // covered directly (and more thoroughly) in http-client.test.ts's URL
   // builder tests — this wrapper only needs to prove the dot-in-host case
   // wires through correctly.
+
+  // bare 'staging' keyword (no dot) is still routed via region detection.
+  it('routes bare staging keyword to NR staging events endpoint', async () => {
+    await sendEvents(testEvents, 'us01xxUSKEY', {
+      ...baseOptions,
+      collectorHost: 'staging',
+    });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`https://${stagingHost('insights-collector')}/v1/accounts/12345/events`);
+  });
 });
 
 // ---------------------------------------------------------------------------

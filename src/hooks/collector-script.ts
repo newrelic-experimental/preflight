@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Hook collector script for Claude Code PreToolUse / PostToolUse / PostToolUseFailure hooks.
+ * Hook collector script for Claude Code PreToolUse / PostToolUse /
+ * PostToolUseFailure / PermissionRequest / PermissionDenied hooks.
  *
  * Called by Claude Code on every tool invocation. Reads the hook JSON from stdin,
  * extracts key fields, and appends a single JSONL line to the buffer file.
@@ -19,6 +20,7 @@ import {
   closeSync,
   mkdirSync,
   existsSync,
+  utimesSync,
   constants as fsConstants,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -242,10 +244,25 @@ function writePpidBreadcrumb(sessionId: string): void {
     let wroteAny = false;
     for (const pid of pids) {
       const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
-      // Short-circuit: no write needed if content already matches.
+      // Short-circuit: no content rewrite needed if it already matches, but
+      // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
+      // rejects a breadcrumb older than the reading process's own start
+      // time, so an actively-hooked session's breadcrumb must keep looking
+      // fresh across an MCP server restart (same ppid, same session_id,
+      // content genuinely unchanged) or that restart would permanently lose
+      // ppid-based resolution for the rest of the session. A breadcrumb from
+      // a session that's actually over stops getting touched here (nothing
+      // calls this with its old ppid+session_id again), so it still goes
+      // stale and gets rejected exactly as intended.
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
+            const now = new Date();
+            try {
+              utimesSync(breadcrumbPath, now, now);
+            } catch {
+              // Best-effort — an unwritable mtime doesn't block the session.
+            }
             wroteAny = true;
             continue;
           }
@@ -320,12 +337,21 @@ interface HookInput {
   tool_name?: string;
   tool_input?: unknown;
   tool_response?: unknown;
+  tool_result?: unknown;
   tool_use_id?: string;
   session_id?: string;
   cwd?: string;
   transcript_path?: string;
   error?: string;
   is_interrupt?: boolean;
+  // StopFailure (code.claude.com/docs/en/hooks.md) reuses `error` above for its
+  // closed error-type enum and adds these two free-text fields: error_details
+  // ("when available", no strict type — string or an object to JSON.stringify)
+  // and last_assistant_message (the raw API error text shown to the user, NOT
+  // Claude's conversational output as it is for Stop/SubagentStop).
+  error_details?: unknown;
+  last_assistant_message?: string;
+  denied_reason?: string;
   // Cursor (https://cursor.com/docs/agent/hooks) sends a different field
   // vocabulary per hook type instead of the uniform tool_name/tool_input
   // Claude Code and Kiro use. conversation_id is Cursor's closest analog to
@@ -370,8 +396,11 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
   const obj = input as Record<string, unknown>;
   const meta: Record<string, unknown> = {};
 
-  // Common field: file_path (Read, Write, Edit)
+  // Common field: file_path (Read, Write, Edit). VS Code Copilot hooks send
+  // camelCase tool_input keys (filePath) per the hooks FAQ
+  // (https://code.visualstudio.com/docs/copilot/customization/hooks).
   if (typeof obj.file_path === 'string') meta.file_path = obj.file_path;
+  else if (typeof obj.filePath === 'string') meta.file_path = obj.filePath;
 
   switch (toolName) {
     case 'Read':
@@ -379,10 +408,36 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       if (typeof obj.limit === 'number') meta.limit = obj.limit;
       break;
     case 'Write':
+    case 'create_file': // VS Code Copilot — same `content` field shape
       if (typeof obj.content === 'string') {
         meta.contentLength = obj.content.length;
         meta.lineCount = obj.content.length > 0 ? countLines(obj.content) : 0;
       }
+      break;
+    // VS Code Copilot's find-and-replace edit tools. Field names are camelCase
+    // (oldString/newString) per the hooks FAQ; tool names from toolNames.ts in
+    // microsoft/vscode (extensions/copilot/src/extension/tools/common/).
+    case 'replace_string_in_file': {
+      const oldStr = obj.oldString;
+      const newStr = obj.newString;
+      if (typeof oldStr === 'string') {
+        meta.oldStringLength = oldStr.length;
+        meta.oldLineCount = oldStr.length > 0 ? countLines(oldStr) : 0;
+      }
+      if (typeof newStr === 'string') {
+        meta.newStringLength = newStr.length;
+        meta.newLineCount = newStr.length > 0 ? countLines(newStr) : 0;
+        meta.isDelete = newStr.length === 0;
+      }
+      break;
+    }
+    case 'multi_replace_string_in_file':
+      if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
+      break;
+    case 'run_in_terminal':
+      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.explanation === 'string') meta.description = redact(obj.explanation);
+      if (typeof obj.isBackground === 'boolean') meta.run_in_background = obj.isBackground;
       break;
     case 'Edit':
       if (typeof obj.old_string === 'string') {
@@ -626,16 +681,31 @@ function processHook(raw: string): void {
     // — a no-match edit is a genuine failure worth surfacing to
     // anti-pattern/task-completion metrics, not a behavior to special-case
     // away.
-    const toolResponse = data.tool_response;
-    const responseSuccess =
+    // GitHub Copilot CLI sends the tool's result under `tool_result`, not
+    // `tool_response`, and signals outcome with `result_type: 'success' |
+    // 'failure'` rather than a `success` boolean (confirmed against the CLI's
+    // own runtime, which serializes `toolResult`/`resultType`/
+    // `text_result_for_llm` and fires a matching `postToolUseFailure` event).
+    // Without this alias every Copilot CLI tool call recorded outputSize 0,
+    // no output metadata, and success: true unconditionally.
+    const toolResponse = data.tool_response ?? data.tool_result;
+    const responseObj =
       toolResponse !== null && typeof toolResponse === 'object' && !Array.isArray(toolResponse)
-        ? (toolResponse as Record<string, unknown>).success
+        ? (toolResponse as Record<string, unknown>)
         : undefined;
+    const responseSuccess =
+      responseObj === undefined
+        ? undefined
+        : responseObj.success !== undefined
+          ? responseObj.success
+          : responseObj.result_type !== undefined
+            ? responseObj.result_type !== 'failure'
+            : undefined;
     event = {
       mode: 'post' as const,
       tool: toolName,
       timestamp,
-      outputSize: sizeOf(data.tool_response),
+      outputSize: sizeOf(toolResponse),
       success: typeof responseSuccess === 'boolean' ? responseSuccess : true,
     };
 
@@ -644,14 +714,12 @@ function processHook(raw: string): void {
     if (postInputMeta !== undefined) event.toolInput = postInputMeta;
 
     // Store only the metadata fields needed for tool-specific parsing
-    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    const outputMeta = extractOutputMeta(toolName, toolResponse);
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
-    if (recordContent && data.tool_response !== undefined) {
+    if (recordContent && toolResponse !== undefined) {
       const content =
-        typeof data.tool_response === 'string'
-          ? data.tool_response
-          : JSON.stringify(data.tool_response);
+        typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
       event.outputContent = redact(truncate(content, maxContentLen));
     }
   } else if (eventName === 'posttoolusefailure') {
@@ -663,6 +731,24 @@ function processHook(raw: string): void {
       error: redact(data.error ?? 'unknown error'),
       isInterrupt: data.is_interrupt ?? false,
     };
+  } else if (eventName === 'permissionrequest' || eventName === 'permissiondenied') {
+    // A user rejection produces no hook event of its own — the processor
+    // infers it from a permission-requested pre that never completes, and can
+    // only pair these by tool_use_id. Without one the event is unusable.
+    if (typeof data.tool_use_id !== 'string' || data.tool_use_id === '') {
+      process.stderr.write(`[preflight-collector] Dropping ${eventName} without tool_use_id\n`);
+      return;
+    }
+    event =
+      eventName === 'permissionrequest'
+        ? { mode: 'permission_request' as const, tool: toolName, timestamp }
+        : {
+            mode: 'permission_denied' as const,
+            tool: toolName,
+            timestamp,
+            ...(typeof data.denied_reason === 'string' &&
+              data.denied_reason !== '' && { deniedReason: redact(data.denied_reason) }),
+          };
   } else if (eventName === 'beforetool') {
     // Gemini CLI (https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md)
     // sends BeforeTool/AfterTool instead of PreToolUse/PostToolUse, but the
@@ -925,6 +1011,36 @@ function processHook(raw: string): void {
       toolUseId: String(data.stepIdx),
       ...(typeof data.error === 'string' && data.error !== '' && { error: redact(data.error) }),
     };
+  } else if (eventName === 'stopfailure') {
+    // Fires once per turn when a model-API call ultimately fails after
+    // Claude Code's own internal retries are exhausted
+    // (code.claude.com/docs/en/hooks.md). Pure notification — no decision
+    // control. `data.error` here is the 10-value closed error-type enum
+    // (rate_limit | overloaded | authentication_failed | ... | unknown),
+    // mapped downstream to ApiErrorType by
+    // metrics/api-failure-tracker.ts#mapClaudeCodeErrorType — never mapped
+    // here, since storage/types.ts must not depend on that module.
+    event = {
+      mode: 'api_failure' as const,
+      errorType: data.error ?? 'unknown',
+      timestamp,
+    };
+
+    // error_details/last_assistant_message are free-text "content" — same
+    // sensitivity class as tool input/output content — unlike errorType
+    // (a safe closed enum), so both are gated behind recordContent.
+    if (recordContent) {
+      if (data.error_details !== undefined) {
+        const details =
+          typeof data.error_details === 'string'
+            ? data.error_details
+            : JSON.stringify(data.error_details);
+        event.errorDetails = redact(truncate(details, maxContentLen));
+      }
+      if (typeof data.last_assistant_message === 'string') {
+        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+      }
+    }
   } else {
     // Unknown hook event — ignore silently
     return;
@@ -935,6 +1051,22 @@ function processHook(raw: string): void {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
+  // Stamp the true originating platform at write time, using this hook
+  // invocation's own environment — this is the only point in the pipeline
+  // that reliably reflects the real host, since whichever process later
+  // drains the buffer (e.g. --local's unscoped drain of an unowned session,
+  // see LocalSessionAggregator) may have detected a completely different
+  // platform for itself. Deliberately reads MCP_CLIENT/NEW_RELIC_AI_PLATFORM
+  // directly instead of going through PlatformRegistry: registry-based
+  // ambient detection would mis-tag every Claude Code hook event as
+  // generic-mcp (ClaudeCodeAdapter.isSupported() doesn't match Claude Code's
+  // real hook env — see #539), and pulling in the full adapter registry adds
+  // measurable overhead on this hot, pre+post-per-tool-call path. Explicit
+  // platforms (currently just Copilot SDK) are the only ones that need
+  // stamping here anyway; leaving it unset lets nr-ingest.ts's existing
+  // default-to-claude-code apply for everything else.
+  const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  if (explicitPlatform) event.platform = explicitPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
 
   // Write to buffer — wrapped in try/catch for resilience.
@@ -1051,9 +1183,18 @@ export const _stdinFs = {
  * Code runs on a Windows host and spawns this script inside WSL via
  * `wsl.exe`: the piped stdin crossing that boundary is created by WSL's
  * root-owned init/relay (root:root, mode 0600), so re-opening `/dev/stdin`
- * fails with EACCES for the non-root user even though fd 0 is readable. Fall
- * back to the fd only on that specific error so the common case keeps
- * avoiding the EAGAIN risk above.
+ * fails with EACCES for the non-root user even though fd 0 is readable.
+ *
+ * A second case where the path fails but the fd works: when the spawning
+ * process is itself Node/Electron (VS Code's Copilot Chat runs hooks this
+ * way), libuv backs a `stdio: 'pipe'` child with a *socketpair* rather than
+ * a FIFO. `open()` on a unix socket via /proc/self/fd fails with ENXIO, so
+ * `/dev/stdin` is unusable there even though fd 0 reads fine.
+ *
+ * Rather than enumerate errnos, fall back to the fd on any /dev/stdin
+ * failure — the fd read is the more universally correct source, and the path
+ * is only preferred to dodge the EAGAIN risk noted above. If the fallback
+ * fails too, that error propagates.
  */
 function readStdinSync(): string {
   if (process.platform === 'win32') {
@@ -1061,11 +1202,8 @@ function readStdinSync(): string {
   }
   try {
     return _stdinFs.readFileSync('/dev/stdin');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
-      return _stdinFs.readFileSync(process.stdin.fd);
-    }
-    throw err;
+  } catch {
+    return _stdinFs.readFileSync(process.stdin.fd);
   }
 }
 

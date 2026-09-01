@@ -63,9 +63,8 @@ export interface AlertSnapshotCollectorDeps {
    * snapshot's `cost.todayUsd` and `cost.weekUsd` reflect prior-session +
    * current-session today/weekly totals (the same numbers fed to
    * BudgetTracker.updateCost), enabling cost.window rules with `today`/
-   * `week` periods to fire. Without this, today/week fall back to 0 — the
-   * pre-fix behavior — so cost.window rules with non-session periods
-   * effectively become no-ops.
+   * `week` periods to fire. Without this, today/week fall back to 0, so
+   * cost.window rules with non-session periods effectively become no-ops.
    */
   readonly budgetTracker?: {
     getStatus(): {
@@ -284,7 +283,7 @@ export class AlertSnapshotCollector {
       // spent — same numbers that feed budget alerts, computed in index.ts
       // from costTracker.getCostForDay() + cross-midnight-aware prior session
       // baseline. Falls back to 0 when no budgetTracker is wired (older
-      // configs / tests), matching the pre-fix placeholder behavior.
+      // configs / tests).
       const status = this.deps.budgetTracker?.getStatus();
       return {
         sessionUsd: sessionUsd ?? 0,

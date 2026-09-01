@@ -137,7 +137,7 @@ Whichever family a tracker belongs to, it still:
 
 Each adapter in `src/platforms/` implements `PlatformAdapter` (`types.ts`): `normalizeToolCall()`, `mapToolName()`, `getSessionMetadata()`, `getHookInstallInstructions()`, `isSupported()`. `PlatformRegistry.detect()` (`platform-registry.ts`) returns the first registered adapter whose `isSupported()` is `true` — registration order matters, and the generic MCP fallback is always registered last with `isSupported()` hardcoded `true`.
 
-Platform capabilities are not uniform: Claude Code, Kiro, and Amazon Q expose a uniform hook shape that `src/hooks/collector-script.ts` parses into every built-in tool call; Cursor and Windsurf expose their own platform-specific hook events, handled by dedicated branches in the same file — all five are `full-hooks` platforms with real, automatic capture. Zed and Continue.dev have no hook/callback mechanism at all, so Preflight can observe calls made to its own MCP tools but never the platform's built-in file/shell tools (`mcp-tools-only`). Copilot and the generic-mcp fallback are `self-reported` — observable in principle, but only when an external party (a third-party extension, or the calling MCP client itself) actually reports them. Never invent a tool-name map or setup instructions — every entry must trace to the platform's own documentation or source, cited in a comment. See [ADAPTERS.md](./docs/ADAPTERS.md) for the full per-platform reference (mechanism, detection env vars, tool-map sourcing, known gaps, setup steps).
+Platform capabilities are not uniform: Claude Code, Kiro, Amazon Q, GitHub Copilot, and GitHub Copilot SDK expose a uniform hook shape that `src/hooks/collector-script.ts` parses into every built-in tool call (Copilot with camelCase `tool_input` keys and VS Code tool names); Cursor and Windsurf expose their own platform-specific hook events, handled by dedicated branches in the same file — all seven are `full-hooks` platforms with real, automatic capture. Zed and Continue.dev have no hook/callback mechanism at all, so Preflight can observe calls made to its own MCP tools but never the platform's built-in file/shell tools (`mcp-tools-only`). The generic-mcp fallback is `self-reported` — observable in principle, but only when the calling MCP client actually reports them. Never invent a tool-name map or setup instructions — every entry must trace to the platform's own documentation or source, cited in a comment. See [ADAPTERS.md](./docs/ADAPTERS.md) for the full per-platform reference (mechanism, detection env vars, tool-map sourcing, known gaps, setup steps).
 
 ## MCP Tool Registration
 
@@ -166,7 +166,7 @@ Key config interfaces:
 
 ### Additional Configuration Fields
 
-Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, and the 8 `otlp.*` OTLP export/receiver fields. See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
+Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, the 8 `otlp.*` OTLP export/receiver fields, and `companionMode` (suppresses `ai.cost.*` gauges and tags cost-bearing Claude Code events when the same org also runs Claude Code's built-in OTel export). See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
 
 ### Event Types
 

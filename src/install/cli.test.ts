@@ -2322,4 +2322,37 @@ describe('preflight setup', () => {
     expect(output.join('')).not.toContain('Setup failed');
     expect(process.exitCode).toBeFalsy();
   });
+
+  it('passes staging: false to the wizard by default', async () => {
+    mockedSetupWizard.runSetupWizard.mockResolvedValue(undefined);
+    await runInstallCli(['setup']);
+    expect(mockedSetupWizard.runSetupWizard).toHaveBeenCalledWith({ staging: false });
+  });
+
+  it('passes staging: true to the wizard when --staging is given', async () => {
+    mockedSetupWizard.runSetupWizard.mockResolvedValue(undefined);
+    await runInstallCli(['setup', '--staging']);
+    expect(mockedSetupWizard.runSetupWizard).toHaveBeenCalledWith({ staging: true });
+  });
+
+  it('hides --staging from setup --help', async () => {
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    const helpText = prog.commands.find((c) => c.name() === 'setup')!.helpInformation();
+    expect(helpText).not.toContain('--staging');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --staging is hidden from --help across every command that supports it
+// ---------------------------------------------------------------------------
+
+describe('--staging is hidden from help everywhere it is supported', () => {
+  it('setup, and (via createInstallProgram) any other install-CLI subcommand, never advertises --staging', async () => {
+    const { createInstallProgram } = await import('./cli.js');
+    const prog = createInstallProgram();
+    for (const cmd of prog.commands) {
+      expect(cmd.helpInformation()).not.toContain('--staging');
+    }
+  });
 });

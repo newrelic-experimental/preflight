@@ -77,11 +77,20 @@ describe('sse-handler', () => {
         todayTotalUsd: 2,
         forecastEodUsd: null,
       });
-      const chunks = await readSseChunks(res, 2);
+      bus.emit('retry-alert', {
+        sessionId: 's1',
+        toolName: 'Bash',
+        occurrences: 3,
+        tokensWasted: 42,
+        ts: 1,
+      });
+      const chunks = await readSseChunks(res, 3);
       const merged = chunks.join('');
       expect(merged).toContain('event: tool-call');
       expect(merged).toContain('"tool":"Read"');
       expect(merged).toContain('event: cost-update');
+      expect(merged).toContain('event: retry-alert');
+      expect(merged).toContain('"toolName":"Bash"');
     } finally {
       await server.close();
     }
@@ -367,7 +376,7 @@ describe('sse-handler', () => {
     (res as unknown as { write: jest.Mock }).write = jest.fn();
 
     createSseHandler(bus)(req, res);
-    // Sanity: bus.onWithSeq attached one listener per channel (5 total).
+    // Sanity: bus.onWithSeq attached one listener per channel (6 total).
     expect(offSpy).not.toHaveBeenCalled();
 
     // Both close events fire — cleanup runs twice but the guard makes the
@@ -382,9 +391,10 @@ describe('sse-handler', () => {
     expect(callsByEvent['tool-call']).toBe(1);
     expect(callsByEvent['cost-update']).toBe(1);
     expect(callsByEvent['anti-pattern']).toBe(1);
+    expect(callsByEvent['retry-alert']).toBe(1);
     expect(callsByEvent['context-update']).toBe(1);
     expect(callsByEvent['alert']).toBe(1);
-    expect(offSpy).toHaveBeenCalledTimes(5);
+    expect(offSpy).toHaveBeenCalledTimes(6);
   });
 
   // Server-side sessionId filtering for the per-session
@@ -547,7 +557,7 @@ describe('sse-handler', () => {
 
     res.emit('error', new Error('EPIPE'));
 
-    expect(offSpy).toHaveBeenCalledTimes(5);
+    expect(offSpy).toHaveBeenCalledTimes(6);
   });
 
   it('res.destroyed short-circuits onAny — no write attempted for live frames', () => {

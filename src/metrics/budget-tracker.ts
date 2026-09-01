@@ -172,9 +172,10 @@ export class BudgetTracker {
    * to seed against yet for those two periods.
    *
    * Deliberately does not call `onThreshold` or push onto `alerts` — these
-   * thresholds were already alerted on (or silently passed, pre-fix) by the
-   * now-dead prior process; this only suppresses a duplicate, not un-fired
-   * spend the user hasn't been told about yet.
+   * thresholds were already alerted on (or silently passed, on an older
+   * build that didn't alert on them) by the now-dead prior process; this
+   * only suppresses a duplicate, not un-fired spend the user hasn't been
+   * told about yet.
    */
   seedFiredThresholdsFromSessionTotal(sessionSpentUsd: number): void {
     if (this.sessionBudgetUsd === null || this.sessionBudgetUsd <= 0) return;

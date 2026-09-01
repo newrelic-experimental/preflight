@@ -31,6 +31,12 @@ export interface McpServerConfig {
   readonly enabled: boolean;
   readonly highSecurity: boolean;
   readonly recordContent: boolean;
+  /**
+   * Set when this org also enables Claude Code's built-in OTel export, so the
+   * same session isn't ingested twice into a blended "org AI spend" dashboard
+   * (session_id === OTel's session.id). See docs/ADVANCED.md § Companion mode.
+   */
+  readonly companionMode: boolean;
   readonly redactionPatterns: readonly RegExp[];
   readonly hookBufferPath: string;
   readonly storagePath: string;
@@ -43,6 +49,8 @@ export interface McpServerConfig {
   readonly collectorHost: string | null;
   readonly proxyUpstreams: readonly UpstreamConfig[];
   readonly nrApiKey: string | null;
+  /** Path to a custom pricing JSON file, applied via `initPricing()`. See `NEW_RELIC_AI_CUSTOM_PRICING_FILE`. */
+  readonly customPricingFile: string | null;
   readonly digestWebhookUrl: string | null;
   readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
@@ -96,6 +104,12 @@ export interface McpServerConfig {
     readonly logRetentionMb: number;
     readonly rulesPath: string;
   };
+  readonly homelabServerUrl: string | null;
+  readonly homelabToken: string | null;
+  readonly homelabServer: {
+    readonly port: number;
+    readonly bindAddress: string;
+  };
 }
 
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
@@ -130,6 +144,7 @@ export const ConfigFileSchema = z
     enabled: z.boolean().optional(),
     highSecurity: z.boolean().optional(),
     recordContent: z.boolean().optional(),
+    companionMode: z.boolean().optional(),
     storagePath: z.string().optional(),
     hookBufferPath: z.string().optional(),
     harvestEventsMs: z.number().optional(),
@@ -142,6 +157,7 @@ export const ConfigFileSchema = z
     collectorHost: z.string().nullable().optional(),
     proxyUpstreams: z.array(z.unknown()).optional(),
     nrApiKey: z.string().nullable().optional(),
+    customPricingFile: z.string().nullable().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
     digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
@@ -196,6 +212,15 @@ export const ConfigFileSchema = z
         port: z.number().int().min(1).max(65535).optional(),
         host: z.string().optional(),
         openOnStart: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+    homelabServerUrl: z.string().nullable().optional(),
+    homelabToken: z.string().nullable().optional(),
+    homelabServer: z
+      .object({
+        port: z.number().int().min(1).max(65535).optional(),
+        bindAddress: z.string().optional(),
       })
       .passthrough()
       .optional(),
@@ -592,6 +617,13 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     }
   }
 
+  // --- licenseKey: CLI has no flag for this, so env > file ---
+  // Hoisted ahead of mode resolution: an ambiguous licenseKey-without-mode
+  // config must fail closed instead of silently defaulting to 'cloud'.
+  const licenseKeyRaw =
+    process.env.NEW_RELIC_LICENSE_KEY ??
+    (typeof file.licenseKey === 'string' ? file.licenseKey : undefined);
+
   // --- Resolve mode early so we can gate licenseKey/accountId requirements ---
   // File mode is already validated by the zod schema in loadConfigFile.
   const isValidMode = (v: string | undefined): v is Mode =>
@@ -600,13 +632,22 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   if (envMode !== undefined && envMode !== '' && !isValidMode(envMode)) {
     throw new Error(`Invalid NR_AI_MODE='${envMode}'. Must be one of: ${VALID_MODES.join(', ')}.`);
   }
-  const mode: Mode =
-    (isValidMode(envMode) ? envMode : undefined) ?? (file.mode as Mode | undefined) ?? 'cloud';
+  const fileMode = file.mode as Mode | undefined;
+  let mode: Mode;
+  if (isValidMode(envMode)) {
+    mode = envMode;
+  } else if (fileMode !== undefined) {
+    mode = fileMode;
+  } else if (licenseKeyRaw) {
+    // Local-first default (README): telemetry export is opt-in, so a config
+    // with credentials but no explicit mode must not silently export.
+    throw new Error(
+      'Config has a licenseKey but no explicit mode. Telemetry export is opt-in: set "mode": "cloud" (or "both") in the config file, set NR_AI_MODE, or remove the credentials for local-only use. Previous versions implicitly defaulted to cloud.',
+    );
+  } else {
+    mode = 'local';
+  }
 
-  // --- licenseKey: CLI has no flag for this, so env > file ---
-  const licenseKeyRaw =
-    process.env.NEW_RELIC_LICENSE_KEY ??
-    (typeof file.licenseKey === 'string' ? file.licenseKey : undefined);
   if (mode !== 'local' && !licenseKeyRaw) {
     throw new Error(
       `Missing required configuration: licenseKey (mode='${mode}'). ` +
@@ -706,6 +747,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       ),
     ),
 
+    companionMode: envBool(
+      'NR_AI_COMPANION_MODE',
+      typeof file.companionMode === 'boolean' ? file.companionMode : false,
+    ),
+
     redactionPatterns: DEFAULT_REDACTION_PATTERNS,
 
     hookBufferPath:
@@ -800,6 +846,10 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
 
     nrApiKey:
       process.env.NEW_RELIC_API_KEY ?? (typeof file.nrApiKey === 'string' ? file.nrApiKey : null),
+
+    customPricingFile:
+      process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ??
+      (typeof file.customPricingFile === 'string' ? file.customPricingFile : null),
 
     digestWebhookUrl:
       process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL ??
@@ -1070,6 +1120,33 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       };
     })(),
 
+    homelabServerUrl:
+      process.env.NEW_RELIC_AI_HOMELAB_URL ??
+      (typeof file.homelabServerUrl === 'string' ? file.homelabServerUrl : null),
+
+    homelabToken:
+      process.env.NEW_RELIC_AI_HOMELAB_TOKEN ??
+      (typeof file.homelabToken === 'string' ? file.homelabToken : null),
+
+    homelabServer: {
+      port: envInt(
+        'NEW_RELIC_AI_HOMELAB_SERVER_PORT',
+        typeof (file.homelabServer as Record<string, unknown>)?.port === 'number'
+          ? ((file.homelabServer as Record<string, unknown>).port as number)
+          : 7777,
+        { min: 1, max: 65535 },
+      ),
+      bindAddress: (() => {
+        const envVal = process.env.NEW_RELIC_AI_HOMELAB_BIND_ADDRESS;
+        if (envVal !== undefined && envVal !== '') return envVal;
+        const fileServer = file.homelabServer as Record<string, unknown>;
+        if (typeof fileServer?.bindAddress === 'string' && fileServer.bindAddress !== '') {
+          return fileServer.bindAddress;
+        }
+        return '0.0.0.0';
+      })(),
+    },
+
     platformTarget: file.platformTarget as PlatformTarget | undefined,
 
     alerts: (() => {
@@ -1129,6 +1206,26 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       };
     })(),
   };
+
+  if (config.homelabServerUrl && !config.homelabToken) {
+    throw new Error(
+      'homelabServerUrl is set but homelabToken is missing. Set NEW_RELIC_AI_HOMELAB_TOKEN.',
+    );
+  }
+
+  if (config.homelabServerUrl) {
+    let parsedHomelabUrl: URL;
+    try {
+      parsedHomelabUrl = new URL(config.homelabServerUrl);
+    } catch {
+      throw new Error(`homelabServerUrl is not a valid URL: "${config.homelabServerUrl}"`);
+    }
+    if (parsedHomelabUrl.protocol !== 'http:' && parsedHomelabUrl.protocol !== 'https:') {
+      throw new Error(
+        `homelabServerUrl must use http: or https:. Got: "${parsedHomelabUrl.protocol}"`,
+      );
+    }
+  }
 
   logger.debug('Configuration loaded', {
     appName: config.appName,

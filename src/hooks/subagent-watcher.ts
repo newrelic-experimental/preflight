@@ -193,6 +193,16 @@ interface DiscoveredFile {
 interface CursorState {
   readonly bytePos: number;
   readonly partialLine: string;
+  /**
+   * The resolved agent-transcript path this byte offset belongs to. The cursor
+   * file is keyed by (parentSessionId, agentId) alone, but the canonical file
+   * for that pair can switch project dirs (repo rename → newest-mtime copy).
+   * `processFile` resets to a fresh cursor when this differs from the file it
+   * is about to read, so a stale offset is never applied to a different file.
+   * Undefined for a cursor file written before this field existed (no reset —
+   * existing offset preserved).
+   */
+  readonly path?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +481,40 @@ export class SubagentWatcher {
         }
       }
     }
-    return out;
+    return this.dedupeByCursorKey(out);
+  }
+
+  /**
+   * Collapse discovered files that would share one cursor to a single
+   * newest-mtime copy. The per-agent byte cursor is keyed by
+   * (parentSessionId, agentId) alone (see cursorPath), but the same
+   * (parentSessionId, agentId) pair can appear under more than one project dir:
+   * Claude Code creates a fresh project-slug directory when a repo is
+   * renamed/moved, and the old dir's `subagents/.../agent-*.jsonl` lingers with
+   * divergent content. Reading both would apply one file's byte offset to the
+   * other's unrelated bytes, re-parsing mismatched turns and inflating subagent
+   * token/cost totals. After a rename the stale dir stops being written, so the
+   * newest-mtime copy is the active, canonical one. Mirrors the identical
+   * dedupe in ParentTranscriptWatcher.discoverUnfiltered().
+   */
+  private dedupeByCursorKey(files: DiscoveredFile[]): DiscoveredFile[] {
+    const canonical = new Map<string, DiscoveredFile>();
+    for (const f of files) {
+      const key = `${f.parentSessionId}|${f.agentId}`;
+      const existing = canonical.get(key);
+      // Newest mtime wins; on an exact mtime tie, break deterministically by
+      // lexicographically-smallest path (see ParentTranscriptWatcher's
+      // identical tie-break) so the choice is stable rather than following
+      // readdir order.
+      if (
+        existing === undefined ||
+        f.stat.mtimeMs > existing.stat.mtimeMs ||
+        (f.stat.mtimeMs === existing.stat.mtimeMs && f.path < existing.path)
+      ) {
+        canonical.set(key, f);
+      }
+    }
+    return [...canonical.values()];
   }
 
   /** Returns the file's Stats when it passes the mtime cutoff, else null — callers reuse the Stats instead of re-statting the same path. */
@@ -531,7 +574,17 @@ export class SubagentWatcher {
   private processFile(file: DiscoveredFile): void {
     const st = file.stat;
     const cursorPath = this.cursorPath(file.parentSessionId, file.agentId);
-    const startCursor = this.readCursor(cursorPath);
+    const persisted = this.readCursor(cursorPath);
+    // If the canonical copy for this (parentSessionId, agentId) switched project
+    // dirs since the last poll (repo rename → newest-mtime copy now wins in
+    // dedupeByCursorKey), the persisted byte offset belongs to the OLD file and
+    // is meaningless here. Start fresh; the event-processor dedupes shared turns
+    // by (agentId, messageId) and day-bucketing keeps "spend today" correct.
+    const switchedFile = persisted.path !== undefined && persisted.path !== file.path;
+    const startCursor: CursorState = switchedFile
+      ? { bytePos: 0, partialLine: '', path: file.path }
+      : persisted;
+    if (switchedFile) this.partialByPath.delete(file.path);
 
     if (startCursor.bytePos >= st.size) return;
 
@@ -647,7 +700,7 @@ export class SubagentWatcher {
     // restart resumes exactly where we left off. Keep the in-memory mirror in
     // sync; when the partial is empty, drop the key entirely so a fully-consumed
     // file leaves no residual entry in the map.
-    this.writeCursor(cursorPath, nextBytePos, newPartial);
+    this.writeCursor(cursorPath, nextBytePos, newPartial, file.path);
     if (newPartial.length > 0) {
       this.partialByPath.set(file.path, newPartial);
     } else {
@@ -767,20 +820,28 @@ export class SubagentWatcher {
       const bytePos =
         typeof parsed.bytePos === 'number' && parsed.bytePos >= 0 ? parsed.bytePos : 0;
       const partialLine = typeof parsed.partialLine === 'string' ? parsed.partialLine : '';
-      return { bytePos, partialLine };
+      const path = typeof parsed.path === 'string' ? parsed.path : undefined;
+      return { bytePos, partialLine, path };
     } catch {
       return { bytePos: 0, partialLine: '' };
     }
   }
 
-  private writeCursor(cursorPath: string, bytePos: number, partialLine: string): void {
+  private writeCursor(
+    cursorPath: string,
+    bytePos: number,
+    partialLine: string,
+    sourcePath: string,
+  ): void {
     try {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
       const dir = dirname(cursorPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine }), { mode: 0o600 });
+      writeFileSync(cursorPath, JSON.stringify({ bytePos, partialLine, path: sourcePath }), {
+        mode: 0o600,
+      });
     } catch (err) {
       this.recordError(err);
     }
