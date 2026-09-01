@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-08-31
+
+### Fixed
+
+- **Configs with New Relic credentials but no explicit `mode` now fail to start with a clear error instead of silently sending telemetry.** The config loader previously defaulted to `cloud` whenever a license key was present without an explicit `mode`, contradicting the project's local-first, offline-by-default default; it now requires an explicit `mode` in that case, and defaults to `local` when no credentials are configured. `preflight doctor` also reports the resolved telemetry mode and where it came from.
+
 ## [1.18.6] - 2026-09-01
 
 ### Fixed

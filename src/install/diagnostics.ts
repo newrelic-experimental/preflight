@@ -128,10 +128,16 @@ function checkTelemetryMode(configPath: string, fileMode: string | undefined): D
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // loadMcpConfig can throw for reasons that have nothing to do with mode
+    // (invalid accountId, a literal "null" licenseKey, etc.) — those aren't
+    // caught by the "Config valid" check above (its Zod schema doesn't
+    // validate those runtime-only rules), so still surface them here rather
+    // than dropping them, but don't imply the mode itself is at fault.
+    const isModeError = message.includes('no explicit mode');
     return {
       check: 'Telemetry mode',
       status: 'fail',
-      detail: message,
+      detail: isModeError ? message : `Could not resolve config to determine mode: ${message}`,
       fix: 'Apply the remedy named in the message, then re-run doctor.',
     };
   }
