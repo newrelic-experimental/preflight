@@ -1562,7 +1562,12 @@ async function main(): Promise<void> {
       localStore,
     });
 
-    const dashboardEnabled = config.mode === 'local' || config.mode === 'both';
+    // options.local always gets a dashboard, regardless of what config.mode
+    // resolves to — the try/catch above only forces mode: 'local' when cloud
+    // credentials are absent, so `--local` combined with an explicit
+    // `mode: 'cloud'` config (real credentials present) would otherwise skip
+    // the dashboard the user explicitly asked for by passing --local.
+    const dashboardEnabled = options.local || config.mode === 'local' || config.mode === 'both';
     let alertEngine: LocalAlertEngine | undefined;
     let alertSnapshotCollector: AlertSnapshotCollector | undefined;
     let alertLog: AlertLog | undefined;

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.5] - 2026-09-01
+
+### Fixed
+
+- **Copilot (and other hook-based platforms') sessions drained through `--local` now reach New Relic when cloud credentials are configured**, and are tagged with their real originating platform instead of always being recorded as Claude Code — previously `--local` unconditionally skipped cloud sending and every hook-sourced event lost its true platform and session attribution.
+
 ## [1.18.4] - 2026-08-31
 
 ### Added

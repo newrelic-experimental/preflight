@@ -1075,7 +1075,7 @@ export class NrIngestManager {
       const proxyEvent = proxyToolCallToNrEvent(record, {
         developer: this.developer,
         appName: this.appName,
-        sessionTraceId: record.sessionId ?? this.sessionTraceId,
+        sessionTraceId: this.sessionTraceId,
         teamId: this.teamId,
         projectId: this.projectId,
         orgId: this.orgId,
