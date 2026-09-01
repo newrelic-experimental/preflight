@@ -241,11 +241,27 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 ## Amazon Kiro (`kiro`)
 
-**Mechanism:** MCP stdio protocol, plus real hook events — [kiro.dev/docs/cli/hooks](https://kiro.dev/docs/cli/hooks). Kiro sends the hook event name in lower-camelCase (`preToolUse`) rather than Claude Code's PascalCase (`PreToolUse`); `collector-script.ts` matches case-insensitively so both are handled by the same generic branches as Claude Code and Amazon Q.
+**Mechanism:** MCP stdio protocol, plus real hook events — [kiro.dev/docs/cli/hooks](https://kiro.dev/docs/cli/hooks). Kiro's docs describe the event name in lower-camelCase (`preToolUse`), but a live install (42.08, macOS) was observed sending **PascalCase** (`PreToolUse`/`PostToolUse`), same as Claude Code. `collector-script.ts` matches case-insensitively, so both spellings work and neither needs a dedicated branch — but don't rely on the camelCase form being what actually arrives.
+
+**Observed payload shape** (captured live, 42.08 macOS): top-level keys are `session_id`, `hook_event_name`, `cwd`, `tool_name`, `tool_input`, and `tool_response` on the post event. Note what's absent — there is no `tool_use_id`, so pre/post pairing relies on the collector's own ordering rather than an id echoed back by the platform.
 
 **Detection (`isSupported()`):** `KIRO_SESSION_ID` set, or `KIRO_IDE` set, or `MCP_CLIENT === 'kiro'`, or `NEW_RELIC_AI_PLATFORM === 'kiro'`.
 
-**Tool-map:** `tool_name` may arrive as either a tool's canonical name (`fs_read`) or a documented alias (`read`) — both forms are covered in `KIRO_TOOL_MAP`. Some entries (`fsRead`, `fsCreate`, etc.) have no confirmed source in Kiro's public docs and are kept as best-effort coverage for IDE-surface tool names — don't remove them without positive evidence they're wrong.
+**Known gap — detection needs an explicit opt-in in practice.** Verified against a live Kiro install (42.08, macOS): Kiro passes a Power's MCP server 16 environment variables and _none_ are Kiro-specific (`PWD`, `INIT_CWD`, `PLUGIN_ROOT`, `PLUGIN_DATA`, `NODE`, `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, `EDITOR`, `COLOR`, `SHLVL`, `_`, `__CF_USER_TEXT_ENCODING`, plus whatever `mcp.json` declares). So the first three signals above never fire on their own and detection falls through to the generic MCP adapter, which records `platform: "generic-mcp"` and leaves tool names unmapped — quietly zeroing every metric keyed on a normalized name while the raw tool-call count still looks right. Set `NEW_RELIC_AI_PLATFORM: "kiro"` in the MCP server's `env` to force it; [`kiro-power/mcp.json`](../kiro-power/mcp.json) does this, and [KIRO_POWER.md](./KIRO_POWER.md) explains why.
+
+**Tool-map:** `tool_name` may arrive as either a tool's canonical name (`fs_read`) or a documented alias (`read`) — both forms are covered in `KIRO_TOOL_MAP`. Some entries (`fsRead`, `fsCreate`, etc.) have no confirmed source in Kiro's public docs and are kept as best-effort coverage for IDE-surface tool names — don't remove them without positive evidence they're wrong. Entries marked `// OBSERVED` are different: they were captured from that same live install's session records, and they are snake_case (`read_file`, `read_files`, `str_replace`, `list_directory`, `grep_search`, `web_fetch`) where the map had previously only guessed camelCase — treat those spellings as authoritative. Kiro's own meta tools (`kiro_powers`, `update_session_information`, `createHook`) are intentionally left unmapped, since mapping them to a file verb would inflate file metrics with activity that never touched a file.
+
+**`tool_input` field names differ from Claude Code's** — captured live, so these are facts rather than inferences:
+
+| Tool          | `tool_input`                                                                    | Note                                                                              |
+| ------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `read_file`   | `{path, offset, limit}`                                                         | file key is `path`, not `file_path`; `offset`/`limit` arrive as `null` when unset |
+| `str_replace` | `{path, oldStr, newStr, replace_all}`                                           | `oldStr`/`newStr`, not `old_string`/`new_string`                                  |
+| `kiro_powers` | `{action, powerName, serverName, toolName, arguments, steeringFile, skillName}` | meta tool, no file                                                                |
+
+`collector-script.ts` has explicit `read_file` and `str_replace` cases for this, which is what makes `unique_files_read` / `unique_files_modified` non-zero on Kiro. They are separate cases rather than a generic `path` → `file_path` promotion because Grep/Glob also send `path`, where it means a search root — promoting that would misreport searches as file access on every platform. Also note Kiro's `path` is **sometimes workspace-relative and sometimes absolute** — both forms were observed in the same session (`cloudformation/export-env.sh` from `str_replace`, a full `/Users/...` path from `read_file`). Don't assume either; anything comparing paths across calls has to normalize first, or the same file counts twice.
+
+**Remaining gap:** `bash_calls_by_category` is still empty on Kiro. It needs the command string, which lives in `execute_bash`'s `tool_input` — a shape not yet captured first-hand, so no case is guessed for it. `bash_commands_run` is unaffected (it keys on the mapped name alone). The same applies to `read_files`, `list_directory`, `grep_search` and any write/delete tool: they map correctly for counting, but contribute no structured metadata until their input shapes are observed.
 
 **Setup:**
 
@@ -279,7 +295,7 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
 
 **Tool-map:** Droid's documented `PreToolUse`/`PostToolUse` matchers are `Task`, `Execute`, `Glob`, `Grep`, `Read`, `Edit`, `Create`, `FetchUrl`, `WebSearch`. `Read`, `Glob`, `Grep`, `Edit` already match Preflight's canonical vocabulary and are listed as explicit identity entries in `DROID_TOOL_MAP` (there is no pass-through fallback). `Task`→Agent, `Execute`→Bash, `Create`→Write, `FetchUrl`→WebFetch, `WebSearch`→WebSearch.
 
-**Known gap:** `collector-script.ts`'s per-tool metadata extractors (`extractInputMeta`/`extractOutputMeta`) switch on the raw, unmapped tool name written into the buffer — so Droid's `Create`/`Execute`/`Task` calls don't get the extra structured fields (content length, command classification, etc.) that `Write`/`Bash`/`Agent` get for Claude Code. This is the same situation Kiro's `fsWrite`/`fsCreate`/etc. are already in; `Read`/`Glob`/`Grep`/`Edit` (matching exactly) are unaffected.
+**Known gap:** `collector-script.ts`'s per-tool metadata extractors (`extractInputMeta`/`extractOutputMeta`) switch on the raw, unmapped tool name written into the buffer — so Droid's `Create`/`Execute`/`Task` calls don't get the extra structured fields (content length, command classification, etc.) that `Write`/`Bash`/`Agent` get for Claude Code. `Read`/`Glob`/`Grep`/`Edit` (matching exactly) are unaffected. Kiro shared this gap until explicit cases were added for its tool names — see the Kiro section.
 
 **Setup:**
 

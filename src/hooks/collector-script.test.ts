@@ -481,6 +481,96 @@ describe('collector-script', () => {
       expect(events[0]!.mode).toBe('pre');
       expect(events[0]!.tool).toBe('create_file');
     });
+
+    // Payloads below are verbatim captures from a live Kiro install (42.08,
+    // macOS) — Kiro keys the file on `path` (not `file_path`) and edit strings on
+    // `oldStr`/`newStr`, so without these cases file_path was never extracted and
+    // unique_files_read / unique_files_modified reported zero.
+    describe('Kiro tool_input extraction', () => {
+      function makeKiroPreToolUse(overrides: Record<string, unknown> = {}): string {
+        return JSON.stringify({
+          session_id: 'sess_kiro_test',
+          hook_event_name: 'PreToolUse',
+          cwd: '/Users/dev/project',
+          tool_name: 'read_file',
+          tool_input: { path: 'cloudformation/export-env.sh', offset: null, limit: null },
+          ...overrides,
+        });
+      }
+
+      it('extracts file_path from read_file’s `path` key', () => {
+        processHook(makeKiroPreToolUse());
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.file_path).toBe('cloudformation/export-env.sh');
+      });
+
+      it('tolerates read_file’s null offset/limit without emitting them', () => {
+        processHook(makeKiroPreToolUse());
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.offset).toBeUndefined();
+        expect(toolInput.limit).toBeUndefined();
+      });
+
+      it('extracts read_file’s offset/limit when Kiro sends real numbers', () => {
+        processHook(makeKiroPreToolUse({ tool_input: { path: 'a.ts', offset: 10, limit: 50 } }));
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.offset).toBe(10);
+        expect(toolInput.limit).toBe(50);
+      });
+
+      it('extracts Edit-style metadata from str_replace’s oldStr/newStr', () => {
+        processHook(
+          makeKiroPreToolUse({
+            tool_name: 'str_replace',
+            tool_input: {
+              path: 'cloudformation/export-env.sh',
+              oldStr: '# CrowdStrike (empty)\nexport TF_VAR_CROWDSTRIKE_CID=""',
+              newStr: '# CrowdStrike (empty)\nexport TF_VAR_CROWDSTRIKE_CID="123"',
+              replace_all: false,
+            },
+          }),
+        );
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.file_path).toBe('cloudformation/export-env.sh');
+        expect(toolInput.oldLineCount).toBe(2);
+        expect(toolInput.newLineCount).toBe(2);
+        expect(toolInput.isDelete).toBe(false);
+        expect(toolInput.replace_all).toBe(false);
+      });
+
+      it('flags a str_replace that empties the target as a delete', () => {
+        processHook(
+          makeKiroPreToolUse({
+            tool_name: 'str_replace',
+            tool_input: { path: 'a.ts', oldStr: 'gone', newStr: '' },
+          }),
+        );
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.newStringLength).toBe(0);
+        expect(toolInput.isDelete).toBe(true);
+      });
+
+      // Guards the reason these are explicit cases: Grep/Glob also send `path`,
+      // where it is a search root. Promoting that to file_path would misreport
+      // searches as file access.
+      it('does not treat a Grep search root as a file path', () => {
+        processHook(
+          makeKiroPreToolUse({
+            tool_name: 'Grep',
+            tool_input: { pattern: 'TODO', path: '/Users/dev/project/src' },
+          }),
+        );
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.file_path).toBeUndefined();
+        expect(toolInput.path).toBe('/Users/dev/project/src');
+      });
+    });
   });
 
   describe('processHook() — PostToolUse', () => {

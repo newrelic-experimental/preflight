@@ -9,9 +9,13 @@ Preflight can be installed directly as a [Kiro](https://kiro.dev) Power, in
 addition to the npm-based install (`npm install -g @newrelic/preflight` +
 `preflight setup`) described in the main [README](../README.md). Both paths
 are valid — the Power is an additional distribution channel, not a
-replacement. In fact, this Power's own MCP server needs that same global
-install (`npm install -g @newrelic/preflight`) — see [Packaging](#packaging)
-for why.
+replacement.
+
+The Power gives you the `nr_observe_*` MCP tools with nothing pre-installed.
+Automatic tool-call capture is the one part that still needs the global
+install, because the hook binary runs on every single tool call and can't be
+routed through `npx` — see
+[Enable automatic tool-call capture](#enable-automatic-tool-call-capture).
 
 `kiro-power/` uses Kiro's current
 [Agent Plugins](https://agent-plugins.org) format (`plugin.json` + `mcp.json`
@@ -64,15 +68,16 @@ PreToolUse/PostToolUse capture — that's a one-time manual step, covered by the
 
 1. Clone this repo (or download it) so you have a local copy of
    [`kiro-power/`](../kiro-power/).
-2. `npm install -g @newrelic/preflight` — this Power's `mcp.json` launches
-   the globally-installed `preflight` binary directly rather than through
-   `npx` (see [Packaging](#packaging) for why).
-3. In Kiro, open the **Powers** panel → **Add Custom Power** → **Import power
+2. In Kiro, open the **Powers** panel → **Add Custom Power** → **Import power
    from a folder** → select the `kiro-power/` directory.
-4. Restart Kiro (or reconnect MCP servers from Kiro's MCP panel). Ask Kiro's
+3. Restart Kiro (or reconnect MCP servers from Kiro's MCP panel). Ask Kiro's
    agent to run Preflight setup (or mention cost/observability) to trigger
    the `setup` skill's onboarding — including wiring hooks for full
    tool-call capture (see below).
+
+No prior install is needed for the MCP tools: `mcp.json` fetches the package
+on demand with `npx`. Automatic tool-call capture is separate and does still
+need a global install — see below.
 
 Kiro also supports importing a Power directly from a GitHub repository URL.
 Whether that flow supports pointing at a subdirectory of a larger repo (like
@@ -154,6 +159,23 @@ commit real credentials into a shared copy of `mcp.json` — keep source
 control on `local` mode with no credentials, same as this repo's copy. See
 [ADVANCED.md](./ADVANCED.md) for the full field reference.
 
+## Why `NEW_RELIC_AI_PLATFORM` is set
+
+`mcp.json` also pins `NEW_RELIC_AI_PLATFORM: "kiro"`. This is load-bearing,
+not decoration: Kiro exposes no ambient environment variable identifying
+itself to a child process (a Power's MCP server gets 16 variables, none of
+them Kiro-specific), so `KiroAdapter.isSupported()` cannot detect it and
+`PlatformRegistry.detect()` falls through to the generic MCP adapter.
+
+The failure that causes is quiet and easy to miss. Session resolution and the
+raw tool-call count still work, so the install looks healthy — but Kiro's tool
+names (`read_file`, `str_replace`, `execute_bash`) are never mapped to
+Preflight's normalized vocabulary, and every metric keyed on a normalized name
+reports zero: `unique_files_read`, `unique_files_modified`,
+`bash_commands_run`, and the anti-pattern and cost-per-file analyses built on
+them. Check `nr_observe_get_config` reports `platform: "kiro"` if those
+numbers ever look implausibly empty.
+
 ## Packaging
 
 `kiro-power/` ships no precompiled hook script and needs no bundle step — a
@@ -161,12 +183,27 @@ Power can't carry a hooks file or an executable at all, so there's nothing
 to bundle; [Enable automatic tool-call capture](#enable-automatic-tool-call-capture)
 reuses the already-published `preflight-collector` bin instead.
 
-`kiro-power/mcp.json` launches the globally-installed `preflight` binary
-directly (`"command": "preflight"`) rather than fetching it on demand via
-`npx`. This is deliberate — see
-`kiro-power/skills/setup/references/troubleshooting.md` for the full
-session-id-resolution rationale (this repo's `src/hooks/session-resolver.ts`
-matches process ancestry in a way an `npx` wrapper process would break).
+`kiro-power/mcp.json` fetches the package on demand
+(`npx -y @newrelic/preflight@latest --stdio`) rather than requiring a global
+install, so the `nr_observe_*` tools work on a first-time machine.
+
+That was not always safe, and the reason is worth recording. `npx` does not
+run the server directly — it execs an `npm exec` process which then runs the
+server, so the server's parent is that wrapper rather than Kiro. Preflight
+resolves its `session_id` by matching its own parent PID against a breadcrumb
+the hook collector writes at _its_ parent PID, and the wrapper broke that
+match: `session_id` never resolved, and every session-scoped tool failed while
+the MCP connection itself looked perfectly healthy. Kiro's working-directory
+fallback can't rescue it either, because a Power's server runs with `cwd` set
+to the Power's install directory and never sees the workspace path.
+
+`src/hooks/process-ancestry.ts` fixes this by walking a few levels up the
+server's own ancestry instead of checking only its immediate parent, so the
+breadcrumb one level above the wrapper is found. **This config therefore
+depends on that fix being present in the published package** — pinning
+`@latest` is what ties the two together. If you ever see `session_id: null`
+on Kiro, check the installed version actually contains the ancestor walk
+before looking anywhere else.
 
 `kiro-power/` ships:
 

@@ -3,10 +3,11 @@
   "mcpServers": {
     "preflight": {
       "type": "stdio",
-      "command": "preflight",
-      "args": ["--stdio"],
+      "command": "npx",
+      "args": ["-y", "@newrelic/preflight@latest", "--stdio"],
       "env": {
-        "NR_AI_MODE": "local"
+        "NR_AI_MODE": "local",
+        "NEW_RELIC_AI_PLATFORM": "kiro"
       }
     }
   }

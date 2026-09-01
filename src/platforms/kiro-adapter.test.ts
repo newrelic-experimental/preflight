@@ -295,5 +295,29 @@ describe('KiroAdapter', () => {
     it('returns "Unknown" for an unrecognized tool name', () => {
       expect(adapter.mapToolName('totally_made_up_tool')).toBe('Unknown');
     });
+
+    // These are the snake_case names captured from a live Kiro install (see
+    // KIRO_TOOL_MAP's doc comment). The map previously only had camelCase
+    // guesses for most of them, so file/edit/shell metrics reported zero.
+    it.each([
+      ['read_file', 'Read'],
+      ['read_files', 'Read'],
+      ['str_replace', 'Edit'],
+      ['list_directory', 'Glob'],
+      ['grep_search', 'Grep'],
+      ['execute_bash', 'Bash'],
+      ['web_fetch', 'WebFetch'],
+    ])('maps the observed Kiro name %s -> %s', (raw, expected) => {
+      expect(adapter.mapToolName(raw)).toBe(expected);
+    });
+
+    // Kiro's own meta/session tools are deliberately unmapped — mapping them
+    // to a file verb would inflate file metrics with non-file activity.
+    it.each(['kiro_powers', 'update_session_information', 'createHook'])(
+      'leaves the Kiro meta tool %s unmapped',
+      (raw) => {
+        expect(adapter.mapToolName(raw)).toBe('Unknown');
+      },
+    );
   });
 });
