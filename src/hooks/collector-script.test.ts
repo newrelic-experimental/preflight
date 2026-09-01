@@ -199,6 +199,26 @@ describe('collector-script', () => {
       expect(event.toolUseId).toBe('toolu_abc123');
     });
 
+    it('stamps event.platform from MCP_CLIENT when explicitly set', () => {
+      process.env.MCP_CLIENT = 'copilot-sdk';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('copilot-sdk');
+    });
+
+    it('stamps event.platform from NEW_RELIC_AI_PLATFORM when MCP_CLIENT is absent', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'cursor';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('cursor');
+    });
+
+    it('leaves event.platform unset for a genuine Claude Code hook with no explicit platform override', () => {
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBeUndefined();
+    });
+
     it('captures transcript_path as transcriptPath', () => {
       processHook(makePreToolUse({ transcript_path: '/tmp/fake-session.jsonl' }));
 

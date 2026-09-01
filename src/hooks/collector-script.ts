@@ -27,7 +27,6 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import { createDefaultRegistry } from '../platforms/index.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -1033,14 +1032,21 @@ function processHook(raw: string): void {
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
   // Stamp the true originating platform at write time, using this hook
-  // invocation's own environment (MCP_CLIENT etc.) — this is the only point
-  // in the pipeline that reliably reflects the real host, since whichever
-  // process later drains the buffer (e.g. --local's unscoped drain of an
-  // unowned session, see LocalSessionAggregator) may have detected a
-  // completely different platform for itself. isSupported() across all
-  // adapters is env-var-only (no file reads), matching this file's
-  // lightweight-collector design constraint.
-  event.platform = createDefaultRegistry().getActive().platformName;
+  // invocation's own environment — this is the only point in the pipeline
+  // that reliably reflects the real host, since whichever process later
+  // drains the buffer (e.g. --local's unscoped drain of an unowned session,
+  // see LocalSessionAggregator) may have detected a completely different
+  // platform for itself. Deliberately reads MCP_CLIENT/NEW_RELIC_AI_PLATFORM
+  // directly instead of going through PlatformRegistry: registry-based
+  // ambient detection would mis-tag every Claude Code hook event as
+  // generic-mcp (ClaudeCodeAdapter.isSupported() doesn't match Claude Code's
+  // real hook env — see #539), and pulling in the full adapter registry adds
+  // measurable overhead on this hot, pre+post-per-tool-call path. Explicit
+  // platforms (currently just Copilot SDK) are the only ones that need
+  // stamping here anyway; leaving it unset lets nr-ingest.ts's existing
+  // default-to-claude-code apply for everything else.
+  const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  if (explicitPlatform) event.platform = explicitPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
 
   // Write to buffer — wrapped in try/catch for resilience.
