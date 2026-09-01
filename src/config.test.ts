@@ -2034,6 +2034,14 @@ describe('validateConfigFile()', () => {
 });
 
 describe('homelab config fields', () => {
+  beforeEach(() => {
+    // The shared beforeEach above forces NR_AI_MODE='cloud' to preserve older
+    // fixtures that predate mode becoming fail-closed. Every test here sets
+    // an explicit file mode ('local') instead — env wins over file, so it
+    // must be cleared for the file value to take effect as these tests intend.
+    delete process.env.NR_AI_MODE;
+  });
+
   it('defaults homelabServerUrl and homelabToken to null', () => {
     const configPath = writeConfigFile({ mode: 'local' });
     const config = loadMcpConfig({ config: configPath });
