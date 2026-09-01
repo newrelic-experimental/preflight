@@ -6,6 +6,7 @@ import {
   SessionStore,
   buildSessionSummary,
   deserializeFullSessionSummary,
+  mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
@@ -46,6 +47,8 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
   return {
     sessionId: `sess-${now}`,
     sessionName: 'my-project',
+    sessionNameSource: null,
+    sessionIntent: null,
     repoName: null,
     startTime: now - 60_000,
     endTime: now,
@@ -1172,6 +1175,126 @@ describe('buildSessionSummary', () => {
 
     expect(summary.sessionName).toBeNull();
     expect(summary.repoName).toBeNull();
+  });
+
+  it('redacts secret-shaped substrings in sessionIntent (Phase 3)', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'redact-test-intent',
+        sessionName: null,
+        sessionNameSource: null,
+        // Sensitive first-prompt content; only ever non-null when recordContent
+        // was on. Persist must redact it (idempotently) before it hits disk.
+        sessionIntent: 'deploy with API_KEY=abc123def456secretvalue please',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.sessionIntent).toBe('deploy with [REDACTED] please');
+  });
+
+  it('leaves sessionIntent null when not provided (recordContent off)', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'redact-test-intent-null',
+        sessionName: null,
+        sessionNameSource: null,
+        sessionIntent: null,
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 1000,
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.sessionIntent).toBeNull();
+  });
+
+  it('deserializeFullSessionSummary round-trips sessionIntent and defaults it to null when missing', () => {
+    const original = makeSummary({ sessionIntent: 'refactor the auth flow' });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.sessionIntent).toBe('refactor the auth flow');
+
+    // Pre-Phase-3 session files have no sessionIntent field → null, not undefined.
+    const raw = JSON.parse(JSON.stringify(original)) as Record<string, unknown>;
+    delete raw.sessionIntent;
+    expect(deserializeFullSessionSummary(raw).sessionIntent).toBeNull();
+  });
+
+  it('deserializeFullSessionSummary round-trips a valid sessionNameSource and rejects bogus/missing to null', () => {
+    const original = makeSummary({ sessionName: 'my session', sessionNameSource: 'ai-title' });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.sessionNameSource).toBe('ai-title');
+
+    // A value outside the 4-way enum → null (defends against a corrupt/edited file).
+    const bogus = JSON.parse(JSON.stringify(original)) as Record<string, unknown>;
+    bogus.sessionNameSource = 'nonsense';
+    expect(deserializeFullSessionSummary(bogus).sessionNameSource).toBeNull();
+
+    // Pre-feature session files have no field → null.
+    const missing = JSON.parse(JSON.stringify(original)) as Record<string, unknown>;
+    delete missing.sessionNameSource;
+    expect(deserializeFullSessionSummary(missing).sessionNameSource).toBeNull();
+  });
+
+  it('mergeSummaries keeps name and source together and never clobbers a captured intent', () => {
+    const existing = makeSummary({
+      sessionName: 'human named it',
+      sessionNameSource: 'user',
+      sessionIntent: 'the original prompt',
+    });
+    // A later (checkpoint) write that never resolved a name/intent this run:
+    // both are null on `incoming`.
+    const incoming = makeSummary({
+      sessionName: null,
+      sessionNameSource: null,
+      sessionIntent: null,
+    });
+    const merged = mergeSummaries(existing, incoming);
+    // Name kept — and its source must stay tied to it (no user→null desync).
+    expect(merged.sessionName).toBe('human named it');
+    expect(merged.sessionNameSource).toBe('user');
+    // A previously-captured intent is preserved, not overwritten to null.
+    expect(merged.sessionIntent).toBe('the original prompt');
   });
 
   it('includes active task data in the summary', () => {

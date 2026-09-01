@@ -99,6 +99,62 @@ describe('RetryDetector', () => {
     expect(result!.similarity).toBeGreaterThanOrEqual(0.8);
   });
 
+  it('tags the alert with the sessionId of the offending calls', () => {
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    const result = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.sessionId).toBe('sess-a');
+  });
+
+  it('does not blend two different sessions failing on the same tool into one alert', () => {
+    // Simulates the --local aggregator process, which drains every session's
+    // buffer into one stream: two unrelated sessions each failing Bash twice
+    // must not look like one session failing it four times.
+    const detector = new RetryDetector();
+
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    const result = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }),
+    );
+
+    // Window is [a, b, a, b] — 2 occurrences per session, below the default
+    // threshold of 3, so neither session's calls should fire on their own.
+    expect(result).toBeNull();
+    expect(detector.getMetrics().totalAlertsEmitted).toBe(0);
+  });
+
+  it('attributes each session correctly when both cross the threshold', () => {
+    const detector = new RetryDetector({ windowSize: 6 });
+
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }));
+    const aThird = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }),
+    );
+
+    expect(aThird).not.toBeNull();
+    expect(aThird!.sessionId).toBe('sess-a');
+    expect(aThird!.occurrences).toBe(3);
+
+    const bThird = detector.recordToolCall(
+      makeRecord({ sessionId: 'sess-b', toolName: 'Bash', success: false }),
+    );
+
+    expect(bThird).not.toBeNull();
+    expect(bThird!.sessionId).toBe('sess-b');
+    expect(bThird!.occurrences).toBe(3);
+  });
+
   it('does not alert when tools are different', () => {
     const detector = new RetryDetector();
 
@@ -351,6 +407,63 @@ describe('RetryDetector', () => {
     expect(metrics.alerts).toHaveLength(0);
     expect(metrics.totalTokensWasted).toBe(0);
     expect(metrics.totalAlertsEmitted).toBe(0);
+  });
+
+  it('tracks a running bySession breakdown incrementally, keyed by session id', () => {
+    const detector = new RetryDetector();
+    // Session A: one thrashing episode (3 failed Bash calls).
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: 'sess-a', toolName: 'Bash', success: false }));
+    // Sessionless calls (undefined sessionId) roll up under 'unknown': one thrashing episode.
+    detector.recordToolCall(makeRecord({ sessionId: undefined, toolName: 'Read', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: undefined, toolName: 'Read', success: false }));
+    detector.recordToolCall(makeRecord({ sessionId: undefined, toolName: 'Read', success: false }));
+
+    const metrics = detector.getMetrics();
+    expect(metrics.totalAlertsEmitted).toBe(2);
+    expect(Object.keys(metrics.bySession).sort()).toEqual(['sess-a', 'unknown']);
+    expect(metrics.bySession['sess-a']?.alertCount).toBe(1);
+    expect(metrics.bySession['unknown']?.alertCount).toBe(1);
+  });
+
+  it('caps the alerts buffer at 200 while totalAlertsEmitted keeps counting past it', () => {
+    const detector = new RetryDetector({ windowSize: 3, minOccurrences: 3 });
+    // Every call from the 3rd onward re-fires a distinct alert: the sliding
+    // 3-window's own call-id set changes on every push (ids are random per
+    // makeRecord call), so the dedupe key never repeats. 203 calls -> 201
+    // alerts fired, well past the 200 cap — this also exercises firedKeys'
+    // own FIFO eviction under heavy load without needing a direct accessor:
+    // a bug there (e.g. an off-by-one that lets an evicted key block a
+    // legitimate re-fire, or double-counts) would surface as a wrong
+    // totalAlertsEmitted below.
+    const CALLS = 203;
+    for (let i = 0; i < CALLS; i++) {
+      detector.recordToolCall(makeRecord({ toolName: 'Bash', success: false }));
+    }
+
+    const metrics = detector.getMetrics();
+    expect(metrics.totalAlertsEmitted).toBe(CALLS - 2);
+    expect(metrics.alerts).toHaveLength(200);
+    expect(metrics.alerts.length).toBeLessThan(metrics.totalAlertsEmitted);
+  });
+
+  it('evicts the least-recently-touched session once bySession exceeds its 50-session cap', () => {
+    const detector = new RetryDetector({ windowSize: 3, minOccurrences: 3 });
+    // One thrashing episode per session, sessions 0..50 (51 distinct
+    // sessions) — session 0 should be evicted once session 50 pushes the
+    // map past its cap.
+    for (let i = 0; i <= 50; i++) {
+      const sessionId = `sess-${i}`;
+      detector.recordToolCall(makeRecord({ sessionId, toolName: 'Bash', success: false }));
+      detector.recordToolCall(makeRecord({ sessionId, toolName: 'Bash', success: false }));
+      detector.recordToolCall(makeRecord({ sessionId, toolName: 'Bash', success: false }));
+    }
+
+    const metrics = detector.getMetrics();
+    expect(Object.keys(metrics.bySession)).toHaveLength(50);
+    expect(metrics.bySession['sess-0']).toBeUndefined();
+    expect(metrics.bySession['sess-50']).toBeDefined();
   });
 
   it('respects custom window size', () => {

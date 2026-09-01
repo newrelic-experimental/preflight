@@ -31,6 +31,14 @@ export interface DashboardServerOptions {
   readonly alertLog?: AlertLog;
   /** Override for testing — resolves to the latest version string or null. */
   readonly npmFetcher?: () => Promise<string | null>;
+  /** When true, relaxes isHostAllowed() to accept any Host header. */
+  readonly serverMode?: boolean;
+  /**
+   * When provided, registers POST /ingest. Called with the raw Authorization
+   * header value (including "Bearer " prefix) and the parsed request body.
+   * Returns the HTTP status code to send: 204 (ok), 400 (bad body), 401 (bad token).
+   */
+  readonly ingestHandler?: (authHeader: string | undefined, body: unknown) => 204 | 400 | 401;
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -89,6 +97,35 @@ export class DashboardServer {
         }),
       );
     });
+    if (opts.ingestHandler) {
+      this.routes.set('POST /ingest', (req, res) => {
+        let raw = '';
+        req.on('data', (chunk: Buffer) => {
+          raw += chunk.toString('utf-8');
+          if (raw.length > 64 * 1024) {
+            if (!res.headersSent) {
+              res.writeHead(400);
+              res.end();
+            }
+            req.destroy();
+          }
+        });
+        req.on('end', () => {
+          if (res.headersSent) return; // already responded (e.g. 64KB limit hit)
+          let body: unknown;
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            res.writeHead(400);
+            res.end();
+            return;
+          }
+          const status = opts.ingestHandler!(req.headers.authorization, body);
+          res.writeHead(status);
+          res.end();
+        });
+      });
+    }
     const sseHandler = createSseHandler(opts.bus);
     this.routes.set('GET /sse', (req, res) => {
       this.activeSseResponses.add(res);
@@ -241,6 +278,7 @@ export class DashboardServer {
   }
 
   private isHostAllowed(hostHeader: string | undefined): boolean {
+    if (this.opts.serverMode) return true;
     if (!hostHeader) return false;
     if (hostHeader.startsWith('[')) {
       const closing = hostHeader.indexOf(']');

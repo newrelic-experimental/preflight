@@ -298,7 +298,11 @@ export function handleGetSessionHistory(
 
   const result = limited.map((s) => ({
     session_id: s.sessionId,
+    // Already redacted at persist time (session-store buildFullSessionSummary).
     session_name: s.sessionName ?? null,
+    session_name_source: s.sessionNameSource ?? null,
+    // Intent already redacted at persist time; null unless recordContent was on.
+    session_intent: s.sessionIntent ?? null,
     developer: s.developer,
     start_time: new Date(s.startTime).toISOString(),
     duration_ms: s.durationMs,

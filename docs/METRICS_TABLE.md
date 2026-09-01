@@ -383,6 +383,20 @@ Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScore
 
 Source: `src/metrics/efficiency-score.ts` — `emitMetrics()`
 
+### MCP Server — API Failure Metrics
+
+Emitted every 60 seconds alongside session gauges (only when an `ApiFailureTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?}` plus `{error_type}` or `{model}` where noted.
+
+| Metric Name                     | Value      | Attributes     | How Computed                                                                                                                  |
+| ------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `ai.api.failures_total`         | count      | —              | Total recorded `StopFailure` events                                                                                           |
+| `ai.api.tokens_lost`            | count      | —              | Always 0 — `StopFailure` carries no token data (see tracker note)                                                             |
+| `ai.api.failure_by_type`        | count      | `{error_type}` | Per-`ApiErrorType` failure count, emitted only when count > 0                                                                 |
+| `ai.api.model_failure_rate`     | rate (0–1) | `{model}`      | `failureCount / totalRequests` per model — requires `recordRequest()` calls not currently made, so this stays unemitted today |
+| `ai.api.model_mean_recovery_ms` | duration   | `{model}`      | Mean `recoveryMs` per model — always `null`/unemitted since `StopFailure` never reports a recovery time                       |
+
+Source: `src/metrics/api-failure-tracker.ts` — `emitMetrics()`
+
 ### Metric Aggregation
 
 All metrics pass through the `MetricAggregator` before being sent. For each unique (name + attributes) combination, the aggregator emits a single `summary` metric with:

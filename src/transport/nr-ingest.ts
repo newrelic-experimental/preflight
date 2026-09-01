@@ -28,9 +28,11 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js'
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import type { ThrashingAlert } from '../metrics/retry-detector.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
@@ -101,6 +103,8 @@ export interface NrIngestOptions {
   efficiencyScorer?: EfficiencyScorer;
   /** Feedback collector for emitting ai.feedback.count metrics. */
   feedbackCollector?: FeedbackCollector;
+  /** API failure tracker for emitting ai.api.* metrics. */
+  apiFailureTracker?: ApiFailureTracker;
   teamId?: string | null;
   projectId?: string | null;
   orgId?: string | null;
@@ -745,6 +749,50 @@ export function antiPatternToNrEvent(
   return event;
 }
 
+/**
+ * Convert a ThrashingAlert into a flat NR event object.
+ *
+ * session_id comes from `attrs.sessionId` (the ingesting process's resolved
+ * sessionTraceId) — the same single-source-of-truth convention every other
+ * ingest*() method uses (see ingestAntiPattern, ingestToolCall). This is
+ * deliberately NOT `alert.sessionId`: that field exists for in-process
+ * attribution (the --local dashboard's per-session breakdown, which drains
+ * every session's buffer into one RetryDetector) and is a different concern
+ * from "which process is reporting this event to NR".
+ */
+export function retryAlertToNrEvent(
+  alert: ThrashingAlert,
+  attrs: {
+    developer: string;
+    appName: string;
+    sessionId?: string;
+    platform?: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiRetryAlert',
+    timestamp: alert.timestamp,
+    tool_name: alert.toolName,
+    occurrences: alert.occurrences,
+    window_size: alert.windowSize,
+    similarity: alert.similarity,
+    tokens_wasted: alert.tokensWastedEstimate,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform: attrs.platform ?? 'claude-code',
+  };
+
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+  if (attrs.sessionId != null) event.session_id = attrs.sessionId;
+
+  return event;
+}
+
 // ---------------------------------------------------------------------------
 // Retry classification
 // ---------------------------------------------------------------------------
@@ -803,6 +851,7 @@ export class NrIngestManager {
   private readonly costTracker?: CostTracker;
   private readonly efficiencyScorer?: EfficiencyScorer;
   private readonly feedbackCollector?: FeedbackCollector;
+  private readonly apiFailureTracker?: ApiFailureTracker;
   readonly auditTrail: AuditTrailManager;
   private readonly developer: string;
   private readonly appName: string;
@@ -833,6 +882,7 @@ export class NrIngestManager {
     this.costTracker = options.costTracker;
     this.efficiencyScorer = options.efficiencyScorer;
     this.feedbackCollector = options.feedbackCollector;
+    this.apiFailureTracker = options.apiFailureTracker;
     this.turnCostAttributor = options.turnCostAttributor;
     this.auditTrail =
       options.auditTrail ??
@@ -1172,6 +1222,19 @@ export class NrIngestManager {
     this.scheduler.addEvent(event);
   }
 
+  ingestRetryAlert(alert: ThrashingAlert, context: { platform?: string } = {}): void {
+    const event = retryAlertToNrEvent(alert, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionId: this.sessionTraceId,
+      platform: context.platform,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(event);
+  }
+
   ingestContextSnapshot(
     snapshot: ContextTurnSnapshot,
     topTools: readonly ToolContextContribution[],
@@ -1291,7 +1354,12 @@ export class NrIngestManager {
 
     // Emit cost and efficiency metrics with developer dimension so Team View
     // FACET developer queries return per-developer breakdowns.
-    if (this.costTracker || this.efficiencyScorer || this.feedbackCollector) {
+    if (
+      this.costTracker ||
+      this.efficiencyScorer ||
+      this.feedbackCollector ||
+      this.apiFailureTracker
+    ) {
       const developer = this.developer;
       const scheduler = this.scheduler;
       const devAggregator = new DeveloperAttributedMetricAggregator((name, value, attrs) => {
@@ -1306,6 +1374,7 @@ export class NrIngestManager {
       this.costTracker?.emitMetrics(devAggregator);
       this.efficiencyScorer?.emitMetrics(devAggregator);
       this.feedbackCollector?.emitMetrics(devAggregator);
+      this.apiFailureTracker?.emitMetrics(devAggregator);
     }
 
     // Emit aggregated proxy metrics

@@ -16,6 +16,7 @@ import {
   entryHasAnyCommandHook,
   areHooksInstalled,
   readAndCheckHooks,
+  NR_HOOK_RE,
 } from './install-helper.js';
 import { writeJsonFile } from './json-utils.js';
 
@@ -37,6 +38,30 @@ afterEach(() => {
   if (existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// NR_HOOK_RE
+// ---------------------------------------------------------------------------
+
+describe('NR_HOOK_RE', () => {
+  it('matches the bare stop-failure command form', () => {
+    expect(NR_HOOK_RE.test('preflight-collector stop-failure')).toBe(true);
+  });
+
+  it('matches the absolute-path stop-failure command form (quoted or unquoted)', () => {
+    expect(NR_HOOK_RE.test('/abs/path/preflight-collector stop-failure')).toBe(true);
+    expect(NR_HOOK_RE.test('"/quoted/path/preflight-collector" stop-failure')).toBe(true);
+  });
+
+  it('still matches pre-tool and post-tool command forms', () => {
+    expect(NR_HOOK_RE.test('preflight-collector pre-tool')).toBe(true);
+    expect(NR_HOOK_RE.test('preflight-collector post-tool')).toBe(true);
+  });
+
+  it('does not match unrelated commands', () => {
+    expect(NR_HOOK_RE.test('some-other-tool stop-failure')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -135,6 +160,33 @@ describe('generateHookEntries', () => {
     const hooks = generateHookEntries(null);
 
     expect(hooks.PreToolUse[0].hooks[0].command).toBe('preflight-collector pre-tool');
+  });
+
+  it('generates a StopFailure entry alongside PreToolUse/PostToolUse', () => {
+    const hooks = generateHookEntries('/usr/local/bin/preflight');
+
+    expect(hooks.StopFailure).toEqual([
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: '"/usr/local/bin/preflight-collector" stop-failure' }],
+      },
+    ]);
+  });
+
+  it('generates a bare-name StopFailure command when no binPath provided', () => {
+    const hooks = generateHookEntries();
+
+    expect(hooks.StopFailure).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector stop-failure' }] },
+    ]);
+  });
+
+  it('wsl mode: generates a quoted wsl.exe StopFailure command', () => {
+    const hooks = generateHookEntries('/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
+
+    expect(hooks.StopFailure[0].hooks[0].command).toBe(
+      'wsl.exe -e "/home/user/bin/preflight-collector" stop-failure',
+    );
   });
 });
 
@@ -286,14 +338,50 @@ describe('mergeSettings', () => {
     const hooks = result.hooks as Record<string, unknown[]>;
     expect(hooks.PreToolUse).toHaveLength(1);
     expect(hooks.PostToolUse).toHaveLength(1);
+    expect(hooks.StopFailure).toHaveLength(1);
 
     const pre = hooks.PreToolUse[0] as Record<string, unknown>;
     expect(pre.hooks).toEqual([{ type: 'command', command: 'preflight-collector pre-tool' }]);
     const post = hooks.PostToolUse[0] as Record<string, unknown>;
     expect(post.hooks).toEqual([{ type: 'command', command: 'preflight-collector post-tool' }]);
+    const stopFailure = hooks.StopFailure[0] as Record<string, unknown>;
+    expect(stopFailure.hooks).toEqual([
+      { type: 'command', command: 'preflight-collector stop-failure' },
+    ]);
 
     // MCP servers are NOT managed in settings.json
     expect(result.mcpServers).toBeUndefined();
+  });
+
+  it('preserves an existing foreign StopFailure entry and appends ours', () => {
+    const existing = {
+      hooks: {
+        StopFailure: [
+          { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --stop-failure' }] },
+        ],
+      },
+    };
+
+    const result = mergeSettings(existing);
+
+    const hooks = result.hooks as Record<string, unknown[]>;
+    expect(hooks.StopFailure).toHaveLength(2);
+    const foreignEntry = hooks.StopFailure[0] as Record<string, unknown>;
+    expect((foreignEntry.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'some-other-tool --stop-failure',
+    );
+    const ourEntry = hooks.StopFailure[1] as Record<string, unknown>;
+    expect((ourEntry.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'preflight-collector stop-failure',
+    );
+  });
+
+  it('is idempotent for StopFailure — running twice does not duplicate entries', () => {
+    const once = mergeSettings({});
+    const twice = mergeSettings(once);
+
+    const hooks = twice.hooks as Record<string, unknown[]>;
+    expect(hooks.StopFailure).toHaveLength(1);
   });
 
   it('preserves existing hooks and other settings', () => {
@@ -448,6 +536,34 @@ describe('removeSettings', () => {
     const result = removeSettings(settings);
 
     expect(result).toEqual(settings);
+  });
+
+  it('removes only preflight StopFailure entries, keeps foreign ones', () => {
+    const settings = {
+      hooks: {
+        StopFailure: [
+          { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --stop-failure' }] },
+          {
+            matcher: '',
+            hooks: [{ type: 'command', command: 'preflight-collector stop-failure' }],
+          },
+        ],
+      },
+    };
+
+    const result = removeSettings(settings);
+
+    const hooks = result.hooks as Record<string, unknown[]>;
+    expect(hooks.StopFailure).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --stop-failure' }] },
+    ]);
+  });
+
+  it('removes a full install (Pre/Post/StopFailure) down to an empty hooks object', () => {
+    const settings = mergeSettings({}, '/usr/local/bin/preflight');
+    const result = removeSettings(settings);
+
+    expect(result.hooks).toBeUndefined();
   });
 });
 

@@ -98,6 +98,12 @@ export interface McpServerConfig {
     readonly logRetentionMb: number;
     readonly rulesPath: string;
   };
+  readonly homelabServerUrl: string | null;
+  readonly homelabToken: string | null;
+  readonly homelabServer: {
+    readonly port: number;
+    readonly bindAddress: string;
+  };
 }
 
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
@@ -199,6 +205,15 @@ export const ConfigFileSchema = z
         port: z.number().int().min(1).max(65535).optional(),
         host: z.string().optional(),
         openOnStart: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+    homelabServerUrl: z.string().nullable().optional(),
+    homelabToken: z.string().nullable().optional(),
+    homelabServer: z
+      .object({
+        port: z.number().int().min(1).max(65535).optional(),
+        bindAddress: z.string().optional(),
       })
       .passthrough()
       .optional(),
@@ -1077,6 +1092,33 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       };
     })(),
 
+    homelabServerUrl:
+      process.env.NEW_RELIC_AI_HOMELAB_URL ??
+      (typeof file.homelabServerUrl === 'string' ? file.homelabServerUrl : null),
+
+    homelabToken:
+      process.env.NEW_RELIC_AI_HOMELAB_TOKEN ??
+      (typeof file.homelabToken === 'string' ? file.homelabToken : null),
+
+    homelabServer: {
+      port: envInt(
+        'NEW_RELIC_AI_HOMELAB_SERVER_PORT',
+        typeof (file.homelabServer as Record<string, unknown>)?.port === 'number'
+          ? ((file.homelabServer as Record<string, unknown>).port as number)
+          : 7777,
+        { min: 1, max: 65535 },
+      ),
+      bindAddress: (() => {
+        const envVal = process.env.NEW_RELIC_AI_HOMELAB_BIND_ADDRESS;
+        if (envVal !== undefined && envVal !== '') return envVal;
+        const fileServer = file.homelabServer as Record<string, unknown>;
+        if (typeof fileServer?.bindAddress === 'string' && fileServer.bindAddress !== '') {
+          return fileServer.bindAddress;
+        }
+        return '0.0.0.0';
+      })(),
+    },
+
     platformTarget: file.platformTarget as PlatformTarget | undefined,
 
     alerts: (() => {
@@ -1136,6 +1178,26 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       };
     })(),
   };
+
+  if (config.homelabServerUrl && !config.homelabToken) {
+    throw new Error(
+      'homelabServerUrl is set but homelabToken is missing. Set NEW_RELIC_AI_HOMELAB_TOKEN.',
+    );
+  }
+
+  if (config.homelabServerUrl) {
+    let parsedHomelabUrl: URL;
+    try {
+      parsedHomelabUrl = new URL(config.homelabServerUrl);
+    } catch {
+      throw new Error(`homelabServerUrl is not a valid URL: "${config.homelabServerUrl}"`);
+    }
+    if (parsedHomelabUrl.protocol !== 'http:' && parsedHomelabUrl.protocol !== 'https:') {
+      throw new Error(
+        `homelabServerUrl must use http: or https:. Got: "${parsedHomelabUrl.protocol}"`,
+      );
+    }
+  }
 
   logger.debug('Configuration loaded', {
     appName: config.appName,

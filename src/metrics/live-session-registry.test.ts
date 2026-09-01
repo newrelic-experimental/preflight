@@ -165,4 +165,115 @@ describe('LiveSessionRegistry', () => {
       reg.stopSampling();
     });
   });
+
+  describe('setAuthoritativeName', () => {
+    it('sets the display name for a session', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'refactor auth flow', 'ai-title');
+      expect(reg.getSessionName('sess-a')).toBe('refactor auth flow');
+    });
+
+    it('overrides a cwd basename already stored by touch()', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      expect(reg.getSessionName('sess-a')).toBe('preflight');
+      reg.setAuthoritativeName('sess-a', 'session naming logic', 'ai-title');
+      expect(reg.getSessionName('sess-a')).toBe('session naming logic');
+    });
+
+    it('is not overwritten by a later touch() with a cwd', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'session naming logic', 'ai-title');
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      expect(reg.getSessionName('sess-a')).toBe('session naming logic');
+    });
+
+    it('ignores an empty name', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      reg.setAuthoritativeName('sess-a', '', 'ai-title');
+      expect(reg.getSessionName('sess-a')).toBe('preflight');
+    });
+
+    it('is cleared on reset()', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'session naming logic', 'ai-title');
+      reg.reset();
+      expect(reg.getSessionName('sess-a')).toBeNull();
+    });
+
+    // --- Phase 2 freshness: re-resolution may upgrade, never downgrade ---
+
+    it('upgrades the name as a better source arrives (cwd -> auto -> ai-title -> user)', () => {
+      const reg = new LiveSessionRegistry();
+      // cwd basename first (from touch), then progressively better re-resolves.
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      expect(reg.getSessionName('sess-a')).toBe('preflight');
+      reg.setAuthoritativeName('sess-a', 'auto guess', 'auto');
+      expect(reg.getSessionName('sess-a')).toBe('auto guess');
+      reg.setAuthoritativeName('sess-a', 'refined title', 'ai-title');
+      expect(reg.getSessionName('sess-a')).toBe('refined title');
+      reg.setAuthoritativeName('sess-a', 'human named it', 'user');
+      expect(reg.getSessionName('sess-a')).toBe('human named it');
+    });
+
+    it('refreshes text for the same source (ai-title -> refined ai-title)', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'first guess', 'ai-title');
+      reg.setAuthoritativeName('sess-a', 'refined title', 'ai-title');
+      expect(reg.getSessionName('sess-a')).toBe('refined title');
+    });
+
+    it('never downgrades a user name to auto or cwd', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'human named it', 'user');
+      // A later re-resolve that fell back to auto/cwd (e.g. the job-state file
+      // disappeared) must not demote the user name.
+      reg.setAuthoritativeName('sess-a', 'auto guess', 'auto');
+      expect(reg.getSessionName('sess-a')).toBe('human named it');
+      reg.setAuthoritativeName('sess-a', 'cwd basename', 'cwd');
+      expect(reg.getSessionName('sess-a')).toBe('human named it');
+      // And a later touch() with a cwd still can't clobber it either.
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      expect(reg.getSessionName('sess-a')).toBe('human named it');
+    });
+
+    it('does not downgrade an ai-title to auto', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'refined title', 'ai-title');
+      reg.setAuthoritativeName('sess-a', 'auto guess', 'auto');
+      expect(reg.getSessionName('sess-a')).toBe('refined title');
+    });
+  });
+
+  describe('getSessionNameSource', () => {
+    it('returns null for an unknown/unnamed session', () => {
+      const reg = new LiveSessionRegistry();
+      expect(reg.getSessionNameSource('sess-a')).toBeNull();
+    });
+
+    it("reports 'cwd' for a name set by the touch() streaming fallback", () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      expect(reg.getSessionName('sess-a')).toBe('preflight');
+      expect(reg.getSessionNameSource('sess-a')).toBe('cwd');
+    });
+
+    it('reports the authoritative source and tracks upgrades', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a', '/Users/dev/projects/preflight');
+      expect(reg.getSessionNameSource('sess-a')).toBe('cwd');
+      reg.setAuthoritativeName('sess-a', 'refined title', 'ai-title');
+      expect(reg.getSessionNameSource('sess-a')).toBe('ai-title');
+      reg.setAuthoritativeName('sess-a', 'human named it', 'user');
+      expect(reg.getSessionNameSource('sess-a')).toBe('user');
+    });
+
+    it('is cleared on reset()', () => {
+      const reg = new LiveSessionRegistry();
+      reg.setAuthoritativeName('sess-a', 'human named it', 'user');
+      reg.reset();
+      expect(reg.getSessionNameSource('sess-a')).toBeNull();
+    });
+  });
 });

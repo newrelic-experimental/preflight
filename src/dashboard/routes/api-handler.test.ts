@@ -487,6 +487,76 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(parsed.outcome).toBe('in progress');
   });
 
+  it('includes modelBreakdown for the current live session when modelUsageTracker is present', async () => {
+    const tracker = new ModelUsageTracker();
+    tracker.recordUsage('claude-sonnet-5', 1000, 500, 3.2);
+    tracker.recordUsage('claude-opus-5', 200, 100, 1.5);
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () =>
+          ({
+            sessionId: 'sess-live-1',
+            sessionName: null,
+            sessionNameSource: null,
+            sessionStartTime: Date.now() - 1_000,
+            sessionDurationMs: 1_000,
+            toolCallCount: 2,
+            toolCallCountByTool: {},
+            toolCallTimeline: [],
+          }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      modelUsageTracker: tracker,
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-live-1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { modelBreakdown: unknown };
+    expect(parsed.modelBreakdown).toEqual(tracker.getRawBreakdown());
+    expect(Object.keys(parsed.modelBreakdown as object)).toEqual([
+      'claude-sonnet-5',
+      'claude-opus-5',
+    ]);
+  });
+
+  it('omits modelBreakdown for the current live session when modelUsageTracker is absent', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      sessionTracker: {
+        getMetrics: () =>
+          ({
+            sessionId: 'sess-live-2',
+            sessionName: null,
+            sessionNameSource: null,
+            sessionStartTime: Date.now() - 1_000,
+            sessionDurationMs: 1_000,
+            toolCallCount: 0,
+            toolCallCountByTool: {},
+            toolCallTimeline: [],
+          }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-live-2' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { modelBreakdown?: unknown };
+    expect(parsed.modelBreakdown).toBeUndefined();
+  });
+
   it('attaches qualityProxy (derived from persisted raw counts) to a persisted session with real signals', async () => {
     const fakeSession = {
       sessionId: 'sess-quality-1',
@@ -1136,7 +1206,7 @@ describe('api-handler GET /api/retry-alerts', () => {
     expect(status()).toBe(503);
   });
 
-  it('returns retry detector metrics as JSON', async () => {
+  it('returns retry detector metrics as JSON, plus a by_session breakdown', async () => {
     const fakeMetrics = {
       alerts: [
         {
@@ -1146,10 +1216,12 @@ describe('api-handler GET /api/retry-alerts', () => {
           similarity: 0.9,
           tokensWastedEstimate: 750,
           timestamp: 1700000000000,
+          sessionId: 'sess-a',
         },
       ],
       totalTokensWasted: 750,
       totalAlertsEmitted: 1,
+      bySession: { 'sess-a': { tokensWasted: 750, alertCount: 1 } },
     };
     const handler = createApiHandler({
       retryDetector: { getMetrics: () => fakeMetrics } as unknown as Parameters<
@@ -1157,6 +1229,83 @@ describe('api-handler GET /api/retry-alerts', () => {
       >[0]['retryDetector'],
     });
     const req = { method: 'GET', url: '/api/retry-alerts' } as IncomingMessage;
+    const { res, status, body, headers } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(headers()['content-type']).toMatch(/application\/json/);
+    const parsed = JSON.parse(body()) as Record<string, unknown>;
+    // The raw camelCase bySession map must not leak into the response
+    // alongside its formatted by_session replacement — same data, two shapes.
+    expect(parsed.bySession).toBeUndefined();
+    const { bySession: _bySession, ...expectedMetrics } = fakeMetrics;
+    expect(parsed).toEqual({
+      ...expectedMetrics,
+      by_session: [{ session_id: 'sess-a', tokens_wasted: 750, alert_count: 1 }],
+    });
+  });
+
+  it('groups by_session across multiple sessions, sorted by tokens wasted', async () => {
+    const fakeMetrics = {
+      alerts: [
+        { toolName: 'Bash', tokensWastedEstimate: 100, sessionId: 'sess-a' },
+        { toolName: 'Bash', tokensWastedEstimate: 900, sessionId: 'sess-b' },
+        { toolName: 'Read', tokensWastedEstimate: 50, sessionId: 'sess-a' },
+        { toolName: 'Read', tokensWastedEstimate: 10, sessionId: null },
+      ],
+      totalTokensWasted: 1060,
+      totalAlertsEmitted: 4,
+      bySession: {
+        'sess-a': { tokensWasted: 150, alertCount: 2 },
+        'sess-b': { tokensWasted: 900, alertCount: 1 },
+        unknown: { tokensWasted: 10, alertCount: 1 },
+      },
+    };
+    const handler = createApiHandler({
+      retryDetector: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['retryDetector'],
+    });
+    const req = { method: 'GET', url: '/api/retry-alerts' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const json = JSON.parse(body()) as { by_session: Array<Record<string, unknown>> };
+    expect(json.by_session).toEqual([
+      { session_id: 'sess-b', tokens_wasted: 900, alert_count: 1 },
+      { session_id: 'sess-a', tokens_wasted: 150, alert_count: 2 },
+      { session_id: 'unknown', tokens_wasted: 10, alert_count: 1 },
+    ]);
+  });
+});
+
+describe('api-handler GET /api/api-failures', () => {
+  it('returns 503 when apiFailureTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/api-failures' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('returns api failure metrics as JSON', async () => {
+    const fakeMetrics = {
+      totalFailures: 2,
+      byErrorType: { rate_limit: 2 },
+      byModel: {},
+      bySessionPhase: { early: 0, middle: 2, late: 0 },
+      totalTokensLost: 0,
+      totalEstimatedCostLostUsd: 0,
+      meanTimeToRecoveryMs: null,
+      throttleAlerts: [],
+      recentFailures: [],
+      dataAvailable: true,
+      note: 'partial data',
+    };
+    const handler = createApiHandler({
+      apiFailureTracker: { getMetrics: () => fakeMetrics } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['apiFailureTracker'],
+    });
+    const req = { method: 'GET', url: '/api/api-failures' } as IncomingMessage;
     const { res, status, body, headers } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
@@ -1344,6 +1493,27 @@ describe('api-handler GET /api/compute-waste', () => {
     expect(json.anti_pattern_tokens_wasted).toBe(200);
     expect(json.status).toBe('clean');
     expect((json.breakdown as unknown[]).length).toBe(1);
+  });
+
+  it('includes a by_session breakdown sourced from the retry detector alerts', async () => {
+    const handler = createApiHandler({
+      retryDetector: {
+        getMetrics: () => ({
+          totalTokensWasted: 300,
+          alerts: [{ toolName: 'Bash', tokensWastedEstimate: 300, sessionId: 'sess-a' }],
+          bySession: { 'sess-a': { tokensWasted: 300, alertCount: 1 } },
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['retryDetector'],
+      antiPatternDetector: {
+        getCurrentPatterns: () => [],
+        getTotalAntiPatternWaste: () => 0,
+      } as unknown as Parameters<typeof createApiHandler>[0]['antiPatternDetector'],
+    });
+    const req = { method: 'GET', url: '/api/compute-waste' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const json = JSON.parse(body()) as { by_session: Array<Record<string, unknown>> };
+    expect(json.by_session).toEqual([{ session_id: 'sess-a', tokens_wasted: 300, alert_count: 1 }]);
   });
 
   it('returns needs_attention when totalTokensWasted >= 2000', async () => {
@@ -6760,5 +6930,92 @@ describe('computeCrossProcessLiveSessionIds', () => {
   it('returns an empty array when neither dependency is available', () => {
     const ids = computeCrossProcessLiveSessionIds({} as Parameters<typeof createApiHandler>[0]);
     expect(ids).toEqual([]);
+  });
+});
+
+describe('api-handler — session_intent is never exposed on the HTTP surface', () => {
+  // session_intent (the first user prompt) is SENSITIVE content: captured only
+  // under recordContent, redacted, and persisted for the MCP tools + 0o600 disk
+  // summary — but the dashboard HTTP surface is broader, so every route that
+  // returns a session must drop it. These guard against a regression that would
+  // silently leak intent while every other assertion stays green.
+  const INTENT = 'redacted first prompt text';
+
+  const summaryWithIntent = {
+    sessionId: 'sess-intent-1',
+    startTime: Date.now() - 5000,
+    toolCallCount: 10,
+    developer: 'alice',
+    sessionName: 'my session',
+    sessionNameSource: 'ai-title',
+    sessionIntent: INTENT,
+  };
+
+  it('GET /api/session/current strips sessionIntent from live metrics', async () => {
+    const handler = createApiHandler({
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'sess-intent-1', toolCallCount: 3, sessionIntent: INTENT }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+    });
+    const req = { method: 'GET', url: '/api/session/current' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    expect('sessionIntent' in parsed).toBe(false);
+  });
+
+  it('GET /api/session/today strips sessionIntent from each summary', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [summaryWithIntent],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/session/today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed.length).toBe(1);
+    expect('sessionIntent' in parsed[0]!).toBe(false);
+    // the non-sensitive fields still come through
+    expect(parsed[0]!.sessionName).toBe('my session');
+  });
+
+  it('GET /api/sessions strips sessionIntent from the slimmed list', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadAllSessions: () => [summaryWithIntent],
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed.length).toBe(1);
+    expect('sessionIntent' in parsed[0]!).toBe(false);
+  });
+
+  it('GET /api/sessions/:id strips sessionIntent from the detail response', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-intent-1' ? summaryWithIntent : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-intent-1' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Record<string, unknown>;
+    expect('sessionIntent' in parsed).toBe(false);
+    expect(parsed.sessionName).toBe('my session');
   });
 });

@@ -49,6 +49,8 @@ import {
   type ContextEfficiencyResponse,
   fetchComputeWaste,
   fetchQualityProxy,
+  fetchApiFailures,
+  type ApiFailureMetrics,
   fetchToolSelectionScore,
   fetchConcurrency,
   fetchActivityHeatmap,
@@ -124,6 +126,11 @@ interface ComputeWasteApiResponse {
     readonly type: string;
     readonly tokens_wasted: number;
     readonly instances: number;
+  }>;
+  readonly by_session?: ReadonlyArray<{
+    readonly session_id: string;
+    readonly tokens_wasted: number;
+    readonly alert_count: number;
   }>;
   readonly status: 'clean' | 'moderate' | 'needs_attention';
 }
@@ -580,9 +587,10 @@ export function Today(): JSX.Element {
 
           <AnimatedCard index={3} className="grid grid-cols-3 gap-3 mb-3">
             <QualityProxyPanel />
+            <ApiFailurePanel />
             <ToolSelectionPanel />
             <LatencyPanel aggregate={aggregate} />
-            <ComputeWastePanel />
+            <ComputeWastePanel liveSessions={liveSessions ?? []} />
             <ModelUsagePanel />
             <CacheHealthPanel aggregate={aggregate} />
             <div className="col-span-3">
@@ -768,6 +776,60 @@ function QualityProxyPanel(): JSX.Element {
           </div>
           {data.degradationDetected && (
             <div className="text-accent-amber text-xs mt-2">&#9888; Quality degrading</div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+function ApiFailurePanel(): JSX.Element {
+  const { data } = useQuery<ApiFailureMetrics>({
+    queryKey: qk.apiFailures,
+    queryFn: fetchApiFailures,
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
+
+  const errorTypeEntries = data?.byErrorType
+    ? Object.entries(data.byErrorType).filter(([, count]) => count > 0)
+    : [];
+  const throttleAlerts = data?.throttleAlerts ?? [];
+
+  return (
+    <Card padding="sm" className="h-full">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Eyebrow>API Failures</Eyebrow>
+        <InfoTooltip text="Turns that failed outright after Claude Code's own retries were exhausted, captured via its StopFailure hook." />
+      </div>
+      {!data || data.totalFailures === 0 ? (
+        <EmptyState
+          icon="radar"
+          title="No API failures"
+          subtitle="Reflects Claude Code's own StopFailure hook, not proxy-mode traffic."
+        />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-ink-muted">Total </span>
+              <span className="text-accent-amber">{data.totalFailures}</span>
+            </div>
+            <div>
+              <span className="text-ink-muted">Throttle alerts </span>
+              <span className={throttleAlerts.length > 0 ? 'text-accent-amber' : ''}>
+                {throttleAlerts.length}
+              </span>
+            </div>
+          </div>
+          {errorTypeEntries.length > 0 && (
+            <div className="text-[10px] text-ink-subtle mt-1">
+              {errorTypeEntries.map(([type, count]) => `${type}: ${count}`).join(', ')}
+            </div>
+          )}
+          {throttleAlerts.length > 0 && (
+            <div className="text-accent-amber text-xs mt-2">
+              &#9888; Rate-limit throttling detected
+            </div>
           )}
         </>
       )}
@@ -1056,14 +1118,22 @@ function CacheHealthPanel({
   );
 }
 
-function ComputeWastePanel(): JSX.Element | null {
+function ComputeWastePanel({
+  liveSessions,
+}: {
+  liveSessions: LiveSessionEntry[];
+}): JSX.Element | null {
   const { data, isPending } = useQuery<ComputeWasteApiResponse>({
     queryKey: qk.computeWaste,
     queryFn: fetchComputeWaste as () => Promise<ComputeWasteApiResponse>,
     retry: false,
   });
+  const retryAlerts = useLiveStore((s) => s.retryAlerts);
 
   if (isPending || !data || typeof data.total_tokens_wasted !== 'number') return null;
+
+  const latestRetryAlert = retryAlerts[retryAlerts.length - 1] ?? null;
+  const topSession = data.by_session?.[0] ?? null;
 
   const statusColor =
     data.status === 'clean'
@@ -1099,10 +1169,29 @@ function ComputeWastePanel(): JSX.Element | null {
         retry: ~{data.retry_tokens_wasted.toLocaleString()} · anti-pattern: ~
         {data.anti_pattern_tokens_wasted.toLocaleString()}
       </div>
+      {topSession !== null && (
+        <div className="text-[10px] text-ink-subtle/70 mt-0.5">
+          top session: {sessionPillLabel(topSession.session_id, liveSessions)} (~
+          {topSession.tokens_wasted.toLocaleString()})
+        </div>
+      )}
       {topOffender !== null && (
         <div className="text-[10px] font-medium text-accent-amber mb-1">
           {topOffender.type.replace(/_/g, ' ')} · ~{topOffender.tokens_wasted.toLocaleString()}{' '}
           tokens
+        </div>
+      )}
+      {latestRetryAlert !== null && (
+        <div className="text-[10px] mb-1">
+          <Pill tone="warning" size="sm" className="mr-1">
+            {latestRetryAlert.toolName}
+          </Pill>
+          <span className="text-ink-muted">retried {latestRetryAlert.occurrences}× </span>
+          {latestRetryAlert.sessionId && (
+            <Pill tone="neutral" size="sm" className="ml-1">
+              Session: {sessionPillLabel(latestRetryAlert.sessionId, liveSessions)}
+            </Pill>
+          )}
         </div>
       )}
       <div className="text-[10px] text-ink-subtle/70 leading-snug">

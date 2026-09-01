@@ -1217,6 +1217,118 @@ describe('HookEventProcessor', () => {
     });
   });
 
+  describe('mode: api_failure', () => {
+    it('routes mode:api_failure entries through onApiFailure with the raw error type unmapped', () => {
+      const frames: import('./event-processor.js').ApiFailureFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'api_failure',
+          tool: 'api_failure',
+          errorType: 'overloaded',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      // rawErrorType must stay the raw Claude Code string — mapping to ApiErrorType
+      // happens downstream, not in event-processor.ts.
+      expect(frames[0].rawErrorType).toBe('overloaded');
+      expect(frames[0].sessionId).toBe('s1');
+      expect(frames[0].timestamp).toBe(1700000000000);
+    });
+
+    it('carries errorDetails and lastAssistantMessage through when present', () => {
+      const frames: import('./event-processor.js').ApiFailureFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'api_failure',
+          tool: 'api_failure',
+          errorType: 'rate_limit',
+          errorDetails: '429 Too Many Requests',
+          lastAssistantMessage: 'API Error: Rate limit reached',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].errorDetails).toBe('429 Too Many Requests');
+      expect(frames[0].lastAssistantMessage).toBe('API Error: Rate limit reached');
+    });
+
+    it('defaults sessionId to null when absent', () => {
+      const frames: import('./event-processor.js').ApiFailureFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'api_failure',
+          tool: 'api_failure',
+          errorType: 'unknown',
+          timestamp: 1700000000000,
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].sessionId).toBeNull();
+    });
+
+    it('swallows errors from a throwing onApiFailure callback', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onApiFailure: () => {
+          throw new Error('boom');
+        },
+      });
+
+      expect(() =>
+        processor.processEvents([
+          {
+            mode: 'api_failure',
+            tool: 'api_failure',
+            errorType: 'rate_limit',
+            timestamp: 1700000000000,
+            sessionId: 's1',
+          } as HookEvent,
+        ]),
+      ).not.toThrow();
+    });
+
+    it('is a no-op when onApiFailure is not configured', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      expect(() =>
+        processor.processEvents([
+          {
+            mode: 'api_failure',
+            tool: 'api_failure',
+            errorType: 'rate_limit',
+            timestamp: 1700000000000,
+          } as HookEvent,
+        ]),
+      ).not.toThrow();
+      expect(records).toHaveLength(0);
+    });
+  });
+
   describe('platform tool-name mapping', () => {
     it('maps a non-canonical tool name using the injected platform adapter', () => {
       const fakeAdapter = {

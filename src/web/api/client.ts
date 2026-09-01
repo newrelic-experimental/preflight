@@ -40,6 +40,11 @@ export interface AntiPattern {
   readonly suggestion: string;
 }
 
+// Which source produced a session's display name, mirroring the server's
+// SessionNameSource (src/hooks/session-resolver.ts). Declared locally so the
+// web bundle never imports server code; keep the union in sync with the server.
+export type SessionNameSource = 'user' | 'ai-title' | 'auto' | 'cwd';
+
 // Real server type also has `sessionId`/`sessionName`/`liveSessions`/many more
 // counters (see SessionTracker.getMetrics() + efficiencyScore/liveSessions
 // added by the route). Declared fully so every current and future consumer
@@ -47,6 +52,10 @@ export interface AntiPattern {
 export interface SessionCurrentResponse {
   readonly sessionId: string;
   readonly sessionName: string | null;
+  // Lets the UI distinguish an authoritative user/ai-title/auto name from a
+  // cwd-basename fallback (null when unnamed). Matches session_name_source in
+  // the MCP tool response and the persisted summaries.
+  readonly sessionNameSource: SessionNameSource | null;
   readonly sessionStartTime: number;
   readonly sessionDurationMs: number;
   readonly toolCallCount: number;
@@ -253,6 +262,22 @@ export interface SessionDetail {
   readonly durationMs?: number;
   readonly estimatedCostUsd?: number | null;
   readonly model?: string | null;
+  // Per-model request/token/cost counters for this session. Present when the
+  // session used one or more models — when it used more than one (a
+  // mid-session model switch, e.g. via /model), `model` above only reflects
+  // whichever model was current at read time, so the UI should prefer this
+  // for display when it has more than one key.
+  readonly modelBreakdown?: Readonly<
+    Record<
+      string,
+      {
+        readonly requestCount: number;
+        readonly totalInputTokens: number;
+        readonly totalOutputTokens: number;
+        readonly totalCostUsd: number;
+      }
+    >
+  >;
   readonly outcome?: string;
   readonly toolBreakdown?: Record<string, number>;
   readonly filesRead?: string[];
@@ -296,6 +321,14 @@ export interface ComputeWasteResponse {
     readonly type: string;
     readonly tokens_wasted: number;
     readonly instances: number;
+  }>;
+  // Attributes retry_tokens_wasted back to the session(s) that caused it —
+  // anti-pattern waste has no per-session attribution yet, so this only ever
+  // covers the retry portion. Sorted descending by tokens_wasted.
+  readonly by_session: ReadonlyArray<{
+    readonly session_id: string;
+    readonly tokens_wasted: number;
+    readonly alert_count: number;
   }>;
   readonly status: 'clean' | 'moderate' | 'needs_attention';
 }
@@ -1202,6 +1235,71 @@ export interface InstructionDriftResponse {
 export const fetchInstructionDrift = (): Promise<InstructionDriftResponse> =>
   getJson<InstructionDriftResponse>('/api/instruction-drift');
 
+// Mirrors ApiFailureTracker's own shapes (src/metrics/api-failure-tracker.ts)
+// verbatim — this file has no import wired to server-side tracker types, so
+// every response shape here is re-declared rather than imported, same as
+// QualityProxyMetrics above.
+export type ApiErrorType =
+  | 'rate_limit'
+  | 'timeout'
+  | 'connection_error'
+  | 'server_error'
+  | 'context_length_exceeded'
+  | 'authentication'
+  | 'unknown';
+
+export type SessionPhase = 'early' | 'middle' | 'late';
+
+export interface ApiFailureEvent {
+  readonly errorType: ApiErrorType;
+  readonly model: string;
+  readonly timestamp: number;
+  readonly turnNumber: number;
+  readonly tokensInFlight: number;
+  readonly recoveryMs: number | null;
+  readonly retryCount: number;
+  readonly recoverySucceeded: boolean | null;
+  readonly sessionPhase: SessionPhase;
+  readonly duringToolExecution: boolean;
+}
+
+export interface ModelReliabilityScorecard {
+  readonly model: string;
+  readonly totalRequests: number;
+  readonly failureCount: number;
+  readonly failureRate: number | null;
+  readonly throttleCount: number;
+  readonly throttleFrequency: number | null;
+  readonly meanRecoveryMs: number | null;
+  readonly p95LatencyMs: number | null;
+  readonly tokensLost: number;
+  readonly estimatedCostLostUsd: number;
+}
+
+export interface ThrottleAlert {
+  readonly model: string;
+  readonly count: number;
+  readonly windowMinutes: number;
+  readonly timestamp: number;
+}
+
+export interface ApiFailureMetrics {
+  readonly totalFailures: number;
+  readonly byErrorType: Readonly<Record<ApiErrorType, number>>;
+  readonly byModel: Readonly<Record<string, ModelReliabilityScorecard>>;
+  readonly bySessionPhase: Readonly<Record<SessionPhase, number>>;
+  readonly totalTokensLost: number;
+  readonly totalEstimatedCostLostUsd: number;
+  readonly meanTimeToRecoveryMs: number | null;
+  readonly throttleAlerts: readonly ThrottleAlert[];
+  readonly recentFailures: readonly ApiFailureEvent[];
+  readonly dataAvailable: boolean;
+  readonly note: string;
+}
+
+export const fetchApiFailures = (): Promise<ApiFailureMetrics> =>
+  getJson<ApiFailureMetrics>('/api/api-failures');
+
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
@@ -1215,6 +1313,7 @@ export const qk = {
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
+  apiFailures: ['api-failures'] as const,
   recommendations: ['recommendations'] as const,
   claudeMdImpact: ['claudemd-impact'] as const,
   collaborationProfile: ['collaboration-profile'] as const,
