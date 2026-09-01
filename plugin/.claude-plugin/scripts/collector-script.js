@@ -8,6 +8,7 @@ import {
   closeSync,
   mkdirSync,
   existsSync,
+  utimesSync,
   constants as fsConstants
 } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -154,6 +155,11 @@ function writePpidBreadcrumb(sessionId) {
       if (existsSync(breadcrumbPath)) {
         try {
           if (readFileSync(breadcrumbPath, "utf-8").trim() === sessionId) {
+            const now = /* @__PURE__ */ new Date();
+            try {
+              utimesSync(breadcrumbPath, now, now);
+            } catch {
+            }
             wroteAny = true;
             continue;
           }
@@ -210,16 +216,43 @@ function extractInputMeta(toolName, input) {
   const obj = input;
   const meta = {};
   if (typeof obj.file_path === "string") meta.file_path = obj.file_path;
+  else if (typeof obj.filePath === "string") meta.file_path = obj.filePath;
   switch (toolName) {
     case "Read":
       if (typeof obj.offset === "number") meta.offset = obj.offset;
       if (typeof obj.limit === "number") meta.limit = obj.limit;
       break;
     case "Write":
+    case "create_file":
       if (typeof obj.content === "string") {
         meta.contentLength = obj.content.length;
         meta.lineCount = obj.content.length > 0 ? countLines(obj.content) : 0;
       }
+      break;
+    // VS Code Copilot's find-and-replace edit tools. Field names are camelCase
+    // (oldString/newString) per the hooks FAQ; tool names from toolNames.ts in
+    // microsoft/vscode (extensions/copilot/src/extension/tools/common/).
+    case "replace_string_in_file": {
+      const oldStr = obj.oldString;
+      const newStr = obj.newString;
+      if (typeof oldStr === "string") {
+        meta.oldStringLength = oldStr.length;
+        meta.oldLineCount = oldStr.length > 0 ? countLines(oldStr) : 0;
+      }
+      if (typeof newStr === "string") {
+        meta.newStringLength = newStr.length;
+        meta.newLineCount = newStr.length > 0 ? countLines(newStr) : 0;
+        meta.isDelete = newStr.length === 0;
+      }
+      break;
+    }
+    case "multi_replace_string_in_file":
+      if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
+      break;
+    case "run_in_terminal":
+      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.explanation === "string") meta.description = redact(obj.explanation);
+      if (typeof obj.isBackground === "boolean") meta.run_in_background = obj.isBackground;
       break;
     case "Edit":
       if (typeof obj.old_string === "string") {
@@ -372,21 +405,22 @@ function processHook(raw) {
       event.inputContent = redact(truncate(content, maxContentLen));
     }
   } else if (eventName === "posttooluse") {
-    const toolResponse = data.tool_response;
-    const responseSuccess = toolResponse !== null && typeof toolResponse === "object" && !Array.isArray(toolResponse) ? toolResponse.success : void 0;
+    const toolResponse = data.tool_response ?? data.tool_result;
+    const responseObj = toolResponse !== null && typeof toolResponse === "object" && !Array.isArray(toolResponse) ? toolResponse : void 0;
+    const responseSuccess = responseObj === void 0 ? void 0 : responseObj.success !== void 0 ? responseObj.success : responseObj.result_type !== void 0 ? responseObj.result_type !== "failure" : void 0;
     event = {
       mode: "post",
       tool: toolName,
       timestamp,
-      outputSize: sizeOf(data.tool_response),
+      outputSize: sizeOf(toolResponse),
       success: typeof responseSuccess === "boolean" ? responseSuccess : true
     };
     const postInputMeta = extractInputMeta(toolName, data.tool_input);
     if (postInputMeta !== void 0) event.toolInput = postInputMeta;
-    const outputMeta = extractOutputMeta(toolName, data.tool_response);
+    const outputMeta = extractOutputMeta(toolName, toolResponse);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
-    if (recordContent && data.tool_response !== void 0) {
-      const content = typeof data.tool_response === "string" ? data.tool_response : JSON.stringify(data.tool_response);
+    if (recordContent && toolResponse !== void 0) {
+      const content = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
       event.outputContent = redact(truncate(content, maxContentLen));
     }
   } else if (eventName === "posttoolusefailure") {
@@ -397,6 +431,18 @@ function processHook(raw) {
       success: false,
       error: redact(data.error ?? "unknown error"),
       isInterrupt: data.is_interrupt ?? false
+    };
+  } else if (eventName === "permissionrequest" || eventName === "permissiondenied") {
+    if (typeof data.tool_use_id !== "string" || data.tool_use_id === "") {
+      process.stderr.write(`[preflight-collector] Dropping ${eventName} without tool_use_id
+`);
+      return;
+    }
+    event = eventName === "permissionrequest" ? { mode: "permission_request", tool: toolName, timestamp } : {
+      mode: "permission_denied",
+      tool: toolName,
+      timestamp,
+      ...typeof data.denied_reason === "string" && data.denied_reason !== "" && { deniedReason: redact(data.denied_reason) }
     };
   } else if (eventName === "beforetool") {
     event = {
@@ -583,6 +629,21 @@ function processHook(raw) {
       toolUseId: String(data.stepIdx),
       ...typeof data.error === "string" && data.error !== "" && { error: redact(data.error) }
     };
+  } else if (eventName === "stopfailure") {
+    event = {
+      mode: "api_failure",
+      errorType: data.error ?? "unknown",
+      timestamp
+    };
+    if (recordContent) {
+      if (data.error_details !== void 0) {
+        const details = typeof data.error_details === "string" ? data.error_details : JSON.stringify(data.error_details);
+        event.errorDetails = redact(truncate(details, maxContentLen));
+      }
+      if (typeof data.last_assistant_message === "string") {
+        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+      }
+    }
   } else {
     return;
   }
@@ -590,6 +651,8 @@ function processHook(raw) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
+  const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  if (explicitPlatform) event.platform = explicitPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   try {
     const bufferPath = getBufferPath(sessionId);
@@ -645,11 +708,8 @@ function readStdinSync() {
   }
   try {
     return _stdinFs.readFileSync("/dev/stdin");
-  } catch (err) {
-    if (err.code === "EACCES") {
-      return _stdinFs.readFileSync(process.stdin.fd);
-    }
-    throw err;
+  } catch {
+    return _stdinFs.readFileSync(process.stdin.fd);
   }
 }
 if (_isDirectExecution) {
