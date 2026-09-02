@@ -224,6 +224,51 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — platform stamping', () => {
+    it('stamps platform from MCP_CLIENT when explicitly set', () => {
+      process.env.MCP_CLIENT = 'copilot-sdk';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('copilot-sdk');
+    });
+
+    it('stamps platform from NEW_RELIC_AI_PLATFORM when MCP_CLIENT is unset', () => {
+      delete process.env.MCP_CLIENT;
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('copilot');
+    });
+
+    it('MCP_CLIENT takes precedence over NEW_RELIC_AI_PLATFORM when both are set', () => {
+      process.env.MCP_CLIENT = 'copilot-sdk';
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('copilot-sdk');
+    });
+
+    // Regression guard: a real Claude Code hook environment sets CLAUDECODE,
+    // CLAUDE_CODE_SESSION_ID, and CLAUDE_CODE_ENTRYPOINT — none of which this
+    // file reads. Ambient (non-explicit) detection was tried via the full
+    // adapter registry and reverted: ClaudeCodeAdapter.isSupported() checks
+    // the wrong env vars for this context, so the always-true generic-mcp
+    // fallback won detection and every Claude Code hook was mis-tagged
+    // generic-mcp instead of the correct (and previously implicit,
+    // nr-ingest.ts-defaulted) claude-code. Platform must stay unstamped here
+    // so that default keeps applying.
+    it('does not stamp platform when neither MCP_CLIENT nor NEW_RELIC_AI_PLATFORM is set (leaves nr-ingest.ts default intact)', () => {
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'sess-001';
+      process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBeUndefined();
+    });
+  });
+
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
     // PowerShell is a real, first-party Claude Code tool (see
     // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no

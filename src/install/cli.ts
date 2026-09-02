@@ -6,7 +6,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, copyFileSync, realpathSync, readFileSync } from 'node:fs';
+import { existsSync, copyFileSync, realpathSync, readFileSync, unlinkSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
@@ -22,6 +22,20 @@ import {
   detectMcpConfigPath,
   generateNrConfig,
 } from './install-helper.js';
+import {
+  detectCopilotHooksPath,
+  detectVsCodeMcpPath,
+  detectVsCodeSettingsPath,
+  mergeCopilotHooksFile,
+  removeCopilotHooksFile,
+  mergeVsCodeMcpConfig,
+  removeVsCodeMcpConfig,
+  mergeVsCodeSettings,
+  removeVsCodeHookFilesLocationsEntry,
+  applyHookCollisionFix,
+  installCopilotSdkExtension,
+} from './copilot-install-helper.js';
+import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { validateConfigFile, DEFAULT_STORAGE_PATH, ConfigFileSchema } from '../config.js';
 import { VALID_MODES, type Mode } from '../config.js';
@@ -35,6 +49,7 @@ import {
   removeDashboardDaemon,
   getDashboardDaemonStatus,
   resolveBinaryPath,
+  resolveNamedBinaryOnPath,
 } from './schedule.js';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { LocalStore } from '../storage/index.js';
@@ -752,6 +767,25 @@ function handleInstall(options: {
     printPathWarning();
   }
 
+  // Double-capture fix — VS Code reads hook files from both the standard
+  // Claude settings.json location and the Copilot hooks file at once with no
+  // dedup (see handleCopilotInstall). Uses the fixed desktop path here
+  // (not the possibly-WSL-resolved settingsPath above) since that's what VS
+  // Code's own chat.hookFilesLocations default always references regardless
+  // of which Claude Code platform target this install resolved to. Applied
+  // here too — not just from the Copilot flow — so the fix takes effect
+  // regardless of which install (Claude or Copilot) ran most recently.
+  const collisionFix = applyHookCollisionFix({
+    claudeSettingsPath: detectSettingsPath(scope, null),
+    copilotHooksPath: detectCopilotHooksPath(scope),
+    vsCodeSettingsPath: detectVsCodeSettingsPath(),
+    claudeHooksJustInstalled: true,
+  });
+  if (collisionFix.applied) {
+    print('✓ Disabled duplicate Claude-format hook reading in VS Code (double-count fix)');
+    print('  Reload the VS Code window for this to take effect.');
+  }
+
   print('\nNext steps:');
   print('  1. Restart Claude Code');
   print('  2. Verify: ask Claude Code to call nr_observe_get_session_stats');
@@ -759,6 +793,306 @@ function handleInstall(options: {
   print('  Tip: if the MCP server fails to connect, run:');
   print('    preflight validate');
   print('  to check your config file for typos or unsupported fields.');
+}
+
+// ---------------------------------------------------------------------------
+// Copilot install/uninstall handlers
+// ---------------------------------------------------------------------------
+
+// Idempotent: always remove-then-add rather than parsing `copilot mcp list`
+// output (undocumented/unstable format risk). Uses execFileSync with an
+// argv array — never a shell string — so a license key containing shell
+// metacharacters can never be interpreted by a shell.
+//
+// Registers with MCP_CLIENT=copilot-sdk (unchanged from today's documented
+// setup) — this env var only affects the MCP *server* process's own
+// platform self-detection (CopilotSdkAdapter's tool-name normalization,
+// local-dashboard session summaries), which is independent of the hooks
+// file's per-event NR tagging (NEW_RELIC_AI_PLATFORM=copilot, embedded by
+// generateCopilotHooksFile). VS Code's own mcp.json entry separately and
+// correctly uses MCP_CLIENT=copilot (see generateVsCodeMcpEntry).
+function registerCopilotMcpServer(
+  copilotCliPath: string,
+  binPath: string | null,
+  licenseKey?: string,
+  accountId?: string,
+): void {
+  try {
+    execFileSync(copilotCliPath, ['mcp', 'remove', 'preflight'], { stdio: 'pipe' });
+  } catch {
+    /* not previously registered — fine */
+  }
+
+  const target = binPath ?? 'npx';
+  const targetArgs = binPath ? ['--stdio'] : ['preflight', '--stdio'];
+  const args = [
+    'mcp',
+    'add',
+    'preflight',
+    '--env',
+    'MCP_CLIENT=copilot-sdk',
+    ...(licenseKey ? ['--env', `NEW_RELIC_LICENSE_KEY=${licenseKey}`] : []),
+    ...(accountId ? ['--env', `NEW_RELIC_ACCOUNT_ID=${accountId}`] : []),
+    '--',
+    target,
+    ...targetArgs,
+  ];
+  execFileSync(copilotCliPath, args, { stdio: 'pipe' });
+}
+
+function handleCopilotInstall(options: {
+  licenseKey?: string;
+  accountId?: string;
+  project?: boolean;
+}): void {
+  const scope = options.project ? 'project' : 'user';
+  const binPath = resolveBinaryPath();
+  const copilotCliPath = resolveNamedBinaryOnPath('copilot');
+  const hooksPath = detectCopilotHooksPath(scope);
+
+  // 1. Hooks file — always written; shared by both the Copilot CLI and VS
+  //    Code Copilot Chat, so this alone covers both surfaces' tool-call
+  //    capture regardless of what's found below.
+  let mergedHooks: Record<string, unknown>;
+  try {
+    mergedHooks = mergeCopilotHooksFile(readJsonFileStrict(hooksPath), binPath);
+  } catch (err) {
+    eprint(`\n✗ Failed to prepare Copilot hooks config: ${errMsg(err)}`);
+    throw err;
+  }
+  try {
+    writeJsonFile(hooksPath, mergedHooks);
+  } catch (err) {
+    eprint(`\n✗ Failed to write Copilot hooks config (${hooksPath}): ${errMsg(err)}`);
+    throw err;
+  }
+  print(`\n✓ Copilot hooks written: ${hooksPath}`);
+
+  // 2. Copilot CLI MCP registration + SDK extension — only when the CLI is
+  //    actually present. Degrades gracefully otherwise: hooks still work.
+  if (copilotCliPath) {
+    try {
+      registerCopilotMcpServer(copilotCliPath, binPath, options.licenseKey, options.accountId);
+      print('✓ Registered preflight with `copilot mcp add` (Copilot CLI)');
+    } catch (err) {
+      eprint(`\n⚠ Could not register MCP server with the copilot CLI: ${errMsg(err)}`);
+      eprint('  Hooks were still installed — tool-call capture works regardless.');
+    }
+
+    const ext = installCopilotSdkExtension();
+    if (ext.copied) {
+      print('✓ Copilot SDK usage extension installed (token-exact cost)');
+      print(
+        '  Restart the Copilot CLI with --experimental (or run /experimental on) to activate it.',
+      );
+    } else if (ext.reason === 'exists') {
+      print('  Copilot SDK usage extension already installed');
+    } else {
+      print(`  ⚠ Could not install Copilot SDK usage extension: ${ext.reason}`);
+    }
+  } else {
+    print('\n  ℹ `copilot` CLI not found on PATH — skipping CLI MCP registration.');
+    print('  Hooks were still installed; VS Code Copilot Chat picks them up automatically.');
+  }
+
+  // 3. VS Code — independent of whether the copilot CLI binary exists.
+  const vsCodeMcpPath = detectVsCodeMcpPath();
+  const vsCodeSettingsPath = detectVsCodeSettingsPath();
+  let touchedVsCodeSettings = false;
+
+  if (vsCodeMcpPath && existsSync(dirname(vsCodeMcpPath))) {
+    try {
+      const mergedVsCodeMcp = mergeVsCodeMcpConfig(readJsonFileStrict(vsCodeMcpPath), binPath, {
+        licenseKey: options.licenseKey,
+        accountId: options.accountId,
+      });
+      writeJsonFile(vsCodeMcpPath, mergedVsCodeMcp);
+      print(`✓ VS Code MCP server registered: ${vsCodeMcpPath}`);
+    } catch (err) {
+      eprint(`\n⚠ Failed to write VS Code MCP config (${vsCodeMcpPath}): ${errMsg(err)}`);
+    }
+  } else {
+    print('\n  ℹ VS Code user directory not found — skipping VS Code MCP registration.');
+  }
+
+  if (vsCodeSettingsPath && existsSync(dirname(vsCodeSettingsPath))) {
+    try {
+      const merged = mergeVsCodeSettings(readJsonFileStrict(vsCodeSettingsPath), {
+        enableAgentDebugLog: true,
+      });
+      writeJsonFile(vsCodeSettingsPath, merged);
+      print('✓ Enabled token-exact cost logging in VS Code settings.json');
+      touchedVsCodeSettings = true;
+    } catch (err) {
+      eprint(`\n⚠ Could not update VS Code settings.json: ${errMsg(err)}`);
+    }
+  }
+
+  // 4. Double-capture fix — VS Code reads hook files from both the Claude
+  //    settings.json location and this Copilot hooks file at once with no
+  //    dedup. Applied here (and from handleInstall's Claude flow) so it's
+  //    correct regardless of install order.
+  const claudeSettingsPath = detectSettingsPath(scope, null);
+  const fix = applyHookCollisionFix({
+    claudeSettingsPath,
+    copilotHooksPath: hooksPath,
+    vsCodeSettingsPath,
+    copilotHooksJustInstalled: true,
+  });
+  if (fix.applied) {
+    print('✓ Disabled duplicate Claude-format hook reading in VS Code (double-count fix)');
+    touchedVsCodeSettings = true;
+  }
+
+  if (touchedVsCodeSettings) {
+    print('\n  ℹ VS Code settings changed — reload the window for these to take effect:');
+    print('    Cmd/Ctrl+Shift+P → "Developer: Reload Window"');
+  }
+
+  print('\nNext steps:');
+  print('  1. Restart the Copilot CLI (if installed) and/or reload VS Code');
+  print('  2. Verify: ask Copilot to call nr_observe_get_session_stats');
+}
+
+async function handleCopilotUninstall(options: {
+  project?: boolean;
+  yes?: boolean;
+}): Promise<void> {
+  const scope = options.project ? 'project' : 'user';
+  const hooksPath = detectCopilotHooksPath(scope);
+  const vsCodeMcpPath = detectVsCodeMcpPath();
+  const vsCodeSettingsPath = detectVsCodeSettingsPath();
+  const claudeSettingsPath = detectSettingsPath(scope, null);
+  const copilotCliPath = resolveNamedBinaryOnPath('copilot');
+  const extensionPath = copilotSdkExtensionInstallPath();
+
+  const changeSummary: string[] = [];
+  if (existsSync(hooksPath)) changeSummary.push(`  • Remove Copilot hooks from ${hooksPath}`);
+  if (vsCodeMcpPath && existsSync(vsCodeMcpPath)) {
+    changeSummary.push(`  • Remove MCP server from ${vsCodeMcpPath}`);
+  }
+
+  // Only remove our own hookFilesLocations entry — never the whole object,
+  // in case the user has unrelated entries there — and only if it's still
+  // exactly `false` (our fix); if the user has since changed it, leave it.
+  let hasHookFilesLocationsFix = false;
+  if (vsCodeSettingsPath && existsSync(vsCodeSettingsPath)) {
+    try {
+      const settings = readJsonFileStrict(vsCodeSettingsPath);
+      const locations = settings['chat.hookFilesLocations'];
+      if (
+        typeof locations === 'object' &&
+        locations !== null &&
+        (locations as Record<string, unknown>)[claudeSettingsPath] === false
+      ) {
+        hasHookFilesLocationsFix = true;
+        changeSummary.push(
+          `  • Remove the "${claudeSettingsPath}": false entry from chat.hookFilesLocations in ${vsCodeSettingsPath}`,
+        );
+      }
+    } catch {
+      /* unreadable — skip this check, nothing to remove */
+    }
+  }
+  if (existsSync(extensionPath)) {
+    changeSummary.push(`  • Remove Copilot SDK usage extension at ${extensionPath}`);
+  }
+  if (copilotCliPath) {
+    changeSummary.push('  • Run `copilot mcp remove preflight`');
+  }
+
+  if (changeSummary.length === 0) {
+    print('Nothing installed for Copilot — no changes to make.');
+    return;
+  }
+
+  print('preflight uninstall --copilot will make the following changes:\n');
+  for (const line of changeSummary) print(line);
+  print('');
+  print(
+    '  Note: the VS Code debug-log setting (github.copilot.chat.agentDebugLog.fileLogging.enabled)',
+  );
+  print('  is left as-is — it is a user preference, not exclusively managed by preflight.');
+  print('');
+
+  if (!handleConfirm(await promptConfirm(options.yes ?? false))) return;
+  print('');
+
+  let anyRemoved = false;
+  let anyFailed = false;
+
+  if (existsSync(hooksPath)) {
+    const { written } = backupAndWrite(
+      hooksPath,
+      undefined,
+      removeCopilotHooksFile,
+      'Copilot hooks',
+    );
+    if (written) {
+      anyRemoved = true;
+      print(`✓ Copilot hooks removed: ${hooksPath}`);
+    } else {
+      anyFailed = true;
+    }
+  }
+
+  if (vsCodeMcpPath && existsSync(vsCodeMcpPath)) {
+    const { written } = backupAndWrite(
+      vsCodeMcpPath,
+      undefined,
+      removeVsCodeMcpConfig,
+      'VS Code MCP config',
+    );
+    if (written) {
+      anyRemoved = true;
+      print(`✓ VS Code MCP server removed: ${vsCodeMcpPath}`);
+    } else {
+      anyFailed = true;
+    }
+  }
+
+  if (hasHookFilesLocationsFix && vsCodeSettingsPath) {
+    const { written } = backupAndWrite(
+      vsCodeSettingsPath,
+      undefined,
+      (data) => removeVsCodeHookFilesLocationsEntry(data, claudeSettingsPath),
+      'VS Code hookFilesLocations setting',
+    );
+    if (written) {
+      anyRemoved = true;
+      print(`✓ Removed the double-count fix from ${vsCodeSettingsPath}`);
+    } else {
+      anyFailed = true;
+    }
+  }
+
+  if (existsSync(extensionPath)) {
+    try {
+      unlinkSync(extensionPath);
+      anyRemoved = true;
+      print(`✓ Copilot SDK usage extension removed: ${extensionPath}`);
+    } catch (err) {
+      anyFailed = true;
+      eprint(`⚠ Could not remove Copilot SDK usage extension: ${errMsg(err)}`);
+    }
+  }
+
+  if (copilotCliPath) {
+    try {
+      execFileSync(copilotCliPath, ['mcp', 'remove', 'preflight'], { stdio: 'pipe' });
+      print('✓ Removed preflight from `copilot mcp list`');
+      anyRemoved = true;
+    } catch (err) {
+      eprint(`⚠ \`copilot mcp remove preflight\` failed (may already be removed): ${errMsg(err)}`);
+    }
+  }
+
+  print(anyFailed ? '\nUninstall incomplete — see errors above.\n' : '\nUninstall complete.\n');
+  if (anyRemoved) {
+    print(
+      'Restart the Copilot CLI (if installed) and/or reload VS Code for changes to take effect.\n',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,7 +1619,31 @@ export function createInstallProgram(): Command {
     .option('--project', 'Write to project-level .claude/settings.json instead of user-level')
     .option('--windows-cc', 'Target Windows Claude Code (desktop app) when running inside WSL')
     .option('--linux-cc', 'Target Linux Claude Code (npm in WSL) when running inside WSL')
-    .action(handleInstall);
+    .option(
+      '--copilot',
+      'Configure GitHub Copilot instead — Copilot CLI hooks/MCP and VS Code Copilot Chat hooks/MCP',
+    )
+    .action(
+      (options: {
+        licenseKey?: string;
+        accountId?: string;
+        mode?: Mode;
+        project?: boolean;
+        windowsCc?: boolean;
+        linuxCc?: boolean;
+        copilot?: boolean;
+      }) => {
+        if (options.copilot) {
+          if (options.windowsCc || options.linuxCc) {
+            print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
+            process.exit(1);
+          }
+          handleCopilotInstall(options);
+          return;
+        }
+        handleInstall(options);
+      },
+    );
 
   program
     .command('uninstall')
@@ -1298,7 +1656,27 @@ export function createInstallProgram(): Command {
       'Remove only the background dashboard daemon (preserves hooks, MCP config, and session history)',
     )
     .option('--yes', 'Skip the confirmation prompt (useful for scripts and CI)')
-    .action(handleUninstall);
+    .option('--copilot', 'Remove GitHub Copilot CLI + VS Code Copilot Chat hooks/MCP instead')
+    .action(
+      async (options: {
+        project?: boolean;
+        windowsCc?: boolean;
+        linuxCc?: boolean;
+        daemon?: boolean;
+        yes?: boolean;
+        copilot?: boolean;
+      }) => {
+        if (options.copilot) {
+          if (options.windowsCc || options.linuxCc || options.daemon) {
+            print('\n  ⚠ --copilot cannot be combined with --windows-cc, --linux-cc, or --daemon.');
+            process.exit(1);
+          }
+          await handleCopilotUninstall(options);
+          return;
+        }
+        await handleUninstall(options);
+      },
+    );
 
   program
     .command('setup')

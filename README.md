@@ -86,6 +86,8 @@ preflight setup
 
 The wizard defaults to **local mode** — press Enter through the prompts and you're set. It wires Preflight into your AI tool (hooks + MCP server) and writes config to `~/.newrelic-preflight/`. Takes under a minute, no account required.
 
+> **Using GitHub Copilot?** The wizard also asks to install Copilot hooks — saying yes configures both the Copilot CLI and VS Code Copilot Chat automatically (hooks, MCP registration, and the fix for VS Code's hook double-capture), so Copilot gets the same tool-call and cost metrics Claude Code does. Run it standalone anytime with `preflight install --copilot`. See [docs/ADAPTERS.md](./docs/ADAPTERS.md#github-copilot-copilot) for details.
+
 When prompted, pick a mode:
 
 | Mode                  | What it does                                                         | New Relic account? |

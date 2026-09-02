@@ -27,7 +27,6 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import { createDefaultRegistry } from '../platforms/index.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -996,14 +995,28 @@ function processHook(raw: string): void {
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
   // Stamp the true originating platform at write time, using this hook
-  // invocation's own environment (MCP_CLIENT etc.) — this is the only point
-  // in the pipeline that reliably reflects the real host, since whichever
-  // process later drains the buffer (e.g. --local's unscoped drain of an
-  // unowned session, see LocalSessionAggregator) may have detected a
-  // completely different platform for itself. isSupported() across all
-  // adapters is env-var-only (no file reads), matching this file's
-  // lightweight-collector design constraint.
-  event.platform = createDefaultRegistry().getActive().platformName;
+  // invocation's own environment — this is the only point in the pipeline
+  // that reliably reflects the real host, since whichever process later
+  // drains the buffer (e.g. --local's unscoped drain of an unowned session,
+  // see LocalSessionAggregator) may have detected a completely different
+  // platform for itself.
+  //
+  // Deliberately explicit-env-only (MCP_CLIENT / NEW_RELIC_AI_PLATFORM)
+  // rather than the full adapter registry: registry-based ambient detection
+  // (e.g. ClaudeCodeAdapter.isSupported() checking CLAUDE_CODE/
+  // CLAUDE_CODE_VERSION) does not match the real env vars Claude Code's own
+  // hook invocations set (CLAUDECODE, CLAUDE_CODE_SESSION_ID,
+  // CLAUDE_CODE_ENTRYPOINT), so the always-true generic-mcp fallback won
+  // detection and mis-tagged every Claude Code hook event as generic-mcp —
+  // a regression, since nr-ingest.ts's own 'claude-code' default was already
+  // correct for that case. Reading the explicit env vars directly instead
+  // keeps the fix for adapters like copilot-sdk (which are themselves
+  // explicit-env-only, so the registry bought nothing there), leaves
+  // ambient-only platforms on the correct downstream default, and avoids
+  // pulling in every adapter module on this hot path (pre+post per tool
+  // call, on every platform).
+  const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  if (explicitPlatform) event.platform = explicitPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
 
   // Write to buffer — wrapped in try/catch for resilience.

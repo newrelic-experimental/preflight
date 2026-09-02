@@ -51,6 +51,16 @@ export interface LocalSessionRollup {
   filesRead: Set<string>;
   filesModified: Set<string>;
   cwd: string | null;
+  /**
+   * First non-null platform seen on this session's own records. A drained
+   * session almost never belongs to the draining process — e.g. a
+   * dashboard's own `activePlatform` reflects *its* environment, not the
+   * Copilot/Claude Code process whose buffer it drained (see the module doc
+   * above) — so this must win over `toSummaries()`'s `context.platform`
+   * fallback, the same way `nr-ingest.ts` prefers `record.sessionId` over
+   * the ingesting process's own trace id.
+   */
+  platform: string | null;
   timeline: ReplayTimelineEntry[];
   /** Live records kept for sequence-sensitive tool-selection scoring. */
   records: ToolCallRecord[];
@@ -211,6 +221,7 @@ export class LocalSessionAggregator {
         filesRead: new Set(),
         filesModified: new Set(),
         cwd: null,
+        platform: null,
         timeline: [],
         records: [],
         quality: new QualityProxyTracker(),
@@ -243,6 +254,7 @@ export class LocalSessionAggregator {
     isBuildCommand?: boolean;
     isLintCommand?: boolean;
     errorType?: unknown;
+    platform?: string | null;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -252,6 +264,13 @@ export class LocalSessionAggregator {
     const tool = record.toolName ?? 'unknown';
     rollup.toolBreakdown[tool] = (rollup.toolBreakdown[tool] ?? 0) + 1;
     if (typeof record.cwd === 'string' && record.cwd.length > 0) rollup.cwd = record.cwd;
+    if (
+      rollup.platform === null &&
+      typeof record.platform === 'string' &&
+      record.platform.length > 0
+    ) {
+      rollup.platform = record.platform;
+    }
     // A `git -C <path>` / `cd <path> && git` command works on a repo that the
     // cwd never names, so without this the repo would be invisible to commit
     // hydration — the whole point of driving other repos from one workspace.
@@ -415,7 +434,7 @@ export class LocalSessionAggregator {
         assistantMessages: 0,
         userCorrections: 0,
         outcome: context.outcome,
-        platform: context.platform ?? null,
+        platform: rollup.platform ?? context.platform ?? null,
       });
     }
     return out;

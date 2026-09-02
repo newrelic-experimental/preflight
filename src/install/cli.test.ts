@@ -34,6 +34,7 @@ jest.mock('./schedule.js', () => ({
   removeDashboardDaemon: jest.fn(() => false),
   getDashboardDaemonStatus: jest.fn(() => ({ installed: false, readable: false })),
   resolveBinaryPath: jest.fn(() => '/usr/local/bin/preflight'),
+  resolveNamedBinaryOnPath: jest.fn(() => null),
 }));
 jest.mock('./install-helper.js', () => ({
   mergeSettings: jest.fn((s: unknown) => s),
@@ -43,6 +44,22 @@ jest.mock('./install-helper.js', () => ({
   detectSettingsPath: jest.fn(() => '/tmp/settings.json'),
   detectMcpConfigPath: jest.fn(() => '/tmp/mcp.json'),
   generateNrConfig: jest.fn(() => ({})),
+}));
+jest.mock('./copilot-install-helper.js', () => ({
+  detectCopilotHooksPath: jest.fn(() => '/tmp/copilot-hooks.json'),
+  detectVsCodeMcpPath: jest.fn(() => '/tmp/vscode-mcp.json'),
+  detectVsCodeSettingsPath: jest.fn(() => '/tmp/vscode-settings.json'),
+  mergeCopilotHooksFile: jest.fn((s: unknown) => s),
+  removeCopilotHooksFile: jest.fn((s: unknown) => s),
+  mergeVsCodeMcpConfig: jest.fn((s: unknown) => s),
+  removeVsCodeMcpConfig: jest.fn((s: unknown) => s),
+  mergeVsCodeSettings: jest.fn((s: unknown) => s),
+  removeVsCodeHookFilesLocationsEntry: jest.fn((s: unknown) => s),
+  applyHookCollisionFix: jest.fn(() => ({ applied: false, reason: 'claude-hooks-absent' })),
+  installCopilotSdkExtension: jest.fn(() => ({ copied: false, reason: 'exists' })),
+}));
+jest.mock('../hooks/copilot-sdk-extension-health.js', () => ({
+  copilotSdkExtensionInstallPath: jest.fn(() => '/tmp/copilot-extension/extension.mjs'),
 }));
 jest.mock('./platform.js', () => ({
   isWsl: jest.fn(() => false),
@@ -75,6 +92,7 @@ import * as scheduleMod from './schedule.js';
 import * as platformMod from './platform.js';
 import { runInstallCli } from './cli.js';
 import * as installHelperMod from './install-helper.js';
+import * as copilotInstallHelperMod from './copilot-install-helper.js';
 import * as configMod from '../config.js';
 import * as setupWizardMod from './setup-wizard.js';
 
@@ -89,6 +107,20 @@ const mockedSchedule = scheduleMod as unknown as {
   installDashboardDaemon: jest.Mock;
   getDashboardDaemonStatus: jest.Mock;
   resolveBinaryPath: jest.Mock;
+  resolveNamedBinaryOnPath: jest.Mock;
+};
+const mockedCopilotHelper = copilotInstallHelperMod as unknown as {
+  detectCopilotHooksPath: jest.Mock;
+  detectVsCodeMcpPath: jest.Mock;
+  detectVsCodeSettingsPath: jest.Mock;
+  mergeCopilotHooksFile: jest.Mock;
+  removeCopilotHooksFile: jest.Mock;
+  mergeVsCodeMcpConfig: jest.Mock;
+  removeVsCodeMcpConfig: jest.Mock;
+  mergeVsCodeSettings: jest.Mock;
+  removeVsCodeHookFilesLocationsEntry: jest.Mock;
+  applyHookCollisionFix: jest.Mock;
+  installCopilotSdkExtension: jest.Mock;
 };
 const mockedPlatform = platformMod as unknown as {
   isWsl: jest.Mock;
@@ -468,6 +500,30 @@ describe('platform resolution via install', () => {
     expect(mockedHelper.mergeSettings).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
       platform: 'wsl-linux-cc',
     });
+  });
+
+  // Regression guard: the VS Code double-count fix must apply regardless of
+  // which installer (Claude or Copilot) ran most recently — not just from
+  // `preflight install --copilot`. See applyHookCollisionFix's own on-disk
+  // checks in copilot-install-helper.ts for why this is safe to call
+  // unconditionally even when Copilot was never installed.
+  it('calls applyHookCollisionFix with claudeHooksJustInstalled, using the fixed desktop settings path', async () => {
+    mockedPlatform.isWsl.mockReturnValue(false);
+    await runInstallCli(['install']);
+    expect(mockedCopilotHelper.applyHookCollisionFix).toHaveBeenCalledWith({
+      claudeSettingsPath: `${homedir()}/.claude/settings.json`,
+      copilotHooksPath: expect.anything(),
+      vsCodeSettingsPath: expect.anything(),
+      claudeHooksJustInstalled: true,
+    });
+  });
+
+  it('prints the double-count-fix confirmation when applyHookCollisionFix applies it', async () => {
+    mockedPlatform.isWsl.mockReturnValue(false);
+    mockedCopilotHelper.applyHookCollisionFix.mockReturnValue({ applied: true });
+    await runInstallCli(['install']);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Disabled duplicate Claude-format hook reading in VS Code');
   });
 });
 
@@ -2354,5 +2410,217 @@ describe('--staging is hidden from help everywhere it is supported', () => {
     for (const cmd of prog.commands) {
       expect(cmd.helpInformation()).not.toContain('--staging');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Copilot install/uninstall
+// ---------------------------------------------------------------------------
+
+describe('copilot install/uninstall', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let exitSpy: ReturnType<typeof jest.spyOn>;
+  let mFs: {
+    existsSync: jest.Mock;
+    writeFileSync: jest.Mock;
+    readFileSync: jest.Mock;
+    realpathSync: jest.Mock;
+  };
+  let mExec: { execFileSync: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mFs = fsMod as unknown as {
+      existsSync: jest.Mock;
+      writeFileSync: jest.Mock;
+      readFileSync: jest.Mock;
+      realpathSync: jest.Mock;
+    };
+    mExec = childMod as unknown as { execFileSync: jest.Mock };
+    mFs.existsSync.mockImplementation(() => false);
+    mFs.readFileSync.mockImplementation(() => '{}');
+    // An earlier describe block (handleUpdate/findRepoRoot tests) leaves
+    // realpathSync pinned to a fixed unrelated return value via
+    // mockReturnValue — clearAllMocks() doesn't undo that. Restore the
+    // module mock's original identity behavior so writeJsonFile's symlink
+    // guard sees real paths regardless of test execution order.
+    mFs.realpathSync.mockImplementation((p: unknown) => p);
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(null);
+    mockedCopilotHelper.detectCopilotHooksPath.mockReturnValue(
+      `${homedir()}/.copilot/hooks/preflight.json`,
+    );
+    mockedCopilotHelper.detectVsCodeMcpPath.mockReturnValue(`${homedir()}/Code/User/mcp.json`);
+    mockedCopilotHelper.detectVsCodeSettingsPath.mockReturnValue(
+      `${homedir()}/Code/User/settings.json`,
+    );
+    mockedCopilotHelper.applyHookCollisionFix.mockReturnValue({
+      applied: false,
+      reason: 'claude-hooks-absent',
+    });
+    mockedCopilotHelper.installCopilotSdkExtension.mockReturnValue({
+      copied: false,
+      reason: 'exists',
+    });
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: string | number | null | undefined) => {
+        throw new Error(`process.exit(${String(code)})`);
+      });
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    exitSpy.mockRestore();
+    process.exitCode = undefined;
+  });
+
+  it('always writes the Copilot hooks file, regardless of whether the copilot CLI is present', async () => {
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(null);
+    await runInstallCli(['install', '--copilot']);
+    expect(mockedCopilotHelper.mergeCopilotHooksFile).toHaveBeenCalledWith(
+      expect.anything(),
+      '/usr/local/bin/preflight',
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Copilot hooks written');
+  });
+
+  it('skips CLI MCP registration and prints a clear message when the copilot CLI is not found', async () => {
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(null);
+    await runInstallCli(['install', '--copilot']);
+    expect(mExec.execFileSync).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('copilot` CLI not found on PATH');
+  });
+
+  it('registers the MCP server via `copilot mcp add` with an argv array when the CLI is found', async () => {
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue('/opt/homebrew/bin/copilot');
+    mExec.execFileSync.mockImplementation(() => Buffer.from(''));
+
+    await runInstallCli(['install', '--copilot', '--license-key', 'abc123', '--account-id', '456']);
+
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      '/opt/homebrew/bin/copilot',
+      ['mcp', 'remove', 'preflight'],
+      { stdio: 'pipe' },
+    );
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      '/opt/homebrew/bin/copilot',
+      [
+        'mcp',
+        'add',
+        'preflight',
+        '--env',
+        'MCP_CLIENT=copilot-sdk',
+        '--env',
+        'NEW_RELIC_LICENSE_KEY=abc123',
+        '--env',
+        'NEW_RELIC_ACCOUNT_ID=456',
+        '--',
+        '/usr/local/bin/preflight',
+        '--stdio',
+      ],
+      { stdio: 'pipe' },
+    );
+  });
+
+  it('never lets a license key with shell metacharacters be interpreted by a shell', async () => {
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue('/opt/homebrew/bin/copilot');
+    mExec.execFileSync.mockImplementation(() => Buffer.from(''));
+    const dangerousKey = '`rm -rf /`; touch pwned; $(echo evil)';
+
+    await runInstallCli([
+      'install',
+      '--copilot',
+      '--license-key',
+      dangerousKey,
+      '--account-id',
+      '456',
+    ]);
+
+    // execFileSync (never execSync/exec) with the key as one literal argv
+    // element — no shell ever parses it, so the metacharacters are inert.
+    const addCall = mExec.execFileSync.mock.calls.find(
+      (c: unknown[]) => Array.isArray(c[1]) && (c[1] as unknown[]).includes('add'),
+    );
+    expect(addCall![1]).toContain(`NEW_RELIC_LICENSE_KEY=${dangerousKey}`);
+  });
+
+  it('skips VS Code steps gracefully when the VS Code user directory is not found', async () => {
+    mFs.existsSync.mockImplementation(() => false);
+    await runInstallCli(['install', '--copilot']);
+    expect(mockedCopilotHelper.mergeVsCodeMcpConfig).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('VS Code user directory not found');
+  });
+
+  it('writes the VS Code MCP entry and settings when the VS Code user directory exists', async () => {
+    mFs.existsSync.mockImplementation(() => true);
+    await runInstallCli(['install', '--copilot']);
+    expect(mockedCopilotHelper.mergeVsCodeMcpConfig).toHaveBeenCalled();
+    expect(mockedCopilotHelper.mergeVsCodeSettings).toHaveBeenCalledWith(expect.anything(), {
+      enableAgentDebugLog: true,
+    });
+  });
+
+  it('calls applyHookCollisionFix unconditionally, marking copilotHooksJustInstalled', async () => {
+    await runInstallCli(['install', '--copilot']);
+    expect(mockedCopilotHelper.applyHookCollisionFix).toHaveBeenCalledWith(
+      expect.objectContaining({ copilotHooksJustInstalled: true }),
+    );
+  });
+
+  it('rejects --copilot combined with --windows-cc', async () => {
+    await expect(runInstallCli(['install', '--copilot', '--windows-cc'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('cannot be combined with');
+  });
+
+  it('rejects --copilot combined with --linux-cc', async () => {
+    await expect(runInstallCli(['install', '--copilot', '--linux-cc'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+  });
+
+  it('uninstall --copilot reports nothing to do when no Copilot config exists', async () => {
+    mFs.existsSync.mockImplementation(() => false);
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue(null);
+    await runInstallCli(['uninstall', '--copilot', '--yes']);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Nothing installed for Copilot');
+  });
+
+  it('uninstall --copilot removes the hooks file and MCP entry when present, with --yes skipping confirmation', async () => {
+    mFs.existsSync.mockImplementation(() => true);
+    mockedSchedule.resolveNamedBinaryOnPath.mockReturnValue('/opt/homebrew/bin/copilot');
+    mExec.execFileSync.mockImplementation(() => Buffer.from(''));
+
+    await runInstallCli(['uninstall', '--copilot', '--yes']);
+
+    expect(mockedCopilotHelper.removeCopilotHooksFile).toHaveBeenCalled();
+    expect(mockedCopilotHelper.removeVsCodeMcpConfig).toHaveBeenCalled();
+    expect(mExec.execFileSync).toHaveBeenCalledWith(
+      '/opt/homebrew/bin/copilot',
+      ['mcp', 'remove', 'preflight'],
+      { stdio: 'pipe' },
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Uninstall complete');
+  });
+
+  it('rejects uninstall --copilot combined with --windows-cc', async () => {
+    await expect(runInstallCli(['uninstall', '--copilot', '--windows-cc'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+  });
+
+  it('rejects uninstall --copilot combined with --daemon', async () => {
+    await expect(runInstallCli(['uninstall', '--copilot', '--daemon'])).rejects.toThrow(
+      'process.exit(1)',
+    );
   });
 });
