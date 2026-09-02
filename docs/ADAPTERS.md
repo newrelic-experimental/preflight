@@ -37,7 +37,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 ## Claude Code (`claude-code`)
 
-**Mechanism:** Native `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks, installed by Preflight itself.
+**Mechanism:** Native `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks, installed by Preflight itself, plus four separate top-level settings.json hooks keys (not `PostToolUse` payload variants): `StopFailure`, which feeds `ApiFailureTracker` with model-API-call failures; `SessionStart`, which fires on every session but is only actionable when Claude Code reports resume-cost fields (`source: 'resume'`/`'fork'` with a prior response) — those feed `SessionResumeTracker`, surfaced in `nr_observe_get_cost_forecast`'s `resumeContext`; `InstructionsLoaded`, which feeds `InstructionDriftTracker` the exact moment a CLAUDE.md/`.claude/rules/*.md` file enters context — including session-start eager loads, which have no visible `Read` tool call at all; and `PostModelSwitch`, which feeds `ModelUsageTracker` a discrete switch event (deliberate `/model` changes, and persistent automatic changes tagged `source: 'auto'`) — `PreModelSwitch` is intentionally not installed, since Preflight has no reason to block or confirm a switch.
 
 **Detection (`isSupported()`):** `CLAUDE_CODE` env var set, or `CLAUDE_CODE_VERSION` set, or `MCP_CLIENT === 'claude-code'`.
 

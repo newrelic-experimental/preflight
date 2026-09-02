@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.newrelic-experimental/preflight",
+  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Windsurf, Copilot, and more)",
+  "repository": {
+    "url": "https://github.com/newrelic-experimental/preflight",
+    "source": "github"
+  },
+  "version": "1.30.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@newrelic/preflight",
+      "version": "1.30.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--stdio",
+          "description": "Run as an MCP stdio server (required for MCP clients)"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "NEW_RELIC_LICENSE_KEY",
+          "description": "New Relic ingest license key. Optional: without it Preflight runs local-only with the dashboard at localhost:7777.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "NEW_RELIC_ACCOUNT_ID",
+          "description": "New Relic account id, used for dashboard and alert deployment. Optional.",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

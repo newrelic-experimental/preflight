@@ -84,7 +84,8 @@ export const DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
   /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*|-[rR][a-zA-Z]*(?:\s+-[a-zA-Z]+)*\s+-[fF]|-[fF][a-zA-Z]*(?:\s+-[a-zA-Z]+)*\s+-[rR]|-[rR]\b|-[a-zA-Z]*[rR]\b)/,
   // GNU long-form: rm --recursive
   /\brm\b.*--recursive\b/,
-  /\bgit\s+push\s+--force\b/i,
+  // git push --force / -f, but NOT --force-with-lease / --force-if-includes (the safe forms)
+  /\bgit\s+push\s+--force(?!-(?:with-lease|if-includes))\b/i,
   /\bgit\s+push\s+-f\b/i,
   /\bgit\s+reset\s+--hard\b/i,
   /\bDROP\s+TABLE\b/i,
@@ -220,6 +221,7 @@ export function auditRecordToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiAuditEvent',
+    event_version: 1,
     timestamp: Math.floor(record.timestamp / 1000),
     action: record.action,
     tool: record.tool,
@@ -254,6 +256,7 @@ export function securityAlertToNrEvent(
   if (!alert) throw new Error('securityAlertToNrEvent called with no securityAlert on record');
   const event: NrEventData = {
     eventType: 'SecurityAlert',
+    event_version: 1,
     timestamp: Math.floor(record.timestamp / 1000),
     severity: alert.severity,
     alert_type: alert.alertType,

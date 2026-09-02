@@ -166,7 +166,7 @@ export function buildConfig(
   const includeNrCreds = mode !== 'local';
   return {
     ...existing,
-    ...(inputs.mode ? { mode } : {}),
+    mode,
     ...(includeNrCreds ? { accountId: inputs.accountId, licenseKey: inputs.licenseKey } : {}),
     developer: inputs.developer,
     ...(inputs.teamId ? { teamId: inputs.teamId } : {}),

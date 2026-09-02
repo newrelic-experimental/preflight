@@ -16,6 +16,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { createLogger } from '../shared/index.js';
+import { redactSensitive } from '../config.js';
 import { VERSION } from '../version.js';
 
 const logger = createLogger('session-stats');
@@ -49,6 +50,7 @@ import type { InstructionDriftTracker } from '../metrics/instruction-drift-track
 import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import type { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
 import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TurnTracker } from '../metrics/turn-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
@@ -142,7 +144,7 @@ const TURN_ANALYSIS_TOOL = {
 const INSTALL_HOOKS_TOOL = {
   name: 'nr_observe_install_hooks',
   description:
-    'Install PreToolUse and PostToolUse monitoring hooks into ~/.claude/settings.json. ' +
+    'Install PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied monitoring hooks into ~/.claude/settings.json. ' +
     'Call when nr_observe_health reports hooks_installed: false. ' +
     'Requires a Claude Code restart to activate monitoring.',
   inputSchema: { type: 'object' as const, properties: {} },
@@ -169,7 +171,13 @@ export function handleGetSessionStats(sessionTracker: SessionTracker, sessionTra
   const stats = {
     session_trace_id: sessionTraceId ?? null,
     session_id: metrics.sessionId,
-    session_name: metrics.sessionName ?? null,
+    // The name can be an ai-title or a user-given title (not just a directory
+    // basename), so redact before it leaves the process.
+    session_name: metrics.sessionName ? redactSensitive(metrics.sessionName) : null,
+    session_name_source: metrics.sessionNameSource ?? null,
+    // Intent is SENSITIVE content; non-null only when recordContent was on at
+    // capture. Redact again (idempotent) before it leaves the process.
+    session_intent: metrics.sessionIntent ? redactSensitive(metrics.sessionIntent) : null,
     session_duration_ms: metrics.sessionDurationMs,
     tool_calls: metrics.toolCallCount,
     tool_calls_by_type: metrics.toolCallCountByTool,
@@ -393,6 +401,7 @@ export interface ToolRegistrationOptions {
   toolCallBuffer?: { getRecords(): readonly import('../storage/types.js').ToolCallRecord[] };
   qualityProxyTracker?: QualityProxyTracker;
   apiFailureTracker?: ApiFailureTracker;
+  sessionResumeTracker?: SessionResumeTracker;
   turnCostAttributor?: TurnCostAttributor;
   turnTracker?: TurnTracker;
   gitEfficiencyTracker?: GitEfficiencyTracker;

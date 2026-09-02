@@ -9,7 +9,8 @@ export type HeadlessInstallResult =
   | { readonly status: 'error'; readonly message: string };
 
 /**
- * Installs PreToolUse/PostToolUse hooks into ~/.claude/settings.json (or
+ * Installs the preflight hook entries (PreToolUse, PostToolUse,
+ * PermissionRequest, PermissionDenied) into ~/.claude/settings.json (or
  * the project-level equivalent) without a TTY. Does NOT touch ~/.mcp.json —
  * Smithery handles MCP server registration separately.
  *

@@ -1,4 +1,4 @@
-import { ApiFailureTracker } from './api-failure-tracker.js';
+import { ApiFailureTracker, mapClaudeCodeErrorType } from './api-failure-tracker.js';
 import type { ThrottleAlert } from './api-failure-tracker.js';
 
 const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -255,16 +255,17 @@ describe('ApiFailureTracker', () => {
     expect(metrics.totalTokensLost).toBe(0);
   });
 
-  it('always reports dataAvailable false with an explanatory note', () => {
+  it('reports dataAvailable true with a partial-data note explaining what remains unavailable', () => {
     const tracker = new ApiFailureTracker();
     const metrics = tracker.getMetrics();
-    expect(metrics.dataAvailable).toBe(false);
+    expect(metrics.dataAvailable).toBe(true);
     expect(metrics.note).toBe(
-      "Model-API-level failure data (rate limits, timeouts, auth errors from the LLM provider itself) is not observable in Preflight's current architecture. Neither Claude Code hook events nor proxy mode see raw model-API traffic — proxy mode forwards requests to MCP servers, not to the model API. All-zero fields below reflect this limitation, not an absence of real failures.",
+      "Failures are captured via Claude Code's StopFailure hook, which fires only once per turn, on a fully-failed turn, after Claude Code's own retries are exhausted — so recoverySucceeded is always false for every recorded event, and recoveryMs/retryCount are always null/0 rather than measured. tokensInFlight is always 0 (this hook carries no token data), so totalTokensLost and totalEstimatedCostLostUsd are not meaningful. Fields derived from totalRequests (failureRate, throttleFrequency, p95LatencyMs) require recordRequest() calls that nothing in this codebase currently makes — model-API request-level latency/throughput has no observable source in stdio or proxy mode — so they stay null/0; real visibility into those would require a future LLM-facing proxy.",
     );
 
-    // Recording real events must not change either field — the limitation is
-    // architectural, not a function of whether any failure was ever recorded.
+    // Recording real events must not change either field — dataAvailable and
+    // the note describe the tracker's fixed capabilities, not a function of
+    // whether any failure has been recorded yet.
     tracker.recordFailure({
       errorType: 'rate_limit',
       model: 'claude-opus-4',
@@ -272,7 +273,46 @@ describe('ApiFailureTracker', () => {
       tokensInFlight: 100,
     });
     const metricsAfter = tracker.getMetrics();
-    expect(metricsAfter.dataAvailable).toBe(false);
+    expect(metricsAfter.dataAvailable).toBe(true);
     expect(metricsAfter.note).toBe(metrics.note);
+  });
+});
+
+describe('mapClaudeCodeErrorType', () => {
+  it.each([
+    ['rate_limit', 'rate_limit'],
+    ['overloaded', 'server_error'],
+    ['authentication_failed', 'authentication'],
+    ['oauth_org_not_allowed', 'authentication'],
+    ['billing_error', 'authentication'],
+    ['invalid_request', 'unknown'],
+    ['model_not_found', 'unknown'],
+    ['server_error', 'server_error'],
+    ['max_output_tokens', 'context_length_exceeded'],
+    ['unknown', 'unknown'],
+    ['something_unrecognized', 'unknown'],
+  ] as const)('maps raw error %s to %s', (raw, expected) => {
+    expect(mapClaudeCodeErrorType(raw)).toBe(expected);
+  });
+
+  it('never produces timeout or connection_error', () => {
+    const rawValues = [
+      'rate_limit',
+      'overloaded',
+      'authentication_failed',
+      'oauth_org_not_allowed',
+      'billing_error',
+      'invalid_request',
+      'model_not_found',
+      'server_error',
+      'max_output_tokens',
+      'unknown',
+      'anything_else',
+    ];
+    for (const raw of rawValues) {
+      const mapped = mapClaudeCodeErrorType(raw);
+      expect(mapped).not.toBe('timeout');
+      expect(mapped).not.toBe('connection_error');
+    }
   });
 });

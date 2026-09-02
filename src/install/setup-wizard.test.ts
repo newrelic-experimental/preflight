@@ -430,6 +430,38 @@ describe('buildConfig', () => {
     expect(result.accountId).toBe('new');
     expect(result.licenseKey).toBe('new-key');
   });
+
+  it('always writes an explicit mode key, even when inputs.mode is omitted', () => {
+    const result = buildConfig(
+      {},
+      {
+        accountId: '1',
+        licenseKey: 'k',
+        developer: 'd',
+        teamId: null,
+        projectId: null,
+        sessionBudgetUsd: null,
+      },
+    );
+    expect(Object.keys(result)).toContain('mode');
+    expect(result.mode).toBe('cloud');
+  });
+
+  it('writes the caller-provided mode explicitly when inputs.mode is set', () => {
+    const result = buildConfig(
+      {},
+      {
+        accountId: '1',
+        licenseKey: 'k',
+        developer: 'd',
+        teamId: null,
+        projectId: null,
+        sessionBudgetUsd: null,
+        mode: 'local',
+      },
+    );
+    expect(result.mode).toBe('local');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,17 @@
+services:
+  preflight-server:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      - preflight-data:/root/.newrelic-preflight
+    ports:
+      - '7777:7777'
+    environment:
+      NEW_RELIC_AI_HOMELAB_TOKEN: '${PREFLIGHT_TOKEN}'
+      NEW_RELIC_AI_HOMELAB_BIND_ADDRESS: '0.0.0.0'
+    command: ['node', 'dist/index.js', 'server']
+    restart: unless-stopped
+
+volumes:
+  preflight-data:

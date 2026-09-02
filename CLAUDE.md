@@ -166,7 +166,7 @@ Key config interfaces:
 
 ### Additional Configuration Fields
 
-Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, and the 8 `otlp.*` OTLP export/receiver fields. See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
+Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, the 8 `otlp.*` OTLP export/receiver fields, and `companionMode` (suppresses `ai.cost.*` gauges and tags cost-bearing Claude Code events when the same org also runs Claude Code's built-in OTel export). See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
 
 ### Event Types
 

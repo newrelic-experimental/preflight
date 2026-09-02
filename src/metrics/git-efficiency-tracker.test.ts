@@ -9,6 +9,7 @@ import {
 } from './git-efficiency-tracker.js';
 import { gitCommandTargetDir, stripHeredocBodies } from './local-session-aggregator.js';
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
+import { MetricAggregator } from '../shared/index.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 afterAll(() => stderrSpy.mockRestore());
@@ -1611,6 +1612,32 @@ describe('GitEfficiencyTracker', () => {
 
       const metrics = tracker.getMetrics();
       expect(metrics.riskIndicators.quickConflictResolutions).toBe(1);
+    });
+  });
+
+  describe('emitMetrics()', () => {
+    it('records the five git outcome gauges to the aggregator', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "one"' }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "two"' }));
+      tracker.recordToolCall(makeRecord({ command: 'git push origin feature' }));
+      tracker.recordToolCall(makeRecord({ command: 'git push --force origin feature' }));
+      tracker.recordToolCall(makeRecord({ command: 'gh pr create --title "Add feature"' }));
+      tracker.recordToolCall(makeRecord({ command: 'gh pr merge 1' }));
+
+      const aggregator = new MetricAggregator();
+      tracker.emitMetrics(aggregator);
+
+      const metrics = aggregator.harvest(60_000);
+      const byName = new Map(metrics.map((m) => [m.name, m]));
+      const sumOf = (name: string) => (byName.get(name)?.value as { sum: number } | undefined)?.sum;
+
+      // pushCount counts the plain push AND the force push (see getMetrics()),
+      // so 2 push-type commands here yield pushCount 2 alongside forcePushes 1.
+      expect(sumOf('ai.git.commit_count')).toBe(2);
+      expect(sumOf('ai.git.push_count')).toBe(2);
+      expect(sumOf('ai.git.force_push_count')).toBe(1);
+      expect(sumOf('ai.git.pr_created')).toBe(1);
+      expect(sumOf('ai.git.pr_merged')).toBe(1);
     });
   });
 });

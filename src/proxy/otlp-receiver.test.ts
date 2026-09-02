@@ -18,6 +18,7 @@ import { createConnection, type AddressInfo } from 'node:net';
 import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
 import { OtlpReceiver } from './otlp-receiver.js';
 import type { OtlpReceiverOptions } from './otlp-receiver.js';
+import { decodeOtlpRequest, encodeOtlpRequest } from './otlp-protobuf.js';
 
 // Captured once at module load, before any test mocks globalThis.fetch, so any
 // describe block can restore the real implementation instead of leaving it
@@ -288,6 +289,314 @@ describe('forward', () => {
     } finally {
       await receiver.stop();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Protobuf payload builders
+//
+// Byte fields use high-bit bytes and 64-bit nanosecond timestamps exceed
+// Number.MAX_SAFE_INTEGER (2^53), so any lossy step in decode → enrich →
+// re-encode shows up as a concrete assertion failure, not a rounding no-op.
+// ---------------------------------------------------------------------------
+
+const TRACE_ID = Buffer.from('0af7651916cd43dd8448eb211c80319c', 'hex');
+const SPAN_ID = Buffer.from('b7ad6b7169203331', 'hex');
+const BIG_NANOS = '1758304182000000123'; // > 2^53
+const BIG_INT64 = '9007199254740993'; // 2^53 + 1, off by one if it ever becomes a JS number
+
+function makeProtoTraceRequest() {
+  return {
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [{ key: 'service.name', value: { stringValue: 'app-under-test' } }],
+        },
+        scopeSpans: [
+          {
+            scope: { name: 'test-lib', version: '1.2.3' },
+            spans: [
+              {
+                traceId: TRACE_ID,
+                spanId: SPAN_ID,
+                name: 'GET /users',
+                kind: 2,
+                startTimeUnixNano: BIG_NANOS,
+                endTimeUnixNano: '1758304182000000987',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function makeProtoMetricsRequest() {
+  return {
+    resourceMetrics: [
+      {
+        resource: {
+          attributes: [{ key: 'service.name', value: { stringValue: 'app-under-test' } }],
+        },
+        scopeMetrics: [
+          {
+            scope: { name: 'test-lib' },
+            metrics: [
+              {
+                name: 'http.requests',
+                unit: '1',
+                gauge: { dataPoints: [{ timeUnixNano: BIG_NANOS, asInt: BIG_INT64 }] },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function makeProtoLogsRequest() {
+  return {
+    resourceLogs: [
+      {
+        resource: {
+          attributes: [{ key: 'service.name', value: { stringValue: 'app-under-test' } }],
+        },
+        scopeLogs: [
+          {
+            scope: { name: 'test-lib' },
+            logRecords: [
+              {
+                timeUnixNano: BIG_NANOS,
+                severityNumber: 9,
+                severityText: 'INFO',
+                body: { stringValue: 'user logged in' },
+                traceId: TRACE_ID,
+                spanId: SPAN_ID,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+type ProtoResourceEntry = {
+  resource?: { attributes?: Array<{ key: string; value: { stringValue?: string } }> };
+};
+
+function resourceAttributes(decoded: Record<string, unknown> | null, key: string): unknown[] {
+  expect(decoded).not.toBeNull();
+  const entries = (decoded as Record<string, unknown>)[key] as ProtoResourceEntry[];
+  return entries[0]?.resource?.attributes ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Protobuf enrichment over HTTP
+// ---------------------------------------------------------------------------
+
+describe('protobuf enrichment over HTTP', () => {
+  const mockFetch = jest
+    .fn<(url: string, init?: RequestInit) => Promise<Response>>()
+    .mockResolvedValue({
+      status: 200,
+      text: async () => '{}',
+    } as Response);
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    (globalThis as { fetch?: unknown }).fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  function forwardedRequest(): { body: Buffer; headers: Record<string, string> } {
+    const init = mockFetch.mock.calls[0]?.[1];
+    expect(init).toBeDefined();
+    return {
+      body: Buffer.from(init?.body as Uint8Array),
+      headers: init?.headers as Record<string, string>,
+    };
+  }
+
+  async function postProtobuf(receiver: OtlpReceiver, path: string, body: Buffer): Promise<void> {
+    await receiver.start();
+    try {
+      const port = getBoundPort(receiver);
+      await httpRequest(port, 'POST', path, body, { 'content-type': 'application/x-protobuf' });
+    } finally {
+      await receiver.stop();
+    }
+  }
+
+  it('enriches a protobuf traces payload and preserves untouched fields', async () => {
+    const receiver = makeReceiver({ forwardEndpoint: 'https://otlp.nr-data.net' });
+    await postProtobuf(
+      receiver,
+      '/v1/traces',
+      encodeOtlpRequest('/v1/traces', makeProtoTraceRequest()),
+    );
+
+    const { body, headers } = forwardedRequest();
+    expect(headers['Content-Type']).toBe('application/x-protobuf');
+
+    const decoded = decodeOtlpRequest('/v1/traces', body);
+    expect(resourceAttributes(decoded, 'resourceSpans')).toContainEqual({
+      key: 'ai.session.id',
+      value: { stringValue: 'test-session' },
+    });
+    expect(resourceAttributes(decoded, 'resourceSpans')).toContainEqual({
+      key: 'service.name',
+      value: { stringValue: 'app-under-test' },
+    });
+
+    const span = (decoded as ReturnType<typeof makeProtoTraceRequest>).resourceSpans[0]
+      ?.scopeSpans[0]?.spans[0];
+    expect(span?.traceId.equals(TRACE_ID)).toBe(true);
+    expect(span?.spanId.equals(SPAN_ID)).toBe(true);
+    expect(span?.startTimeUnixNano).toBe(BIG_NANOS);
+    expect(span?.name).toBe('GET /users');
+  });
+
+  it('enriches a protobuf metrics payload and preserves 64-bit values', async () => {
+    const receiver = makeReceiver({ forwardEndpoint: 'https://otlp.nr-data.net' });
+    await postProtobuf(
+      receiver,
+      '/v1/metrics',
+      encodeOtlpRequest('/v1/metrics', makeProtoMetricsRequest()),
+    );
+
+    const decoded = decodeOtlpRequest('/v1/metrics', forwardedRequest().body);
+    expect(resourceAttributes(decoded, 'resourceMetrics')).toContainEqual({
+      key: 'ai.session.id',
+      value: { stringValue: 'test-session' },
+    });
+
+    const point = (decoded as ReturnType<typeof makeProtoMetricsRequest>).resourceMetrics[0]
+      ?.scopeMetrics[0]?.metrics[0]?.gauge.dataPoints[0];
+    expect(point?.timeUnixNano).toBe(BIG_NANOS);
+    expect(point?.asInt).toBe(BIG_INT64);
+  });
+
+  it('enriches a protobuf logs payload and preserves the record', async () => {
+    const receiver = makeReceiver({ forwardEndpoint: 'https://otlp.nr-data.net' });
+    await postProtobuf(receiver, '/v1/logs', encodeOtlpRequest('/v1/logs', makeProtoLogsRequest()));
+
+    const decoded = decodeOtlpRequest('/v1/logs', forwardedRequest().body);
+    expect(resourceAttributes(decoded, 'resourceLogs')).toContainEqual({
+      key: 'ai.session.id',
+      value: { stringValue: 'test-session' },
+    });
+
+    const record = (decoded as ReturnType<typeof makeProtoLogsRequest>).resourceLogs[0]
+      ?.scopeLogs[0]?.logRecords[0];
+    expect(record?.timeUnixNano).toBe(BIG_NANOS);
+    expect(record?.body.stringValue).toBe('user logged in');
+    expect(record?.traceId.equals(TRACE_ID)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enrichPayload (protobuf)
+// ---------------------------------------------------------------------------
+
+describe('enrichPayload (protobuf)', () => {
+  const PROTOBUF = 'application/x-protobuf';
+
+  it('re-encodes byte-for-byte when every enrichment key is already present', () => {
+    const receiver = makeReceiver({ enrichmentAttributes: { 'ai.session.id': 'test-session' } });
+    const payload = makeProtoTraceRequest();
+    payload.resourceSpans[0]?.resource.attributes.push({
+      key: 'ai.session.id',
+      value: { stringValue: 'test-session' },
+    });
+    const input = encodeOtlpRequest('/v1/traces', payload);
+
+    const output = receiver.enrichPayload(input, '/v1/traces', PROTOBUF);
+
+    // Nothing was injected, so a lossless decode → toObject → fromObject →
+    // encode pipeline must reproduce the input bytes exactly.
+    expect(output.equals(input)).toBe(true);
+  });
+
+  it('enriches a fixture produced by an independent encoder (otlp-transformer)', async () => {
+    const { ProtobufLogsSerializer } = await import('@opentelemetry/otlp-transformer');
+    const { resourceFromAttributes } = await import('@opentelemetry/resources');
+    const { SeverityNumber } = await import('@opentelemetry/api-logs');
+    const record: import('@opentelemetry/sdk-logs').ReadableLogRecord = {
+      hrTime: [1758304182, 123], // 1758304182000000123 ns, exceeds 2^53
+      hrTimeObserved: [1758304182, 456],
+      severityNumber: SeverityNumber.INFO,
+      severityText: 'INFO',
+      body: 'independent encoder record',
+      spanContext: {
+        traceId: TRACE_ID.toString('hex'),
+        spanId: SPAN_ID.toString('hex'),
+        traceFlags: 1,
+      },
+      resource: resourceFromAttributes({ 'service.name': 'independent-app' }),
+      instrumentationScope: { name: 'independent-lib', version: '9.9.9' },
+      attributes: { 'log.source': 'jest' },
+      droppedAttributesCount: 0,
+    };
+    const serialized = ProtobufLogsSerializer.serializeRequest([record]);
+    expect(serialized).toBeDefined();
+    const fixture = Buffer.from(serialized as Uint8Array);
+
+    const receiver = makeReceiver({ enrichmentAttributes: { 'ai.session.id': 'sess-xv' } });
+    const decoded = decodeOtlpRequest(
+      '/v1/logs',
+      receiver.enrichPayload(fixture, '/v1/logs', PROTOBUF),
+    );
+
+    expect(resourceAttributes(decoded, 'resourceLogs')).toContainEqual({
+      key: 'ai.session.id',
+      value: { stringValue: 'sess-xv' },
+    });
+    expect(resourceAttributes(decoded, 'resourceLogs')).toContainEqual({
+      key: 'service.name',
+      value: { stringValue: 'independent-app' },
+    });
+    const log = (decoded as ReturnType<typeof makeProtoLogsRequest>).resourceLogs[0]?.scopeLogs[0]
+      ?.logRecords[0];
+    expect(log?.timeUnixNano).toBe(BIG_NANOS);
+    expect(log?.body.stringValue).toBe('independent encoder record');
+    expect(log?.severityNumber).toBe(9);
+    expect(log?.traceId.equals(TRACE_ID)).toBe(true);
+    expect(log?.spanId.equals(SPAN_ID)).toBe(true);
+  });
+
+  it('creates the resource envelope when a protobuf payload has none', () => {
+    const receiver = makeReceiver({ enrichmentAttributes: { 'ai.session.id': 'sess-123' } });
+    const input = encodeOtlpRequest('/v1/traces', {
+      resourceSpans: [{ scopeSpans: [{ spans: [{ traceId: TRACE_ID, name: 'orphan' }] }] }],
+    });
+
+    const decoded = decodeOtlpRequest(
+      '/v1/traces',
+      receiver.enrichPayload(input, '/v1/traces', PROTOBUF),
+    );
+
+    expect(resourceAttributes(decoded, 'resourceSpans')).toContainEqual({
+      key: 'ai.session.id',
+      value: { stringValue: 'sess-123' },
+    });
+  });
+
+  it('forwards malformed protobuf bytes unmodified', () => {
+    const receiver = makeReceiver();
+    const malformed = Buffer.from([0x08]); // field 1 varint tag with no value
+    expect(receiver.enrichPayload(malformed, '/v1/traces', PROTOBUF)).toBe(malformed);
+  });
+
+  it('forwards protobuf on an unknown /v1/ path unmodified', () => {
+    const receiver = makeReceiver();
+    const body = encodeOtlpRequest('/v1/traces', makeProtoTraceRequest());
+    expect(receiver.enrichPayload(body, '/v1/profiles', PROTOBUF)).toBe(body);
   });
 });
 

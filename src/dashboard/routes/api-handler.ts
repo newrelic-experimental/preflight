@@ -5,6 +5,7 @@ import { normalizeDeveloperName, redactSensitive } from '../../config.js';
 import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
+  type SessionNameSource,
 } from '../../hooks/session-resolver.js';
 import {
   localDateKey,
@@ -14,6 +15,7 @@ import {
 } from '../../lib/date.js';
 import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
+import type { ApiFailureMetrics } from '../../metrics/api-failure-tracker.js';
 import type { BudgetStatus } from '../../metrics/budget-tracker.js';
 import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
@@ -43,7 +45,7 @@ import {
   ZERO_QUALITY_PROXY_COUNTS,
 } from '../../metrics/quality-proxy-tracker.js';
 import type { Recommendation } from '../../metrics/recommendation-engine.js';
-import type { RetryDetectorMetrics } from '../../metrics/retry-detector.js';
+import type { RetryDetectorMetrics, RetrySessionBreakdown } from '../../metrics/retry-detector.js';
 import type {
   ToolSelectionMetrics,
   ToolSelectionSummary,
@@ -275,9 +277,34 @@ function toLiveWorkflowDetail(live: LiveWorkflowRunDetail): {
   return { run, agents, topology: live.topology ?? null };
 }
 
+/**
+ * Persisted-summary fields that must never reach the dashboard HTTP surface.
+ * `sessionIntent` (the first user prompt) is SENSITIVE content — it is captured
+ * only under recordContent, redacted, and persisted for the MCP tools + the
+ * 0o600 on-disk summary, but the HTTP surface is strictly broader than that
+ * file, so every route that returns a persisted summary must drop it. Keep this
+ * the single place the exclusion is declared.
+ */
+const DASHBOARD_OMITTED_SUMMARY_FIELDS: ReadonlySet<string> = new Set(['sessionIntent']);
+
+/**
+ * Shallow-copy a persisted session summary for an HTTP response, dropping every
+ * field in `DASHBOARD_OMITTED_SUMMARY_FIELDS`. Route all summary-returning
+ * dashboard endpoints through this so a content field can never leak by being
+ * spread verbatim.
+ */
+function toDashboardSummary(summary: FullSessionSummary): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(summary)) {
+    if (!DASHBOARD_OMITTED_SUMMARY_FIELDS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
 interface LiveSessionMetrics {
   readonly sessionId: string;
   readonly sessionName: string | null;
+  readonly sessionNameSource: SessionNameSource | null;
   readonly sessionStartTime: number;
   readonly sessionDurationMs: number;
   readonly toolCallCount: number;
@@ -424,6 +451,7 @@ export interface ApiHandlerDeps {
     getTotalAntiPatternWaste: () => number;
   };
   readonly retryDetector?: { getMetrics: () => RetryDetectorMetrics };
+  readonly apiFailureTracker?: { getMetrics: () => ApiFailureMetrics };
   readonly instructionDriftTracker?: { getMetrics: () => InstructionDriftMetrics };
   readonly decisionTracker?: { getMetrics: (sessionId?: string) => DecisionTreeMetrics };
   readonly turnCostAttributor?: { getMetrics: (sessionId?: string) => CostAttributionMetrics };
@@ -523,6 +551,10 @@ export interface ApiHandlerDeps {
     // default to the most-recently-active session. Older fakes / mocks that
     // don't implement it still work — `?.` falls back to undefined.
     getLastActivity?: (sessionId: string) => number | null;
+    // Optional for the same reason: lets the session-list/detail surfaces
+    // report which source produced the name (see SessionNameSource). Callers
+    // use `getSessionNameSource?.(id) ?? null` so partial mocks fall back safely.
+    getSessionNameSource?: (sessionId: string) => SessionNameSource | null;
   };
   readonly concurrencyTracker?: {
     getConcurrentCount: () => number;
@@ -563,6 +595,24 @@ function unavailable(res: ServerResponse, what: string): void {
     'content-length': String(Buffer.byteLength(payload)),
   });
   res.end(payload);
+}
+
+// Formats RetryDetector's pre-aggregated by-session breakdown (a --local
+// dashboard process's single RetryDetector drains every session's buffer,
+// see ThrashingAlert's sessionId doc in retry-detector.ts) for the JSON API
+// shape this route has always returned. RetryDetector itself owns grouping
+// and the 'unknown' sentinel for sessionless alerts now — this is a thin
+// shape adapter, not a groupBy.
+function retryAlertsBySession(
+  bySession: Readonly<Record<string, RetrySessionBreakdown>> | undefined,
+): Array<{ session_id: string; tokens_wasted: number; alert_count: number }> {
+  return Object.entries(bySession ?? {})
+    .map(([session_id, v]) => ({
+      session_id,
+      tokens_wasted: v.tokensWasted,
+      alert_count: v.alertCount,
+    }))
+    .sort((a, b) => b.tokens_wasted - a.tokens_wasted);
 }
 
 const MAX_BODY_BYTES = 64 * 1024; // 64 KB — generous for any settings payload
@@ -1058,12 +1108,21 @@ export function createApiHandler(
     // no tasks have been scored yet (or when the scorer wasn't wired in).
     const efficiencyScore = deps.efficiencyScorer?.getSessionAverage()?.score ?? null;
     const liveSessions = computeCrossProcessLiveSessionIds(deps);
-    jsonOk(res, { ...deps.sessionTracker.getMetrics(), efficiencyScore, liveSessions });
+    // getMetrics() returns the full SessionMetrics at runtime (LiveSessionMetrics
+    // is a curated subset type). session_intent (the first prompt) is SENSITIVE
+    // content and is deliberately NOT exposed on the dashboard HTTP surface — it
+    // lives only on the MCP tool responses and persisted summaries (both
+    // redacted). Strip it from the shallow copy before spreading it into the
+    // response rather than emitting the whole metrics object verbatim.
+    const { sessionIntent, ...metricsForResponse } =
+      deps.sessionTracker.getMetrics() as LiveSessionMetrics & { sessionIntent?: unknown };
+    void sessionIntent;
+    jsonOk(res, { ...metricsForResponse, efficiencyScore, liveSessions });
   });
 
   routes.set('GET /api/session/today', (_req, res) => {
     if (!deps.sessionStore) return unavailable(res, 'sessionStore');
-    jsonOk(res, deps.sessionStore.loadTodaySessions());
+    jsonOk(res, deps.sessionStore.loadTodaySessions().map(toDashboardSummary));
   });
 
   routes.set('GET /api/sessions', (req, res) => {
@@ -1107,6 +1166,7 @@ export function createApiHandler(
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
+          sessionNameSource: live.sessionNameSource ?? null,
           startTime: live.sessionStartTime,
           durationMs: live.sessionDurationMs,
           toolCallCount: live.toolCallCount,
@@ -1153,6 +1213,7 @@ export function createApiHandler(
           sliced.push({
             sessionId: id,
             sessionName: deps.liveSessionRegistry.getSessionName(id),
+            sessionNameSource: deps.liveSessionRegistry.getSessionNameSource?.(id) ?? null,
             startTime: sessionStart,
             durationMs: lastActivityTs != null ? Math.max(0, lastActivityTs - sessionStart) : 0,
             toolCallCount: stats?.count ?? 0,
@@ -1171,7 +1232,9 @@ export function createApiHandler(
       const o = s as Record<string, unknown>;
       const out: Record<string, unknown> = {};
       for (const k of Object.keys(o)) {
-        if (!HEAVY_FIELDS.has(k)) out[k] = o[k];
+        // Drop heavy fields the list view never renders AND sensitive content
+        // fields (session_intent) that must not reach the HTTP surface.
+        if (!HEAVY_FIELDS.has(k) && !DASHBOARD_OMITTED_SUMMARY_FIELDS.has(k)) out[k] = o[k];
       }
       return out;
     });
@@ -1219,6 +1282,7 @@ export function createApiHandler(
       return {
         sessionId: id,
         sessionName: deps.liveSessionRegistry?.getSessionName(id) ?? null,
+        sessionNameSource: deps.liveSessionRegistry?.getSessionNameSource?.(id) ?? null,
         startTime: stats?.firstTs ?? lastActivity,
         lastActivity,
       };
@@ -1766,7 +1830,16 @@ export function createApiHandler(
 
   routes.set('GET /api/retry-alerts', (_req, res) => {
     if (!deps.retryDetector) return unavailable(res, 'retryDetector');
-    jsonOk(res, deps.retryDetector.getMetrics());
+    // Destructure out the raw bySession map — by_session below is its
+    // formatted replacement, so leaving both in the response would just
+    // duplicate the same data under two different shapes/cases.
+    const { bySession, ...metrics } = deps.retryDetector.getMetrics();
+    jsonOk(res, { ...metrics, by_session: retryAlertsBySession(bySession) });
+  });
+
+  routes.set('GET /api/api-failures', (_req, res) => {
+    if (!deps.apiFailureTracker) return unavailable(res, 'apiFailureTracker');
+    jsonOk(res, deps.apiFailureTracker.getMetrics());
   });
 
   routes.set('GET /api/instruction-drift', (_req, res) => {
@@ -1829,6 +1902,10 @@ export function createApiHandler(
       retry_tokens_wasted: retryTokensWasted,
       anti_pattern_tokens_wasted: antiPatternTokensWasted,
       breakdown,
+      // Anti-pattern waste has no per-session breakdown yet — AntiPattern
+      // objects don't carry a sessionId (see ThrashingAlert for the retry
+      // side, which now does). This only ever attributes the retry portion.
+      by_session: retryAlertsBySession(deps.retryDetector.getMetrics().bySession),
       status,
     });
   });
@@ -2871,7 +2948,10 @@ export function createApiHandler(
           const quality = combineQualityProxyRawCounts([
             session.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS,
           ]);
-          const responseBody: Record<string, unknown> = { ...session };
+          // toDashboardSummary drops sensitive content fields (session_intent)
+          // that must not reach the HTTP surface; the detail view augments the
+          // remaining fields below.
+          const responseBody: Record<string, unknown> = toDashboardSummary(session);
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
           // The persisted shape's key is `toolSelectionMetrics`, but
           // Sessions.tsx's SessionTimeline reads `toolSelectionScore` —
@@ -2897,6 +2977,13 @@ export function createApiHandler(
             const costMetrics = deps.costTracker?.getMetrics();
             const costUsd = costMetrics?.sessionTotalCostUsd ?? null;
             const model = costMetrics?.model ?? null;
+            // Per-model breakdown so the UI can show every model used this
+            // session, not just the last one seen (`model` above collapses a
+            // mid-session model switch to whichever model was current at
+            // read time). Persisted sessions already carry this via
+            // FullSessionSummary.modelBreakdown — mirror it here so the live
+            // branch renders the same way.
+            const modelBreakdown = deps.modelUsageTracker?.getRawBreakdown();
             const antiPatterns: PersistedAntiPattern[] = deps.antiPatternDetector
               ? toPersistedAntiPatterns(deps.antiPatternDetector.getCurrentPatterns())
               : [];
@@ -2907,11 +2994,13 @@ export function createApiHandler(
             jsonOk(res, {
               sessionId: live.sessionId,
               sessionName: live.sessionName ?? null,
+              sessionNameSource: live.sessionNameSource ?? null,
               startTime: live.sessionStartTime,
               durationMs: live.sessionDurationMs,
               toolCallCount: live.toolCallCount,
               estimatedCostUsd: costUsd,
               model,
+              modelBreakdown,
               outcome: 'in progress',
               toolBreakdown: live.toolCallCountByTool,
               antiPatterns,
@@ -2984,6 +3073,7 @@ export function createApiHandler(
           jsonOk(res, {
             sessionId,
             sessionName: deps.liveSessionRegistry?.getSessionName(sessionId) ?? null,
+            sessionNameSource: deps.liveSessionRegistry?.getSessionNameSource?.(sessionId) ?? null,
             startTime,
             durationMs: lastTs - startTime,
             toolCallCount: records.length,

@@ -23,7 +23,7 @@ import {
 import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
-import { isSyntheticSessionId } from '../hooks/session-resolver.js';
+import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
 import type { SessionSummary, ReplayTimelineEntry } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -87,6 +87,14 @@ export function toPersistedAntiPatterns(patterns: readonly AntiPattern[]): Persi
 
 export interface FullSessionSummary extends SessionSummary {
   readonly sessionName: string | null;
+  /** Which source produced `sessionName` (see SessionNameSource), or null. */
+  readonly sessionNameSource: SessionNameSource | null;
+  /**
+   * The session's originating intent (first user prompt), redacted, or null.
+   * SENSITIVE content: only ever non-null when recordContent was enabled at
+   * capture time (force-disabled under highSecurity). See SessionMetrics.
+   */
+  readonly sessionIntent: string | null;
   readonly repoName: string | null;
   readonly model: string | null;
   readonly toolBreakdown: Record<string, number>;
@@ -341,6 +349,17 @@ export function mergeSummaries(
     durationMs: Math.max(0, endTime - startTime),
     toolCallCount: maxNum(existing.toolCallCount, incoming.toolCallCount),
     sessionName: incoming.sessionName ?? existing.sessionName,
+    // Tie the source to whichever name won above so a name/source desync can't
+    // arise (incoming spreads a null source alongside a null name). The
+    // in-process tracker already enforces the no-downgrade invariant on
+    // `incoming`, so taking incoming's name+source when present is safe.
+    sessionNameSource: incoming.sessionName
+      ? incoming.sessionNameSource
+      : existing.sessionNameSource,
+    // Never clobber a previously-captured intent with a later intent-less write
+    // (e.g. a checkpoint saved before the name/intent was resolved, or a run
+    // with recordContent off).
+    sessionIntent: incoming.sessionIntent ?? existing.sessionIntent,
     repoName: incoming.repoName ?? existing.repoName,
     model: incoming.model ?? existing.model,
     platform: incoming.platform ?? existing.platform,
@@ -768,6 +787,14 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   return {
     sessionId: sessionMetrics.sessionId,
     sessionName: sessionMetrics.sessionName ? redactSensitive(sessionMetrics.sessionName) : null,
+    // Source is an enum label (not user content) — persisted unredacted.
+    sessionNameSource: sessionMetrics.sessionNameSource ?? null,
+    // Intent is SENSITIVE content; the tracker only holds a value when
+    // recordContent was on, and it is already redacted there. Redact again
+    // (idempotent) so persistence is safe regardless of caller.
+    sessionIntent: sessionMetrics.sessionIntent
+      ? redactSensitive(sessionMetrics.sessionIntent)
+      : null,
     repoName: sources.repoName ? redactSensitive(sources.repoName) : null,
     startTime: sessionMetrics.sessionStartTime,
     endTime: now,
@@ -866,6 +893,8 @@ function formatDate(date: Date): string {
 interface SerializedFullSessionSummary {
   readonly sessionId?: unknown;
   readonly sessionName?: unknown;
+  readonly sessionNameSource?: unknown;
+  readonly sessionIntent?: unknown;
   readonly repoName?: unknown;
   readonly startTime?: unknown;
   readonly endTime?: unknown;
@@ -1098,6 +1127,14 @@ export function deserializeFullSessionSummary(
     sessionId:
       typeof obj.sessionId === 'string' && obj.sessionId.length > 0 ? obj.sessionId : 'unknown',
     sessionName: typeof obj.sessionName === 'string' ? obj.sessionName : null,
+    sessionNameSource:
+      obj.sessionNameSource === 'user' ||
+      obj.sessionNameSource === 'ai-title' ||
+      obj.sessionNameSource === 'auto' ||
+      obj.sessionNameSource === 'cwd'
+        ? obj.sessionNameSource
+        : null,
+    sessionIntent: typeof obj.sessionIntent === 'string' ? obj.sessionIntent : null,
     repoName: typeof obj.repoName === 'string' ? obj.repoName : null,
     startTime: typeof obj.startTime === 'number' ? obj.startTime : 0,
     endTime: typeof obj.endTime === 'number' ? obj.endTime : 0,

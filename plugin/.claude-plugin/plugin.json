@@ -1,0 +1,15 @@
+{
+  "name": "newrelic-preflight",
+  "displayName": "Preflight",
+  "version": "1.30.0",
+  "description": "Observability for AI coding assistants — tool-call capture, cost tracking, and efficiency scoring, powered by New Relic.",
+  "author": {
+    "name": "New Relic",
+    "url": "https://github.com/newrelic-experimental"
+  },
+  "homepage": "https://github.com/newrelic-experimental/preflight",
+  "repository": "https://github.com/newrelic-experimental/preflight",
+  "license": "Apache-2.0",
+  "keywords": ["observability", "new-relic", "cost-tracking", "mcp", "hooks", "efficiency"],
+  "mcpServers": "./.mcp.json"
+}

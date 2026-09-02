@@ -29,7 +29,7 @@ import { homedir } from 'node:os';
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
-import { entryContainsNrObserve, areHooksInstalled } from './install-helper.js';
+import { entryContainsNrObserve } from './install-helper.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 
@@ -396,6 +396,28 @@ export interface HookCollisionFixResult {
  * caller just wrote that file this run (so this function doesn't need to
  * re-read a file its own caller already knows the state of).
  */
+/**
+ * Whether a hooks file has NR-pattern PreToolUse AND PostToolUse entries —
+ * the two event types VS Code actually double-fires when it reads hooks from
+ * both a Claude-format file and a Copilot-format file at once. Deliberately
+ * narrower than install-helper.ts's own `areHooksInstalled` (which also
+ * requires PermissionRequest/PermissionDenied, added for Claude's own
+ * upgrade-detection): Copilot's hooks file never defines those two event
+ * types at all (see generateCopilotHooksFile), so reusing that broader check
+ * here would make this fix permanently unable to detect Copilot hooks as
+ * present, and would also stop detecting older/partial Claude installs that
+ * still double-fire.
+ */
+function hasNrToolUseHooks(content: Record<string, unknown>): boolean {
+  const hooks = content.hooks;
+  if (typeof hooks !== 'object' || hooks === null) return false;
+  const h = hooks as Record<string, unknown>;
+  return (['PreToolUse', 'PostToolUse'] as const).every((hookType) => {
+    const arr = h[hookType];
+    return Array.isArray(arr) && arr.some(entryContainsNrObserve);
+  });
+}
+
 export function applyHookCollisionFix(opts: {
   claudeSettingsPath: string;
   copilotHooksPath: string;
@@ -413,7 +435,7 @@ export function applyHookCollisionFix(opts: {
     opts.claudeHooksJustInstalled ??
     (() => {
       try {
-        return areHooksInstalled(readJsonFileStrict(opts.claudeSettingsPath));
+        return hasNrToolUseHooks(readJsonFileStrict(opts.claudeSettingsPath));
       } catch {
         return false;
       }
@@ -424,7 +446,7 @@ export function applyHookCollisionFix(opts: {
     opts.copilotHooksJustInstalled ??
     (() => {
       try {
-        return areHooksInstalled(readJsonFileStrict(opts.copilotHooksPath));
+        return hasNrToolUseHooks(readJsonFileStrict(opts.copilotHooksPath));
       } catch {
         return false;
       }

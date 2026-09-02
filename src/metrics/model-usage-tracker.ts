@@ -17,11 +17,35 @@ export interface ModelStats extends ModelBreakdownEntry {
   readonly avgOutputTokensPerRequest: number | null;
 }
 
-export interface ModelUsageMetrics {
+/**
+ * A discrete model switch, from Claude Code's PostModelSwitch hook. `source`
+ * is `'command'`/`'picker'`/`'sdk'` for a deliberate switch, `'auto'` for a
+ * persistent automatic change, or `'resume'` for the model restored on
+ * session resume — see `ModelSwitchHookEvent`'s doc comment (storage/types.ts)
+ * for what this does and doesn't cover.
+ */
+export interface ModelSwitchEvent {
+  readonly timestamp: number;
+  readonly fromModel: string;
+  readonly toModel: string;
+  readonly source: string;
+  readonly requestedModel: string | null;
+}
+
+interface DerivedModelStats {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
   readonly mostEfficientModel: string | null;
   readonly totalModelsUsed: number;
+}
+
+export interface ModelUsageMetrics extends DerivedModelStats {
+  /** Total PostModelSwitch events seen this process/session. */
+  readonly switchCount: number;
+  /** Subset of switchCount where source === 'auto' (a persistent automatic change, not a one-turn fallback). */
+  readonly automaticSwitchCount: number;
+  /** Most recent switches, newest last, bounded to MAX_SWITCH_EVENTS. */
+  readonly recentSwitches: readonly ModelSwitchEvent[];
 }
 
 interface MutableModelStats {
@@ -42,7 +66,7 @@ import type { Resettable } from './tracker-contracts.js';
 // volumes.
 function deriveModelUsageMetrics(
   byModelRaw: Readonly<Record<string, ModelBreakdownEntry>>,
-): ModelUsageMetrics {
+): DerivedModelStats {
   const byModel: Record<string, ModelStats> = {};
   let mostUsedModel: string | null = null;
   let maxRequests = 0;
@@ -95,8 +119,11 @@ function deriveModelUsageMetrics(
   };
 }
 
+const MAX_SWITCH_EVENTS = 100;
+
 export class ModelUsageTracker implements Resettable {
   private byModel = new Map<string, MutableModelStats>();
+  private switches: ModelSwitchEvent[] = [];
 
   recordUsage(model: string, inputTokens: number, outputTokens: number, costUsd: number): void {
     let stats = this.byModel.get(model);
@@ -140,6 +167,30 @@ export class ModelUsageTracker implements Resettable {
     }
   }
 
+  /**
+   * Records a discrete model switch from Claude Code's PostModelSwitch hook.
+   * Bounded FIFO — oldest dropped past MAX_SWITCH_EVENTS, mirroring
+   * ApiFailureTracker's event-list pattern.
+   */
+  recordModelSwitch(event: {
+    fromModel: string;
+    toModel: string;
+    source?: string;
+    requestedModel?: string | null;
+    timestampMs?: number;
+  }): void {
+    this.switches.push({
+      timestamp: event.timestampMs ?? Date.now(),
+      fromModel: event.fromModel,
+      toModel: event.toModel,
+      source: event.source ?? 'unknown',
+      requestedModel: event.requestedModel ?? null,
+    });
+    if (this.switches.length > MAX_SWITCH_EVENTS) {
+      this.switches.shift();
+    }
+  }
+
   // Raw per-model counters only — no derived ratios. This is the shape
   // persisted onto FullSessionSummary.modelBreakdown (session-store.ts) so a
   // session file never stores a stale derived ratio; ratios are always
@@ -153,7 +204,12 @@ export class ModelUsageTracker implements Resettable {
   }
 
   getMetrics(): ModelUsageMetrics {
-    return deriveModelUsageMetrics(this.getRawBreakdown());
+    return {
+      ...deriveModelUsageMetrics(this.getRawBreakdown()),
+      switchCount: this.switches.length,
+      automaticSwitchCount: this.switches.filter((s) => s.source === 'auto').length,
+      recentSwitches: [...this.switches],
+    };
   }
 
   // Combines raw per-model counters from multiple sources (e.g. this
@@ -180,10 +236,19 @@ export class ModelUsageTracker implements Resettable {
         summed[model] = existing;
       }
     }
-    return deriveModelUsageMetrics(summed);
+    // Switch history is this process's own live in-memory state, not part of
+    // any persisted per-model breakdown — nothing to combine, so these
+    // fields are always empty here regardless of input.
+    return {
+      ...deriveModelUsageMetrics(summed),
+      switchCount: 0,
+      automaticSwitchCount: 0,
+      recentSwitches: [],
+    };
   }
 
   reset(_sessionId: string): void {
     this.byModel.clear();
+    this.switches = [];
   }
 }

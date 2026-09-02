@@ -171,6 +171,19 @@ export default {
   // Env: NR_AI_OTLP_FORWARD_HEADERS (comma-separated key=value pairs)
   otlpForwardHeaders: { 'api-key': 'YOUR_LICENSE_KEY_NRAL' },
 
+  // ── Companion mode (running alongside Claude Code's built-in OTel) ─────────
+
+  // Set this when your org also enables Claude Code's built-in OTel export —
+  // both paths share the same session_id (Claude Code's session.id), so a
+  // blended "org AI spend" dashboard would otherwise double the true cost.
+  // When true, Preflight suppresses its own ai.cost.* gauges (cost, tokens,
+  // cache, cost per line of code) and tags cost-bearing Claude Code events
+  // with cost_authority: 'external' instead of dropping them, so the two
+  // sources can still be reconciled. See docs/ADVANCED.md.
+  // Env: NR_AI_COMPANION_MODE  (true/false)
+  // Default: false
+  companionMode: false,
+
   // ── NR User API key (for team queries and deploying dashboards/alerts) ───────
 
   // User API key (NRAK-...). Used for team summary queries and deploying dashboards/alerts.
@@ -192,15 +205,16 @@ export default {
   //
   // `mode` controls what destinations receive your AI-coding telemetry:
   //
-  //   'cloud' — (default) ship every event to New Relic. Existing behaviour.
+  //   'cloud' — ship every event to New Relic. Existing behaviour.
   //             Requires `licenseKey` and `accountId`.
-  //   'local' — keep all data on your machine. The MCP server boots an
+  //   'local' — (default) keep all data on your machine. The MCP server boots an
   //             embedded HTTP dashboard at http://127.0.0.1:7777 and does
   //             NOT send anything to NR. `licenseKey` is optional.
   //   'both'  — do both. Useful as a transition aid.
   //
   // Env: NR_AI_MODE
-  // Default: "cloud"
+  // Default: "local" — a licenseKey with no explicit mode is rejected at
+  // startup (opt-in export), not silently treated as cloud.
   // mode: 'cloud',
   //
   // dashboard: {

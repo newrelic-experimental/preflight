@@ -28,9 +28,12 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js'
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import type { ThrashingAlert } from '../metrics/retry-detector.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
+import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
+import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
@@ -101,6 +104,10 @@ export interface NrIngestOptions {
   efficiencyScorer?: EfficiencyScorer;
   /** Feedback collector for emitting ai.feedback.count metrics. */
   feedbackCollector?: FeedbackCollector;
+  /** API failure tracker for emitting ai.api.* metrics. */
+  apiFailureTracker?: ApiFailureTracker;
+  /** Git efficiency tracker for emitting ai.git.* metrics. */
+  gitEfficiencyTracker?: GitEfficiencyTracker;
   teamId?: string | null;
   projectId?: string | null;
   orgId?: string | null;
@@ -121,6 +128,15 @@ export interface NrIngestOptions {
    * reporting `duration_ms≈604800000` with file-activity counts stuck at 0).
    */
   trackSessionGauges?: boolean;
+  /**
+   * When true, `emitSessionGauges()` suppresses the `ai.cost.*` gauge family
+   * and cost-bearing Claude-Code-sourced events are tagged
+   * `cost_authority: 'external'` instead of dropped. Set this when the same
+   * org also enables Claude Code's built-in OTel export, so a blended
+   * "org AI spend" dashboard doesn't double the true cost (the two exports
+   * share `session_id` === OTel's `session.id`). Default false.
+   */
+  companionMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +158,8 @@ const STANDARD_KEYS = new Set([
   'outputSizeBytes',
   'inputHash',
   'platform',
+  'agentId',
+  'agentType',
 ]);
 
 /**
@@ -186,6 +204,7 @@ export function toolCallToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiToolCall',
+    event_version: 1,
     timestamp: record.timestamp,
     tool: record.toolName,
     tool_use_id: record.toolUseId,
@@ -208,6 +227,8 @@ export function toolCallToNrEvent(
   if (record.inputSizeBytes != null) event.input_size_bytes = record.inputSizeBytes;
   if (record.outputSizeBytes != null) event.output_size_bytes = record.outputSizeBytes;
   if (record.inputHash != null) event.input_hash = record.inputHash;
+  if (typeof record.agentId === 'string') event.agent_id = record.agentId;
+  if (typeof record.agentType === 'string') event.agent_type = record.agentType;
 
   // Platform attribution — defaults to 'claude-code' for backward compatibility
   event.platform = typeof record.platform === 'string' ? record.platform : 'claude-code';
@@ -254,6 +275,7 @@ export function proxyToolCallToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiMcpToolCall',
+    event_version: 1,
     timestamp: record.timestamp,
     server: record.serverName,
     tool: record.toolName,
@@ -297,6 +319,7 @@ export function proxyRequestToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiProxyRequest',
+    event_version: 1,
     timestamp: record.timestamp,
     server: record.serverName,
     method: record.method,
@@ -332,6 +355,8 @@ export function codingTaskToNrEvent(
     teamId?: string | null;
     projectId?: string | null;
     orgId?: string | null;
+    /** See `NrIngestOptions.companionMode`. */
+    companionMode?: boolean;
   },
 ): NrEventData {
   const firstRecord = task.toolCalls[0];
@@ -339,6 +364,7 @@ export function codingTaskToNrEvent(
 
   const event: NrEventData = {
     eventType: 'AiCodingTask',
+    event_version: 1,
     timestamp: task.endTime,
     task_id: task.taskId,
     developer: attrs.developer,
@@ -374,6 +400,12 @@ export function codingTaskToNrEvent(
   // firstRecord?.sessionId fallback was only meaningful when the MCP fabricated
   // its own UUID and lost cross-reference with the tool-call records.
   if (attrs.sessionTraceId != null) event.session_id = attrs.sessionTraceId;
+
+  // Only claude-code-platform cost has an OTel twin to reconcile against —
+  // other platforms' cost fields have no double-count to flag.
+  if (attrs.companionMode && platform === 'claude-code') {
+    event.cost_authority = 'external';
+  }
 
   return event;
 }
@@ -470,6 +502,8 @@ export function subagentTurnToNrEvent(
     teamId?: string | null;
     projectId?: string | null;
     orgId?: string | null;
+    /** See `NrIngestOptions.companionMode`. */
+    companionMode?: boolean;
   },
 ): NrEventData {
   const event: NrEventData = {
@@ -499,6 +533,9 @@ export function subagentTurnToNrEvent(
   if (attrs.teamId) event.team_id = attrs.teamId;
   if (attrs.projectId) event.project_id = attrs.projectId;
   if (attrs.orgId) event.org_id = attrs.orgId;
+  // Subagent turns are always derived from a Claude Code transcript — no
+  // platform check needed, unlike codingTaskToNrEvent.
+  if (attrs.companionMode) event.cost_authority = 'external';
   return event;
 }
 
@@ -516,6 +553,8 @@ export function subagentTokenEventToNrEvent(
     teamId?: string | null;
     projectId?: string | null;
     orgId?: string | null;
+    /** See `NrIngestOptions.companionMode`. */
+    companionMode?: boolean;
   },
 ): NrEventData {
   const ev: NrEventData = {
@@ -538,6 +577,9 @@ export function subagentTokenEventToNrEvent(
   if (attrs.teamId) ev.team_id = attrs.teamId;
   if (attrs.projectId) ev.project_id = attrs.projectId;
   if (attrs.orgId) ev.org_id = attrs.orgId;
+  // Subagent token events are always derived from a Claude Code transcript —
+  // no platform check needed, unlike codingTaskToNrEvent.
+  if (attrs.companionMode) ev.cost_authority = 'external';
   return ev;
 }
 
@@ -549,6 +591,8 @@ export function scriptWorkflowRunToNrEvent(
     teamId?: string | null;
     projectId?: string | null;
     orgId?: string | null;
+    /** See `NrIngestOptions.companionMode`. */
+    companionMode?: boolean;
   },
 ): NrEventData {
   const event: NrEventData = {
@@ -586,6 +630,9 @@ export function scriptWorkflowRunToNrEvent(
   if (attrs.teamId) event.team_id = attrs.teamId;
   if (attrs.projectId) event.project_id = attrs.projectId;
   if (attrs.orgId) event.org_id = attrs.orgId;
+  // Script-driven workflow runs are always derived from a Claude Code
+  // transcript — no platform check needed, unlike codingTaskToNrEvent.
+  if (attrs.companionMode) event.cost_authority = 'external';
   return event;
 }
 
@@ -645,6 +692,8 @@ export function workflowRunToNrEvent(
     teamId?: string | null;
     projectId?: string | null;
     orgId?: string | null;
+    /** See `NrIngestOptions.companionMode`. */
+    companionMode?: boolean;
   },
 ): NrEventData {
   const event: NrEventData = {
@@ -690,6 +739,10 @@ export function workflowRunToNrEvent(
   const resolvedSessionId = attrs.sessionTraceId ?? metrics.session_id;
   if (resolvedSessionId) event.session_id = resolvedSessionId;
 
+  // Agent-tool workflow runs are always derived from a Claude Code
+  // transcript — no platform check needed, unlike codingTaskToNrEvent.
+  if (attrs.companionMode) event.cost_authority = 'external';
+
   return event;
 }
 
@@ -715,6 +768,7 @@ export function antiPatternToNrEvent(
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiAntiPattern',
+    event_version: 1,
     timestamp: attrs.detectedAt ?? Date.now(),
     // Field name is intentionally 'type' (not 'patternType') — used by all NRQL queries and dashboards. Do not rename.
     type: pattern.type,
@@ -741,6 +795,50 @@ export function antiPatternToNrEvent(
   if (pattern.repeatCount != null) event.repeat_count = pattern.repeatCount;
   if (pattern.editCount != null) event.edit_count = pattern.editCount;
   if (pattern.agentCount != null) event.agent_count = pattern.agentCount;
+
+  return event;
+}
+
+/**
+ * Convert a ThrashingAlert into a flat NR event object.
+ *
+ * session_id comes from `attrs.sessionId` (the ingesting process's resolved
+ * sessionTraceId) — the same single-source-of-truth convention every other
+ * ingest*() method uses (see ingestAntiPattern, ingestToolCall). This is
+ * deliberately NOT `alert.sessionId`: that field exists for in-process
+ * attribution (the --local dashboard's per-session breakdown, which drains
+ * every session's buffer into one RetryDetector) and is a different concern
+ * from "which process is reporting this event to NR".
+ */
+export function retryAlertToNrEvent(
+  alert: ThrashingAlert,
+  attrs: {
+    developer: string;
+    appName: string;
+    sessionId?: string;
+    platform?: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+  },
+): NrEventData {
+  const event: NrEventData = {
+    eventType: 'AiRetryAlert',
+    timestamp: alert.timestamp,
+    tool_name: alert.toolName,
+    occurrences: alert.occurrences,
+    window_size: alert.windowSize,
+    similarity: alert.similarity,
+    tokens_wasted: alert.tokensWastedEstimate,
+    developer: attrs.developer,
+    app_name: attrs.appName,
+    platform: attrs.platform ?? 'claude-code',
+  };
+
+  if (attrs.teamId) event.team_id = attrs.teamId;
+  if (attrs.projectId) event.project_id = attrs.projectId;
+  if (attrs.orgId) event.org_id = attrs.orgId;
+  if (attrs.sessionId != null) event.session_id = attrs.sessionId;
 
   return event;
 }
@@ -803,6 +901,8 @@ export class NrIngestManager {
   private readonly costTracker?: CostTracker;
   private readonly efficiencyScorer?: EfficiencyScorer;
   private readonly feedbackCollector?: FeedbackCollector;
+  private readonly apiFailureTracker?: ApiFailureTracker;
+  private readonly gitEfficiencyTracker?: GitEfficiencyTracker;
   readonly auditTrail: AuditTrailManager;
   private readonly developer: string;
   private readonly appName: string;
@@ -815,6 +915,7 @@ export class NrIngestManager {
   private readonly otlpTransport: OtlpTransport | null;
   private readonly otlpEventBridge: OtlpEventBridge | null;
   private readonly trackSessionGauges: boolean;
+  private readonly companionMode: boolean;
   private sessionGaugeIntervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private consecutiveEventSendFailures = 0;
@@ -833,6 +934,8 @@ export class NrIngestManager {
     this.costTracker = options.costTracker;
     this.efficiencyScorer = options.efficiencyScorer;
     this.feedbackCollector = options.feedbackCollector;
+    this.apiFailureTracker = options.apiFailureTracker;
+    this.gitEfficiencyTracker = options.gitEfficiencyTracker;
     this.turnCostAttributor = options.turnCostAttributor;
     this.auditTrail =
       options.auditTrail ??
@@ -843,6 +946,7 @@ export class NrIngestManager {
       });
     this.metricHarvestIntervalMs = options.metricHarvestIntervalMs ?? 60_000;
     this.trackSessionGauges = options.trackSessionGauges ?? true;
+    this.companionMode = options.companionMode ?? false;
 
     let otlpTransport: OtlpTransport | null = null;
     let otlpEventBridge: OtlpEventBridge | null = null;
@@ -1070,6 +1174,7 @@ export class NrIngestManager {
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
+      companionMode: this.companionMode,
     });
     this.scheduler.addEvent(event);
   }
@@ -1089,6 +1194,7 @@ export class NrIngestManager {
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
+      companionMode: this.companionMode,
     });
     this.scheduler.addEvent(event);
   }
@@ -1106,6 +1212,7 @@ export class NrIngestManager {
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
+      companionMode: this.companionMode,
     });
     this.scheduler.addEvent(event);
   }
@@ -1122,6 +1229,7 @@ export class NrIngestManager {
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
+      companionMode: this.companionMode,
     });
     this.scheduler.addEvent(event);
   }
@@ -1138,6 +1246,7 @@ export class NrIngestManager {
       teamId: this.teamId,
       projectId: this.projectId,
       orgId: this.orgId,
+      companionMode: this.companionMode,
     });
     this.scheduler.addEvent(ev);
   }
@@ -1172,12 +1281,26 @@ export class NrIngestManager {
     this.scheduler.addEvent(event);
   }
 
+  ingestRetryAlert(alert: ThrashingAlert, context: { platform?: string } = {}): void {
+    const event = retryAlertToNrEvent(alert, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionId: this.sessionTraceId,
+      platform: context.platform,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+    });
+    this.scheduler.addEvent(event);
+  }
+
   ingestContextSnapshot(
     snapshot: ContextTurnSnapshot,
     topTools: readonly ToolContextContribution[],
   ): void {
     const nrEvent: NrEventData = {
       eventType: 'AiContextSnapshot',
+      event_version: 1,
       timestamp: snapshot.timestamp,
       developer: this.developer,
       appName: this.appName,
@@ -1207,6 +1330,7 @@ export class NrIngestManager {
   ingestBudgetWarning(event: BudgetThresholdEvent): void {
     const nrEvent: NrEventData = {
       eventType: 'AiBudgetWarning',
+      event_version: 1,
       timestamp: event.timestamp,
       developer: this.developer,
       appName: this.appName,
@@ -1291,7 +1415,13 @@ export class NrIngestManager {
 
     // Emit cost and efficiency metrics with developer dimension so Team View
     // FACET developer queries return per-developer breakdowns.
-    if (this.costTracker || this.efficiencyScorer || this.feedbackCollector) {
+    if (
+      this.costTracker ||
+      this.efficiencyScorer ||
+      this.feedbackCollector ||
+      this.apiFailureTracker ||
+      this.gitEfficiencyTracker
+    ) {
       const developer = this.developer;
       const scheduler = this.scheduler;
       const devAggregator = new DeveloperAttributedMetricAggregator((name, value, attrs) => {
@@ -1303,9 +1433,14 @@ export class NrIngestManager {
             : { developer, ...teamAttrs, ...attrs },
         );
       });
-      this.costTracker?.emitMetrics(devAggregator);
+      // Gauges carry no platform attribute, so suppression is the only way to
+      // stop the blended-dashboard double-count against Claude Code's own
+      // OTel export — cost-bearing events are tagged instead (see below).
+      if (!this.companionMode) this.costTracker?.emitMetrics(devAggregator);
       this.efficiencyScorer?.emitMetrics(devAggregator);
       this.feedbackCollector?.emitMetrics(devAggregator);
+      this.apiFailureTracker?.emitMetrics(devAggregator);
+      this.gitEfficiencyTracker?.emitMetrics(devAggregator);
     }
 
     // Emit aggregated proxy metrics

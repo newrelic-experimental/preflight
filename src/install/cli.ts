@@ -751,7 +751,7 @@ function handleInstall(options: {
   }
 
   print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
-  print('  - Added PreToolUse and PostToolUse hooks');
+  print('  - Added PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied hooks');
   print(`✓ MCP server registered: ${mcpPath}`);
   print('  - Added preflight MCP server');
 

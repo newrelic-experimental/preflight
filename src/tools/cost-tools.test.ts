@@ -10,6 +10,7 @@ import {
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
+import { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
 import { localDateKey } from '../lib/date.js';
 import { buildCostForecastFromInputs } from '../metrics/cost-forecast.js';
 import type { TokenReport } from './cost-tools.js';
@@ -430,6 +431,52 @@ describe('handleGetCostForecast()', () => {
     // `body` given the huge backdated "yesterday" spend above.
     expect(body.forecastEndOfDayUsd).toBeCloseTo(expected.forecastEndOfDayUsd ?? 0, 2);
     expect(sessionTotalCostUsd).toBeGreaterThan(tracker.getCostForDay(todayKey));
+  });
+
+  it('omits resumeContext when no sessionResumeTracker is passed', () => {
+    const tracker = new CostTracker();
+    const result = handleGetCostForecast(tracker, Date.now());
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.resumeContext).toBeUndefined();
+  });
+
+  it('includes resumeContext (all zeros) when a sessionResumeTracker with no resumes is passed', () => {
+    const tracker = new CostTracker();
+    const resumeTracker = new SessionResumeTracker();
+    const result = handleGetCostForecast(tracker, Date.now(), resumeTracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.resumeContext).toEqual({
+      resumeCount: 0,
+      totalEstimatedCacheWriteUsd: 0,
+      lastResume: null,
+    });
+  });
+
+  it('includes resumeContext reflecting a recorded resume, without perturbing the forecast fields', () => {
+    const tracker = new CostTracker();
+    const resumeTracker = new SessionResumeTracker();
+    resumeTracker.recordResume({
+      secondsSinceLastResponse: 5400,
+      contextTokens: 182340,
+      promptCacheLikelyExpired: true,
+      estimatedCacheWriteUsd: 1.1396,
+      timestampMs: 1700000000000,
+    });
+
+    const sessionStartMs = Date.now() - 60_000;
+    const withResume = handleGetCostForecast(tracker, sessionStartMs, resumeTracker);
+    const withoutResume = handleGetCostForecast(tracker, sessionStartMs);
+    const bodyWithResume = JSON.parse(withResume.content[0].text);
+    const bodyWithoutResume = JSON.parse(withoutResume.content[0].text);
+
+    expect(bodyWithResume.resumeContext.resumeCount).toBe(1);
+    expect(bodyWithResume.resumeContext.totalEstimatedCacheWriteUsd).toBeCloseTo(1.1396);
+    expect(bodyWithResume.resumeContext.lastResume.estimatedCacheWriteUsd).toBeCloseTo(1.1396);
+    // The forecast math itself must be identical with/without resumeContext present.
+    expect(bodyWithResume.forecastEndOfDayUsd).toBe(bodyWithoutResume.forecastEndOfDayUsd);
+    expect(bodyWithResume.rateUsdPerMs).toBe(bodyWithoutResume.rateUsdPerMs);
   });
 });
 

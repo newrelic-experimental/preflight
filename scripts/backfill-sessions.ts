@@ -334,6 +334,8 @@ async function main(): Promise<void> {
     const summary: FullSessionSummary = {
       sessionId,
       sessionName: null, // not recoverable from NR event data
+      sessionNameSource: null, // not recoverable from NR event data
+      sessionIntent: null, // not recoverable from NR event data
       repoName: null, // not recoverable from NR event data
       startTime: base.startTime,
       endTime: base.endTime,

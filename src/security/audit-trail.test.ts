@@ -297,6 +297,16 @@ describe('AuditTrailManager', () => {
     expect(audit.securityAlert).toBeUndefined();
   });
 
+  it.each(['git push --force-with-lease origin main', 'git push --force-if-includes origin main'])(
+    'does not flag "%s" as destructive (safe force variant)',
+    (command) => {
+      const mgr = makeManager();
+      const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+
+      expect(audit.securityAlert).toBeUndefined();
+    },
+  );
+
   // 6. External network request (medium)
   it('detects curl as medium external network alert', () => {
     const mgr = makeManager();
@@ -845,6 +855,15 @@ describe('auditRecordToNrEvent', () => {
     expect(event['audit.security_alert']).toBe(false);
     expect(event['audit.severity']).toBeUndefined();
   });
+
+  it('includes event_version: 1 on AiAuditEvent', () => {
+    const mgr = makeManager();
+    const record = makeRecord({ toolName: 'Read', filePath: 'src/app.ts' });
+    const audit = mgr.recordToolCall(record);
+    const event = auditRecordToNrEvent(audit);
+
+    expect(event.event_version).toBe(1);
+  });
 });
 
 describe('securityAlertToNrEvent', () => {
@@ -860,6 +879,15 @@ describe('securityAlertToNrEvent', () => {
     expect(event.tool).toBe('Bash');
     expect(event.command).toBe('rm -rf /');
     expect(event.developer).toBe('alice');
+  });
+
+  it('includes event_version: 1 on SecurityAlert', () => {
+    const mgr = makeManager();
+    const record = makeRecord({ toolName: 'Bash', command: 'rm -rf /' });
+    const audit = mgr.recordToolCall(record);
+    const event = securityAlertToNrEvent(audit);
+
+    expect(event.event_version).toBe(1);
   });
 });
 

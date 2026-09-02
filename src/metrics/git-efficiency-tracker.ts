@@ -1,3 +1,4 @@
+import type { MetricAggregator } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import {
@@ -752,6 +753,19 @@ export class GitEfficiencyTracker {
       prMetrics,
       repoContext: this.repoContext,
     };
+  }
+
+  // Each count below blends hook-observed events with events hydrated from
+  // `git log`/PR-CLI history at session start — the two paths are already
+  // deduped upstream (see hydrateGitLog()'s isDuplicate check), so there is
+  // no separate hook-observed-vs-hydrated split to emit here.
+  emitMetrics(aggregator: MetricAggregator): void {
+    const metrics = this.getMetrics();
+    aggregator.record('ai.git.commit_count', metrics.commitCount);
+    aggregator.record('ai.git.push_count', metrics.pushCount);
+    aggregator.record('ai.git.force_push_count', metrics.forcePushes);
+    aggregator.record('ai.git.pr_created', metrics.prMetrics.created);
+    aggregator.record('ai.git.pr_merged', metrics.prMetrics.merged);
   }
 
   reset(_sessionId: string): void {

@@ -41,6 +41,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify plugin hook bundle is up to date
+        run: npm run verify:plugin-hook
+
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,3 +83,24 @@ jobs:
             [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
           done
           exit 1
+
+      # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
+      # npm package carries a matching `mcpName`, so this must run after the
+      # npm publish above. GitHub OIDC auth covers the
+      # io.github.newrelic-experimental/* namespace with no extra secret.
+      - name: Sync server.json version
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const version = require('./package.json').version;
+            const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+            s.version = version;
+            s.packages[0].version = version;
+            fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
+          "
+
+      - name: Publish to MCP Registry
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

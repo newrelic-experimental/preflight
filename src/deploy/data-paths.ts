@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 
 /**
  * Resolve the directory containing bundled data files (alerts/, dashboards/,
- * copilot-pricing/ JSON definitions, or the copilot-sdk-extension/ plain-JS
+ * pricing-overlay/ JSON definitions, or the copilot-sdk-extension/ plain-JS
  * extension file).
  *
  * The deploy modules ship as `dist/deploy/*.js` after TypeScript build, with
@@ -21,11 +21,11 @@ import { dirname, resolve } from 'node:path';
  *
  * Throws if no candidate exists — the deploy commands cannot run without the
  * underlying data files. Callers for whom the data is optional (e.g. the
- * copilot-pricing overlay, unlike alerts/dashboards which are required for
- * their own commands) must wrap this in a try/catch and degrade gracefully.
+ * pricing overlay, unlike alerts/dashboards which are required for their own
+ * commands) must wrap this in a try/catch and degrade gracefully.
  */
 export function resolveDataDir(
-  name: 'alerts' | 'dashboards' | 'copilot-pricing' | 'copilot-sdk-extension',
+  name: 'alerts' | 'dashboards' | 'pricing-overlay' | 'copilot-sdk-extension',
 ): string {
   const rawPath = process.argv[1] ?? process.cwd();
   const scriptPath = (() => {
