@@ -1,6 +1,6 @@
 {
   "name": "@newrelic/preflight",
-  "version": "1.33.1",
+  "version": "1.33.2",
   "mcpName": "io.github.newrelic-experimental/preflight",
   "type": "module",
   "license": "Apache-2.0",
@@ -19,7 +19,7 @@
   "bugs": {
     "url": "https://github.com/newrelic-experimental/preflight/issues"
   },
-  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Windsurf, Copilot, and more)",
+  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Copilot, etc.)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

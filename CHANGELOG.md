@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.2] - 2026-09-03
+
+### Fixed
+
+- **The MCP Registry publish step in the Release workflow was failing on every run.** `server.json`'s `description` field was 106 characters, exceeding the registry's 100-character limit; shortened it so releases reach `registry.modelcontextprotocol.io` again.
+
 ## [1.33.1] - 2026-09-03
 
 ### Added

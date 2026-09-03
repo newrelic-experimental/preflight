@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.newrelic-experimental/preflight",
-  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Windsurf, Copilot, and more)",
+  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Copilot, etc.)",
   "repository": {
     "url": "https://github.com/newrelic-experimental/preflight",
     "source": "github"
   },
-  "version": "1.33.1",
+  "version": "1.33.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@newrelic/preflight",
-      "version": "1.33.1",
+      "version": "1.33.2",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
