@@ -1,7 +1,7 @@
 {
   "name": "newrelic-preflight",
   "displayName": "Preflight",
-  "version": "1.33.0",
+  "version": "1.33.1",
   "description": "Observability for AI coding assistants — tool-call capture, cost tracking, and efficiency scoring, powered by New Relic.",
   "author": {
     "name": "New Relic",

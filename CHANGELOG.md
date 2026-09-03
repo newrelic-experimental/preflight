@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.1] - 2026-09-03
+
+### Added
+
+- **Grok 4.6, Gemini 3.8 Flash, Claude Fable 5.1, and Claude Mythos 5.1 are now priced.**
+
+### Fixed
+
+- **Cached tokens on Bedrock's Claude 3.5 Haiku were being priced at $0.** That model's cache pricing was missing from the pricing table entirely; it now carries cache-write/cache-read rates consistent with every other Bedrock Claude entry.
+- **Grok 4.5's cached-input rate and context window were stale.** Cached input now prices at $0.3 per million tokens (was $0.5) and the context window is now 500K (was overstated as 1M), matching xAI's own published pricing.
+- **`ministral-3b-latest`, `ministral-8b-latest`, and `ministral-14b-latest` now resolve to real pricing instead of $0.** Mistral introduced "-latest" aliases for its Ministral 3 family; without them, sessions reporting those exact model strings had no matching entry.
+
 ## [1.33.0] - 2026-09-03
 
 ### Added
