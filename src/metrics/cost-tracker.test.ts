@@ -968,6 +968,70 @@ describe('CostTracker', () => {
   });
 });
 
+describe('rateMultiplier option', () => {
+  it('defaults to no correction — costRateMultiplierApplied is 1', () => {
+    const tracker = new CostTracker();
+    expect(tracker.getMetrics().costRateMultiplierApplied).toBe(1);
+  });
+
+  it('scales every dollar field of the breakdown by the configured multiplier', () => {
+    const tracker = new CostTracker(undefined, { rateMultiplier: 0.85 });
+
+    const usage = makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 });
+    const breakdown = tracker.recordTokenUsage(usage, 'claude-sonnet-4');
+
+    // Unscaled: input=0.03, output=0.03, total=0.06 (see the base test above)
+    expect(breakdown.inputUsd).toBeCloseTo(0.03 * 0.85, 6);
+    expect(breakdown.outputUsd).toBeCloseTo(0.03 * 0.85, 6);
+    expect(breakdown.totalUsd).toBeCloseTo(0.06 * 0.85, 6);
+  });
+
+  it('applies the same factor to accumulated session totals and costByModel', () => {
+    const tracker = new CostTracker(undefined, { rateMultiplier: 0.5 });
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.sessionTotalCostUsd).toBeCloseTo(0.03, 6); // 0.06 * 0.5
+    expect(metrics.costByModel['claude-sonnet-4']).toBeCloseTo(0.03, 6);
+    expect(metrics.costRateMultiplierApplied).toBe(0.5);
+  });
+
+  it('scales savingsFromCacheUsd by the same factor', () => {
+    const unscaled = new CostTracker();
+    const scaled = new CostTracker(undefined, { rateMultiplier: 0.4 });
+
+    const usage = makeUsage({
+      inputTokens: 1_000,
+      outputTokens: 500,
+      cacheReadTokens: 10_000,
+      totalTokens: 1_500,
+    });
+
+    const unscaledBreakdown = unscaled.recordTokenUsage(usage, 'claude-sonnet-4');
+    const scaledBreakdown = scaled.recordTokenUsage(usage, 'claude-sonnet-4');
+
+    expect(unscaledBreakdown.savingsFromCacheUsd).toBeGreaterThan(0);
+    expect(scaledBreakdown.savingsFromCacheUsd).toBeCloseTo(
+      unscaledBreakdown.savingsFromCacheUsd * 0.4,
+      6,
+    );
+  });
+
+  it('a multiplier of 1 behaves identically to the default (no scaling branch)', () => {
+    const tracker = new CostTracker(undefined, { rateMultiplier: 1 });
+    const usage = makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 });
+
+    const breakdown = tracker.recordTokenUsage(usage, 'claude-sonnet-4');
+
+    expect(breakdown.totalUsd).toBeCloseTo(0.06, 6);
+    expect(tracker.getMetrics().costRateMultiplierApplied).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Subagent token support
 // ---------------------------------------------------------------------------

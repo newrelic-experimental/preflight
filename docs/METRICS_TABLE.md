@@ -53,28 +53,29 @@ These events are emitted by the MCP server (`preflight`) when Claude Code or ano
 
 Emitted for every tool call captured by the hook collector.
 
-| Field               | Type    | Description                                                                                                                                                                |
-| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `eventType`         | string  | Always `"AiToolCall"`                                                                                                                                                      |
-| `event_version`     | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                |
-| `timestamp`         | number  | Unix epoch milliseconds                                                                                                                                                    |
-| `tool`              | string  | Tool name (e.g., `Read`, `Edit`, `Bash`, `Grep`)                                                                                                                           |
-| `tool_use_id`       | string  | Unique tool use identifier from the AI assistant                                                                                                                           |
-| `success`           | boolean | Whether the tool call succeeded                                                                                                                                            |
-| `developer`         | string  | Developer identifier                                                                                                                                                       |
-| `app_name`          | string  | Application name (default: `preflight`)                                                                                                                                    |
-| `session_id`        | string  | Session identifier (if available)                                                                                                                                          |
-| `team_id`           | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not configured.                                              |
-| `project_id`        | string  | Project identifier (derived from git remote or configured)                                                                                                                 |
-| `org_id`            | string  | Organization identifier (if configured)                                                                                                                                    |
-| `platform`          | string  | Platform attribution (default: `claude-code`)                                                                                                                              |
-| `duration_ms`       | number  | Tool call duration in milliseconds (if available)                                                                                                                          |
-| `error_type`        | string  | Error classification (if failed)                                                                                                                                           |
-| `error`             | string  | Error message (if failed)                                                                                                                                                  |
-| `input_size_bytes`  | number  | Size of tool input (if available)                                                                                                                                          |
-| `output_size_bytes` | number  | Size of tool output (if available)                                                                                                                                         |
-| `input_hash`        | string  | Hash of tool input for deduplication (if available)                                                                                                                        |
-| `*`                 | varies  | Tool-specific fields from input/output parsers (e.g., `filePath`, `command`, `exitCode`, `isTestCommand`, `bashCategory`, `bashLeading`, `bashDestructive`, `bashNetwork`) |
+| Field               | Type    | Description                                                                                                                                                                                                                |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`         | string  | Always `"AiToolCall"`                                                                                                                                                                                                      |
+| `event_version`     | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                                                                                                                |
+| `timestamp`         | number  | Unix epoch milliseconds                                                                                                                                                                                                    |
+| `tool`              | string  | Tool name (e.g., `Read`, `Edit`, `Bash`, `Grep`)                                                                                                                                                                           |
+| `tool_use_id`       | string  | Unique tool use identifier from the AI assistant                                                                                                                                                                           |
+| `success`           | boolean | Whether the tool call succeeded                                                                                                                                                                                            |
+| `developer`         | string  | Developer identifier                                                                                                                                                                                                       |
+| `app_name`          | string  | Application name (default: `preflight`)                                                                                                                                                                                    |
+| `session_id`        | string  | Session identifier (if available)                                                                                                                                                                                          |
+| `team_id`           | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not configured.                                                                                              |
+| `project_id`        | string  | Project identifier (derived from git remote or configured)                                                                                                                                                                 |
+| `repo_url`          | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                                                                                                                       |
+| `org_id`            | string  | Organization identifier (if configured)                                                                                                                                                                                    |
+| `platform`          | string  | Platform attribution (default: `claude-code`)                                                                                                                                                                              |
+| `duration_ms`       | number  | Tool call duration in milliseconds (if available)                                                                                                                                                                          |
+| `error_type`        | string  | Error classification (if failed): `timeout` (no completion within 60s), `rejected` (user rejected the permission prompt), `denied` (auto permission mode denied by policy), `interrupted` (user interrupted mid-execution) |
+| `error`             | string  | Error message (if failed)                                                                                                                                                                                                  |
+| `input_size_bytes`  | number  | Size of tool input (if available)                                                                                                                                                                                          |
+| `output_size_bytes` | number  | Size of tool output (if available)                                                                                                                                                                                         |
+| `input_hash`        | string  | Hash of tool input for deduplication (if available)                                                                                                                                                                        |
+| `*`                 | varies  | Tool-specific fields from input/output parsers (e.g., `filePath`, `command`, `exitCode`, `isTestCommand`, `bashCategory`, `bashLeading`, `bashDestructive`, `bashNetwork`)                                                 |
 
 Source: `src/transport/nr-ingest.ts` — `toolCallToNrEvent()`
 
@@ -106,6 +107,7 @@ Emitted for proxied tool calls (when the server forwards to upstream MCP servers
 | `session_id`          | string  | Session identifier (if available)                                                                                      |
 | `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`          | string  | Project identifier (derived from git remote or configured)                                                             |
+| `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`              | string  | Organization identifier (if configured)                                                                                |
 | `proxy_overhead_ms`   | number  | Time spent in proxy layer (if available)                                                                               |
 | `error_type`          | string  | Error classification (if failed)                                                                                       |
@@ -132,6 +134,7 @@ Emitted for non-tool proxy requests (discovery methods like `tools/list`, `resou
 | `app_name`            | string  | Application name                                                                                                       |
 | `team_id`             | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`          | string  | Project identifier (derived from git remote or configured)                                                             |
+| `repo_url`            | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`              | string  | Organization identifier (if configured)                                                                                |
 | `proxy_overhead_ms`   | number  | Proxy layer overhead (if available)                                                                                    |
 | `response_size_bytes` | number  | Response size (if available)                                                                                           |
@@ -154,6 +157,7 @@ Emitted for every tool call as a security audit record.
 | `session_id`           | string  | Session identifier (if available)                                                                                      |
 | `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`           | string  | Project identifier (derived from git remote or configured)                                                             |
+| `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`               | string  | Organization identifier (if configured)                                                                                |
 | `file_path`            | string  | File path involved (if applicable)                                                                                     |
 | `command`              | string  | Command executed (if applicable)                                                                                       |
@@ -180,6 +184,7 @@ Emitted only when a security alert is triggered (subset of audit events).
 | `session_id`    | string | Session identifier (if available)                                                                                      |
 | `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
+| `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`        | string | Organization identifier (if configured)                                                                                |
 | `file_path`     | string | File path (if sensitive file alert)                                                                                    |
 | `command`       | string | Command (if destructive command alert)                                                                                 |
@@ -208,6 +213,7 @@ Emitted when a task boundary is detected (a logical unit of work from task start
 | `session_id`           | string  | Session identifier (if available)                                                                                      |
 | `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`           | string  | Project identifier (derived from git remote or configured)                                                             |
+| `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`               | string  | Organization identifier (if configured)                                                                                |
 | `start_time`           | number  | Task start time (Unix epoch milliseconds)                                                                              |
 | `end_time`             | number  | Task end time (Unix epoch milliseconds)                                                                                |
@@ -247,6 +253,7 @@ Emitted for each anti-pattern detected within a completed task.
 | `session_id`    | string | Session identifier (if available)                                                                                      |
 | `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`    | string | Project identifier (if configured)                                                                                     |
+| `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`        | string | Organization identifier (if configured)                                                                                |
 | `suggestion`    | string | Human-readable remediation suggestion                                                                                  |
 | `file`          | string | File involved (if applicable)                                                                                          |
@@ -278,6 +285,7 @@ Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 | `session_id`    | string | Session identifier (if available)                                                                                      |
 | `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`    | string | Project identifier (if configured)                                                                                     |
+| `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`        | string | Organization identifier (if configured)                                                                                |
 
 **Firing rules:**
@@ -304,6 +312,7 @@ Emitted for each LLM turn when context-window tracking is enabled, capturing tok
 | `session_id`            | string | Session identifier (if available)                                                                                      |
 | `team_id`               | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`            | string | Project identifier (if configured)                                                                                     |
+| `repo_url`              | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
 | `org_id`                | string | Organization identifier (if configured)                                                                                |
 | `turn_number`           | number | Sequential turn number within the session                                                                              |
 | `total_context_tokens`  | number | Total input tokens for this turn                                                                                       |
@@ -482,14 +491,14 @@ Source: `src/install/key-validator.ts` — `validateLicenseKey()`
 
 Recorded for each tool call as it happens.
 
-| Metric Name                        | Value      | Attributes                                                | How Computed                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------- | ---------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ai.tool.call_count`               | `1`        | `{tool, session_id?, team_id?, project_id?, org_id?}`     | Incremented once per tool call                                                                                                                                                                                                                                                                                                                 |
-| `ai.tool.duration_ms`              | duration   | `{tool, session_id?, team_id?, project_id?, org_id?}`     | From `ToolCallRecord.durationMs`                                                                                                                                                                                                                                                                                                               |
-| `ai.tool.success`                  | `0` or `1` | `{tool, session_id?, team_id?, project_id?, org_id?}`     | `record.success ? 1 : 0`                                                                                                                                                                                                                                                                                                                       |
-| `ai.bash.call_count`               | count      | `{category, session_id?, team_id?, project_id?, org_id?}` | Per-`bashCategory` call count for Bash tool calls (e.g. `git`, `test-runner`, `build`). **Local-only — not currently exported to New Relic**, despite this row's history: it is computed by `SessionTracker.emitMetrics()`, but the harvest loop never calls that method — see [Local-only Metrics](#local-only-metrics-defined-not-exported). |
-| `ai.mcp.proxy_request_count`       | `1`        | `{server, method}`                                        | Incremented per proxy discovery request                                                                                                                                                                                                                                                                                                        |
-| `ai.mcp.proxy_request_duration_ms` | duration   | `{server}`                                                | From `ProxyRequestRecord.durationMs`                                                                                                                                                                                                                                                                                                           |
+| Metric Name                        | Value      | Attributes                                                           | How Computed                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------- | ---------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai.tool.call_count`               | `1`        | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | Incremented once per tool call                                                                                                                                                                                                                                                                                                                 |
+| `ai.tool.duration_ms`              | duration   | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | From `ToolCallRecord.durationMs`                                                                                                                                                                                                                                                                                                               |
+| `ai.tool.success`                  | `0` or `1` | `{tool, session_id?, team_id?, project_id?, org_id?, repo_url?}`     | `record.success ? 1 : 0`                                                                                                                                                                                                                                                                                                                       |
+| `ai.bash.call_count`               | count      | `{category, session_id?, team_id?, project_id?, org_id?, repo_url?}` | Per-`bashCategory` call count for Bash tool calls (e.g. `git`, `test-runner`, `build`). **Local-only — not currently exported to New Relic**, despite this row's history: it is computed by `SessionTracker.emitMetrics()`, but the harvest loop never calls that method — see [Local-only Metrics](#local-only-metrics-defined-not-exported). |
+| `ai.mcp.proxy_request_count`       | `1`        | `{server, method}`                                                   | Incremented per proxy discovery request                                                                                                                                                                                                                                                                                                        |
+| `ai.mcp.proxy_request_duration_ms` | duration   | `{server}`                                                           | From `ProxyRequestRecord.durationMs`                                                                                                                                                                                                                                                                                                           |
 
 Source: `src/transport/nr-ingest.ts` — `ingestToolCall()`, `ingestProxyRequest()`
 
@@ -497,11 +506,11 @@ Source: `src/transport/nr-ingest.ts` — `ingestToolCall()`, `ingestProxyRequest
 
 Emitted every 60 seconds (on the metric harvest cadence) with current session state.
 
-| Metric Name                       | Value    | Attributes                                      | How Computed                                             |
-| --------------------------------- | -------- | ----------------------------------------------- | -------------------------------------------------------- |
-| `ai.session.duration_ms`          | duration | `{session_id?, team_id?, project_id?, org_id?}` | `SessionTracker.getMetrics().sessionDurationMs`          |
-| `ai.session.unique_files_read`    | count    | `{session_id?, team_id?, project_id?, org_id?}` | Size of internal Set of file paths from Read calls       |
-| `ai.session.unique_files_written` | count    | `{session_id?, team_id?, project_id?, org_id?}` | Size of internal Set of file paths from Write/Edit calls |
+| Metric Name                       | Value    | Attributes                                                 | How Computed                                             |
+| --------------------------------- | -------- | ---------------------------------------------------------- | -------------------------------------------------------- |
+| `ai.session.duration_ms`          | duration | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | `SessionTracker.getMetrics().sessionDurationMs`          |
+| `ai.session.unique_files_read`    | count    | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | Size of internal Set of file paths from Read calls       |
+| `ai.session.unique_files_written` | count    | `{session_id?, team_id?, project_id?, org_id?, repo_url?}` | Size of internal Set of file paths from Write/Edit calls |
 
 Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`
 
@@ -509,19 +518,19 @@ Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`
 
 Emitted every 60 seconds alongside session gauges (only when proxy mode is active).
 
-| Metric Name                | Value       | Attributes                                       | How Computed                                                    |
-| -------------------------- | ----------- | ------------------------------------------------ | --------------------------------------------------------------- |
-| `ai.mcp.server_call_count` | count       | `{server, team_id?, project_id?, org_id?}`       | Per-server total call count from `ProxyMetricsTracker`          |
-| `ai.mcp.server_latency_ms` | average ms  | `{server, team_id?, project_id?, org_id?}`       | `sum(latencies) / count` per server (only emitted if count > 0) |
-| `ai.mcp.server_error_rate` | ratio (0-1) | `{server, team_id?, project_id?, org_id?}`       | `failedCount / totalCount` per server (only emitted if > 0)     |
-| `ai.mcp.proxy_overhead_ms` | average ms  | `{team_id?, project_id?, org_id?}`               | `sum(overheadValues) / count` across all servers (only if > 0)  |
-| `ai.mcp.tool_popularity`   | count       | `{tool, server, team_id?, project_id?, org_id?}` | Per-tool per-server call count (capped at 100 combinations)     |
+| Metric Name                | Value       | Attributes                                                  | How Computed                                                    |
+| -------------------------- | ----------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| `ai.mcp.server_call_count` | count       | `{server, team_id?, project_id?, org_id?, repo_url?}`       | Per-server total call count from `ProxyMetricsTracker`          |
+| `ai.mcp.server_latency_ms` | average ms  | `{server, team_id?, project_id?, org_id?, repo_url?}`       | `sum(latencies) / count` per server (only emitted if count > 0) |
+| `ai.mcp.server_error_rate` | ratio (0-1) | `{server, team_id?, project_id?, org_id?, repo_url?}`       | `failedCount / totalCount` per server (only emitted if > 0)     |
+| `ai.mcp.proxy_overhead_ms` | average ms  | `{team_id?, project_id?, org_id?, repo_url?}`               | `sum(overheadValues) / count` across all servers (only if > 0)  |
+| `ai.mcp.tool_popularity`   | count       | `{tool, server, team_id?, project_id?, org_id?, repo_url?}` | Per-tool per-server call count (capped at 100 combinations)     |
 
 Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`, `src/metrics/proxy-metrics.ts`
 
 ### MCP Server — Cost Metrics
 
-Emitted every 60 seconds alongside session gauges (only when a `CostTracker` is wired in). All metrics include `{developer, session_id?, team_id?, project_id?, org_id?}` attributes plus `{model?}` when a current model is known.
+Emitted every 60 seconds alongside session gauges (only when a `CostTracker` is wired in). All metrics include `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` attributes plus `{model?}` when a current model is known.
 
 | Metric Name                      | Value | How Computed                                             |
 | -------------------------------- | ----- | -------------------------------------------------------- |
@@ -539,7 +548,7 @@ Source: `src/metrics/cost-tracker.ts` — `emitMetrics()`
 
 ### MCP Server — Efficiency Metrics
 
-Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScorer` is wired in and has scored at least one task). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?}`.
+Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScorer` is wired in and has scored at least one task). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}`.
 
 | Metric Name                           | Value       | How Computed                        |
 | ------------------------------------- | ----------- | ----------------------------------- |
@@ -553,7 +562,7 @@ Source: `src/metrics/efficiency-score.ts` — `emitMetrics()`
 
 ### MCP Server — API Failure Metrics
 
-Emitted every 60 seconds alongside session gauges (only when an `ApiFailureTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?}` plus `{error_type}` or `{model}` where noted.
+Emitted every 60 seconds alongside session gauges (only when an `ApiFailureTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` plus `{error_type}` or `{model}` where noted.
 
 | Metric Name                     | Value      | Attributes     | How Computed                                                                                                                  |
 | ------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------- |

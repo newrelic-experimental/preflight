@@ -7,22 +7,32 @@
  *
  * Handles orphans:
  *   - Pre events without a post within orphanTimeoutMs → timeout record
+ *   - Permission-requested pre events (PermissionRequest seen, then nothing —
+ *     Claude Code fires no hook event for an interactive user rejection)
+ *     without a post within PERMISSION_REQUESTED_TIMEOUT_MS → rejected record
  *   - Post events without a matching pre → record with durationMs: null
  */
 
 import { randomUUID } from 'node:crypto';
 import { createLogger } from '../shared/index.js';
-import { createDefaultRegistry } from '../platforms/index.js';
+import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
 import type {
   HookEvent,
   PreHookEvent,
   PostHookEvent,
+  PermissionRequestHookEvent,
+  PermissionDeniedHookEvent,
   TokenHookEvent,
   SubagentTokenHookEvent,
   ObservabilityHealthHookEvent,
   ApiFailureHookEvent,
+  SessionStartHookEvent,
+  InstructionsLoadedHookEvent,
+  ModelSwitchHookEvent,
+  UserPromptSubmitHookEvent,
+  StopHookEvent,
   ToolCallRecord,
   TokenEvent,
   SubagentTokenEvent,
@@ -76,6 +86,16 @@ export interface HookEventProcessorOptions {
   onWorkflowRun?: (event: WorkflowRunEvent) => void;
   /** Fires for every `mode: 'api_failure'` line; errors swallowed. */
   onApiFailure?: (event: ApiFailureFrame) => void;
+  /** Fires for every `mode: 'session_start'` line; errors swallowed. */
+  onSessionStart?: (event: SessionStartFrame) => void;
+  /** Fires for every `mode: 'instructions_loaded'` line; errors swallowed. */
+  onInstructionsLoaded?: (event: InstructionsLoadedFrame) => void;
+  /** Fires for every `mode: 'model_switch'` line; errors swallowed. */
+  onModelSwitch?: (event: ModelSwitchFrame) => void;
+  /** Fires for every `mode: 'user_prompt_submit'` line; errors swallowed. */
+  onUserPromptSubmit?: (event: BoundaryFrame) => void;
+  /** Fires for every `mode: 'stop'` line; errors swallowed. */
+  onStop?: (event: BoundaryFrame) => void;
   /**
    * Adapter used to map each platform's raw tool names (e.g. Kiro's `fs_read`)
    * to Preflight's canonical vocabulary (`Read`) before pairing/emitting.
@@ -143,13 +163,69 @@ export interface ApiFailureFrame {
   readonly lastAssistantMessage?: string;
 }
 
+/** Wire-shape data extracted from a `mode: 'session_start'` entry. */
+export interface SessionStartFrame {
+  readonly timestamp: number;
+  readonly sessionId: string | null;
+  readonly source?: string;
+  readonly secondsSinceLastResponse?: number;
+  readonly contextTokens?: number;
+  readonly promptCacheLikelyExpired?: boolean;
+  readonly estimatedCacheWriteUsd?: number;
+}
+
+/** Wire-shape data extracted from a `mode: 'instructions_loaded'` entry. */
+export interface InstructionsLoadedFrame {
+  readonly timestamp: number;
+  readonly sessionId: string | null;
+  readonly filePath: string;
+  readonly memoryType?: string;
+  readonly loadReason?: string;
+}
+
+/** Wire-shape data extracted from a `mode: 'model_switch'` entry. */
+export interface ModelSwitchFrame {
+  readonly timestamp: number;
+  readonly sessionId: string | null;
+  readonly fromModel: string;
+  readonly toModel: string;
+  readonly requestedModel?: string | null;
+  readonly source?: string;
+}
+
+/**
+ * Wire-shape data extracted from a `mode: 'user_prompt_submit'` or
+ * `mode: 'stop'` entry — both carry nothing beyond a timestamp/sessionId
+ * (see the doc comments on `UserPromptSubmitHookEvent`/`StopHookEvent` in
+ * storage/types.ts for why), so one shared frame type covers both.
+ */
+export interface BoundaryFrame {
+  readonly timestamp: number;
+  readonly sessionId: string | null;
+}
+
 function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
+// Permission prompts legitimately dwell — a user thinking for 90 seconds is
+// common, while an approval arriving after 5 minutes is rare enough to accept
+// as a post-without-pre record instead.
+const PERMISSION_REQUESTED_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_PENDING = 2_000;
+
+/**
+ * Lifecycle of a pre event awaiting its completion. `awaiting_post` is the
+ * normal path; `permission_requested` means Claude Code asked the user to
+ * approve this call — a rejection fires no further hook event, so an entry
+ * that expires in this phase is classified 'rejected' rather than 'timeout'.
+ */
+interface PendingEntry {
+  readonly event: PreHookEvent;
+  readonly phase: 'awaiting_post' | 'permission_requested';
+}
 
 /**
  * Fixed-capacity FIFO dedup set for one session/agent's own event stream.
@@ -233,7 +309,33 @@ export class HookEventProcessor {
   private readonly onSubagentToken: ((event: SubagentTokenEvent) => void) | null;
   private readonly onWorkflowRun: ((event: WorkflowRunEvent) => void) | null;
   private readonly onApiFailure: ((event: ApiFailureFrame) => void) | null;
+  private readonly onSessionStart: ((event: SessionStartFrame) => void) | null;
+  private readonly onInstructionsLoaded: ((event: InstructionsLoadedFrame) => void) | null;
+  private readonly onModelSwitch: ((event: ModelSwitchFrame) => void) | null;
+  private readonly onUserPromptSubmit: ((event: BoundaryFrame) => void) | null;
+  private readonly onStop: ((event: BoundaryFrame) => void) | null;
   private readonly platformAdapter: PlatformAdapter;
+  /**
+   * Set from a non-generic `platform` value carried on a pre/post event (see
+   * `applyStampedPlatform`) — overrides `platformAdapter` once a hook-time
+   * stamp names a registered adapter. Last non-generic stamp wins; a
+   * `generic-mcp` or unrecognized stamp never overrides. This process-level
+   * field only feeds `activePlatform` (the session-summary label); tool-name
+   * mapping uses the per-session map below, so in `drainAllSessions` mode
+   * concurrent sessions from different platforms each map with their own
+   * stamped adapter.
+   */
+  private stampedPlatformAdapter: PlatformAdapter | null = null;
+  /**
+   * Per-session stamped adapters, scoped by sessionId like
+   * subagentDedupRegistry/tokenDedupRegistry below — without this, one
+   * mutable process-level adapter would mis-map tool names for interleaved
+   * sessions from different platforms in `drainAllSessions` mode.
+   * FIFO-bounded; values are shared singletons from one registry.
+   */
+  private readonly stampedAdapterBySession = new Map<string, PlatformAdapter>();
+  private static readonly MAX_STAMPED_SESSIONS = 100;
+  private registeredAdaptersByName: Map<string, PlatformAdapter> | null = null;
   /**
    * Per-agent dedup rings for recent subagent turns (scoped by agentId, one
    * DedupRing per agent, LRU-bounded across agents). Cursor recovery may
@@ -266,7 +368,7 @@ export class HookEventProcessor {
    */
   private readonly tokenDedupRegistry = new DedupRingRegistry(50, 4096);
 
-  private readonly pending: Map<string, PreHookEvent> = new Map();
+  private readonly pending: Map<string, PendingEntry> = new Map();
   private readonly maxPendingEvents: number;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -288,6 +390,11 @@ export class HookEventProcessor {
     this.onSubagentToken = options.onSubagentToken ?? null;
     this.onWorkflowRun = options.onWorkflowRun ?? null;
     this.onApiFailure = options.onApiFailure ?? null;
+    this.onSessionStart = options.onSessionStart ?? null;
+    this.onInstructionsLoaded = options.onInstructionsLoaded ?? null;
+    this.onModelSwitch = options.onModelSwitch ?? null;
+    this.onUserPromptSubmit = options.onUserPromptSubmit ?? null;
+    this.onStop = options.onStop ?? null;
     this.platformAdapter = options.platformAdapter ?? createDefaultRegistry().getActive();
 
     this.boundBeforeExit = () => {
@@ -299,12 +406,70 @@ export class HookEventProcessor {
   }
 
   /**
-   * The platform name resolved for this process — either the explicitly
-   * injected `platformAdapter`, or the auto-detected default. Resolved
-   * once at construction time; this getter never re-detects.
+   * The platform name currently in effect — the last non-generic
+   * hook-stamped adapter (see `applyStampedPlatform`) if one has been seen,
+   * else the explicitly injected `platformAdapter`, else the auto-detected
+   * default. Not construction-time-only: a stamped event can flip this on
+   * any later read.
    */
   get activePlatform(): string {
-    return this.platformAdapter.platformName;
+    return this.currentAdapter.platformName;
+  }
+
+  private get currentAdapter(): PlatformAdapter {
+    return this.stampedPlatformAdapter ?? this.platformAdapter;
+  }
+
+  /**
+   * Lazily builds the platformName → adapter map from the full registry, once
+   * per process — avoids the registry-construction cost for the common case
+   * where no event ever carries a `platform` stamp.
+   */
+  private getRegisteredAdaptersByName(): Map<string, PlatformAdapter> {
+    if (this.registeredAdaptersByName === null) {
+      this.registeredAdaptersByName = new Map(
+        createDefaultRegistry()
+          .getRegistered()
+          .map((adapter) => [adapter.platformName, adapter]),
+      );
+    }
+    return this.registeredAdaptersByName;
+  }
+
+  /**
+   * See `stampedPlatformAdapter`'s and `stampedAdapterBySession`'s doc
+   * comments for the override rules. The name-equality shortcut skips
+   * registry construction for the common case where every stamp names the
+   * already-active adapter.
+   */
+  private applyStampedPlatform(sessionId: string | undefined, platformName: string): void {
+    if (platformName === GENERIC_MCP_PLATFORM_NAME) return;
+    const adapter =
+      platformName === this.currentAdapter.platformName
+        ? this.currentAdapter
+        : this.getRegisteredAdaptersByName().get(platformName);
+    if (!adapter) return;
+    this.stampedPlatformAdapter = adapter;
+    if (sessionId === undefined) return;
+    if (
+      !this.stampedAdapterBySession.has(sessionId) &&
+      this.stampedAdapterBySession.size >= HookEventProcessor.MAX_STAMPED_SESSIONS
+    ) {
+      const oldest = this.stampedAdapterBySession.keys().next().value;
+      if (oldest !== undefined) this.stampedAdapterBySession.delete(oldest);
+    }
+    this.stampedAdapterBySession.set(sessionId, adapter);
+  }
+
+  /**
+   * The adapter used to map this session's tool names — its own stamped
+   * adapter when one has been seen, else the process-level current adapter
+   * (which covers events from collectors too old to stamp).
+   */
+  private adapterForSession(sessionId: string | undefined): PlatformAdapter {
+    const stamped =
+      sessionId !== undefined ? this.stampedAdapterBySession.get(sessionId) : undefined;
+    return stamped ?? this.currentAdapter;
   }
 
   start(): void {
@@ -379,9 +544,21 @@ export class HookEventProcessor {
    */
   processEvents(events: HookEvent[]): void {
     for (const rawEvent of events) {
+      if (
+        (rawEvent.mode === 'pre' || rawEvent.mode === 'post') &&
+        rawEvent.platform !== undefined
+      ) {
+        this.applyStampedPlatform(rawEvent.sessionId, rawEvent.platform);
+      }
       const event: HookEvent =
         rawEvent.mode === 'pre' || rawEvent.mode === 'post'
-          ? { ...rawEvent, tool: mapToolNameOrOriginal(this.platformAdapter, rawEvent.tool) }
+          ? {
+              ...rawEvent,
+              tool: mapToolNameOrOriginal(
+                this.adapterForSession(rawEvent.sessionId),
+                rawEvent.tool,
+              ),
+            }
           : rawEvent;
       try {
         if (event.mode === 'token') {
@@ -390,6 +567,10 @@ export class HookEventProcessor {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
           this.handlePostEvent(event);
+        } else if (event.mode === 'permission_request') {
+          this.handlePermissionRequestEvent(event);
+        } else if (event.mode === 'permission_denied') {
+          this.handlePermissionDeniedEvent(event);
         } else if (event.mode === 'subagent_token') {
           this.handleSubagentTokenEvent(event);
         } else if (event.mode === 'observability_health') {
@@ -398,6 +579,16 @@ export class HookEventProcessor {
           this.handleWorkflowRunEvent(event);
         } else if (event.mode === 'api_failure') {
           this.handleApiFailureEvent(event);
+        } else if (event.mode === 'session_start') {
+          this.handleSessionStartEvent(event);
+        } else if (event.mode === 'instructions_loaded') {
+          this.handleInstructionsLoadedEvent(event);
+        } else if (event.mode === 'model_switch') {
+          this.handleModelSwitchEvent(event);
+        } else if (event.mode === 'user_prompt_submit') {
+          this.handleBoundaryEvent(event, this.onUserPromptSubmit, 'onUserPromptSubmit');
+        } else if (event.mode === 'stop') {
+          this.handleBoundaryEvent(event, this.onStop, 'onStop');
         }
       } catch (err) {
         logger.warn('Error processing hook event', {
@@ -442,8 +633,8 @@ export class HookEventProcessor {
       // Named to avoid shared/redact.ts's SECRET_KEY_RE (which matches any key
       // name containing "key") — that would silently blank this diagnostic value.
       let evictedPairingId: string | undefined;
-      for (const [key, pendingEvent] of this.pending) {
-        if (now - pendingEvent.timestamp >= this.orphanTimeoutMs) {
+      for (const [key, entry] of this.pending) {
+        if (now - entry.event.timestamp >= this.pendingTtlMs(entry)) {
           evictedPairingId = key;
           break;
         }
@@ -457,26 +648,59 @@ export class HookEventProcessor {
       if (evictedPairingId) {
         const evicted = this.pending.get(evictedPairingId)!;
         this.pending.delete(evictedPairingId);
-        // Emit a synthetic timeout record so the eviction is visible in metrics,
+        // Emit a synthetic orphan record so the eviction is visible in metrics,
         // matching the behavior of sweepOrphans() and flushPending().
-        const toolFields = parseToolSpecificFields(evicted.tool, evicted.toolInput, undefined);
-        this.emitRecord({
-          id: randomUUID(),
-          sessionId: evicted.sessionId ?? null,
-          toolName: evicted.tool,
-          toolUseId: evicted.toolUseId ?? evictedPairingId,
-          timestamp: evicted.timestamp,
-          durationMs: null,
-          success: false,
-          errorType: 'timeout',
-          ...(evicted.inputSize !== undefined && { inputSizeBytes: evicted.inputSize }),
-          ...(evicted.inputHash !== undefined && { inputHash: evicted.inputHash }),
-          ...(evicted.platform !== undefined && { platform: evicted.platform }),
-          ...toolFields,
-        });
+        this.emitUnpairedPreRecord(evictedPairingId, evicted);
       }
     }
-    this.pending.set(this.pairingKey(event), event);
+    this.pending.set(this.pairingKey(event), { event, phase: 'awaiting_post' });
+  }
+
+  private handlePermissionRequestEvent(event: PermissionRequestHookEvent): void {
+    const entry = this.pending.get(event.toolUseId);
+    if (entry === undefined) {
+      logger.debug('Permission request without a pending pre — dropped', {
+        tool: event.tool,
+        toolUseId: event.toolUseId,
+      });
+      return;
+    }
+    this.pending.set(event.toolUseId, { event: entry.event, phase: 'permission_requested' });
+  }
+
+  private handlePermissionDeniedEvent(event: PermissionDeniedHookEvent): void {
+    const entry = this.pending.get(event.toolUseId);
+    if (entry === undefined) {
+      logger.debug('Permission denied without a pending pre — dropped', {
+        tool: event.tool,
+        toolUseId: event.toolUseId,
+      });
+      return;
+    }
+    this.pending.delete(event.toolUseId);
+
+    const pre = entry.event;
+    const toolFields = parseToolSpecificFields(pre.tool, pre.toolInput, undefined);
+    this.emitRecord({
+      id: randomUUID(),
+      sessionId: pre.sessionId ?? event.sessionId ?? null,
+      toolName: pre.tool,
+      toolUseId: pre.toolUseId ?? event.toolUseId,
+      timestamp: pre.timestamp,
+      // null, not denial latency — durationMs means execution time and the
+      // tool never executed, same convention as swept orphans.
+      durationMs: null,
+      success: false,
+      errorType: 'denied',
+      ...(event.deniedReason !== undefined && { error: event.deniedReason }),
+      ...(pre.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
+      ...(pre.inputHash !== undefined && { inputHash: pre.inputHash }),
+      ...(pre.cwd !== undefined && { cwd: pre.cwd }),
+      ...(pre.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
+      ...(pre.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
+      ...(pre.platform !== undefined && { platform: pre.platform }),
+      ...toolFields,
+    });
   }
 
   private handlePostEvent(event: PostHookEvent): void {
@@ -488,7 +712,7 @@ export class HookEventProcessor {
       toolUseId ??
       this.findOldestPendingKey(event.tool) ??
       `${event.tool}:${event.timestamp}:${randomUUID()}`;
-    const preEvent = this.pending.get(key);
+    const preEvent = this.pending.get(key)?.event;
     this.pending.delete(key);
 
     if (preEvent) {
@@ -498,14 +722,21 @@ export class HookEventProcessor {
         preEvent.toolInput,
         event.toolOutput,
       );
+      const wallClockMs = Math.max(0, event.timestamp - preEvent.timestamp);
+      const hasNativeDuration =
+        typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs);
       const record: ToolCallRecord = {
         id: randomUUID(),
         sessionId: preEvent.sessionId ?? event.sessionId ?? null,
         toolName: preEvent.tool,
         toolUseId: preEvent.toolUseId ?? key,
         timestamp: preEvent.timestamp,
-        durationMs: Math.max(0, event.timestamp - preEvent.timestamp),
+        durationMs: hasNativeDuration ? (event.nativeDurationMs as number) : wallClockMs,
+        permissionWaitMs: hasNativeDuration
+          ? Math.max(0, wallClockMs - (event.nativeDurationMs as number))
+          : null,
         success: event.success ?? true,
+        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
         ...(event.error !== undefined && { error: event.error }),
         ...(preEvent.inputSize !== undefined && { inputSizeBytes: preEvent.inputSize }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
@@ -517,6 +748,12 @@ export class HookEventProcessor {
         ...(preEvent.permissionMode !== undefined && {
           permissionMode: preEvent.permissionMode,
         }),
+        ...((preEvent.agentId ?? event.agentId) !== undefined && {
+          agentId: preEvent.agentId ?? event.agentId,
+        }),
+        ...((preEvent.agentType ?? event.agentType) !== undefined && {
+          agentType: preEvent.agentType ?? event.agentType,
+        }),
         ...((preEvent.platform ?? event.platform) !== undefined && {
           platform: preEvent.platform ?? event.platform,
         }),
@@ -524,7 +761,10 @@ export class HookEventProcessor {
       };
       this.emitRecord(record);
     } else {
-      // Orphaned post — no matching pre; use post-event's toolInput if present
+      // Orphaned post — no matching pre; use post-event's toolInput if present.
+      // There's no pre-event timestamp to build a wall-clock delta from, but
+      // a native duration_ms (if the platform sent one) is still real data —
+      // no reason to discard it just because pairing failed.
       logger.debug('Orphaned post event — no matching pre', { tool: event.tool, key });
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, event.toolOutput);
       const record: ToolCallRecord = {
@@ -533,10 +773,16 @@ export class HookEventProcessor {
         toolName: event.tool,
         toolUseId: event.toolUseId ?? key,
         timestamp: event.timestamp,
-        durationMs: null,
+        durationMs:
+          typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
+            ? event.nativeDurationMs
+            : null,
         success: event.success ?? true,
+        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
         ...(event.error !== undefined && { error: event.error }),
         ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
+        ...(event.agentId !== undefined && { agentId: event.agentId }),
+        ...(event.agentType !== undefined && { agentType: event.agentType }),
         ...(event.platform !== undefined && { platform: event.platform }),
         ...toolFields,
       };
@@ -581,57 +827,63 @@ export class HookEventProcessor {
     }
   }
 
+  /**
+   * How long a pending entry may dwell before it's flushed as an orphan.
+   * Permission-requested entries wait out the longer TTL — the user is being
+   * asked, and prompts dwell far longer than a healthy tool execution.
+   */
+  private pendingTtlMs(entry: PendingEntry): number {
+    return entry.phase === 'permission_requested'
+      ? PERMISSION_REQUESTED_TIMEOUT_MS
+      : this.orphanTimeoutMs;
+  }
+
+  /**
+   * Emit the record for a pending pre that will never pair: a swept orphan,
+   * a capacity eviction, or a shutdown flush. The phase decides the
+   * classification — a permission-requested entry expired because the user
+   * never approved ('rejected'); a bare entry expired because the tool never
+   * reported back ('timeout').
+   */
+  private emitUnpairedPreRecord(key: string, entry: PendingEntry): void {
+    const event = entry.event;
+    const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
+    this.emitRecord({
+      id: randomUUID(),
+      sessionId: event.sessionId ?? null,
+      toolName: event.tool,
+      toolUseId: event.toolUseId ?? key,
+      timestamp: event.timestamp,
+      durationMs: null,
+      success: false,
+      errorType: entry.phase === 'permission_requested' ? 'rejected' : 'timeout',
+      ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
+      ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
+      ...(event.platform !== undefined && { platform: event.platform }),
+      ...toolFields,
+    });
+  }
+
   private sweepOrphans(): void {
     const now = Date.now();
     const expired: string[] = [];
 
-    for (const [key, event] of this.pending) {
-      if (now - event.timestamp >= this.orphanTimeoutMs) {
+    for (const [key, entry] of this.pending) {
+      if (now - entry.event.timestamp >= this.pendingTtlMs(entry)) {
         expired.push(key);
       }
     }
 
     for (const key of expired) {
-      const event = this.pending.get(key)!;
+      const entry = this.pending.get(key)!;
       this.pending.delete(key);
-
-      const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
-      const record: ToolCallRecord = {
-        id: randomUUID(),
-        sessionId: event.sessionId ?? null,
-        toolName: event.tool,
-        toolUseId: event.toolUseId ?? key,
-        timestamp: event.timestamp,
-        durationMs: null,
-        success: false,
-        errorType: 'timeout',
-        ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
-        ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
-        ...(event.platform !== undefined && { platform: event.platform }),
-        ...toolFields,
-      };
-      this.emitRecord(record);
+      this.emitUnpairedPreRecord(key, entry);
     }
   }
 
   private flushPending(): void {
-    for (const [key, event] of this.pending) {
-      const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
-      const record: ToolCallRecord = {
-        id: randomUUID(),
-        sessionId: event.sessionId ?? null,
-        toolName: event.tool,
-        toolUseId: event.toolUseId ?? key,
-        timestamp: event.timestamp,
-        durationMs: null,
-        success: false,
-        errorType: 'timeout',
-        ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
-        ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
-        ...(event.platform !== undefined && { platform: event.platform }),
-        ...toolFields,
-      };
-      this.emitRecord(record);
+    for (const [key, entry] of this.pending) {
+      this.emitUnpairedPreRecord(key, entry);
     }
     this.pending.clear();
   }
@@ -647,7 +899,8 @@ export class HookEventProcessor {
   private findOldestPendingKey(tool: string): string | undefined {
     let oldestKey: string | undefined;
     let oldestTimestamp = Infinity;
-    for (const [k, v] of this.pending) {
+    for (const [k, entry] of this.pending) {
+      const v = entry.event;
       // Only match fallback-keyed entries (format: "Tool:timestamp:uuid") — skip
       // entries keyed by their real toolUseId so a no-toolUseId post event doesn't
       // steal a slot that belongs to a later post event that carries that toolUseId.
@@ -794,6 +1047,101 @@ export class HookEventProcessor {
       this.onApiFailure(frame);
     } catch (err) {
       logger.warn('onApiFailure callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleSessionStartEvent(event: SessionStartHookEvent): void {
+    if (!this.onSessionStart) return;
+    const frame: SessionStartFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      sessionId: event.sessionId ?? null,
+      ...(typeof event.source === 'string' ? { source: event.source } : {}),
+      ...(typeof event.secondsSinceLastResponse === 'number'
+        ? { secondsSinceLastResponse: event.secondsSinceLastResponse }
+        : {}),
+      ...(typeof event.contextTokens === 'number' ? { contextTokens: event.contextTokens } : {}),
+      ...(typeof event.promptCacheLikelyExpired === 'boolean'
+        ? { promptCacheLikelyExpired: event.promptCacheLikelyExpired }
+        : {}),
+      ...(typeof event.estimatedCacheWriteUsd === 'number'
+        ? { estimatedCacheWriteUsd: event.estimatedCacheWriteUsd }
+        : {}),
+    };
+    try {
+      this.onSessionStart(frame);
+    } catch (err) {
+      logger.warn('onSessionStart callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleInstructionsLoadedEvent(event: InstructionsLoadedHookEvent): void {
+    if (!this.onInstructionsLoaded) return;
+    const frame: InstructionsLoadedFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      sessionId: event.sessionId ?? null,
+      filePath: event.filePath,
+      ...(typeof event.memoryType === 'string' ? { memoryType: event.memoryType } : {}),
+      ...(typeof event.loadReason === 'string' ? { loadReason: event.loadReason } : {}),
+    };
+    try {
+      this.onInstructionsLoaded(frame);
+    } catch (err) {
+      logger.warn('onInstructionsLoaded callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleModelSwitchEvent(event: ModelSwitchHookEvent): void {
+    if (!this.onModelSwitch) return;
+    const frame: ModelSwitchFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      sessionId: event.sessionId ?? null,
+      fromModel: event.fromModel,
+      toModel: event.toModel,
+      ...(event.requestedModel !== undefined ? { requestedModel: event.requestedModel } : {}),
+      ...(typeof event.source === 'string' ? { source: event.source } : {}),
+    };
+    try {
+      this.onModelSwitch(frame);
+    } catch (err) {
+      logger.warn('onModelSwitch callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Shared handler for `user_prompt_submit`/`stop` — both carry nothing beyond timestamp/sessionId. */
+  private handleBoundaryEvent(
+    event: UserPromptSubmitHookEvent | StopHookEvent,
+    callback: ((event: BoundaryFrame) => void) | null,
+    callbackName: string,
+  ): void {
+    if (!callback) return;
+    const frame: BoundaryFrame = {
+      timestamp:
+        typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+          ? event.timestamp
+          : Date.now(),
+      sessionId: event.sessionId ?? null,
+    };
+    try {
+      callback(frame);
+    } catch (err) {
+      logger.warn(`${callbackName} callback failed`, {
         error: err instanceof Error ? err.message : String(err),
       });
     }

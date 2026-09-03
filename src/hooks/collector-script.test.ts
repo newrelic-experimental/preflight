@@ -18,6 +18,7 @@ import {
   writeCwdBreadcrumb,
   writePpidBreadcrumb,
 } from './collector-script.js';
+import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -96,6 +97,70 @@ function makeStopFailure(overrides?: Record<string, unknown>): string {
     error: 'rate_limit',
     error_details: '429 Too Many Requests',
     last_assistant_message: 'API Error: Rate limit reached',
+    ...overrides,
+  });
+}
+
+function makeSessionStartResume(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'abc123',
+    transcript_path: '/Users/test/.claude/projects/test/abc123.jsonl',
+    cwd: '/Users/test/project',
+    hook_event_name: 'SessionStart',
+    source: 'resume',
+    seconds_since_last_response: 5400,
+    context_tokens: 182340,
+    prompt_cache_likely_expired: true,
+    estimated_cache_write_usd: 1.1396,
+    ...overrides,
+  });
+}
+
+function makeInstructionsLoaded(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'abc123',
+    transcript_path: '/Users/test/.claude/projects/test/abc123.jsonl',
+    cwd: '/Users/test/project',
+    hook_event_name: 'InstructionsLoaded',
+    file_path: '/Users/test/project/CLAUDE.md',
+    memory_type: 'Project',
+    load_reason: 'session_start',
+    ...overrides,
+  });
+}
+
+function makePostModelSwitch(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'abc123',
+    transcript_path: '/Users/test/.claude/projects/test/abc123.jsonl',
+    cwd: '/Users/test/project',
+    hook_event_name: 'PostModelSwitch',
+    from_model: 'claude-sonnet-5',
+    to_model: 'claude-opus-5',
+    requested_model: 'opus',
+    source: 'command',
+    ...overrides,
+  });
+}
+
+function makeUserPromptSubmit(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'sess-001',
+    transcript_path: '/Users/test/.claude/projects/test/sess-001.jsonl',
+    cwd: '/projects/test',
+    hook_event_name: 'UserPromptSubmit',
+    prompt: 'fix the bug in foo.ts',
+    ...overrides,
+  });
+}
+
+function makeStop(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'sess-001',
+    transcript_path: '/Users/test/.claude/projects/test/sess-001.jsonl',
+    cwd: '/projects/test',
+    hook_event_name: 'Stop',
+    last_assistant_message: 'Done, all tests pass.',
     ...overrides,
   });
 }
@@ -213,7 +278,20 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('cursor');
     });
 
-    it('leaves event.platform unset for a genuine Claude Code hook with no explicit platform override', () => {
+    it('stamps event.platform "claude-code" when only CLAUDECODE is set', () => {
+      // jest itself runs under Claude Code, so CLAUDECODE is already set in
+      // this process env — set it explicitly for clarity and to survive a
+      // future test environment that doesn't carry it ambiently.
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
+    it('leaves event.platform unset when no platform signal is present', () => {
+      for (const key of CLAUDE_CODE_ENV_SIGNALS) delete process.env[key];
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
       processHook(makePreToolUse());
 
       expect(readBufferEvents()[0]!.platform).toBeUndefined();
@@ -224,6 +302,22 @@ describe('collector-script', () => {
 
       const event = readBufferEvents()[0]!;
       expect(event.transcriptPath).toBe('/tmp/fake-session.jsonl');
+    });
+
+    it('captures agent_id/agent_type as agentId/agentType', () => {
+      processHook(makePreToolUse({ agent_id: 'agent-abc123', agent_type: 'general-purpose' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.agentId).toBe('agent-abc123');
+      expect(event.agentType).toBe('general-purpose');
+    });
+
+    it('omits agentId/agentType for the parent session (no agent_id sent)', () => {
+      processHook(makePreToolUse());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.agentId).toBeUndefined();
+      expect(event.agentType).toBeUndefined();
     });
 
     it('does not include content fields by default', () => {
@@ -588,12 +682,42 @@ describe('collector-script', () => {
       expect(event.outputSize).toBeGreaterThan(0);
     });
 
+    it('captures agent_id/agent_type as agentId/agentType', () => {
+      processHook(makePostToolUse({ agent_id: 'agent-def456', agent_type: 'Explore' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.agentId).toBe('agent-def456');
+      expect(event.agentType).toBe('Explore');
+    });
+
     it('captures session metadata', () => {
       processHook(makePostToolUse());
 
       const event = readBufferEvents()[0]!;
       expect(event.sessionId).toBe('sess-001');
       expect(event.toolUseId).toBe('toolu_def456');
+    });
+
+    it('captures native duration_ms as nativeDurationMs', () => {
+      processHook(makePostToolUse({ duration_ms: 842 }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.nativeDurationMs).toBe(842);
+    });
+
+    it('omits nativeDurationMs when duration_ms is absent', () => {
+      processHook(makePostToolUse());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.nativeDurationMs).toBeUndefined();
+    });
+
+    it('ignores an invalid duration_ms (negative, NaN, or non-number)', () => {
+      processHook(makePostToolUse({ duration_ms: -5 }));
+      expect(readBufferEvents()[0]!.nativeDurationMs).toBeUndefined();
+
+      processHook(makePostToolUse({ duration_ms: 'not-a-number' }));
+      expect(readBufferEvents()[1]!.nativeDurationMs).toBeUndefined();
     });
   });
 
@@ -610,6 +734,13 @@ describe('collector-script', () => {
       expect(event.success).toBe(false);
       expect(event.error).toBe('Command exited with non-zero status code 1');
       expect(event.isInterrupt).toBe(false);
+    });
+
+    it('captures native duration_ms as nativeDurationMs', () => {
+      processHook(makePostToolUseFailure({ duration_ms: 1337 }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.nativeDurationMs).toBe(1337);
     });
 
     it('captures is_interrupt flag when true', () => {
@@ -704,6 +835,273 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — SessionStart', () => {
+    it('writes a session_start event with all resume-cost fields', () => {
+      processHook(makeSessionStartResume());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('session_start');
+      expect(event.source).toBe('resume');
+      expect(event.secondsSinceLastResponse).toBe(5400);
+      expect(event.contextTokens).toBe(182340);
+      expect(event.promptCacheLikelyExpired).toBe(true);
+      expect(event.estimatedCacheWriteUsd).toBeCloseTo(1.1396);
+    });
+
+    it('omits the resume-cost fields for a plain startup (no resume fields sent)', () => {
+      processHook(
+        makeSessionStartResume({
+          source: 'startup',
+          seconds_since_last_response: undefined,
+          context_tokens: undefined,
+          prompt_cache_likely_expired: undefined,
+          estimated_cache_write_usd: undefined,
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.source).toBe('startup');
+      expect(event.secondsSinceLastResponse).toBeUndefined();
+      expect(event.contextTokens).toBeUndefined();
+      expect(event.promptCacheLikelyExpired).toBeUndefined();
+      expect(event.estimatedCacheWriteUsd).toBeUndefined();
+    });
+
+    it('does not gate resume fields on recordContent', () => {
+      // source is a closed enum and the rest are numbers/booleans, not free text.
+      processHook(makeSessionStartResume());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.source).toBe('resume');
+      expect(event.estimatedCacheWriteUsd).toBeCloseTo(1.1396);
+    });
+  });
+
+  describe('processHook() — InstructionsLoaded', () => {
+    it('writes an instructions_loaded event with filePath/memoryType/loadReason', () => {
+      processHook(makeInstructionsLoaded());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('instructions_loaded');
+      expect(event.filePath).toBe('/Users/test/project/CLAUDE.md');
+      expect(event.memoryType).toBe('Project');
+      expect(event.loadReason).toBe('session_start');
+    });
+
+    it('captures a lazy nested_traversal load for a subdirectory CLAUDE.md', () => {
+      processHook(
+        makeInstructionsLoaded({
+          file_path: '/Users/test/project/packages/api/CLAUDE.md',
+          memory_type: 'Project',
+          load_reason: 'nested_traversal',
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.filePath).toBe('/Users/test/project/packages/api/CLAUDE.md');
+      expect(event.loadReason).toBe('nested_traversal');
+    });
+
+    it('defaults filePath to "unknown" when file_path is missing', () => {
+      processHook(makeInstructionsLoaded({ file_path: undefined }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.filePath).toBe('unknown');
+    });
+
+    it('does not gate filePath/memoryType/loadReason on recordContent', () => {
+      // Unlike StopFailure's error_details/last_assistant_message, these are
+      // path/enum metadata, not free-text content.
+      processHook(makeInstructionsLoaded());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.filePath).toBe('/Users/test/project/CLAUDE.md');
+      expect(event.memoryType).toBe('Project');
+    });
+  });
+
+  describe('processHook() — PostModelSwitch', () => {
+    it('writes a model_switch event with fromModel/toModel/requestedModel/source', () => {
+      processHook(makePostModelSwitch());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('model_switch');
+      expect(event.fromModel).toBe('claude-sonnet-5');
+      expect(event.toModel).toBe('claude-opus-5');
+      expect(event.requestedModel).toBe('opus');
+      expect(event.source).toBe('command');
+    });
+
+    it('captures an automatic switch with requestedModel null', () => {
+      processHook(
+        makePostModelSwitch({
+          source: 'auto',
+          requested_model: null,
+        }),
+      );
+
+      const event = readBufferEvents()[0]!;
+      expect(event.source).toBe('auto');
+      expect(event.requestedModel).toBeNull();
+    });
+
+    it('defaults fromModel/toModel to "unknown" when absent', () => {
+      processHook(makePostModelSwitch({ from_model: undefined, to_model: undefined }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.fromModel).toBe('unknown');
+      expect(event.toModel).toBe('unknown');
+    });
+
+    it('does not gate fromModel/toModel/source on recordContent', () => {
+      // Model IDs are a closed-ish identifier vocabulary, not free-text content.
+      processHook(makePostModelSwitch());
+
+      const event = readBufferEvents()[0]!;
+      expect(event.fromModel).toBe('claude-sonnet-5');
+      expect(event.source).toBe('command');
+    });
+  });
+
+  describe('processHook() — PermissionRequest / PermissionDenied', () => {
+    it('writes a permission_request event with toolUseId and sessionId', () => {
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf build' },
+          tool_use_id: 'toolu_perm1',
+          session_id: 'sess-001',
+          prompt_id: 'prompt-001',
+          cwd: '/projects/test',
+          permission_mode: 'default',
+        }),
+      );
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('permission_request');
+      expect(event.tool).toBe('Bash');
+      expect(event.toolUseId).toBe('toolu_perm1');
+      expect(event.sessionId).toBe('sess-001');
+      expect(event.timestamp).toEqual(expect.any(Number));
+    });
+
+    it('writes a permission_denied event carrying a redacted deniedReason', () => {
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionDenied',
+          tool_name: 'Bash',
+          tool_use_id: 'toolu_perm2',
+          session_id: 'sess-001',
+          denied_reason: 'Blocked by policy: Bearer eyJhbGciOiJIUzI1NiJ9.token.signature',
+        }),
+      );
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+      const event = events[0]!;
+      expect(event.mode).toBe('permission_denied');
+      expect(event.tool).toBe('Bash');
+      expect(event.toolUseId).toBe('toolu_perm2');
+      expect(event.deniedReason).toContain('Blocked by policy');
+      expect(event.deniedReason).toContain('[REDACTED]');
+      expect(event.deniedReason).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    });
+
+    it('drops a permission event with no tool_use_id without crashing', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          session_id: 'sess-001',
+        }),
+      );
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionDenied',
+          tool_name: 'Bash',
+          tool_use_id: '',
+          session_id: 'sess-001',
+        }),
+      );
+
+      expect(readBufferEvents()).toHaveLength(0);
+      expect(stderrWriteSpy).toHaveBeenCalledTimes(2);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('never writes hook decision output to stdout', () => {
+      processHook(
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_use_id: 'toolu_perm3',
+          session_id: 'sess-001',
+        }),
+      );
+
+      expect(stdoutSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('processHook() — UserPromptSubmit', () => {
+    it('writes a user_prompt_submit event with session metadata', () => {
+      processHook(makeUserPromptSubmit());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('user_prompt_submit');
+      expect(event.sessionId).toBe('sess-001');
+    });
+
+    it('never captures the prompt text, even with recordContent=true', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeUserPromptSubmit({ prompt: 'API_KEY = sk-1234567890abcdef' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(JSON.stringify(event)).not.toContain('sk-1234567890abcdef');
+      expect(event.prompt).toBeUndefined();
+    });
+  });
+
+  describe('processHook() — Stop', () => {
+    it('writes a stop event with session metadata', () => {
+      processHook(makeStop());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('stop');
+      expect(event.sessionId).toBe('sess-001');
+    });
+
+    it('never captures last_assistant_message, even with recordContent=true', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeStop({ last_assistant_message: 'API_KEY = sk-1234567890abcdef' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(JSON.stringify(event)).not.toContain('sk-1234567890abcdef');
+      expect(event.lastAssistantMessage).toBeUndefined();
+    });
+  });
+
   describe('recordContent', () => {
     it('includes redacted input content when recordContent=true (PreToolUse)', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
@@ -793,7 +1191,7 @@ describe('collector-script', () => {
     it('silently ignores unknown hook event names', () => {
       processHook(
         JSON.stringify({
-          hook_event_name: 'SessionStart',
+          hook_event_name: 'PreCompact',
           session_id: 'sess-001',
         }),
       );
@@ -1985,7 +2383,7 @@ describe('collector-script', () => {
     });
 
     it('still ignores a genuinely unknown hook_event_name', () => {
-      processHook(makeGeminiBeforeTool({ hook_event_name: 'SessionStart' }));
+      processHook(makeGeminiBeforeTool({ hook_event_name: 'PreCompact' }));
       expect(readBufferEvents()).toHaveLength(0);
     });
   });

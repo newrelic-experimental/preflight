@@ -356,6 +356,65 @@ describe('InstructionDriftTracker.recordToolCall (content-based hashing)', () =>
   });
 });
 
+describe('InstructionDriftTracker.recordInstructionsLoaded', () => {
+  it('sets promptHash from a session-start load with no preceding Read tool call', () => {
+    // The whole point of InstructionsLoaded: eager session-start loads have
+    // no visible Read call at all, so recordToolCall() alone would leave
+    // promptHash null for the entire session unless something else happens
+    // to re-read the file later.
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'v1 content');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordInstructionsLoaded(claudeMdPath, 'session_start');
+
+    expect(tracker.promptHash).not.toBeNull();
+  });
+
+  it('detects a real content change the same way recordToolCall does', () => {
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'v1 content');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordInstructionsLoaded(claudeMdPath, 'session_start');
+    const hashAfterV1 = tracker.promptHash;
+
+    writeFileSync(claudeMdPath, 'v2 content, materially different');
+    tracker.recordInstructionsLoaded(claudeMdPath, 'compact');
+    const hashAfterV2 = tracker.promptHash;
+
+    expect(hashAfterV2).not.toBe(hashAfterV1);
+  });
+
+  it('ignores loads of files outside CLAUDE.md/.claude/', () => {
+    const otherPath = join(tmpDir, 'some-source-file.ts');
+    writeFileSync(otherPath, 'export const x = 1;');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordInstructionsLoaded(otherPath, 'session_start');
+
+    expect(tracker.promptHash).toBeNull();
+  });
+
+  it('does not throw and leaves promptHash unchanged when the file is unreadable', () => {
+    const tracker = new InstructionDriftTracker();
+    const missingPath = join(tmpDir, 'CLAUDE.md'); // never created
+
+    expect(() => tracker.recordInstructionsLoaded(missingPath, 'session_start')).not.toThrow();
+    expect(tracker.promptHash).toBeNull();
+  });
+
+  it('works without a loadReason argument', () => {
+    const claudeMdPath = join(tmpDir, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'v1 content');
+
+    const tracker = new InstructionDriftTracker();
+    tracker.recordInstructionsLoaded(claudeMdPath);
+
+    expect(tracker.promptHash).not.toBeNull();
+  });
+});
+
 describe('InstructionDriftTracker — configurable instruction file paths', () => {
   it('hashes a platform-specific instruction file when configured', () => {
     const cursorRulesPath = join(tmpDir, '.cursorrules');

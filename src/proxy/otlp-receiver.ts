@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { Agent } from 'undici';
 import { createLogger } from '../shared/index.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
+import { decodeOtlpRequest, encodeOtlpRequest } from './otlp-protobuf.js';
 
 const logger = createLogger('otlp-receiver');
 
@@ -16,6 +17,10 @@ const ALLOWED_CONTENT_TYPES = new Set([
   'application/x-protobuf',
   'application/octet-stream',
 ]);
+
+function mediaTypeOf(contentType: string | undefined): string {
+  return contentType?.split(';')[0]?.trim() ?? 'application/json';
+}
 
 class BodyTooLargeError extends Error {}
 class RequestTimeoutError extends Error {}
@@ -153,8 +158,8 @@ export class OtlpReceiver {
 
     try {
       const body = await this.readBody(req);
-      const enriched = this.enrichPayload(body);
       const contentType = req.headers['content-type'] ?? 'application/json';
+      const enriched = this.enrichPayload(body, path, contentType);
 
       if (this.options.forwardEndpoint) {
         const result = await this.forward(enriched, path, contentType);
@@ -346,25 +351,43 @@ export class OtlpReceiver {
   }
 
   private checkContentType(req: IncomingMessage): void {
-    const contentType =
-      (req.headers['content-type'] as string | undefined)?.split(';')[0]?.trim() ??
-      'application/json';
+    const contentType = mediaTypeOf(req.headers['content-type'] as string | undefined);
 
     if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
       throw new UnsupportedContentTypeError(`Unsupported Content-Type: ${contentType}`);
     }
   }
 
-  enrichPayload(body: Buffer): Buffer {
-    // For JSON-encoded OTLP (content-type: application/json), parse and inject attributes.
-    // For protobuf-encoded OTLP (content-type: application/x-protobuf), pass through unchanged
-    // (protobuf decoding requires additional dependencies — handle JSON only in v1).
+  enrichPayload(body: Buffer, path?: string, contentType?: string): Buffer {
+    // application/x-protobuf is decoded, enriched, and re-encoded. Everything
+    // else keeps the JSON-parse-or-passthrough behavior, including
+    // application/octet-stream, whose encoding the OTLP spec leaves ambiguous.
+    if (mediaTypeOf(contentType) === 'application/x-protobuf') {
+      return this.enrichProtobufPayload(body, path ?? '');
+    }
     try {
       const parsed = JSON.parse(body.toString('utf-8')) as Record<string, unknown>;
       this.injectResourceAttributes(parsed, this.options.enrichmentAttributes);
       return Buffer.from(JSON.stringify(parsed));
     } catch {
-      // Not JSON (likely protobuf) — forward as-is
+      // Not JSON; forward unmodified
+      return body;
+    }
+  }
+
+  private enrichProtobufPayload(body: Buffer, path: string): Buffer {
+    // Re-encoding through the vendored descriptor drops fields the descriptor
+    // does not know about. A sender running a newer OTLP schema than
+    // src/proxy/otlp-descriptor.ts loses those fields here (the JSON path has
+    // no such limit). Regenerating the descriptor is documented in that file.
+    try {
+      const payload = decodeOtlpRequest(path, body);
+      if (payload === null) return body;
+      this.injectResourceAttributes(payload, this.options.enrichmentAttributes);
+      return encodeOtlpRequest(path, payload);
+    } catch {
+      // Never drop telemetry on an enrich failure. Forward the original
+      // bytes, matching the JSON path's behavior on unparseable input.
       return body;
     }
   }

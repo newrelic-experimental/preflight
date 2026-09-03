@@ -6,6 +6,7 @@ import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { CopilotAdapter } from './copilot-adapter.js';
+import { CopilotAppAdapter } from './copilot-app-adapter.js';
 import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
 import { CursorAdapter } from './cursor-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
@@ -88,6 +89,11 @@ export function createDefaultRegistry(): PlatformRegistry {
   registry.register(new CursorAdapter());
   registry.register(new WindsurfAdapter());
   registry.register(new CopilotAdapter());
+  // CopilotAppAdapter before CopilotSdkAdapter: the app is the more specific
+  // host (ambient-detects via ~/.copilot/data.db, which only the desktop app
+  // creates), so it must win when both could match the same ~/.copilot
+  // directory.
+  registry.register(new CopilotAppAdapter());
   registry.register(new CopilotSdkAdapter());
   registry.register(new ZedAdapter());
   registry.register(new ContinueAdapter());

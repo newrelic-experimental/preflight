@@ -44,35 +44,16 @@ jest.mock('../config.js', () => ({
   DEFAULT_STORAGE_PATH: '/test-home/.newrelic-preflight',
 }));
 
-// Stub install-helper.
-jest.mock('./install-helper.js', () => ({
-  detectSettingsPath: jest.fn(() => '/test-home/.claude/settings.json'),
-  NR_HOOK_RE: /preflight-collector"?\s+(?:pre|post)-tool/,
-  entryContainsNrObserve: jest.fn((entry: unknown) => {
-    // Replicate minimal logic for tests that construct real hook entries
-    if (typeof entry !== 'object' || entry === null) return false;
-    const obj = entry as Record<string, unknown>;
-    const re = /preflight-collector"?\s+(?:pre|post)-tool/;
-    if (Array.isArray(obj.hooks)) {
-      return (obj.hooks as Array<Record<string, unknown>>).some(
-        (h) => typeof h.command === 'string' && re.test(h.command),
-      );
-    }
-    if (typeof obj.command === 'string') return re.test(obj.command);
-    return false;
-  }),
-  entryHasAnyCommandHook: jest.fn((entry: unknown) => {
-    if (typeof entry !== 'object' || entry === null) return false;
-    const obj = entry as Record<string, unknown>;
-    if (Array.isArray(obj.hooks)) {
-      return (obj.hooks as Array<Record<string, unknown>>).some(
-        (h) => typeof h.command === 'string' && h.command !== '',
-      );
-    }
-    if (typeof obj.command === 'string') return obj.command !== '';
-    return false;
-  }),
-}));
+// Stub install-helper: only detectSettingsPath is redirected — the matching
+// logic and hook-event vocabulary stay real so these tests can't drift from
+// what the installer actually writes.
+jest.mock('./install-helper.js', () => {
+  const real = jest.requireActual<typeof import('./install-helper.js')>('./install-helper.js');
+  return {
+    ...real,
+    detectSettingsPath: jest.fn(() => '/test-home/.claude/settings.json'),
+  };
+});
 
 // Stub platform module.
 jest.mock('./platform.js', () => ({
@@ -115,6 +96,13 @@ function makeOpts() {
   return {
     configPath: '/test-home/.newrelic-preflight/config.json',
     storagePath: '/test-home/.newrelic-preflight',
+  };
+}
+
+function nrHookEntry(subcommand: string) {
+  return {
+    matcher: '',
+    hooks: [{ type: 'command', command: `preflight-collector ${subcommand}` }],
   };
 }
 
@@ -385,23 +373,43 @@ describe('runDiagnostics', () => {
       expect(checks.find((x) => x.check === 'Hooks wired')?.status).toBe('fail');
     });
 
-    it('returns ok when both PreToolUse and PostToolUse hooks are present', async () => {
-      const hookEntry = {
-        matcher: '',
-        hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }],
-      };
-      const postEntry = {
-        matcher: '',
-        hooks: [{ type: 'command', command: 'preflight-collector post-tool' }],
-      };
+    it('returns ok when all five preflight hooks are present', async () => {
       mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
       mockedReadFileSync.mockImplementation((p) => {
         if (p === '/test-home/.claude/settings.json')
-          return JSON.stringify({ hooks: { PreToolUse: [hookEntry], PostToolUse: [postEntry] } });
+          return JSON.stringify({
+            hooks: {
+              PreToolUse: [nrHookEntry('pre-tool')],
+              PostToolUse: [nrHookEntry('post-tool')],
+              PermissionRequest: [nrHookEntry('permission-request')],
+              PermissionDenied: [nrHookEntry('permission-denied')],
+              StopFailure: [nrHookEntry('stop-failure')],
+            },
+          });
         return '{}';
       });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Hooks wired')?.status).toBe('ok');
+    });
+
+    it('returns fail naming the permission hooks for a pre-upgrade install', async () => {
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === '/test-home/.claude/settings.json')
+          return JSON.stringify({
+            hooks: {
+              PreToolUse: [nrHookEntry('pre-tool')],
+              PostToolUse: [nrHookEntry('post-tool')],
+            },
+          });
+        return '{}';
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toContain('PermissionRequest');
+      expect(c.detail).toContain('PermissionDenied');
+      expect(c.fix).toContain('preflight install');
     });
 
     it('includes malformed-file note when one path parses and another fails JSON.parse', async () => {
@@ -449,37 +457,41 @@ describe('runDiagnostics', () => {
       mockedDetectSettingsPath
         .mockReturnValueOnce('/test-home/.claude/settings.json') // Linux path (no hooks)
         .mockReturnValueOnce(`${winHome}/.claude/settings.json`); // Windows path (has hooks)
-      const hookEntry = {
-        matcher: '',
-        hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }],
-      };
-      const postEntry = {
-        matcher: '',
-        hooks: [{ type: 'command', command: 'preflight-collector post-tool' }],
-      };
       mockedExistSync.mockImplementation((p) => p === `${winHome}/.claude/settings.json`);
       mockedReadFileSync.mockImplementation((p) => {
         if (p === `${winHome}/.claude/settings.json`)
-          return JSON.stringify({ hooks: { PreToolUse: [hookEntry], PostToolUse: [postEntry] } });
+          return JSON.stringify({
+            hooks: {
+              PreToolUse: [nrHookEntry('pre-tool')],
+              PostToolUse: [nrHookEntry('post-tool')],
+              PermissionRequest: [nrHookEntry('permission-request')],
+              PermissionDenied: [nrHookEntry('permission-denied')],
+              StopFailure: [nrHookEntry('stop-failure')],
+            },
+          });
         return '{}';
       });
       const checks = await runDiagnostics(makeOpts());
       expect(checks.find((x) => x.check === 'Hooks wired')?.status).toBe('ok');
     });
 
-    it('returns warn when both PreToolUse and PostToolUse have custom (non-NR) commands', async () => {
-      const preEntry = {
+    it('returns warn when every hook event has a custom (non-NR) command', async () => {
+      const customEntry = (sub: string) => ({
         matcher: '',
-        hooks: [{ type: 'command', command: '/home/user/wrapper.sh pre-tool' }],
-      };
-      const postEntry = {
-        matcher: '',
-        hooks: [{ type: 'command', command: '/home/user/wrapper.sh post-tool' }],
-      };
+        hooks: [{ type: 'command', command: `/home/user/wrapper.sh ${sub}` }],
+      });
       mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
       mockedReadFileSync.mockImplementation((p) => {
         if (p === '/test-home/.claude/settings.json')
-          return JSON.stringify({ hooks: { PreToolUse: [preEntry], PostToolUse: [postEntry] } });
+          return JSON.stringify({
+            hooks: {
+              PreToolUse: [customEntry('pre-tool')],
+              PostToolUse: [customEntry('post-tool')],
+              PermissionRequest: [customEntry('permission-request')],
+              PermissionDenied: [customEntry('permission-denied')],
+              StopFailure: [customEntry('stop-failure')],
+            },
+          });
         return '{}';
       });
       const checks = await runDiagnostics(makeOpts());
@@ -491,10 +503,6 @@ describe('runDiagnostics', () => {
     });
 
     it('returns warn when one event has the NR hook and the other has a custom command', async () => {
-      const preNrEntry = {
-        matcher: '',
-        hooks: [{ type: 'command', command: 'preflight-collector pre-tool' }],
-      };
       const postCustomEntry = {
         matcher: '',
         hooks: [{ type: 'command', command: '/home/user/wrapper.sh post-tool' }],
@@ -503,7 +511,13 @@ describe('runDiagnostics', () => {
       mockedReadFileSync.mockImplementation((p) => {
         if (p === '/test-home/.claude/settings.json')
           return JSON.stringify({
-            hooks: { PreToolUse: [preNrEntry], PostToolUse: [postCustomEntry] },
+            hooks: {
+              PreToolUse: [nrHookEntry('pre-tool')],
+              PostToolUse: [postCustomEntry],
+              PermissionRequest: [nrHookEntry('permission-request')],
+              PermissionDenied: [nrHookEntry('permission-denied')],
+              StopFailure: [nrHookEntry('stop-failure')],
+            },
           });
         return '{}';
       });

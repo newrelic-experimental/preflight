@@ -155,8 +155,10 @@ export function validateReportSessionEndInput(raw: unknown): ReportSessionEndInp
   };
 }
 
+export const GENERIC_MCP_PLATFORM_NAME = 'generic-mcp';
+
 export class GenericMcpAdapter implements PlatformAdapter {
-  readonly platformName = 'generic-mcp';
+  readonly platformName = GENERIC_MCP_PLATFORM_NAME;
   readonly visibilityLevel = 'self-reported' as const;
   readonly capabilities = { instructionFilePaths: [] as const };
 

@@ -147,6 +147,31 @@ export class TurnTracker implements Resettable {
     return this.turnCounter + 1;
   }
 
+  /**
+   * Finalizes the current open turn using an externally-supplied end
+   * timestamp — Claude Code's Stop hook — instead of waiting for the next
+   * tool call to arrive more than `gapThresholdMs` late. Fixes two
+   * heuristic failure modes at once: two genuinely separate turns that
+   * happen to follow each other quickly getting merged (Stop closes the
+   * first before the second's tool calls ever have a chance to look like
+   * a gap), and a turn's recorded end lagging its last tool call by
+   * however long Claude spent generating its final response after that
+   * call (this only ever extends `currentTurnEnd`, never shrinks it, so a
+   * late/clock-skewed Stop timestamp can't make a turn look shorter than
+   * its own last tool call).
+   *
+   * No-op when no turn is currently open — a tool-call-free conversational
+   * turn, or a Stop that doesn't correspond to any pending tool calls, is
+   * safe to ignore here.
+   */
+  finalizeTurnAt(stopTimestampMs: number): void {
+    if (this.currentTurnCalls.length === 0) return;
+    if (stopTimestampMs > this.currentTurnEnd) {
+      this.currentTurnEnd = stopTimestampMs;
+    }
+    this.finalizeTurn();
+  }
+
   reset(_sessionId: string): void {
     this.turns = [];
     this.turnCounter = 0;

@@ -46,6 +46,26 @@ export interface TokenRecordContext {
 
 const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
 
+/**
+ * Scales every dollar field of a `CostBreakdown` by `factor`, leaving token
+ * counts and everything else untouched. Used to correct Preflight's own
+ * list-price computation to an org's real contracted rate (see
+ * `CostTrackerOptions.rateMultiplier`) — `calculateCost()` itself lives in
+ * `src/shared/`, a vendored snapshot this repo must not edit, so the
+ * correction is applied to its output here instead of inside it.
+ */
+function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreakdown {
+  return {
+    inputUsd: breakdown.inputUsd * factor,
+    outputUsd: breakdown.outputUsd * factor,
+    thinkingUsd: breakdown.thinkingUsd * factor,
+    cacheReadUsd: breakdown.cacheReadUsd * factor,
+    cacheCreationUsd: breakdown.cacheCreationUsd * factor,
+    totalUsd: breakdown.totalUsd * factor,
+    savingsFromCacheUsd: breakdown.savingsFromCacheUsd * factor,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -96,6 +116,15 @@ export interface CostMetrics {
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
+  /**
+   * The combined correction factor (`rateMultiplier` × the 1.1 data-residency
+   * premium when configured — see `CostTrackerOptions`) applied to every
+   * dollar figure above. `1` means no correction: every figure is Preflight's
+   * own list-price computation, same as before this field existed. Surfaced
+   * so a consumer (MCP tool response, dashboard) can label the numbers
+   * accordingly instead of implying they match an invoice.
+   */
+  readonly costRateMultiplierApplied: number;
 }
 
 /**
@@ -186,6 +215,7 @@ export class CostTracker implements Resettable {
   private subagentCostByDayUsd = new Map<string, number>();
   private parentCostUsd = 0;
   private totalLinesChanged = 0;
+  private readonly rateMultiplier: number;
 
   /**
    * @param sessionTracker Optional. When provided, `getMetrics().costPerFileModified`
@@ -194,9 +224,16 @@ export class CostTracker implements Resettable {
    *   CostTracker — if the two are reset independently (e.g. one on a
    *   session boundary and the other not), the ratio silently blends two
    *   different session histories.
+   * @param options.rateMultiplier Combined correction factor for an org's
+   *   contracted rate and/or the data-residency premium (see `src/config.ts`'s
+   *   `costRateMultiplier`/`dataResidencyPremium` — this constructor takes
+   *   their product, already resolved, not the two raw config fields).
+   *   Validated at config load (`0 < x`); trusted as-is here. Defaults to `1`
+   *   (no correction — list price, same as before this option existed).
    */
-  constructor(sessionTracker?: SessionTracker) {
+  constructor(sessionTracker?: SessionTracker, options?: { rateMultiplier?: number }) {
     this.sessionTracker = sessionTracker ?? null;
+    this.rateMultiplier = options?.rateMultiplier ?? 1;
   }
 
   /**
@@ -237,7 +274,11 @@ export class CostTracker implements Resettable {
     model: string,
     ctx?: TokenRecordContext,
   ): CostBreakdown {
-    const breakdown = calculateCost(model, usage);
+    const rawBreakdown = calculateCost(model, usage);
+    const breakdown =
+      this.rateMultiplier === 1
+        ? rawBreakdown
+        : scaleCostBreakdown(rawBreakdown, this.rateMultiplier);
     const wallNowMs = Date.now();
 
     // Late-arrival rejection: a `ctx.timestampMs` more than 48h before now is
@@ -548,6 +589,7 @@ export class CostTracker implements Resettable {
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
+      costRateMultiplierApplied: this.rateMultiplier,
     };
   }
 

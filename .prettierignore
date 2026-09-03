@@ -1,4 +1,5 @@
 dist/
+plugin/.claude-plugin/scripts/collector-script.js
 coverage/
 node_modules/
 .claude/

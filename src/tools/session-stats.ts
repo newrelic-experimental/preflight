@@ -50,6 +50,7 @@ import type { InstructionDriftTracker } from '../metrics/instruction-drift-track
 import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import type { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
 import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TurnTracker } from '../metrics/turn-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
@@ -143,7 +144,7 @@ const TURN_ANALYSIS_TOOL = {
 const INSTALL_HOOKS_TOOL = {
   name: 'nr_observe_install_hooks',
   description:
-    'Install PreToolUse and PostToolUse monitoring hooks into ~/.claude/settings.json. ' +
+    'Install PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied monitoring hooks into ~/.claude/settings.json. ' +
     'Call when nr_observe_health reports hooks_installed: false. ' +
     'Requires a Claude Code restart to activate monitoring.',
   inputSchema: { type: 'object' as const, properties: {} },
@@ -400,6 +401,7 @@ export interface ToolRegistrationOptions {
   toolCallBuffer?: { getRecords(): readonly import('../storage/types.js').ToolCallRecord[] };
   qualityProxyTracker?: QualityProxyTracker;
   apiFailureTracker?: ApiFailureTracker;
+  sessionResumeTracker?: SessionResumeTracker;
   turnCostAttributor?: TurnCostAttributor;
   turnTracker?: TurnTracker;
   gitEfficiencyTracker?: GitEfficiencyTracker;

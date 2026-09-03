@@ -11,6 +11,7 @@ import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { LocalStore } from '../storage/local-store.js';
 import { redactSensitive } from '../config.js';
 import { isSyntheticSessionId } from '../hooks/session-resolver.js';
+import { attachTeamAttribution } from '../transport/nr-ingest.js';
 
 const logger = createLogger('audit-trail');
 
@@ -217,7 +218,12 @@ function detectSecurityAlert(
 
 export function auditRecordToNrEvent(
   record: AuditRecord,
-  attrs?: { teamId?: string | null; projectId?: string | null; orgId?: string | null },
+  attrs?: {
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+    repoUrl?: string | null;
+  },
 ): NrEventData {
   const event: NrEventData = {
     eventType: 'AiAuditEvent',
@@ -229,9 +235,7 @@ export function auditRecordToNrEvent(
     developer: record.developer,
   };
 
-  if (attrs?.teamId) event.team_id = attrs.teamId;
-  if (attrs?.projectId) event.project_id = attrs.projectId;
-  if (attrs?.orgId) event.org_id = attrs.orgId;
+  attachTeamAttribution(event, attrs ?? {});
 
   if (record.sessionId != null) event.session_id = record.sessionId;
   if (record.filePath != null) event.file_path = redactSensitive(record.filePath);
@@ -250,7 +254,12 @@ export function auditRecordToNrEvent(
 
 export function securityAlertToNrEvent(
   record: AuditRecord,
-  attrs?: { teamId?: string | null; projectId?: string | null; orgId?: string | null },
+  attrs?: {
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+    repoUrl?: string | null;
+  },
 ): NrEventData {
   const alert = record.securityAlert;
   if (!alert) throw new Error('securityAlertToNrEvent called with no securityAlert on record');
@@ -265,9 +274,7 @@ export function securityAlertToNrEvent(
     developer: record.developer,
   };
 
-  if (attrs?.teamId) event.team_id = attrs.teamId;
-  if (attrs?.projectId) event.project_id = attrs.projectId;
-  if (attrs?.orgId) event.org_id = attrs.orgId;
+  attachTeamAttribution(event, attrs ?? {});
 
   if (record.sessionId != null) event.session_id = record.sessionId;
   if (record.filePath != null) event.file_path = redactSensitive(record.filePath);

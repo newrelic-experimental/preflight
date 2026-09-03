@@ -29,6 +29,7 @@ export interface ServerOptions {
   readonly developer?: string;
   readonly teamId?: string | null;
   readonly projectId?: string | null;
+  readonly repoUrl?: string | null;
   readonly sessionTracker?: SessionTracker;
   readonly costTracker?: CostTracker;
   readonly taskDetector?: TaskDetector;

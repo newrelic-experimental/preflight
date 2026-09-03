@@ -41,6 +41,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify plugin hook bundle is up to date
+        run: npm run verify:plugin-hook
+
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,3 +83,41 @@ jobs:
             [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
           done
           exit 1
+
+      # The MCP Registry looks up the package on registry.npmjs.org to verify
+      # it carries a matching `mcpName`, but npm's own registry API can take
+      # a few seconds to reflect a publish that just succeeded. Poll for the
+      # version instead of a fixed sleep, since propagation time varies.
+      - name: Wait for npm package availability
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          for attempt in 1 2 3 4 5; do
+            if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "@newrelic/preflight@$VERSION not yet visible on npm, attempt $attempt"
+            sleep $((attempt * 10))
+          done
+          echo "@newrelic/preflight@$VERSION never became visible on npm" >&2
+          exit 1
+
+      # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
+      # npm package carries a matching `mcpName`, so this must run after the
+      # npm publish above. GitHub OIDC auth covers the
+      # io.github.newrelic-experimental/* namespace with no extra secret.
+      - name: Sync server.json version
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const version = require('./package.json').version;
+            const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+            s.version = version;
+            s.packages[0].version = version;
+            fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
+          "
+
+      - name: Publish to MCP Registry
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

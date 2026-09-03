@@ -5,11 +5,122 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.34.0] - 2026-09-03
 
 ### Added
 
-- **Preflight is now available as a [Kiro Power](docs/KIRO_POWER.md)** (`kiro-power/`) — install it from Kiro's Powers panel to add the `nr_observe_*` MCP query tools without manually editing `~/.kiro/settings/mcp.json`. Ships in Kiro's Agent Plugins format (`plugin.json` + `mcp.json` + two Agent Skills: `setup` for first-run onboarding, `observability` for the tool catalog). Kiro Powers can't bundle hooks or executables, so automatic tool-call capture stays a documented one-time step (`npm install -g @newrelic/preflight` for the `preflight-collector` bin, plus a `.kiro/hooks/preflight-observability.json` entry) rather than something the Power installs itself — see `docs/KIRO_POWER.md` and the corresponding addition to `KiroAdapter.getHookInstallInstructions()`.
+- **Preflight now attributes telemetry to a repo's full git remote URL, not just the shorter `org/repo` form.** A new `repo_url` field ships alongside `project_id` on every NR event and metric, auto-inferred from `git remote get-url origin` and credential-stripped before being sent. It has its own opt-out (`repoUrlEnabled: false`, or `NEW_RELIC_AI_REPO_URL_ENABLED=false`), independent of `project_id`'s, and the `preflight install` setup wizard prompts for it explicitly.
+- **Five recommended New Relic Scorecard rule definitions are now documented in `docs/SCORECARDS.md`**, covering AI-coding cost, anti-pattern rate, efficiency score, cost-per-file, and security alerts per team — usable against Preflight's existing custom events with no entity synthesis required.
+
+### Fixed
+
+- **`project_id` (and now `repo_url`) could silently resolve from the wrong repository when running under a git hook or CI subprocess.** Both are inferred via `git remote get-url origin`, but that read didn't clear `GIT_DIR`/`GIT_WORK_TREE` — environment variables git sets for hook subprocesses (including this repo's own pre-push hook) that redirect git commands to a different repository's `.git` directory.
+
+## [1.33.2] - 2026-09-03
+
+### Fixed
+
+- **The MCP Registry publish step in the Release workflow was failing on every run.** `server.json`'s `description` field was 106 characters, exceeding the registry's 100-character limit; shortened it so releases reach `registry.modelcontextprotocol.io` again.
+
+## [1.33.1] - 2026-09-03
+
+### Added
+
+- **Grok 4.6, Gemini 3.8 Flash, Claude Fable 5.1, and Claude Mythos 5.1 are now priced.**
+
+### Fixed
+
+- **Cached tokens on Bedrock's Claude 3.5 Haiku were being priced at $0.** That model's cache pricing was missing from the pricing table entirely; it now carries cache-write/cache-read rates consistent with every other Bedrock Claude entry.
+- **Grok 4.5's cached-input rate and context window were stale.** Cached input now prices at $0.3 per million tokens (was $0.5) and the context window is now 500K (was overstated as 1M), matching xAI's own published pricing.
+- **`ministral-3b-latest`, `ministral-8b-latest`, and `ministral-14b-latest` now resolve to real pricing instead of $0.** Mistral introduced "-latest" aliases for its Ministral 3 family; without them, sessions reporting those exact model strings had no matching entry.
+
+## [1.33.0] - 2026-09-03
+
+### Added
+
+- **Preflight now recognizes the GitHub Copilot desktop app as its own platform.** Previously its sessions captured tool-call activity but no cost data and filed under the generic MCP fallback; Preflight now labels them correctly and reads token-exact cost from the app's own local usage database.
+
+### Fixed
+
+- **Claude Code sessions were sometimes mislabeled as a generic MCP client instead of Claude Code.** Platform detection checked environment variables Claude Code doesn't actually set, so affected sessions' cost and tool-call data filed under the wrong platform label instead of being correctly attributed.
+
+## [1.32.1] - 2026-09-03
+
+### Fixed
+
+- **Tooltip value text is no longer unreadable black-on-dark on the Cost Per Outcome, Top Tools, and Cost by Tool charts.** These charts color each bar per-entry rather than on the `Bar` element itself, so Recharts fell back to a hardcoded black for the tooltip's value line while the label stayed themed — it now uses the same ink token as the rest of the tooltip.
+
+## [1.32.0] - 2026-09-02
+
+### Added
+
+- **Preflight now supports correcting cost figures toward an organization's actual contracted rate.** Preflight previously computed every dollar figure from its own vendored public list-price table, with no way to reflect a negotiated discount or the data-residency inference premium — so for an org billed differently than list price, every cost figure was systematically off by a known amount. Two new config options close that gap: a flat discount multiplier, and a flag for the same 1.1× premium applied to data-residency workspaces.
+
+## [1.31.0] - 2026-09-02
+
+### Added
+
+- **Turn and task boundaries are now anchored to Claude Code's own prompt-submit and stop signals, not just idle gaps.** Turn and task tracking previously inferred boundaries from a short gap in tool-call activity, which could merge two quick back-to-back turns or understate a turn's true duration by missing the time spent generating a final response. Preflight now uses Claude Code's `UserPromptSubmit` and `Stop` hooks as a precise, corroborating signal for both, falling back to the existing gap-based detection when a conversation ends without a `Stop` (e.g. a user interrupt).
+
+## [1.30.0] - 2026-09-02
+
+### Added
+
+- **Preflight now understands when a resumed session's cost spike was expected.** Claude Code's `SessionStart` hook reports how long a session had been idle and its own estimate of what re-warming the prompt cache will cost when resuming a stale conversation. Preflight now surfaces that context alongside its cost forecast, so a resume-driven spike has an explanation attached instead of appearing as an unexplained cache-hit dip.
+
+## [1.29.0] - 2026-09-02
+
+### Added
+
+- **Preflight now sees model switches as they happen, not just as a change in token-usage reports.** Claude Code's `PostModelSwitch` hook fires whenever the session's model changes — a deliberate `/model` switch, a persistent automatic fallback, or the model restored on resume. Preflight now records each of these as a discrete event, including how many were automatic, instead of only inferring a change happened from a different model string showing up in usage data.
+
+## [1.28.0] - 2026-09-02
+
+### Added
+
+- **Instruction-file drift tracking now sees session-start loads, not just edits.** Claude Code's `InstructionsLoaded` hook fires the moment a CLAUDE.md or `.claude/rules/*.md` file enters context — including at session start, when no `Read` tool call happens at all. Preflight now uses that as the authoritative signal instead of relying solely on Edit/Write tool calls to infer when instructions changed.
+
+## [1.27.0] - 2026-09-02
+
+### Added
+
+- **Tool-call records now capture which subagent, if any, made the call.** When Claude Code reports its native `agent_id`/`agent_type` hook fields, Preflight attributes the tool call to that subagent — laying groundwork for future per-subagent cost and workflow breakdowns.
+
+## [1.26.1] - 2026-09-02
+
+### Fixed
+
+- **Tool-call latency no longer includes the time you spent approving a permission prompt.** Duration was measured as the wall-clock gap between when Preflight received a tool call and when it completed, which included any permission-prompt wait and PreToolUse hook overhead. Preflight now reads Claude Code's own reported tool-execution time when available, so latency percentiles and per-tool cost/latency breakdowns reflect actual tool speed.
+
+## [1.26.0] - 2026-09-02
+
+### Added
+
+- **Preflight now publishes to the official MCP Registry** (registry.modelcontextprotocol.io) after each release, making it discoverable through the registry and the surfaces that federate from it.
+
+## [1.25.0] - 2026-09-01
+
+### Added
+
+- **Preflight can now be installed directly as a Claude Code plugin** — `/plugin marketplace add newrelic-experimental/preflight` sets up hooks and the MCP server without a separate npm install or build step.
+
+## [1.24.0] - 2026-09-01
+
+### Added
+
+- **A new `companionMode` setting prevents double-counting cost and token metrics when an org also enables Claude Code's built-in OTel export.** With it on, Preflight's own cost gauges are suppressed and cost-bearing events are tagged for reconciliation instead of dropped, so a blended "org AI spend" dashboard reflects the true total rather than counting each session twice.
+
+## [1.23.0] - 2026-09-01
+
+### Added
+
+- **The inbound OTLP receiver now enriches protobuf-encoded payloads, not just JSON** — `application/x-protobuf` bodies (the default for most OTel SDKs, including Claude Code's own) are decoded, tagged with session/repo context, and re-encoded, matching what the JSON path already did. A payload using OTLP schema fields newer than the receiver's vendored descriptor loses those unrecognized fields on re-encode; a payload that fails to decode is forwarded unmodified rather than dropped.
+
+## [1.22.0] - 2026-09-01
+
+### Added
+
+- **Tool-call telemetry now distinguishes user rejections, auto-mode policy denials, and mid-run interrupts from a generic timeout** — `error_type` gains `rejected`, `denied`, and `interrupted` values (previously all three exported as `timeout`), enabling acceptance-rate analysis for Edit/Write tools. Wires Claude Code's `PermissionRequest`/`PermissionDenied` hooks alongside the existing ones; after upgrading, `preflight doctor`'s hooks-wired check will report a failure until `preflight install` is re-run to register the two new hooks.
 
 ## [1.21.0] - 2026-09-01
 

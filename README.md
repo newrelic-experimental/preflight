@@ -102,6 +102,17 @@ Restart your AI tool — hooks and the MCP server load at session start. Every t
 > `nr_observe_*` query tools — see the doc for install steps and how to add
 > automatic tool-call capture on top.
 
+> **Using Claude Code?** You can skip the npm install above and add Preflight as a [Claude Code plugin](docs/PLUGIN.md) instead:
+>
+> ```
+> /plugin marketplace add newrelic-experimental/preflight
+> /plugin install newrelic-preflight@newrelic-preflight-marketplace
+> ```
+
+### Other ways to install
+
+**Cursor** — [Add to Cursor](https://cursor.com/en/install-mcp?name=newrelic-preflight&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBuZXdyZWxpYy9wcmVmbGlnaHQiLCItLXN0ZGlvIl19) installs the MCP server via a one-click deeplink; run `preflight setup` afterwards for hook capture.
+
 ---
 
 ## Works With
@@ -191,6 +202,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 ## Documentation
 
 - [**ADVANCED.md**](docs/ADVANCED.md) — Configuration, dashboards, alerts, Terraform
+- [**SCORECARDS.md**](docs/SCORECARDS.md) — New Relic Scorecard rules for team attribution
 - [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) — Data flow, component reference, and operating modes
 - [**ADAPTERS.md**](docs/ADAPTERS.md) — Per-platform integration mechanism, setup steps, and known gaps
 - [**TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) — Common setup and connection problems, and how to fix them

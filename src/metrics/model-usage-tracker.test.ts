@@ -118,6 +118,83 @@ describe('ModelUsageTracker', () => {
   });
 });
 
+describe('ModelUsageTracker.recordModelSwitch', () => {
+  it('reports zero switches for a new tracker', () => {
+    const t = new ModelUsageTracker();
+    const m = t.getMetrics();
+    expect(m.switchCount).toBe(0);
+    expect(m.automaticSwitchCount).toBe(0);
+    expect(m.recentSwitches).toEqual([]);
+  });
+
+  it('records a deliberate switch with all fields', () => {
+    const t = new ModelUsageTracker();
+    t.recordModelSwitch({
+      fromModel: 'claude-sonnet-5',
+      toModel: 'claude-opus-5',
+      source: 'command',
+      requestedModel: 'opus',
+      timestampMs: 1700000000000,
+    });
+
+    const m = t.getMetrics();
+    expect(m.switchCount).toBe(1);
+    expect(m.automaticSwitchCount).toBe(0);
+    expect(m.recentSwitches).toEqual([
+      {
+        timestamp: 1700000000000,
+        fromModel: 'claude-sonnet-5',
+        toModel: 'claude-opus-5',
+        source: 'command',
+        requestedModel: 'opus',
+      },
+    ]);
+  });
+
+  it('counts source: "auto" switches separately as automaticSwitchCount', () => {
+    const t = new ModelUsageTracker();
+    t.recordModelSwitch({ fromModel: 'a', toModel: 'b', source: 'command' });
+    t.recordModelSwitch({ fromModel: 'b', toModel: 'a', source: 'auto' });
+    t.recordModelSwitch({ fromModel: 'a', toModel: 'c', source: 'resume' });
+
+    const m = t.getMetrics();
+    expect(m.switchCount).toBe(3);
+    expect(m.automaticSwitchCount).toBe(1);
+  });
+
+  it('defaults source to "unknown" and requestedModel to null when absent', () => {
+    const t = new ModelUsageTracker();
+    t.recordModelSwitch({ fromModel: 'claude-sonnet-5', toModel: 'claude-opus-5' });
+
+    const [event] = t.getMetrics().recentSwitches;
+    expect(event?.source).toBe('unknown');
+    expect(event?.requestedModel).toBeNull();
+  });
+
+  it('bounds recentSwitches to the most recent 100, dropping the oldest', () => {
+    const t = new ModelUsageTracker();
+    for (let i = 0; i < 105; i++) {
+      t.recordModelSwitch({ fromModel: `model-${i}`, toModel: `model-${i + 1}` });
+    }
+
+    const m = t.getMetrics();
+    expect(m.switchCount).toBe(100);
+    expect(m.recentSwitches).toHaveLength(100);
+    expect(m.recentSwitches[0]?.fromModel).toBe('model-5');
+    expect(m.recentSwitches[99]?.fromModel).toBe('model-104');
+  });
+
+  it('reset() clears switch history', () => {
+    const t = new ModelUsageTracker();
+    t.recordModelSwitch({ fromModel: 'a', toModel: 'b' });
+    t.reset('sess-1');
+
+    const m = t.getMetrics();
+    expect(m.switchCount).toBe(0);
+    expect(m.recentSwitches).toEqual([]);
+  });
+});
+
 describe('ModelUsageTracker.getRawBreakdown', () => {
   it('returns raw counters with no derived fields for a new tracker', () => {
     const t = new ModelUsageTracker();
@@ -159,6 +236,9 @@ describe('ModelUsageTracker.combineBreakdowns', () => {
       mostUsedModel: null,
       mostEfficientModel: null,
       totalModelsUsed: 0,
+      switchCount: 0,
+      automaticSwitchCount: 0,
+      recentSwitches: [],
     });
   });
 

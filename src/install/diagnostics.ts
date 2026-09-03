@@ -13,8 +13,11 @@ import {
   detectSettingsPath,
   entryContainsNrObserve,
   entryHasAnyCommandHook,
+  HOOK_EVENT_TYPES,
+  HOOK_SUBCOMMAND_PATTERN,
   NR_HOOK_RE,
 } from './install-helper.js';
+import type { HookEventType } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
@@ -233,17 +236,14 @@ function checkDaemon(): DiagnosticCheck[] {
   return [installedCheck, nodePathCheck];
 }
 
-/** The only two settings.json hook keys this diagnostic checks for. */
-interface ClaudeSettingsHooks {
-  readonly PreToolUse?: unknown;
-  readonly PostToolUse?: unknown;
-}
+/** The settings.json hook keys this diagnostic checks — the installer's own set. */
+type ClaudeSettingsHooks = Partial<Record<HookEventType, unknown>>;
 
 // Captures the binary path portion of an installed NR hook command, e.g.
 // `"/Users/x/.nvm/.../bin/preflight-collector" pre-tool` -> group 1 =
 // `/Users/x/.nvm/.../bin/preflight-collector`. Handles both quoted and
 // unquoted forms (see generateHookEntries() in install-helper.ts).
-const HOOK_COMMAND_PATH_RE = /^"?(.+?)"?\s+(?:pre|post)-tool$/;
+const HOOK_COMMAND_PATH_RE = new RegExp(`^"?(.+?)"?\\s+(?:${HOOK_SUBCOMMAND_PATTERN})$`);
 
 function checkHooksWired(settingsPaths: string[], platform: string | undefined): DiagnosticCheck {
   if (platform !== undefined && platform !== 'claude-code') {
@@ -265,10 +265,8 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
   }
 
   const anyPathExists = settingsPaths.some(existsSync);
-  let hooksPre = false;
-  let hooksPost = false;
-  let hooksPreAny = false;
-  let hooksPostAny = false;
+  const nrWired = new Set<HookEventType>();
+  const anyWired = new Set<HookEventType>();
   const parseErrorPaths: string[] = [];
   let anyParsed = false;
 
@@ -278,13 +276,11 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
       const settings = JSON.parse(readFileSync(sp, 'utf-8')) as Record<string, unknown>;
       anyParsed = true;
       const hooks = settings.hooks as ClaudeSettingsHooks | undefined;
-      if (Array.isArray(hooks?.PreToolUse)) {
-        hooksPre ||= hooks.PreToolUse.some(entryContainsNrObserve);
-        hooksPreAny ||= hooks.PreToolUse.some(entryHasAnyCommandHook);
-      }
-      if (Array.isArray(hooks?.PostToolUse)) {
-        hooksPost ||= hooks.PostToolUse.some(entryContainsNrObserve);
-        hooksPostAny ||= hooks.PostToolUse.some(entryHasAnyCommandHook);
+      for (const hookType of HOOK_EVENT_TYPES) {
+        const entries = hooks?.[hookType];
+        if (!Array.isArray(entries)) continue;
+        if (entries.some(entryContainsNrObserve)) nrWired.add(hookType);
+        if (entries.some(entryHasAnyCommandHook)) anyWired.add(hookType);
       }
     } catch (err) {
       logger.debug('settings file could not be parsed — treating as not wired', { err, path: sp });
@@ -301,13 +297,13 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
     };
   }
 
-  if (hooksPre && hooksPost) {
+  if (HOOK_EVENT_TYPES.every((hookType) => nrWired.has(hookType))) {
     const malformedNote =
       parseErrorPaths.length > 0 ? `; ${parseErrorPaths.join(' and ')} could not be parsed` : '';
     return {
       check: 'Hooks wired',
       status: parseErrorPaths.length > 0 ? 'warn' : 'ok',
-      detail: `PreToolUse and PostToolUse hooks found${malformedNote}`,
+      detail: `${HOOK_EVENT_TYPES.join(', ')} hooks found${malformedNote}`,
       ...(parseErrorPaths.length > 0 && {
         fix: 'Fix or delete the malformed file(s), then run: preflight install',
       }),
@@ -325,16 +321,9 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
   }
 
   // Determine which event types are missing the official NR collector hook.
-  const missingNrEvents = (
-    [!hooksPre && 'PreToolUse', !hooksPost && 'PostToolUse'] as (string | false)[]
-  ).filter((x): x is string => x !== false);
-
-  const customEvents = missingNrEvents.filter((ev) =>
-    ev === 'PreToolUse' ? hooksPreAny : hooksPostAny,
-  );
-  const trulyMissingEvents = missingNrEvents.filter((ev) =>
-    ev === 'PreToolUse' ? !hooksPreAny : !hooksPostAny,
-  );
+  const missingNrEvents = HOOK_EVENT_TYPES.filter((hookType) => !nrWired.has(hookType));
+  const customEvents = missingNrEvents.filter((hookType) => anyWired.has(hookType));
+  const trulyMissingEvents = missingNrEvents.filter((hookType) => !anyWired.has(hookType));
 
   const searched = settingsPaths.filter(existsSync).join(' or ');
   const malformedNote =
@@ -346,7 +335,7 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
       check: 'Hooks wired',
       status: 'warn',
       detail: `${customEvents.join(' and ')} ${customEvents.length > 1 ? 'have' : 'has'} a custom hook command in ${searched} — verify it calls preflight-collector${malformedNote}`,
-      fix: 'Run preflight install to use the official hook, or confirm your script calls preflight-collector <event>-tool',
+      fix: 'Run preflight install to use the official hooks, or confirm your script forwards each hook event to preflight-collector',
     };
   }
 
@@ -380,7 +369,7 @@ function extractInstalledHookCommand(settingsPaths: string[]): string | null {
       continue;
     }
     const hooks = settings.hooks as ClaudeSettingsHooks | undefined;
-    for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
+    for (const hookType of HOOK_EVENT_TYPES) {
       const entries = hooks?.[hookType];
       if (!Array.isArray(entries)) continue;
       for (const entry of entries) {

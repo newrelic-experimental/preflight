@@ -249,7 +249,8 @@ Session cost breakdown by task, model, and efficiency.
   "cost_per_line_of_code": 0.003,
   "cost_per_file_modified": 0.065,
   "cost_per_million_tokens": 7.43,
-  "tokens": { "input": 50000, "output": 20000, "thinking": 10000 }
+  "tokens": { "input": 50000, "output": 20000, "thinking": 10000 },
+  "rate_multiplier_applied": 1
 }
 ```
 
@@ -264,6 +265,7 @@ Session cost breakdown by task, model, and efficiency.
 - `cost_per_file_modified` — `totalCost / uniqueFilesWritten` (null if no files modified)
 - `cost_per_million_tokens` — blended session rate: `(totalCost / totalTokens) * 1_000_000`, summed across input, output, thinking, cache-read, and cache-creation tokens (null if no tokens reported). Not shipped as its own NR metric — it's a pure ratio of `ai.cost.session_total_usd` and the `ai.cost.tokens_*` counts already emitted, so it's more flexibly computed in NRQL at query time (`sum(cost)/sum(tokens)*1e6`, facetable by any dimension) than as a pre-baked gauge.
 - `tokens` — running totals by token type from all reports
+- `rate_multiplier_applied` — `1` unless `costRateMultiplier`/`dataResidencyPremium` are configured (see [ADVANCED.md](./ADVANCED.md#cost--pricing-corrections)), in which case every dollar figure above already reflects that correction. Preflight's cost figures are always its own estimate from token counts × a pricing table, never a real invoice — this field only tells you whether that estimate has been adjusted toward an org's actual contracted rate.
 
 **Requires:** `CostTracker`; `TaskDetector` for per-task breakdown
 
@@ -999,7 +1001,7 @@ Source: `src/tools/cost-tools.ts`
 
 ### `nr_observe_get_cost_forecast`
 
-Projects future spend based on current session burn rate.
+Projects future spend based on current session burn rate. When this session was resumed after being stale, the response also includes a `resumeContext` field (`resumeCount`, `totalEstimatedCacheWriteUsd`, `lastResume`) — Claude Code's own SessionStart report of how long it had been and its estimated cost to re-warm the prompt cache, sourced from `SessionResumeTracker`. Riding alongside the forecast as extra JSON; it never changes the forecast fields themselves.
 
 **Parameters:** None
 
@@ -1160,7 +1162,7 @@ Source: `src/tools/analytics-tools.ts`, `src/metrics/task-completion-tracker.ts`
 
 ### `nr_observe_get_model_usage`
 
-Which AI model was used per request and cost-efficiency per model.
+Which AI model was used per request, cost-efficiency per model, and any model switches during the session.
 
 **Parameters:** None
 
@@ -1190,7 +1192,25 @@ Which AI model was used per request and cost-efficiency per model.
   },
   "mostUsedModel": "claude-sonnet-4-6",
   "mostEfficientModel": "claude-sonnet-4-6",
-  "totalModelsUsed": 2
+  "totalModelsUsed": 2,
+  "switchCount": 2,
+  "automaticSwitchCount": 1,
+  "recentSwitches": [
+    {
+      "timestamp": 1767225600000,
+      "fromModel": "claude-sonnet-4-6",
+      "toModel": "claude-opus-4-7",
+      "source": "command",
+      "requestedModel": "opus"
+    },
+    {
+      "timestamp": 1767225660000,
+      "fromModel": "claude-opus-4-7",
+      "toModel": "claude-sonnet-4-6",
+      "source": "auto",
+      "requestedModel": null
+    }
+  ]
 }
 ```
 
@@ -1200,6 +1220,8 @@ Which AI model was used per request and cost-efficiency per model.
 - `costPerMillionTokens` — per-model rate: `(totalCostUsd / (totalInputTokens + totalOutputTokens)) * 1_000_000` (null if no tokens). Only counts input+output tokens — narrower than `nr_observe_get_cost_breakdown`'s session-blended `cost_per_million_tokens`, which also folds in thinking/cache-read/cache-creation tokens. The two figures are not directly comparable.
 - `mostUsedModel` — the model with the highest `requestCount`
 - `mostEfficientModel` — the model with the lowest `costPerOutputToken`
+- `switchCount` / `automaticSwitchCount` — total `PostModelSwitch` events seen this session, and the subset where `source === 'auto'` (a persistent automatic change, e.g. a sustained fallback — not a one-turn fallback-chain substitution, which Claude Code doesn't fire this hook for)
+- `recentSwitches` — the most recent switches (newest last, bounded to 100); `requestedModel` is `null` for an automatic switch or session-resume restore
 
 **Data source:** `ModelUsageTracker`
 
@@ -1208,6 +1230,7 @@ Which AI model was used per request and cost-efficiency per model.
 - Tracks `model` field from each request (e.g., "claude-sonnet-4-6")
 - Aggregates request count, input/output tokens, and cost per model
 - Picks `mostUsedModel` (highest request count) and `mostEfficientModel` (lowest `costPerOutputToken`)
+- Records each Claude Code `PostModelSwitch` hook event as a discrete switch (deliberate `/model` change, persistent automatic fallback, or resume) via `recordModelSwitch()`
 
 **Requires:** `ModelUsageTracker`
 
