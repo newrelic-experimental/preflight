@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] - 2026-09-03
+
+### Added
+
+- **Preflight is now available as a [Kiro Power](docs/KIRO_POWER.md)** — install it from Kiro's Powers panel for the `nr_observe_*` MCP tools without manually editing `~/.kiro/settings/mcp.json`.
+
+### Fixed
+
+- **Session resolution failed when the MCP server was launched through a wrapper process (e.g. `npx`), which affected Kiro and could affect other launchers.**
+- **Kiro sessions were misdetected as a generic MCP client, and Kiro's tool names weren't recognized** — both silently zeroed out file, edit, and shell metrics.
+- **MCP clients that connect before the full tool set is registered now get notified once it is**, instead of seeing only a partial tool list for the rest of the session.
+
 ## [1.34.0] - 2026-09-03
 
 ### Added
