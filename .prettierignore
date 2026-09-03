@@ -8,8 +8,3 @@ package-lock.json
 *_IDEATION.md
 *_PLAN.md
 site/.astro/
-
-# Standalone HTML reports contain pre-formatted blocks (process trees, terminal
-# transcripts) whose exact leading whitespace is load-bearing under
-# `white-space: pre`. Prettier rewraps that content and destroys the alignment.
-examples/*.html
