@@ -84,6 +84,23 @@ jobs:
           done
           exit 1
 
+      # The MCP Registry looks up the package on registry.npmjs.org to verify
+      # it carries a matching `mcpName`, but npm's own registry API can take
+      # a few seconds to reflect a publish that just succeeded. Poll for the
+      # version instead of a fixed sleep, since propagation time varies.
+      - name: Wait for npm package availability
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          for attempt in 1 2 3 4 5; do
+            if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "@newrelic/preflight@$VERSION not yet visible on npm, attempt $attempt"
+            sleep $((attempt * 10))
+          done
+          echo "@newrelic/preflight@$VERSION never became visible on npm" >&2
+          exit 1
+
       # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the
