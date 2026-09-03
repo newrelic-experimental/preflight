@@ -280,6 +280,41 @@ function extractInputMeta(toolName, input) {
       }
       if (typeof obj.replace_all === "boolean") meta.replace_all = obj.replace_all;
       break;
+    // Amazon Kiro. Tool names and tool_input field names captured from a live
+    // Kiro install (42.08, macOS) — `read_file` sends {path, offset, limit} and
+    // `str_replace` sends {path, oldStr, newStr, replace_all}. Two deltas from
+    // Claude Code worth noting: the file key is `path`, not `file_path`, and the
+    // edit strings are `oldStr`/`newStr`, not `old_string`/`new_string`.
+    //
+    // These are explicit cases rather than hoisting `path` into the
+    // name-independent file_path block above, because Grep/Glob also send `path`
+    // — there it means a search root, not a file, and promoting it to file_path
+    // would misreport searches as file access for every platform.
+    //
+    // The path Kiro sends is workspace-relative ("cloudformation/export-env.sh"),
+    // unlike Claude Code's absolute paths. That's fine for the unique-file
+    // counting these fields feed, but don't assume absolute downstream.
+    case "read_file":
+      if (typeof obj.path === "string") meta.file_path = obj.path;
+      if (typeof obj.offset === "number") meta.offset = obj.offset;
+      if (typeof obj.limit === "number") meta.limit = obj.limit;
+      break;
+    case "str_replace": {
+      if (typeof obj.path === "string") meta.file_path = obj.path;
+      const kiroOld = obj.oldStr;
+      const kiroNew = obj.newStr;
+      if (typeof kiroOld === "string") {
+        meta.oldStringLength = kiroOld.length;
+        meta.oldLineCount = kiroOld.length > 0 ? countLines(kiroOld) : 0;
+      }
+      if (typeof kiroNew === "string") {
+        meta.newStringLength = kiroNew.length;
+        meta.newLineCount = kiroNew.length > 0 ? countLines(kiroNew) : 0;
+        meta.isDelete = kiroNew.length === 0;
+      }
+      if (typeof obj.replace_all === "boolean") meta.replace_all = obj.replace_all;
+      break;
+    }
     // PowerShell is a real, first-party Claude Code tool on native Windows,
     // auto-enabled without Git Bash (code.claude.com/docs/en/tools-reference,
     // /setup, /env-vars) — same command/description/timeout/run_in_background
