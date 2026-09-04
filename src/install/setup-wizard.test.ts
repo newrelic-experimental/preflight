@@ -1352,6 +1352,12 @@ describe('setupWizard environment and nrApiKey steps', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     // Prevent the test runner's real NEW_RELIC_API_KEY from bleeding in as a default
     delete process.env.NEW_RELIC_API_KEY;
+    // This block's tests never exercise credential-validation failure paths, so
+    // give validateLicenseKey/validateApiKey a definite resolved value here rather
+    // than relying on whatever a prior describe block's beforeEach last configured
+    // (jest.clearAllMocks() clears call history, not mockResolvedValue results).
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
   });
 
   afterEach(() => {
@@ -1929,15 +1935,15 @@ describe('setupWizard Copilot hooks install step', () => {
   });
 
   // Local mode order up through this step:
-  // mode, developer, teamId, projectId, sessionBudget, dashboardPort,
-  // copyStarterRules, installHooks, installCopilotHooks
+  // mode, developer, teamId, projectId, repoUrlEnabled, sessionBudget,
+  // dashboardPort, copyStarterRules, installHooks, installCopilotHooks
   function answers(...values: string[]): void {
     let i = 0;
     mockRl.question.mockImplementation(async () => values[i++] ?? '');
   }
 
   it('accepts the default (Enter) and runs the Copilot installer', async () => {
-    answers('local', 'tester', '', '', '', '', 'n', 'n', '');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', '');
 
     await runSetupWizard();
 
@@ -1947,7 +1953,7 @@ describe('setupWizard Copilot hooks install step', () => {
   });
 
   it("does not run the Copilot installer when the user answers 'n'", async () => {
-    answers('local', 'tester', '', '', '', '', 'n', 'n', 'n');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n');
 
     await runSetupWizard();
 
@@ -1955,7 +1961,7 @@ describe('setupWizard Copilot hooks install step', () => {
   });
 
   it("does not run the Copilot installer when the user answers 'no'", async () => {
-    answers('local', 'tester', '', '', '', '', 'n', 'n', 'no');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'no');
 
     await runSetupWizard();
 
@@ -1966,8 +1972,8 @@ describe('setupWizard Copilot hooks install step', () => {
     mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
     mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
     // cloud mode order: mode, accountId, licenseKey, environment, nrApiKey,
-    // developer, teamId, projectId, sessionBudget, installHooks, installCopilotHooks
-    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', 'n', 'y');
+    // developer, teamId, projectId, repoUrlEnabled, sessionBudget, installHooks, installCopilotHooks
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'n', 'y');
 
     await runSetupWizard();
 
@@ -1982,7 +1988,7 @@ describe('setupWizard Copilot hooks install step', () => {
   });
 
   it('does not pass credentials in local mode (none were collected)', async () => {
-    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
 
     await runSetupWizard();
 
@@ -1991,7 +1997,7 @@ describe('setupWizard Copilot hooks install step', () => {
 
   it('sets exitCode=1 but continues the wizard when runInstallCli rejects', async () => {
     mockedCli.runInstallCli.mockRejectedValueOnce(new Error('copilot install failed'));
-    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
 
     await runSetupWizard();
 
@@ -2004,7 +2010,7 @@ describe('setupWizard Copilot hooks install step', () => {
 
   it('is asked independently of the Claude hooks answer', async () => {
     // Decline Claude hooks ('n' at installHooks) but accept Copilot ('y').
-    answers('local', 'tester', '', '', '', '', 'n', 'n', 'y');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
 
     await runSetupWizard();
 
