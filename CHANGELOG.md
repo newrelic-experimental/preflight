@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.0] - 2026-09-04
+
+### Added
+
+- **`git clean -f` and `find -delete` now raise a `destructive_command` alert at `critical`.** Both delete files with no recovery path and were flagged by nothing before. Dry-run and bare `git clean` stay unflagged.
+
 ## [1.40.0] - 2026-09-04
 
 ### Added
