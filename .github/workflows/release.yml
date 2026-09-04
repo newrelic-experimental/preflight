@@ -105,15 +105,27 @@ jobs:
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the
       # io.github.newrelic-experimental/* namespace with no extra secret.
-      - name: Sync server.json version
+      #
+      # plugin/.claude-plugin/plugin.json and kiro-power/plugin.json have no
+      # registry consumer to satisfy, but their own version fields have
+      # drifted from package.json's before (kiro-power/plugin.json went two
+      # releases stale after #545) because nothing else keeps them in sync.
+      - name: Sync manifest versions
         run: |
           node -e "
             const fs = require('node:fs');
             const version = require('./package.json').version;
+
             const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
             s.version = version;
             s.packages[0].version = version;
             fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
+
+            for (const path of ['plugin/.claude-plugin/plugin.json', 'kiro-power/plugin.json']) {
+              const p = JSON.parse(fs.readFileSync(path, 'utf8'));
+              p.version = version;
+              fs.writeFileSync(path, JSON.stringify(p, null, 2) + '\n');
+            }
           "
 
       - name: Publish to MCP Registry
@@ -121,3 +133,12 @@ jobs:
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
+
+      - name: Commit synced manifest versions
+        run: |
+          if ! git diff --quiet -- server.json plugin/.claude-plugin/plugin.json kiro-power/plugin.json; then
+            VERSION="$(node -p "require('./package.json').version")"
+            git add server.json plugin/.claude-plugin/plugin.json kiro-power/plugin.json
+            git commit -m "Chore: sync manifest versions to $VERSION"
+            git push origin HEAD:main
+          fi
