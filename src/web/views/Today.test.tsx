@@ -2567,3 +2567,63 @@ describe('Today view — API Failures panel', () => {
     expect(await screen.findByText(/Rate-limit throttling detected/)).toBeInTheDocument();
   });
 });
+
+describe('Today view — Model Usage panel', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const stats = (requestCount: number, totalCostUsd: number, costPerOutputToken: number) => ({
+    requestCount,
+    totalCostUsd,
+    costPerOutputToken,
+    costPerMillionTokens: costPerOutputToken * 500_000,
+  });
+
+  function stubModelUsage(byModel: Record<string, unknown>, mostEfficientModel: string): void {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/model-usage')) {
+        return new Response(
+          JSON.stringify({ byModel, mostUsedModel: 'claude-fable-5', mostEfficientModel }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  const fiveModels = {
+    'claude-fable-5': stats(1080, 210.72, 0.00009),
+    'claude-opus-5': stats(555, 24.99, 0.00006),
+    'claude-sonnet-5': stats(729, 20.96, 0.00005),
+    'claude-haiku-4-5-20251001': stats(599, 6.1, 0.00002),
+    'claude-fable-5-1': stats(3, 0.02, 0.00001),
+  };
+
+  it('keeps the most efficient model visible when it falls outside the top 4 by spend', async () => {
+    stubModelUsage(fiveModels, 'claude-fable-5-1');
+    renderToday();
+    expect(await screen.findByText('claude-fable-5-1')).toBeInTheDocument();
+    expect(screen.getByText('3req')).toBeInTheDocument();
+    expect(
+      screen.getByText('Most efficient: claude-fable-5-1 ($10.00/1M output tok)'),
+    ).toBeInTheDocument();
+  });
+
+  it('still caps the list at 4 rows when the most efficient model is already listed', async () => {
+    stubModelUsage(fiveModels, 'claude-haiku-4-5-20251001');
+    renderToday();
+    expect(await screen.findByText('claude-haiku-4-5-20251001')).toBeInTheDocument();
+    expect(screen.queryByText('claude-fable-5-1')).toBeNull();
+    expect(
+      screen.getByText('Most efficient: claude-haiku-4-5-20251001 ($20.00/1M output tok)'),
+    ).toBeInTheDocument();
+  });
+});

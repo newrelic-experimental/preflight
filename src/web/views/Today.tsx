@@ -1064,6 +1064,8 @@ interface ModelUsageMetrics {
   readonly mostEfficientModel: string | null;
 }
 
+const MAX_MODEL_ROWS = 4;
+
 function ModelUsagePanel(): JSX.Element {
   const { data } = useQuery<ModelUsageMetrics>({
     queryKey: qk.modelUsage,
@@ -1073,18 +1075,27 @@ function ModelUsagePanel(): JSX.Element {
 
   // Same shape-defensive guard as LatencyPanel — `data.byModel` can be
   // missing or null when no token events have been recorded yet.
-  const models = data?.byModel
+  const ranked = data?.byModel
     ? Object.entries(data.byModel)
         .filter(([, s]) => s.requestCount > 0)
         .sort((a, b) => b[1].totalCostUsd - a[1].totalCostUsd)
-        .slice(0, 4)
     : [];
+  const mostEfficient = data?.mostEfficientModel ?? null;
+  // The cheapest model per output token is often the one that spent the
+  // least today, so a plain top-N-by-spend cut would hide the very row the
+  // footer names. Re-attach it so the label always points at a visible row.
+  const models = ranked.slice(0, MAX_MODEL_ROWS);
+  const cutMostEfficient = ranked.slice(MAX_MODEL_ROWS).find(([m]) => m === mostEfficient);
+  if (cutMostEfficient) models.push(cutMostEfficient);
+  const mostEfficientRate = mostEfficient
+    ? (data?.byModel?.[mostEfficient]?.costPerOutputToken ?? null)
+    : null;
 
   return (
     <Card padding="sm" className="h-full">
       <div className="flex items-center gap-1.5 mb-2">
         <Eyebrow>Model Usage</Eyebrow>
-        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. The live slice resets if the server process restarts." />
+        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. The $/1M tok column blends input and output tokens; 'most efficient' is the lowest cost per output token. The live slice resets if the server process restarts." />
       </div>
       {!data || models.length === 0 ? (
         <EmptyState
@@ -1106,9 +1117,11 @@ function ModelUsagePanel(): JSX.Element {
               </div>
             </div>
           ))}
-          {data?.mostEfficientModel && (
+          {mostEfficient && (
             <div className="text-[10px] text-accent-green mt-1">
-              Most efficient: {data.mostEfficientModel}
+              Most efficient: {mostEfficient}
+              {mostEfficientRate !== null &&
+                ` (${formatUsd(mostEfficientRate * 1_000_000)}/1M output tok)`}
             </div>
           )}
         </div>

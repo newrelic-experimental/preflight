@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.1] - 2026-09-04
+
+### Fixed
+
+- **The Today dashboard's Model Usage panel no longer names a "most efficient" model that it doesn't list.** The panel shows the top 4 models by spend, and the cheapest model per output token is often the one that spent the least, so its row was cut while the footer still named it. The most-efficient model's row now stays visible even when it falls outside the top 4, and the footer prints the rate it was judged on ($ per 1M output tokens), which differs from the blended $/1M tok column.
+
 ## [1.39.0] - 2026-09-04
 
 ### Added
