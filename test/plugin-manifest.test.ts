@@ -26,6 +26,10 @@ const hooksConfig: {
   hooks: { PreToolUse: unknown[]; PostToolUse: unknown[] };
 } = JSON.parse(readFileSync(resolve(repoRoot, 'plugin/hooks/hooks.json'), 'utf-8'));
 
+const kiroPluginManifest: { version: string } = JSON.parse(
+  readFileSync(resolve(repoRoot, 'kiro-power/plugin.json'), 'utf-8'),
+);
+
 describe('Claude Code plugin manifests', () => {
   it('marketplace.json lists the plugin pointing at ./plugin', () => {
     const entry = marketplace.plugins.find((p) => p.name === pluginManifest.name);
@@ -60,5 +64,14 @@ describe('Claude Code plugin manifests', () => {
     expect(existsSync(resolve(repoRoot, 'plugin/.claude-plugin/scripts/collector-script.js'))).toBe(
       true,
     );
+  });
+
+  it('kiro-power/plugin.json version stays in sync with package.json', () => {
+    // Not auto-synced (no registry/publish step reads it) — this went two
+    // releases stale (1.36.0, 1.37.0) with nothing catching it before this
+    // test existed. See CLAUDE.md and .github/workflows/release.yml's
+    // "Verify manifest versions are in sync" gate for the release-time half
+    // of this check.
+    expect(kiroPluginManifest.version).toBe(packageJson.version);
   });
 });
