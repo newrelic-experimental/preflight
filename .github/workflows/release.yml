@@ -44,11 +44,9 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
-      # `main` is protected by rulesets with zero bypass actors (see #534),
-      # so this job can't push a fix-up commit — it can only fail loudly and
-      # point at the PR that needs to land first. kiro-power/plugin.json
-      # drifted for two releases (#567, #568) after #545's one-time manual
-      # sync before this check existed.
+      # main is protected by rulesets with zero bypass actors, so this job
+      # can't push a fix-up commit — it can only fail loudly and point at
+      # the PR that needs to land first.
       - name: Verify manifest versions are in sync
         run: |
           node -e "
