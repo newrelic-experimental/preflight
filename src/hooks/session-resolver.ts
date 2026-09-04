@@ -1,7 +1,7 @@
 /**
  * Resolve the Claude Code session_id for the running MCP process.
  *
- * Three sources, in order:
+ * Four sources, in order:
  *   1. `CLAUDE_JOB_DIR` env var → read `<dir>/state.json`, regex-extract the
  *      session UUID from the `linkScanPath` field's filename. Instant; used
  *      by background-job MCPs.
@@ -11,16 +11,22 @@
  *      breadcrumb was written — resolveFromBreadcrumb() guards against that
  *      by rejecting a breadcrumb older than the resolving process's own
  *      start time (see its doc comment).
- *   3. cwd breadcrumb at `<storage>/session-by-cwd/<sanitized-cwd>.txt` —
+ *   3. ancestor PPID breadcrumbs — the same files as #2, but looked up at each
+ *      of this process's ancestor PIDs rather than only its immediate parent.
+ *      Covers launchers that interpose a process between the IDE and the MCP
+ *      server (`npx`, which execs an `npm exec` wrapper), where our own
+ *      `process.ppid` is that wrapper and the breadcrumb sits a level above it.
+ *      See process-ancestry.ts. Only consulted when #2 misses.
+ *   4. cwd breadcrumb at `<storage>/session-by-cwd/<sanitized-cwd>.txt` —
  *      also written by the hook collector on every tool call, keyed by the
  *      project directory instead of a PID. Fallback for platforms where the
  *      PPID bridge never reaches the MCP's own `process.ppid` (e.g. native
  *      Windows, where Claude Code interposes Git Bash between itself and the
- *      hook collector but launches the MCP server directly). Only consulted
- *      when #2 misses.
- *   Both breadcrumb sources are polled together at exponential backoff:
- *   100ms, 200ms, 500ms, 1s, 2s, then steady at 2s. No hard timeout; logs a
- *   single WARN at 60s if still unresolved.
+ *      hook collector but launches the MCP server directly). Consulted last,
+ *      only when #2 and #3 both miss.
+ *   Sources #2–#4 are polled together at exponential backoff: 100ms, 200ms,
+ *   500ms, 1s, 2s, then steady at 2s. No hard timeout; logs a single WARN at
+ *   60s if still unresolved.
  *
  * The MCP must never fabricate its own session_id. If none of these resolve,
  * tool handlers should report "session_id not yet resolved" rather than make
@@ -40,6 +46,7 @@ import {
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../shared/index.js';
+import { getAncestorPids } from './process-ancestry.js';
 
 import { redactSensitive } from '../config.js';
 
@@ -51,8 +58,16 @@ const POLL_SCHEDULE_MS = [100, 200, 500, 1000, 2000];
 const STEADY_POLL_MS = 2000;
 const WARN_AFTER_MS = 60_000;
 
-/** Which of the three sources produced a resolveSessionId() result. */
-export type SessionIdSource = 'jobdir' | 'ppid' | 'cwd';
+/**
+ * How far above our own ppid to look for a breadcrumb. Deliberately shallower
+ * than the collector's write-side walk (5): the `npx` case this exists for
+ * needs one level, a wrapper shell behind it two, while deeper ancestors are
+ * progressively more shared between concurrent sessions on the same machine.
+ */
+const READ_ANCESTOR_MAX_DEPTH = 4;
+
+/** Which of the sources produced a resolveSessionId() result. */
+export type SessionIdSource = 'jobdir' | 'ppid' | 'ppid-ancestor' | 'cwd';
 
 export interface SessionResolverOptions {
   /** Override the storage path used to find the breadcrumb directory. */
@@ -63,6 +78,12 @@ export interface SessionResolverOptions {
   readonly cwd?: string;
   /** Override `process.env.CLAUDE_JOB_DIR` (test seam). */
   readonly claudeJobDir?: string | null;
+  /**
+   * Override the ancestor-PID chain that would otherwise be derived from
+   * `ppid` via getAncestorPids() (test seam). Supplying it also skips that
+   * derivation, which on non-Linux costs a `ps` subprocess.
+   */
+  readonly ancestorPids?: readonly number[];
   /** When true, skip the WARN log (test seam). */
   readonly suppressWarn?: boolean;
   /**
@@ -189,6 +210,45 @@ export function resolveFromBreadcrumb(
   return sid;
 }
 
+/** What resolveFromAncestorBreadcrumb() found, and where. */
+export interface AncestorBreadcrumbHit {
+  readonly sessionId: string;
+  /** The ancestor PID whose breadcrumb matched. */
+  readonly pid: number;
+  /** Levels above our own ppid — 1 is our ppid's parent. */
+  readonly depth: number;
+}
+
+/**
+ * Try each ANCESTOR pid's breadcrumb, for the case where a launcher interposed
+ * a process between the IDE and this one so our own `process.ppid` isn't the
+ * PID the collector keyed its breadcrumb on (`npx` → `npm exec` → server; see
+ * process-ancestry.ts). Index 0 of `ancestorPids` is our own ppid and is
+ * skipped — resolveFromBreadcrumb() already covered it.
+ *
+ * First match wins: the closest ancestor is the most specific, and therefore
+ * the least likely to be a PID shared with a concurrent session.
+ *
+ * Each level goes through resolveFromBreadcrumb(), so the PID-recycling mtime
+ * gate applies per level — which matters more here than for a single lookup,
+ * since a walk tests several PIDs and any of them could have been recycled.
+ */
+export function resolveFromAncestorBreadcrumb(
+  storagePath: string,
+  ancestorPids: readonly number[],
+  processStartMs?: number,
+): AncestorBreadcrumbHit | null {
+  for (let depth = 1; depth < ancestorPids.length; depth++) {
+    const pid = ancestorPids[depth]!;
+    const sessionId =
+      processStartMs === undefined
+        ? resolveFromBreadcrumb(storagePath, pid)
+        : resolveFromBreadcrumb(storagePath, pid, processStartMs);
+    if (sessionId) return { sessionId, pid, depth };
+  }
+  return null;
+}
+
 /**
  * Sanitize a cwd into the single filename segment used both by the collector's
  * `writeCwdBreadcrumb()` (session-by-cwd breadcrumb) and by Claude Code's own
@@ -287,6 +347,12 @@ export async function resolveSessionId(
   const startTime = Date.now();
   let warnedAt60s = false;
   let attempt = 0;
+  // Computed at most once, lazily, and only after a direct-ppid miss — on
+  // non-Linux that walk costs a subprocess, and the overwhelmingly common
+  // direct-launch case never gets here. Process ancestry doesn't change over a
+  // process's life, so one computation is enough. Kept as a closure variable
+  // rather than module state: nothing to reset between tests.
+  let ancestorPids: readonly number[] | undefined;
 
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const onAbort = () => {
@@ -318,6 +384,28 @@ export async function resolveSessionId(
         options.onResolutionSource?.({ source: 'ppid', sessionId: sid });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(sid);
+        return;
+      }
+      // Then our ancestors' breadcrumbs, before falling back to cwd: any
+      // PID-keyed breadcrumb is more precise than the cwd one, which is shared
+      // by every session that ever ran in that directory.
+      ancestorPids ??=
+        options.ancestorPids ?? getAncestorPids(ppid, { maxDepth: READ_ANCESTOR_MAX_DEPTH });
+      const fromAncestor = resolveFromAncestorBreadcrumb(storagePath, ancestorPids);
+      if (fromAncestor) {
+        const elapsed = Date.now() - startTime;
+        logger.info('Resolved session_id from ancestor ppid breadcrumb', {
+          sessionId: fromAncestor.sessionId,
+          pid: fromAncestor.pid,
+          depth: fromAncestor.depth,
+          elapsedMs: elapsed,
+        });
+        options.onResolutionSource?.({
+          source: 'ppid-ancestor',
+          sessionId: fromAncestor.sessionId,
+        });
+        if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        resolvePromise(fromAncestor.sessionId);
         return;
       }
       const sidFromCwd = resolveFromCwd(storagePath, cwd);

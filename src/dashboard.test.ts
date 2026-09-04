@@ -101,6 +101,7 @@ describe.each(dashboards)('Dashboard: $file', ({ dashboard }) => {
       'AiAuditEvent',
       'SecurityAlert',
       'AiMcpToolCall',
+      'AiTurnCost',
     ]);
 
     for (const query of queries) {
@@ -167,8 +168,8 @@ describe('Team View dashboard', () => {
     expect(teamView!.dashboard.name).toBe('AI Coding Assistant — Team View');
   });
 
-  it('has 4 rows of widgets (14 total)', () => {
-    expect(teamView!.dashboard.pages[0].widgets).toHaveLength(14);
+  it('has 5 rows of widgets (17 total)', () => {
+    expect(teamView!.dashboard.pages[0].widgets).toHaveLength(17);
   });
 
   it('includes FACET developer queries for team comparison', () => {

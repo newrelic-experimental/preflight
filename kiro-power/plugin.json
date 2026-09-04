@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "newrelic-preflight",
+  "version": "1.39.0",
+  "description": "AI coding observability for Kiro. Tracks tool calls, cost, anti-patterns, and efficiency metrics — and (optionally) ships them to New Relic.",
+  "author": {
+    "name": "New Relic",
+    "url": "https://github.com/newrelic-experimental"
+  },
+  "homepage": "https://github.com/newrelic-experimental/preflight",
+  "repository": "https://github.com/newrelic-experimental/preflight",
+  "license": "Apache-2.0",
+  "keywords": [
+    "observability",
+    "cost",
+    "metrics",
+    "new relic",
+    "efficiency",
+    "anti-patterns",
+    "preflight"
+  ]
+}

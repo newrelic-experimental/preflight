@@ -50,12 +50,14 @@ const HOOK_SUBCOMMANDS = {
  */
 export const HOOK_SUBCOMMAND_PATTERN = Object.values(HOOK_SUBCOMMANDS).join('|');
 
-// InstructionsLoaded, PostModelSwitch, and SessionStart are deliberately kept
-// out of HOOK_SUBCOMMANDS/HOOK_EVENT_TYPES (see the areHooksInstalled comment
-// below) but still need to be recognized here.
+// InstructionsLoaded, PostModelSwitch, SessionStart, UserPromptSubmit, and
+// Stop are deliberately kept out of HOOK_SUBCOMMANDS/HOOK_EVENT_TYPES (see
+// the areHooksInstalled comment below) but still need to be recognized here.
 const INSTRUCTIONS_LOADED_SUBCOMMAND = 'instructions-loaded';
 const MODEL_SWITCH_SUBCOMMAND = 'model-switch';
 const SESSION_START_SUBCOMMAND = 'session-start';
+const USER_PROMPT_SUBMIT_SUBCOMMAND = 'user-prompt-submit';
+const STOP_SUBCOMMAND = 'stop';
 
 // Matches the hook commands this installer writes, in both bare-name and
 // absolute-path forms (quoted or unquoted):
@@ -65,8 +67,10 @@ const SESSION_START_SUBCOMMAND = 'session-start';
 //   preflight-collector instructions-loaded
 //   preflight-collector model-switch
 //   preflight-collector session-start
+//   preflight-collector user-prompt-submit
+//   preflight-collector stop
 export const NR_HOOK_RE = new RegExp(
-  `preflight-collector"?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND})`,
+  `preflight-collector"?\\s+(?:${HOOK_SUBCOMMAND_PATTERN}|${INSTRUCTIONS_LOADED_SUBCOMMAND}|${MODEL_SWITCH_SUBCOMMAND}|${SESSION_START_SUBCOMMAND}|${USER_PROMPT_SUBMIT_SUBCOMMAND}|${STOP_SUBCOMMAND})`,
 );
 
 // ---------------------------------------------------------------------------
@@ -83,13 +87,15 @@ export interface HookEntry {
   hooks: HookCommand[];
 }
 
-// InstructionsLoaded, PostModelSwitch, and SessionStart are appended
-// separately rather than folded into HookEventType — see the
-// areHooksInstalled comment below.
+// InstructionsLoaded, PostModelSwitch, SessionStart, UserPromptSubmit, and
+// Stop are appended separately rather than folded into HookEventType — see
+// the areHooksInstalled comment below.
 export type HookEntries = Record<HookEventType, HookEntry[]> & {
   InstructionsLoaded: HookEntry[];
   PostModelSwitch: HookEntry[];
   SessionStart: HookEntry[];
+  UserPromptSubmit: HookEntry[];
+  Stop: HookEntry[];
 };
 
 export interface McpServerConfig {
@@ -179,6 +185,35 @@ export function generateHookEntries(
           {
             type: 'command',
             command: `${collectorInvocation} ${SESSION_START_SUBCOMMAND}`,
+          },
+        ],
+      },
+    ],
+    // UserPromptSubmit/Stop are corroborating precise turn/task-boundary
+    // signals for TurnTracker/TaskDetector's existing idle-gap heuristics —
+    // neither replaces the heuristic (Stop doesn't fire on a user
+    // interrupt), so both stay wired regardless. Purely observational: this
+    // collector never returns a JSON decision, even though both hooks
+    // support one (UserPromptSubmit can block/modify a prompt, Stop can
+    // block Claude from stopping).
+    UserPromptSubmit: [
+      {
+        matcher: HOOK_MATCHER,
+        hooks: [
+          {
+            type: 'command',
+            command: `${collectorInvocation} ${USER_PROMPT_SUBMIT_SUBCOMMAND}`,
+          },
+        ],
+      },
+    ],
+    Stop: [
+      {
+        matcher: HOOK_MATCHER,
+        hooks: [
+          {
+            type: 'command',
+            command: `${collectorInvocation} ${STOP_SUBCOMMAND}`,
           },
         ],
       },
@@ -302,9 +337,10 @@ function filterNrObserveEntries(entries: unknown[]): unknown[] {
  * Pure — no file I/O.
  *
  * Deliberately does NOT check StopFailure, InstructionsLoaded,
- * PostModelSwitch, or SessionStart: broadening what counts as "hooks
- * installed" would change behavior for existing users, which is a scope cut
- * for this PR, not an oversight — don't "fix" this without re-reading why.
+ * PostModelSwitch, SessionStart, UserPromptSubmit, or Stop: broadening what
+ * counts as "hooks installed" would change behavior for existing users,
+ * which is a scope cut for this PR, not an oversight — don't "fix" this
+ * without re-reading why.
  */
 export function areHooksInstalled(settingsContent: Record<string, unknown>): boolean {
   const hooks = settingsContent.hooks;
@@ -347,6 +383,8 @@ const HooksFieldSchema = z
     InstructionsLoaded: z.array(z.unknown()).optional(),
     PostModelSwitch: z.array(z.unknown()).optional(),
     SessionStart: z.array(z.unknown()).optional(),
+    UserPromptSubmit: z.array(z.unknown()).optional(),
+    Stop: z.array(z.unknown()).optional(),
   })
   .passthrough();
 const SettingsSchema = z.object({ hooks: HooksFieldSchema.optional() }).passthrough();
@@ -390,6 +428,8 @@ export function mergeSettings(
     'InstructionsLoaded',
     'PostModelSwitch',
     'SessionStart',
+    'UserPromptSubmit',
+    'Stop',
   ] as const) {
     const existingArr = Array.isArray(hooks[hookType]) ? [...(hooks[hookType] as unknown[])] : [];
 
@@ -478,6 +518,8 @@ export function removeSettings(existing: Record<string, unknown>): Record<string
       'InstructionsLoaded',
       'PostModelSwitch',
       'SessionStart',
+      'UserPromptSubmit',
+      'Stop',
     ] as const) {
       if (Array.isArray(hooks[hookType])) {
         const filtered = filterNrObserveEntries(hooks[hookType] as unknown[]);

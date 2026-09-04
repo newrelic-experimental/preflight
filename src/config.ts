@@ -27,6 +27,9 @@ export interface McpServerConfig {
   readonly teamId: string | null;
   readonly projectId: string | null;
   readonly orgId: string | null;
+  readonly repoUrl: string | null;
+  /** Dedicated opt-out for `repoUrl`, independent of `projectId`'s. Defaults true. */
+  readonly repoUrlEnabled: boolean;
   readonly model: string;
   readonly enabled: boolean;
   readonly highSecurity: boolean;
@@ -51,6 +54,28 @@ export interface McpServerConfig {
   readonly nrApiKey: string | null;
   /** Path to a custom pricing JSON file, applied via `initPricing()`. See `NEW_RELIC_AI_CUSTOM_PRICING_FILE`. */
   readonly customPricingFile: string | null;
+  /**
+   * Flat discount multiplier (0 < x ≤ 1) applied to every dollar figure
+   * `CostTracker` computes, so an org's contracted rate is reflected instead
+   * of list price. Mirrors Claude Code's own `modelPricing.multiplier`
+   * semantics without reading Claude Code's managed settings directly —
+   * those are delivered through several mechanisms (server-managed,
+   * MDM, a `managed-settings.json` file, a policy helper), only one of which
+   * is a static file, and only the winning source is actually in effect, so
+   * auto-discovery would risk silently applying a stale/overridden rate.
+   * `null`/unset: no correction. See `NEW_RELIC_AI_COST_RATE_MULTIPLIER`.
+   */
+  readonly costRateMultiplier: number | null;
+  /**
+   * Applies the 1.1x US-only-inference premium Claude Code itself applies
+   * for data-residency workspaces (see
+   * https://platform.claude.com/docs/en/about-claude/pricing#data-residency-pricing),
+   * multiplicatively combined with `costRateMultiplier` when both are set.
+   * Preflight cannot detect residency-billed responses on its own (no hook
+   * or event exposes it), so this is an explicit opt-in, not automatic.
+   * See `NEW_RELIC_AI_DATA_RESIDENCY_PREMIUM`.
+   */
+  readonly dataResidencyPremium: boolean;
   readonly digestWebhookUrl: string | null;
   readonly digestSchedule: string; // cron expression, default: "0 9 * * 1" (Monday 9am)
   /** Default: 90. `null` disables retention (only reachable via an explicit `null` in config.json). */
@@ -140,6 +165,8 @@ export const ConfigFileSchema = z
     teamId: z.string().nullable().optional(),
     projectId: z.string().nullable().optional(),
     orgId: z.string().nullable().optional(),
+    repoUrl: z.string().nullable().optional(),
+    repoUrlEnabled: z.boolean().optional(),
     model: z.string().optional(),
     enabled: z.boolean().optional(),
     highSecurity: z.boolean().optional(),
@@ -158,6 +185,8 @@ export const ConfigFileSchema = z
     proxyUpstreams: z.array(z.unknown()).optional(),
     nrApiKey: z.string().nullable().optional(),
     customPricingFile: z.string().nullable().optional(),
+    costRateMultiplier: z.number().nullable().optional(),
+    dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
     digestSchedule: z.string().optional(),
     retainSessionsDays: z.number().nullable().optional(),
@@ -289,21 +318,35 @@ function inferDeveloper(): string {
   }
 }
 
-function inferProjectId(): string | null {
+function getGitRemoteUrl(): string | null {
   try {
-    const remote = execSync('git remote get-url origin', {
+    return execSync('git remote get-url origin', {
       encoding: 'utf-8',
       timeout: 2000,
-      env: { ...process.env },
+      // GIT_DIR/GIT_WORK_TREE (set by git for hook subprocesses, e.g. this
+      // process running under husky's pre-push) override the cwd-implied
+      // repo, silently redirecting this call to whatever repo the ambient
+      // env points at. See local-session-aggregator.ts's GIT_OPTS for the
+      // same guard.
+      env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined },
     }).trim();
-    // Extract "org/repo" from HTTPS or SSH remotes:
-    // https://github.com/org/repo.git  → org/repo
-    // git@github.com:org/repo.git      → org/repo
-    const match = remote.match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
-    return match ? match[1] : null;
   } catch {
     return null;
   }
+}
+
+function inferProjectId(): string | null {
+  const remote = getGitRemoteUrl();
+  if (!remote) return null;
+  // Extract "org/repo" from HTTPS or SSH remotes:
+  // https://github.com/org/repo.git  → org/repo
+  // git@github.com:org/repo.git      → org/repo
+  const match = remote.match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
+  return match ? match[1] : null;
+}
+
+function inferRepoUrl(): string | null {
+  return getGitRemoteUrl();
 }
 
 function envBool(key: string, defaultValue: boolean): boolean {
@@ -484,6 +527,24 @@ function validateFilePositiveNumber(value: number, fieldName: string): boolean {
     fieldName,
     value,
   });
+  return false;
+}
+
+// costRateMultiplier is a discount factor, not an arbitrary positive number —
+// mirrors the bound Claude Code itself enforces on modelPricing.multiplier
+// (docs/settings-reference#modelpricing: "greater than 0 and at most 1").
+// A value above 1 would silently inflate every cost figure, the opposite of
+// this field's purpose, so it gets its own validator rather than reusing
+// validateFilePositiveNumber.
+function validateFileRatio(value: number, fieldName: string): boolean {
+  if (Number.isFinite(value) && value > 0 && value <= 1) return true;
+  logger.warn(
+    `${fieldName} in config file must be a number greater than 0 and at most 1 — ignoring value`,
+    {
+      fieldName,
+      value,
+    },
+  );
   return false;
 }
 
@@ -699,6 +760,32 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     typeof file.highSecurity === 'boolean' ? file.highSecurity : false,
   );
 
+  const resolvedProjectId = sanitizeOrgField(
+    process.env.NEW_RELIC_AI_PROJECT_ID ??
+      (typeof file.projectId === 'string' ? file.projectId : inferProjectId()),
+  );
+
+  // Dedicated opt-out, independent of projectId's — repo_url can carry an
+  // internal git host that org/repo alone doesn't, so it gets its own toggle
+  // rather than riding along on projectId's. Defaults on; the setup wizard
+  // prompts for it explicitly (see setup-wizard.ts) so sending it is an
+  // informed choice, not a silent default.
+  const repoUrlEnabled = envBool(
+    'NEW_RELIC_AI_REPO_URL_ENABLED',
+    typeof file.repoUrlEnabled === 'boolean' ? file.repoUrlEnabled : true,
+  );
+
+  // Credential redaction applies uniformly regardless of source — an
+  // explicit override (env var or config file) can carry embedded
+  // credentials just as easily as an inferred git remote (e.g. a URL
+  // copy-pasted from an authenticated `git remote -v`).
+  const rawRepoUrl =
+    process.env.NEW_RELIC_AI_REPO_URL ??
+    (typeof file.repoUrl === 'string' ? file.repoUrl : inferRepoUrl());
+  const resolvedRepoUrl = sanitizeOrgField(
+    rawRepoUrl === null ? null : redactSensitive(rawRepoUrl),
+  );
+
   const config: McpServerConfig = {
     licenseKey,
     accountId,
@@ -723,10 +810,11 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
       process.env.NEW_RELIC_AI_TEAM_ID ?? (typeof file.teamId === 'string' ? file.teamId : null),
     ),
 
-    projectId: sanitizeOrgField(
-      process.env.NEW_RELIC_AI_PROJECT_ID ??
-        (typeof file.projectId === 'string' ? file.projectId : inferProjectId()),
-    ),
+    projectId: resolvedProjectId,
+
+    repoUrlEnabled,
+
+    repoUrl: repoUrlEnabled ? resolvedRepoUrl : null,
 
     orgId: sanitizeOrgField(
       process.env.NEW_RELIC_AI_ORG_ID ?? (typeof file.orgId === 'string' ? file.orgId : null),
@@ -850,6 +938,23 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     customPricingFile:
       process.env.NEW_RELIC_AI_CUSTOM_PRICING_FILE ??
       (typeof file.customPricingFile === 'string' ? file.customPricingFile : null),
+
+    costRateMultiplier: (() => {
+      const raw = process.env.NEW_RELIC_AI_COST_RATE_MULTIPLIER;
+      if (raw !== undefined && raw !== '') {
+        const v = parseFloat(raw);
+        if (Number.isFinite(v) && v > 0 && v <= 1) return v;
+      }
+      if (typeof file.costRateMultiplier !== 'number') return null;
+      return validateFileRatio(file.costRateMultiplier, 'costRateMultiplier')
+        ? file.costRateMultiplier
+        : null;
+    })(),
+
+    dataResidencyPremium: envBool(
+      'NEW_RELIC_AI_DATA_RESIDENCY_PREMIUM',
+      typeof file.dataResidencyPremium === 'boolean' ? file.dataResidencyPremium : false,
+    ),
 
     digestWebhookUrl:
       process.env.NEW_RELIC_AI_DIGEST_WEBHOOK_URL ??

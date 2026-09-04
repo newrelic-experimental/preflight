@@ -28,6 +28,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { REDACTION_PATTERNS } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
+import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
@@ -93,6 +94,19 @@ function getMaxContentLength(): number {
   if (val === undefined) return 10_240;
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10_240 : parsed;
+}
+
+/**
+ * Ambient stamping is deliberately limited to Claude Code, the only platform
+ * whose hook-process env signal is verified; other platforms stamp via
+ * explicit MCP_CLIENT in their generated hook commands.
+ */
+function detectStampPlatform(): string | undefined {
+  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  if (explicit) return explicit;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)
+    ? 'claude-code'
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +521,41 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       }
       if (typeof obj.replace_all === 'boolean') meta.replace_all = obj.replace_all;
       break;
+    // Amazon Kiro. Tool names and tool_input field names captured from a live
+    // Kiro install (42.08, macOS) — `read_file` sends {path, offset, limit} and
+    // `str_replace` sends {path, oldStr, newStr, replace_all}. Two deltas from
+    // Claude Code worth noting: the file key is `path`, not `file_path`, and the
+    // edit strings are `oldStr`/`newStr`, not `old_string`/`new_string`.
+    //
+    // These are explicit cases rather than hoisting `path` into the
+    // name-independent file_path block above, because Grep/Glob also send `path`
+    // — there it means a search root, not a file, and promoting it to file_path
+    // would misreport searches as file access for every platform.
+    //
+    // The path Kiro sends is workspace-relative ("cloudformation/export-env.sh"),
+    // unlike Claude Code's absolute paths. That's fine for the unique-file
+    // counting these fields feed, but don't assume absolute downstream.
+    case 'read_file':
+      if (typeof obj.path === 'string') meta.file_path = obj.path;
+      if (typeof obj.offset === 'number') meta.offset = obj.offset;
+      if (typeof obj.limit === 'number') meta.limit = obj.limit;
+      break;
+    case 'str_replace': {
+      if (typeof obj.path === 'string') meta.file_path = obj.path;
+      const kiroOld = obj.oldStr;
+      const kiroNew = obj.newStr;
+      if (typeof kiroOld === 'string') {
+        meta.oldStringLength = kiroOld.length;
+        meta.oldLineCount = kiroOld.length > 0 ? countLines(kiroOld) : 0;
+      }
+      if (typeof kiroNew === 'string') {
+        meta.newStringLength = kiroNew.length;
+        meta.newLineCount = kiroNew.length > 0 ? countLines(kiroNew) : 0;
+        meta.isDelete = kiroNew.length === 0;
+      }
+      if (typeof obj.replace_all === 'boolean') meta.replace_all = obj.replace_all;
+      break;
+    }
     // PowerShell is a real, first-party Claude Code tool on native Windows,
     // auto-enabled without Git Bash (code.claude.com/docs/en/tools-reference,
     // /setup, /env-vars) — same command/description/timeout/run_in_background
@@ -549,6 +598,11 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       if (typeof obj.taskId === 'string') meta.taskId = obj.taskId;
       if (typeof obj.status === 'string') meta.status = obj.status;
       if (typeof obj.subject === 'string') meta.subject = obj.subject;
+      break;
+    case 'Skill':
+      // Capped because it becomes a per-skill map key and an NR facet downstream.
+      if (typeof obj.skill === 'string') meta.skill = obj.skill.slice(0, 128);
+      if (typeof obj.args === 'string') meta.argsLength = obj.args.length;
       break;
   }
 
@@ -1162,6 +1216,32 @@ function processHook(raw: string): void {
       ...(data.requested_model !== undefined && { requestedModel: data.requested_model }),
       ...(typeof data.source === 'string' && { source: data.source }),
     };
+  } else if (eventName === 'userpromptsubmit') {
+    // Fires when the user submits a prompt, before Claude processes it
+    // (code.claude.com/docs/en/hooks.md). Pure notification — no decision
+    // control used here (this hook CAN block/modify the prompt via a JSON
+    // decision, but this collector never emits one). Deliberately no
+    // content captured — `data.prompt` is free text this collector has no
+    // reason to read; only the timestamp matters, as a precise task-start
+    // boundary for TaskDetector.
+    event = {
+      mode: 'user_prompt_submit' as const,
+      timestamp,
+    };
+  } else if (eventName === 'stop') {
+    // Fires when the main agent has finished responding
+    // (code.claude.com/docs/en/hooks.md) — NOT on a user interrupt, so this
+    // is a corroborating precise signal for TurnTracker/TaskDetector, not a
+    // full replacement for their idle-gap heuristics. Pure notification —
+    // no decision control used here (Stop CAN block Claude from stopping
+    // via a JSON decision, but this collector never emits one).
+    // Deliberately no content captured — last_assistant_message/
+    // background_tasks/session_crons are all real fields on this hook's
+    // input, but none are needed just to mark "a turn/task ended here".
+    event = {
+      mode: 'stop' as const,
+      timestamp,
+    };
   } else {
     // Unknown hook event — ignore silently
     return;
@@ -1177,24 +1257,12 @@ function processHook(raw: string): void {
   // that reliably reflects the real host, since whichever process later
   // drains the buffer (e.g. --local's unscoped drain of an unowned session,
   // see LocalSessionAggregator) may have detected a completely different
-  // platform for itself.
-  //
-  // Deliberately explicit-env-only (MCP_CLIENT / NEW_RELIC_AI_PLATFORM)
-  // rather than the full adapter registry: registry-based ambient detection
-  // (e.g. ClaudeCodeAdapter.isSupported() checking CLAUDE_CODE/
-  // CLAUDE_CODE_VERSION) does not match the real env vars Claude Code's own
-  // hook invocations set (CLAUDECODE, CLAUDE_CODE_SESSION_ID,
-  // CLAUDE_CODE_ENTRYPOINT), so the always-true generic-mcp fallback won
-  // detection and mis-tagged every Claude Code hook event as generic-mcp —
-  // a regression, since nr-ingest.ts's own 'claude-code' default was already
-  // correct for that case (see #539). Reading the explicit env vars directly
-  // instead keeps the fix for adapters like copilot-sdk (which are
-  // themselves explicit-env-only, so the registry bought nothing there),
-  // leaves ambient-only platforms on the correct downstream default, and
-  // avoids pulling in every adapter module on this hot path (pre+post per
-  // tool call, on every platform).
-  const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicitPlatform) event.platform = explicitPlatform;
+  // platform for itself. Deliberately reads env vars directly (and imports
+  // only the light claude-code-adapter const, not the full registry) instead
+  // of going through PlatformRegistry — registry-based detection adds
+  // measurable overhead on this hot, pre+post-per-tool-call path.
+  const stampedPlatform = detectStampPlatform();
+  if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;

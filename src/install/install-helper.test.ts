@@ -59,6 +59,12 @@ describe('NR_HOOK_RE', () => {
     expect(NR_HOOK_RE.test('preflight-collector post-tool')).toBe(true);
   });
 
+  it('matches the user-prompt-submit and stop command forms', () => {
+    expect(NR_HOOK_RE.test('preflight-collector user-prompt-submit')).toBe(true);
+    expect(NR_HOOK_RE.test('preflight-collector stop')).toBe(true);
+    expect(NR_HOOK_RE.test('"/quoted/path/preflight-collector" user-prompt-submit')).toBe(true);
+  });
+
   it('does not match unrelated commands', () => {
     expect(NR_HOOK_RE.test('some-other-tool stop-failure')).toBe(false);
   });
@@ -311,6 +317,53 @@ describe('generateHookEntries', () => {
 
     expect(hooks.SessionStart[0].hooks[0].command).toBe(
       'wsl.exe -e "/home/user/bin/preflight-collector" session-start',
+    );
+  });
+
+  it('generates UserPromptSubmit and Stop entries alongside PreToolUse/PostToolUse', () => {
+    const hooks = generateHookEntries('/usr/local/bin/preflight');
+
+    expect(hooks.UserPromptSubmit).toEqual([
+      {
+        matcher: '',
+        hooks: [
+          {
+            type: 'command',
+            command: '"/usr/local/bin/preflight-collector" user-prompt-submit',
+          },
+        ],
+      },
+    ]);
+    expect(hooks.Stop).toEqual([
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: '"/usr/local/bin/preflight-collector" stop' }],
+      },
+    ]);
+  });
+
+  it('generates bare-name UserPromptSubmit/Stop commands when no binPath provided', () => {
+    const hooks = generateHookEntries();
+
+    expect(hooks.UserPromptSubmit).toEqual([
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'preflight-collector user-prompt-submit' }],
+      },
+    ]);
+    expect(hooks.Stop).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector stop' }] },
+    ]);
+  });
+
+  it('wsl mode: generates quoted wsl.exe UserPromptSubmit/Stop commands', () => {
+    const hooks = generateHookEntries('/home/user/bin/preflight', { platform: 'wsl-windows-cc' });
+
+    expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe(
+      'wsl.exe -e "/home/user/bin/preflight-collector" user-prompt-submit',
+    );
+    expect(hooks.Stop[0].hooks[0].command).toBe(
+      'wsl.exe -e "/home/user/bin/preflight-collector" stop',
     );
   });
 });
@@ -615,6 +668,48 @@ describe('mergeSettings', () => {
 
     const hooks = twice.hooks as Record<string, unknown[]>;
     expect(hooks.StopFailure).toHaveLength(1);
+  });
+
+  it('preserves an existing foreign UserPromptSubmit/Stop entry and appends ours', () => {
+    const existing = {
+      hooks: {
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --on-prompt' }] },
+        ],
+        Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --on-stop' }] }],
+      },
+    };
+
+    const result = mergeSettings(existing);
+
+    const hooks = result.hooks as Record<string, unknown[]>;
+    expect(hooks.UserPromptSubmit).toHaveLength(2);
+    expect(hooks.Stop).toHaveLength(2);
+    const foreignPrompt = hooks.UserPromptSubmit[0] as Record<string, unknown>;
+    expect((foreignPrompt.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'some-other-tool --on-prompt',
+    );
+    const ourPrompt = hooks.UserPromptSubmit[1] as Record<string, unknown>;
+    expect((ourPrompt.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'preflight-collector user-prompt-submit',
+    );
+    const foreignStop = hooks.Stop[0] as Record<string, unknown>;
+    expect((foreignStop.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'some-other-tool --on-stop',
+    );
+    const ourStop = hooks.Stop[1] as Record<string, unknown>;
+    expect((ourStop.hooks as Array<Record<string, string>>)[0].command).toBe(
+      'preflight-collector stop',
+    );
+  });
+
+  it('is idempotent for UserPromptSubmit/Stop — running twice does not duplicate entries', () => {
+    const once = mergeSettings({});
+    const twice = mergeSettings(once);
+
+    const hooks = twice.hooks as Record<string, unknown[]>;
+    expect(hooks.UserPromptSubmit).toHaveLength(1);
+    expect(hooks.Stop).toHaveLength(1);
   });
 
   it('preserves existing hooks and other settings', () => {
@@ -930,6 +1025,34 @@ describe('removeSettings', () => {
     const result = removeSettings(settings);
 
     expect(result.hooks).toBeUndefined();
+  });
+
+  it('removes only preflight UserPromptSubmit/Stop entries, keeps foreign ones', () => {
+    const settings = {
+      hooks: {
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --on-prompt' }] },
+          {
+            matcher: '',
+            hooks: [{ type: 'command', command: 'preflight-collector user-prompt-submit' }],
+          },
+        ],
+        Stop: [
+          { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --on-stop' }] },
+          { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector stop' }] },
+        ],
+      },
+    };
+
+    const result = removeSettings(settings);
+
+    const hooks = result.hooks as Record<string, unknown[]>;
+    expect(hooks.UserPromptSubmit).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --on-prompt' }] },
+    ]);
+    expect(hooks.Stop).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: 'some-other-tool --on-stop' }] },
+    ]);
   });
 });
 

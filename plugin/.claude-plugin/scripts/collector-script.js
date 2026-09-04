@@ -40,6 +40,15 @@ function resolveRecordContent(highSecurity, explicitValue) {
   return highSecurity ? false : explicitValue;
 }
 
+// src/platforms/claude-code-adapter.ts
+var CLAUDE_CODE_ENV_SIGNALS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE",
+  "CLAUDE_CODE_VERSION"
+];
+
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
 var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -79,6 +88,11 @@ function getMaxContentLength() {
   if (val === void 0) return 10240;
   const parsed = parseInt(val, 10);
   return Number.isNaN(parsed) ? 10240 : parsed;
+}
+function detectStampPlatform() {
+  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  if (explicit) return explicit;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0) ? "claude-code" : void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
 function redact(value) {
@@ -266,6 +280,41 @@ function extractInputMeta(toolName, input) {
       }
       if (typeof obj.replace_all === "boolean") meta.replace_all = obj.replace_all;
       break;
+    // Amazon Kiro. Tool names and tool_input field names captured from a live
+    // Kiro install (42.08, macOS) — `read_file` sends {path, offset, limit} and
+    // `str_replace` sends {path, oldStr, newStr, replace_all}. Two deltas from
+    // Claude Code worth noting: the file key is `path`, not `file_path`, and the
+    // edit strings are `oldStr`/`newStr`, not `old_string`/`new_string`.
+    //
+    // These are explicit cases rather than hoisting `path` into the
+    // name-independent file_path block above, because Grep/Glob also send `path`
+    // — there it means a search root, not a file, and promoting it to file_path
+    // would misreport searches as file access for every platform.
+    //
+    // The path Kiro sends is workspace-relative ("cloudformation/export-env.sh"),
+    // unlike Claude Code's absolute paths. That's fine for the unique-file
+    // counting these fields feed, but don't assume absolute downstream.
+    case "read_file":
+      if (typeof obj.path === "string") meta.file_path = obj.path;
+      if (typeof obj.offset === "number") meta.offset = obj.offset;
+      if (typeof obj.limit === "number") meta.limit = obj.limit;
+      break;
+    case "str_replace": {
+      if (typeof obj.path === "string") meta.file_path = obj.path;
+      const kiroOld = obj.oldStr;
+      const kiroNew = obj.newStr;
+      if (typeof kiroOld === "string") {
+        meta.oldStringLength = kiroOld.length;
+        meta.oldLineCount = kiroOld.length > 0 ? countLines(kiroOld) : 0;
+      }
+      if (typeof kiroNew === "string") {
+        meta.newStringLength = kiroNew.length;
+        meta.newLineCount = kiroNew.length > 0 ? countLines(kiroNew) : 0;
+        meta.isDelete = kiroNew.length === 0;
+      }
+      if (typeof obj.replace_all === "boolean") meta.replace_all = obj.replace_all;
+      break;
+    }
     // PowerShell is a real, first-party Claude Code tool on native Windows,
     // auto-enabled without Git Bash (code.claude.com/docs/en/tools-reference,
     // /setup, /env-vars) — same command/description/timeout/run_in_background
@@ -308,6 +357,10 @@ function extractInputMeta(toolName, input) {
       if (typeof obj.taskId === "string") meta.taskId = obj.taskId;
       if (typeof obj.status === "string") meta.status = obj.status;
       if (typeof obj.subject === "string") meta.subject = obj.subject;
+      break;
+    case "Skill":
+      if (typeof obj.skill === "string") meta.skill = obj.skill.slice(0, 128);
+      if (typeof obj.args === "string") meta.argsLength = obj.args.length;
       break;
   }
   return Object.keys(meta).length > 0 ? meta : void 0;
@@ -683,6 +736,16 @@ function processHook(raw) {
       ...data.requested_model !== void 0 && { requestedModel: data.requested_model },
       ...typeof data.source === "string" && { source: data.source }
     };
+  } else if (eventName === "userpromptsubmit") {
+    event = {
+      mode: "user_prompt_submit",
+      timestamp
+    };
+  } else if (eventName === "stop") {
+    event = {
+      mode: "stop",
+      timestamp
+    };
   } else {
     return;
   }
@@ -690,8 +753,8 @@ function processHook(raw) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const explicitPlatform = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
-  if (explicitPlatform) event.platform = explicitPlatform;
+  const stampedPlatform = detectStampPlatform();
+  if (stampedPlatform) event.platform = stampedPlatform;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;

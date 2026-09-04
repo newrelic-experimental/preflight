@@ -18,8 +18,10 @@ import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler
 import { SubagentTimelineStore } from './dashboard/subagent-timeline-store.js';
 import { WorkflowStore } from './dashboard/workflow-store.js';
 import { isCopilotSdkExtensionMissing } from './hooks/copilot-sdk-extension-health.js';
+import { CopilotAppUsageWatcher } from './hooks/copilot-app-usage-watcher.js';
 import { CopilotUsageWatcher } from './hooks/copilot-usage-watcher.js';
 import { HookEventProcessor } from './hooks/index.js';
+import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import {
   isSyntheticSessionId,
@@ -833,6 +835,7 @@ async function main(): Promise<void> {
   let activeWorkflowWatcher: WorkflowWatcher | null = null;
   let activeParentTranscriptWatcher: ParentTranscriptWatcher | null = null;
   let activeCopilotUsageWatcher: CopilotUsageWatcher | null = null;
+  let activeCopilotAppUsageWatcher: CopilotAppUsageWatcher | null = null;
   // Aborts the async resolveSessionId polling loop when shutdown fires so
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
@@ -924,6 +927,7 @@ async function main(): Promise<void> {
       activeWorkflowWatcher?.stop();
       activeParentTranscriptWatcher?.stop();
       activeCopilotUsageWatcher?.stop();
+      activeCopilotAppUsageWatcher?.stop();
       liveSessionRegistry?.stopSampling();
       // Use allSettled so a failure in one stop() doesn't prevent the others.
       const stopResults = await Promise.allSettled([
@@ -1103,7 +1107,13 @@ async function main(): Promise<void> {
       }) ?? undefined;
 
     sessionTracker = new SessionTracker(sessionTraceId);
-    const costTracker = new CostTracker(sessionTracker);
+    // Combine the two independent correction factors here so CostTracker only
+    // ever deals with one number (see its constructor doc comment) — the raw
+    // config fields (costRateMultiplier, dataResidencyPremium) stay unmerged
+    // in config.ts since they're set/documented independently.
+    const rateMultiplier =
+      (config.costRateMultiplier ?? 1) * (config.dataResidencyPremium ? 1.1 : 1);
+    const costTracker = new CostTracker(sessionTracker, { rateMultiplier });
     taskDetector = new TaskDetector({ costTracker });
     const antiPatternDetector = new AntiPatternDetector();
     const efficiencyScorer = new EfficiencyScorer();
@@ -1218,7 +1228,7 @@ async function main(): Promise<void> {
     // --local ids are synthetic, so this is a no-op for them — the provisional
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
-    const turnCostAttributor = new TurnCostAttributor();
+    const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     // Day-boundary reset bookkeeping for gitEfficiencyTracker: the
@@ -1802,6 +1812,9 @@ async function main(): Promise<void> {
                 copilotDebugLoggingDisabled:
                   activeCopilotUsageWatcher?.getHealth().debugLoggingLikelyDisabled ?? false,
                 copilotSdkExtensionMissing: isCopilotSdkExtensionMissing(activePlatformName),
+                platformDetectionFellBack: isPlatformDetectionFellBack(
+                  eventProcessor?.activePlatform ?? activePlatformName,
+                ),
               };
             },
           },
@@ -1899,6 +1912,7 @@ async function main(): Promise<void> {
         teamId: config.teamId,
         projectId: config.projectId,
         orgId: config.orgId,
+        repoUrl: config.repoUrl,
         companionMode: config.companionMode,
         sessionTracker,
         localStore,
@@ -2219,7 +2233,8 @@ async function main(): Promise<void> {
       },
       onTokenEvent: (tokenEvent) => {
         if (!costTracker || !config) return;
-        turnCostAttributor.recordTokenEvent(tokenEvent);
+        const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
+        if (closedTurn) capturedNrIngest?.ingestTurnCost(closedTurn);
         const usage = {
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,
@@ -2451,6 +2466,13 @@ async function main(): Promise<void> {
           timestampMs: frame.timestamp,
         });
       },
+      onUserPromptSubmit: (frame) => {
+        taskDetector!.startTaskIfNone(frame.timestamp);
+      },
+      onStop: (frame) => {
+        turnTracker.finalizeTurnAt(frame.timestamp);
+        taskDetector!.markBoundary(frame.timestamp);
+      },
     });
 
     persistSession = (opts?: { periodic?: boolean }) => {
@@ -2594,6 +2616,15 @@ async function main(): Promise<void> {
     // gated only by its own opt-out. It no-ops cheaply when no VS Code
     // workspaceStorage dirs exist.
     const copilotUsageWatcherEnabled = process.env['NR_AI_ENABLE_COPILOT_USAGE_WATCHER'] !== '0';
+    // CopilotAppUsageWatcher is the GitHub Copilot desktop app's analog of
+    // CopilotUsageWatcher: token-exact cost, but read from the app's own
+    // data.db SQLite store instead of a debug-log tail (the app has no
+    // extensions/ mechanism to produce one — see copilot-app-adapter.ts).
+    // Same always-run rationale as the other two: it feeds the primary cost
+    // signal for that platform, so it is gated only by its own opt-out, and
+    // it no-ops cheaply (a single existsSync) when data.db is absent.
+    const copilotAppUsageWatcherEnabled =
+      process.env['NR_AI_ENABLE_COPILOT_APP_USAGE_WATCHER'] !== '0';
 
     // Construct + start the watchers for a given session id. In `--stdio` mode
     // the watchers filter discovered transcript dirs by `parentSessionId`; in
@@ -2634,6 +2665,17 @@ async function main(): Promise<void> {
         });
         activeCopilotUsageWatcher.start();
         logger.info('CopilotUsageWatcher started', {
+          parentSessionId: isStdioWatcher ? watcherSessionId : null,
+        });
+      }
+      if (copilotAppUsageWatcherEnabled) {
+        activeCopilotAppUsageWatcher = new CopilotAppUsageWatcher({
+          storagePath: config!.storagePath,
+          parentSessionId: isStdioWatcher ? watcherSessionId : undefined,
+          localStore,
+        });
+        activeCopilotAppUsageWatcher.start();
+        logger.info('CopilotAppUsageWatcher started', {
           parentSessionId: isStdioWatcher ? watcherSessionId : null,
         });
       }
@@ -2710,6 +2752,10 @@ async function main(): Promise<void> {
       if (activeCopilotUsageWatcher) {
         activeCopilotUsageWatcher.stop();
         activeCopilotUsageWatcher = null;
+      }
+      if (activeCopilotAppUsageWatcher) {
+        activeCopilotAppUsageWatcher.stop();
+        activeCopilotAppUsageWatcher = null;
       }
       if (activeSubagentWatcher) {
         activeSubagentWatcher.stop();
@@ -2822,6 +2868,7 @@ async function main(): Promise<void> {
           teamId: config!.teamId,
           projectId: config!.projectId,
           orgId: config!.orgId,
+          repoUrl: config!.repoUrl,
           companionMode: config!.companionMode,
           sessionTracker: sessionTracker!,
           localStore: realLocalStore,
@@ -2907,6 +2954,12 @@ async function main(): Promise<void> {
         configFilePath,
         configSummary,
       });
+
+      // The client cached tools/list during the pending window, when only the
+      // health/install/config tools existed. Tell it to re-list now that the
+      // full set is registered, or it keeps the pending three for the whole
+      // connection.
+      void mcpServer!.notifyToolListChanged();
     };
 
     // Arms a background watch for the ppid breadcrumb after an initial
@@ -3091,6 +3144,10 @@ async function main(): Promise<void> {
           configSummary,
         });
 
+        // Harmless if the client hasn't listed yet, and necessary if it listed
+        // in the window between connectStdio() and this call.
+        void mcpServer!.notifyToolListChanged();
+
         nrIngest?.start();
         logger.info('Server running on stdio transport');
         // stdin 'end' and 'error' handlers are registered immediately after
@@ -3180,6 +3237,7 @@ async function main(): Promise<void> {
         teamId: config.teamId,
         projectId: config.projectId,
         orgId: config.orgId,
+        repoUrl: config.repoUrl,
         companionMode: config.companionMode,
         sessionTracker: new SessionTracker(sessionTraceId),
         localStore: proxyLocalStore,

@@ -376,6 +376,19 @@ export interface TurnCostsResponse {
     string,
     { totalCost: number; callCount: number; avgCost: number }
   >;
+  readonly costBySkill?: Record<
+    string,
+    {
+      callCount: number;
+      attributedCallCount: number;
+      totalCost: number;
+      avgCost: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      totalDurationMs: number;
+    }
+  >;
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
 }

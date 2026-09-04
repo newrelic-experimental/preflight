@@ -6,6 +6,19 @@ import type {
   PlatformSessionMetadata,
 } from './types.js';
 
+// `CLAUDECODE=1`, `CLAUDE_CODE_ENTRYPOINT`, and `CLAUDE_CODE_SESSION_ID` are
+// what current Claude Code actually sets in every child process env (hooks,
+// MCP servers) — verified empirically in a live session 2026-08-31;
+// `CLAUDE_CODE`/`CLAUDE_CODE_VERSION` kept for older builds. Without these,
+// detection falls through to generic-mcp on current versions.
+export const CLAUDE_CODE_ENV_SIGNALS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE',
+  'CLAUDE_CODE_VERSION',
+] as const;
+
 export class ClaudeCodeAdapter implements PlatformAdapter {
   readonly platformName = 'claude-code';
   readonly visibilityLevel = 'full-hooks' as const;
@@ -59,8 +72,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     return (
-      process.env.CLAUDE_CODE !== undefined ||
-      process.env.CLAUDE_CODE_VERSION !== undefined ||
+      CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined) ||
       process.env.MCP_CLIENT === 'claude-code'
     );
   }

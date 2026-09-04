@@ -1,11 +1,16 @@
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { AmazonQAdapter } from './amazon-q-adapter.js';
 import { AntigravityAdapter } from './antigravity-adapter.js';
-import { ClaudeCodeAdapter } from './claude-code-adapter.js';
+import { CLAUDE_CODE_ENV_SIGNALS, ClaudeCodeAdapter } from './claude-code-adapter.js';
 import { ClineAdapter } from './cline-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
 import { ContinueAdapter } from './continue-adapter.js';
 import { CopilotAdapter } from './copilot-adapter.js';
+import { CopilotAppAdapter } from './copilot-app-adapter.js';
 import { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
 import { CursorAdapter } from './cursor-adapter.js';
 import { DroidAdapter } from './droid-adapter.js';
@@ -24,8 +29,7 @@ let stderrSpy: ReturnType<typeof jest.spyOn>;
 const savedEnv: Record<string, string | undefined> = {};
 
 const ENV_KEYS = [
-  'CLAUDE_CODE',
-  'CLAUDE_CODE_VERSION',
+  ...CLAUDE_CODE_ENV_SIGNALS,
   'MCP_CLIENT',
   'MCP_CLIENT_NAME',
   'CURSOR_SESSION_ID',
@@ -47,7 +51,22 @@ const ENV_KEYS = [
   'KIRO_IDE',
   'KIRO_VERSION',
   'PI_CODING_AGENT',
+  'NEW_RELIC_AI_COPILOT_DIR',
 ];
+
+// CopilotAppAdapter ambient-detects via NEW_RELIC_AI_COPILOT_DIR
+// (defaulting to ~/.copilot). Any machine that really has the GitHub Copilot
+// desktop app or CLI installed has a real ~/.copilot/data.db, so every test
+// below that expects no ambient copilot-app match must point this at a
+// nonexistent path rather than merely deleting it.
+const NONEXISTENT_COPILOT_DIR = resolve(
+  tmpdir(),
+  `nr-platform-registry-test-no-copilot-dir-${process.pid}`,
+);
+
+// A real fixture directory (created per test that needs it) for exercising
+// CopilotAppAdapter's ambient data.db detection.
+let fixtureCopilotDir: string | null = null;
 
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -55,6 +74,8 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.NEW_RELIC_AI_COPILOT_DIR = NONEXISTENT_COPILOT_DIR;
+  fixtureCopilotDir = null;
 });
 
 afterEach(() => {
@@ -62,6 +83,9 @@ afterEach(() => {
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
+  }
+  if (fixtureCopilotDir && existsSync(fixtureCopilotDir)) {
+    rmSync(fixtureCopilotDir, { recursive: true, force: true });
   }
 });
 
@@ -262,6 +286,46 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('copilot-sdk');
     });
 
+    it('selects Copilot App adapter when copilot-app platform env is set', () => {
+      process.env.NEW_RELIC_AI_PLATFORM = 'copilot-app';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('copilot-app');
+    });
+
+    it('selects Copilot App adapter ambiently from a data.db-only fixture dir, not generic-mcp or copilot-sdk', () => {
+      fixtureCopilotDir = resolve(
+        tmpdir(),
+        `nr-platform-registry-test-copilot-app-dir-${process.pid}-${Date.now()}`,
+      );
+      mkdirSync(fixtureCopilotDir, { recursive: true });
+      writeFileSync(resolve(fixtureCopilotDir, 'data.db'), '');
+      process.env.NEW_RELIC_AI_COPILOT_DIR = fixtureCopilotDir;
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('copilot-app');
+    });
+
+    it('prefers an explicit MCP_CLIENT=copilot-sdk over the ambient copilot-app data.db signal', () => {
+      fixtureCopilotDir = resolve(
+        tmpdir(),
+        `nr-platform-registry-test-copilot-app-dir-${process.pid}-${Date.now()}`,
+      );
+      mkdirSync(fixtureCopilotDir, { recursive: true });
+      writeFileSync(resolve(fixtureCopilotDir, 'data.db'), '');
+      process.env.NEW_RELIC_AI_COPILOT_DIR = fixtureCopilotDir;
+      process.env.MCP_CLIENT = 'copilot-sdk';
+      const registry = createDefaultRegistry();
+
+      const detected = registry.detect();
+      expect(detected).not.toBeNull();
+      expect(detected!.platformName).toBe('copilot-sdk');
+    });
+
     it('selects Zed adapter when Zed env vars are present', () => {
       process.env.ZED_SESSION_ID = 'zed-abc';
       const registry = createDefaultRegistry();
@@ -428,25 +492,26 @@ describe('createDefaultRegistry', () => {
     const registry = createDefaultRegistry();
     const registered = registry.getRegistered();
 
-    expect(registered).toHaveLength(18);
+    expect(registered).toHaveLength(19);
     expect(registered[0]).toBeInstanceOf(ClaudeCodeAdapter);
     expect(registered[1]).toBeInstanceOf(CursorAdapter);
     expect(registered[2]).toBeInstanceOf(WindsurfAdapter);
     expect(registered[3]).toBeInstanceOf(CopilotAdapter);
-    expect(registered[4]).toBeInstanceOf(CopilotSdkAdapter);
-    expect(registered[5]).toBeInstanceOf(ZedAdapter);
-    expect(registered[6]).toBeInstanceOf(ContinueAdapter);
-    expect(registered[7]).toBeInstanceOf(AmazonQAdapter);
-    expect(registered[8]).toBeInstanceOf(KiroAdapter);
-    expect(registered[9]).toBeInstanceOf(DroidAdapter);
-    expect(registered[10]).toBeInstanceOf(GeminiCliAdapter);
-    expect(registered[11]).toBeInstanceOf(ClineAdapter);
-    expect(registered[12]).toBeInstanceOf(CodexAdapter);
-    expect(registered[13]).toBeInstanceOf(OpencodeAdapter);
-    expect(registered[14]).toBeInstanceOf(KiloCodeAdapter);
-    expect(registered[15]).toBeInstanceOf(PiAdapter);
-    expect(registered[16]).toBeInstanceOf(AntigravityAdapter);
-    expect(registered[17]).toBeInstanceOf(GenericMcpAdapter);
+    expect(registered[4]).toBeInstanceOf(CopilotAppAdapter);
+    expect(registered[5]).toBeInstanceOf(CopilotSdkAdapter);
+    expect(registered[6]).toBeInstanceOf(ZedAdapter);
+    expect(registered[7]).toBeInstanceOf(ContinueAdapter);
+    expect(registered[8]).toBeInstanceOf(AmazonQAdapter);
+    expect(registered[9]).toBeInstanceOf(KiroAdapter);
+    expect(registered[10]).toBeInstanceOf(DroidAdapter);
+    expect(registered[11]).toBeInstanceOf(GeminiCliAdapter);
+    expect(registered[12]).toBeInstanceOf(ClineAdapter);
+    expect(registered[13]).toBeInstanceOf(CodexAdapter);
+    expect(registered[14]).toBeInstanceOf(OpencodeAdapter);
+    expect(registered[15]).toBeInstanceOf(KiloCodeAdapter);
+    expect(registered[16]).toBeInstanceOf(PiAdapter);
+    expect(registered[17]).toBeInstanceOf(AntigravityAdapter);
+    expect(registered[18]).toBeInstanceOf(GenericMcpAdapter);
   });
 
   it('includes zed, continue, amazon-q, kiro, droid, gemini-cli, cline, codex, opencode, kilocode, pi, and antigravity adapters', () => {
@@ -464,6 +529,7 @@ describe('createDefaultRegistry', () => {
     expect(names).toContain('kilocode');
     expect(names).toContain('pi');
     expect(names).toContain('antigravity');
+    expect(names).toContain('copilot-app');
   });
 
   it('ends with generic-mcp as fallback', () => {
@@ -536,6 +602,7 @@ describe('all adapters implement PlatformAdapter interface', () => {
     new CursorAdapter(),
     new WindsurfAdapter(),
     new CopilotAdapter(),
+    new CopilotAppAdapter(),
     new CopilotSdkAdapter(),
     new ZedAdapter(),
     new ContinueAdapter(),

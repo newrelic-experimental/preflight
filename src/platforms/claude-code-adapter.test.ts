@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { ClaudeCodeAdapter } from './claude-code-adapter.js';
+import { CLAUDE_CODE_ENV_SIGNALS, ClaudeCodeAdapter } from './claude-code-adapter.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -7,7 +7,7 @@ const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-  for (const key of ['CLAUDE_CODE', 'CLAUDE_CODE_VERSION', 'CLAUDE_MODEL', 'MCP_CLIENT']) {
+  for (const key of [...CLAUDE_CODE_ENV_SIGNALS, 'CLAUDE_MODEL', 'MCP_CLIENT']) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
@@ -120,6 +120,11 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   describe('isSupported', () => {
+    it('returns true when CLAUDECODE is set', () => {
+      process.env.CLAUDECODE = '1';
+      expect(adapter.isSupported()).toBe(true);
+    });
+
     it('returns true when CLAUDE_CODE is set', () => {
       process.env.CLAUDE_CODE = '1';
       expect(adapter.isSupported()).toBe(true);
@@ -127,6 +132,16 @@ describe('ClaudeCodeAdapter', () => {
 
     it('returns true when CLAUDE_CODE_VERSION is set', () => {
       process.env.CLAUDE_CODE_VERSION = '1.0.0';
+      expect(adapter.isSupported()).toBe(true);
+    });
+
+    it('returns true when CLAUDE_CODE_ENTRYPOINT is set', () => {
+      process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+      expect(adapter.isSupported()).toBe(true);
+    });
+
+    it('returns true when CLAUDE_CODE_SESSION_ID is set', () => {
+      process.env.CLAUDE_CODE_SESSION_ID = 'session_123';
       expect(adapter.isSupported()).toBe(true);
     });
 

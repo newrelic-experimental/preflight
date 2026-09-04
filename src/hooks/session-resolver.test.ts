@@ -7,6 +7,7 @@ import {
   resolveFromJobDir,
   resolveFromBreadcrumb,
   resolveFromCwd,
+  resolveFromAncestorBreadcrumb,
   nextDelayMs,
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
@@ -178,6 +179,63 @@ describe('session-resolver', () => {
     });
   });
 
+  describe('resolveFromAncestorBreadcrumb()', () => {
+    /** Writes a ppid breadcrumb and returns its path. */
+    function writeBreadcrumb(pid: number, sessionId: string): string {
+      const dir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(dir, { recursive: true });
+      const path = resolve(dir, `${pid}.txt`);
+      writeFileSync(path, sessionId);
+      return path;
+    }
+
+    it('returns null for empty or single-element input (nothing above our own ppid)', () => {
+      expect(resolveFromAncestorBreadcrumb(tmpDir, [])).toBeNull();
+      expect(resolveFromAncestorBreadcrumb(tmpDir, [72995])).toBeNull();
+    });
+
+    it('resolves the npx-shaped tree — breadcrumb at the IDE, one level above our ppid', () => {
+      // Real Kiro trace: server ppid is the npm exec wrapper (72995); the
+      // collector wrote its breadcrumb at Kiro Helper's pid (72451).
+      writeBreadcrumb(72451, 'sess-kiro-real');
+      const hit = resolveFromAncestorBreadcrumb(tmpDir, [72995, 72451, 72060]);
+      expect(hit).toEqual({ sessionId: 'sess-kiro-real', pid: 72451, depth: 1 });
+    });
+
+    it('skips index 0 — the direct ppid is resolveFromBreadcrumb()’s job', () => {
+      writeBreadcrumb(72995, 'sess-direct-ppid');
+      expect(resolveFromAncestorBreadcrumb(tmpDir, [72995, 72451])).toBeNull();
+    });
+
+    it('prefers the closest ancestor when several have breadcrumbs', () => {
+      writeBreadcrumb(72451, 'sess-closest');
+      writeBreadcrumb(72060, 'sess-further-up');
+      const hit = resolveFromAncestorBreadcrumb(tmpDir, [72995, 72451, 72060]);
+      expect(hit?.sessionId).toBe('sess-closest');
+      expect(hit?.depth).toBe(1);
+    });
+
+    it('keeps walking past ancestors that have no breadcrumb', () => {
+      writeBreadcrumb(72060, 'sess-two-up');
+      const hit = resolveFromAncestorBreadcrumb(tmpDir, [72995, 72451, 72060]);
+      expect(hit).toEqual({ sessionId: 'sess-two-up', pid: 72060, depth: 2 });
+    });
+
+    it('inherits the mtime staleness gate, rejecting a recycled-PID ancestor', () => {
+      const path = writeBreadcrumb(72451, 'sess-stale-leftover');
+      const oldMs = Date.now() - 60_000;
+      utimesSync(path, oldMs / 1000, oldMs / 1000);
+      // A process that started after the breadcrumb was written must not trust it.
+      expect(resolveFromAncestorBreadcrumb(tmpDir, [72995, 72451], Date.now())).toBeNull();
+    });
+
+    it('accepts an ancestor breadcrumb written after the process started', () => {
+      writeBreadcrumb(72451, 'sess-fresh');
+      const hit = resolveFromAncestorBreadcrumb(tmpDir, [72995, 72451], Date.now() - 60_000);
+      expect(hit?.sessionId).toBe('sess-fresh');
+    });
+  });
+
   describe('nextDelayMs()', () => {
     it('follows the exp-backoff schedule and saturates at 2s', () => {
       expect(nextDelayMs(0)).toBe(100);
@@ -330,6 +388,117 @@ describe('session-resolver', () => {
         source: 'cwd',
         sessionId: 'sess-cwd-source',
       });
+    });
+  });
+
+  describe('resolveSessionId() — ancestor ppid fallback', () => {
+    /** Writes a ppid breadcrumb. */
+    function writeBreadcrumb(pid: number, sessionId: string): void {
+      const dir = resolve(tmpDir, 'session-by-ppid');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, `${pid}.txt`), sessionId);
+    }
+
+    it('resolves via an ancestor and reports source "ppid-ancestor"', async () => {
+      // Our own ppid (88101) has no breadcrumb — the npx wrapper case.
+      writeBreadcrumb(88102, 'sess-via-ancestor');
+      const onResolutionSource = jest.fn();
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 88101,
+        ancestorPids: [88101, 88102, 88103],
+        storagePath: tmpDir,
+        suppressWarn: true,
+        onResolutionSource,
+      });
+
+      expect(sid).toBe('sess-via-ancestor');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'ppid-ancestor',
+        sessionId: 'sess-via-ancestor',
+      });
+    });
+
+    it('prefers the direct ppid over an ancestor when both have breadcrumbs', async () => {
+      writeBreadcrumb(88201, 'sess-direct');
+      writeBreadcrumb(88202, 'sess-ancestor');
+      const onResolutionSource = jest.fn();
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 88201,
+        ancestorPids: [88201, 88202],
+        storagePath: tmpDir,
+        suppressWarn: true,
+        onResolutionSource,
+      });
+
+      expect(sid).toBe('sess-direct');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'ppid',
+        sessionId: 'sess-direct',
+      });
+    });
+
+    it('prefers an ancestor over the collision-prone cwd breadcrumb', async () => {
+      writeBreadcrumb(88302, 'sess-ancestor-wins');
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-shared.txt'), 'sess-cwd-loses');
+      const onResolutionSource = jest.fn();
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 88301,
+        ancestorPids: [88301, 88302],
+        cwd: '/projects/shared',
+        storagePath: tmpDir,
+        suppressWarn: true,
+        onResolutionSource,
+      });
+
+      expect(sid).toBe('sess-ancestor-wins');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'ppid-ancestor',
+        sessionId: 'sess-ancestor-wins',
+      });
+    });
+
+    it('still falls back to cwd when no ancestor has a breadcrumb', async () => {
+      mkdirSync(resolve(tmpDir, 'session-by-cwd'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-fallback.txt'), 'sess-cwd-used');
+      const onResolutionSource = jest.fn();
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 88401,
+        ancestorPids: [88401, 88402, 88403],
+        cwd: '/projects/fallback',
+        storagePath: tmpDir,
+        suppressWarn: true,
+        onResolutionSource,
+      });
+
+      expect(sid).toBe('sess-cwd-used');
+      expect(onResolutionSource).toHaveBeenCalledWith({
+        source: 'cwd',
+        sessionId: 'sess-cwd-used',
+      });
+    });
+
+    it('resolves once an ancestor breadcrumb appears mid-poll', async () => {
+      setTimeout(() => {
+        writeBreadcrumb(88502, 'sess-ancestor-late');
+      }, 150);
+
+      const sid = await resolveSessionId({
+        claudeJobDir: null,
+        ppid: 88501,
+        ancestorPids: [88501, 88502],
+        storagePath: tmpDir,
+        suppressWarn: true,
+      });
+      expect(sid).toBe('sess-ancestor-late');
     });
   });
 

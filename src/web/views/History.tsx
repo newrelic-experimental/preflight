@@ -68,6 +68,11 @@ const TOOLTIP_STYLE = {
   fontSize: 12,
   color: 'var(--color-ink-base)',
 };
+// Recharts falls back to a hardcoded #000 for tooltip item text whenever the
+// series has no explicit fill/stroke (e.g. Bars colored per-entry via Cell).
+// TOOLTIP_STYLE.color only reaches the tooltip label, not item rows, so this
+// has to be passed separately as `itemStyle`.
+const TOOLTIP_ITEM_STYLE = { color: 'var(--color-ink-base)' };
 const ACCENT = 'var(--color-accent-green)';
 const ACCENT_AMBER = 'var(--color-accent-amber)';
 const ACCENT_GREEN = 'var(--color-accent-green)';
@@ -363,7 +368,7 @@ export function History(): JSX.Element {
                     stroke={GRID_STROKE}
                     width={110}
                   />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
                   <Bar dataKey="totalCost" radius={[0, 3, 3, 0]}>
                     {outcomeData.map((entry) => (
                       <Cell
@@ -492,6 +497,7 @@ export function History(): JSX.Element {
                   />
                   <Tooltip
                     contentStyle={TOOLTIP_STYLE}
+                    itemStyle={TOOLTIP_ITEM_STYLE}
                     labelFormatter={(label) => shortToolName(String(label))}
                   />
                   <Bar dataKey="count" radius={[0, 3, 3, 0]}>

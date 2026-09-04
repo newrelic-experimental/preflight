@@ -1,6 +1,6 @@
 {
   "name": "@newrelic/preflight",
-  "version": "1.30.0",
+  "version": "1.39.0",
   "mcpName": "io.github.newrelic-experimental/preflight",
   "type": "module",
   "license": "Apache-2.0",
@@ -19,7 +19,7 @@
   "bugs": {
     "url": "https://github.com/newrelic-experimental/preflight/issues"
   },
-  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Windsurf, Copilot, and more)",
+  "description": "New Relic MCP server for observing AI coding assistants (Claude Code, Cursor, Copilot, etc.)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -65,6 +65,7 @@
     "regenerate:otlp-descriptor": "npx tsx scripts/regenerate-otlp-descriptor.ts",
     "check:bundle-size": "npx tsx scripts/check-bundle-size.ts",
     "check:docs-inventory": "npx tsx scripts/check-docs-inventory.ts",
+    "whats-new:draft": "npx tsx scripts/draft-whats-new.ts",
     "dev": "node dist/index.js --local",
     "dev:all": "npm run build && npm run dev",
     "dev:full": "npm run build:server && { npm run dev & BACK=$!; npm run dev:web; kill $BACK 2>/dev/null || true; }",

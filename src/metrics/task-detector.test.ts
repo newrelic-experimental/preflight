@@ -816,6 +816,65 @@ describe('markBoundary', () => {
   });
 });
 
+describe('startTaskIfNone', () => {
+  it('starts a new active task when none is active', () => {
+    const detector = new TaskDetector();
+    expect(detector.getCurrentTask()).toBeNull();
+
+    detector.startTaskIfNone(Date.now());
+
+    expect(detector.getMetrics().currentTaskActive).toBe(true);
+  });
+
+  it('is a no-op when a task is already active — does not reset its accumulated calls', () => {
+    const detector = new TaskDetector();
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+
+    detector.startTaskIfNone(Date.now());
+
+    expect(detector.getMetrics().currentTaskToolCalls).toBe(1);
+  });
+
+  it('lets a task started via startTaskIfNone be closed normally by markBoundary', () => {
+    const detector = new TaskDetector();
+    detector.startTaskIfNone(Date.now());
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+
+    const closed = detector.markBoundary(Date.now());
+
+    expect(closed).not.toBeNull();
+    expect(closed!.toolCallCount).toBe(1);
+    expect(detector.getMetrics().currentTaskActive).toBe(false);
+  });
+
+  it('markBoundary drops a task started via startTaskIfNone that never received a tool call, without counting it as completed', () => {
+    const detector = new TaskDetector();
+    detector.startTaskIfNone(Date.now());
+
+    const closed = detector.markBoundary(Date.now());
+
+    expect(closed).toBeNull();
+    const metrics = detector.getMetrics();
+    expect(metrics.currentTaskActive).toBe(false);
+    expect(metrics.totalTasksCompleted).toBe(0);
+    expect(metrics.completedTasks).toHaveLength(0);
+  });
+
+  it('a dropped zero-tool-call task does not block the next real task from starting', () => {
+    const detector = new TaskDetector();
+    detector.startTaskIfNone(1000);
+    detector.markBoundary(2000);
+
+    detector.startTaskIfNone(3000);
+    detector.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/a.ts', timestamp: 3500 }));
+    const closed = detector.markBoundary(4000);
+
+    expect(closed).not.toBeNull();
+    expect(closed!.toolCallCount).toBe(1);
+    expect(detector.getMetrics().totalTasksCompleted).toBe(1);
+  });
+});
+
 describe('seedFromPersisted', () => {
   it('folds seeded totals into getMetrics().seededAggregate, additive across calls', () => {
     const detector = new TaskDetector();

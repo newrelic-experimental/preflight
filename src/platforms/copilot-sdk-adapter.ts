@@ -30,8 +30,13 @@ import type {
  * read_agent, write_agent, skill. This mirrors the VS Code CopilotAdapter's
  * COPILOT_TOOL_MAP precedent of leaving introspection tools unmapped rather
  * than guessing.
+ *
+ * Exported for reuse by `CopilotAppAdapter`: the GitHub Copilot desktop app
+ * runs this exact CLI as a pooled stdio process (empirically verified —
+ * macOS, Copilot app v1.1.14, 2026-09-01), so it speaks the identical
+ * tool-name vocabulary. One source of truth rather than a forked copy.
  */
-const COPILOT_SDK_TOOL_MAP: Record<string, string> = {
+export const COPILOT_SDK_TOOL_MAP: Record<string, string> = {
   // Canonical Claude-shaped names, as actually delivered by PascalCase
   // PreToolUse/PostToolUse (identity — see the module doc above).
   Bash: 'Bash',

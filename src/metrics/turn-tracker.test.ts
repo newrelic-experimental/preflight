@@ -228,4 +228,62 @@ describe('TurnTracker', () => {
     t.recordToolCall(makeRecord({ toolUseId: 'u2', timestamp: 5000, durationMs: 50 }));
     expect(t.getCurrentTurnNumber()).toBe(2);
   });
+
+  describe('finalizeTurnAt()', () => {
+    it('is a no-op when no turn is open', () => {
+      const t = new TurnTracker();
+      t.finalizeTurnAt(1000);
+      expect(t.getMetrics().totalTurns).toBe(0);
+    });
+
+    it('finalizes the open turn immediately, without waiting for the gap threshold', () => {
+      const t = new TurnTracker();
+      t.recordToolCall(makeRecord({ toolUseId: 'u1', timestamp: 1000, durationMs: 50 }));
+      t.finalizeTurnAt(1200);
+
+      const m = t.getMetrics();
+      expect(m.totalTurns).toBe(1);
+      expect(m.recentTurns[0]!.toolCount).toBe(1);
+      expect(t.getCurrentTurnNumber()).toBe(0);
+    });
+
+    it('extends the turn end time to the Stop timestamp when it is later than the last tool call', () => {
+      const t = new TurnTracker();
+      t.recordToolCall(makeRecord({ toolUseId: 'u1', timestamp: 1000, durationMs: 50 }));
+      // Last tool call ends at 1050; Stop fires later, after response generation.
+      t.finalizeTurnAt(1800);
+
+      const m = t.getMetrics();
+      expect(m.recentTurns[0]!.startTime).toBe(1000);
+      expect(m.recentTurns[0]!.endTime).toBe(1800);
+      expect(m.recentTurns[0]!.durationMs).toBe(800);
+    });
+
+    it('never shrinks the turn end time when the Stop timestamp is earlier (clock skew)', () => {
+      const t = new TurnTracker();
+      t.recordToolCall(makeRecord({ toolUseId: 'u1', timestamp: 1000, durationMs: 500 }));
+      // Last tool call ends at 1500; a skewed/late-arriving Stop claims an earlier time.
+      t.finalizeTurnAt(1100);
+
+      const m = t.getMetrics();
+      expect(m.recentTurns[0]!.endTime).toBe(1500);
+      expect(m.recentTurns[0]!.durationMs).toBe(500);
+    });
+
+    it('prevents two quick consecutive turns from merging into one', () => {
+      const t = new TurnTracker();
+      t.recordToolCall(makeRecord({ toolUseId: 'u1', timestamp: 1000, durationMs: 50 }));
+      t.finalizeTurnAt(1100);
+
+      // Second turn's first tool call arrives well within the gap threshold of
+      // the first turn's end — without finalizeTurnAt, this would merge into turn 1.
+      t.recordToolCall(makeRecord({ toolUseId: 'u2', timestamp: 1150, durationMs: 50 }));
+
+      const m = t.getMetrics();
+      expect(m.totalTurns).toBe(2);
+      expect(m.recentTurns[0]!.toolCount).toBe(1);
+      expect(m.recentTurns[1]!.toolCount).toBe(1);
+      expect(t.getCurrentTurnNumber()).toBe(2);
+    });
+  });
 });

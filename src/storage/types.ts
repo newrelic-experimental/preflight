@@ -1,7 +1,11 @@
 interface HookEventBase {
   readonly tool: string;
   readonly timestamp: number;
-  /** True originating platform, stamped by collector-script.ts at write time. */
+  /**
+   * True originating platform, stamped by the collector in the hook
+   * subprocess, where platform env signals actually exist. Absent on lines
+   * written by older collectors and by watchers.
+   */
   readonly platform?: string;
 }
 
@@ -199,13 +203,40 @@ export interface ModelSwitchHookEvent extends HookEventBase {
 }
 
 /**
+ * Emitted by Claude Code's UserPromptSubmit hook, which fires when the user
+ * submits a prompt, before Claude processes it (code.claude.com/docs/en/hooks.md).
+ * Deliberately carries no content — the `prompt` field itself is free text
+ * this file has no reason to capture; only its timestamp matters, as a
+ * precise "a new task started here" boundary for `TaskDetector`.
+ */
+export interface UserPromptSubmitHookEvent extends HookEventBase {
+  readonly mode: 'user_prompt_submit';
+  readonly sessionId?: string;
+}
+
+/**
+ * Emitted by Claude Code's Stop hook, which fires when the main agent has
+ * finished responding — does NOT fire on a user interrupt, so this is a
+ * corroborating precise signal, not a full replacement for the existing
+ * idle-gap heuristics in `TurnTracker`/`TaskDetector` (code.claude.com/docs/en/hooks.md).
+ * Deliberately carries no content — `last_assistant_message`,
+ * `background_tasks`, and `session_crons` are all real fields on this hook's
+ * input, but none of them are needed just to mark "a turn/task ended here".
+ */
+export interface StopHookEvent extends HookEventBase {
+  readonly mode: 'stop';
+  readonly sessionId?: string;
+}
+
+/**
  * Buffer line discriminated union. `pre`/`post`/`token` are the original
  * collector modes; `permission_request`/`permission_denied` are collector
  * modes for Claude Code's permission hooks. `subagent_token`, `workflow_run`,
  * and `observability_health` are emitted by the SubagentWatcher / WorkflowWatcher.
  * `api_failure` is emitted by the collector for Claude Code's StopFailure
  * hook, `session_start` for its SessionStart hook, `instructions_loaded` for
- * its InstructionsLoaded hook, `model_switch` for its PostModelSwitch hook.
+ * its InstructionsLoaded hook, `model_switch` for its PostModelSwitch hook,
+ * `user_prompt_submit`/`stop` for its UserPromptSubmit/Stop hooks.
  */
 export type HookEvent =
   | PreHookEvent
@@ -219,7 +250,9 @@ export type HookEvent =
   | ApiFailureHookEvent
   | SessionStartHookEvent
   | InstructionsLoadedHookEvent
-  | ModelSwitchHookEvent;
+  | ModelSwitchHookEvent
+  | UserPromptSubmitHookEvent
+  | StopHookEvent;
 
 export interface TokenEvent {
   readonly mode: 'token';
@@ -282,6 +315,10 @@ export interface ToolCallRecord {
    */
   readonly agentId?: string;
   readonly agentType?: string;
+  /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
+  readonly skillName?: string;
+  /** Length of the free-text `tool_input.args`; the text itself is never recorded. */
+  readonly skillArgsLength?: number;
   readonly [key: string]: unknown;
 }
 

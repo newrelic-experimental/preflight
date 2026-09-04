@@ -4,11 +4,12 @@ export type {
   PlatformSessionMetadata,
   PlatformAdapter,
 } from './types.js';
-export { ClaudeCodeAdapter } from './claude-code-adapter.js';
+export { ClaudeCodeAdapter, CLAUDE_CODE_ENV_SIGNALS } from './claude-code-adapter.js';
 export { CursorAdapter } from './cursor-adapter.js';
 export { WindsurfAdapter } from './windsurf-adapter.js';
 export { CopilotAdapter } from './copilot-adapter.js';
-export { CopilotSdkAdapter } from './copilot-sdk-adapter.js';
+export { CopilotAppAdapter } from './copilot-app-adapter.js';
+export { CopilotSdkAdapter, COPILOT_SDK_TOOL_MAP } from './copilot-sdk-adapter.js';
 export type { CopilotToolCallEvent, CopilotUsageRecord } from './copilot-adapter.js';
 export { parseCopilotUsageResponse } from './copilot-adapter.js';
 export { ZedAdapter } from './zed-adapter.js';
@@ -23,7 +24,11 @@ export { OpencodeAdapter } from './opencode-adapter.js';
 export { KiloCodeAdapter } from './kilo-code-adapter.js';
 export { PiAdapter } from './pi-adapter.js';
 export { AntigravityAdapter } from './antigravity-adapter.js';
-export { GenericMcpAdapter, validateReportToolCallInput } from './generic-mcp-adapter.js';
+export {
+  GenericMcpAdapter,
+  GENERIC_MCP_PLATFORM_NAME,
+  validateReportToolCallInput,
+} from './generic-mcp-adapter.js';
 export type {
   ReportToolCallInput,
   ReportSessionStartInput,

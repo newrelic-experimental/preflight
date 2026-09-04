@@ -13,6 +13,23 @@ import type {
  * (e.g. `fsRead`, `fsCreate`) are kept as best-effort coverage for IDE-surface
  * tool names not yet documented publicly; don't remove them without positive
  * evidence they're wrong.
+ *
+ * The `OBSERVED` entries below are the opposite case: names captured from a
+ * live Kiro install (six sessions on Kiro 42.08, macOS, Sep 2026), recorded in
+ * `toolBreakdown` of the persisted session records. They matter because the
+ * pre-existing camelCase guesses (`readFile`, `listDirectory`, `strReplace`,
+ * `grepSearch`, `readMultipleFiles`) never matched what Kiro actually sends,
+ * which is snake_case — so every file/edit/shell metric derived from a
+ * normalized name silently reported zero on Kiro. Treat these as the
+ * authoritative spellings; the camelCase forms are retained only because they
+ * cost nothing and may cover other Kiro surfaces.
+ *
+ * Deliberately NOT mapped, though observed: `kiro_powers`,
+ * `update_session_information` and `createHook` are Kiro's own
+ * meta/session-management tools, not file or shell operations. Mapping them to
+ * a file verb would inflate file metrics with activity that never touched a
+ * file. They fall through to 'Unknown' with the original name preserved in
+ * telemetry, which is the intended behavior for unrecognized tools.
  */
 const KIRO_TOOL_MAP: Record<string, string> = {
   fsRead: 'Read',
@@ -20,6 +37,8 @@ const KIRO_TOOL_MAP: Record<string, string> = {
   read: 'Read',
   readFile: 'Read',
   readMultipleFiles: 'Read',
+  read_file: 'Read', // OBSERVED
+  read_files: 'Read', // OBSERVED
   fsWrite: 'Write',
   fs_write: 'Write',
   write: 'Write',
@@ -30,6 +49,7 @@ const KIRO_TOOL_MAP: Record<string, string> = {
   fs_edit: 'Edit',
   editFile: 'Edit',
   strReplace: 'Edit',
+  str_replace: 'Edit', // OBSERVED
   deletePath: 'Delete',
   fs_delete: 'Delete',
   deleteFile: 'Delete',
@@ -38,9 +58,11 @@ const KIRO_TOOL_MAP: Record<string, string> = {
   fileSearch: 'Glob',
   fs_find: 'Glob',
   findFiles: 'Glob',
+  list_directory: 'Glob', // OBSERVED
   grepSearch: 'Grep',
   grep: 'Grep',
   search_code: 'Grep',
+  grep_search: 'Grep', // OBSERVED
   executeBash: 'Bash',
   execute_bash: 'Bash',
   shell: 'Bash',
@@ -48,6 +70,7 @@ const KIRO_TOOL_MAP: Record<string, string> = {
   run_command: 'Bash',
   use_aws: 'Bash',
   aws: 'Bash',
+  web_fetch: 'WebFetch', // OBSERVED
 };
 
 interface KiroToolCallEvent {
@@ -128,6 +151,24 @@ export class KiroAdapter implements PlatformAdapter {
       '     }',
       '   }',
       '3. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).',
+      '',
+      "For automatic tool-call capture, also wire Kiro's native hooks system",
+      '(https://kiro.dev/docs/hooks/): run `npm install -g @newrelic/preflight`',
+      'for the `preflight-collector` bin (check it resolves via `command -v',
+      'preflight-collector` before wiring it up — PreToolUse hooks can block',
+      'the call they guard if the command is missing), then add',
+      '.kiro/hooks/preflight-observability.json (no "matcher" needed —',
+      'omitting it defaults to always-match; the same command distinguishes',
+      'pre/post from the hook payload itself, not from an argument):',
+      '  {',
+      '    "version": "v1",',
+      '    "hooks": [',
+      '      { "name": "preflight-pre-tool", "trigger": "PreToolUse",',
+      '        "action": { "type": "command", "command": "preflight-collector" } },',
+      '      { "name": "preflight-post-tool", "trigger": "PostToolUse",',
+      '        "action": { "type": "command", "command": "preflight-collector" } }',
+      '    ]',
+      '  }',
     ].join('\n');
   }
 

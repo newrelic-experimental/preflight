@@ -147,7 +147,7 @@ export function handleReportTokens(
 export const COST_BREAKDOWN_TOOL = {
   name: 'nr_observe_get_cost_breakdown',
   description:
-    'Get a breakdown of session costs by task, model, and efficiency metrics like cost per line of code.',
+    "Get a breakdown of session costs by task, model, and efficiency metrics like cost per line of code. Cost figures are Preflight's own list-price estimate unless costRateMultiplier/dataResidencyPremium are configured for an org's contracted rate — see rate_multiplier_applied in the response.",
   inputSchema: {
     type: 'object' as const,
     properties: {},
@@ -180,6 +180,11 @@ export function handleGetCostBreakdown(costTracker: CostTracker, taskDetector?: 
       cache_read: metrics.totalCacheReadTokens,
       cache_creation: metrics.totalCacheCreationTokens,
     },
+    // 1 unless costRateMultiplier/dataResidencyPremium are configured — see
+    // CostMetrics.costRateMultiplierApplied. A value other than 1 means every
+    // dollar figure above reflects that correction, not Preflight's default
+    // list-price computation, which is still only an estimate either way.
+    rate_multiplier_applied: metrics.costRateMultiplierApplied,
   };
 
   return {

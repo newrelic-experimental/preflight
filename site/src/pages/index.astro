@@ -1,0 +1,381 @@
+---
+import '../styles/landing.css';
+import commandsDoc from '../../../docs/COMMANDS_TABLE.md?raw';
+import metricsDoc from '../../../docs/METRICS_TABLE.md?raw';
+import pkg from '../../../package.json';
+import CodePanel from '../components/CodePanel.astro';
+import CopyButton from '../components/CopyButton.astro';
+import LogoMark from '../components/LogoMark.astro';
+import { emphasizeNumbers } from '../highlight';
+import {
+  AGENT_PROMPT,
+  BASE,
+  CLOUD_COMMAND,
+  FEATURES,
+  FOOTER,
+  INSTALL_COMMAND,
+  NAV,
+  PLATFORMS,
+  SHOWCASE,
+  SITE_URL,
+  TEAMS,
+} from '../landing';
+
+const toolCount = new Set(commandsDoc.match(/nr_observe_[a-z_]+/g)).size;
+const metricCount = new Set(metricsDoc.match(/^\| `ai\.[\w.]+`/gm)).size;
+const dashboardCount = Object.keys(import.meta.glob('../../../dashboards/*.json')).length;
+const fullHooksCount = PLATFORMS.filter((p) => p.coverage === 'full-hooks').length;
+const mcpOnlyCount = PLATFORMS.length - fullHooksCount;
+
+const STATS = [
+  { value: toolCount, label: 'MCP tools', href: `${BASE}/commands-table/` },
+  { value: metricCount, label: 'Metrics', href: `${BASE}/metrics-table/` },
+  { value: dashboardCount, label: 'Dashboards', href: `${BASE}/getting-started/` },
+  { value: PLATFORMS.length, label: 'Platforms', href: `${BASE}/adapters/` },
+];
+
+const THEMES = [
+  { value: 'auto', label: 'System theme', icon: 'M4 5h16v11H4z M8 20h8 M12 16v4' },
+  {
+    value: 'light',
+    label: 'Light theme',
+    icon: 'M12 3v2 M12 19v2 M3 12h2 M19 12h2 M5.6 5.6l1.4 1.4 M17 17l1.4 1.4 M5.6 18.4 7 17 M17 7l1.4-1.4 M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
+  },
+  { value: 'dark', label: 'Dark theme', icon: 'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z' },
+];
+
+const title = 'Preflight: observability for AI coding assistants';
+const description =
+  'Preflight captures every tool call, every dollar, and every stall from Claude Code, Cursor, Copilot, and more. Runs on your machine. Sends nothing anywhere by default. Connect New Relic to roll it up across your whole org.';
+const logo = `${BASE}/demo/preflight-logo.svg`;
+---
+
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={`${SITE_URL}/`} />
+    <link rel="icon" href={logo} type="image/svg+xml" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={`${SITE_URL}/demo/preflight-logo.svg`} />
+    <script is:inline>
+      // Same storage key and values as Starlight, so a choice made here carries into the docs.
+      (() => {
+        let stored = null;
+        try {
+          stored = localStorage.getItem('starlight-theme');
+        } catch {}
+        const light =
+          stored === 'light' ||
+          (stored !== 'dark' && matchMedia('(prefers-color-scheme: light)').matches);
+        document.documentElement.dataset.theme = light ? 'light' : 'dark';
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href={`${BASE}/`} aria-label="Preflight home">
+          <img src={logo} width="28" height="28" alt="" />
+          <span class="brand-name">Preflight</span>
+        </a>
+        <nav aria-label="Primary">
+          <ul>
+            {
+              NAV.map((link) => (
+                <li>
+                  <a href={link.href}>{link.label}</a>
+                </li>
+              ))
+            }
+          </ul>
+        </nav>
+        <div class="theme-toggle" role="group" aria-label="Theme">
+          {
+            THEMES.map((t) => (
+              <button type="button" data-set-theme={t.value} aria-label={t.label} title={t.label}>
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d={t.icon} />
+                </svg>
+              </button>
+            ))
+          }
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero wrap">
+        <a class="pill" href={`${BASE}/whats-new/`}>
+          <span class="dot"></span>
+          What's new in v{pkg.version}
+          <span aria-hidden="true">→</span>
+        </a>
+        <h1>See what your AI coding assistant is actually doing</h1>
+        <p class="sub">{description}</p>
+        <div class="two-up">
+          <CodePanel id="install-command" label="For humans" code={INSTALL_COMMAND}>
+            <CopyButton slot="actions" text={INSTALL_COMMAND} target="install-command" />
+          </CodePanel>
+          <div>
+            <CodePanel id="agent-prompt" label="For agents" code={AGENT_PROMPT}>
+              <CopyButton
+                slot="actions"
+                text={AGENT_PROMPT}
+                target="agent-prompt"
+                label="Copy prompt"
+                primary
+              />
+            </CodePanel>
+            <p class="hint">Paste into Claude Code, Cursor, or any coding agent.</p>
+          </div>
+        </div>
+        <a class="text-link" href={`${BASE}/getting-started/`}>Read the docs →</a>
+      </section>
+
+      <section class="showcase wrap" aria-labelledby="showcase-heading">
+        <h2 id="showcase-heading">Ask your agent</h2>
+        <p class="lede">
+          Preflight is an MCP server, so the assistant doing the work can answer questions about
+          its own session. Ask in chat and it looks up the numbers.
+        </p>
+        <div class="tabs" role="tablist" aria-label="Example questions">
+          {
+            SHOWCASE.map((tab, i) => (
+              <button
+                type="button"
+                role="tab"
+                id={`tab-${tab.id}`}
+                aria-selected={i === 0 ? 'true' : 'false'}
+                aria-controls={`panel-${tab.id}`}
+                tabindex={i === 0 ? 0 : -1}
+              >
+                {tab.label}
+              </button>
+            ))
+          }
+        </div>
+        {
+          SHOWCASE.map((tab, i) => (
+            <div
+              class="showcase-panel"
+              role="tabpanel"
+              id={`panel-${tab.id}`}
+              aria-labelledby={`tab-${tab.id}`}
+              hidden={i !== 0}
+            >
+              <div class="chat">
+                <div class="turn">
+                  <span class="who">You</span>
+                  <span class="ask">{tab.ask}</span>
+                </div>
+                <div class="turn">
+                  <span class="who">Agent</span>
+                  <div>
+                    <p class="answer" data-answer>
+                      {emphasizeNumbers(tab.answer).map((s) =>
+                        s.figure ? <strong class="figure">{s.text}</strong> : s.text,
+                      )}
+                    </p>
+                    <p class="via" data-via>
+                      via <code>{tab.tool}</code>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))
+        }
+      </section>
+
+      <section class="platforms wrap" aria-labelledby="platforms-heading">
+        <h2 id="platforms-heading">Works with</h2>
+        <ul class="pills">
+          {
+            PLATFORMS.map((p) => (
+              <li>
+                <a
+                  class:list={['platform', { muted: p.coverage !== 'full-hooks' }]}
+                  href={`${BASE}/adapters/#${p.anchor}`}
+                >
+                  {p.logo && <LogoMark logo={p.logo} />}
+                  {p.name}
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+        <p class="legend">
+          <a href={`${BASE}/adapters/`}>
+            {fullHooksCount} capture every built-in tool call. {mcpOnlyCount} see only calls routed
+            to Preflight's own MCP tools.
+          </a>
+        </p>
+      </section>
+
+      <section class="stats wrap" aria-label="By the numbers">
+        {
+          STATS.map((s) => (
+            <a class="stat" href={s.href}>
+              <span class="stat-value">{s.value}</span>
+              <span class="stat-label">{s.label}</span>
+            </a>
+          ))
+        }
+      </section>
+
+      <section class="features wrap" aria-label="Features">
+        {
+          FEATURES.map((f) => (
+            <a class="feature" href={f.href}>
+              <h3>{f.title}</h3>
+              <p>{f.body}</p>
+              <span class="more">Learn more →</span>
+            </a>
+          ))
+        }
+      </section>
+
+      <section class="dashboard wrap" aria-labelledby="dashboard-heading">
+        <h2 id="dashboard-heading">Watch it live at localhost:7777</h2>
+        <p class="lede">
+          Local mode ships with a dashboard that needs no account and never leaves your machine.
+        </p>
+        <img
+          class="dashboard-gif"
+          src={`${BASE}/demo/preflight-readme.gif`}
+          alt="Animated tour of the Preflight local dashboard: session tracking, cost breakdown, efficiency score, and anti-patterns"
+          loading="lazy"
+        />
+        <p class="caption">
+          Teams get <a href={`${BASE}/getting-started/`}>{dashboardCount} prebuilt New Relic dashboards</a>.
+        </p>
+      </section>
+
+      <section id="teams" class="teams wrap" aria-labelledby="teams-heading">
+        <h2 id="teams-heading">Measure the return across your org</h2>
+        <p class="lede">
+          Connect New Relic and every session from every developer rolls up by team, project, and
+          platform. See what AI-assisted coding costs, what it produces, and where the money goes to
+          waste.
+        </p>
+        <div class="teams-grid">
+          {
+            TEAMS.map((t) => {
+              const Card = t.href ? 'a' : 'div';
+              return (
+                <Card class="feature" href={t.href}>
+                  <h3>{t.title}</h3>
+                  <p>{t.body}</p>
+                </Card>
+              );
+            })
+          }
+        </div>
+        <p class="caption">
+          Manager view carries team metrics with no tool-call content. Security audit tracks
+          sensitive file access and destructive commands.
+        </p>
+        <CodePanel id="cloud-command" label="Connect New Relic" code={CLOUD_COMMAND}>
+          <CopyButton slot="actions" text={CLOUD_COMMAND} target="cloud-command" />
+        </CodePanel>
+        <a class="text-link" href={`${BASE}/getting-started/`}>Team setup guide →</a>
+      </section>
+
+      <section class="cta wrap" aria-labelledby="cta-heading">
+        <h2 id="cta-heading">Under a minute to first session</h2>
+        <CodePanel id="install-command-cta" label="Install" code={INSTALL_COMMAND}>
+          <CopyButton slot="actions" text={INSTALL_COMMAND} target="install-command-cta" primary />
+        </CodePanel>
+        <a class="text-link" href={`${BASE}/getting-started/`}>Read the docs →</a>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer-inner">
+        <div class="footer-brand">
+          <a class="brand" href={`${BASE}/`}>
+            <img src={logo} width="24" height="24" alt="" />
+            Preflight
+          </a>
+          <p>Observability for AI coding assistants.</p>
+        </div>
+        {
+          FOOTER.map((col) => (
+            <div class="footer-col">
+              <h4>{col.heading}</h4>
+              <ul>
+                {col.links.map((link) => (
+                  <li>
+                    <a href={link.href}>{link.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </div>
+      <div class="wrap footer-bottom">Apache 2.0. A New Relic experimental project.</div>
+    </footer>
+
+    <script>
+      const STORAGE_KEY = 'starlight-theme';
+      const root = document.documentElement;
+      const buttons = document.querySelectorAll<HTMLButtonElement>('[data-set-theme]');
+      const lightQuery = matchMedia('(prefers-color-scheme: light)');
+
+      function stored(): string {
+        try {
+          const value = localStorage.getItem(STORAGE_KEY);
+          return value === 'light' || value === 'dark' ? value : 'auto';
+        } catch {
+          return 'auto';
+        }
+      }
+
+      function apply(choice: string) {
+        const resolved = choice === 'auto' ? (lightQuery.matches ? 'light' : 'dark') : choice;
+        root.dataset.theme = resolved;
+        buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.setTheme === choice)));
+      }
+
+      buttons.forEach((b) =>
+        b.addEventListener('click', () => {
+          const choice = b.dataset.setTheme ?? 'auto';
+          try {
+            if (choice === 'auto') localStorage.removeItem(STORAGE_KEY);
+            else localStorage.setItem(STORAGE_KEY, choice);
+          } catch {}
+          apply(choice);
+        }),
+      );
+      lightQuery.addEventListener('change', () => {
+        if (stored() === 'auto') apply('auto');
+      });
+      apply(stored());
+
+      const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+      function selectTab(tab: HTMLButtonElement) {
+        tabs.forEach((t) => {
+          const selected = t === tab;
+          t.setAttribute('aria-selected', String(selected));
+          t.tabIndex = selected ? 0 : -1;
+          const panel = document.getElementById(t.getAttribute('aria-controls') ?? '');
+          if (panel) panel.hidden = !selected;
+        });
+        tab.focus();
+      }
+      tabs.forEach((tab, i) => {
+        tab.addEventListener('click', () => selectTab(tab));
+        tab.addEventListener('keydown', (e) => {
+          const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+          if (step) selectTab(tabs[(i + step + tabs.length) % tabs.length]);
+        });
+      });
+    </script>
+  </body>
+</html>

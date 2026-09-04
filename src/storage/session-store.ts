@@ -24,6 +24,7 @@ import { join, resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
+import { GENERIC_MCP_PLATFORM_NAME } from '../platforms/generic-mcp-adapter.js';
 import type { SessionSummary, ReplayTimelineEntry } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import type { CostTracker } from '../metrics/cost-tracker.js';
@@ -362,7 +363,12 @@ export function mergeSummaries(
     sessionIntent: incoming.sessionIntent ?? existing.sessionIntent,
     repoName: incoming.repoName ?? existing.repoName,
     model: incoming.model ?? existing.model,
-    platform: incoming.platform ?? existing.platform,
+    // A later generic-labeled checkpoint (e.g. an aggregator restarted
+    // without env signals) must not clobber a real platform label.
+    platform:
+      incoming.platform && incoming.platform !== GENERIC_MCP_PLATFORM_NAME
+        ? incoming.platform
+        : (existing.platform ?? incoming.platform),
     instructionPromptHash: incoming.instructionPromptHash ?? existing.instructionPromptHash,
     toolBreakdown: mergeCounts(existing.toolBreakdown, incoming.toolBreakdown),
     filesRead: union(existing.filesRead, incoming.filesRead),

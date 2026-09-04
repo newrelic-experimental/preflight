@@ -5,6 +5,101 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] - 2026-09-04
+
+### Added
+
+- **Cost per tool call and per skill now reaches New Relic as a new `AiTurnCost` event.** When a turn's token usage arrives, Preflight emits one row per tool call in that turn with its share of the cost and tokens, plus `tool`, `skillName`, `tool_use_id`, and `turn_id`, so `FROM AiTurnCost SELECT sum(cost_usd) WHERE tool = 'Skill' FACET skillName` works over any window. A Cost by Skill widget is added to the team-view dashboard. Under `companionMode`, rows from Claude Code turns are tagged `cost_authority: 'external'` like `AiCodingTask`.
+- **`nr_observe_get_cost_per_tool` now applies `costRateMultiplier` and `dataResidencyPremium`.** The turn-cost attributor priced at list rate while every other cost figure was scaled, so `costByToolType` and `costBySkill` did not reconcile with `AiCodingTask` for orgs with a configured multiplier. They do now.
+
+## [1.38.0] - 2026-09-03
+
+### Added
+
+- **The local dashboard shows a Cost by Skill table, and the team-view New Relic dashboard gains two skill widgets.** The table lists calls, cost, tokens, and time per skill under the Cost by Tool card, and appears only once a skill has been invoked. The New Relic widgets chart skill calls and hours in skills over seven days, faceted by `skillName`.
+
+## [1.37.0] - 2026-09-03
+
+### Added
+
+- **Skill invocations are now tracked per skill instead of collapsing into one `Skill` bucket.** Each `Skill` tool call now carries the invoked skill's name on its record and on the `AiToolCall` event, so `code-review` and `security-review` are distinguishable in every breakdown. The argument text itself is never recorded, only its length.
+- **`nr_observe_get_cost_per_tool` returns a new `costBySkill` field.** One row per skill with call count, attributed call count, estimated cost, estimated input/output/cache-read tokens, and total duration. The existing `costByToolType` field is unchanged, and its `Skill` entry equals the sum of the skill rows.
+
+## [1.36.0] - 2026-09-03
+
+### Added
+
+- **The docs site has a new landing page** with an install command for humans and a copy-to-clipboard setup prompt for coding agents, plus a What's New page summarizing recent releases in plain language.
+
+## [1.35.0] - 2026-09-03
+
+### Added
+
+- **Preflight is now available as a [Kiro Power](docs/KIRO_POWER.md)** — install it from Kiro's Powers panel for the `nr_observe_*` MCP tools without manually editing `~/.kiro/settings/mcp.json`.
+
+### Fixed
+
+- **Session resolution failed when the MCP server was launched through a wrapper process (e.g. `npx`), which affected Kiro and could affect other launchers.**
+- **Kiro sessions were misdetected as a generic MCP client, and Kiro's tool names weren't recognized** — both silently zeroed out file, edit, and shell metrics.
+- **MCP clients that connect before the full tool set is registered now get notified once it is**, instead of seeing only a partial tool list for the rest of the session.
+
+## [1.34.0] - 2026-09-03
+
+### Added
+
+- **Preflight now attributes telemetry to a repo's full git remote URL, not just the shorter `org/repo` form.** A new `repo_url` field ships alongside `project_id` on every NR event and metric, auto-inferred from `git remote get-url origin` and credential-stripped before being sent. It has its own opt-out (`repoUrlEnabled: false`, or `NEW_RELIC_AI_REPO_URL_ENABLED=false`), independent of `project_id`'s, and the `preflight install` setup wizard prompts for it explicitly.
+- **Five recommended New Relic Scorecard rule definitions are now documented in `docs/SCORECARDS.md`**, covering AI-coding cost, anti-pattern rate, efficiency score, cost-per-file, and security alerts per team — usable against Preflight's existing custom events with no entity synthesis required.
+
+### Fixed
+
+- **`project_id` (and now `repo_url`) could silently resolve from the wrong repository when running under a git hook or CI subprocess.** Both are inferred via `git remote get-url origin`, but that read didn't clear `GIT_DIR`/`GIT_WORK_TREE` — environment variables git sets for hook subprocesses (including this repo's own pre-push hook) that redirect git commands to a different repository's `.git` directory.
+
+## [1.33.2] - 2026-09-03
+
+### Fixed
+
+- **The MCP Registry publish step in the Release workflow was failing on every run.** `server.json`'s `description` field was 106 characters, exceeding the registry's 100-character limit; shortened it so releases reach `registry.modelcontextprotocol.io` again.
+
+## [1.33.1] - 2026-09-03
+
+### Added
+
+- **Grok 4.6, Gemini 3.8 Flash, Claude Fable 5.1, and Claude Mythos 5.1 are now priced.**
+
+### Fixed
+
+- **Cached tokens on Bedrock's Claude 3.5 Haiku were being priced at $0.** That model's cache pricing was missing from the pricing table entirely; it now carries cache-write/cache-read rates consistent with every other Bedrock Claude entry.
+- **Grok 4.5's cached-input rate and context window were stale.** Cached input now prices at $0.3 per million tokens (was $0.5) and the context window is now 500K (was overstated as 1M), matching xAI's own published pricing.
+- **`ministral-3b-latest`, `ministral-8b-latest`, and `ministral-14b-latest` now resolve to real pricing instead of $0.** Mistral introduced "-latest" aliases for its Ministral 3 family; without them, sessions reporting those exact model strings had no matching entry.
+
+## [1.33.0] - 2026-09-03
+
+### Added
+
+- **Preflight now recognizes the GitHub Copilot desktop app as its own platform.** Previously its sessions captured tool-call activity but no cost data and filed under the generic MCP fallback; Preflight now labels them correctly and reads token-exact cost from the app's own local usage database.
+
+### Fixed
+
+- **Claude Code sessions were sometimes mislabeled as a generic MCP client instead of Claude Code.** Platform detection checked environment variables Claude Code doesn't actually set, so affected sessions' cost and tool-call data filed under the wrong platform label instead of being correctly attributed.
+
+## [1.32.1] - 2026-09-03
+
+### Fixed
+
+- **Tooltip value text is no longer unreadable black-on-dark on the Cost Per Outcome, Top Tools, and Cost by Tool charts.** These charts color each bar per-entry rather than on the `Bar` element itself, so Recharts fell back to a hardcoded black for the tooltip's value line while the label stayed themed — it now uses the same ink token as the rest of the tooltip.
+
+## [1.32.0] - 2026-09-02
+
+### Added
+
+- **Preflight now supports correcting cost figures toward an organization's actual contracted rate.** Preflight previously computed every dollar figure from its own vendored public list-price table, with no way to reflect a negotiated discount or the data-residency inference premium — so for an org billed differently than list price, every cost figure was systematically off by a known amount. Two new config options close that gap: a flat discount multiplier, and a flag for the same 1.1× premium applied to data-residency workspaces.
+
+## [1.31.0] - 2026-09-02
+
+### Added
+
+- **Turn and task boundaries are now anchored to Claude Code's own prompt-submit and stop signals, not just idle gaps.** Turn and task tracking previously inferred boundaries from a short gap in tool-call activity, which could merge two quick back-to-back turns or understate a turn's true duration by missing the time spent generating a final response. Preflight now uses Claude Code's `UserPromptSubmit` and `Stop` hooks as a precise, corroborating signal for both, falling back to the existing gap-based detection when a conversation ends without a `Stop` (e.g. a user interrupt).
+
 ## [1.30.0] - 2026-09-02
 
 ### Added

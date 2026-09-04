@@ -18,6 +18,7 @@ import {
   writeCwdBreadcrumb,
   writePpidBreadcrumb,
 } from './collector-script.js';
+import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -142,6 +143,28 @@ function makePostModelSwitch(overrides?: Record<string, unknown>): string {
   });
 }
 
+function makeUserPromptSubmit(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'sess-001',
+    transcript_path: '/Users/test/.claude/projects/test/sess-001.jsonl',
+    cwd: '/projects/test',
+    hook_event_name: 'UserPromptSubmit',
+    prompt: 'fix the bug in foo.ts',
+    ...overrides,
+  });
+}
+
+function makeStop(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    session_id: 'sess-001',
+    transcript_path: '/Users/test/.claude/projects/test/sess-001.jsonl',
+    cwd: '/projects/test',
+    hook_event_name: 'Stop',
+    last_assistant_message: 'Done, all tests pass.',
+    ...overrides,
+  });
+}
+
 function makeGeminiBeforeTool(overrides?: Record<string, unknown>): string {
   return JSON.stringify({
     hook_event_name: 'BeforeTool',
@@ -255,7 +278,20 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('cursor');
     });
 
-    it('leaves event.platform unset for a genuine Claude Code hook with no explicit platform override', () => {
+    it('stamps event.platform "claude-code" when only CLAUDECODE is set', () => {
+      // jest itself runs under Claude Code, so CLAUDECODE is already set in
+      // this process env — set it explicitly for clarity and to survive a
+      // future test environment that doesn't carry it ambiently.
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
+    it('leaves event.platform unset when no platform signal is present', () => {
+      for (const key of CLAUDE_CODE_ENV_SIGNALS) delete process.env[key];
+      delete process.env.MCP_CLIENT;
+      delete process.env.NEW_RELIC_AI_PLATFORM;
       processHook(makePreToolUse());
 
       expect(readBufferEvents()[0]!.platform).toBeUndefined();
@@ -474,6 +510,33 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.toolOutput).toEqual({ agentResultLength: 11 });
     });
+
+    it('extracts Skill name and args length', () => {
+      const input = { skill: 'code-review', args: 'Check the error handling' };
+      processHook(makePreToolUse({ tool_name: 'Skill', tool_input: input }));
+
+      const event = readBufferEvents()[0]!;
+      const toolInput = event.toolInput as Record<string, unknown>;
+      expect(toolInput.skill).toBe('code-review');
+      expect(toolInput.argsLength).toBe('Check the error handling'.length);
+    });
+
+    it('caps Skill name to 128 characters', () => {
+      const longName = 'a'.repeat(200);
+      const input = { skill: longName };
+      processHook(makePreToolUse({ tool_name: 'Skill', tool_input: input }));
+
+      const event = readBufferEvents()[0]!;
+      const toolInput = event.toolInput as Record<string, unknown>;
+      expect((toolInput.skill as string).length).toBe(128);
+    });
+
+    it('omits toolInput when Skill has no parseable data', () => {
+      processHook(makePreToolUse({ tool_name: 'Skill', tool_input: {} }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolInput).toBeUndefined();
+    });
   });
 
   // VS Code Copilot agent hooks send the uniform PreToolUse/PostToolUse envelope
@@ -583,6 +646,96 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.mode).toBe('pre');
       expect(events[0]!.tool).toBe('create_file');
+    });
+
+    // Payloads below are verbatim captures from a live Kiro install (42.08,
+    // macOS) — Kiro keys the file on `path` (not `file_path`) and edit strings on
+    // `oldStr`/`newStr`, so without these cases file_path was never extracted and
+    // unique_files_read / unique_files_modified reported zero.
+    describe('Kiro tool_input extraction', () => {
+      function makeKiroPreToolUse(overrides: Record<string, unknown> = {}): string {
+        return JSON.stringify({
+          session_id: 'sess_kiro_test',
+          hook_event_name: 'PreToolUse',
+          cwd: '/Users/dev/project',
+          tool_name: 'read_file',
+          tool_input: { path: 'cloudformation/export-env.sh', offset: null, limit: null },
+          ...overrides,
+        });
+      }
+
+      it('extracts file_path from read_file’s `path` key', () => {
+        processHook(makeKiroPreToolUse());
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.file_path).toBe('cloudformation/export-env.sh');
+      });
+
+      it('tolerates read_file’s null offset/limit without emitting them', () => {
+        processHook(makeKiroPreToolUse());
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.offset).toBeUndefined();
+        expect(toolInput.limit).toBeUndefined();
+      });
+
+      it('extracts read_file’s offset/limit when Kiro sends real numbers', () => {
+        processHook(makeKiroPreToolUse({ tool_input: { path: 'a.ts', offset: 10, limit: 50 } }));
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.offset).toBe(10);
+        expect(toolInput.limit).toBe(50);
+      });
+
+      it('extracts Edit-style metadata from str_replace’s oldStr/newStr', () => {
+        processHook(
+          makeKiroPreToolUse({
+            tool_name: 'str_replace',
+            tool_input: {
+              path: 'cloudformation/export-env.sh',
+              oldStr: '# CrowdStrike (empty)\nexport TF_VAR_CROWDSTRIKE_CID=""',
+              newStr: '# CrowdStrike (empty)\nexport TF_VAR_CROWDSTRIKE_CID="123"',
+              replace_all: false,
+            },
+          }),
+        );
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.file_path).toBe('cloudformation/export-env.sh');
+        expect(toolInput.oldLineCount).toBe(2);
+        expect(toolInput.newLineCount).toBe(2);
+        expect(toolInput.isDelete).toBe(false);
+        expect(toolInput.replace_all).toBe(false);
+      });
+
+      it('flags a str_replace that empties the target as a delete', () => {
+        processHook(
+          makeKiroPreToolUse({
+            tool_name: 'str_replace',
+            tool_input: { path: 'a.ts', oldStr: 'gone', newStr: '' },
+          }),
+        );
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.newStringLength).toBe(0);
+        expect(toolInput.isDelete).toBe(true);
+      });
+
+      // Guards the reason these are explicit cases: Grep/Glob also send `path`,
+      // where it is a search root. Promoting that to file_path would misreport
+      // searches as file access.
+      it('does not treat a Grep search root as a file path', () => {
+        processHook(
+          makeKiroPreToolUse({
+            tool_name: 'Grep',
+            tool_input: { pattern: 'TODO', path: '/Users/dev/project/src' },
+          }),
+        );
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.file_path).toBeUndefined();
+        expect(toolInput.path).toBe('/Users/dev/project/src');
+      });
     });
   });
 
@@ -972,6 +1125,52 @@ describe('collector-script', () => {
       );
 
       expect(stdoutSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('processHook() — UserPromptSubmit', () => {
+    it('writes a user_prompt_submit event with session metadata', () => {
+      processHook(makeUserPromptSubmit());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('user_prompt_submit');
+      expect(event.sessionId).toBe('sess-001');
+    });
+
+    it('never captures the prompt text, even with recordContent=true', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeUserPromptSubmit({ prompt: 'API_KEY = sk-1234567890abcdef' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(JSON.stringify(event)).not.toContain('sk-1234567890abcdef');
+      expect(event.prompt).toBeUndefined();
+    });
+  });
+
+  describe('processHook() — Stop', () => {
+    it('writes a stop event with session metadata', () => {
+      processHook(makeStop());
+
+      const events = readBufferEvents();
+      expect(events).toHaveLength(1);
+
+      const event = events[0]!;
+      expect(event.mode).toBe('stop');
+      expect(event.sessionId).toBe('sess-001');
+    });
+
+    it('never captures last_assistant_message, even with recordContent=true', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+      processHook(makeStop({ last_assistant_message: 'API_KEY = sk-1234567890abcdef' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(JSON.stringify(event)).not.toContain('sk-1234567890abcdef');
+      expect(event.lastAssistantMessage).toBeUndefined();
     });
   });
 

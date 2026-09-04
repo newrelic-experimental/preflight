@@ -354,6 +354,14 @@ export interface ObservabilityHealthSnapshot {
    * non-copilot-sdk deployments and older snapshot producers.
    */
   readonly copilotSdkExtensionMissing?: boolean;
+  /**
+   * True when the session-level active platform (see
+   * `HookEventProcessor.activePlatform`) resolved to `generic-mcp` — the
+   * detector found none of the platform-specific env signals it looks for,
+   * so tool calls and session summaries are filing under the generic
+   * fallback instead of the real host.
+   */
+  readonly platformDetectionFellBack: boolean;
 }
 
 export interface ApiHandlerDeps {

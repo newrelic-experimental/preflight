@@ -160,6 +160,17 @@ function parseTaskUpdate(input: Record<string, unknown>): ToolFields {
   return fields;
 }
 
+function parseSkill(input: Record<string, unknown>): ToolFields {
+  const fields: ToolFields = {};
+  if (typeof input.skill === 'string') fields.skillName = input.skill;
+  if (typeof input.argsLength === 'number') {
+    fields.skillArgsLength = input.argsLength;
+  } else if (typeof input.args === 'string') {
+    fields.skillArgsLength = input.args.length;
+  }
+  return fields;
+}
+
 // ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
@@ -179,6 +190,7 @@ const INPUT_PARSERS: Record<string, (input: Record<string, unknown>) => ToolFiel
   AskUserQuestion: parseAskUserQuestion,
   TaskCreate: parseTaskCreate,
   TaskUpdate: parseTaskUpdate,
+  Skill: parseSkill,
 };
 
 function parseEditOutput(output: Record<string, unknown>): ToolFields {

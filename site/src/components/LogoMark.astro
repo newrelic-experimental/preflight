@@ -1,0 +1,45 @@
+---
+import { BASE } from '../landing';
+import { LOGOS, type LogoKey } from '../logos';
+
+interface Props {
+  logo: LogoKey;
+}
+const { logo } = Astro.props;
+const entry = LOGOS[logo];
+
+const SOURCES = import.meta.glob('/public/logos/*.svg', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
+function inlineSvg(file: string, viewBox?: string): string {
+  const svg = SOURCES[`/public/logos/${file}`];
+  const open = svg.match(/<svg[^>]*>/)?.[0] ?? '<svg>';
+  const box = viewBox ?? open.match(/viewBox="([^"]+)"/)?.[1] ?? '';
+  const rootFill = open.match(/\sfill="([^"]+)"/)?.[1] ?? 'currentColor';
+  const inner = svg
+    .slice(svg.indexOf(open) + open.length, svg.lastIndexOf('</svg>'))
+    .replace(/<style[\s\S]*?<\/style>/g, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/(fill|stroke)="(#[0-9a-fA-F]{3,8}|black)"/g, '$1="currentColor"');
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="mark" viewBox="${box}" width="20" height="20" fill="${rootFill}" aria-hidden="true">${inner}</svg>`;
+}
+---
+
+{
+  entry.treatment === 'current-color' ? (
+    <Fragment set:html={inlineSvg(entry.file, entry.viewBox)} />
+  ) : (
+    <img
+      class="mark"
+      data-treatment={entry.treatment}
+      src={`${BASE}/logos/${entry.file}`}
+      width="20"
+      height="20"
+      alt=""
+      loading="lazy"
+    />
+  )
+}

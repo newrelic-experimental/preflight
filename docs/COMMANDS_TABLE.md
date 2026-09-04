@@ -249,7 +249,8 @@ Session cost breakdown by task, model, and efficiency.
   "cost_per_line_of_code": 0.003,
   "cost_per_file_modified": 0.065,
   "cost_per_million_tokens": 7.43,
-  "tokens": { "input": 50000, "output": 20000, "thinking": 10000 }
+  "tokens": { "input": 50000, "output": 20000, "thinking": 10000 },
+  "rate_multiplier_applied": 1
 }
 ```
 
@@ -264,6 +265,7 @@ Session cost breakdown by task, model, and efficiency.
 - `cost_per_file_modified` — `totalCost / uniqueFilesWritten` (null if no files modified)
 - `cost_per_million_tokens` — blended session rate: `(totalCost / totalTokens) * 1_000_000`, summed across input, output, thinking, cache-read, and cache-creation tokens (null if no tokens reported). Not shipped as its own NR metric — it's a pure ratio of `ai.cost.session_total_usd` and the `ai.cost.tokens_*` counts already emitted, so it's more flexibly computed in NRQL at query time (`sum(cost)/sum(tokens)*1e6`, facetable by any dimension) than as a pre-baked gauge.
 - `tokens` — running totals by token type from all reports
+- `rate_multiplier_applied` — `1` unless `costRateMultiplier`/`dataResidencyPremium` are configured (see [ADVANCED.md](./ADVANCED.md#cost--pricing-corrections)), in which case every dollar figure above already reflects that correction. Preflight's cost figures are always its own estimate from token counts × a pricing table, never a real invoice — this field only tells you whether that estimate has been adjusted toward an org's actual contracted rate.
 
 **Requires:** `CostTracker`; `TaskDetector` for per-task breakdown
 
@@ -1307,7 +1309,30 @@ Cost attribution per tool type — approximate, based on turn-level token correl
   ],
   "costByToolType": {
     "Read": { "totalCost": 0.012, "callCount": 15, "avgCost": 0.0008 },
-    "Edit": { "totalCost": 0.025, "callCount": 8, "avgCost": 0.003 }
+    "Edit": { "totalCost": 0.025, "callCount": 8, "avgCost": 0.003 },
+    "Skill": { "totalCost": 0.042, "callCount": 4, "avgCost": 0.0105 }
+  },
+  "costBySkill": {
+    "code-review": {
+      "callCount": 2,
+      "attributedCallCount": 2,
+      "totalCost": 0.025,
+      "avgCost": 0.0125,
+      "inputTokens": 3500,
+      "outputTokens": 280,
+      "cacheReadTokens": 15000,
+      "totalDurationMs": 4200
+    },
+    "pstack:how": {
+      "callCount": 2,
+      "attributedCallCount": 2,
+      "totalCost": 0.017,
+      "avgCost": 0.0085,
+      "inputTokens": 2100,
+      "outputTokens": 120,
+      "cacheReadTokens": 8000,
+      "totalDurationMs": 2800
+    }
   },
   "totalAttributedCost": 0.042,
   "attributionRate": 0.85
@@ -1317,6 +1342,18 @@ Cost attribution per tool type — approximate, based on turn-level token correl
 **Data source:** `TurnCostAttributor`
 
 **How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of total session cost that could be attributed (turns with no token report are excluded). Results are approximate — cost is correlated at the turn level, not the individual call level.
+
+`costBySkill` has one row per invoked skill name (`code-review`, `pstack:how`). `callCount` and `totalDurationMs` are measured on every call. `totalCost`, `inputTokens`, `outputTokens`, and `cacheReadTokens` are the same even split across the turn's tool calls that `costByToolType` uses, and they cover only the `attributedCallCount` calls whose turn received a token report. `costByToolType.Skill` equals the sum of the skill rows. Skill calls that arrive without a skill name (some non-Claude-Code adapters) count under `costByToolType.Skill` and get no row here. Calls and duration per skill over any window are also available in New Relic, since `skillName` rides on every `AiToolCall`:
+
+```sql
+FROM AiToolCall SELECT count(*), sum(duration_ms)/3.6e6 AS hours WHERE tool = 'Skill' FACET skillName SINCE 1 week ago
+```
+
+Cost and tokens per skill over any window come from `AiTurnCost`:
+
+```sql
+FROM AiTurnCost SELECT sum(cost_usd) WHERE tool = 'Skill' FACET skillName SINCE 1 week ago
+```
 
 **Requires:** `TurnCostAttributor`
 

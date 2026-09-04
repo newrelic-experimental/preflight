@@ -26,6 +26,7 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from '../proxy/types.js'
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
 import type { ThrashingAlert } from '../metrics/retry-detector.js';
+import type { ClosedTurn, TurnCostAttribution } from '../metrics/turn-cost-attributor.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
@@ -129,6 +130,32 @@ function makeThrashingAlert(overrides?: Partial<ThrashingAlert>): ThrashingAlert
     tokensWastedEstimate: 42,
     timestamp: 1_700_000_000_000,
     sessionId: 'sess-001',
+    ...overrides,
+  };
+}
+
+function makeClosedTurn(overrides?: Partial<ClosedTurn>): ClosedTurn {
+  const attribution: TurnCostAttribution = {
+    turnId: 'turn-001',
+    startTime: 1_700_000_000_000,
+    endTime: 1_700_000_010_000,
+    toolCalls: ['toolu_001'],
+    toolNames: ['Read'],
+    inputTokens: 10_000,
+    outputTokens: 2_000,
+    cacheReadTokens: 100,
+    cacheCreationTokens: 50,
+    model: 'claude-sonnet-4-20250514',
+    estimatedCostUsd: 0.06,
+    costPerToolCall: 0.06,
+    sessionId: 'sess-001',
+  };
+
+  return {
+    id: 'closed-turn-uuid-001',
+    attribution,
+    calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skillName: null }],
+    platform: 'claude-code',
     ...overrides,
   };
 }
@@ -434,6 +461,18 @@ describe('toolCallToNrEvent()', () => {
       expect(event.agentTeamName as string).not.toContain(SECRET_TOKEN);
     });
 
+    it('redacts secrets in skillName', () => {
+      const record = makeRecord({
+        toolName: 'Skill',
+        skillName: `api-key-${SECRET_TOKEN}`,
+      } as unknown as Partial<ToolCallRecord>);
+
+      const event = toolCallToNrEvent(record, { developer: 'd', appName: 'a' });
+
+      expect(event.skillName as string).not.toContain(SECRET_TOKEN);
+      expect(event.skillName as string).toContain('[REDACTED]');
+    });
+
     it('does not redact non-sensitive string fields', () => {
       const record = makeRecord({
         toolName: 'Bash',
@@ -548,6 +587,24 @@ describe('NrIngestManager', () => {
       const callCountMetric = sentMetrics.find((m) => m.name === 'ai.tool.call_count')!;
       const attrs = callCountMetric.attributes as Record<string, unknown>;
       expect(attrs.session_id).toBe('hook-session-001');
+    });
+
+    it('tags tool call metrics with repo_url when configured (regression: teamDims previously omitted it)', async () => {
+      const manager = new NrIngestManager(
+        makeIngestOptions({ repoUrl: 'https://github.com/org/repo' }),
+      );
+
+      manager.ingestToolCall(makeRecord());
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const callCountMetric = sentMetrics.find((m) => m.name === 'ai.tool.call_count')!;
+      const attrs = callCountMetric.attributes as Record<string, unknown>;
+      expect(attrs.repo_url).toBe('https://github.com/org/repo');
     });
   });
 
@@ -1039,6 +1096,25 @@ describe('NrIngestManager', () => {
       const metricNames = sentMetrics.map((m) => m.name);
       expect(metricNames).toContain('ai.session.duration_ms');
       expect(metricNames).toContain('ai.session.unique_files_read');
+    });
+
+    it('tags session gauge metrics with repo_url when configured (regression: teamAttrs previously omitted it)', async () => {
+      const sessionTracker = new SessionTracker('repo-url-gauge-session');
+      sessionTracker.recordToolCall(makeRecord({ toolName: 'Read', filePath: '/x.ts' }));
+
+      const manager = new NrIngestManager(
+        makeIngestOptions({ sessionTracker, repoUrl: 'https://github.com/org/repo' }),
+      );
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const durationMetric = sentMetrics.find((m) => m.name === 'ai.session.duration_ms')!;
+      const attrs = durationMetric.attributes as Record<string, unknown>;
+      expect(attrs.repo_url).toBe('https://github.com/org/repo');
     });
 
     it('emits aggregated proxy metrics (server_call_count, tool_popularity) sourced from proxyMetrics on stop', async () => {
@@ -1725,18 +1801,20 @@ describe('retryAlertToNrEvent()', () => {
     expect(event.platform).toBe('claude-code');
   });
 
-  it('includes team/project/org attribution when provided', () => {
+  it('includes team/project/org/repo attribution when provided', () => {
     const event = retryAlertToNrEvent(makeThrashingAlert(), {
       developer: 'd',
       appName: 'a',
       teamId: 'team-1',
       projectId: 'proj-1',
       orgId: 'org-1',
+      repoUrl: 'https://github.com/org/repo',
     });
 
     expect(event.team_id).toBe('team-1');
     expect(event.project_id).toBe('proj-1');
     expect(event.org_id).toBe('org-1');
+    expect(event.repo_url).toBe('https://github.com/org/repo');
   });
 });
 
@@ -1775,6 +1853,396 @@ describe('NrIngestManager.ingestRetryAlert()', () => {
     >;
     const retryEvent = sentEvents.find((e) => e.eventType === 'AiRetryAlert');
     expect(retryEvent?.session_id).toBe('the-trace-id');
+  });
+
+  it('includes repo_url on the queued event when configured', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({ repoUrl: 'https://github.com/org/repo' }),
+    );
+
+    manager.ingestRetryAlert(makeThrashingAlert());
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const retryEvent = sentEvents.find((e) => e.eventType === 'AiRetryAlert');
+    expect(retryEvent?.repo_url).toBe('https://github.com/org/repo');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NrIngestManager.ingestTurnCost()
+// ---------------------------------------------------------------------------
+
+describe('NrIngestManager.ingestTurnCost()', () => {
+  it('queues one AiTurnCost event per call in the turn, flushed on stop()', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const turn = makeClosedTurn({
+      calls: [
+        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
+        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: 'code-review' },
+      ],
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001', 'toolu_002'],
+        toolNames: ['Read', 'Skill'],
+        inputTokens: 20_000,
+        outputTokens: 4_000,
+        cacheReadTokens: 200,
+        cacheCreationTokens: 100,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.12,
+        costPerToolCall: 0.06,
+        sessionId: 'sess-001',
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const turnCostEvents = sentEvents.filter((e) => e.eventType === 'AiTurnCost');
+    expect(turnCostEvents).toHaveLength(2);
+  });
+
+  it('emits one event per call with documented fields', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const turn = makeClosedTurn({
+      id: 'turn-id-123',
+      calls: [{ toolUseId: 'toolu_001', toolName: 'Read', skillName: null }],
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001'],
+        toolNames: ['Read'],
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        cacheReadTokens: 100,
+        cacheCreationTokens: 50,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.06,
+        costPerToolCall: 0.06,
+        sessionId: 'sess-001',
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event = sentEvents.find((e) => e.eventType === 'AiTurnCost');
+
+    expect(event).toBeDefined();
+    expect(event!.event_version).toBe(1);
+    expect(event!.turn_id).toBe('turn-id-123');
+    expect(event!.tool_use_id).toBe('toolu_001');
+    expect(event!.tool).toBe('Read');
+    expect(event!.cost_usd).toBeCloseTo(0.06, 10);
+    expect(event!.turn_cost_usd).toBeCloseTo(0.06, 10);
+    expect(event!.turn_tool_call_count).toBe(1);
+    expect(event!.model).toBe('claude-sonnet-4-20250514');
+    expect(event!.developer).toBe('test-dev');
+    expect(event!.app_name).toBe('test-app');
+    expect(event!.platform).toBe('claude-code');
+  });
+
+  it('skillName appears only on Skill rows and is redacted when secret-shaped', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const secretSkillName = 'sk_test_' + 'a'.repeat(30);
+
+    const turn = makeClosedTurn({
+      calls: [
+        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
+        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: secretSkillName },
+      ],
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001', 'toolu_002'],
+        toolNames: ['Read', 'Skill'],
+        inputTokens: 20_000,
+        outputTokens: 4_000,
+        cacheReadTokens: 200,
+        cacheCreationTokens: 100,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.12,
+        costPerToolCall: 0.06,
+        sessionId: 'sess-001',
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const readEvent = sentEvents.find((e) => e.eventType === 'AiTurnCost' && e.tool === 'Read');
+    const skillEvent = sentEvents.find((e) => e.eventType === 'AiTurnCost' && e.tool === 'Skill');
+
+    expect(readEvent).not.toHaveProperty('skillName');
+    expect(skillEvent!.skillName).not.toBe(secretSkillName);
+    expect(skillEvent!.skillName).toBeDefined();
+  });
+
+  it('sum(cost_usd) equals turn_cost_usd and token fields sum correctly', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const turn = makeClosedTurn({
+      calls: [
+        { toolUseId: 'toolu_001', toolName: 'Read', skillName: null },
+        { toolUseId: 'toolu_002', toolName: 'Skill', skillName: 'code-review' },
+      ],
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001', 'toolu_002'],
+        toolNames: ['Read', 'Skill'],
+        inputTokens: 20_000,
+        outputTokens: 4_000,
+        cacheReadTokens: 200,
+        cacheCreationTokens: 100,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.12,
+        costPerToolCall: 0.06,
+        sessionId: 'sess-001',
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const turnCostEvents = sentEvents.filter((e) => e.eventType === 'AiTurnCost');
+
+    let sumCost = 0;
+    let sumInputTokens = 0;
+    let sumOutputTokens = 0;
+    let sumCacheReadTokens = 0;
+    let sumCacheCreationTokens = 0;
+
+    for (const event of turnCostEvents) {
+      sumCost += (event.cost_usd as number) ?? 0;
+      sumInputTokens += (event.input_tokens as number) ?? 0;
+      sumOutputTokens += (event.output_tokens as number) ?? 0;
+      sumCacheReadTokens += (event.cache_read_tokens as number) ?? 0;
+      sumCacheCreationTokens += (event.cache_creation_tokens as number) ?? 0;
+    }
+
+    expect(sumCost).toBeCloseTo(0.12, 9);
+    expect(sumInputTokens).toBeCloseTo(20_000, 9);
+    expect(sumOutputTokens).toBeCloseTo(4_000, 9);
+    expect(sumCacheReadTokens).toBeCloseTo(200, 9);
+    expect(sumCacheCreationTokens).toBeCloseTo(100, 9);
+  });
+
+  it('cost_authority is external only when companionMode and platform is claude-code', async () => {
+    const manager1 = new NrIngestManager(
+      makeIngestOptions({
+        companionMode: true,
+      }),
+    );
+    const turn1 = makeClosedTurn({ platform: 'claude-code' });
+    manager1.ingestTurnCost(turn1);
+    manager1.start();
+    await manager1.stop();
+
+    const sentEvents1 = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event1 = sentEvents1.find((e) => e.eventType === 'AiTurnCost');
+    expect(event1!.cost_authority).toBe('external');
+
+    mockSendEvents.mockClear();
+
+    const manager2 = new NrIngestManager(
+      makeIngestOptions({
+        companionMode: true,
+      }),
+    );
+    const turn2 = makeClosedTurn({ platform: 'copilot-app' });
+    manager2.ingestTurnCost(turn2);
+    manager2.start();
+    await manager2.stop();
+
+    const sentEvents2 = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event2 = sentEvents2.find((e) => e.eventType === 'AiTurnCost');
+    expect(event2).not.toHaveProperty('cost_authority');
+
+    mockSendEvents.mockClear();
+
+    const manager3 = new NrIngestManager(
+      makeIngestOptions({
+        companionMode: false,
+      }),
+    );
+    const turn3 = makeClosedTurn({ platform: 'claude-code' });
+    manager3.ingestTurnCost(turn3);
+    manager3.start();
+    await manager3.stop();
+
+    const sentEvents3 = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event3 = sentEvents3.find((e) => e.eventType === 'AiTurnCost');
+    expect(event3).not.toHaveProperty('cost_authority');
+  });
+
+  it('session_id is attribution.sessionId when present', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const turn = makeClosedTurn({
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001'],
+        toolNames: ['Read'],
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        cacheReadTokens: 100,
+        cacheCreationTokens: 50,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.06,
+        costPerToolCall: 0.06,
+        sessionId: 'my-session-id',
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event = sentEvents.find((e) => e.eventType === 'AiTurnCost');
+
+    expect(event!.session_id).toBe('my-session-id');
+  });
+
+  it('session_id falls back to sessionTraceId when attribution.sessionId is null', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        sessionTraceId: 'trace-id-from-manager',
+      }),
+    );
+
+    const turn = makeClosedTurn({
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001'],
+        toolNames: ['Read'],
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        cacheReadTokens: 100,
+        cacheCreationTokens: 50,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.06,
+        costPerToolCall: 0.06,
+        sessionId: null,
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event = sentEvents.find((e) => e.eventType === 'AiTurnCost');
+
+    expect(event!.session_id).toBe('trace-id-from-manager');
+  });
+
+  it('session_id is omitted when both attribution.sessionId and sessionTraceId are null/undefined', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const turn = makeClosedTurn({
+      attribution: {
+        turnId: 'turn-001',
+        startTime: 1_700_000_000_000,
+        endTime: 1_700_000_010_000,
+        toolCalls: ['toolu_001'],
+        toolNames: ['Read'],
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        cacheReadTokens: 100,
+        cacheCreationTokens: 50,
+        model: 'claude-sonnet-4-20250514',
+        estimatedCostUsd: 0.06,
+        costPerToolCall: 0.06,
+        sessionId: null,
+      },
+    });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event = sentEvents.find((e) => e.eventType === 'AiTurnCost');
+
+    expect(event).not.toHaveProperty('session_id');
+  });
+
+  it('platform defaults to claude-code when undefined on the turn', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    const turn = makeClosedTurn({ platform: undefined });
+
+    manager.ingestTurnCost(turn);
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event = sentEvents.find((e) => e.eventType === 'AiTurnCost');
+
+    expect(event!.platform).toBe('claude-code');
+  });
+
+  it('does not tag cost_authority under companionMode when the turn carries no platform stamp', async () => {
+    const manager = new NrIngestManager(makeIngestOptions({ companionMode: true }));
+    manager.ingestTurnCost(makeClosedTurn({ platform: undefined }));
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    const event = sentEvents.find((e) => e.eventType === 'AiTurnCost');
+
+    expect(event!.platform).toBe('claude-code');
+    expect(event!.cost_authority).toBeUndefined();
   });
 });
 

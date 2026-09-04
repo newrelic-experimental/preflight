@@ -81,6 +81,13 @@ export const MODEL_ALIASES: Record<string, string> = {
   'eu.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
   'au.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
   'jp.anthropic.claude-haiku-4-5-20251001-v1:0': 'anthropic.claude-haiku-4-5-20251001-v1:0',
+
+  // Mistral's pricing page now shows a "-latest" alias for each Ministral 3
+  // size, routing to the dated snapshot IDs that are this table's actual
+  // keys (see the Ministral 3 comment in DEFAULT_PRICING_TABLE).
+  'ministral-3b-latest': 'ministral-3b-2512',
+  'ministral-8b-latest': 'ministral-8b-2512',
+  'ministral-14b-latest': 'ministral-14b-2512',
 };
 
 // ---------------------------------------------------------------------------
@@ -135,6 +142,29 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 50,
     thinkingPerMTok: 50,
     cacheReadPerMTok: 1,
+    cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  // Extends Fable 5 at the same input/output prices, with cache reads at a
+  // quarter of the usual 0.1x-input multiplier (0.025x here) — cache
+  // writes are unaffected, still the standard 1.25x-input rate. GA, labeled
+  // "Latest" on docs.claude.com.
+  'claude-fable-5-1': {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    thinkingPerMTok: 50,
+    cacheReadPerMTok: 0.25,
+    cacheCreationPerMTok: 12.5,
+    contextWindow: 1_000_000,
+  },
+  // Shares Fable 5.1's specs and pricing exactly (same discounted 0.025x
+  // cache-read multiplier). Invite-only, same Project Glasswing limited
+  // availability as claude-mythos-5.
+  'claude-mythos-5-1': {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    thinkingPerMTok: 50,
+    cacheReadPerMTok: 0.25,
     cacheCreationPerMTok: 12.5,
     contextWindow: 1_000_000,
   },
@@ -273,19 +303,31 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- Google Gemini (current generation) ----
-  // Gemini 3.6 Flash and 3.7 Flash are newer generations than 3.5 Flash,
-  // released after this table's last full pass. Both currently carry
-  // identical promotional pricing that steps up on 2027-01-01 (confirmed
-  // directly on ai.google.dev/gemini-api/docs/pricing on 2026-08-14):
-  // input $0.75->$1.50, output (incl. thinking) $3.75->$7.50. Rates below
-  // are the CURRENT (pre-step-up) rate — update both to the post-2027-01-01
-  // rate once that date passes. (Google also publishes a context-caching
-  // rate, $0.075->$0.15, but it's deliberately omitted here, consistent
-  // with every other Gemini entry in this table: none of them set
-  // cacheReadPerMTok even though extractGeminiTokens() does report a real
-  // cachedContentTokenCount. This is a pre-existing gap across the whole
-  // Gemini section, not something introduced here — worth a follow-up pass
-  // if cached Gemini usage becomes material.)
+  // Gemini 3.6 Flash, 3.7 Flash, and 3.8 Flash are newer generations than 3.5
+  // Flash, released after this table's last full pass. All three currently
+  // carry identical promotional pricing that steps up on 2027-01-01
+  // (confirmed directly on ai.google.dev/gemini-api/docs/pricing on
+  // 2026-09-02 for 3.8, 2026-08-14 for 3.6/3.7): input $0.75->$1.50, output
+  // (incl. thinking) $3.75->$7.50. Rates below are the CURRENT (pre-step-up)
+  // rate — update all three to the post-2027-01-01 rate once that date
+  // passes. (Google also publishes a context-caching rate, $0.075->$0.15,
+  // but it's deliberately omitted here, consistent with every other Gemini
+  // entry in this table: none of them set cacheReadPerMTok even though
+  // extractGeminiTokens() does report a real cachedContentTokenCount. This
+  // is a pre-existing gap across the whole Gemini section, not something
+  // introduced here — worth a follow-up pass if cached Gemini usage becomes
+  // material.)
+  //
+  // 3.8 Flash's own model page states its exact input-token limit as
+  // 1,048,576, not a round 1,000,000 — contextWindow below is rounded to
+  // 1_000_000 to match every sibling Gemini entry's convention in this file
+  // (all of which round the same way), not a precision loss introduced here.
+  'gemini-3.8-flash': {
+    inputPerMTok: 0.75,
+    outputPerMTok: 3.75,
+    thinkingPerMTok: 3.75,
+    contextWindow: 1_000_000,
+  },
   'gemini-3.7-flash': {
     inputPerMTok: 0.75,
     outputPerMTok: 3.75,
@@ -769,9 +811,14 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     cacheCreationPerMTok: 3.75,
     contextWindow: 200_000,
   },
+  // Cache pricing for this model IS now published on the Bedrock pricing
+  // page (it wasn't as of this file's last check) — same 1.25x-input /
+  // 0.1x-input multiplier convention used everywhere else in this section.
   'anthropic.claude-3-5-haiku-20241022-v1:0': {
     inputPerMTok: 0.8,
     outputPerMTok: 4,
+    cacheReadPerMTok: 0.08,
+    cacheCreationPerMTok: 1.0,
     contextWindow: 200_000,
   },
   'anthropic.claude-3-opus-20240229-v1:0': {
@@ -848,9 +895,11 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
     outputPerMTok: 0.6,
     contextWindow: 256_000,
   },
-  // Ministral 3 family — no "-latest" alias exists for these yet, so the
-  // dated snapshot ID (as shown on each model's docs page) is the real,
-  // callable model string.
+  // Ministral 3 family — Mistral's pricing page now shows a "-latest" alias
+  // for each size (ministral-3b-latest / -8b-latest / -14b-latest), routed
+  // to these dated entries via MODEL_ALIASES above. The dated snapshot ID
+  // (as shown on each model's docs page) remains the real, callable model
+  // string; "-latest" is Mistral's own shorthand for it.
   'ministral-14b-2512': {
     inputPerMTok: 0.2,
     outputPerMTok: 0.2,
@@ -964,16 +1013,37 @@ export const DEFAULT_PRICING_TABLE: Record<string, ModelPricing> = {
   },
 
   // ---- xAI ----
-  // Sourced from GitHub Copilot's pricing page (see the file-level comment
-  // above) — xAI has no separate public per-token pricing page of its own.
+  // xAI now publishes its own direct pricing (docs.x.ai/developers/pricing),
+  // superseding the GitHub Copilot sourcing this entry previously used —
+  // Copilot's page still lists this model but its cached-input rate ($0.5)
+  // is stale next to xAI's own $0.3.
   'grok-4.5': {
     inputPerMTok: 2,
     outputPerMTok: 6,
-    cacheReadPerMTok: 0.5,
-    contextWindow: 1_000_000,
+    cacheReadPerMTok: 0.3,
+    contextWindow: 500_000,
     // ModelPricing has no tiered cache-read field, so the long-context
-    // tier's doubled cached-input rate ($1 vs the $0.5 base rate above)
+    // tier's doubled cached-input rate ($0.6 vs the $0.3 base rate above)
     // cannot be represented — the base (lower) cache rate is used at every
+    // tier. Not fixable without a schema change; known and accepted.
+    tierThreshold: 200_000,
+    tierMode: 'flat',
+    tierInputPerMTok: 4,
+    tierOutputPerMTok: 12,
+  },
+  // xAI's current flagship, GA (docs.x.ai marks it "Latest"/default model,
+  // no preview/beta disclaimer), sourced from docs.x.ai/docs/pricing and
+  // docs.x.ai/docs/models/grok-4.6 directly — same $2/$6 base and 200K flat
+  // long-context tier shape as grok-4.5, but a higher cached-input rate
+  // ($0.5 base / $1 long-context tier, vs 4.5's $0.3/$0.6).
+  'grok-4.6': {
+    inputPerMTok: 2,
+    outputPerMTok: 6,
+    cacheReadPerMTok: 0.5,
+    contextWindow: 500_000,
+    // Same known schema gap as grok-4.5: no tiered cache-read field, so the
+    // long-context tier's doubled cached-input rate ($1 vs the $0.5 base
+    // rate above) can't be represented — the base rate applies at every
     // tier. Not fixable without a schema change; known and accepted.
     tierThreshold: 200_000,
     tierMode: 'flat',

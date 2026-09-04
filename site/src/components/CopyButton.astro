@@ -1,0 +1,48 @@
+---
+interface Props {
+  text: string;
+  target: string;
+  label?: string;
+  primary?: boolean;
+}
+const { text, target, label = 'Copy', primary = false } = Astro.props;
+---
+
+<button
+  type="button"
+  class:list={['copy', { primary }]}
+  data-copy={text}
+  data-target={target}
+  data-label={label}>{label}</button
+>
+
+<script>
+  const RESET_MS = 2000;
+
+  function selectTarget(id: string) {
+    const el = document.getElementById(id);
+    const selection = window.getSelection();
+    if (el && selection) {
+      selection.removeAllRanges();
+      selection.selectAllChildren(el);
+    }
+  }
+
+  document.addEventListener('click', async (event) => {
+    const button = (event.target as Element).closest<HTMLButtonElement>('button.copy');
+    if (!button) return;
+    const { copy = '', target = '', label = 'Copy' } = button.dataset;
+    try {
+      await navigator.clipboard.writeText(copy);
+      button.textContent = 'Copied';
+      button.dataset.state = 'copied';
+      setTimeout(() => {
+        button.textContent = label;
+        delete button.dataset.state;
+      }, RESET_MS);
+    } catch {
+      button.textContent = 'Select and copy';
+      selectTarget(target);
+    }
+  });
+</script>

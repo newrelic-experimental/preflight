@@ -2304,6 +2304,144 @@ describe('Today view — Cost by Tool panel', () => {
   });
 });
 
+describe('Today view — Cost by Skill panel', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the Cost by Skill eyebrow and one row per skill with the formatted calls, cost, and time values visible', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {},
+      costBySkill: {
+        'skill-1': {
+          callCount: 5,
+          attributedCallCount: 5,
+          totalCost: 0.15,
+          avgCost: 0.03,
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 100,
+          totalDurationMs: 5000,
+        },
+        'skill-2': {
+          callCount: 3,
+          attributedCallCount: 3,
+          totalCost: 0.08,
+          avgCost: 0.0267,
+          inputTokens: 800,
+          outputTokens: 400,
+          cacheReadTokens: 0,
+          totalDurationMs: 3000,
+        },
+      },
+      totalAttributedCost: 0.23,
+      attributionRate: 0.95,
+    });
+    renderToday(qc);
+    expect(screen.getByText('Cost by Skill')).toBeInTheDocument();
+    expect(screen.getByText('skill-1')).toBeInTheDocument();
+    expect(screen.getByText('skill-2')).toBeInTheDocument();
+    expect(screen.getByText('$0.1500')).toBeInTheDocument();
+    expect(screen.getByText('$0.0800')).toBeInTheDocument();
+  });
+
+  it('sorts by cost descending', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {},
+      costBySkill: {
+        'expensive-skill': {
+          callCount: 10,
+          attributedCallCount: 10,
+          totalCost: 1.5,
+          avgCost: 0.15,
+          inputTokens: 5000,
+          outputTokens: 3000,
+          cacheReadTokens: 200,
+          totalDurationMs: 10000,
+        },
+        'cheap-skill': {
+          callCount: 2,
+          attributedCallCount: 2,
+          totalCost: 0.05,
+          avgCost: 0.025,
+          inputTokens: 500,
+          outputTokens: 200,
+          cacheReadTokens: 0,
+          totalDurationMs: 1000,
+        },
+      },
+      totalAttributedCost: 1.55,
+      attributionRate: 0.9,
+    });
+    renderToday(qc);
+    const rows = screen.getAllByRole('row');
+    const firstDataRow = rows[1];
+    expect(firstDataRow.textContent).toContain('expensive-skill');
+  });
+
+  it('renders nothing when costBySkill is an empty object', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {},
+      costBySkill: {},
+      totalAttributedCost: 0,
+      attributionRate: 1.0,
+    });
+    renderToday(qc);
+    expect(screen.queryByText('Cost by Skill')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when the response has no costBySkill field at all', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {
+        Read: { totalCost: 0.1, callCount: 10, avgCost: 0.01 },
+      },
+      totalAttributedCost: 0.1,
+      attributionRate: 1.0,
+    });
+    renderToday(qc);
+    expect(screen.queryByText('Cost by Skill')).not.toBeInTheDocument();
+  });
+
+  it('sets the title attribute on the cost cell when attributedCallCount is less than callCount', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {},
+      costBySkill: {
+        'partial-skill': {
+          callCount: 5,
+          attributedCallCount: 2,
+          totalCost: 0.1,
+          avgCost: 0.05,
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 0,
+          totalDurationMs: 2000,
+        },
+      },
+      totalAttributedCost: 0.1,
+      attributionRate: 0.8,
+    });
+    renderToday(qc);
+    const costCell = screen.getByText('$0.1000');
+    expect(costCell).toHaveAttribute('title', 'Cost covers 2 of 5 calls');
+  });
+});
+
 describe('Today view — API Failures panel', () => {
   beforeEach(() => {
     // todayTotalUsd must be nonzero, or Today's `noActivityToday` short-circuit

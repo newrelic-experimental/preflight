@@ -3554,6 +3554,7 @@ describe('api-handler GET /api/observability-health', () => {
       watcherDisabledByLock: false,
       costSelfCheckDeltaPct: null,
       watcherDisabledReason: null,
+      platformDetectionFellBack: false,
     };
     const handler = createApiHandler({
       observabilityHealth: { getSnapshot: () => snapshot },

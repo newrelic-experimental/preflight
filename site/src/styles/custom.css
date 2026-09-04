@@ -1,4 +1,8 @@
+@import './fonts.css';
+
 :root {
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
   --sl-color-accent-low: #0b3d2a;
   --sl-color-accent: #1ce783;
   --sl-color-accent-high: #c2f6dd;

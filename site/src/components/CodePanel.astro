@@ -1,0 +1,20 @@
+---
+interface Props {
+  id: string;
+  code: string;
+  label?: string;
+}
+const { id, code, label } = Astro.props;
+---
+
+<div class="panel">
+  {
+    (label || Astro.slots.has('actions')) && (
+      <div class="panel-head">
+        {label && <span class="panel-label">{label}</span>}
+        <slot name="actions" />
+      </div>
+    )
+  }
+  <pre class="panel-code"><code id={id}>{code}</code></pre>
+</div>

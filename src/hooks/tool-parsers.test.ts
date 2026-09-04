@@ -342,6 +342,47 @@ describe('parseToolSpecificFields', () => {
     });
   });
 
+  describe('Skill parser', () => {
+    it('maps skill → skillName and argsLength → skillArgsLength', () => {
+      const input = { skill: 'code-review', argsLength: 42 };
+      const fields = parseToolSpecificFields('Skill', input, undefined);
+
+      expect(fields.skillName).toBe('code-review');
+      expect(fields.skillArgsLength).toBe(42);
+    });
+
+    it('computes argsLength from raw args string when argsLength is absent', () => {
+      const input = { skill: 'pstack:how', args: 'How does this work?' };
+      const fields = parseToolSpecificFields('Skill', input, undefined);
+
+      expect(fields.skillName).toBe('pstack:how');
+      expect(fields.skillArgsLength).toBe('How does this work?'.length);
+    });
+
+    it('does not include args text in output, only length', () => {
+      const input = { skill: 'design', args: 'Create a button component' };
+      const fields = parseToolSpecificFields('Skill', input, undefined);
+
+      expect(fields.skillArgsLength).toBe('Create a button component'.length);
+      expect(Object.values(fields).includes('Create a button component')).toBe(false);
+    });
+
+    it('returns empty when skill is not a string', () => {
+      const input = { skill: 123, args: 'test' };
+      const fields = parseToolSpecificFields('Skill', input, undefined);
+
+      expect(fields.skillName).toBeUndefined();
+    });
+
+    it('handles lowercase "skill" tool name via capitalize fallback', () => {
+      const input = { skill: 'foo', args: 'bar' };
+      const fields = parseToolSpecificFields('skill', input, undefined);
+
+      expect(fields.skillName).toBe('foo');
+      expect(fields.skillArgsLength).toBe(3);
+    });
+  });
+
   describe('Bash output parser', () => {
     it('extracts exitCode from tool response', () => {
       const input = { command: 'npm test' };

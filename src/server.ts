@@ -32,7 +32,15 @@ export class NrMcpServer {
     this.server = new Server(
       { name: options.name, version: options.version },
       {
-        capabilities: { tools: {}, resources: {}, logging: {} },
+        // tools.listChanged is required, not cosmetic: when the session_id
+        // can't be resolved synchronously the server first exposes only the
+        // pending tool set (registerPendingTools) and swaps in the full set
+        // once trackers exist, milliseconds later. A client that called
+        // tools/list during that window would otherwise cache the three
+        // pending tools for the life of the connection and never see
+        // nr_observe_get_session_stats and friends. Declaring the capability
+        // lets notifyToolListChanged() tell it to re-list.
+        capabilities: { tools: { listChanged: true }, resources: {}, logging: {} },
         instructions:
           'This server monitors tool usage for observability purposes. Metrics are sent to New Relic. ' +
           'When token usage data is available after API calls, report it via nr_observe_report_tokens to enable cost tracking.',
@@ -109,6 +117,30 @@ export class NrMcpServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     logger.info('MCP server connected via stdio transport');
+  }
+
+  /**
+   * Tell connected clients the tool list changed so they re-issue tools/list.
+   *
+   * Call this after swapping the pending tool set for the full one. Clients
+   * cache tools/list from initialization, so without this a client that
+   * connected during the pending window keeps only the three pending tools —
+   * observed on Kiro, which listed exactly nr_observe_health,
+   * nr_observe_install_hooks and nr_observe_get_config for a whole session
+   * while the full set was registered server-side.
+   *
+   * Never throws: a client that doesn't support the notification, or a
+   * transport that has already gone away, must not take down startup. Failure
+   * only means that client keeps its stale list, which is the pre-existing
+   * behavior.
+   */
+  async notifyToolListChanged(): Promise<void> {
+    try {
+      await this.server.sendToolListChanged();
+      logger.debug('Sent tools/list_changed notification');
+    } catch (err) {
+      logger.debug('Could not send tools/list_changed notification', { error: String(err) });
+    }
   }
 
   async close(): Promise<void> {

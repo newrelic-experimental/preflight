@@ -227,6 +227,29 @@ describe('handleGetCostBreakdown()', () => {
 
     expect(body.cost_per_million_tokens).toBeNull();
   });
+
+  it('includes rate_multiplier_applied, defaulting to 1', () => {
+    const tracker = new CostTracker();
+    const result = handleGetCostBreakdown(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.rate_multiplier_applied).toBe(1);
+  });
+
+  it('reflects a configured rateMultiplier in rate_multiplier_applied and total_usd', () => {
+    const tracker = new CostTracker(undefined, { rateMultiplier: 0.85 });
+    handleReportTokens(tracker, {
+      input_tokens: 500_000,
+      output_tokens: 500_000,
+      model: 'claude-sonnet-4',
+    });
+
+    const result = handleGetCostBreakdown(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.rate_multiplier_applied).toBe(0.85);
+    expect(body.total_usd).toBeCloseTo(9.0 * 0.85, 2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -261,6 +284,7 @@ describe('handleGetPromptCacheHealth()', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
+      costRateMultiplierApplied: 1,
       ...overrides,
     } satisfies CostMetrics);
     return tracker;

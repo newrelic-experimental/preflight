@@ -69,7 +69,9 @@ import {
 } from '../api/client';
 import {
   fmtTimeOfDay,
+  formatDuration,
   formatNumber,
+  formatTokensCompact,
   formatUsd,
   formatUsdOrDash,
   rateColor,
@@ -203,6 +205,11 @@ const CHART_TOOLTIP_STYLE = {
   fontSize: 12,
   color: 'var(--color-ink-base)',
 };
+// Recharts falls back to a hardcoded #000 for tooltip item text whenever the
+// series has no explicit fill/stroke (Bar below is colored per-entry via
+// Cell). CHART_TOOLTIP_STYLE.color only reaches the tooltip label, not item
+// rows, so this has to be passed separately as `itemStyle`.
+const CHART_TOOLTIP_ITEM_STYLE = { color: 'var(--color-ink-base)' };
 
 // Mirrors History.tsx's toolFillColor — same tool-name-keyed palette, so a
 // tool's color is consistent whether viewed here (by cost) or in the Top
@@ -421,6 +428,10 @@ export function Today(): JSX.Element {
           </AnimatedCard>
 
           <AnimatedCard index={2}>
+            <CostBySkillPanel />
+          </AnimatedCard>
+
+          <AnimatedCard index={3}>
             <RecentAlertsPanel />
           </AnimatedCard>
         </>
@@ -596,6 +607,9 @@ export function Today(): JSX.Element {
             <div className="col-span-3">
               <CostByToolPanel />
             </div>
+            <div className="col-span-3">
+              <CostBySkillPanel />
+            </div>
           </AnimatedCard>
 
           <AnimatedCard index={4}>
@@ -704,6 +718,7 @@ function CostByToolPanel(): JSX.Element {
                 />
                 <Tooltip
                   contentStyle={CHART_TOOLTIP_STYLE}
+                  itemStyle={CHART_TOOLTIP_ITEM_STYLE}
                   labelFormatter={(label) => shortToolName(String(label))}
                 />
                 <Bar dataKey="totalCost" name="Cost ($)" radius={[0, 3, 3, 0]}>
@@ -724,6 +739,77 @@ function CostByToolPanel(): JSX.Element {
             </div>
           )}
         </>
+      )}
+    </Card>
+  );
+}
+
+function CostBySkillPanel(): JSX.Element | null {
+  const { data, isError } = useQuery<TurnCostsResponse>({
+    queryKey: qk.costPerTool,
+    queryFn: () => fetchCostPerTool(),
+    refetchInterval: QUALITY_REFETCH_MS,
+    retry: false,
+  });
+
+  if (isError || !data || !data.costBySkill) {
+    return null;
+  }
+
+  const skills = Object.entries(data.costBySkill)
+    .sort((a, b) => b[1].totalCost - a[1].totalCost || b[1].callCount - a[1].callCount)
+    .slice(0, 10);
+
+  if (skills.length === 0) {
+    return null;
+  }
+
+  const lowAttribution = (data.attributionRate ?? 1) < 0.5;
+
+  return (
+    <Card padding="sm" className="h-full">
+      <Eyebrow className="mb-2">Cost by Skill</Eyebrow>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border-subtle text-ink-muted">
+            <th className="text-left py-1.5 px-1">Skill</th>
+            <th className="text-right py-1.5 px-1">Calls</th>
+            <th className="text-right py-1.5 px-1">Cost</th>
+            <th className="text-right py-1.5 px-1">Tokens</th>
+            <th className="text-right py-1.5 px-1">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {skills.map(([skillName, entry]) => (
+            <tr key={skillName} className="border-b border-border-subtle hover:bg-surface-5">
+              <td className="py-1.5 px-1 text-ink-base font-mono text-xs">{skillName}</td>
+              <td className="text-right py-1.5 px-1 text-ink-subtle">{entry.callCount}</td>
+              <td
+                className="text-right py-1.5 px-1 text-ink-base"
+                title={
+                  entry.attributedCallCount < entry.callCount
+                    ? `Cost covers ${entry.attributedCallCount} of ${entry.callCount} calls`
+                    : undefined
+                }
+              >
+                {formatUsd(entry.totalCost)}
+              </td>
+              <td className="text-right py-1.5 px-1 text-ink-subtle">
+                {formatTokensCompact(
+                  entry.inputTokens + entry.outputTokens + entry.cacheReadTokens,
+                )}
+              </td>
+              <td className="text-right py-1.5 px-1 text-ink-subtle">
+                {formatDuration(entry.totalDurationMs)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {lowAttribution && (
+        <div className="text-[10px] text-ink-muted italic mt-1">
+          Based on {Math.round((data.attributionRate ?? 0) * 100)}% of session cost
+        </div>
       )}
     </Card>
   );

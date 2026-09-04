@@ -1297,6 +1297,20 @@ describe('buildSessionSummary', () => {
     expect(merged.sessionIntent).toBe('the original prompt');
   });
 
+  it('mergeSummaries keeps a real platform label against an incoming generic-mcp checkpoint', () => {
+    const existing = makeSummary({ platform: 'claude-code' });
+    const incoming = makeSummary({ platform: 'generic-mcp' });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.platform).toBe('claude-code');
+  });
+
+  it('mergeSummaries lets an incoming real platform upgrade an existing generic-mcp label', () => {
+    const existing = makeSummary({ platform: 'generic-mcp' });
+    const incoming = makeSummary({ platform: 'claude-code' });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.platform).toBe('claude-code');
+  });
+
   it('includes active task data in the summary', () => {
     const mockSessionTracker = {
       getMetrics: () => ({
@@ -1400,6 +1414,7 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
+      costRateMultiplierApplied: 1,
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
       sessionTracker,
@@ -1438,6 +1453,7 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
       subagentCostByDayUsd: {},
+      costRateMultiplierApplied: 1,
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
       sessionTracker,

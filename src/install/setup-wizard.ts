@@ -155,6 +155,7 @@ export function buildConfig(
     developer: string;
     teamId: string | null;
     projectId: string | null;
+    repoUrlEnabled: boolean;
     sessionBudgetUsd: number | null;
     mode?: WizardMode;
     dashboardPort?: number | null;
@@ -171,6 +172,7 @@ export function buildConfig(
     developer: inputs.developer,
     ...(inputs.teamId ? { teamId: inputs.teamId } : {}),
     ...(inputs.projectId ? { projectId: inputs.projectId } : {}),
+    repoUrlEnabled: inputs.repoUrlEnabled,
     ...(inputs.sessionBudgetUsd !== null ? { sessionBudgetUsd: inputs.sessionBudgetUsd } : {}),
     ...(inputs.dashboardPort != null
       ? { dashboard: { port: inputs.dashboardPort, host: '127.0.0.1', openOnStart: false } }
@@ -409,6 +411,24 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     ).trim();
     const projectId = projectIdAnswer || existingProjectId;
 
+    const existingRepoUrlEnabled =
+      typeof existing.repoUrlEnabled === 'boolean' ? existing.repoUrlEnabled : true;
+    const repoUrlDefaultLabel = existingRepoUrlEnabled ? 'Y/n' : 'y/N';
+    const repoUrlAnswer = (
+      await rl.question(
+        `Send full repo URL (repo_url) — more sensitive than Project ID, may reveal an internal git host [${repoUrlDefaultLabel}]: `,
+      )
+    )
+      .trim()
+      .toLowerCase();
+    // Adaptive default: when the shown default is Y (existing/initial true),
+    // only an explicit decline flips it off — matching every other [Y/n]
+    // prompt in this wizard (e.g. installHooks below). When the shown
+    // default is N, only an explicit accept flips it on.
+    const repoUrlEnabled = existingRepoUrlEnabled
+      ? repoUrlAnswer !== 'n' && repoUrlAnswer !== 'no'
+      : repoUrlAnswer === 'y' || repoUrlAnswer === 'yes';
+
     // Step 5: Budget caps
     const existingBudget =
       typeof existing.sessionBudgetUsd === 'number' ? String(existing.sessionBudgetUsd) : null;
@@ -466,6 +486,7 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       developer,
       teamId,
       projectId,
+      repoUrlEnabled,
       sessionBudgetUsd,
       mode,
       dashboardPort,
