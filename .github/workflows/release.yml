@@ -44,6 +44,29 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
+      # `main` is protected by rulesets with zero bypass actors (see #534),
+      # so this job can't push a fix-up commit — it can only fail loudly and
+      # point at the PR that needs to land first. kiro-power/plugin.json
+      # drifted for two releases (#567, #568) after #545's one-time manual
+      # sync before this check existed.
+      - name: Verify manifest versions are in sync
+        run: |
+          node -e "
+            const version = require('./package.json').version;
+            const mismatches = [];
+            for (const path of ['plugin/.claude-plugin/plugin.json', 'kiro-power/plugin.json']) {
+              const p = require('./' + path);
+              if (p.version !== version) {
+                mismatches.push(path + ' is at ' + p.version + ', expected ' + version);
+              }
+            }
+            if (mismatches.length) {
+              console.error(mismatches.join('\n'));
+              console.error('Fix these in a merged PR before releasing — this workflow cannot push directly to main.');
+              process.exit(1);
+            }
+          "
+
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -105,27 +128,20 @@ jobs:
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the
       # io.github.newrelic-experimental/* namespace with no extra secret.
-      #
-      # plugin/.claude-plugin/plugin.json and kiro-power/plugin.json have no
-      # registry consumer to satisfy, but their own version fields have
-      # drifted from package.json's before (kiro-power/plugin.json went two
-      # releases stale after #545) because nothing else keeps them in sync.
-      - name: Sync manifest versions
+      # This mutates the job's local checkout only — main's ruleset (see
+      # above) means it can't be pushed back, so it exists purely to make
+      # this run's registry submission correct even if the checked-in
+      # server.json (which has no hard gate like the plugin manifests do)
+      # drifted.
+      - name: Sync server.json version
         run: |
           node -e "
             const fs = require('node:fs');
             const version = require('./package.json').version;
-
             const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
             s.version = version;
             s.packages[0].version = version;
             fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
-
-            for (const path of ['plugin/.claude-plugin/plugin.json', 'kiro-power/plugin.json']) {
-              const p = JSON.parse(fs.readFileSync(path, 'utf8'));
-              p.version = version;
-              fs.writeFileSync(path, JSON.stringify(p, null, 2) + '\n');
-            }
           "
 
       - name: Publish to MCP Registry
@@ -133,12 +149,3 @@ jobs:
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
-
-      - name: Commit synced manifest versions
-        run: |
-          if ! git diff --quiet -- server.json plugin/.claude-plugin/plugin.json kiro-power/plugin.json; then
-            VERSION="$(node -p "require('./package.json').version")"
-            git add server.json plugin/.claude-plugin/plugin.json kiro-power/plugin.json
-            git commit -m "Chore: sync manifest versions to $VERSION"
-            git push origin HEAD:main
-          fi
