@@ -1,6 +1,6 @@
 {
   "name": "@newrelic/preflight",
-  "version": "1.39.0",
+  "version": "1.42.0",
   "mcpName": "io.github.newrelic-experimental/preflight",
   "type": "module",
   "license": "Apache-2.0",
@@ -64,6 +64,7 @@
     "backfill:sessions": "npx tsx scripts/backfill-sessions.ts",
     "regenerate:otlp-descriptor": "npx tsx scripts/regenerate-otlp-descriptor.ts",
     "check:bundle-size": "npx tsx scripts/check-bundle-size.ts",
+    "check:claude-code-changelog": "npx tsx scripts/check-claude-code-changelog.ts",
     "check:docs-inventory": "npx tsx scripts/check-docs-inventory.ts",
     "whats-new:draft": "npx tsx scripts/draft-whats-new.ts",
     "dev": "node dist/index.js --local",

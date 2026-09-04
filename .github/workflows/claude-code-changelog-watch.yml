@@ -1,0 +1,105 @@
+name: Claude Code Changelog Watch
+
+# Weekly check for anything new in anthropics/claude-code's CHANGELOG.md
+# worth reacting to — new hook fields/events, cost/usage/pricing changes,
+# OTel changes. See scripts/check-claude-code-changelog.ts for why this
+# exists: scanning the changelog by hand doesn't scale.
+#
+# State lives in the tracking issue, not in git: the last-seen changelog
+# version is stored as an HTML comment at the end of the issue body, so the
+# job never has to push to `main` (which branch protection forbids for every
+# token). Reports are posted as comments on that same issue.
+on:
+  schedule:
+    - cron: '17 9 * * 1' # Mondays ~09:17 UTC — off the hour, per cron etiquette
+  workflow_dispatch: {}
+
+permissions:
+  contents: read # checkout only; the cursor is no longer committed
+  issues: write # to create/comment on the tracking issue and store the cursor in its body
+
+env:
+  ISSUE_TITLE: Claude Code changelog watch
+  # Changelog version to start from when no tracking issue exists yet. Seeded
+  # rather than left empty so the first run doesn't silently swallow entries
+  # that shipped between this workflow landing and its first scheduled run.
+  SEED_CURSOR: '2.1.251'
+  CURSOR_PATH: changelog-cursor.txt
+  REPORT_PATH: changelog-report.md
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Load cursor from tracking issue
+        id: load
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NUMBER=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 100 \
+            --search "in:title \"$ISSUE_TITLE\"" --json number,title \
+            --jq "[.[] | select(.title == \"$ISSUE_TITLE\")] | sort_by(.number) | last | .number // empty")
+          CURSOR=""
+          if [ -n "$NUMBER" ]; then
+            CURSOR=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+              | sed -n 's/.*<!-- changelog-cursor: \([^ ]*\) -->.*/\1/p' | tail -n 1)
+          fi
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+          echo "cursor=${CURSOR:-$SEED_CURSOR}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${CURSOR:-$SEED_CURSOR}" > "$CURSOR_PATH"
+          echo "Tracking issue: ${NUMBER:-(none yet)}; cursor: ${CURSOR:-$SEED_CURSOR (seed)}"
+
+      - name: Run changelog check
+        id: check
+        # No `npm ci` — the script only imports Node built-ins; `npx tsx`
+        # fetches its own runtime on demand, same as the other scripts/*.ts
+        # entries in package.json.
+        run: npm run check:claude-code-changelog
+
+      - name: Create tracking issue
+        id: create
+        if: steps.load.outputs.number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Weekly watch of [anthropics/claude-code's CHANGELOG.md](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) for new hook, cost, usage, pricing, and OpenTelemetry entries. Each run that finds something posts a report as a comment here."
+            echo
+            echo "Keep this issue open: the last-seen changelog version is stored in the hidden comment below and the workflow reads it back on every run."
+            echo
+            echo "<!-- changelog-cursor: ${{ steps.load.outputs.cursor }} -->"
+          } > issue-body.md
+          URL=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file issue-body.md)
+          echo "number=${URL##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Comment report on tracking issue
+        if: steps.check.outputs.matched == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.load.outputs.number || steps.create.outputs.number }}
+        run: gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$REPORT_PATH"
+
+      - name: Save cursor to tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.load.outputs.number || steps.create.outputs.number }}
+          OLD_CURSOR: ${{ steps.load.outputs.cursor }}
+        run: |
+          NEW_CURSOR=$(tr -d '[:space:]' < "$CURSOR_PATH")
+          if [ "$NEW_CURSOR" = "$OLD_CURSOR" ]; then
+            echo "Cursor unchanged at $OLD_CURSOR."
+            exit 0
+          fi
+          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+            | sed '/<!-- changelog-cursor: /d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > issue-body.md
+          printf '\n\n<!-- changelog-cursor: %s -->\n' "$NEW_CURSOR" >> issue-body.md
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+          echo "Cursor updated: $OLD_CURSOR -> $NEW_CURSOR"
