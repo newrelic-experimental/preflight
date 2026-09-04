@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] - 2026-09-04
+
+### Added
+
+- **`preflight install --copilot` (and a prompt in `preflight setup`) now configures GitHub Copilot end-to-end.** Sets up Copilot CLI hooks and MCP registration, VS Code Copilot Chat's MCP config and token-exact cost logging, and a fix for VS Code double-counting tool calls when both Claude Code and Copilot hook files are present — plus a matching `preflight uninstall --copilot`. Previously this setup was entirely manual.
+
+### Fixed
+
+- **GitHub Copilot tool-call capture (CLI and VS Code Copilot Chat) now actually reaches New Relic.** The hooks file Preflight generated used the wrong JSON shape, so Copilot's hooks-runner silently never executed any hook — tool-call count, tool selection, latency, audit, and session tracking were all missing for Copilot sessions, while cost tracking kept working through a separate path and masked the problem. Also fixes a related bug where a Copilot session drained by an unrelated running Preflight process could be mislabeled with that process's own platform instead of its own.
+
 ## [1.39.0] - 2026-09-04
 
 ### Added
