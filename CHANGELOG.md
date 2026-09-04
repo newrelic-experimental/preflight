@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] - 2026-09-04
+
+### Added
+
+- **Audit records now name the subagent that made each tool call.** Tool calls from Task and Workflow subagents already reached the audit trail through hooks, but `AuditRecord` dropped the hook payload's `agent_id` and `agent_type`, so a search of `~/.newrelic-preflight/audit/*.jsonl` by agent id found nothing. The on-disk audit log, `AiAuditEvent`, `SecurityAlert`, the NR log entry, and the dashboard Audit page now carry `agent_id` and `agent_type` (`agentId` and `agentType` on disk and in the dashboard). Both are absent for calls the parent session made. (#578)
+- **A non-recursive `rm` or `unlink` now raises a `file_deletion` alert at `medium` severity.** Only recursive forms were flagged before, so `rm -f <file>` left no alert even when it deleted an untracked file. `rm -rf` and the other recursive forms stay `destructive_command` at `critical`. The rule matches `rm` in command position only, so `git rm`, `npm rm`, and `docker rm` do not match. Disable it with the new `deletionPatterns: []` option on `AuditTrailManager`. (#577)
+
+### Changed
+
+- `detectSecurityAlert` evaluates an ordered rule table and returns the highest-severity match instead of the first match in an if-chain. Verdicts for the three existing alert types are unchanged.
+
 ## [1.39.0] - 2026-09-04
 
 ### Added
