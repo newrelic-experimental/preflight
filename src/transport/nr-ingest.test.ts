@@ -662,6 +662,47 @@ describe('NrIngestManager', () => {
     });
   });
 
+  describe('ingestCodingTask()', () => {
+    it('classifies the task outcome and stamps the active model (verified via flush)', async () => {
+      const costTracker = {
+        getMetrics: () => ({ model: 'claude-opus-5' }),
+        emitMetrics: () => undefined,
+      } as unknown as CostTracker;
+      const manager = new NrIngestManager(makeIngestOptions({ costTracker }));
+
+      // makeTask() modifies a .ts file with no test failures → 'refactor'.
+      manager.ingestCodingTask(makeTask());
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const taskEvent = sentEvents.find((e) => e.eventType === 'AiCodingTask')!;
+      expect(taskEvent).toBeDefined();
+      expect(taskEvent.outcome_type).toBe('refactor');
+      expect(taskEvent.model).toBe('claude-opus-5');
+    });
+
+    it('omits model when no cost tracker is wired', async () => {
+      const manager = new NrIngestManager(makeIngestOptions());
+
+      manager.ingestCodingTask(makeTask());
+
+      manager.start();
+      await manager.stop();
+
+      const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+        Record<string, unknown>
+      >;
+      const taskEvent = sentEvents.find((e) => e.eventType === 'AiCodingTask')!;
+      expect(taskEvent).toBeDefined();
+      expect(taskEvent.outcome_type).toBe('refactor');
+      expect(taskEvent).not.toHaveProperty('model');
+    });
+  });
+
   describe('ingestProxyRequest()', () => {
     it('buffers AiProxyRequest event and records proxy metrics (verified via flush)', async () => {
       const manager = new NrIngestManager(makeIngestOptions());
@@ -1400,6 +1441,27 @@ describe('codingTaskToNrEvent()', () => {
     expect(event.tokens_used).toBe(1200);
     expect(event.asked_user_questions).toBe(0);
     expect(event.sub_agents_spawned).toBe(0);
+  });
+
+  it('stamps outcome_type and model when provided', () => {
+    const task = makeTask();
+    const event = codingTaskToNrEvent(task, {
+      developer: 'd',
+      appName: 'a',
+      outcomeType: 'bug_fix',
+      model: 'claude-sonnet-5',
+    });
+
+    expect(event.outcome_type).toBe('bug_fix');
+    expect(event.model).toBe('claude-sonnet-5');
+  });
+
+  it('omits outcome_type and model when absent or null', () => {
+    const task = makeTask();
+    const event = codingTaskToNrEvent(task, { developer: 'd', appName: 'a', model: null });
+
+    expect(event).not.toHaveProperty('outcome_type');
+    expect(event).not.toHaveProperty('model');
   });
 
   it('emits files_read and files_modified as counts, not arrays', () => {

@@ -203,38 +203,40 @@ Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
 Emitted when a task boundary is detected (a logical unit of work from task start to completion).
 
-| Field                  | Type    | Description                                                                                                            |
-| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `eventType`            | string  | Always `"AiCodingTask"`                                                                                                |
-| `event_version`        | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                            |
-| `timestamp`            | number  | Unix epoch milliseconds (task end time)                                                                                |
-| `task_id`              | string  | Unique task identifier                                                                                                 |
-| `developer`            | string  | Developer identifier                                                                                                   |
-| `app_name`             | string  | Application name                                                                                                       |
-| `platform`             | string  | Platform attribution (default: `claude-code`)                                                                          |
-| `session_id`           | string  | Session identifier (if available)                                                                                      |
-| `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                             |
-| `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
-| `org_id`               | string  | Organization identifier (if configured)                                                                                |
-| `start_time`           | number  | Task start time (Unix epoch milliseconds)                                                                              |
-| `end_time`             | number  | Task end time (Unix epoch milliseconds)                                                                                |
-| `duration_ms`          | number  | Task duration in milliseconds                                                                                          |
-| `tool_call_count`      | number  | Total tool calls in the task                                                                                           |
-| `files_read`           | number  | Number of unique files read                                                                                            |
-| `files_modified`       | number  | Number of unique files modified                                                                                        |
-| `lines_added`          | number  | Lines added across all edits                                                                                           |
-| `lines_removed`        | number  | Lines removed across all edits                                                                                         |
-| `bash_commands_run`    | number  | Number of Bash tool calls                                                                                              |
-| `tests_run`            | number  | Number of test runs detected                                                                                           |
-| `tests_passed`         | boolean | Whether the last test run passed                                                                                       |
-| `build_run`            | boolean | Whether a build was run                                                                                                |
-| `build_passed`         | boolean | Whether the last build passed                                                                                          |
-| `estimated_cost_usd`   | number  | Estimated token cost for the task (`0` when cost was never computed)                                                   |
-| `cost_estimated`       | boolean | `true` when `estimated_cost_usd` was actually computed; `false` when defaulted to `0`                                  |
-| `tokens_used`          | number  | Total tokens consumed in the task                                                                                      |
-| `asked_user_questions` | number  | Number of questions asked to the user                                                                                  |
-| `sub_agents_spawned`   | number  | Number of sub-agent spawns                                                                                             |
+| Field                  | Type    | Description                                                                                                                   |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`            | string  | Always `"AiCodingTask"`                                                                                                       |
+| `event_version`        | number  | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                                   |
+| `timestamp`            | number  | Unix epoch milliseconds (task end time)                                                                                       |
+| `task_id`              | string  | Unique task identifier                                                                                                        |
+| `developer`            | string  | Developer identifier                                                                                                          |
+| `app_name`             | string  | Application name                                                                                                              |
+| `platform`             | string  | Platform attribution (default: `claude-code`)                                                                                 |
+| `session_id`           | string  | Session identifier (if available)                                                                                             |
+| `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set.        |
+| `project_id`           | string  | Project identifier (derived from git remote or configured)                                                                    |
+| `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                          |
+| `org_id`               | string  | Organization identifier (if configured)                                                                                       |
+| `start_time`           | number  | Task start time (Unix epoch milliseconds)                                                                                     |
+| `end_time`             | number  | Task end time (Unix epoch milliseconds)                                                                                       |
+| `duration_ms`          | number  | Task duration in milliseconds                                                                                                 |
+| `tool_call_count`      | number  | Total tool calls in the task                                                                                                  |
+| `files_read`           | number  | Number of unique files read                                                                                                   |
+| `files_modified`       | number  | Number of unique files modified                                                                                               |
+| `lines_added`          | number  | Lines added across all edits                                                                                                  |
+| `lines_removed`        | number  | Lines removed across all edits                                                                                                |
+| `bash_commands_run`    | number  | Number of Bash tool calls                                                                                                     |
+| `tests_run`            | number  | Number of test runs detected                                                                                                  |
+| `tests_passed`         | boolean | Whether the last test run passed                                                                                              |
+| `build_run`            | boolean | Whether a build was run                                                                                                       |
+| `build_passed`         | boolean | Whether the last build passed                                                                                                 |
+| `estimated_cost_usd`   | number  | Estimated token cost for the task (`0` when cost was never computed)                                                          |
+| `cost_estimated`       | boolean | `true` when `estimated_cost_usd` was actually computed; `false` when defaulted to `0`                                         |
+| `tokens_used`          | number  | Total tokens consumed in the task                                                                                             |
+| `asked_user_questions` | number  | Number of questions asked to the user                                                                                         |
+| `sub_agents_spawned`   | number  | Number of sub-agent spawns                                                                                                    |
+| `outcome_type`         | string  | Task classification: `bug_fix`, `feature`, `refactor`, `investigation`, `configuration`, `documentation`, or `failed_attempt` |
+| `model`                | string  | Model active when the task completed (e.g. `claude-sonnet-5`). Omitted when no token usage was ever reported.                 |
 
 Source: `src/transport/nr-ingest.ts` — `codingTaskToNrEvent()`
 

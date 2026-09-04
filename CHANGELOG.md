@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.0] - 2026-09-04
+
+### Added
+
+- **`AiCodingTask` events now carry `outcome_type` and `model`**, joining the existing per-task outcome classification (`bug_fix`, `feature`, `refactor`, `investigation`, `configuration`, `documentation`, `failed_attempt`) with the model that was active when the task completed. This makes "which model works best for which kind of task" answerable in NRQL: `FROM AiCodingTask SELECT average(estimated_cost_usd) FACET model, outcome_type`. `model` is omitted when no token usage was ever reported for the session.
+
 ## [1.39.0] - 2026-09-04
 
 ### Added
