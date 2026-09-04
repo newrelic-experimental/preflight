@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.0] - 2026-09-03
+
+### Added
+
+- **The local dashboard shows a Cost by Skill table, and the team-view New Relic dashboard gains two skill widgets.** The table lists calls, cost, tokens, and time per skill under the Cost by Tool card, and appears only once a skill has been invoked. The New Relic widgets chart skill calls and hours in skills over seven days, faceted by `skillName`.
+
 ## [1.37.0] - 2026-09-03
 
 ### Added

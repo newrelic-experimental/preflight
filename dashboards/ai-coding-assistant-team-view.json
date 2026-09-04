@@ -306,6 +306,46 @@
               }
             ]
           }
+        },
+        {
+          "title": "Skill Calls (7d)",
+          "layout": {
+            "column": 1,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT count(*) FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Time in Skills (7d, hours)",
+          "layout": {
+            "column": 7,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.bar"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "SELECT sum(duration_ms) / 3600000 AS 'Hours' FROM AiToolCall WHERE tool = 'Skill' AND developer = {{developer}} AND session_id = {{session_id}} FACET skillName SINCE 7 DAYS AGO LIMIT 20"
+              }
+            ]
+          }
         }
       ]
     }

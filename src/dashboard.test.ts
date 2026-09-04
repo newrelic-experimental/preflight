@@ -167,8 +167,8 @@ describe('Team View dashboard', () => {
     expect(teamView!.dashboard.name).toBe('AI Coding Assistant — Team View');
   });
 
-  it('has 4 rows of widgets (14 total)', () => {
-    expect(teamView!.dashboard.pages[0].widgets).toHaveLength(14);
+  it('has 5 rows of widgets (16 total)', () => {
+    expect(teamView!.dashboard.pages[0].widgets).toHaveLength(16);
   });
 
   it('includes FACET developer queries for team comparison', () => {
