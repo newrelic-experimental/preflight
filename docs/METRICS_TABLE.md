@@ -197,7 +197,7 @@ Emitted only when a security alert is triggered (subset of audit events).
 
 Security alert triggers:
 
-- **`destructive_command`** (critical): `rm -rf` (any recursive flag combo), `git push --force` (but NOT `--force-with-lease` / `--force-if-includes`), `DROP TABLE`, pipe-to-shell, etc. Detection is the OR of the bash classifier (`record.bashDestructive`) and the regex pattern list — defense in depth, neither layer alone is authoritative.
+- **`destructive_command`** (critical): `rm -rf` (any recursive flag combo), `git push --force` (but NOT `--force-with-lease` / `--force-if-includes`), `git clean -f` (any force form), `find -delete`, `DROP TABLE`, pipe-to-shell, etc. Detection is the OR of the bash classifier (`record.bashDestructive`) and the regex pattern list — defense in depth, neither layer alone is authoritative.
 - **`sensitive_file`** (high): `.env`, `.pem`, `.key`, `credentials`, `secret`, `.ssh`, `.npmrc`, `.pypirc`, `password`, `token` (path-boundary anchored)
 - **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands. Detection is the OR of the bash classifier (`record.bashNetwork`) and the regex pattern list.
 - **`file_deletion`** (medium): `rm` or `unlink` in command position (start of line, after `;`, `&`, `|`, or `(`, optionally with `sudo`), OR-ed with the bash classifier's leading token (`record.bashLeading`), which also strips env-var prefixes. Anchoring keeps `git rm`, `npm rm`, `docker rm`, and quoted text like `echo "rm foo"` out of scope. Recursive forms match too but lose to `destructive_command` by severity.

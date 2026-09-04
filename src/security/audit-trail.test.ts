@@ -373,6 +373,34 @@ describe('AuditTrailManager', () => {
     },
   );
 
+  it.each([
+    'git clean -f',
+    'git clean -fd',
+    'git clean -xdf',
+    'git clean -df -e keep',
+    'git clean --force',
+    'git clean -d --force',
+    "find . -name '*.tmp' -delete",
+    'find /tmp -type f -delete',
+  ])('detects "%s" as critical destructive command', (command) => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+
+    expect(audit.securityAlert).toBeDefined();
+    expect(audit.securityAlert!.severity).toBe('critical');
+    expect(audit.securityAlert!.alertType).toBe('destructive_command');
+  });
+
+  it.each(['git clean -n', 'git clean --dry-run', 'git clean', "find . -name '*.ts'"])(
+    'does not flag "%s" as destructive (safe form)',
+    (command) => {
+      const mgr = makeManager();
+      const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+
+      expect(audit.securityAlert?.alertType).not.toBe('destructive_command');
+    },
+  );
+
   // 6. External network request (medium)
   it('detects curl as medium external network alert', () => {
     const mgr = makeManager();

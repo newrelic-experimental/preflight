@@ -95,6 +95,10 @@ export const DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
   /\bgit\s+push\s+--force(?!-(?:with-lease|if-includes))\b/i,
   /\bgit\s+push\s+-f\b/i,
   /\bgit\s+reset\s+--hard\b/i,
+  // git clean only deletes with -f/--force (clean.requireForce defaults to true);
+  // -n/--dry-run and bare `git clean` are safe and stay unflagged.
+  /\bgit\s+clean\b(?=.*\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\b)/i,
+  /\bfind\b.*\s-delete\b/i,
   /\bDROP\s+TABLE\b/i,
   /\bDROP\s+DATABASE\b/i,
   /\bDELETE\s+FROM\b/i,

@@ -244,7 +244,7 @@ Both `AgentConfig` and `McpServerConfig` are frozen with `Object.freeze()` immed
 `AuditTrailManager` (`src/security/audit-trail.ts`) classifies every tool call and flags:
 
 - **Sensitive file access** — `.env`, `.pem`, `.key`, credential and password files — severity: `high`
-- **Destructive commands** — `rm -rf`, `DROP TABLE`, pipe-to-shell patterns — severity: `critical`
+- **Destructive commands** — `rm -rf`, `git clean -f`, `find -delete`, `DROP TABLE`, pipe-to-shell patterns — severity: `critical`
 - **External network requests** — `curl`, `wget`, `nc`, `ssh` — severity: `medium`
 - **File deletion** (non-recursive rm / unlink) — severity: `medium`
 
