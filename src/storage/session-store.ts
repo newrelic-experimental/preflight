@@ -307,6 +307,12 @@ export function mergeSummaries(
           totalInputTokens: Math.max(prev.totalInputTokens, entry.totalInputTokens),
           totalOutputTokens: Math.max(prev.totalOutputTokens, entry.totalOutputTokens),
           totalCostUsd: Math.max(prev.totalCostUsd, entry.totalCostUsd),
+          totalCacheReadTokens: Math.max(prev.totalCacheReadTokens, entry.totalCacheReadTokens),
+          totalCacheCreationTokens: Math.max(
+            prev.totalCacheCreationTokens,
+            entry.totalCacheCreationTokens,
+          ),
+          totalThinkingTokens: Math.max(prev.totalThinkingTokens, entry.totalThinkingTokens),
         }
       : entry;
   }
@@ -1066,6 +1072,12 @@ export function deserializeFullSessionSummary(
           totalInputTokens: e.totalInputTokens,
           totalOutputTokens: e.totalOutputTokens,
           totalCostUsd: e.totalCostUsd,
+          totalCacheReadTokens:
+            typeof e.totalCacheReadTokens === 'number' ? e.totalCacheReadTokens : 0,
+          totalCacheCreationTokens:
+            typeof e.totalCacheCreationTokens === 'number' ? e.totalCacheCreationTokens : 0,
+          totalThinkingTokens:
+            typeof e.totalThinkingTokens === 'number' ? e.totalThinkingTokens : 0,
         };
       }
     }

@@ -12,6 +12,19 @@ import { createLogger } from '../shared/index.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import { getIsoWeekId, getWeekDateRange } from '../storage/weekly-summary.js';
+import { classifySessionOutcome, type OutcomeType } from './cost-per-outcome.js';
+
+// Canonical display order for outcome breakdowns — matches the order
+// OutcomeType is declared in cost-per-outcome.ts, not session iteration order.
+const OUTCOME_ORDER: readonly OutcomeType[] = [
+  'bug_fix',
+  'feature',
+  'refactor',
+  'investigation',
+  'configuration',
+  'documentation',
+  'failed_attempt',
+];
 
 const logger = createLogger('trend-analyzer');
 
@@ -71,6 +84,31 @@ export interface ModelComparison {
   readonly modelBEfficiency: number | null;
   readonly modelASessionCount: number;
   readonly modelBSessionCount: number;
+}
+
+export interface ModelOutcomeStats {
+  readonly model: string;
+  readonly sessionCount: number;
+  readonly avgCostUsd: number;
+  readonly avgEfficiencyScore: number | null;
+  readonly avgTaskSuccessRate: number;
+}
+
+export type ModelRecommendationConfidence = 'high' | 'medium' | 'low' | 'insufficient_data';
+
+export interface OutcomeModelRanking {
+  readonly outcome: OutcomeType;
+  readonly ranked: readonly ModelOutcomeStats[];
+  readonly recommendedModel: string | null;
+  readonly confidence: ModelRecommendationConfidence;
+}
+
+export interface ModelRecommendationReport {
+  readonly ranked: readonly ModelOutcomeStats[];
+  readonly recommendedModel: string | null;
+  readonly confidence: ModelRecommendationConfidence;
+  readonly byOutcome: readonly OutcomeModelRanking[];
+  readonly generatedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +241,92 @@ function groupByWeek(sessions: FullSessionSummary[]): Map<string, FullSessionSum
     groups.set(week, list);
   }
   return groups;
+}
+
+// Minimum sessions-on-the-top-ranked-model before a recommendation is
+// trusted at each confidence tier. Hand-picked judgment calls, not derived
+// from data — tune here if this fires too often or too rarely in practice.
+const MIN_SESSIONS_LOW_CONFIDENCE = 3;
+const MIN_SESSIONS_MEDIUM_CONFIDENCE = 8;
+const MIN_SESSIONS_HIGH_CONFIDENCE = 20;
+
+// A model only "wins" if it beats the runner-up by a real margin, not just
+// noise — same hand-picked-judgment-call caveat as the sample thresholds
+// above. On the [0,1] efficiency scale, 0.05 is treated as the smallest gap
+// worth acting on.
+const MIN_MEANINGFUL_EFFICIENCY_GAP = 0.05;
+
+function confidenceForSampleSize(n: number): ModelRecommendationConfidence {
+  if (n >= MIN_SESSIONS_HIGH_CONFIDENCE) return 'high';
+  if (n >= MIN_SESSIONS_MEDIUM_CONFIDENCE) return 'medium';
+  if (n >= MIN_SESSIONS_LOW_CONFIDENCE) return 'low';
+  return 'insufficient_data';
+}
+
+function rankModelsForSessions(sessions: FullSessionSummary[]): {
+  ranked: ModelOutcomeStats[];
+  recommendedModel: string | null;
+  confidence: ModelRecommendationConfidence;
+} {
+  const byModel = new Map<string, FullSessionSummary[]>();
+  for (const s of sessions) {
+    if (!s.model) continue;
+    const group = byModel.get(s.model) ?? [];
+    group.push(s);
+    byModel.set(s.model, group);
+  }
+
+  const ranked: ModelOutcomeStats[] = [];
+  for (const [model, group] of byModel) {
+    const agg = aggregateWeek(group);
+    ranked.push({
+      model,
+      sessionCount: group.length,
+      avgCostUsd: round(agg.cost / group.length, 4),
+      avgEfficiencyScore: agg.efficiency,
+      avgTaskSuccessRate: agg.taskSuccess,
+    });
+  }
+
+  // Higher efficiency first; sessions with no scored tasks (null) sort last;
+  // ties broken by lower cost.
+  ranked.sort((a, b) => {
+    if (a.avgEfficiencyScore === null && b.avgEfficiencyScore === null) {
+      return a.avgCostUsd - b.avgCostUsd;
+    }
+    if (a.avgEfficiencyScore === null) return 1;
+    if (b.avgEfficiencyScore === null) return -1;
+    if (b.avgEfficiencyScore !== a.avgEfficiencyScore) {
+      return b.avgEfficiencyScore - a.avgEfficiencyScore;
+    }
+    return a.avgCostUsd - b.avgCostUsd;
+  });
+
+  const top = ranked[0];
+  const runnerUp = ranked[1];
+
+  // A recommendation requires a real comparison: a runner-up backed by
+  // enough of its own sessions to not be noise, and a gap between the two
+  // large enough to not be noise either. Without both, there's nothing
+  // confidently recommendable — regardless of how many sessions the
+  // leader alone has. This also correctly handles the case of only one
+  // model ever being used: no runner-up means no comparison happened.
+  const hasComparableRunnerUp =
+    runnerUp != null && runnerUp.sessionCount >= MIN_SESSIONS_LOW_CONFIDENCE;
+  const hasMeaningfulGap =
+    hasComparableRunnerUp &&
+    top!.avgEfficiencyScore !== null &&
+    runnerUp!.avgEfficiencyScore !== null &&
+    top!.avgEfficiencyScore - runnerUp!.avgEfficiencyScore >= MIN_MEANINGFUL_EFFICIENCY_GAP;
+
+  const confidence =
+    top && hasMeaningfulGap ? confidenceForSampleSize(top.sessionCount) : 'insufficient_data';
+
+  return {
+    ranked,
+    recommendedModel: confidence === 'insufficient_data' ? null : (top?.model ?? null),
+    confidence,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +531,35 @@ export class TrendAnalyzer {
     }
 
     logger.debug('Weekly trend metrics emitted', { weekId, developers: byDeveloper.size });
+  }
+
+  rankModelsByOutcome(options?: { developer?: string; since?: Date }): ModelRecommendationReport {
+    let sessions = this.sessionStore.loadAllSessions({ since: options?.since });
+    if (options?.developer) {
+      sessions = sessions.filter((s) => s.developer === options.developer);
+    }
+
+    const overall = rankModelsForSessions(sessions);
+
+    const byOutcomeSessions = new Map<OutcomeType, FullSessionSummary[]>();
+    for (const s of sessions) {
+      const outcome = classifySessionOutcome(s);
+      const group = byOutcomeSessions.get(outcome) ?? [];
+      group.push(s);
+      byOutcomeSessions.set(outcome, group);
+    }
+
+    const byOutcome: OutcomeModelRanking[] = OUTCOME_ORDER.filter((outcome) =>
+      byOutcomeSessions.has(outcome),
+    ).map((outcome) => ({ outcome, ...rankModelsForSessions(byOutcomeSessions.get(outcome)!) }));
+
+    return {
+      ranked: overall.ranked,
+      recommendedModel: overall.recommendedModel,
+      confidence: overall.confidence,
+      byOutcome,
+      generatedAt: Date.now(),
+    };
   }
 
   // ---------------------------------------------------------------------------

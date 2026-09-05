@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   AuditTrailManager,
+  attachAuditAttribution,
   auditRecordToNrEvent,
   securityAlertToNrEvent,
   DEFAULT_SENSITIVE_FILE_PATTERNS,
@@ -180,10 +181,75 @@ describe('AuditTrailManager', () => {
     expect(audit.securityAlert!.alertType).toBe('destructive_command');
   });
 
-  it('does not flag "rm -f file.txt" as destructive (no recursive flag)', () => {
+  it('flags "rm -f file.txt" as file_deletion at medium severity (no recursive flag)', () => {
     const mgr = makeManager();
     const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command: 'rm -f file.txt' }));
-    expect(audit.securityAlert?.alertType).not.toBe('destructive_command');
+    expect(audit.securityAlert).toMatchObject({ severity: 'medium', alertType: 'file_deletion' });
+    expect(audit.securityAlert!.description).toMatch(/^File deletion:/);
+  });
+
+  it.each(['rm file.txt', 'sudo rm file.txt', 'cd x && rm -f y', 'unlink f'])(
+    'flags "%s" as file_deletion',
+    (command) => {
+      const mgr = makeManager();
+      const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+      expect(audit.securityAlert?.alertType).toBe('file_deletion');
+    },
+  );
+
+  it.each(['rm -rf /tmp/x', 'rm -r d'])(
+    'still flags "%s" as destructive_command at critical (recursive form wins over file_deletion)',
+    (command) => {
+      const mgr = makeManager();
+      const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+      expect(audit.securityAlert).toMatchObject({
+        severity: 'critical',
+        alertType: 'destructive_command',
+      });
+    },
+  );
+
+  it('flags "rm f && curl http://x" as external_network (tie goes to the earlier row)', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Bash', command: 'rm f && curl http://x' }),
+    );
+    expect(audit.securityAlert?.alertType).toBe('external_network');
+  });
+
+  it.each(['npm rm lodash', 'git rm f', 'docker rm c', 'echo "rm foo"', 'npm test'])(
+    '"%s" yields no security alert',
+    (command) => {
+      const mgr = makeManager();
+      const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+      expect(audit.securityAlert).toBeUndefined();
+    },
+  );
+
+  it('flags an env-prefixed rm through the classifier leading token when the regex misses', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Bash', command: 'FOO=bar rm -f f', bashLeading: 'rm' }),
+    );
+    expect(audit.securityAlert?.alertType).toBe('file_deletion');
+  });
+
+  it('does not treat a package-manager rm subcommand as a deletion via the leading token', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({ toolName: 'Bash', command: 'npm rm lodash', bashLeading: 'npm' }),
+    );
+    expect(audit.securityAlert).toBeUndefined();
+  });
+
+  it('does not flag file deletion when deletionPatterns is explicitly disabled', () => {
+    const mgr = new AuditTrailManager({
+      developer: 'dev',
+      sessionId: 'sess-001',
+      deletionPatterns: [],
+    });
+    const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command: 'rm -f f' }));
+    expect(audit.securityAlert).toBeUndefined();
   });
 
   // Classifier consolidation: detectSecurityAlert is the OR of the
@@ -304,6 +370,34 @@ describe('AuditTrailManager', () => {
       const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
 
       expect(audit.securityAlert).toBeUndefined();
+    },
+  );
+
+  it.each([
+    'git clean -f',
+    'git clean -fd',
+    'git clean -xdf',
+    'git clean -df -e keep',
+    'git clean --force',
+    'git clean -d --force',
+    "find . -name '*.tmp' -delete",
+    'find /tmp -type f -delete',
+  ])('detects "%s" as critical destructive command', (command) => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+
+    expect(audit.securityAlert).toBeDefined();
+    expect(audit.securityAlert!.severity).toBe('critical');
+    expect(audit.securityAlert!.alertType).toBe('destructive_command');
+  });
+
+  it.each(['git clean -n', 'git clean --dry-run', 'git clean', "find . -name '*.ts'"])(
+    'does not flag "%s" as destructive (safe form)',
+    (command) => {
+      const mgr = makeManager();
+      const audit = mgr.recordToolCall(makeRecord({ toolName: 'Bash', command }));
+
+      expect(audit.securityAlert?.alertType).not.toBe('destructive_command');
     },
   );
 
@@ -822,6 +916,145 @@ describe('AuditTrailManager.getAuditLog() disk read-back', () => {
 
     const log = mgr.getAuditLog(5);
     expect(log).toHaveLength(5);
+  });
+});
+
+describe('attachAuditAttribution()', () => {
+  it('writes session_id, agent_id, and agent_type and skips absent values', () => {
+    const full: Record<string, string | number | boolean> = {};
+    attachAuditAttribution(full, { sessionId: 'sess-1', agentId: 'a9f8', agentType: 'workflow' });
+    expect(full).toEqual({ session_id: 'sess-1', agent_id: 'a9f8', agent_type: 'workflow' });
+
+    const bare: Record<string, string | number | boolean> = {};
+    attachAuditAttribution(bare, { sessionId: null });
+    expect(bare).toEqual({});
+  });
+});
+
+describe('AuditTrailManager subagent attribution', () => {
+  it('carries agentId and agentType from the ToolCallRecord onto the AuditRecord', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        command: 'rm -rf /tmp/x',
+        agentId: 'a9f8',
+        agentType: 'workflow',
+      }),
+    );
+
+    expect(audit.agentId).toBe('a9f8');
+    expect(audit.agentType).toBe('workflow');
+  });
+
+  it('leaves agentId and agentType undefined when the record has neither', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(makeRecord({ toolName: 'Read', filePath: 'src/app.ts' }));
+
+    expect(audit.agentId).toBeUndefined();
+    expect(audit.agentType).toBeUndefined();
+  });
+
+  it('includes agentId and agentType in the entry persisted to disk', () => {
+    const { store, appendSpy } = makeLocalStore();
+    const mgr = makeManager({ localStore: store });
+
+    mgr.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        command: 'rm -rf /tmp/x',
+        agentId: 'a9f8',
+        agentType: 'workflow',
+      }),
+    );
+
+    expect(appendSpy.mock.calls[0][0]).toMatchObject({ agentId: 'a9f8', agentType: 'workflow' });
+  });
+
+  it('carries agentId and agentType through recordProxyCall', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordProxyCall(makeProxyRecord({ agentId: 'a9f8', agentType: 'workflow' }));
+
+    expect(audit.agentId).toBe('a9f8');
+    expect(audit.agentType).toBe('workflow');
+  });
+
+  it('reads agentId and agentType back from a disk entry via getAuditLog()', () => {
+    const appendSpy = jest.fn();
+    const store = {
+      appendAuditLog: appendSpy,
+      peekAllAuditLogs: jest.fn(() => [
+        {
+          timestamp: 555,
+          sessionId: 'sess-other',
+          action: 'BashCommand',
+          tool: 'Bash',
+          detail: 'Bash: rm -rf /tmp/x',
+          developer: 'alice',
+          agentId: 'a9f8',
+          agentType: 'workflow',
+        },
+      ]),
+    } as unknown as LocalStore;
+    const mgr = makeManager({ localStore: store });
+
+    const [entry] = mgr.getAuditLog();
+    expect(entry?.agentId).toBe('a9f8');
+    expect(entry?.agentType).toBe('workflow');
+  });
+
+  it('leaves agentId and agentType undefined for a disk entry with neither field', () => {
+    const appendSpy = jest.fn();
+    const store = {
+      appendAuditLog: appendSpy,
+      peekAllAuditLogs: jest.fn(() => [
+        {
+          timestamp: 555,
+          sessionId: 'sess-other',
+          action: 'FileRead',
+          tool: 'Read',
+          detail: 'Read src/old.ts',
+          developer: 'alice',
+        },
+      ]),
+    } as unknown as LocalStore;
+    const mgr = makeManager({ localStore: store });
+
+    const [entry] = mgr.getAuditLog();
+    expect(entry?.agentId).toBeUndefined();
+    expect(entry?.agentType).toBeUndefined();
+  });
+
+  it('emits agent_id and agent_type on auditRecordToNrEvent when present', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({
+        toolName: 'Read',
+        filePath: 'src/app.ts',
+        agentId: 'a9f8',
+        agentType: 'workflow',
+      }),
+    );
+    const event = auditRecordToNrEvent(audit);
+
+    expect(event.agent_id).toBe('a9f8');
+    expect(event.agent_type).toBe('workflow');
+  });
+
+  it('emits agent_id and agent_type on securityAlertToNrEvent when present', () => {
+    const mgr = makeManager();
+    const audit = mgr.recordToolCall(
+      makeRecord({
+        toolName: 'Bash',
+        command: 'rm -rf /tmp/x',
+        agentId: 'a9f8',
+        agentType: 'workflow',
+      }),
+    );
+    const event = securityAlertToNrEvent(audit);
+
+    expect(event.agent_id).toBe('a9f8');
+    expect(event.agent_type).toBe('workflow');
   });
 });
 

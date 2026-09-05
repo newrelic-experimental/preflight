@@ -178,6 +178,26 @@ export const RECOMMENDATIONS_TOOL = {
   annotations: { readOnlyHint: true },
 };
 
+export const MODEL_RECOMMENDATION_TOOL = {
+  name: 'nr_observe_get_model_recommendation',
+  description:
+    'Get a data-driven model recommendation ranked by historical efficiency score, cost, and task success rate across past sessions, both overall and broken down by task outcome type (bug_fix, feature, refactor, investigation, configuration, documentation, failed_attempt).',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      developer: {
+        type: 'string',
+        description: 'Developer name to scope the ranking to (default: aggregate across all)',
+      },
+      since: {
+        type: 'string',
+        description: 'ISO date string; only consider sessions on or after this date',
+      },
+    },
+  },
+  annotations: { readOnlyHint: true },
+};
+
 export const PLATFORM_COMPARISON_TOOL = {
   name: 'nr_observe_get_platform_comparison',
   description:
@@ -594,6 +614,34 @@ export function handleGetRecommendations(
         text: JSON.stringify({ recommendations: recs, count: recs.length }, null, 2),
       },
     ],
+  };
+}
+
+export function handleGetModelRecommendation(
+  trendAnalyzer: TrendAnalyzer,
+  args: { developer?: string; since?: string },
+) {
+  let since: Date | undefined;
+  if (args.since) {
+    const sinceMs = new Date(args.since).getTime();
+    if (isNaN(sinceMs)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ error: `Invalid since date: "${args.since}"` }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    since = new Date(sinceMs);
+  }
+
+  const report = trendAnalyzer.rankModelsByOutcome({ developer: args.developer, since });
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(report, null, 2) }],
   };
 }
 
@@ -1148,6 +1196,18 @@ export function registerCrossSessionTools(deps: CrossSessionToolsDeps): Register
         return handleGetRecommendations(check.value, {
           developer: args?.developer as string | undefined,
           topN: args?.topN as number | undefined,
+        });
+      },
+    },
+    {
+      definition: MODEL_RECOMMENDATION_TOOL,
+      available: !!deps.trendAnalyzer,
+      handle: (args) => {
+        const check = requireTracker(deps.trendAnalyzer, 'TrendAnalyzer');
+        if (!check.ok) return check.result;
+        return handleGetModelRecommendation(check.value, {
+          developer: args?.developer as string | undefined,
+          since: args?.since as string | undefined,
         });
       },
     },

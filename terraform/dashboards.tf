@@ -7,6 +7,7 @@ locals {
   _acct = tostring(var.account_id)
 
   _inject = {
+    adoption_cost      = "ai-coding-assistant-adoption-cost.json"
     overview           = "ai-coding-assistant-overview.json"
     manager_view       = "ai-coding-assistant-manager-view.json"
     personal           = "ai-coding-assistant-personal.json"
@@ -63,4 +64,9 @@ resource "newrelic_one_dashboard_json" "session_detail" {
 resource "newrelic_one_dashboard_json" "team_view" {
   account_id = var.account_id
   json       = local.dashboards["team_view"]
+}
+
+resource "newrelic_one_dashboard_json" "adoption_cost" {
+  account_id = var.account_id
+  json       = local.dashboards["adoption_cost"]
 }

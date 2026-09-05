@@ -1175,23 +1175,26 @@ Which AI model was used per request, cost-efficiency per model, and any model sw
       "requestCount": 25,
       "totalInputTokens": 120000,
       "totalOutputTokens": 45000,
+      "totalCacheReadTokens": 15000,
+      "totalCacheCreationTokens": 5000,
+      "totalThinkingTokens": 0,
       "totalCostUsd": 0.42,
-      "costPerOutputToken": 0.0000093,
-      "costPerMillionTokens": 2.55,
+      "costPerMillionTokens": 2.27,
       "avgOutputTokensPerRequest": 1800
     },
     "claude-opus-4-7": {
       "requestCount": 3,
       "totalInputTokens": 20000,
       "totalOutputTokens": 8000,
+      "totalCacheReadTokens": 2000,
+      "totalCacheCreationTokens": 1000,
+      "totalThinkingTokens": 0,
       "totalCostUsd": 0.18,
-      "costPerOutputToken": 0.0000225,
-      "costPerMillionTokens": 6.43,
+      "costPerMillionTokens": 5.81,
       "avgOutputTokensPerRequest": 2666.67
     }
   },
   "mostUsedModel": "claude-sonnet-4-6",
-  "mostEfficientModel": "claude-sonnet-4-6",
   "totalModelsUsed": 2,
   "switchCount": 2,
   "automaticSwitchCount": 1,
@@ -1216,10 +1219,8 @@ Which AI model was used per request, cost-efficiency per model, and any model sw
 
 **Field notes:**
 
-- `costPerOutputToken` — `totalCostUsd / totalOutputTokens` (null if no output tokens)
-- `costPerMillionTokens` — per-model rate: `(totalCostUsd / (totalInputTokens + totalOutputTokens)) * 1_000_000` (null if no tokens). Only counts input+output tokens — narrower than `nr_observe_get_cost_breakdown`'s session-blended `cost_per_million_tokens`, which also folds in thinking/cache-read/cache-creation tokens. The two figures are not directly comparable.
+- `costPerMillionTokens` — per-model rate: `(totalCostUsd / (totalInputTokens + totalOutputTokens + totalThinkingTokens + totalCacheReadTokens + totalCacheCreationTokens)) * 1_000_000` (null if no tokens). Counts every billed token, so it is comparable with list prices and with `nr_observe_get_cost_breakdown`'s session-blended `cost_per_million_tokens`.
 - `mostUsedModel` — the model with the highest `requestCount`
-- `mostEfficientModel` — the model with the lowest `costPerOutputToken`
 - `switchCount` / `automaticSwitchCount` — total `PostModelSwitch` events seen this session, and the subset where `source === 'auto'` (a persistent automatic change, e.g. a sustained fallback — not a one-turn fallback-chain substitution, which Claude Code doesn't fire this hook for)
 - `recentSwitches` — the most recent switches (newest last, bounded to 100); `requestedModel` is `null` for an automatic switch or session-resume restore
 
@@ -1228,13 +1229,88 @@ Which AI model was used per request, cost-efficiency per model, and any model sw
 **How it works:**
 
 - Tracks `model` field from each request (e.g., "claude-sonnet-4-6")
-- Aggregates request count, input/output tokens, and cost per model
-- Picks `mostUsedModel` (highest request count) and `mostEfficientModel` (lowest `costPerOutputToken`)
+- Aggregates request count, input/output/thinking/cache tokens, and cost per model
+- Picks `mostUsedModel` (highest request count)
 - Records each Claude Code `PostModelSwitch` hook event as a discrete switch (deliberate `/model` change, persistent automatic fallback, or resume) via `recordModelSwitch()`
 
 **Requires:** `ModelUsageTracker`
 
 Source: `src/tools/analytics-tools.ts`, `src/metrics/model-usage-tracker.ts`
+
+---
+
+### `nr_observe_get_model_recommendation`
+
+Data-driven model recommendation ranked by historical efficiency score, cost, and task success rate across past sessions, both overall and broken down by task outcome type.
+
+**Parameters:**
+
+- `developer` (optional) — Developer name to scope the ranking to; aggregate across all developers if omitted.
+- `since` (optional) — ISO date string; only consider sessions on or after this date.
+
+**Returns:**
+
+```json
+{
+  "ranked": [
+    {
+      "model": "claude-sonnet-4-20250514",
+      "sessionCount": 25,
+      "avgCostUsd": 0.04,
+      "avgEfficiencyScore": 0.82,
+      "avgTaskSuccessRate": 0.95
+    },
+    {
+      "model": "claude-opus-4-20250805",
+      "sessionCount": 12,
+      "avgCostUsd": 0.08,
+      "avgEfficiencyScore": 0.78,
+      "avgTaskSuccessRate": 0.92
+    }
+  ],
+  "recommendedModel": "claude-sonnet-4-20250514",
+  "confidence": "high",
+  "byOutcome": [
+    {
+      "outcome": "bug_fix",
+      "ranked": [
+        {
+          "model": "claude-sonnet-4-20250514",
+          "sessionCount": 15,
+          "avgCostUsd": 0.03,
+          "avgEfficiencyScore": 0.85,
+          "avgTaskSuccessRate": 0.97
+        }
+      ],
+      "recommendedModel": "claude-sonnet-4-20250514",
+      "confidence": "high"
+    }
+  ],
+  "generatedAt": 1746345600000
+}
+```
+
+**Field notes:**
+
+- `ranked` — All models ranked by efficiency score (descending), with ties broken by lower cost. Models with no scored sessions (`avgEfficiencyScore: null`) sort last.
+- `recommendedModel` — Top-ranked model, or `null` if insufficient data.
+- `confidence` — `insufficient_data` unless there's a runner-up model with at least 3 sessions of its own AND the gap between the top and runner-up average efficiency scores is at least 0.05; otherwise gated by the top model's own session count: `high` (≥20 sessions), `medium` (≥8), `low` (≥3).
+- `byOutcome` — Rankings broken down by task outcome type (bug_fix, feature, refactor, investigation, configuration, documentation, failed_attempt).
+- `avgTaskSuccessRate` — `testPassCount / testRunCount` for sessions of that outcome, 0 if no tests run.
+
+**Data source:** `TrendAnalyzer.rankModelsByOutcome()`
+
+**How it works:**
+
+- Loads all sessions (optionally filtered by `developer` and/or `since`).
+- Groups by model and outcome type (using `classifySessionOutcome`).
+- Computes per-model averages (cost, efficiency, task success).
+- Ranks by efficiency descending, cost ascending on ties, null-efficiency last.
+- Assigns confidence tier based on the top-ranked model's session count.
+
+**Requires:** `TrendAnalyzer`
+
+Source: `src/metrics/trend-analyzer.ts`, `src/tools/cross-session-tools.ts`
 
 ---
 
@@ -1347,6 +1423,12 @@ Cost attribution per tool type — approximate, based on turn-level token correl
 
 ```sql
 FROM AiToolCall SELECT count(*), sum(duration_ms)/3.6e6 AS hours WHERE tool = 'Skill' FACET skillName SINCE 1 week ago
+```
+
+Cost and tokens per skill over any window come from `AiTurnCost`:
+
+```sql
+FROM AiTurnCost SELECT sum(cost_usd) WHERE tool = 'Skill' FACET skillName SINCE 1 week ago
 ```
 
 **Requires:** `TurnCostAttributor`

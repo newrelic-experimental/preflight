@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.0] - 2026-09-04
+
+### Fixed
+
+- **The Model Usage panel's $/1M tok rate now counts every billed token, and the "Most efficient" footer is gone.** The rate priced cache reads, cache writes, and thinking in its numerator but divided by uncached input and output tokens only. Subagent turns re-read a large cached prompt and emit a short tool call, so Haiku and Opus subagents showed rates of $1,000 to $9,000 per million while the parent Fable session showed $29, and the footer named Fable the most efficient model. The rate now divides by input, output, thinking, cache read, and cache creation tokens, which makes it comparable with list prices and with `nr_observe_get_cost_breakdown`. The History view's per-model rate uses the same denominator. The `nr_observe_get_model_usage` tool adds `totalCacheReadTokens`, `totalCacheCreationTokens`, and `totalThinkingTokens` per model. Session files written before this release lack the three fields and are read as 0, so their rate matches the old figure until they age out.
+
+### Removed
+
+- **`mostEfficientModel` and `costPerOutputToken` from `nr_observe_get_model_usage`.** Both were built on total cost (cache and thinking included) over output tokens alone, the ratio that ranked the priciest model as the most efficient. Clients that read either field must drop it.
+
+## [1.43.1] - 2026-09-04
+
+### Fixed
+
+- **Chart tooltips no longer get clipped inside cards that hide overflow.** The Concurrent Sessions tooltip is now portaled to the page and positioned from the cursor's on-screen location, so it always renders in full instead of being cut off at the card's edge. The Forecast card's hourly-spend chart also now shares the same square-block style and tooltip as Concurrent Sessions.
+
+## [1.43.0] - 2026-09-04
+
+### Added
+
+- **Audit records now name the subagent that made each tool call.** Tool calls from Task and Workflow subagents already reached the audit trail through hooks, but `AuditRecord` dropped the hook payload's `agent_id` and `agent_type`, so a search of `~/.newrelic-preflight/audit/*.jsonl` by agent id found nothing. The on-disk audit log, `AiAuditEvent`, `SecurityAlert`, the NR log entry, and the dashboard Audit page now carry `agent_id` and `agent_type` (`agentId` and `agentType` on disk and in the dashboard). Both are absent for calls the parent session made.
+- **A non-recursive `rm` or `unlink` now raises a `file_deletion` alert at `medium` severity.** Only recursive forms were flagged before, so `rm -f <file>` left no alert even when it deleted an untracked file. `rm -rf` and the other recursive forms stay `destructive_command` at `critical`. The rule matches `rm` in command position only, so `git rm`, `npm rm`, and `docker rm` do not match. Disable it with the new `deletionPatterns: []` option on `AuditTrailManager`.
+- **`git clean -f` and `find -delete` now raise a `destructive_command` alert at `critical`.** Both delete files with no recovery path and were flagged by nothing before. Dry-run and bare `git clean` stay unflagged.
+
+### Changed
+
+- `detectSecurityAlert` evaluates an ordered rule table and returns the highest-severity match instead of the first match in an if-chain. Verdicts for the three existing alert types are unchanged.
+
+## [1.42.0] - 2026-09-04
+
+### Added
+
+- **`nr_observe_get_model_recommendation` ranks the models in your session history by how they actually performed.** Every model seen in persisted sessions is ranked by average efficiency score, cost, and task success rate, overall and per task outcome type (`bug_fix`, `feature`, `refactor`, and the rest). Confidence is gated on sample size, so a handful of sessions never produces a recommendation.
+- **`nr_observe_get_recommendations` now compares your current model against the historical winner.** The `model_selection` recommendation fires only when the session's dominant model differs from the historically better-performing one and a comparable runner-up exists with a meaningful gap. It previously compared an arbitrary pair of models once three or more had been used.
+
+## [1.41.0] - 2026-09-04
+
+### Added
+
+- **A new Adoption & Cost dashboard for engineering managers.** `dashboards/ai-coding-assistant-adoption-cost.json` has five pages (Adoption, Cost, Tools & MCP, Team Leaderboard, Team Pulse) built entirely from Preflight's own events and metrics, including per-developer outcomes, MCP usage from both the hook and proxy paths, and the git-outcome gauges (PRs, commits, edit accept rate, cost per PR). Deploy it with `npm run deploy:dashboard:all`.
+- **A demo data generator for testing and demos.** `scripts/generate-demo-data.ts` seeds an account with realistic telemetry from ten developer personas covering every event type and the cumulative metric snapshots the dashboard relies on. Supports `--dry-run`, `--hours`, `--seed`, `--eu`, and `--staging`.
+
+## [1.40.0] - 2026-09-04
+
+### Added
+
+- **`preflight install --copilot` (and a prompt in `preflight setup`) now configures GitHub Copilot end-to-end.** Sets up Copilot CLI hooks and MCP registration, VS Code Copilot Chat's MCP config and token-exact cost logging, and a fix for VS Code double-counting tool calls when both Claude Code and Copilot hook files are present — plus a matching `preflight uninstall --copilot`. Previously this setup was entirely manual.
+
+### Fixed
+
+- **GitHub Copilot tool-call capture (CLI and VS Code Copilot Chat) now actually reaches New Relic.** The hooks file Preflight generated used the wrong JSON shape, so Copilot's hooks-runner silently never executed any hook — tool-call count, tool selection, latency, audit, and session tracking were all missing for Copilot sessions, while cost tracking kept working through a separate path and masked the problem. Also fixes a related bug where a Copilot session drained by an unrelated running Preflight process could be mislabeled with that process's own platform instead of its own.
+
+## [1.39.0] - 2026-09-04
+
+### Added
+
+- **Cost per tool call and per skill now reaches New Relic as a new `AiTurnCost` event.** When a turn's token usage arrives, Preflight emits one row per tool call in that turn with its share of the cost and tokens, plus `tool`, `skillName`, `tool_use_id`, and `turn_id`, so `FROM AiTurnCost SELECT sum(cost_usd) WHERE tool = 'Skill' FACET skillName` works over any window. A Cost by Skill widget is added to the team-view dashboard. Under `companionMode`, rows from Claude Code turns are tagged `cost_authority: 'external'` like `AiCodingTask`.
+- **`nr_observe_get_cost_per_tool` now applies `costRateMultiplier` and `dataResidencyPremium`.** The turn-cost attributor priced at list rate while every other cost figure was scaled, so `costByToolType` and `costBySkill` did not reconcile with `AiCodingTask` for orgs with a configured multiplier. They do now.
+
 ## [1.38.0] - 2026-09-03
 
 ### Added

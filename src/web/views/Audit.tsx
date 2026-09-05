@@ -12,6 +12,7 @@ const FILTERS = [
   { key: 'sensitive_file', label: 'Sensitive files' },
   { key: 'destructive_command', label: 'Destructive' },
   { key: 'external_network', label: 'External network' },
+  { key: 'file_deletion', label: 'File deletion' },
 ] as const;
 
 type FilterKey = (typeof FILTERS)[number]['key'];
@@ -30,6 +31,7 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
   sensitive_file: 'Sensitive files',
   destructive_command: 'Destructive',
   external_network: 'External network',
+  file_deletion: 'File deletion',
   other: 'Other',
 };
 
@@ -126,13 +128,14 @@ export function Audit(): JSX.Element {
                 <th className="text-left p-2">Tool</th>
                 <th className="text-left p-2">Target</th>
                 <th className="text-left p-2">Classification</th>
+                <th className="text-left p-2">Agent</th>
                 <th className="text-left p-2">Session</th>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="p-3 text-ink-muted text-center">
+                  <td colSpan={6} className="p-3 text-ink-muted text-center">
                     No matching entries.
                   </td>
                 </tr>
@@ -158,6 +161,9 @@ export function Audit(): JSX.Element {
                     >
                       {CLASSIFICATION_LABELS[r.classification] ?? r.classification}
                     </Pill>
+                  </td>
+                  <td className="p-2 text-ink-subtle" title={r.agentId}>
+                    {r.agentType ?? r.agentId ?? '—'}
                   </td>
                   <td className="p-2 text-ink-subtle">
                     {r.sessionId ? (

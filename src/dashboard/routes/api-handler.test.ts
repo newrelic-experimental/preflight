@@ -15,6 +15,7 @@ import {
   toToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
+import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 
@@ -489,8 +490,12 @@ describe('api-handler GET /api/sessions/:id', () => {
 
   it('includes modelBreakdown for the current live session when modelUsageTracker is present', async () => {
     const tracker = new ModelUsageTracker();
-    tracker.recordUsage('claude-sonnet-5', 1000, 500, 3.2);
-    tracker.recordUsage('claude-opus-5', 200, 100, 1.5);
+    tracker.recordUsage(
+      'claude-sonnet-5',
+      makeUsage({ inputTokens: 1000, outputTokens: 500 }),
+      3.2,
+    );
+    tracker.recordUsage('claude-opus-5', makeUsage({ inputTokens: 200, outputTokens: 100 }), 1.5);
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],
@@ -1722,6 +1727,44 @@ describe('api-handler GET /api/audit', () => {
     const { res, status } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(503);
+  });
+
+  it('carries agentId and agentType through to the DTO when present, and omits them when absent', async () => {
+    const fakeAuditLog = [
+      {
+        timestamp: 1700000000000,
+        sessionId: 'session-a',
+        action: 'BashCommand',
+        tool: 'Bash',
+        detail: 'Bash: rm -rf /tmp/x',
+        developer: 'alice',
+        agentId: 'a9f8',
+        agentType: 'workflow',
+        securityAlert: { severity: 'critical', alertType: 'destructive_command' },
+      },
+      {
+        timestamp: 1700000001000,
+        sessionId: 'session-a',
+        action: 'FileRead',
+        tool: 'Read',
+        detail: '/some/file.ts',
+        developer: 'alice',
+      },
+    ];
+    const handler = createApiHandler({
+      auditTrailManager: { getAuditLog: () => fakeAuditLog } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['auditTrailManager'],
+    });
+    const req = { method: 'GET', url: '/api/audit' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as Array<Record<string, unknown>>;
+    expect(parsed[0]!.agentId).toBe('a9f8');
+    expect(parsed[0]!.agentType).toBe('workflow');
+    expect(parsed[1]).not.toHaveProperty('agentId');
+    expect(parsed[1]).not.toHaveProperty('agentType');
   });
 
   it('redacts secret-bearing strings in target (formerly detail) before serializing', async () => {
@@ -3218,6 +3261,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           totalCacheSavingsUsd: 0.25,
           totalCacheReadTokens: 800,
           totalCacheCreationTokens: 0,
+          totalThinkingTokens: 0,
           totalInputTokens: 200,
         }),
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
@@ -5022,6 +5066,7 @@ describe('api-handler GET /api/cache-health', () => {
           cacheHitRate: rate,
           totalCacheReadTokens: 1000,
           totalCacheCreationTokens: 200,
+          totalThinkingTokens: 0,
           totalCacheSavingsUsd: 0.5,
         }),
       } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
@@ -5064,6 +5109,7 @@ describe('api-handler GET /api/cache-health', () => {
           cacheHitRate: 0.99,
           totalCacheReadTokens: 500,
           totalCacheCreationTokens: 0,
+          totalThinkingTokens: 0,
           totalInputTokens: 500,
           totalCacheSavingsUsd: 0,
         }),
@@ -5672,7 +5718,11 @@ describe('api-handler GET /api/model-usage', () => {
 
   it('returns just this process live breakdown when no persisted-today sessions exist', async () => {
     const tracker = new ModelUsageTracker();
-    tracker.recordUsage('claude-sonnet-5', 1000, 500, 3.2);
+    tracker.recordUsage(
+      'claude-sonnet-5',
+      makeUsage({ inputTokens: 1000, outputTokens: 500 }),
+      3.2,
+    );
     const handler = createApiHandler({ modelUsageTracker: tracker });
     const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
     const { res, status, body } = fakeRes();
@@ -5684,7 +5734,7 @@ describe('api-handler GET /api/model-usage', () => {
   it('combines this process live breakdown with every other persisted-today session, excluding its own already-persisted entry', async () => {
     const tracker = new ModelUsageTracker();
     // Live, not-yet-persisted: $1 / 100 output tokens.
-    tracker.recordUsage('model-a', 0, 100, 1);
+    tracker.recordUsage('model-a', makeUsage({ inputTokens: 0, outputTokens: 100 }), 1);
     const persistedToday = [
       {
         // Same session as the live tracker above — must NOT be double
@@ -5696,6 +5746,9 @@ describe('api-handler GET /api/model-usage', () => {
             totalInputTokens: 0,
             totalOutputTokens: 100,
             totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
           },
         },
       },
@@ -5707,6 +5760,9 @@ describe('api-handler GET /api/model-usage', () => {
             totalInputTokens: 0,
             totalOutputTokens: 900,
             totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
           },
         },
       },
@@ -5739,13 +5795,13 @@ describe('api-handler GET /api/model-usage', () => {
     // ~$0.00111 (~$0.0056), which would be wrong.
     expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
     expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
-    expect(parsed.byModel['model-a'].costPerOutputToken).toBeCloseTo(0.002);
+    expect(parsed.byModel['model-a'].costPerMillionTokens).toBeCloseTo(2000);
     expect(parsed.byModel['model-a'].requestCount).toBe(10);
   });
 
   it('ignores persisted-today sessions with no modelBreakdown field (legacy files)', async () => {
     const tracker = new ModelUsageTracker();
-    tracker.recordUsage('model-a', 100, 50, 0.5);
+    tracker.recordUsage('model-a', makeUsage({ inputTokens: 100, outputTokens: 50 }), 0.5);
     const persistedToday = [{ sessionId: 'sess-legacy' }] as unknown as ReturnType<
       NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
     >;

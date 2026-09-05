@@ -115,7 +115,7 @@ Logger writes to stderr as JSON. Never write to stdout (reserved for MCP stdio t
 Trackers in `src/metrics/` do not share one input shape — they fall into four families depending on how data reaches them:
 
 - **Streaming push (void)** — `recordToolCall(record: ToolCallRecord): void`. The majority shape: `SessionTracker`, `TaskDetector`, `WorkflowRunTracker`, `ContextTracker`, `GitEfficiencyTracker`, and most others.
-- **Streaming push (signaling)** — `recordToolCall(record: ToolCallRecord): T`, returning a value the caller acts on immediately instead of only accumulating: `TurnTracker` (returns the turn id), `RetryDetector` (returns `ThrashingAlert | null`).
+- **Streaming push (signaling)** — `recordToolCall(record: ToolCallRecord): T`, returning a value the caller acts on immediately instead of only accumulating: `TurnTracker` (returns the turn id), `RetryDetector` (returns `ThrashingAlert | null`). `TurnCostAttributor` fits this same shape but on its other input method — `recordTokenEvent(event: TokenEvent): ClosedTurn | null` — since a turn's cost closes on the token event, not the tool call.
 - **Primitive accumulator** — a domain-named method taking specific values instead of a full `ToolCallRecord`, because the input is self-reported (tokens, cost) rather than a raw tool call: `ModelUsageTracker.recordUsage(model, inputTokens, outputTokens, costUsd)`, `CostTracker.recordTokenUsage(usage, model, ctx?)` / `recordEstimatedTokens(...)`, `BudgetTracker.updateCost(...)`.
 - **Batch/pull analyzer** — invoked periodically over accumulated history rather than per-call: `AntiPatternDetector.analyze(toolCalls: ToolCallRecord[])`, `EfficiencyScorer.computeScore(task, antiPatterns?)` / `updateScore(...)`.
 
@@ -170,9 +170,10 @@ Beyond the fields above: per-developer/team/org identifiers, budget caps, digest
 
 ### Event Types
 
-| Event Type        | Emitted By      | Use Case                                  |
-| ----------------- | --------------- | ----------------------------------------- |
-| `AiBudgetWarning` | `BudgetTracker` | Budget threshold crossed (50%, 80%, 100%) |
+| Event Type        | Emitted By           | Use Case                                    |
+| ----------------- | -------------------- | ------------------------------------------- |
+| `AiBudgetWarning` | `BudgetTracker`      | Budget threshold crossed (50%, 80%, 100%)   |
+| `AiTurnCost`      | `TurnCostAttributor` | Cost and tokens per tool call and per skill |
 
 ### Team Attribution Fields
 

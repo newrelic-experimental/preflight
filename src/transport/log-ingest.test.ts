@@ -96,6 +96,14 @@ describe('auditRecordToLogEntry()', () => {
     expect(entry.attributes).not.toHaveProperty('session_id');
   });
 
+  it('includes agent_id and agent_type when present', () => {
+    const record = makeAuditRecord({ agentId: 'a9f8', agentType: 'workflow' });
+    const entry = auditRecordToLogEntry(record, 'my-app');
+
+    expect(entry.attributes!.agent_id).toBe('a9f8');
+    expect(entry.attributes!.agent_type).toBe('workflow');
+  });
+
   it('redacts secrets in detail, file_path, and command', () => {
     const SECRET_TOKEN = 'sk-test-deadbeef0123456789abcdef0123456789';
     const record = makeAuditRecord({

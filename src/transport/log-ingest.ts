@@ -8,6 +8,7 @@ import type { NrLogEntry, TransportOptions, TransportResult } from '../shared/in
 import { sendLogs } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
 import type { AuditRecord } from '../security/audit-trail.js';
+import { attachAuditAttribution } from '../security/audit-trail.js';
 
 const logger = createLogger('log-ingest');
 
@@ -47,7 +48,7 @@ export function auditRecordToLogEntry(record: AuditRecord, appName: string): NrL
     'audit.security_alert': !!record.securityAlert,
   };
 
-  if (record.sessionId != null) attributes.session_id = record.sessionId;
+  attachAuditAttribution(attributes, record);
   // Defense-in-depth: AuditRecord is already constructed with redacted
   // filePath/command/detail (see audit-trail.ts), but apply redactSensitive
   // again here so a future caller that bypasses the AuditTrailManager

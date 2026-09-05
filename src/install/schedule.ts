@@ -332,17 +332,17 @@ export function getDashboardDaemonStatus(): DashboardDaemonStatus {
 
 const WINDOWS_BINARY_SUFFIXES = ['.cmd', '.ps1', ''];
 
-export function resolveBinaryPath(): string | null {
-  // Walk PATH directly — avoids hardcoding the `which` location and is safe
-  // for Nix/Homebrew installs where binaries live outside /usr/bin.
-  // PATH is ':'-delimited on POSIX and ';'-delimited on Windows (whose
-  // entries themselves contain drive-letter colons, e.g. "C:\foo").
+// Walk PATH directly — avoids hardcoding the `which` location and is safe
+// for Nix/Homebrew installs where binaries live outside /usr/bin.
+// PATH is ':'-delimited on POSIX and ';'-delimited on Windows (whose
+// entries themselves contain drive-letter colons, e.g. "C:\foo").
+export function resolveNamedBinaryOnPath(name: string): string | null {
   const delimiter = process.platform === 'win32' ? ';' : ':';
   const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
   const suffixes = process.platform === 'win32' ? WINDOWS_BINARY_SUFFIXES : [''];
   for (const dir of pathDirs) {
     for (const suffix of suffixes) {
-      const candidate = join(dir, `preflight${suffix}`);
+      const candidate = join(dir, `${name}${suffix}`);
       try {
         if (statSync(candidate).isFile()) {
           accessSync(candidate, constants.X_OK);
@@ -354,4 +354,8 @@ export function resolveBinaryPath(): string | null {
     }
   }
   return null;
+}
+
+export function resolveBinaryPath(): string | null {
+  return resolveNamedBinaryOnPath('preflight');
 }

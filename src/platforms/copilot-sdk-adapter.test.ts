@@ -223,6 +223,28 @@ describe('CopilotSdkAdapter', () => {
       const instructions = adapter.getHookInstallInstructions();
       expect(instructions).not.toContain('/extensions reload');
     });
+
+    // Regression guard: the hooks-runner does not inherit env vars set on the
+    // `copilot mcp add` registration below, so every hook command must embed
+    // the platform tag directly or events silently default to 'claude-code'.
+    it('embeds NEW_RELIC_AI_PLATFORM=copilot directly in the hook commands', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('NEW_RELIC_AI_PLATFORM=copilot');
+    });
+
+    it('mentions the automated installer', () => {
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('preflight install --copilot');
+    });
+
+    it('still registers the MCP server itself with MCP_CLIENT=copilot-sdk (unchanged)', () => {
+      // Distinct from the hooks file's NEW_RELIC_AI_PLATFORM=copilot tag —
+      // this env var drives the MCP server's own platform self-detection
+      // (CopilotSdkAdapter's tool-name normalization, local-dashboard
+      // session summaries), not per-event NR tagging.
+      const instructions = adapter.getHookInstallInstructions();
+      expect(instructions).toContain('--env MCP_CLIENT=copilot-sdk');
+    });
   });
 
   describe('initialize', () => {

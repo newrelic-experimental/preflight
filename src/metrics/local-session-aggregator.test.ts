@@ -79,6 +79,56 @@ describe('LocalSessionAggregator', () => {
     expect(byId.get(other)).toBe(2);
   });
 
+  // Regression guard: a session's own records carry its true platform
+  // (e.g. a Copilot session drained by an unrelated generic-mcp dashboard
+  // process); that must win over toSummaries()'s context.platform, which
+  // only reflects the *draining* process's own environment.
+  it("prefers the session's own record platform over the draining process's context platform", () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'run_in_terminal',
+      timestamp: 1,
+      platform: 'copilot',
+    });
+
+    const [summary] = agg.toSummaries({
+      developer: 'tester',
+      platform: 'generic-mcp',
+      outcome: 'in progress',
+      repoResolver: new StubRepoResolver(),
+      toolSelectionScorer: new ToolSelectionScorer(),
+    });
+    expect(summary?.platform).toBe('copilot');
+  });
+
+  it('falls back to the context platform when no record carries one', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'run_in_terminal', timestamp: 1 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.platform).toBe('copilot');
+  });
+
+  it('keeps the first non-null platform seen across a session’s records', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'run_in_terminal',
+      timestamp: 1,
+      platform: 'copilot',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'read_file',
+      timestamp: 2,
+      platform: 'copilot-sdk',
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.platform).toBe('copilot');
+  });
+
   it('attributes token cost to the session that incurred it', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
@@ -280,6 +330,8 @@ describe('LocalSessionAggregator panel rehydration', () => {
       model: 'gpt-5',
       inputTokens: 100,
       outputTokens: 20,
+      cacheReadTokens: 800,
+      cacheCreationTokens: 40,
       costUsd: 0.5,
     } as never);
     agg.recordTokenUsage(REAL_ID, {
@@ -296,6 +348,9 @@ describe('LocalSessionAggregator panel rehydration', () => {
         totalInputTokens: 150,
         totalOutputTokens: 30,
         totalCostUsd: 0.75,
+        totalCacheReadTokens: 800,
+        totalCacheCreationTokens: 40,
+        totalThinkingTokens: 0,
       },
     });
     const quality = summary?.qualityProxy as { totalSignals: number } | undefined;

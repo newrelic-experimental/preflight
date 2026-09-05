@@ -17,6 +17,7 @@ export interface TurnCostAttribution {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
   readonly model: string;
   readonly estimatedCostUsd: number;
   readonly costPerToolCall: number;
@@ -46,6 +47,22 @@ export interface SkillCostEntry {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly totalDurationMs: number;
+}
+
+export interface TurnToolCall {
+  readonly toolUseId: string;
+  readonly toolName: string;
+  /** Set only for Skill calls that carried a skill name; mirrors the bucket identity. */
+  readonly skillName: string | null;
+}
+
+/** What recordTokenEvent() hands back once a turn's cost is known. */
+export interface ClosedTurn {
+  readonly id: string;
+  readonly attribution: TurnCostAttribution;
+  readonly calls: readonly TurnToolCall[];
+  /** `ToolCallRecord.platform` of the turn's first call; undefined when the hook carried no stamp. */
+  readonly platform: string | undefined;
 }
 
 export interface CostAttributionMetrics {
@@ -113,7 +130,13 @@ interface PendingTurn {
   turnId: string;
   startTime: number;
   endTime: number;
-  toolCalls: Array<{ toolUseId: string; toolName: string; bucketKey: string }>;
+  toolCalls: Array<{
+    toolUseId: string;
+    toolName: string;
+    skillName: string | null;
+    bucketKey: string;
+  }>;
+  platform: string | undefined;
 }
 
 // A dedicated bucket for records/events with no sessionId (null/undefined) —
@@ -207,6 +230,11 @@ function getOrCreateBucket(
  */
 export class TurnCostAttributor {
   private readonly sessions = new Map<string, SessionState>();
+  private readonly rateMultiplier: number;
+
+  constructor(options?: { rateMultiplier?: number }) {
+    this.rateMultiplier = options?.rateMultiplier ?? 1;
+  }
 
   private getOrCreateSession(sessionId: string | null | undefined): SessionState {
     const key = sessionId ?? NULL_SESSION_KEY;
@@ -244,6 +272,7 @@ export class TurnCostAttributor {
       state.pendingTurn.toolCalls.push({
         toolUseId: record.toolUseId,
         toolName: record.toolName,
+        skillName: id.skillName,
         bucketKey: key,
       });
     } else {
@@ -251,21 +280,29 @@ export class TurnCostAttributor {
         turnId: turnId ?? randomUUID(),
         startTime: record.timestamp,
         endTime,
-        toolCalls: [{ toolUseId: record.toolUseId, toolName: record.toolName, bucketKey: key }],
+        toolCalls: [
+          {
+            toolUseId: record.toolUseId,
+            toolName: record.toolName,
+            skillName: id.skillName,
+            bucketKey: key,
+          },
+        ],
+        platform: typeof record.platform === 'string' ? record.platform : undefined,
       };
     }
   }
 
-  recordTokenEvent(event: TokenEvent): void {
+  recordTokenEvent(event: TokenEvent): ClosedTurn | null {
     const state = this.getOrCreateSession(event.sessionId);
-    if (!state.pendingTurn) return;
+    if (!state.pendingTurn) return null;
 
     // A token event outside the match window can't be reliably tied to the
     // pending turn — silently drop it rather than risk mis-attributing cost
     // to the wrong turn. Dropped events show up as a lower `attributionRate`
     // in getMetrics(), not as an error.
     const timeSinceLastTool = event.timestamp - state.pendingTurn.endTime;
-    if (timeSinceLastTool < 0 || timeSinceLastTool > TOKEN_MATCH_WINDOW_MS) return;
+    if (timeSinceLastTool < 0 || timeSinceLastTool > TOKEN_MATCH_WINDOW_MS) return null;
 
     const usage: TokenUsage = {
       inputTokens: event.inputTokens,
@@ -277,7 +314,7 @@ export class TurnCostAttributor {
     };
 
     const breakdown = calculateCost(event.model, usage);
-    const costUsd = breakdown.totalUsd;
+    const costUsd = breakdown.totalUsd * this.rateMultiplier;
     const toolCount = state.pendingTurn.toolCalls.length;
     const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
 
@@ -290,6 +327,7 @@ export class TurnCostAttributor {
       inputTokens: event.inputTokens,
       outputTokens: event.outputTokens,
       cacheReadTokens: event.cacheReadTokens,
+      cacheCreationTokens: event.cacheCreationTokens,
       model: event.model,
       estimatedCostUsd: costUsd,
       costPerToolCall: costPerTool,
@@ -314,7 +352,22 @@ export class TurnCostAttributor {
       bucket.cacheReadTokens += event.cacheReadTokens / toolCount;
     }
 
+    // Minted here rather than reusing `attribution.turnId`: the caller's turn
+    // id comes from the process-global TurnTracker and can repeat across two
+    // attributor turns, so it cannot group AiTurnCost rows.
+    const closedTurn: ClosedTurn = {
+      id: randomUUID(),
+      attribution,
+      calls: state.pendingTurn.toolCalls.map((tc) => ({
+        toolUseId: tc.toolUseId,
+        toolName: tc.toolName,
+        skillName: tc.skillName,
+      })),
+      platform: state.pendingTurn.platform,
+    };
+
     state.pendingTurn = null;
+    return closedTurn;
   }
 
   getCostForToolCall(

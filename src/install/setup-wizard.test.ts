@@ -1056,7 +1056,7 @@ describe('setupWizard auto-update step', () => {
 
   // Cloud mode answer order:
   // mode, accountId, licenseKey, environment, nrApiKey, developer, teamId, projectId,
-  // repoUrlEnabled, sessionBudget, installHooks, autoUpdate, updateTime
+  // repoUrlEnabled, sessionBudget, installHooks, installCopilotHooks, autoUpdate, updateTime
   function cloudAnswers(...values: string[]): void {
     let i = 0;
     mockRl.question.mockImplementation(async () => values[i++] ?? '');
@@ -1064,7 +1064,22 @@ describe('setupWizard auto-update step', () => {
 
   it('calls installSchedule with parsed hour and minute when user accepts', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
-    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'y', '09:00');
+    cloudAnswers(
+      'cloud',
+      '12345',
+      'NRLIC-test',
+      '',
+      '',
+      'dev',
+      '',
+      '',
+      '',
+      '',
+      'n',
+      'n',
+      'y',
+      '09:00',
+    );
 
     await runSetupWizard();
 
@@ -1073,7 +1088,7 @@ describe('setupWizard auto-update step', () => {
 
   it('uses 08:00 as default time when user presses enter', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
-    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'y', '');
+    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'n', 'y', '');
 
     await runSetupWizard();
 
@@ -1081,7 +1096,7 @@ describe('setupWizard auto-update step', () => {
   });
 
   it('does not call installSchedule when user declines auto-update', async () => {
-    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'n');
+    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'n', 'n');
 
     await runSetupWizard();
 
@@ -1090,7 +1105,22 @@ describe('setupWizard auto-update step', () => {
 
   it('prints PATH warning and skips installSchedule when binary not on PATH', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue(null);
-    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'y', '08:00');
+    cloudAnswers(
+      'cloud',
+      '12345',
+      'NRLIC-test',
+      '',
+      '',
+      'dev',
+      '',
+      '',
+      '',
+      '',
+      'n',
+      'n',
+      'y',
+      '08:00',
+    );
 
     await runSetupWizard();
 
@@ -1101,8 +1131,9 @@ describe('setupWizard auto-update step', () => {
 
   it('skips auto-update step entirely on non-macOS', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-    // No auto-update answers needed — step is skipped on non-macOS.
-    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n');
+    // No auto-update answers needed — that step is skipped on non-macOS, but
+    // installCopilotHooks is still asked (unconditionally, on every platform).
+    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'n');
 
     await runSetupWizard();
 
@@ -1123,6 +1154,7 @@ describe('setupWizard auto-update step', () => {
       '',
       '',
       'n',
+      'n',
       'y',
       'not-a-time',
     );
@@ -1136,7 +1168,22 @@ describe('setupWizard auto-update step', () => {
 
   it('falls back to 08:00 with a warning when the entered hour is out of range', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
-    cloudAnswers('cloud', '12345', 'NRLIC-test', '', '', 'dev', '', '', '', '', 'n', 'y', '25:00');
+    cloudAnswers(
+      'cloud',
+      '12345',
+      'NRLIC-test',
+      '',
+      '',
+      'dev',
+      '',
+      '',
+      '',
+      '',
+      'n',
+      'n',
+      'y',
+      '25:00',
+    );
 
     await runSetupWizard();
 
@@ -1175,9 +1222,9 @@ describe('setupWizard daemon install step', () => {
     Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
   });
 
-  // Local mode answer order up through Step 6b, then Step 7 (auto-update, darwin-only):
-  // mode, developer, teamId, projectId, repoUrlEnabled, sessionBudget, dashboardPort,
-  // copyStarterRules, installHooks, daemonAnswer, autoUpdate
+  // Local mode answer order up through Step 6c, then Step 6b, then Step 7 (auto-update, darwin-only):
+  // mode, developer, teamId, projectId, repoUrlEnabled, sessionBudget, dashboardPort, copyStarterRules,
+  // installHooks, installCopilotHooks, daemonAnswer, autoUpdate
   function answers(...values: string[]): void {
     let i = 0;
     mockRl.question.mockImplementation(async () => values[i++] ?? '');
@@ -1185,7 +1232,7 @@ describe('setupWizard daemon install step', () => {
 
   it('reports success and calls waitForHealthyDashboard when the daemon health-checks OK', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
-    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y', 'n');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'y', 'n');
 
     await runSetupWizard();
 
@@ -1203,7 +1250,7 @@ describe('setupWizard daemon install step', () => {
   it('downgrades to a warning when the daemon health-check fails', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
     mockedDashboardHealth.waitForHealthyDashboard.mockResolvedValue(false);
-    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y', 'n');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'y', 'n');
 
     await runSetupWizard();
 
@@ -1215,7 +1262,7 @@ describe('setupWizard daemon install step', () => {
   it('skips verification and keeps the success message when dashboard config cannot be loaded', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
     mockedDashboardHealth.getDashboardAddress.mockReturnValue(null);
-    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y', 'n');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'y', 'n');
 
     await runSetupWizard();
 
@@ -1226,7 +1273,7 @@ describe('setupWizard daemon install step', () => {
 
   it('does not install the daemon when the user declines', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
-    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'n');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'n', 'n');
 
     await runSetupWizard();
 
@@ -1235,7 +1282,7 @@ describe('setupWizard daemon install step', () => {
 
   it('warns without installing when preflight is not on PATH', async () => {
     mockedSchedule.resolveBinaryPath.mockReturnValue(null);
-    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y', 'n');
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n', 'y', 'n');
 
     await runSetupWizard();
 
@@ -1305,6 +1352,12 @@ describe('setupWizard environment and nrApiKey steps', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     // Prevent the test runner's real NEW_RELIC_API_KEY from bleeding in as a default
     delete process.env.NEW_RELIC_API_KEY;
+    // This block's tests never exercise credential-validation failure paths, so
+    // give validateLicenseKey/validateApiKey a definite resolved value here rather
+    // than relying on whatever a prior describe block's beforeEach last configured
+    // (jest.clearAllMocks() clears call history, not mockResolvedValue results).
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
   });
 
   afterEach(() => {
@@ -1795,7 +1848,10 @@ describe('setupWizard WSL CC-mode selection', () => {
 
   it('skips hook install (does not fall back to --linux-cc) when wslChoice is 1 but Windows home cannot be resolved', async () => {
     mockedPlatform.resolveWindowsHome.mockReturnValue(null);
-    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'y', '1');
+    // Trailing 'n' declines the (unconditional, WSL-independent) Copilot
+    // hooks question — otherwise the exhausted-answers default ('' = yes)
+    // would trigger a second, unrelated runInstallCli call here.
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'y', '1', 'n');
 
     await runSetupWizard();
 
@@ -1844,5 +1900,121 @@ describe('setupWizard WSL CC-mode selection', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(output).toContain('is not on your PATH');
     expect(output).toContain('npm install -g @newrelic/preflight');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 6c: Copilot hooks install (always asked, independent of mode/WSL)
+// ---------------------------------------------------------------------------
+describe('setupWizard Copilot hooks install step', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let stderrSpy: ReturnType<typeof jest.spyOn>;
+  let mockRl: { question: jest.Mock; close: jest.Mock };
+  const savedPlatform = process.platform;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockRl = { question: jest.fn(), close: jest.fn() };
+    mockedRl.createInterface.mockReturnValue(mockRl);
+    mockedFs.mkdirSync.mockReturnValue(undefined);
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.readFileSync.mockReturnValue('{}');
+    mockedPlatform.isWsl.mockReturnValue(false);
+    // Linux (non-macOS) avoids the daemon/schedule prompts that would
+    // otherwise follow the Copilot question in this sequence.
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true });
+    process.exitCode = undefined;
+  });
+
+  // Local mode order up through this step:
+  // mode, developer, teamId, projectId, repoUrlEnabled, sessionBudget,
+  // dashboardPort, copyStarterRules, installHooks, installCopilotHooks
+  function answers(...values: string[]): void {
+    let i = 0;
+    mockRl.question.mockImplementation(async () => values[i++] ?? '');
+  }
+
+  it('accepts the default (Enter) and runs the Copilot installer', async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', '');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--copilot']);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Copilot hooks installed.');
+  });
+
+  it("does not run the Copilot installer when the user answers 'n'", async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'n');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).not.toHaveBeenCalled();
+  });
+
+  it("does not run the Copilot installer when the user answers 'no'", async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'no');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).not.toHaveBeenCalled();
+  });
+
+  it('passes --license-key/--account-id in cloud mode so copilot mcp add gets real credentials', async () => {
+    mockedKeyValidator.validateLicenseKey.mockResolvedValue({ valid: true });
+    mockedKeyValidator.validateApiKey.mockResolvedValue({ valid: true });
+    // cloud mode order: mode, accountId, licenseKey, environment, nrApiKey,
+    // developer, teamId, projectId, repoUrlEnabled, sessionBudget, installHooks, installCopilotHooks
+    answers('cloud', '12345', 'NRLIC-test', '', '', 'tester', '', '', '', '', 'n', 'y');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith([
+      'install',
+      '--copilot',
+      '--license-key',
+      'NRLIC-test',
+      '--account-id',
+      '12345',
+    ]);
+  });
+
+  it('does not pass credentials in local mode (none were collected)', async () => {
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--copilot']);
+  });
+
+  it('sets exitCode=1 but continues the wizard when runInstallCli rejects', async () => {
+    mockedCli.runInstallCli.mockRejectedValueOnce(new Error('copilot install failed'));
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
+
+    await runSetupWizard();
+
+    expect(process.exitCode).toBe(1);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).not.toContain('Copilot hooks installed.');
+    // The wizard reached its final summary rather than crashing.
+    expect(output).toContain('Setup complete');
+  });
+
+  it('is asked independently of the Claude hooks answer', async () => {
+    // Decline Claude hooks ('n' at installHooks) but accept Copilot ('y').
+    answers('local', 'tester', '', '', '', '', '', 'n', 'n', 'y');
+
+    await runSetupWizard();
+
+    expect(mockedCli.runInstallCli).toHaveBeenCalledTimes(1);
+    expect(mockedCli.runInstallCli).toHaveBeenCalledWith(['install', '--copilot']);
   });
 });

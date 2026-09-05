@@ -7,19 +7,19 @@
  *   - efficiency         — from TrendAnalyzer
  *   - prompt_engineering — from PromptFeedbackEngine
  *   - claudemd           — from ClaudeMdTracker
- *   - model_selection    — from TrendAnalyzer.detectModelMigrationImpact()
+ *   - model_selection    — from TrendAnalyzer.rankModelsByOutcome()
  */
 
 import { createHash } from 'node:crypto';
 import type { MetricAggregator } from '../shared/index.js';
 import { createLogger } from '../shared/index.js';
-import type { SessionStore } from '../storage/session-store.js';
 import type { TrendAnalyzer } from './trend-analyzer.js';
 import type { CollaborationProfiler } from './collaboration-profile.js';
 import type { ClaudeMdTracker } from './claudemd-tracker.js';
 import type { PromptFeedbackEngine } from './prompt-feedback.js';
 import type { CostPerOutcomeAnalyzer } from './cost-per-outcome.js';
 import type { TaskDetector } from './task-detector.js';
+import type { ModelUsageTracker } from './model-usage-tracker.js';
 
 const logger = createLogger('recommendation-engine');
 
@@ -64,30 +64,30 @@ const PROMPT_RECOMMENDATION_TITLES: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export class RecommendationEngine {
-  private readonly sessionStore: SessionStore;
   private readonly trendAnalyzer: TrendAnalyzer;
   private readonly collaborationProfiler: CollaborationProfiler;
   private readonly claudeMdTracker: ClaudeMdTracker;
   private readonly promptFeedbackEngine: PromptFeedbackEngine;
   private readonly costPerOutcomeAnalyzer: CostPerOutcomeAnalyzer;
   private readonly taskDetector?: TaskDetector;
+  private readonly modelUsageTracker?: ModelUsageTracker;
 
   constructor(options: {
-    sessionStore: SessionStore;
     trendAnalyzer: TrendAnalyzer;
     collaborationProfiler: CollaborationProfiler;
     claudeMdTracker: ClaudeMdTracker;
     promptFeedbackEngine: PromptFeedbackEngine;
     costPerOutcomeAnalyzer: CostPerOutcomeAnalyzer;
     taskDetector?: TaskDetector;
+    modelUsageTracker?: ModelUsageTracker;
   }) {
-    this.sessionStore = options.sessionStore;
     this.trendAnalyzer = options.trendAnalyzer;
     this.collaborationProfiler = options.collaborationProfiler;
     this.claudeMdTracker = options.claudeMdTracker;
     this.promptFeedbackEngine = options.promptFeedbackEngine;
     this.costPerOutcomeAnalyzer = options.costPerOutcomeAnalyzer;
     this.taskDetector = options.taskDetector;
+    this.modelUsageTracker = options.modelUsageTracker;
   }
 
   /**
@@ -334,40 +334,33 @@ export class RecommendationEngine {
 
   private getModelRecommendations(): Recommendation[] {
     const recs: Recommendation[] = [];
+    const report = this.trendAnalyzer.rankModelsByOutcome();
 
-    const sessions = this.sessionStore.loadAllSessions();
-    const models = new Set(sessions.map((s) => s.model).filter(Boolean));
-
-    if (models.size >= 2) {
-      const modelArr = [...models];
-      const comparison = this.trendAnalyzer.detectModelMigrationImpact(modelArr[0]!, modelArr[1]!);
-
-      if (
-        comparison.modelASessionCount >= 2 &&
-        comparison.modelBSessionCount >= 2 &&
-        comparison.modelACost > 0 &&
-        comparison.modelBCost > 0
-      ) {
-        const costRatio = round(comparison.modelACost / comparison.modelBCost, 1);
-        const effA = comparison.modelAEfficiency ?? 0;
-        const effB = comparison.modelBEfficiency ?? 0;
-        const effDiff = round(Math.abs(effA - effB) * 100, 0);
-
-        const actualRatio = costRatio > 1 ? costRatio : 1 / costRatio;
-        if (actualRatio > 2 && effDiff < 15) {
-          const cheaper = costRatio > 1 ? modelArr[1] : modelArr[0];
-          recs.push(
-            makeRec(
-              'model_selection',
-              'medium',
-              'Cost-inefficient model usage',
-              `One model costs ${actualRatio}x more but only improves efficiency by ${effDiff}%. Consider using ${cheaper} for routine tasks.`,
-              `${modelArr[0]}: $${round(comparison.modelACost, 2)}/session, ${modelArr[1]}: $${round(comparison.modelBCost, 2)}/session`,
-            ),
-          );
-        }
-      }
+    if (report.confidence !== 'high' || report.recommendedModel === null) {
+      return recs;
     }
+
+    const currentModel = this.modelUsageTracker?.getMetrics().mostUsedModel ?? null;
+    if (currentModel === null || currentModel === report.recommendedModel) {
+      return recs;
+    }
+
+    const top = report.ranked.find((m) => m.model === report.recommendedModel);
+    const current = report.ranked.find((m) => m.model === currentModel);
+    if (!top) return recs;
+
+    recs.push(
+      makeRec(
+        'model_selection',
+        'high',
+        'Historically better-performing model available',
+        `Across ${top.sessionCount} past sessions, ${report.recommendedModel} averaged a higher efficiency score than your current default (${currentModel}). Consider switching.`,
+        `${report.recommendedModel}: avg efficiency ${top.avgEfficiencyScore ?? 'n/a'}, $${top.avgCostUsd}/session (n=${top.sessionCount})` +
+          (current
+            ? `; ${currentModel}: avg efficiency ${current.avgEfficiencyScore ?? 'n/a'}, $${current.avgCostUsd}/session (n=${current.sessionCount})`
+            : `; ${currentModel}: no scored sessions yet`),
+      ),
+    );
 
     return recs;
   }

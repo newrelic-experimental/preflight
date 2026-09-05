@@ -13,6 +13,7 @@ import { PromptFeedbackEngine } from './prompt-feedback.js';
 import { CostPerOutcomeAnalyzer } from './cost-per-outcome.js';
 import { RecommendationEngine } from './recommendation-engine.js';
 import { TaskDetector } from './task-detector.js';
+import { ModelUsageTracker } from './model-usage-tracker.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -96,7 +97,6 @@ function createEngine() {
   const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
 
   const engine = new RecommendationEngine({
-    sessionStore: store,
     trendAnalyzer,
     collaborationProfiler,
     claudeMdTracker,
@@ -277,7 +277,6 @@ describe('RecommendationEngine', () => {
     const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
 
     const engine = new RecommendationEngine({
-      sessionStore: store,
       trendAnalyzer,
       collaborationProfiler,
       claudeMdTracker,
@@ -337,33 +336,148 @@ describe('RecommendationEngine', () => {
   // 8. getModelRecommendations via generateAllRecommendations
   // -------------------------------------------------------------------------
 
-  it('flags cost-inefficient model usage when cost ratio exceeds 2x with <15% efficiency difference', () => {
+  it('returns no recommendation when no modelUsageTracker provided', () => {
     const { engine } = createEngine();
 
-    for (let i = 0; i < 2; i++) {
+    // Create sessions with strong recommendation signal
+    for (let i = 0; i < 20; i++) {
       store.saveSession(
         makeSummary({
-          sessionId: `expensive-${i}`,
-          model: 'model-alpha',
-          estimatedCostUsd: 1.0,
-          efficiencyScore: 0.8,
+          sessionId: `sonnet-${i}`,
+          model: 'sonnet',
+          efficiencyScore: 0.9,
         }),
       );
       store.saveSession(
         makeSummary({
-          sessionId: `cheap-${i}`,
-          model: 'model-beta',
-          estimatedCostUsd: 0.4,
-          efficiencyScore: 0.8,
+          sessionId: `opus-${i}`,
+          model: 'opus',
+          efficiencyScore: 0.6,
         }),
       );
     }
 
     const recs = engine.generateAllRecommendations('alice');
+    const modelRec = recs.find((r) => r.category === 'model_selection');
+    expect(modelRec).toBeUndefined();
+  });
 
+  it('returns no recommendation when insufficient historical data', () => {
+    const { engine } = createEngine();
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 's1',
+        model: 'sonnet',
+        efficiencyScore: 0.9,
+      }),
+    );
+
+    const recs = engine.generateAllRecommendations('alice');
+    const modelRec = recs.find((r) => r.category === 'model_selection');
+    expect(modelRec).toBeUndefined();
+  });
+
+  it('returns recommendation when modelUsageTracker provided and different model has better performance', () => {
+    const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
+    const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
+    const claudeMdTracker = new ClaudeMdTracker({ sessionStore: store });
+    const promptFeedbackEngine = new PromptFeedbackEngine({
+      sessionStore: store,
+      collaborationProfiler,
+      claudeMdTracker,
+    });
+    const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
+
+    // Create mock ModelUsageTracker that returns 'opus' as mostUsedModel
+    const mockModelUsageTracker = {
+      getMetrics: () => ({ mostUsedModel: 'opus' }),
+    };
+
+    const engine = new RecommendationEngine({
+      trendAnalyzer,
+      collaborationProfiler,
+      claudeMdTracker,
+      promptFeedbackEngine,
+      costPerOutcomeAnalyzer,
+      modelUsageTracker: mockModelUsageTracker as unknown as ModelUsageTracker,
+    });
+
+    // Create sessions with sonnet being better
+    for (let i = 0; i < 20; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `sonnet-${i}`,
+          model: 'sonnet',
+          efficiencyScore: 0.9,
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: `opus-${i}`,
+          model: 'opus',
+          efficiencyScore: 0.6,
+        }),
+      );
+    }
+
+    const recs = engine.generateAllRecommendations('alice');
     const modelRec = recs.find((r) => r.category === 'model_selection');
     expect(modelRec).toBeDefined();
-    expect(modelRec?.detail).toContain('model-beta');
+    expect(modelRec?.title).toContain('Historically better-performing model');
+    expect(modelRec?.detail).toContain('sonnet');
+    expect(modelRec?.detail).toContain('opus');
+  });
+
+  it('returns no actionable recommendation when confidence is medium or low, even with a different better-performing model', () => {
+    const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
+    const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
+    const claudeMdTracker = new ClaudeMdTracker({ sessionStore: store });
+    const promptFeedbackEngine = new PromptFeedbackEngine({
+      sessionStore: store,
+      collaborationProfiler,
+      claudeMdTracker,
+    });
+    const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
+
+    // Create mock ModelUsageTracker that returns 'opus' as mostUsedModel
+    const mockModelUsageTracker = {
+      getMetrics: () => ({ mostUsedModel: 'opus' }),
+    };
+
+    const engine = new RecommendationEngine({
+      trendAnalyzer,
+      collaborationProfiler,
+      claudeMdTracker,
+      promptFeedbackEngine,
+      costPerOutcomeAnalyzer,
+      modelUsageTracker: mockModelUsageTracker as unknown as ModelUsageTracker,
+    });
+
+    // Create sessions that will result in medium confidence (10 sessions per model, gap = 0.06)
+    for (let i = 0; i < 10; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `sonnet-${i}`,
+          model: 'sonnet',
+          efficiencyScore: 0.9,
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: `opus-${i}`,
+          model: 'opus',
+          efficiencyScore: 0.84, // gap = 0.06, above the 0.05 threshold but only 10 sessions = medium confidence
+        }),
+      );
+    }
+
+    const recs = engine.generateAllRecommendations('alice');
+    const modelRec = recs.find((r) => r.category === 'model_selection');
+
+    // Even though rankModelsByOutcome would report a recommendation with 'medium' confidence,
+    // the actionable nudge should NOT be present since we gate on 'high' only
+    expect(modelRec).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------

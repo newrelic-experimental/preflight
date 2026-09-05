@@ -44,7 +44,7 @@ import {
   securityAlertToNrEvent,
 } from '../security/index.js';
 import type { AuditRecord } from '../security/index.js';
-import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
+import type { TurnCostAttributor, ClosedTurn } from '../metrics/turn-cost-attributor.js';
 import type { LocalStore } from '../storage/index.js';
 import { LogIngestManager } from './log-ingest.js';
 
@@ -849,6 +849,73 @@ export function retryAlertToNrEvent(
   return event;
 }
 
+/**
+ * One `AiTurnCost` row per tool call in a closed turn, each carrying the
+ * turn's cost and tokens split evenly. `tool_use_id` cross-references the
+ * call's `AiToolCall` row.
+ */
+export function turnCostToNrEvents(
+  turn: ClosedTurn,
+  attrs: {
+    developer: string;
+    appName: string;
+    sessionTraceId?: string;
+    teamId?: string | null;
+    projectId?: string | null;
+    orgId?: string | null;
+    companionMode?: boolean;
+  },
+): NrEventData[] {
+  const events: NrEventData[] = [];
+  const platform = turn.platform ?? 'claude-code';
+
+  for (const call of turn.calls) {
+    const event: NrEventData = {
+      eventType: 'AiTurnCost',
+      event_version: 1,
+      timestamp: turn.attribution.endTime,
+      turn_id: turn.id,
+      tool_use_id: call.toolUseId,
+      tool: call.toolName,
+      cost_usd: turn.attribution.costPerToolCall,
+      input_tokens: turn.attribution.inputTokens / turn.calls.length,
+      output_tokens: turn.attribution.outputTokens / turn.calls.length,
+      cache_read_tokens: turn.attribution.cacheReadTokens / turn.calls.length,
+      cache_creation_tokens: turn.attribution.cacheCreationTokens / turn.calls.length,
+      turn_cost_usd: turn.attribution.estimatedCostUsd,
+      turn_tool_call_count: turn.calls.length,
+      model: turn.attribution.model,
+      developer: attrs.developer,
+      app_name: attrs.appName,
+      platform,
+    };
+
+    if (call.skillName !== null) {
+      event.skillName = redactSensitive(call.skillName);
+    }
+
+    if (attrs.teamId) event.team_id = attrs.teamId;
+    if (attrs.projectId) event.project_id = attrs.projectId;
+    if (attrs.orgId) event.org_id = attrs.orgId;
+
+    // The turn's own session wins over this process's trace id for the same
+    // reason ingestToolCall() prefers the record's: a --local daemon's trace
+    // id is synthetic.
+    const sessionId = turn.attribution.sessionId ?? attrs.sessionTraceId;
+    if (sessionId != null) event.session_id = sessionId;
+
+    // Only an explicit claude-code stamp has an OTel twin to defer to; an
+    // unstamped turn keeps the display default above but is not tagged.
+    if (attrs.companionMode && turn.platform === 'claude-code') {
+      event.cost_authority = 'external';
+    }
+
+    events.push(event);
+  }
+
+  return events;
+}
+
 // ---------------------------------------------------------------------------
 // Retry classification
 // ---------------------------------------------------------------------------
@@ -1314,6 +1381,21 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
     });
     this.scheduler.addEvent(event);
+  }
+
+  ingestTurnCost(turn: ClosedTurn): void {
+    const events = turnCostToNrEvents(turn, {
+      developer: this.developer,
+      appName: this.appName,
+      sessionTraceId: this.sessionTraceId,
+      teamId: this.teamId,
+      projectId: this.projectId,
+      orgId: this.orgId,
+      companionMode: this.companionMode,
+    });
+    for (const event of events) {
+      this.scheduler.addEvent(event);
+    }
   }
 
   ingestContextSnapshot(

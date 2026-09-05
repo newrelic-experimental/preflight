@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { DiscreteBlockChart } from './DiscreteBlockChart';
 
 describe('DiscreteBlockChart', () => {
@@ -35,5 +35,33 @@ describe('DiscreteBlockChart', () => {
     // its topmost block.
     expect(rects[1]!.getAttribute('fill')).toBe('var(--color-chart-block-peak)');
     expect(rects[3]!.getAttribute('fill')).toBe('var(--color-chart-block-peak)');
+  });
+
+  it('portals the tooltip to document.body on hover, escaping an overflow-hidden ancestor', () => {
+    const { container } = render(
+      <div style={{ overflow: 'hidden' }}>
+        <DiscreteBlockChart data={[{ count: 2, tooltip: 'peak: 5' }]} ariaLabel="chart" />
+      </div>,
+    );
+    fireEvent.mouseEnter(container.querySelector('g')!);
+    const tooltip = screen.getByText('peak: 5');
+    expect(container.contains(tooltip)).toBe(false);
+    expect(document.body.contains(tooltip)).toBe(true);
+  });
+
+  it('dismisses the tooltip on scroll instead of leaving it drifted from its anchor', () => {
+    render(<DiscreteBlockChart data={[{ count: 2, tooltip: 'peak: 5' }]} ariaLabel="chart" />);
+    fireEvent.mouseEnter(document.querySelector('g')!);
+    expect(screen.getByText('peak: 5')).toBeInTheDocument();
+    fireEvent.scroll(window);
+    expect(screen.queryByText('peak: 5')).toBeNull();
+  });
+
+  it('dismisses the tooltip on window resize', () => {
+    render(<DiscreteBlockChart data={[{ count: 2, tooltip: 'peak: 5' }]} ariaLabel="chart" />);
+    fireEvent.mouseEnter(document.querySelector('g')!);
+    expect(screen.getByText('peak: 5')).toBeInTheDocument();
+    fireEvent.resize(window);
+    expect(screen.queryByText('peak: 5')).toBeNull();
   });
 });

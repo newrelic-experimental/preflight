@@ -15,7 +15,7 @@ import { useLocation } from 'wouter';
 import { useLiveStore, useSubagentStats, type AlertEvent } from '../store/liveStore';
 import { Kpi } from '../components/Kpi';
 import { AnimatedCard } from '../components/AnimatedCard';
-import { HourlyCostBlocks, type HourlyCostEntry } from '../components/HourlyCostBlocks';
+import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
 import { SessionTrace } from '../components/SessionTrace';
 import { WorkflowRunDetail } from '../components/WorkflowRunDetail';
@@ -1054,14 +1054,12 @@ function LatencyPanel({
 interface ModelStats {
   readonly requestCount: number;
   readonly totalCostUsd: number;
-  readonly costPerOutputToken: number | null;
   readonly costPerMillionTokens: number | null;
 }
 
 interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
-  readonly mostEfficientModel: string | null;
 }
 
 function ModelUsagePanel(): JSX.Element {
@@ -1084,7 +1082,7 @@ function ModelUsagePanel(): JSX.Element {
     <Card padding="sm" className="h-full">
       <div className="flex items-center gap-1.5 mb-2">
         <Eyebrow>Model Usage</Eyebrow>
-        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. The live slice resets if the server process restarts." />
+        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. $/1M tok counts every billed token, cache reads and cache writes included, so it is comparable with list prices. The live slice resets if the server process restarts." />
       </div>
       {!data || models.length === 0 ? (
         <EmptyState
@@ -1106,11 +1104,6 @@ function ModelUsagePanel(): JSX.Element {
               </div>
             </div>
           ))}
-          {data?.mostEfficientModel && (
-            <div className="text-[10px] text-accent-green mt-1">
-              Most efficient: {data.mostEfficientModel}
-            </div>
-          )}
         </div>
       )}
     </Card>
@@ -1923,6 +1916,50 @@ function computeTodayFlags(sessions: SessionSummary[]): number {
   return Math.round(total);
 }
 
+interface HourlyCostEntry {
+  readonly hour: number; // 0..23
+  readonly cost: number;
+}
+
+// Friendly per-block cost values for the Forecast card's hourly-spend chart;
+// we pick the smallest one that yields no more than TARGET_PEAK_BLOCKS rows
+// for the peak hour. Keeps stack heights legible regardless of whether today
+// is a $0.40 day or a $40 day.
+const HOURLY_SPEND_NICE_UNITS = [
+  0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000,
+];
+const HOURLY_SPEND_TARGET_PEAK_BLOCKS = 5;
+
+function pickHourlySpendBlockUnit(raw: number): number {
+  if (raw <= 0) return 0.01;
+  for (const c of HOURLY_SPEND_NICE_UNITS) if (c >= raw) return c;
+  return HOURLY_SPEND_NICE_UNITS[HOURLY_SPEND_NICE_UNITS.length - 1]!;
+}
+
+function formatHourLabel(hour: number): string {
+  if (hour === 0) return '12am';
+  if (hour < 12) return `${hour}am`;
+  if (hour === 12) return '12pm';
+  return `${hour - 12}pm`;
+}
+
+function describeHourlySpend(hours: readonly HourlyCostEntry[]): string {
+  const total = hours.reduce((s, h) => s + h.cost, 0);
+  const max = hours.reduce((m, h) => Math.max(m, h.cost), 0);
+  const peak = hours.find((h) => h.cost === max);
+  if (peak === undefined || max === 0) return 'Hourly spend today: no activity yet.';
+  return `Hourly spend today: ${formatUsd(total)} total, peak ${formatUsd(max)} at ${formatHourLabel(peak.hour)}`;
+}
+
+function hourlySpendToBlockItems(hours: readonly HourlyCostEntry[]): DiscreteBlockChartItem[] {
+  const maxCost = hours.reduce((m, h) => Math.max(m, h.cost), 0);
+  const blockUnit = pickHourlySpendBlockUnit(maxCost / HOURLY_SPEND_TARGET_PEAK_BLOCKS);
+  return hours.map((h) => ({
+    count: Math.max(0, Math.round(h.cost / blockUnit)),
+    tooltip: `${formatHourLabel(h.hour)}: ${formatUsd(h.cost)} (start hour)`,
+  }));
+}
+
 function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   // The /api/sessions route always injects the live session with its current
   // in-memory cost (when not yet persisted) or returns the persisted entry
@@ -2029,7 +2066,10 @@ function ForecastEodCard({
           </div>
           {hasSpend && (
             <div className="mt-2">
-              <HourlyCostBlocks hours={hourlySpend} />
+              <DiscreteBlockChart
+                data={hourlySpendToBlockItems(hourlySpend)}
+                ariaLabel={describeHourlySpend(hourlySpend)}
+              />
               {subagentUsd > 0 && (
                 <div className="flex gap-3 mt-1 text-[10px] text-ink-muted tabular-nums">
                   <span>parent {formatUsd(parentUsd)}</span>

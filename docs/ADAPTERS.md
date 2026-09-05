@@ -589,17 +589,29 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 **Setup:**
 
+0. Or just run `preflight setup` (or `preflight install --copilot` directly) — it automates every step below for both VS Code Copilot Chat and the Copilot CLI, including the double-capture fix in step 1b.
 1. Create a hooks file — user-level `~/.copilot/hooks/preflight.json` (applies to all workspaces) or workspace-level `.github/hooks/preflight.json` (both are documented hook locations in VS Code's location table):
    ```json
    {
      "version": 1,
      "hooks": {
-       "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],
-       "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]
+       "PreToolUse": [
+         {
+           "type": "command",
+           "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector pre-tool"
+         }
+       ],
+       "PostToolUse": [
+         {
+           "type": "command",
+           "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector post-tool"
+         }
+       ]
      }
    }
    ```
-   VS Code also reads Claude-format hooks from `~/.claude/settings.json` by default, so a `preflight install` done for Claude Code is picked up automatically — but hooks from all locations are _collected_, so pick one user-level source: either rely on the Claude-format file, or use `~/.copilot/hooks` and disable the Claude location for Copilot via `chat.hookFilesLocations` (`"~/.claude/settings.json": false`). Same-event hooks in both files double-capture every tool call.
+   The `NEW_RELIC_AI_PLATFORM=copilot` prefix is required: Copilot's hooks-runner process is spawned separately from the MCP server process and does not inherit env vars set on an MCP registration (e.g. `copilot mcp add --env MCP_CLIENT=...`), so without embedding the tag directly in the command string, every event silently falls through to the `claude-code` platform default.
+   1b. VS Code also reads Claude-format hooks from `~/.claude/settings.json` by default, so a `preflight install` done for Claude Code is picked up automatically — but hooks from all locations are _collected_, so same-event hooks in both files double-capture every tool call. The installer (step 0) fixes this automatically by writing `"chat.hookFilesLocations": { "<claude-settings-path>": false }` into VS Code's `settings.json`; doing it by hand means disabling the Claude location for Copilot the same way.
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`).
 3. Register the Preflight MCP server for `nr_observe_*` tools with env `MCP_CLIENT=copilot`, `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`.
 4. For token-exact cost, add `"github.copilot.chat.agentDebugLog.fileLogging.enabled": true` to VS Code User `settings.json` and reload the window (see **Required setting** above). Not needed for tool-call/session telemetry, only for exact cost.
@@ -625,16 +637,28 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 **Setup:**
 
+0. Or just run `preflight setup` (or `preflight install --copilot` directly) — it automates every step below, including the hooks file, MCP registration, and (optionally) the SDK usage extension in step 4.
 1. Create a hooks file for tool-call capture — user-level `~/.copilot/hooks/preflight.json` or workspace-level `.github/hooks/preflight.json`:
    ```json
    {
      "version": 1,
      "hooks": {
-       "PreToolUse": [{ "type": "command", "command": "preflight-collector pre-tool" }],
-       "PostToolUse": [{ "type": "command", "command": "preflight-collector post-tool" }]
+       "PreToolUse": [
+         {
+           "type": "command",
+           "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector pre-tool"
+         }
+       ],
+       "PostToolUse": [
+         {
+           "type": "command",
+           "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector post-tool"
+         }
+       ]
      }
    }
    ```
+   The `NEW_RELIC_AI_PLATFORM=copilot` prefix is required — the hooks-runner does not inherit env vars set on the MCP server registration in step 3 below, so without it every event falls through to the `claude-code` platform default.
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```bash

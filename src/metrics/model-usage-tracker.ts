@@ -3,15 +3,17 @@ export interface ModelBreakdownEntry {
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
   readonly totalCostUsd: number;
+  readonly totalCacheReadTokens: number;
+  readonly totalCacheCreationTokens: number;
+  readonly totalThinkingTokens: number;
 }
 
 export interface ModelStats extends ModelBreakdownEntry {
-  readonly costPerOutputToken: number | null;
   /**
-   * Per-model rate: totalCostUsd / (totalInputTokens + totalOutputTokens) * 1M.
-   * Narrower than CostTracker's session-blended `costPerMillionTokens`, which
-   * also folds in thinking/cache-read/cache-creation tokens — the two are not
-   * directly comparable.
+   * Per-model rate: totalCostUsd over every token the cost priced (input,
+   * output, thinking, cache read, cache creation), per million. Same
+   * denominator as CostTracker's session-blended `costPerMillionTokens`, so
+   * the two are comparable with each other and with list prices.
    */
   readonly costPerMillionTokens: number | null;
   readonly avgOutputTokensPerRequest: number | null;
@@ -35,7 +37,6 @@ export interface ModelSwitchEvent {
 interface DerivedModelStats {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
-  readonly mostEfficientModel: string | null;
   readonly totalModelsUsed: number;
 }
 
@@ -53,9 +54,25 @@ interface MutableModelStats {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  totalThinkingTokens: number;
 }
 
+import type { TokenUsage } from '../shared/tokens.js';
 import type { Resettable } from './tracker-contracts.js';
+
+function zeroModelStats(): MutableModelStats {
+  return {
+    requestCount: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCostUsd: 0,
+    totalCacheReadTokens: 0,
+    totalCacheCreationTokens: 0,
+    totalThinkingTokens: 0,
+  };
+}
 
 // Pure derivation: raw per-model counters -> the full ModelStats shape (raw +
 // derived ratios) plus the mostUsed/mostEfficient picks. Shared by getMetrics()
@@ -70,13 +87,14 @@ function deriveModelUsageMetrics(
   const byModel: Record<string, ModelStats> = {};
   let mostUsedModel: string | null = null;
   let maxRequests = 0;
-  let mostEfficientModel: string | null = null;
-  let lowestCostPerOutputToken = Infinity;
 
   for (const [model, stats] of Object.entries(byModelRaw)) {
-    const costPerOutputToken =
-      stats.totalOutputTokens > 0 ? stats.totalCostUsd / stats.totalOutputTokens : null;
-    const totalTokens = stats.totalInputTokens + stats.totalOutputTokens;
+    const totalTokens =
+      stats.totalInputTokens +
+      stats.totalOutputTokens +
+      stats.totalThinkingTokens +
+      stats.totalCacheReadTokens +
+      stats.totalCacheCreationTokens;
     const costPerMillionTokens =
       totalTokens > 0 ? (stats.totalCostUsd / totalTokens) * 1_000_000 : null;
     const avgOutputTokensPerRequest =
@@ -87,7 +105,9 @@ function deriveModelUsageMetrics(
       totalInputTokens: stats.totalInputTokens,
       totalOutputTokens: stats.totalOutputTokens,
       totalCostUsd: stats.totalCostUsd,
-      costPerOutputToken,
+      totalCacheReadTokens: stats.totalCacheReadTokens,
+      totalCacheCreationTokens: stats.totalCacheCreationTokens,
+      totalThinkingTokens: stats.totalThinkingTokens,
       costPerMillionTokens,
       avgOutputTokensPerRequest,
     };
@@ -96,25 +116,11 @@ function deriveModelUsageMetrics(
       maxRequests = stats.requestCount;
       mostUsedModel = model;
     }
-
-    // On an exact tie, prefer the alphabetically-first model name for a
-    // deterministic result regardless of iteration order. '￿' (U+FFFF) sorts
-    // after every realistic model name, so `mostEfficientModel ?? '￿'` always
-    // loses the very first comparison and lets the first real candidate win.
-    if (
-      costPerOutputToken !== null &&
-      (costPerOutputToken < lowestCostPerOutputToken ||
-        (costPerOutputToken === lowestCostPerOutputToken && model < (mostEfficientModel ?? '￿')))
-    ) {
-      lowestCostPerOutputToken = costPerOutputToken;
-      mostEfficientModel = model;
-    }
   }
 
   return {
     byModel,
     mostUsedModel,
-    mostEfficientModel,
     totalModelsUsed: Object.keys(byModelRaw).length,
   };
 }
@@ -125,16 +131,19 @@ export class ModelUsageTracker implements Resettable {
   private byModel = new Map<string, MutableModelStats>();
   private switches: ModelSwitchEvent[] = [];
 
-  recordUsage(model: string, inputTokens: number, outputTokens: number, costUsd: number): void {
+  recordUsage(model: string, usage: TokenUsage, costUsd: number): void {
     let stats = this.byModel.get(model);
     if (!stats) {
-      stats = { requestCount: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0 };
+      stats = zeroModelStats();
       this.byModel.set(model, stats);
     }
     stats.requestCount++;
-    stats.totalInputTokens += inputTokens;
-    stats.totalOutputTokens += outputTokens;
+    stats.totalInputTokens += usage.inputTokens;
+    stats.totalOutputTokens += usage.outputTokens;
     stats.totalCostUsd += costUsd;
+    stats.totalCacheReadTokens += usage.cacheReadTokens;
+    stats.totalCacheCreationTokens += usage.cacheCreationTokens;
+    stats.totalThinkingTokens += usage.thinkingTokens;
   }
 
   /**
@@ -157,13 +166,16 @@ export class ModelUsageTracker implements Resettable {
     for (const [model, entry] of Object.entries(breakdown)) {
       let stats = this.byModel.get(model);
       if (!stats) {
-        stats = { requestCount: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0 };
+        stats = zeroModelStats();
         this.byModel.set(model, stats);
       }
       stats.requestCount += entry.requestCount;
       stats.totalInputTokens += entry.totalInputTokens;
       stats.totalOutputTokens += entry.totalOutputTokens;
       stats.totalCostUsd += entry.totalCostUsd;
+      stats.totalCacheReadTokens += entry.totalCacheReadTokens;
+      stats.totalCacheCreationTokens += entry.totalCacheCreationTokens;
+      stats.totalThinkingTokens += entry.totalThinkingTokens;
     }
   }
 
@@ -223,16 +235,14 @@ export class ModelUsageTracker implements Resettable {
     const summed: Record<string, MutableModelStats> = {};
     for (const breakdown of breakdowns) {
       for (const [model, entry] of Object.entries(breakdown)) {
-        const existing = summed[model] ?? {
-          requestCount: 0,
-          totalInputTokens: 0,
-          totalOutputTokens: 0,
-          totalCostUsd: 0,
-        };
+        const existing = summed[model] ?? zeroModelStats();
         existing.requestCount += entry.requestCount;
         existing.totalInputTokens += entry.totalInputTokens;
         existing.totalOutputTokens += entry.totalOutputTokens;
         existing.totalCostUsd += entry.totalCostUsd;
+        existing.totalCacheReadTokens += entry.totalCacheReadTokens;
+        existing.totalCacheCreationTokens += entry.totalCacheCreationTokens;
+        existing.totalThinkingTokens += entry.totalThinkingTokens;
         summed[model] = existing;
       }
     }

@@ -87,6 +87,8 @@ interface RawAuditRecord {
   readonly developer: string;
   readonly filePath?: string;
   readonly command?: string;
+  readonly agentId?: string;
+  readonly agentType?: string;
   readonly securityAlert?: { readonly severity: string; readonly alertType: string } | undefined;
 }
 
@@ -104,6 +106,8 @@ interface AuditEntryDto {
   readonly target: string;
   readonly classification: string;
   readonly severity?: string;
+  readonly agentId?: string;
+  readonly agentType?: string;
 }
 
 function toAuditEntry(entry: unknown): AuditEntryDto {
@@ -122,6 +126,8 @@ function toAuditEntry(entry: unknown): AuditEntryDto {
     target,
     classification,
     severity: r.securityAlert?.severity,
+    agentId: typeof r.agentId === 'string' ? r.agentId : undefined,
+    agentType: typeof r.agentType === 'string' ? r.agentType : undefined,
   };
 }
 
@@ -1805,8 +1811,8 @@ export function createApiHandler(
     // risk double-counting the live session when its snapshot is already in persisted data.
     const sessionTodayUsd = deps.costTracker.getCostForDay?.(localDateKey(Date.now())) ?? null;
     // Extend with subagent spend breakdown so the Today view's
-    // new "Subagent spend" KPI and stacked HourlyCostBlocks have data without
-    // an extra round-trip.
+    // "Subagent spend" KPI and the Forecast card's hourly-spend chart have
+    // data without an extra round-trip.
     const subagentMetrics = deps.costTracker.getSubagentMetrics?.() ?? null;
     const subagentUsd = subagentMetrics?.subagentUsd ?? 0;
     const totalUsd = cost.sessionTotalCostUsd ?? 0;

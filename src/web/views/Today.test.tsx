@@ -2006,6 +2006,77 @@ describe('Today view — cross-midnight session proration', () => {
   });
 });
 
+describe('Today view — Forecast card hourly-spend chart', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockSessions(sessions: unknown[]): void {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(JSON.stringify(sessions), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  it('does not render the chart when no session has spent anything today', async () => {
+    mockSessions([]);
+    renderToday();
+    await waitFor(() => {
+      expect(screen.queryByRole('img', { name: /Hourly spend today/ })).toBeNull();
+    });
+  });
+
+  it("describes today's total and peak hour in the chart's aria-label", async () => {
+    const dayStart = localStartOfDay();
+    const hourSession = (hour: number, cost: number) => ({
+      sessionId: `s-${hour}`,
+      startTime: dayStart + hour * 60 * 60 * 1000 + 5 * 60 * 1000,
+      durationMs: 10 * 60 * 1000,
+      toolCallCount: 1,
+      estimatedCostUsd: cost,
+    });
+    mockSessions([hourSession(9, 1.5), hourSession(14, 0.5)]);
+    renderToday();
+    expect(
+      await screen.findByRole('img', {
+        name: 'Hourly spend today: $2.00 total, peak $1.50 at 9am',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not render the chart when every hour rounds to 0 blocks at the smallest unit step', async () => {
+    // maxCost=$0.001 picks the smallest NICE_UNIT (0.01) as the block unit,
+    // and round(0.001 / 0.01) = 0 — every column renders 0 blocks even
+    // though hasSpend is true, so DiscreteBlockChart returns null.
+    const dayStart = localStartOfDay();
+    mockSessions([
+      {
+        sessionId: 'tiny-cost',
+        startTime: dayStart + 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
+        durationMs: 10 * 60 * 1000,
+        toolCallCount: 1,
+        estimatedCostUsd: 0.001,
+      },
+    ]);
+    renderToday();
+    await waitFor(() => {
+      expect(screen.queryByRole('img', { name: /Hourly spend today/ })).toBeNull();
+    });
+  });
+});
+
 describe('Today view — day-rollover clears stale SSE snapshot', () => {
   beforeEach(() => {
     vi.useFakeTimers();

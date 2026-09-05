@@ -620,4 +620,205 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
     });
   });
+
+  describe('recordTokenEvent() return value (ClosedTurn)', () => {
+    it('returns null with no pending turn', () => {
+      const attributor = new TurnCostAttributor();
+      const result = attributor.recordTokenEvent(makeTokenEvent());
+      expect(result).toBeNull();
+    });
+
+    it('returns null outside the 5s window', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 7000 }));
+      expect(result).toBeNull();
+    });
+
+    it('returns ClosedTurn with id on successful attribution', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      expect(result).not.toBeNull();
+      expect(result!.id).toBeDefined();
+      expect(typeof result!.id).toBe('string');
+      expect(result!.id.length).toBeGreaterThan(20);
+    });
+
+    it('returns different ids for two closed turns', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result1 = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_002', timestamp: 5000 }));
+      const result2 = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 5100 }));
+
+      expect(result1).not.toBeNull();
+      expect(result2).not.toBeNull();
+      expect(result1!.id).not.toBe(result2!.id);
+    });
+
+    it('returned calls carry skillName for Skill records and null otherwise', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'code-review',
+          toolUseId: 'skill-1',
+          timestamp: 1000,
+        }),
+      );
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Read',
+          toolUseId: 'read-1',
+          timestamp: 1500,
+        }),
+      );
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1600 }));
+
+      expect(result).not.toBeNull();
+      expect(result!.calls).toHaveLength(2);
+
+      const skillCall = result!.calls.find((c) => c.toolName === 'Skill');
+      expect(skillCall).toBeDefined();
+      expect(skillCall!.skillName).toBe('code-review');
+
+      const readCall = result!.calls.find((c) => c.toolName === 'Read');
+      expect(readCall).toBeDefined();
+      expect(readCall!.skillName).toBeNull();
+    });
+
+    it("platform is the first record's platform when stamped", () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({
+          toolUseId: 'toolu_001',
+          timestamp: 1000,
+          platform: 'copilot-app',
+        }),
+      );
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      expect(result).not.toBeNull();
+      expect(result!.platform).toBe('copilot-app');
+    });
+
+    it('platform is undefined when no record carries a stamp', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      expect(result).not.toBeNull();
+      expect(result!.platform).toBeUndefined();
+    });
+
+    it('attribution deep-equals the last entry of getMetrics().turns', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      const metrics = attributor.getMetrics();
+      expect(result).not.toBeNull();
+      expect(result!.attribution).toEqual(metrics.turns[metrics.turns.length - 1]);
+    });
+
+    it('attribution includes cacheCreationTokens', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result = attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          cacheCreationTokens: 500,
+        }),
+      );
+
+      expect(result).not.toBeNull();
+      expect(result!.attribution.cacheCreationTokens).toBe(500);
+    });
+
+    it('rateMultiplier: 1.5 scales costUsd by 1.5 in returned attribution', () => {
+      const attributor1x = new TurnCostAttributor({ rateMultiplier: 1 });
+      attributor1x.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result1x = attributor1x.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          inputTokens: 10_000,
+          outputTokens: 2_000,
+        }),
+      );
+
+      const attributor15x = new TurnCostAttributor({ rateMultiplier: 1.5 });
+      attributor15x.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      const result15x = attributor15x.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          inputTokens: 10_000,
+          outputTokens: 2_000,
+        }),
+      );
+
+      expect(result1x).not.toBeNull();
+      expect(result15x).not.toBeNull();
+      expect(result15x!.attribution.estimatedCostUsd).toBeCloseTo(
+        result1x!.attribution.estimatedCostUsd * 1.5,
+        10,
+      );
+      expect(result15x!.attribution.costPerToolCall).toBeCloseTo(
+        result1x!.attribution.costPerToolCall * 1.5,
+        10,
+      );
+    });
+
+    it('rateMultiplier scales costBySkill in returned attribution', () => {
+      const attributor1x = new TurnCostAttributor({ rateMultiplier: 1 });
+      attributor1x.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'test',
+          toolUseId: 'skill-1',
+          timestamp: 1000,
+        }),
+      );
+      attributor1x.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      const attributor15x = new TurnCostAttributor({ rateMultiplier: 1.5 });
+      attributor15x.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'test',
+          toolUseId: 'skill-1',
+          timestamp: 1000,
+        }),
+      );
+      attributor15x.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      const metrics1x = attributor1x.getMetrics();
+      const metrics15x = attributor15x.getMetrics();
+
+      expect(metrics15x.costBySkill['test'].totalCost).toBeCloseTo(
+        metrics1x.costBySkill['test'].totalCost * 1.5,
+        10,
+      );
+    });
+
+    it('rateMultiplier scales totalAttributedCost', () => {
+      const attributor1x = new TurnCostAttributor({ rateMultiplier: 1 });
+      attributor1x.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      attributor1x.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      const attributor15x = new TurnCostAttributor({ rateMultiplier: 1.5 });
+      attributor15x.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      attributor15x.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      const metrics1x = attributor1x.getMetrics();
+      const metrics15x = attributor15x.getMetrics();
+
+      expect(metrics15x.totalAttributedCost).toBeCloseTo(metrics1x.totalAttributedCost * 1.5, 10);
+    });
+  });
 });

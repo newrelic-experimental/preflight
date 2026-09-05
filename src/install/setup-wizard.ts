@@ -606,6 +606,40 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
       }
     }
 
+    // Step 6c: Copilot hook install (GitHub Copilot CLI + VS Code Copilot Chat)
+    // Always asked, unconditionally — mirrors the Claude Code hooks question
+    // above exactly. Independent of mode, matching that question's own
+    // independence from mode: hook-based tool-call capture works the same
+    // regardless of where telemetry ships.
+    //
+    // Unlike the Claude step above, credentials ARE passed here even though
+    // config.json already has them — the Copilot CLI's own `copilot mcp add`
+    // bakes the literal license key/account ID into Copilot's own MCP
+    // config, which is separate from and doesn't read our config.json.
+    const installCopilotHooks = (
+      await rl.question(
+        '\nInstall GitHub Copilot hooks now? Configures both the Copilot CLI and VS Code Copilot Chat [Y/n]: ',
+      )
+    )
+      .trim()
+      .toLowerCase();
+    if (installCopilotHooks !== 'n' && installCopilotHooks !== 'no') {
+      print('\nRunning Copilot installer...');
+      const copilotInstallArgs = ['install', '--copilot'];
+      if (mode !== 'local' && licenseKey && accountId) {
+        copilotInstallArgs.push('--license-key', licenseKey, '--account-id', accountId);
+      }
+      try {
+        await runInstallCli(copilotInstallArgs);
+        print('Copilot hooks installed.');
+      } catch {
+        // handleCopilotInstall already printed the specific error. Set exit
+        // code and continue — daemon, schedule, and dashboard steps do not
+        // depend on Copilot hook installation.
+        process.exitCode = 1;
+      }
+    }
+
     // Step 6b: Always-on background dashboard daemon
     if ((mode === 'local' || mode === 'both') && process.platform === 'darwin') {
       const binaryPath = resolveBinaryPath();

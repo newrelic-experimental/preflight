@@ -37,13 +37,19 @@ export interface SecurityAlert {
   readonly description: string;
 }
 
-export interface AuditRecord {
+export interface AuditAttribution {
+  readonly sessionId: string | null;
+  /** Subagent that made the call. Absent for the parent session. Same id space as AiToolCall.agent_id. */
+  readonly agentId?: string;
+  readonly agentType?: string;
+}
+
+export interface AuditRecord extends AuditAttribution {
   /** Stable per-call id, sourced from `ToolCallRecord.id`/`ProxyToolCallRecord.id` — lets
    * consumers (e.g. the Audit page's React key) distinguish two entries that otherwise
    * share the same timestamp/tool/detail. */
   readonly id: string;
   readonly timestamp: number;
-  readonly sessionId: string | null;
   readonly action: AuditAction;
   readonly tool: string;
   readonly detail: string;
@@ -89,6 +95,10 @@ export const DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
   /\bgit\s+push\s+--force(?!-(?:with-lease|if-includes))\b/i,
   /\bgit\s+push\s+-f\b/i,
   /\bgit\s+reset\s+--hard\b/i,
+  // git clean only deletes with -f/--force (clean.requireForce defaults to true);
+  // -n/--dry-run and bare `git clean` are safe and stay unflagged.
+  /\bgit\s+clean\b(?=.*\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\b)/i,
+  /\bfind\b.*\s-delete\b/i,
   /\bDROP\s+TABLE\b/i,
   /\bDROP\s+DATABASE\b/i,
   /\bDELETE\s+FROM\b/i,
@@ -106,6 +116,29 @@ export const DEFAULT_NETWORK_COMMAND_PATTERNS: RegExp[] = [
   /\bnc\b/,
   /\bssh\b/,
 ];
+
+const RM_OR_UNLINK_IN_COMMAND_POSITION = /(?:^|[;&|(])\s*(?:sudo\s+)?(?:rm|unlink)\s/m;
+
+export const DEFAULT_DELETION_COMMAND_PATTERNS: RegExp[] = [RM_OR_UNLINK_IN_COMMAND_POSITION];
+
+const ATTRIBUTION_WIRE_KEYS: Record<keyof AuditAttribution, string> = {
+  sessionId: 'session_id',
+  agentId: 'agent_id',
+  agentType: 'agent_type',
+};
+const ATTRIBUTION_KEYS = Object.keys(ATTRIBUTION_WIRE_KEYS) as ReadonlyArray<
+  keyof AuditAttribution
+>;
+
+export function attachAuditAttribution(
+  target: Record<string, string | number | boolean>,
+  source: AuditAttribution,
+): void {
+  for (const key of ATTRIBUTION_KEYS) {
+    const value = source[key];
+    if (typeof value === 'string') target[ATTRIBUTION_WIRE_KEYS[key]] = value;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tool name → AuditAction mapping
@@ -157,59 +190,79 @@ function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((p) => p.test(value));
 }
 
+type AlertSubject = 'command' | 'filePath';
+
+interface AlertRule {
+  readonly alertType: string;
+  readonly severity: AlertSeverity;
+  readonly subject: AlertSubject;
+  readonly patterns: readonly RegExp[];
+  readonly classifierHit?: (record: ToolCallRecord) => boolean;
+  readonly describe: (redacted: string) => string;
+}
+
+interface AuditPatternSet {
+  readonly sensitive: readonly RegExp[];
+  readonly destructive: readonly RegExp[];
+  readonly network: readonly RegExp[];
+  readonly deletion: readonly RegExp[];
+}
+
+const SEVERITY_RANK: Record<AlertSeverity, number> = { critical: 3, high: 2, medium: 1 };
+
+function buildAlertRules(p: AuditPatternSet): readonly AlertRule[] {
+  return [
+    {
+      alertType: 'destructive_command',
+      severity: 'critical',
+      subject: 'command',
+      patterns: p.destructive,
+      classifierHit: (r) => r.bashDestructive === true,
+      describe: (c) => `Destructive command detected: ${c}`,
+    },
+    {
+      alertType: 'sensitive_file',
+      severity: 'high',
+      subject: 'filePath',
+      patterns: p.sensitive,
+      describe: (f) => `Sensitive file accessed: ${f}`,
+    },
+    {
+      alertType: 'external_network',
+      severity: 'medium',
+      subject: 'command',
+      patterns: p.network,
+      classifierHit: (r) => r.bashNetwork === true,
+      describe: (c) => `External network request: ${c}`,
+    },
+    {
+      alertType: 'file_deletion',
+      severity: 'medium',
+      subject: 'command',
+      patterns: p.deletion,
+      classifierHit: (r) => r.bashLeading === 'rm' || r.bashLeading === 'unlink',
+      describe: (c) => `File deletion: ${c}`,
+    },
+  ];
+}
+
 function detectSecurityAlert(
   record: ToolCallRecord,
-  sensitivePatterns: readonly RegExp[],
-  destructivePatterns: readonly RegExp[],
-  networkPatterns: readonly RegExp[],
+  rules: readonly AlertRule[],
 ): SecurityAlert | undefined {
-  const command = record.command as string | undefined;
-  const filePath = record.filePath as string | undefined;
-  // Defense in depth: the classifier's verdict and the pattern lists are
-  // OR-ed together. Either layer flagging is enough to alert. We deliberately
-  // do NOT short-circuit on `bashDestructive === false` — the two layers can
-  // diverge (the classifier and the audit pattern list maintain independent
-  // regexes), so treating the classifier as authoritative would let a
-  // narrower classifier silently suppress a hit the audit list would have
-  // caught. Treat the classifier as additive, not authoritative, for
-  // security-critical decisions.
-  const classifierDestructive = record.bashDestructive === true;
-  const classifierNetwork = record.bashNetwork === true;
-
-  // Destructive commands (critical) — check first, highest priority
-  if (command) {
-    const isDestructive = classifierDestructive || matchesAny(command, destructivePatterns);
-    if (isDestructive) {
-      return {
-        severity: 'critical',
-        alertType: 'destructive_command',
-        description: `Destructive command detected: ${redactSensitive(command)}`,
-      };
-    }
-  }
-
-  // Sensitive file access (high)
-  if (filePath && matchesAny(filePath, sensitivePatterns)) {
-    return {
-      severity: 'high',
-      alertType: 'sensitive_file',
-      description: `Sensitive file accessed: ${redactSensitive(filePath)}`,
+  let best: SecurityAlert | undefined;
+  for (const rule of rules) {
+    const value = record[rule.subject];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    if (!rule.classifierHit?.(record) && !matchesAny(value, rule.patterns)) continue;
+    if (best && SEVERITY_RANK[best.severity] >= SEVERITY_RANK[rule.severity]) continue;
+    best = {
+      severity: rule.severity,
+      alertType: rule.alertType,
+      description: rule.describe(redactSensitive(value)),
     };
   }
-
-  // External network request (medium) — only for Bash commands
-  if (command) {
-    const isNetwork = classifierNetwork || matchesAny(command, networkPatterns);
-    if (isNetwork) {
-      return {
-        severity: 'medium',
-        alertType: 'external_network',
-        description: `External network request: ${redactSensitive(command)}`,
-      };
-    }
-  }
-
-  return undefined;
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,8 +289,8 @@ export function auditRecordToNrEvent(
   };
 
   attachTeamAttribution(event, attrs ?? {});
+  attachAuditAttribution(event, record);
 
-  if (record.sessionId != null) event.session_id = record.sessionId;
   if (record.filePath != null) event.file_path = redactSensitive(record.filePath);
   if (record.command != null) event.command = redactSensitive(record.command);
 
@@ -275,8 +328,8 @@ export function securityAlertToNrEvent(
   };
 
   attachTeamAttribution(event, attrs ?? {});
+  attachAuditAttribution(event, record);
 
-  if (record.sessionId != null) event.session_id = record.sessionId;
   if (record.filePath != null) event.file_path = redactSensitive(record.filePath);
   if (record.command != null) event.command = redactSensitive(record.command);
 
@@ -355,6 +408,10 @@ function auditEntryToRecord(entry: AuditEntry): AuditRecord | null {
     typeof rawSessionId === 'string' && !isSyntheticSessionId(rawSessionId) ? rawSessionId : null;
   const filePath = typeof entry.filePath === 'string' ? entry.filePath : undefined;
   const command = typeof entry.command === 'string' ? entry.command : undefined;
+  const agentId =
+    typeof entry.agentId === 'string' && entry.agentId.length > 0 ? entry.agentId : undefined;
+  const agentType =
+    typeof entry.agentType === 'string' && entry.agentType.length > 0 ? entry.agentType : undefined;
   // Disk entries written before this field was introduced have no `id`; fall
   // back to the same content fingerprint used for cross-process dedup below.
   // That fingerprint isn't guaranteed unique across two distinct legacy
@@ -382,6 +439,8 @@ function auditEntryToRecord(entry: AuditEntry): AuditRecord | null {
     id,
     timestamp,
     sessionId,
+    agentId,
+    agentType,
     action,
     tool,
     detail,
@@ -412,6 +471,8 @@ export interface AuditTrailManagerOptions {
   sensitivePatterns?: RegExp[];
   destructivePatterns?: RegExp[];
   networkPatterns?: RegExp[];
+  /** Non-recursive delete detection (medium). Pass [] to disable. Defaults to DEFAULT_DELETION_COMMAND_PATTERNS. */
+  deletionPatterns?: RegExp[];
   /** Optional local store for persisting each audit record to disk immediately. */
   localStore?: LocalStore;
 }
@@ -419,9 +480,7 @@ export interface AuditTrailManagerOptions {
 export class AuditTrailManager {
   private readonly developer: string;
   private sessionId: string | null;
-  private readonly sensitivePatterns: readonly RegExp[];
-  private readonly destructivePatterns: readonly RegExp[];
-  private readonly networkPatterns: readonly RegExp[];
+  private readonly rules: readonly AlertRule[];
   private readonly localStore: LocalStore | null;
 
   private entries: AuditRecord[] = [];
@@ -441,22 +500,28 @@ export class AuditTrailManager {
   constructor(options: AuditTrailManagerOptions) {
     this.developer = options.developer;
     this.sessionId = options.sessionId;
-    this.sensitivePatterns = options.sensitivePatterns ?? DEFAULT_SENSITIVE_FILE_PATTERNS;
-    this.destructivePatterns = options.destructivePatterns ?? DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS;
-    this.networkPatterns = options.networkPatterns ?? DEFAULT_NETWORK_COMMAND_PATTERNS;
+    this.rules = buildAlertRules({
+      sensitive: options.sensitivePatterns ?? DEFAULT_SENSITIVE_FILE_PATTERNS,
+      destructive: options.destructivePatterns ?? DEFAULT_DESTRUCTIVE_COMMAND_PATTERNS,
+      network: options.networkPatterns ?? DEFAULT_NETWORK_COMMAND_PATTERNS,
+      deletion: options.deletionPatterns ?? DEFAULT_DELETION_COMMAND_PATTERNS,
+    });
     this.localStore = options.localStore ?? null;
   }
 
   recordToolCall(record: ToolCallRecord): AuditRecord {
     const action = classifyTool(record.toolName);
     const detail = buildDetail(record);
+    return this.commit(record, action, detail);
+  }
 
-    const alert = detectSecurityAlert(
-      record,
-      this.sensitivePatterns,
-      this.destructivePatterns,
-      this.networkPatterns,
-    );
+  recordProxyCall(record: ProxyToolCallRecord): AuditRecord {
+    const detail = `McpToolCall: ${record.serverName}/${record.toolName}`;
+    return this.commit(record, 'McpToolCall', detail);
+  }
+
+  private commit(record: ToolCallRecord, action: AuditAction, detail: string): AuditRecord {
+    const alert = detectSecurityAlert(record, this.rules);
 
     const rawFilePath = record.filePath as string | undefined;
     const rawCommand = record.command as string | undefined;
@@ -464,6 +529,8 @@ export class AuditTrailManager {
       id: record.id,
       timestamp: record.timestamp,
       sessionId: resolveAuditSessionId(record.sessionId, this.sessionId),
+      agentId: typeof record.agentId === 'string' ? record.agentId : undefined,
+      agentType: typeof record.agentType === 'string' ? record.agentType : undefined,
       action,
       tool: record.toolName,
       detail,
@@ -481,56 +548,14 @@ export class AuditTrailManager {
       if (this.sensitiveAccessLog.length >= AuditTrailManager.MAX_ENTRIES)
         this.sensitiveAccessLog.shift();
       this.sensitiveAccessLog.push(auditRecord);
-      logger.warn('Security alert', {
+      const alertContext: Record<string, string | number | boolean> = {
         severity: alert.severity,
         alertType: alert.alertType,
         tool: record.toolName,
         detail,
-      });
-    }
-
-    this.persistToDisk(auditRecord);
-    return auditRecord;
-  }
-
-  recordProxyCall(record: ProxyToolCallRecord): AuditRecord {
-    const detail = `McpToolCall: ${record.serverName}/${record.toolName}`;
-    const filePath = record.filePath as string | undefined;
-    const command = record.command as string | undefined;
-
-    const alert = detectSecurityAlert(
-      record,
-      this.sensitivePatterns,
-      this.destructivePatterns,
-      this.networkPatterns,
-    );
-
-    const auditRecord: AuditRecord = {
-      id: record.id,
-      timestamp: record.timestamp,
-      sessionId: resolveAuditSessionId(record.sessionId, this.sessionId),
-      action: 'McpToolCall',
-      tool: record.toolName,
-      detail,
-      developer: this.developer,
-      // Same redaction policy as recordToolCall — see comment there.
-      filePath: filePath != null ? redactSensitive(filePath) : undefined,
-      command: command != null ? redactSensitive(command) : undefined,
-      securityAlert: alert,
-    };
-
-    if (this.entries.length >= AuditTrailManager.MAX_ENTRIES) this.entries.shift();
-    this.entries.push(auditRecord);
-    if (alert) {
-      if (this.sensitiveAccessLog.length >= AuditTrailManager.MAX_ENTRIES)
-        this.sensitiveAccessLog.shift();
-      this.sensitiveAccessLog.push(auditRecord);
-      logger.warn('Security alert', {
-        severity: alert.severity,
-        alertType: alert.alertType,
-        tool: record.toolName,
-        detail,
-      });
+      };
+      attachAuditAttribution(alertContext, auditRecord);
+      logger.warn('Security alert', alertContext);
     }
 
     this.persistToDisk(auditRecord);
@@ -623,6 +648,8 @@ export class AuditTrailManager {
       developer: record.developer,
       filePath: record.filePath,
       command: record.command,
+      agentId: record.agentId,
+      agentType: record.agentType,
       securityAlert: record.securityAlert
         ? { severity: record.securityAlert.severity, alertType: record.securityAlert.alertType }
         : undefined,

@@ -75,6 +75,8 @@ Emitted for every tool call captured by the hook collector.
 | `input_size_bytes`  | number  | Size of tool input (if available)                                                                                                                                                                                          |
 | `output_size_bytes` | number  | Size of tool output (if available)                                                                                                                                                                                         |
 | `input_hash`        | string  | Hash of tool input for deduplication (if available)                                                                                                                                                                        |
+| `skillName`         | string  | Skill name for Skill tool calls (note: camelCase, case-sensitive in NRQL facets)                                                                                                                                           |
+| `skillArgsLength`   | number  | Length of skill arguments (if available)                                                                                                                                                                                   |
 | `*`                 | varies  | Tool-specific fields from input/output parsers (e.g., `filePath`, `command`, `exitCode`, `isTestCommand`, `bashCategory`, `bashLeading`, `bashDestructive`, `bashNetwork`)                                                 |
 
 Source: `src/transport/nr-ingest.ts` — `toolCallToNrEvent()`
@@ -155,6 +157,8 @@ Emitted for every tool call as a security audit record.
 | `detail`               | string  | Human-readable description of the action                                                                               |
 | `developer`            | string  | Developer identifier                                                                                                   |
 | `session_id`           | string  | Session identifier (if available)                                                                                      |
+| `agent_id`             | string  | Claude Code subagent id from the hook payload. Absent for the parent session.                                          |
+| `agent_type`           | string  | The subagent's type as reported by the Claude Code hook payload (e.g. `"Explore"`). Absent for the parent session.     |
 | `team_id`              | string  | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`           | string  | Project identifier (derived from git remote or configured)                                                             |
 | `repo_url`             | string  | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
@@ -163,7 +167,7 @@ Emitted for every tool call as a security audit record.
 | `command`              | string  | Command executed (if applicable)                                                                                       |
 | `audit.security_alert` | boolean | Whether a security alert was triggered                                                                                 |
 | `audit.severity`       | string  | Alert severity: `critical`, `high`, or `medium` (if alert)                                                             |
-| `audit.alert_type`     | string  | Alert type: `destructive_command`, `sensitive_file`, or `external_network` (if alert)                                  |
+| `audit.alert_type`     | string  | Alert type: `destructive_command`, `sensitive_file`, `external_network`, or `file_deletion` (if alert)                 |
 
 Source: `src/security/audit-trail.ts` — `auditRecordToNrEvent()`
 
@@ -177,11 +181,13 @@ Emitted only when a security alert is triggered (subset of audit events).
 | `event_version` | number | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                            |
 | `timestamp`     | number | Unix epoch seconds                                                                                                     |
 | `severity`      | string | `critical`, `high`, or `medium`                                                                                        |
-| `alert_type`    | string | `destructive_command`, `sensitive_file`, or `external_network`                                                         |
+| `alert_type`    | string | `destructive_command`, `sensitive_file`, `external_network`, or `file_deletion`                                        |
 | `description`   | string | Human-readable alert description                                                                                       |
 | `tool`          | string | Tool that triggered the alert                                                                                          |
 | `developer`     | string | Developer identifier                                                                                                   |
 | `session_id`    | string | Session identifier (if available)                                                                                      |
+| `agent_id`      | string | Claude Code subagent id from the hook payload. Absent for the parent session.                                          |
+| `agent_type`    | string | The subagent's type as reported by the Claude Code hook payload (e.g. `"Explore"`). Absent for the parent session.     |
 | `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
 | `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
 | `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
@@ -191,9 +197,10 @@ Emitted only when a security alert is triggered (subset of audit events).
 
 Security alert triggers:
 
-- **`destructive_command`** (critical): `rm -rf` (any recursive flag combo), `git push --force` (but NOT `--force-with-lease` / `--force-if-includes`), `DROP TABLE`, pipe-to-shell, etc. Detection is the OR of the bash classifier (`record.bashDestructive`) and the regex pattern list — defense in depth, neither layer alone is authoritative.
+- **`destructive_command`** (critical): `rm -rf` (any recursive flag combo), `git push --force` (but NOT `--force-with-lease` / `--force-if-includes`), `git clean -f` (any force form), `find -delete`, `DROP TABLE`, pipe-to-shell, etc. Detection is the OR of the bash classifier (`record.bashDestructive`) and the regex pattern list — defense in depth, neither layer alone is authoritative.
 - **`sensitive_file`** (high): `.env`, `.pem`, `.key`, `credentials`, `secret`, `.ssh`, `.npmrc`, `.pypirc`, `password`, `token` (path-boundary anchored)
 - **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands. Detection is the OR of the bash classifier (`record.bashNetwork`) and the regex pattern list.
+- **`file_deletion`** (medium): `rm` or `unlink` in command position (start of line, after `;`, `&`, `|`, or `(`, optionally with `sudo`), OR-ed with the bash classifier's leading token (`record.bashLeading`), which also strips env-var prefixes. Anchoring keeps `git rm`, `npm rm`, `docker rm`, and quoted text like `echo "rm foo"` out of scope. Recursive forms match too but lose to `destructive_command` by severity.
 
 Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
@@ -469,6 +476,40 @@ Emitted when `RetryDetector` flags a thrashing pattern — the same tool call re
 Unlike every other event type in this document, `AiRetryAlert` does not carry `event_version` — `retryAlertToNrEvent()` predates the `event_version` stamping pass and was missed by it.
 
 Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
+
+#### `AiTurnCost`
+
+Emitted for each tool call in an attributed turn, carrying the turn's cost and tokens split evenly across the calls. `tool_use_id` cross-references the call's `AiToolCall` row; facet by `skillName` for cost per skill.
+
+| Field                   | Type   | Description                                                                                                                                      |
+| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `eventType`             | string | Always `"AiTurnCost"`                                                                                                                            |
+| `event_version`         | number | Always `1`                                                                                                                                       |
+| `timestamp`             | number | Unix epoch milliseconds — the turn's end time (when the token event arrived)                                                                     |
+| `turn_id`               | string | Unique identifier for the turn (fresh UUID minted at cost close); groups all rows from one turn                                                  |
+| `tool_use_id`           | string | Joins to `AiToolCall.tool_use_id`                                                                                                                |
+| `tool`                  | string | Tool name (e.g., `"Read"`, `"Skill"`)                                                                                                            |
+| `skillName`             | string | Present only for Skill calls; the skill name from the call's `skillName` field (note: camelCase, case-sensitive in NRQL; see `AiToolCall` below) |
+| `cost_usd`              | number | This call's share of the turn's cost (turn total ÷ call count)                                                                                   |
+| `input_tokens`          | number | This call's share of the turn's input tokens (fractional)                                                                                        |
+| `output_tokens`         | number | This call's share of the turn's output tokens (fractional)                                                                                       |
+| `cache_read_tokens`     | number | This call's share of cache-read tokens (fractional)                                                                                              |
+| `cache_creation_tokens` | number | This call's share of cache-creation tokens (fractional)                                                                                          |
+| `turn_cost_usd`         | number | The full turn's cost (identical on all rows from one turn)                                                                                       |
+| `turn_tool_call_count`  | number | The number of calls in this turn (identical on all rows from one turn)                                                                           |
+| `model`                 | string | Model used to generate the turn's response                                                                                                       |
+| `developer`             | string | Developer identifier                                                                                                                             |
+| `app_name`              | string | Application name                                                                                                                                 |
+| `platform`              | string | Originating platform (defaults to `"claude-code"`)                                                                                               |
+| `session_id`            | string | Resolved Claude Code session ID (if available). Precedence: `attribution.sessionId` > `sessionTraceId`; omitted when both are null               |
+| `team_id`               | string | User-defined team label (if configured)                                                                                                          |
+| `project_id`            | string | Project identifier (if configured)                                                                                                               |
+| `org_id`                | string | Organization identifier (if configured)                                                                                                          |
+| `cost_authority`        | string | `"external"` only when `companionMode` is true and `platform === 'claude-code'`; omitted otherwise                                               |
+
+One row per tool call in an attributed turn. A row measures the usage of the model response that followed the turn, split evenly across the turn's calls — the same approximation `nr_observe_get_cost_per_tool` reports. Turns whose next response lands more than 5 seconds after the last tool produce no rows, so long responses are under-represented; tool-free turns (pure text responses) never appear; rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
+
+Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnCost()`
 
 ### Setup Validation
 

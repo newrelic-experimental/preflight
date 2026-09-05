@@ -1228,7 +1228,7 @@ async function main(): Promise<void> {
     // --local ids are synthetic, so this is a no-op for them — the provisional
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
-    const turnCostAttributor = new TurnCostAttributor();
+    const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
     // Day-boundary reset bookkeeping for gitEfficiencyTracker: the
@@ -1556,13 +1556,13 @@ async function main(): Promise<void> {
       claudeMdTracker,
     });
     const recommendationEngine = new RecommendationEngine({
-      sessionStore,
       trendAnalyzer,
       collaborationProfiler,
       claudeMdTracker,
       promptFeedbackEngine,
       costPerOutcomeAnalyzer,
       taskDetector,
+      modelUsageTracker,
     });
 
     const sessionStartMs = Date.now();
@@ -2233,7 +2233,8 @@ async function main(): Promise<void> {
       },
       onTokenEvent: (tokenEvent) => {
         if (!costTracker || !config) return;
-        turnCostAttributor.recordTokenEvent(tokenEvent);
+        const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent);
+        if (closedTurn) capturedNrIngest?.ingestTurnCost(closedTurn);
         const usage = {
           inputTokens: tokenEvent.inputTokens,
           outputTokens: tokenEvent.outputTokens,
@@ -2245,12 +2246,7 @@ async function main(): Promise<void> {
         const breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
           timestampMs: tokenEvent.timestamp,
         });
-        modelUsageTracker.recordUsage(
-          tokenEvent.model,
-          tokenEvent.inputTokens,
-          tokenEvent.outputTokens,
-          breakdown.totalUsd,
-        );
+        modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
           timestamp: tokenEvent.timestamp,
           costUsd: breakdown.totalUsd,
@@ -2361,12 +2357,7 @@ async function main(): Promise<void> {
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
         // tracker left Model Usage blind to every subagent-only session.
-        modelUsageTracker.recordUsage(
-          turn.model,
-          turn.inputTokens,
-          turn.outputTokens,
-          breakdown.totalUsd,
-        );
+        modelUsageTracker.recordUsage(turn.model, usage, breakdown.totalUsd);
         // Pricing miss → usd:null on the wire; we recompute here so
         // the breakdown view distinguishes "0 because pricing absent" from
         // "0 because the turn truly had zero cost".
