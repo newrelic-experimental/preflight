@@ -57,6 +57,9 @@ interface SessionRow {
   readonly toolBreakdown?: Record<string, number>;
   readonly tokensInput?: number;
   readonly tokensOutput?: number;
+  readonly tokensCacheRead?: number;
+  readonly tokensCacheCreation?: number;
+  readonly tokensThinking?: number;
 }
 
 const TICK_STYLE = { fill: 'var(--color-ink-muted)', fontSize: 10 };
@@ -1284,7 +1287,12 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       // token defaults, so guard on an actual positive token count rather
       // than null-ness (a session with real cost but zero recorded tokens
       // would otherwise pass the null check and inflate the blended rate).
-      const sessionTokens = (r.tokensInput ?? 0) + (r.tokensOutput ?? 0);
+      const sessionTokens =
+        (r.tokensInput ?? 0) +
+        (r.tokensOutput ?? 0) +
+        (r.tokensThinking ?? 0) +
+        (r.tokensCacheRead ?? 0) +
+        (r.tokensCacheCreation ?? 0);
       if (sessionTokens > 0) {
         entry.blendedCostSum += r.estimatedCostUsd;
         entry.blendedTokensSum += sessionTokens;

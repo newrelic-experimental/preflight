@@ -42,6 +42,16 @@ const GIT_OPTS = {
   },
 };
 
+export interface ModelBreakdownTally {
+  requestCount: number;
+  input: number;
+  output: number;
+  cost: number;
+  cacheRead: number;
+  cacheCreation: number;
+  thinking: number;
+}
+
 export interface LocalSessionRollup {
   sessionId: string;
   startTime: number;
@@ -66,10 +76,7 @@ export interface LocalSessionRollup {
   records: ToolCallRecord[];
   /** Per-session quality tracker, so raw counts survive into the summary. */
   quality: QualityProxyTracker;
-  modelBreakdown: Map<
-    string,
-    { requestCount: number; input: number; output: number; cost: number }
-  >;
+  modelBreakdown: Map<string, ModelBreakdownTally>;
   costUsd: number;
   tokensInput: number;
   tokensOutput: number;
@@ -328,6 +335,7 @@ export class LocalSessionAggregator {
       outputTokens?: number;
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
+      thinkingTokens?: number;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
@@ -344,11 +352,17 @@ export class LocalSessionAggregator {
         input: 0,
         output: 0,
         cost: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+        thinking: 0,
       };
       entry.requestCount += 1;
       entry.input += usage.inputTokens ?? 0;
       entry.output += usage.outputTokens ?? 0;
       entry.cost += usage.costUsd ?? 0;
+      entry.cacheRead += usage.cacheReadTokens ?? 0;
+      entry.cacheCreation += usage.cacheCreationTokens ?? 0;
+      entry.thinking += usage.thinkingTokens ?? 0;
       rollup.modelBreakdown.set(usage.model, entry);
     }
   }
@@ -544,10 +558,7 @@ export function resolveAuthorEmail(dir: string): string | null {
 
 /** Shape the per-model tallies the way `combineBreakdowns()` expects them. */
 function modelBreakdownOf(rollup: {
-  modelBreakdown: Map<
-    string,
-    { requestCount: number; input: number; output: number; cost: number }
-  >;
+  modelBreakdown: Map<string, ModelBreakdownTally>;
 }): Record<string, ModelBreakdownEntry> {
   const out: Record<string, ModelBreakdownEntry> = {};
   for (const [model, e] of rollup.modelBreakdown) {
@@ -556,6 +567,9 @@ function modelBreakdownOf(rollup: {
       totalInputTokens: e.input,
       totalOutputTokens: e.output,
       totalCostUsd: e.cost,
+      totalCacheReadTokens: e.cacheRead,
+      totalCacheCreationTokens: e.cacheCreation,
+      totalThinkingTokens: e.thinking,
     };
   }
   return out;

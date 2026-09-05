@@ -330,6 +330,8 @@ describe('LocalSessionAggregator panel rehydration', () => {
       model: 'gpt-5',
       inputTokens: 100,
       outputTokens: 20,
+      cacheReadTokens: 800,
+      cacheCreationTokens: 40,
       costUsd: 0.5,
     } as never);
     agg.recordTokenUsage(REAL_ID, {
@@ -346,6 +348,9 @@ describe('LocalSessionAggregator panel rehydration', () => {
         totalInputTokens: 150,
         totalOutputTokens: 30,
         totalCostUsd: 0.75,
+        totalCacheReadTokens: 800,
+        totalCacheCreationTokens: 40,
+        totalThinkingTokens: 0,
       },
     });
     const quality = summary?.qualityProxy as { totalSignals: number } | undefined;

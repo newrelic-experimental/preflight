@@ -183,6 +183,9 @@ export interface SessionListEntry {
   readonly efficiencyScore?: number | null;
   readonly tokensInput?: number;
   readonly tokensOutput?: number;
+  readonly tokensCacheRead?: number;
+  readonly tokensCacheCreation?: number;
+  readonly tokensThinking?: number;
 }
 
 export interface LiveSessionEntry {
@@ -275,6 +278,9 @@ export interface SessionDetail {
         readonly totalInputTokens: number;
         readonly totalOutputTokens: number;
         readonly totalCostUsd: number;
+        readonly totalCacheReadTokens: number;
+        readonly totalCacheCreationTokens: number;
+        readonly totalThinkingTokens: number;
       }
     >
   >;
@@ -842,7 +848,6 @@ export interface ModelStats {
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
   readonly totalCostUsd: number;
-  readonly costPerOutputToken: number | null;
   readonly costPerMillionTokens: number | null;
   readonly avgOutputTokensPerRequest: number | null;
 }
@@ -850,7 +855,6 @@ export interface ModelStats {
 export interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
-  readonly mostEfficientModel: string | null;
   readonly totalModelsUsed: number;
 }
 

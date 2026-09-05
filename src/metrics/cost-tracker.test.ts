@@ -1,10 +1,10 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { CostTracker } from './cost-tracker.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
 import { MetricAggregator } from '../shared/index.js';
-import type { TokenUsage } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -20,18 +20,6 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-function makeUsage(overrides?: Partial<TokenUsage>): TokenUsage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    thinkingTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    totalTokens: 0,
-    ...overrides,
-  };
-}
 
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
@@ -1255,6 +1243,7 @@ describe('seedFromPersisted()', () => {
         totalOutputTokens: 383_743,
         totalCacheReadTokens: 171_800_083,
         totalCacheCreationTokens: 3_409_635,
+        totalThinkingTokens: 0,
         costByModel: { 'claude-sonnet-5': 56.02 },
         dayCostUsd: 56.02,
       }),

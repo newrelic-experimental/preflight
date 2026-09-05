@@ -48,7 +48,7 @@ export const TASK_COMPLETION_TOOL = {
 export const MODEL_USAGE_TOOL = {
   name: 'nr_observe_get_model_usage',
   description:
-    'Get per-model usage statistics: request counts, token totals, cost, and cost-per-output-token efficiency ratios. Identifies the most-used and most cost-efficient model, plus any PostModelSwitch events (deliberate /model changes, automatic fallbacks, or resume) recorded this session.',
+    'Get per-model usage statistics: request counts, token totals (input, output, thinking, cache read, cache creation), cost, and cost per million billed tokens. Identifies the most-used model, plus any PostModelSwitch events (deliberate /model changes, automatic fallbacks, or resume) recorded this session.',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };

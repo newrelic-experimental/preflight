@@ -78,8 +78,8 @@ export interface CostMetrics {
   readonly costPerFileModified: number | null;
   /**
    * Blended session cost rate: totalCostUsd / totalTokens (all types) * 1M.
-   * Broader than ModelUsageTracker's per-model `costPerMillionTokens`, which
-   * only counts input+output tokens — the two are not directly comparable.
+   * ModelUsageTracker's per-model `costPerMillionTokens` uses the same
+   * denominator, so the two are comparable.
    */
   readonly costPerMillionTokens: number | null;
   readonly model: string | null;

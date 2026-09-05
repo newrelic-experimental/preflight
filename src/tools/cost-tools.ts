@@ -118,7 +118,7 @@ export function handleReportTokens(
   };
 
   const breakdown = costTracker.recordTokenUsage(usage, safeModel);
-  modelUsageTracker?.recordUsage(safeModel, inputTokens, outputTokens, breakdown.totalUsd);
+  modelUsageTracker?.recordUsage(safeModel, usage, breakdown.totalUsd);
   const metrics = costTracker.getMetrics();
 
   return {

@@ -1175,23 +1175,26 @@ Which AI model was used per request, cost-efficiency per model, and any model sw
       "requestCount": 25,
       "totalInputTokens": 120000,
       "totalOutputTokens": 45000,
+      "totalCacheReadTokens": 15000,
+      "totalCacheCreationTokens": 5000,
+      "totalThinkingTokens": 0,
       "totalCostUsd": 0.42,
-      "costPerOutputToken": 0.0000093,
-      "costPerMillionTokens": 2.55,
+      "costPerMillionTokens": 2.27,
       "avgOutputTokensPerRequest": 1800
     },
     "claude-opus-4-7": {
       "requestCount": 3,
       "totalInputTokens": 20000,
       "totalOutputTokens": 8000,
+      "totalCacheReadTokens": 2000,
+      "totalCacheCreationTokens": 1000,
+      "totalThinkingTokens": 0,
       "totalCostUsd": 0.18,
-      "costPerOutputToken": 0.0000225,
-      "costPerMillionTokens": 6.43,
+      "costPerMillionTokens": 5.81,
       "avgOutputTokensPerRequest": 2666.67
     }
   },
   "mostUsedModel": "claude-sonnet-4-6",
-  "mostEfficientModel": "claude-sonnet-4-6",
   "totalModelsUsed": 2,
   "switchCount": 2,
   "automaticSwitchCount": 1,
@@ -1216,10 +1219,8 @@ Which AI model was used per request, cost-efficiency per model, and any model sw
 
 **Field notes:**
 
-- `costPerOutputToken` — `totalCostUsd / totalOutputTokens` (null if no output tokens)
-- `costPerMillionTokens` — per-model rate: `(totalCostUsd / (totalInputTokens + totalOutputTokens)) * 1_000_000` (null if no tokens). Only counts input+output tokens — narrower than `nr_observe_get_cost_breakdown`'s session-blended `cost_per_million_tokens`, which also folds in thinking/cache-read/cache-creation tokens. The two figures are not directly comparable.
+- `costPerMillionTokens` — per-model rate: `(totalCostUsd / (totalInputTokens + totalOutputTokens + totalThinkingTokens + totalCacheReadTokens + totalCacheCreationTokens)) * 1_000_000` (null if no tokens). Counts every billed token, so it is comparable with list prices and with `nr_observe_get_cost_breakdown`'s session-blended `cost_per_million_tokens`.
 - `mostUsedModel` — the model with the highest `requestCount`
-- `mostEfficientModel` — the model with the lowest `costPerOutputToken`
 - `switchCount` / `automaticSwitchCount` — total `PostModelSwitch` events seen this session, and the subset where `source === 'auto'` (a persistent automatic change, e.g. a sustained fallback — not a one-turn fallback-chain substitution, which Claude Code doesn't fire this hook for)
 - `recentSwitches` — the most recent switches (newest last, bounded to 100); `requestedModel` is `null` for an automatic switch or session-resume restore
 
@@ -1228,8 +1229,8 @@ Which AI model was used per request, cost-efficiency per model, and any model sw
 **How it works:**
 
 - Tracks `model` field from each request (e.g., "claude-sonnet-4-6")
-- Aggregates request count, input/output tokens, and cost per model
-- Picks `mostUsedModel` (highest request count) and `mostEfficientModel` (lowest `costPerOutputToken`)
+- Aggregates request count, input/output/thinking/cache tokens, and cost per model
+- Picks `mostUsedModel` (highest request count)
 - Records each Claude Code `PostModelSwitch` hook event as a discrete switch (deliberate `/model` change, persistent automatic fallback, or resume) via `recordModelSwitch()`
 
 **Requires:** `ModelUsageTracker`

@@ -1054,14 +1054,12 @@ function LatencyPanel({
 interface ModelStats {
   readonly requestCount: number;
   readonly totalCostUsd: number;
-  readonly costPerOutputToken: number | null;
   readonly costPerMillionTokens: number | null;
 }
 
 interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
-  readonly mostEfficientModel: string | null;
 }
 
 function ModelUsagePanel(): JSX.Element {
@@ -1084,7 +1082,7 @@ function ModelUsagePanel(): JSX.Element {
     <Card padding="sm" className="h-full">
       <div className="flex items-center gap-1.5 mb-2">
         <Eyebrow>Model Usage</Eyebrow>
-        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. The live slice resets if the server process restarts." />
+        <InfoTooltip text="Cost and request volume per model used today, combining this server's live usage with every other session's saved totals. $/1M tok counts every billed token, cache reads and cache writes included, so it is comparable with list prices. The live slice resets if the server process restarts." />
       </div>
       {!data || models.length === 0 ? (
         <EmptyState
@@ -1106,11 +1104,6 @@ function ModelUsagePanel(): JSX.Element {
               </div>
             </div>
           ))}
-          {data?.mostEfficientModel && (
-            <div className="text-[10px] text-accent-green mt-1">
-              Most efficient: {data.mostEfficientModel}
-            </div>
-          )}
         </div>
       )}
     </Card>

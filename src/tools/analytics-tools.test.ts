@@ -4,6 +4,7 @@ import { ContextTrackerRegistry } from '../metrics/context-tracker.js';
 import { LatencyTracker } from '../metrics/latency-tracker.js';
 import { TaskCompletionTracker } from '../metrics/task-completion-tracker.js';
 import { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import {
@@ -107,7 +108,11 @@ describe('analytics-tools handlers', () => {
 
   it('handleGetModelUsage returns the tracker metrics verbatim', () => {
     const tracker = new ModelUsageTracker();
-    tracker.recordUsage('claude-sonnet-4', 1000, 200, 0.06);
+    tracker.recordUsage(
+      'claude-sonnet-4',
+      makeUsage({ inputTokens: 1000, outputTokens: 200 }),
+      0.06,
+    );
 
     const result = handleGetModelUsage(tracker);
     const parsed = JSON.parse(result.content[0].text);

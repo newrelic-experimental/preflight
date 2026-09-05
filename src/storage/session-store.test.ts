@@ -361,6 +361,33 @@ describe('buildSessionSummary anti-patterns', () => {
     expect(roundTripped.antiPatterns).toHaveLength(5);
     expect(roundTripped.antiPatterns.every((p) => p.type === 'thrashing')).toBe(true);
   });
+
+  it('reads a modelBreakdown entry written before cache token fields existed with both cache counts at 0', () => {
+    const raw = {
+      sessionId: 'legacy-3',
+      modelBreakdown: {
+        'claude-sonnet-4-6': {
+          requestCount: 4,
+          totalInputTokens: 120,
+          totalOutputTokens: 60,
+          totalCostUsd: 0.3,
+        },
+      },
+    };
+    const roundTripped = deserializeFullSessionSummary(raw);
+
+    expect(roundTripped.modelBreakdown).toEqual({
+      'claude-sonnet-4-6': {
+        requestCount: 4,
+        totalInputTokens: 120,
+        totalOutputTokens: 60,
+        totalCostUsd: 0.3,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalThinkingTokens: 0,
+      },
+    });
+  });
 });
 
 function makeSessionTracker(): SessionTracker {
@@ -2390,6 +2417,9 @@ describe('modelBreakdown field', () => {
           totalInputTokens: 900,
           totalOutputTokens: 400,
           totalCostUsd: 0.12,
+          totalCacheReadTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalThinkingTokens: 0,
         },
       }),
     };
@@ -2406,6 +2436,9 @@ describe('modelBreakdown field', () => {
         totalInputTokens: 900,
         totalOutputTokens: 400,
         totalCostUsd: 0.12,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalThinkingTokens: 0,
       },
     });
   });
@@ -2446,6 +2479,9 @@ describe('modelBreakdown field', () => {
           totalInputTokens: 900,
           totalOutputTokens: 400,
           totalCostUsd: 0.12,
+          totalCacheReadTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalThinkingTokens: 0,
         },
       },
     });
@@ -2475,6 +2511,9 @@ describe('modelBreakdown field', () => {
           totalInputTokens: 10,
           totalOutputTokens: 10,
           totalCostUsd: 0.1,
+          totalCacheReadTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalThinkingTokens: 0,
         },
         'bad-model': { requestCount: 1 },
       },
@@ -2488,6 +2527,9 @@ describe('modelBreakdown field', () => {
         totalInputTokens: 10,
         totalOutputTokens: 10,
         totalCostUsd: 0.1,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalThinkingTokens: 0,
       },
     });
   });
@@ -2630,6 +2672,9 @@ describe('saveSession cross-process merge', () => {
           totalInputTokens: 292,
           totalOutputTokens: 533,
           totalCostUsd: 0.008871,
+          totalCacheReadTokens: 0,
+          totalCacheCreationTokens: 0,
+          totalThinkingTokens: 0,
         },
       },
     });
@@ -2659,6 +2704,9 @@ describe('saveSession cross-process merge', () => {
         totalInputTokens: 292,
         totalOutputTokens: 533,
         totalCostUsd: 0.008871,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalThinkingTokens: 0,
       },
     });
   });
@@ -2686,6 +2734,9 @@ describe('saveSession cross-process merge', () => {
             totalInputTokens: 10,
             totalOutputTokens: 5,
             totalCostUsd: 0.1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
           },
         },
       }),
@@ -2700,6 +2751,9 @@ describe('saveSession cross-process merge', () => {
             totalInputTokens: 20,
             totalOutputTokens: 6,
             totalCostUsd: 0.2,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
           },
         },
       }),
