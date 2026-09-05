@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.4] - 2026-09-05
+
+### Added
+
+- **Homelab server mode now serves a dashboard, protected by HTTP Basic Auth.** Previously `preflight server` only accepted forwarded events over `/ingest`; visiting the server's address in a browser 404'd, and the only way to view accumulated data was inspecting session files directly. The dashboard (and its `/api/*` and `/sse` routes) now render using the shared homelab token as an HTTP Basic Auth password — any username, the token as the password — so a browser's native login prompt authenticates automatically on first visit and on every subsequent request, including static assets and the live event stream. `GET /api/health` remains open, matching local mode. `POST /ingest` keeps its existing independent Bearer-token check.
+
 ## [1.44.0] - 2026-09-04
 
 ### Fixed

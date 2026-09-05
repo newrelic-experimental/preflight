@@ -4,13 +4,11 @@ Run Preflight as a shared event-collection server — multiple developers forwar
 their session data to one box, which accumulates it into standard session-store
 files, no New Relic account required.
 
-**Current scope: this is ingest-only.** The server accepts and persists events;
-it does not yet serve a dashboard for viewing the aggregated data. Dashboard
-viewing (with proper per-route authentication) is tracked as a follow-up — see
-[issue #514](https://github.com/newrelic-experimental/preflight/issues/514)
-for status. Until then, the accumulated session files
-(`<storage>/sessions/*.json`) can be inspected directly on the server, or copied
-to a machine running `preflight --local` against that storage path.
+The server accepts events over `/ingest` and also serves a dashboard for
+viewing the accumulated session data, protected by HTTP Basic Auth using the
+same shared token as `/ingest`. The accumulated session files
+(`<storage>/sessions/*.json`) can also be inspected directly on the server, or
+copied to a machine running `preflight --local` against that storage path.
 
 ## Architecture
 
@@ -96,9 +94,14 @@ NEW_RELIC_AI_HOMELAB_TOKEN=<your-secret>
 | `homelabServer.port`        | `NEW_RELIC_AI_HOMELAB_SERVER_PORT`  | `7777`    | Port to bind |
 | `homelabServer.bindAddress` | `NEW_RELIC_AI_HOMELAB_BIND_ADDRESS` | `0.0.0.0` | Bind address |
 
-The server binds all interfaces by default so remote clients can reach it. The
-only access control today is the single shared bearer token on `/ingest` — there
-is no per-developer credential and no dashboard exposed. Bind to a trusted
+The server binds all interfaces by default so remote clients can reach it.
+There is a single shared secret (`PREFLIGHT_TOKEN` / `homelabToken`), presented
+two ways depending on the caller: forwarding clients send it as
+`Authorization: Bearer <token>` on `POST /ingest`; browsers viewing the
+dashboard send it as HTTP Basic Auth (any username, the token as the
+password) — your browser's native login prompt handles this automatically and
+resends the credential on every request. `GET /api/health` stays open
+(no session data). There is no per-developer credential. Bind to a trusted
 network/VPN interface if that matters for your deployment.
 
 `homelabServerUrl` is expected to point at a private LAN address — that's the
@@ -128,7 +131,19 @@ curl -s -o /dev/null -w "%{http_code}" -X POST http://<homelab>:7777/ingest \
   -H "Content-Type: application/json" \
   -d '{"developer":"test","sessionId":"test-abc","records":[{"id":"1","sessionId":"test-abc","toolName":"Read","toolUseId":"u1","timestamp":1000,"durationMs":1,"success":true}]}'
 # Expected: 204
+
+# Dashboard auth rejection (no credentials)
+curl -s -o /dev/null -w "%{http_code}" http://<homelab>:7777/
+# Expected: 401
+
+# Dashboard auth success (any username, token as password)
+curl -s -o /dev/null -w "%{http_code}" -u "dashboard:<your-secret>" http://<homelab>:7777/
+# Expected: 200
 ```
+
+Or just open `http://<homelab>:7777/` in a browser — it will prompt for a
+username/password; enter anything for the username and the shared token as
+the password.
 
 ## Troubleshooting
 

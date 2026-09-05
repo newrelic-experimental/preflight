@@ -39,6 +39,16 @@ export interface DashboardServerOptions {
    * Returns the HTTP status code to send: 204 (ok), 400 (bad body), 401 (bad token).
    */
   readonly ingestHandler?: (authHeader: string | undefined, body: unknown) => 204 | 400 | 401;
+  /**
+   * When provided, gates every route except GET /api/health and POST
+   * /ingest (which has its own independent Bearer-token check via
+   * ingestHandler) behind this check. Called with the raw Authorization
+   * header value; return true to allow the request through. A false
+   * result sends 401 with a WWW-Authenticate: Basic header so browsers
+   * prompt natively and then resend credentials on every later request,
+   * including static assets and /sse which can't carry custom headers.
+   */
+  readonly isAuthorized?: (authHeader: string | undefined) => boolean;
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -224,6 +234,16 @@ export class DashboardServer {
       // browser's disk cache. SSE sets its own no-cache headers.
       if (pathname.startsWith('/api/')) res.setHeader('cache-control', 'no-store');
       const key = `${req.method ?? 'GET'} ${pathname}`;
+      if (
+        this.opts.isAuthorized &&
+        key !== 'GET /api/health' &&
+        key !== 'POST /ingest' &&
+        !this.opts.isAuthorized(req.headers.authorization)
+      ) {
+        res.writeHead(401, { 'www-authenticate': 'Basic realm="Preflight Homelab"' });
+        res.end();
+        return;
+      }
       const handler = this.routes.get(key);
       if (handler) {
         try {
