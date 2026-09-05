@@ -2886,6 +2886,19 @@ describe('subagentTurnToNrEvent()', () => {
     const event = subagentTurnToNrEvent(makeTurn(), { developer: 'd', appName: 'a' });
     expect(event).not.toHaveProperty('cost_authority');
   });
+
+  it('includes agent_type when present', () => {
+    const event = subagentTurnToNrEvent(makeTurn({ agent_type: 'general-purpose' }), {
+      developer: 'd',
+      appName: 'a',
+    });
+    expect(event.agent_type).toBe('general-purpose');
+  });
+
+  it('omits agent_type when absent (best-effort cross-reference miss)', () => {
+    const event = subagentTurnToNrEvent(makeTurn(), { developer: 'd', appName: 'a' });
+    expect(event).not.toHaveProperty('agent_type');
+  });
 });
 
 describe('observabilityHealthToNrEvent()', () => {

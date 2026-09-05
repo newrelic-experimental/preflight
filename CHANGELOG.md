@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.3] - 2026-09-05
+
+### Added
+
+- **Subagent cost can now be broken down by agent type, on a best-effort basis.** `nr_observe_get_cost_breakdown` gains a `by_agent_type` field, and the `AiSubagentTurn` event gains an `agent_type` attribute, alongside the existing per-agent-id data. Coverage depends on the subagent having made at least one tool call the harness reports a type for — a subagent that never does so is still counted in the overall subagent total but not broken out by type.
+
 ## [1.44.0] - 2026-09-04
 
 ### Fixed

@@ -1164,6 +1164,73 @@ describe('subagent token support', () => {
     expect(metrics.subagentCostUsd).toBe(0);
   });
 
+  it('ctx.agentId + ctx.agentType set → cost accumulates in subagentCostByAgentType[agentType]', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { agentId: 'agent-abc', agentType: 'general-purpose' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 5_000, outputTokens: 1_000, totalTokens: 6_000 }),
+      'claude-sonnet-4',
+      { agentId: 'agent-def', agentType: 'general-purpose' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      { agentId: 'agent-ghi', agentType: 'Explore' },
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.subagentCostByAgentType).toHaveProperty('general-purpose');
+    expect(metrics.subagentCostByAgentType).toHaveProperty('Explore');
+    expect(metrics.subagentCostByAgentType['general-purpose']).toBeGreaterThan(
+      metrics.subagentCostByAgentType['Explore']!,
+    );
+  });
+
+  it('ctx.agentId set but ctx.agentType absent → no entry added to subagentCostByAgentType', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { agentId: 'agent-abc' },
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.subagentCostByAgentType).toEqual({});
+    expect(metrics.subagentCostUsd).toBeGreaterThan(0);
+  });
+
+  it('late arrival (>48h) with ctx.agentType: subagentCostByAgentType still accumulates', () => {
+    const tracker = new CostTracker();
+    const oldTs = Date.now() - 49 * 60 * 60 * 1000; // 49h ago
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { timestampMs: oldTs, agentId: 'agent-abc', agentType: 'general-purpose' },
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.subagentCostByAgentType['general-purpose']).toBeGreaterThan(0);
+  });
+
+  it('reset() clears subagentCostByAgentType', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { agentId: 'agent-abc', agentType: 'general-purpose' },
+    );
+    expect(tracker.getMetrics().subagentCostByAgentType).toHaveProperty('general-purpose');
+
+    tracker.reset('session-1');
+
+    expect(tracker.getMetrics().subagentCostByAgentType).toEqual({});
+  });
+
   it('ctx.workflowRunId set → cost appears in costByWorkflowRunId[runId][dayKey]', () => {
     const tracker = new CostTracker();
     const ts = Date.now() - 30 * 60 * 1000; // 30 min ago
