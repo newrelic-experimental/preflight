@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.2] - 2026-09-05
+
+### Fixed
+
+- **An open-but-idle Claude Code window no longer disappears from the Today tab, and its buffered activity is no longer at risk of being garbage-collected before it's persisted.** The dashboard treated "hasn't made a tool call in the last 3 minutes" the same as "this session no longer exists" — an idle-but-still-open window vanished from the session list and today's session count, and its buffer file could be deleted by the background GC pass as an orphan. Sessions seen at any point today are now tracked separately from the 3-minute "actively coding" window, so an idle window stays visible and its data stays safe until it's actually persisted.
+- **The hourly-spend chart on the Forecast card no longer double-highlights a "peak" hour.** Two different hours could round to the same number of blocks once cost was quantized for display, and both got the peak color even though only one was the real highest-spending hour. The chart now flags peak from the actual dollar amount instead of the rounded block count.
+
 ## [1.44.0] - 2026-09-04
 
 ### Fixed

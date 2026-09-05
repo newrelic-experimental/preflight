@@ -361,6 +361,14 @@ export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
       for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
         live.add(id);
       }
+      // Also protect sessions seen at any point today but no longer within the
+      // 3-minute live window (e.g. an open Claude Code window idle between
+      // prompts) — without this, gcOrphanBuffers/gcWatcherCursors would treat
+      // an idle-but-still-open session as orphaned and delete its buffer file
+      // before it's ever persisted.
+      for (const id of liveSessionRegistry.getTodaySessionIds({ includeSynthetic: true })) {
+        live.add(id);
+      }
     }
     localStore.gcOrphanBuffers(live);
     const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);

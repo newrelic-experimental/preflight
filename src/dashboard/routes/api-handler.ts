@@ -569,6 +569,12 @@ export interface ApiHandlerDeps {
     // report which source produced the name (see SessionNameSource). Callers
     // use `getSessionNameSource?.(id) ?? null` so partial mocks fall back safely.
     getSessionNameSource?: (sessionId: string) => SessionNameSource | null;
+    // Optional: sessions touched at any point today (local calendar day),
+    // surviving the 3-minute getLiveSessions() eviction. Used wherever "still
+    // part of today" is the right question rather than "active right now" —
+    // see computeCrossProcessTodaySessionIds(). `?.` falls back to an empty
+    // set for older fakes/mocks.
+    getTodaySessionIds?: (options?: { includeSynthetic?: boolean }) => string[];
   };
   readonly concurrencyTracker?: {
     getConcurrentCount: () => number;
@@ -1072,6 +1078,28 @@ export function computeCrossProcessLiveSessionIds(deps: ApiHandlerDeps): string[
   return Array.from(ids);
 }
 
+// Same cross-process union as computeCrossProcessLiveSessionIds(), but scoped
+// to "seen at any point today" (local calendar day) rather than the 3-minute
+// live window. Use this wherever the question is "should this session still
+// count toward today's data" (the /api/sessions list, today's aggregate
+// sessionCount, the concurrency chart's activity windows) rather than
+// "is it actively being worked on right now" — an idle-but-still-open window
+// answers yes to the former and no to the latter.
+export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string[] {
+  const ids = new Set<string>(deps.liveSessionRegistry?.getTodaySessionIds?.() ?? []);
+  const startOfToday = localStartOfDay();
+  const peeked = deps.localStore?.peekAllBuffers() ?? [];
+  for (const ev of peeked) {
+    const sid = (ev as { sessionId?: unknown }).sessionId;
+    if (typeof sid !== 'string' || sid.length === 0) continue;
+    if (isSyntheticSessionId(sid)) continue;
+    const ts = (ev as { timestamp?: unknown }).timestamp;
+    if (typeof ts !== 'number') continue;
+    if (ts >= startOfToday) ids.add(sid);
+  }
+  return Array.from(ids);
+}
+
 // Narrows this MCP's own peekAllBuffers() rows (raw buffer-file lines from
 // EVERY --stdio process, read-only) into the two event kinds
 // computeContextMetricsFromEvents() understands, scoped to one session.
@@ -1215,7 +1243,9 @@ export function createApiHandler(
           perSession.set(sid, { count: 1, firstTs: ts || Date.now(), lastTs: ts || Date.now() });
         }
       }
-      for (const id of computeCrossProcessLiveSessionIds(deps)) {
+      // Today-scoped (not 3-min live-scoped): an idle-but-still-open window
+      // must keep its stub row here — see computeCrossProcessTodaySessionIds().
+      for (const id of computeCrossProcessTodaySessionIds(deps)) {
         if (!knownIds.has(id)) {
           const stats = perSession.get(id);
           // getLastActivity is registry-maintained and survives buffer drains,
@@ -1352,6 +1382,15 @@ export function createApiHandler(
     let subagentUsd = 0;
     let antiPatternCount = 0;
     const sessionsSeen = new Set<string>();
+    // (0) sessions seen today but idle past the buffer's undrained window and
+    // not yet persisted to disk — the only remaining signal an open-but-idle
+    // Claude Code window still exists. Without this, such a session
+    // contributes to neither (1) nor (2) below and undercounts sessionCount.
+    // Registry-only (not the cross-process buffer union computed elsewhere
+    // in this file) since (1) below already peeks every process's buffer.
+    for (const id of deps.liveSessionRegistry?.getTodaySessionIds?.() ?? []) {
+      sessionsSeen.add(id);
+    }
     const latencySamples: LatencySample[] = [];
     const pushLatencySample = (sample: LatencySample): void => {
       if (latencySamples.length < MAX_AGGREGATE_LATENCY_SAMPLES) latencySamples.push(sample);
@@ -2358,8 +2397,10 @@ export function createApiHandler(
       // renders cleanly at any zoom level. Replaces the prior unbounded
       // 30-second rolling timeSeries.
       const startTimestamp = localStartOfDay();
-      // getLiveSessions() already excludes synthetic session ids too.
-      const liveIds = deps.liveSessionRegistry?.getLiveSessions() ?? [];
+      // Today-scoped (not 3-min live-scoped): an idle-but-still-open session's
+      // buffered activity must still fold into the chart — getTodaySessionIds()
+      // already excludes synthetic session ids too.
+      const liveIds = deps.liveSessionRegistry?.getTodaySessionIds?.() ?? [];
       const bufferRecords = deps.toolCallBuffer?.getRecords() ?? [];
       const windows = collectTodayActivityWindows(todaySessions, liveIds, bufferRecords);
       const buckets = computeTodayConcurrencyBuckets(windows, startTimestamp);
