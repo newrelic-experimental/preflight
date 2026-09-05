@@ -94,14 +94,16 @@
     "@opentelemetry/core": "^2.10.0",
     "body-parser": "^2.3.0",
     "brace-expansion": "^5.0.7",
+    "browserslist": "^4.28.7",
     "eslint-plugin-react": {
       "eslint": "$eslint"
     },
-    "fast-uri": "^3.1.5",
+    "fast-uri": "^3.1.6",
     "hono": "^4.12.34",
     "ip-address": "^10.3.1",
     "js-yaml": "^4.3.1",
     "nanoid": "^3.3.18",
+    "qs": "^6.16.0",
     "undici": "^7.29.0"
   },
   "devDependencies": {
