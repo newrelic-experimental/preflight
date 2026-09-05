@@ -283,7 +283,10 @@ describe('Audit view', () => {
       },
     ]);
     await waitFor(() => expect(screen.getByText('/etc/hosts')).toBeInTheDocument());
-    expect(screen.getByText('—')).toBeInTheDocument();
+    const row = screen.getByText('/etc/hosts').closest('tr');
+    const cells = Array.from(row?.querySelectorAll('td') ?? []);
+    const sessionCell = cells[cells.length - 1];
+    expect(sessionCell?.textContent).toBe('—');
     expect(screen.queryByRole('link')).toBeNull();
   });
 
