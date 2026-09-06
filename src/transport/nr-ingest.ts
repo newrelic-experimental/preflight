@@ -1232,6 +1232,33 @@ export class NrIngestManager {
     return this.primaryTierName;
   }
 
+  /**
+   * Fan one NR event out to every tier whose `eventTypes` matches, in tier
+   * declaration order. The single choke point through which all ~15
+   * `ingestX()` methods emit events.
+   *
+   * The same event object is shared by reference across tiers — field-level
+   * redaction/projection per tier is an explicit non-goal (routing is
+   * event-type-level only). Neither `HarvestScheduler.addEvent()` nor
+   * `TierLocalWriter.addEvent()` mutates it.
+   *
+   * An event whose type matches no tier is dropped silently: a narrow tier
+   * list is a deliberate operator choice, and logging per dropped event would
+   * flood stderr at tool-call volume.
+   */
+  private routeEvent(event: NrEventData): void {
+    const rawEventType = event.eventType;
+    const eventType = typeof rawEventType === 'string' ? rawEventType : '';
+    for (const tierName of this.router.resolveEventType(eventType)) {
+      const scheduler = this.schedulers.get(tierName);
+      if (scheduler !== undefined) {
+        scheduler.addEvent(event);
+        continue;
+      }
+      this.localWriters.get(tierName)?.addEvent(event);
+    }
+  }
+
   ingestProxyRequest(record: ProxyRequestRecord): void {
     const event = proxyRequestToNrEvent(record, {
       developer: this.developer,
@@ -1241,7 +1268,7 @@ export class NrIngestManager {
       orgId: this.orgId,
       repoUrl: this.repoUrl,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
 
     const server = record.serverName;
     this.primaryScheduler.recordMetric('ai.mcp.proxy_request_count', 1, {
@@ -1281,7 +1308,7 @@ export class NrIngestManager {
     // Enriching NR events here would always produce null because the token event
     // (which finalizes turn cost) arrives asynchronously after ingestToolCall is called.
 
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
 
     // Record per-call metrics for NR Metric API. Prefer the record's own
     // sessionId (see the comment on the AiToolCall event above) — this also
@@ -1325,7 +1352,7 @@ export class NrIngestManager {
         orgId: this.orgId,
         repoUrl: this.repoUrl,
       });
-      this.primaryScheduler.addEvent(proxyEvent);
+      this.routeEvent(proxyEvent);
       this.proxyMetrics.recordProxyCall(record);
     }
 
@@ -1337,7 +1364,7 @@ export class NrIngestManager {
       (isProxyToolCall(record)
         ? this.auditTrail.recordProxyCall(record)
         : this.auditTrail.recordToolCall(record));
-    this.primaryScheduler.addEvent(
+    this.routeEvent(
       auditRecordToNrEvent(finalAuditRecord, {
         teamId: this.teamId,
         projectId: this.projectId,
@@ -1346,7 +1373,7 @@ export class NrIngestManager {
       }),
     );
     if (finalAuditRecord.securityAlert) {
-      this.primaryScheduler.addEvent(
+      this.routeEvent(
         securityAlertToNrEvent(finalAuditRecord, {
           teamId: this.teamId,
           projectId: this.projectId,
@@ -1370,7 +1397,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   /**
@@ -1391,7 +1418,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   /**
@@ -1410,7 +1437,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   /**
@@ -1428,7 +1455,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   /**
@@ -1446,7 +1473,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.primaryScheduler.addEvent(ev);
+    this.routeEvent(ev);
   }
 
   /** Buffer an `AiObservabilityHealth` event from the watcher pipeline. */
@@ -1459,7 +1486,7 @@ export class NrIngestManager {
       orgId: this.orgId,
       repoUrl: this.repoUrl,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   ingestAntiPattern(
@@ -1478,7 +1505,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       detectedAt: context.detectedAt,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   ingestRetryAlert(alert: ThrashingAlert, context: { platform?: string } = {}): void {
@@ -1492,7 +1519,7 @@ export class NrIngestManager {
       orgId: this.orgId,
       repoUrl: this.repoUrl,
     });
-    this.primaryScheduler.addEvent(event);
+    this.routeEvent(event);
   }
 
   ingestTurnCost(turn: ClosedTurn): void {
@@ -1506,7 +1533,7 @@ export class NrIngestManager {
       companionMode: this.companionMode,
     });
     for (const event of events) {
-      this.primaryScheduler.addEvent(event);
+      this.routeEvent(event);
     }
   }
 
@@ -1541,7 +1568,7 @@ export class NrIngestManager {
     if (this.orgId) nrEvent.org_id = this.orgId;
     if (this.repoUrl) nrEvent.repo_url = this.repoUrl;
     if (this.sessionTraceId != null) nrEvent.session_id = this.sessionTraceId;
-    this.primaryScheduler.addEvent(nrEvent);
+    this.routeEvent(nrEvent);
   }
 
   ingestBudgetWarning(event: BudgetThresholdEvent): void {
@@ -1562,7 +1589,7 @@ export class NrIngestManager {
     if (this.orgId) nrEvent.org_id = this.orgId;
     if (this.repoUrl) nrEvent.repo_url = this.repoUrl;
     if (this.sessionTraceId != null) nrEvent.session_id = this.sessionTraceId;
-    this.primaryScheduler.addEvent(nrEvent);
+    this.routeEvent(nrEvent);
   }
 
   start(): void {

@@ -35,7 +35,7 @@ import { FeedbackCollector } from '../tools/workflow-tools.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { TokenUsage } from '../shared/index.js';
 import type { ResolvedTier } from './tier-types.js';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -3510,5 +3510,211 @@ describe('NrIngestManager — tier construction', () => {
     await manager.stop();
 
     expect(manager.getEventSendHealth().consecutiveFailures).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('NrIngestManager — routeEvent fan-out', () => {
+  function eventsSentWithKey(licenseKey: string): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const call of mockSendEvents.mock.calls as unknown[][]) {
+      if (call[1] !== licenseKey) continue;
+      for (const event of call[0] as Array<Record<string, unknown>>) out.push(event);
+    }
+    return out;
+  }
+
+  it('sends a safe-shared event to both the wildcard tier and a tier naming it', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({ name: 'personal', eventTypes: ['*'] }),
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            eventTypes: ['AiCodingTask'],
+          }),
+        ],
+      }),
+    );
+
+    manager.ingestCodingTask(makeTask());
+    manager.start();
+    await manager.stop();
+
+    expect(eventsSentWithKey('lk-personal').map((e) => e.eventType)).toEqual(['AiCodingTask']);
+    expect(eventsSentWithKey('lk-team').map((e) => e.eventType)).toEqual(['AiCodingTask']);
+  });
+
+  it('withholds a personal-only event from a tier that does not name it', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({ name: 'personal', eventTypes: ['*'] }),
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            eventTypes: ['AiCodingTask'],
+          }),
+        ],
+      }),
+    );
+
+    manager.ingestToolCall(
+      makeRecord({ toolName: 'Bash', command: 'rm -rf /tmp/x' } as Partial<ToolCallRecord>),
+    );
+    manager.start();
+    await manager.stop();
+
+    const personalTypes = eventsSentWithKey('lk-personal').map((e) => e.eventType);
+    expect(personalTypes).toContain('AiToolCall');
+    expect(personalTypes).toContain('AiAuditEvent');
+    expect(eventsSentWithKey('lk-team')).toEqual([]);
+  });
+
+  it('routes every ingest method through the router (no event bypasses tier selection)', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            // Deliberately narrow: nothing this test emits is listed, so a
+            // call site still writing straight to the primary scheduler
+            // would leak here.
+            eventTypes: ['AiRetryAlert'],
+          }),
+        ],
+      }),
+    );
+
+    manager.ingestProxyRequest(makeProxyRequestRecord());
+    manager.ingestToolCall(makeRecord());
+    manager.ingestCodingTask(makeTask());
+    manager.ingestWorkflowRun({
+      workflow_run_id: 'toolu_wf1',
+      session_id: 'sess-001',
+      started_at: 1_700_000_000_000,
+      duration_ms: 1000,
+      tool_call_count: 2,
+      child_agent_count: 0,
+      status: 'completed',
+    } as WorkflowRunMetrics);
+    manager.ingestObservabilityHealth({
+      timestamp: 1_700_000_000_000,
+      watcher: 'workflow',
+      files_watched: 1,
+      lines_read: 10,
+      bytes_read: 100,
+      parse_errors: 0,
+      schema_drifts: 0,
+      last_error: null,
+    } as ObservabilityHealthMetrics);
+    manager.ingestAntiPattern(makePattern(), { taskId: 'task-001' });
+    manager.ingestTurnCost(makeClosedTurn());
+    manager.ingestContextSnapshot(makeContextSnapshot(), [makeToolContribution()]);
+    manager.ingestBudgetWarning({
+      timestamp: 1_700_000_000_000,
+      period: 'session',
+      thresholdPct: 80,
+      spentUsd: 8,
+      budgetUsd: 10,
+    });
+
+    manager.start();
+    await manager.stop();
+
+    // Only AiRetryAlert is routed to this tier, and none was emitted.
+    expect(eventsSentWithKey('lk-team')).toEqual([]);
+    // The retry-alert path itself still reaches the tier.
+    mockSendEvents.mockClear();
+
+    const manager2 = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            eventTypes: ['AiRetryAlert'],
+          }),
+        ],
+      }),
+    );
+    manager2.ingestRetryAlert(makeThrashingAlert());
+    manager2.start();
+    await manager2.stop();
+    expect(eventsSentWithKey('lk-team').map((e) => e.eventType)).toEqual(['AiRetryAlert']);
+  });
+
+  it('writes routed events to a local tier as JSONL', async () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-local-tier-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal', eventTypes: ['*'] }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      manager.ingestCodingTask(makeTask({ taskId: 'task-local-1' }));
+      manager.ingestToolCall(makeRecord());
+      manager.start();
+      await manager.stop();
+
+      const filePath = resolve(localDir, 'events-2023-11-14.jsonl');
+      const lines = readFileSync(filePath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const written = JSON.parse(lines[0]) as Record<string, unknown>;
+      expect(written.eventType).toBe('AiCodingTask');
+      expect(written.task_id).toBe('task-local-1');
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still sends everything to the single default tier when no tiers are configured', async () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestToolCall(makeRecord({ toolName: 'Edit' }));
+    manager.start();
+    await manager.stop();
+
+    const sentEvents = (mockSendEvents.mock.calls[0] as unknown[])[0] as Array<
+      Record<string, unknown>
+    >;
+    expect(sentEvents.map((e) => e.eventType).sort()).toEqual(['AiAuditEvent', 'AiToolCall']);
+  });
+
+  it('drops an event whose type matches no tier without throwing', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            eventTypes: ['AiCodingTask'],
+          }),
+        ],
+      }),
+    );
+
+    expect(() =>
+      manager.ingestBudgetWarning({
+        timestamp: 1_700_000_000_000,
+        period: 'daily',
+        thresholdPct: 50,
+        spentUsd: 5,
+        budgetUsd: 10,
+      }),
+    ).not.toThrow();
+
+    manager.start();
+    await manager.stop();
+    expect(eventsSentWithKey('lk-team')).toEqual([]);
   });
 });
