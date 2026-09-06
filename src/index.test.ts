@@ -8,6 +8,7 @@ import {
   readdirSync,
   utimesSync,
   realpathSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -1616,4 +1617,20 @@ describe('preflight server subcommand', () => {
   // smoke test in docs/homelab.md. it.todo (rather than a placeholder
   // assertion) so this doesn't silently report as a passing test.
   it.todo('responds to GET /api/health with 200');
+});
+
+describe('NrIngestManager tier wiring', () => {
+  // NrIngestOptions.tiers is optional for backward compatibility, so a missing
+  // `tiers:` at a construction site compiles clean and silently degrades
+  // multi-tier routing to single-tier. src/index.privacy.test.ts documents why
+  // main()'s branches can't be driven in-process, so this asserts on source.
+  it('passes config.tiers at every NrIngestManager construction site', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/index.ts'), 'utf-8');
+
+    const constructionSites = source.match(/new NrIngestManager\(\{/g) ?? [];
+    const tierWirings = source.match(/^\s*tiers: config!?\.tiers,$/gm) ?? [];
+
+    expect(constructionSites).toHaveLength(3);
+    expect(tierWirings).toHaveLength(constructionSites.length);
+  });
 });
