@@ -34,6 +34,10 @@ import { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { TokenUsage } from '../shared/index.js';
+import type { ResolvedTier } from './tier-types.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,6 +187,15 @@ function makeTask(overrides?: Partial<AiCodingTask>): AiCodingTask {
     askedUserQuestions: 0,
     subAgentsSpawned: 0,
     toolCalls: [makeRecord({ sessionId: 'sess-001', platform: 'claude-code' })],
+    ...overrides,
+  };
+}
+
+function makeTier(overrides?: Partial<ResolvedTier>): ResolvedTier {
+  return {
+    name: 'personal',
+    destination: { type: 'nr', licenseKey: 'lk-personal', accountId: '12345' },
+    eventTypes: ['*'],
     ...overrides,
   };
 }
@@ -1069,8 +1082,11 @@ describe('NrIngestManager', () => {
 
       // At this point running=false. Calling emitSessionGauges should be a no-op.
       const recordMetricSpy = jest.spyOn(
-        (manager as unknown as { scheduler: { recordMetric: (...args: unknown[]) => void } })
-          .scheduler,
+        (
+          manager as unknown as {
+            primaryScheduler: { recordMetric: (...args: unknown[]) => void };
+          }
+        ).primaryScheduler,
         'recordMetric',
       );
 
@@ -3329,5 +3345,170 @@ describe('NrIngestManager companion mode event tagging', () => {
     const wfEvents = sentEvents.filter((e) => e.eventType === 'AiWorkflowRun');
     expect(subagentEvent!.cost_authority).toBe('external');
     expect(wfEvents.every((e) => e.cost_authority === 'external')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NrIngestManager — tier construction
+// ---------------------------------------------------------------------------
+
+describe('NrIngestManager — tier construction', () => {
+  it('synthesizes a single default tier when no tiers option is supplied', () => {
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    expect(manager.getTierNames()).toEqual(['default']);
+    expect(manager.getPrimaryTierName()).toBe('default');
+  });
+
+  it('treats an empty tiers array the same as no tiers option', () => {
+    const manager = new NrIngestManager(makeIngestOptions({ tiers: [] }));
+
+    expect(manager.getTierNames()).toEqual(['default']);
+    expect(manager.getPrimaryTierName()).toBe('default');
+  });
+
+  it('builds one scheduler per nr tier and one writer per local tier', () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-tier-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier(),
+            makeTier({
+              name: 'team',
+              destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+              eventTypes: ['AiCodingTask'],
+            }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      expect(manager.getTierNames()).toEqual(['personal', 'team', 'org']);
+      expect(manager.getPrimaryTierName()).toBe('personal');
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('names the first nr tier as primary even when a local tier is declared first', () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-tier-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+            makeTier({ name: 'personal' }),
+          ],
+        }),
+      );
+
+      expect(manager.getPrimaryTierName()).toBe('personal');
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when every tier is local (no primary to carry metrics and logs)', () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-tier-'));
+    try {
+      expect(
+        () =>
+          new NrIngestManager(
+            makeIngestOptions({
+              tiers: [
+                makeTier({
+                  name: 'org',
+                  destination: { type: 'local', path: localDir },
+                  eventTypes: ['AiCodingTask'],
+                }),
+              ],
+            }),
+          ),
+      ).toThrow(/at least one nr-type tier/i);
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends metrics only through the primary tier', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier(),
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            eventTypes: ['AiCodingTask'],
+          }),
+        ],
+      }),
+    );
+
+    manager.ingestToolCall(makeRecord());
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendMetrics).toHaveBeenCalledTimes(1);
+    expect((mockSendMetrics.mock.calls[0] as unknown[])[1]).toBe('lk-personal');
+  });
+
+  it("sends the primary tier's events with that tier's licenseKey and accountId", async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier({
+            name: 'personal',
+            destination: { type: 'nr', licenseKey: 'lk-personal', accountId: '99999' },
+          }),
+        ],
+      }),
+    );
+
+    manager.ingestCodingTask(makeTask());
+    manager.start();
+    await manager.stop();
+
+    expect(mockSendEvents).toHaveBeenCalledTimes(1);
+    const call = mockSendEvents.mock.calls[0] as unknown[];
+    expect(call[1]).toBe('lk-personal');
+    expect((call[2] as { accountId: string }).accountId).toBe('99999');
+  });
+
+  it('starts and stops every tier scheduler', async () => {
+    const manager = new NrIngestManager(
+      makeIngestOptions({
+        tiers: [
+          makeTier(),
+          makeTier({
+            name: 'team',
+            destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+            eventTypes: ['*'],
+          }),
+        ],
+      }),
+    );
+
+    manager.start();
+    await expect(manager.stop()).resolves.toBeUndefined();
+  });
+
+  it('keeps getEventSendHealth() driven by the primary tier only', async () => {
+    mockSendEvents.mockResolvedValueOnce({ success: false, statusCode: 500, retryCount: 0 });
+    const manager = new NrIngestManager(makeIngestOptions());
+
+    manager.ingestCodingTask(makeTask());
+    manager.start();
+    await manager.stop();
+
+    expect(manager.getEventSendHealth().consecutiveFailures).toBeGreaterThanOrEqual(1);
   });
 });

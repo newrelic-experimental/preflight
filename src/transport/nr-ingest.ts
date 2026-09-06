@@ -47,6 +47,10 @@ import type { AuditRecord } from '../security/index.js';
 import type { TurnCostAttributor, ClosedTurn } from '../metrics/turn-cost-attributor.js';
 import type { LocalStore } from '../storage/index.js';
 import { LogIngestManager } from './log-ingest.js';
+import { TierRouter } from './tier-router.js';
+import { DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './tier-types.js';
+import type { ResolvedTier } from './tier-types.js';
+import { TierLocalWriter } from '../storage/tier-local-writer.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,6 +142,18 @@ export interface NrIngestOptions {
    * share `session_id` === OTel's `session.id`). Default false.
    */
   companionMode?: boolean;
+  /**
+   * Multi-tier telemetry routing (issue #38). Threaded from `config.tiers`.
+   * Absent or empty → one implicit `default` tier is synthesized from
+   * `licenseKey` + `transportOptions.accountId`, reproducing the pre-#38
+   * single-scheduler behavior exactly.
+   *
+   * The FIRST nr-type tier in array order is the **primary tier**: it carries
+   * the aggregated Metric API stream, the NR Logs API audit entries, the OTLP
+   * bridge/transport, and the `getEventSendHealth()` counters. At least one
+   * nr-type tier is required.
+   */
+  tiers?: readonly ResolvedTier[];
 }
 
 // ---------------------------------------------------------------------------
@@ -967,7 +983,12 @@ class DeveloperAttributedMetricAggregator extends MetricAggregator {
 // ---------------------------------------------------------------------------
 
 export class NrIngestManager {
-  private readonly scheduler: HarvestScheduler;
+  private readonly schedulers: Map<string, HarvestScheduler>;
+  private readonly localWriters: Map<string, TierLocalWriter>;
+  private readonly router: TierRouter;
+  /** First nr-type tier — carries metrics, logs, OTLP, and send-health. */
+  private readonly primaryScheduler: HarvestScheduler;
+  private readonly primaryTierName: string;
   private readonly logIngest: LogIngestManager;
   private readonly sessionTracker: SessionTracker;
   private readonly proxyMetrics: ProxyMetricsTracker;
@@ -1049,24 +1070,34 @@ export class NrIngestManager {
     // Wrap send functions so non-retryable 4xx failures (400, 403, etc.) are not
     // re-queued by HarvestScheduler. Returning success=true suppresses the requeue
     // without masking the original error — we log a warning before returning.
+    //
+    // One wrapper per tier so the tier name appears in the drop log. Only the
+    // primary tier moves the `getEventSendHealth()` counters: those describe
+    // "is this process's own telemetry landing", and a secondary team-account
+    // tier being unreachable must not make the primary look unhealthy.
     const rawSendEventsFn = options.sendEventsFn ?? sendEvents;
-    const classifyingEventsFn: SendEventsFn = async (events, licenseKey, opts) => {
-      const result = await rawSendEventsFn(events, licenseKey, opts);
-      if (result.success) {
-        this.consecutiveEventSendFailures = 0;
-        this.lastEventSendSuccessAt = Date.now();
-      } else {
-        this.consecutiveEventSendFailures += 1;
-        this.lastEventSendFailureAt = Date.now();
-      }
-      if (!result.success && result.statusCode !== null && isNonRetryable4xx(result.statusCode)) {
-        logger.warn('Dropping non-retryable event batch', {
-          statusCode: result.statusCode,
-          batchSize: events.length,
-        });
-        return { ...result, success: true };
-      }
-      return result;
+    const makeClassifyingEventsFn = (tierName: string, isPrimary: boolean): SendEventsFn => {
+      return async (events, licenseKey, opts) => {
+        const result = await rawSendEventsFn(events, licenseKey, opts);
+        if (isPrimary) {
+          if (result.success) {
+            this.consecutiveEventSendFailures = 0;
+            this.lastEventSendSuccessAt = Date.now();
+          } else {
+            this.consecutiveEventSendFailures += 1;
+            this.lastEventSendFailureAt = Date.now();
+          }
+        }
+        if (!result.success && result.statusCode !== null && isNonRetryable4xx(result.statusCode)) {
+          logger.warn('Dropping non-retryable event batch', {
+            tier: tierName,
+            statusCode: result.statusCode,
+            batchSize: events.length,
+          });
+          return { ...result, success: true };
+        }
+        return result;
+      };
     };
 
     const rawSendMetricsFn = options.sendMetricsFn ?? sendMetrics;
@@ -1088,22 +1119,90 @@ export class NrIngestManager {
       clientVersion: VERSION,
     };
 
-    this.scheduler = new HarvestScheduler({
-      licenseKey: options.licenseKey,
-      transportOptions,
-      eventHarvestIntervalMs: options.eventHarvestIntervalMs,
-      metricHarvestIntervalMs: options.metricHarvestIntervalMs,
-      sendEventsFn: classifyingEventsFn,
-      sendMetricsFn: classifyingMetricsFn,
-      otlpEventBridge: otlpEventBridge ?? undefined,
-      otlpTransport: otlpTransport ?? undefined,
-      transport: options.transport,
-      allowProcessExit: true,
-    });
+    // Absent/empty tiers → one implicit tier reproducing the pre-#38 single
+    // scheduler exactly (same licenseKey, same transportOptions, same OTLP
+    // objects, same transport mode).
+    const tiers: readonly ResolvedTier[] =
+      options.tiers !== undefined && options.tiers.length > 0
+        ? options.tiers
+        : [
+            {
+              name: DEFAULT_TIER_NAME,
+              destination: {
+                type: 'nr',
+                licenseKey: options.licenseKey,
+                accountId: options.transportOptions.accountId,
+              },
+              eventTypes: [WILDCARD_EVENT_TYPE],
+            },
+          ];
+
+    this.router = new TierRouter(tiers);
+    this.schedulers = new Map();
+    this.localWriters = new Map();
+
+    let primaryScheduler: HarvestScheduler | null = null;
+    let primaryTierName: string | null = null;
+    let primaryLicenseKey: string | null = null;
+    let primaryTransportOptions: TransportOptions | null = null;
+
+    for (const tier of tiers) {
+      if (tier.destination.type === 'local') {
+        this.localWriters.set(
+          tier.name,
+          new TierLocalWriter({ tierName: tier.name, path: tier.destination.path }),
+        );
+        continue;
+      }
+
+      const isPrimary: boolean = primaryScheduler === null;
+      const tierTransportOptions: TransportOptions = {
+        ...transportOptions,
+        accountId: tier.destination.accountId,
+      };
+      const scheduler: HarvestScheduler = new HarvestScheduler({
+        licenseKey: tier.destination.licenseKey,
+        transportOptions: tierTransportOptions,
+        eventHarvestIntervalMs: options.eventHarvestIntervalMs,
+        metricHarvestIntervalMs: options.metricHarvestIntervalMs,
+        sendEventsFn: makeClassifyingEventsFn(tier.name, isPrimary),
+        sendMetricsFn: classifyingMetricsFn,
+        // Per-tier OTLP is an explicit non-goal — OTLP stays bound to the
+        // primary tier, so secondary tiers are NR-events-only.
+        otlpEventBridge: isPrimary ? (otlpEventBridge ?? undefined) : undefined,
+        otlpTransport: isPrimary ? (otlpTransport ?? undefined) : undefined,
+        transport: isPrimary ? options.transport : 'nr-events-api',
+        allowProcessExit: true,
+      });
+      this.schedulers.set(tier.name, scheduler);
+
+      if (isPrimary) {
+        primaryScheduler = scheduler;
+        primaryTierName = tier.name;
+        primaryLicenseKey = tier.destination.licenseKey;
+        primaryTransportOptions = tierTransportOptions;
+      }
+    }
+
+    if (
+      primaryScheduler === null ||
+      primaryTierName === null ||
+      primaryLicenseKey === null ||
+      primaryTransportOptions === null
+    ) {
+      // validateTiers() already enforces this at config load; this guard covers
+      // direct programmatic construction.
+      throw new Error(
+        'NrIngestManager requires at least one nr-type tier — the aggregated Metric API stream ' +
+          'and NR Logs API audit entries are delivered through the primary tier.',
+      );
+    }
+    this.primaryScheduler = primaryScheduler;
+    this.primaryTierName = primaryTierName;
 
     this.logIngest = new LogIngestManager({
-      licenseKey: options.licenseKey,
-      transportOptions,
+      licenseKey: primaryLicenseKey,
+      transportOptions: primaryTransportOptions,
       developer: options.developer,
       appName: options.appName,
       logHarvestIntervalMs: options.logHarvestIntervalMs,
@@ -1123,6 +1222,16 @@ export class NrIngestManager {
     };
   }
 
+  /** All configured tier names, in declaration order (nr tiers then local). */
+  getTierNames(): readonly string[] {
+    return [...this.schedulers.keys(), ...this.localWriters.keys()];
+  }
+
+  /** The tier carrying metrics, logs, OTLP, and send-health. */
+  getPrimaryTierName(): string {
+    return this.primaryTierName;
+  }
+
   ingestProxyRequest(record: ProxyRequestRecord): void {
     const event = proxyRequestToNrEvent(record, {
       developer: this.developer,
@@ -1132,12 +1241,15 @@ export class NrIngestManager {
       orgId: this.orgId,
       repoUrl: this.repoUrl,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
 
     const server = record.serverName;
-    this.scheduler.recordMetric('ai.mcp.proxy_request_count', 1, { server, method: record.method });
+    this.primaryScheduler.recordMetric('ai.mcp.proxy_request_count', 1, {
+      server,
+      method: record.method,
+    });
     if (record.durationMs != null) {
-      this.scheduler.recordMetric('ai.mcp.proxy_request_duration_ms', record.durationMs, {
+      this.primaryScheduler.recordMetric('ai.mcp.proxy_request_duration_ms', record.durationMs, {
         server,
       });
     }
@@ -1169,7 +1281,7 @@ export class NrIngestManager {
     // Enriching NR events here would always produce null because the token event
     // (which finalizes turn cost) arrives asynchronously after ingestToolCall is called.
 
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
 
     // Record per-call metrics for NR Metric API. Prefer the record's own
     // sessionId (see the comment on the AiToolCall event above) — this also
@@ -1184,19 +1296,19 @@ export class NrIngestManager {
     if (this.orgId) teamDims.org_id = this.orgId;
     if (this.repoUrl) teamDims.repo_url = this.repoUrl;
 
-    this.scheduler.recordMetric(
+    this.primaryScheduler.recordMetric(
       'ai.tool.call_count',
       1,
       sessionId != null ? { tool, session_id: sessionId, ...teamDims } : { tool, ...teamDims },
     );
     if (record.durationMs != null) {
-      this.scheduler.recordMetric(
+      this.primaryScheduler.recordMetric(
         'ai.tool.duration_ms',
         record.durationMs,
         sessionId != null ? { tool, session_id: sessionId, ...teamDims } : { tool, ...teamDims },
       );
     }
-    this.scheduler.recordMetric(
+    this.primaryScheduler.recordMetric(
       'ai.tool.success',
       record.success ? 1 : 0,
       sessionId != null ? { tool, session_id: sessionId, ...teamDims } : { tool, ...teamDims },
@@ -1213,7 +1325,7 @@ export class NrIngestManager {
         orgId: this.orgId,
         repoUrl: this.repoUrl,
       });
-      this.scheduler.addEvent(proxyEvent);
+      this.primaryScheduler.addEvent(proxyEvent);
       this.proxyMetrics.recordProxyCall(record);
     }
 
@@ -1225,7 +1337,7 @@ export class NrIngestManager {
       (isProxyToolCall(record)
         ? this.auditTrail.recordProxyCall(record)
         : this.auditTrail.recordToolCall(record));
-    this.scheduler.addEvent(
+    this.primaryScheduler.addEvent(
       auditRecordToNrEvent(finalAuditRecord, {
         teamId: this.teamId,
         projectId: this.projectId,
@@ -1234,7 +1346,7 @@ export class NrIngestManager {
       }),
     );
     if (finalAuditRecord.securityAlert) {
-      this.scheduler.addEvent(
+      this.primaryScheduler.addEvent(
         securityAlertToNrEvent(finalAuditRecord, {
           teamId: this.teamId,
           projectId: this.projectId,
@@ -1258,7 +1370,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   /**
@@ -1279,7 +1391,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   /**
@@ -1298,7 +1410,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   /**
@@ -1316,7 +1428,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   /**
@@ -1334,7 +1446,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       companionMode: this.companionMode,
     });
-    this.scheduler.addEvent(ev);
+    this.primaryScheduler.addEvent(ev);
   }
 
   /** Buffer an `AiObservabilityHealth` event from the watcher pipeline. */
@@ -1347,7 +1459,7 @@ export class NrIngestManager {
       orgId: this.orgId,
       repoUrl: this.repoUrl,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   ingestAntiPattern(
@@ -1366,7 +1478,7 @@ export class NrIngestManager {
       repoUrl: this.repoUrl,
       detectedAt: context.detectedAt,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   ingestRetryAlert(alert: ThrashingAlert, context: { platform?: string } = {}): void {
@@ -1380,7 +1492,7 @@ export class NrIngestManager {
       orgId: this.orgId,
       repoUrl: this.repoUrl,
     });
-    this.scheduler.addEvent(event);
+    this.primaryScheduler.addEvent(event);
   }
 
   ingestTurnCost(turn: ClosedTurn): void {
@@ -1394,7 +1506,7 @@ export class NrIngestManager {
       companionMode: this.companionMode,
     });
     for (const event of events) {
-      this.scheduler.addEvent(event);
+      this.primaryScheduler.addEvent(event);
     }
   }
 
@@ -1429,7 +1541,7 @@ export class NrIngestManager {
     if (this.orgId) nrEvent.org_id = this.orgId;
     if (this.repoUrl) nrEvent.repo_url = this.repoUrl;
     if (this.sessionTraceId != null) nrEvent.session_id = this.sessionTraceId;
-    this.scheduler.addEvent(nrEvent);
+    this.primaryScheduler.addEvent(nrEvent);
   }
 
   ingestBudgetWarning(event: BudgetThresholdEvent): void {
@@ -1450,13 +1562,13 @@ export class NrIngestManager {
     if (this.orgId) nrEvent.org_id = this.orgId;
     if (this.repoUrl) nrEvent.repo_url = this.repoUrl;
     if (this.sessionTraceId != null) nrEvent.session_id = this.sessionTraceId;
-    this.scheduler.addEvent(nrEvent);
+    this.primaryScheduler.addEvent(nrEvent);
   }
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.scheduler.start();
+    for (const scheduler of this.schedulers.values()) scheduler.start();
     this.logIngest.start();
 
     // Emit session-level gauges on the metric harvest cadence
@@ -1480,7 +1592,10 @@ export class NrIngestManager {
 
     this.running = false;
 
-    const cleanupPromises = [this.scheduler.stop(), this.logIngest.stop()];
+    const cleanupPromises: Promise<void>[] = [
+      ...[...this.schedulers.values()].map((scheduler) => scheduler.stop()),
+      this.logIngest.stop(),
+    ];
     if (this.otlpTransport) {
       cleanupPromises.push(this.otlpTransport.shutdown());
     }
@@ -1506,7 +1621,7 @@ export class NrIngestManager {
     if (this.repoUrl) teamAttrs.repo_url = this.repoUrl;
 
     const record = (name: string, value: number, attrs: Record<string, string | number> = {}) => {
-      this.scheduler.recordMetric(
+      this.primaryScheduler.recordMetric(
         name,
         value,
         sessionId != null ? { session_id: sessionId, ...attrs } : attrs,
@@ -1530,7 +1645,7 @@ export class NrIngestManager {
       this.gitEfficiencyTracker
     ) {
       const developer = this.developer;
-      const scheduler = this.scheduler;
+      const scheduler = this.primaryScheduler;
       const devAggregator = new DeveloperAttributedMetricAggregator((name, value, attrs) => {
         scheduler.recordMetric(
           name,
@@ -1553,30 +1668,37 @@ export class NrIngestManager {
     // Emit aggregated proxy metrics
     const proxyMetrics = this.proxyMetrics.getMetrics();
     for (const [server, stats] of Object.entries(proxyMetrics.perServer)) {
-      this.scheduler.recordMetric('ai.mcp.server_call_count', stats.callCount, {
+      this.primaryScheduler.recordMetric('ai.mcp.server_call_count', stats.callCount, {
         server,
         ...teamAttrs,
       });
       if (stats.latencyMs.count > 0) {
         const avg = stats.latencyMs.sum / stats.latencyMs.count;
-        this.scheduler.recordMetric('ai.mcp.server_latency_ms', avg, { server, ...teamAttrs });
+        this.primaryScheduler.recordMetric('ai.mcp.server_latency_ms', avg, {
+          server,
+          ...teamAttrs,
+        });
       }
       if (stats.errorRate > 0) {
-        this.scheduler.recordMetric('ai.mcp.server_error_rate', stats.errorRate, {
+        this.primaryScheduler.recordMetric('ai.mcp.server_error_rate', stats.errorRate, {
           server,
           ...teamAttrs,
         });
       }
     }
     if (proxyMetrics.avgProxyOverheadMs > 0) {
-      this.scheduler.recordMetric('ai.mcp.proxy_overhead_ms', proxyMetrics.avgProxyOverheadMs, {
-        ...teamAttrs,
-      });
+      this.primaryScheduler.recordMetric(
+        'ai.mcp.proxy_overhead_ms',
+        proxyMetrics.avgProxyOverheadMs,
+        {
+          ...teamAttrs,
+        },
+      );
     }
     // Cap at 100 (tool, server) combinations to stay within NR Metric API cardinality limits.
     const MAX_TOOL_POPULARITY_ENTRIES = 100;
     for (const entry of proxyMetrics.toolPopularity.slice(0, MAX_TOOL_POPULARITY_ENTRIES)) {
-      this.scheduler.recordMetric('ai.mcp.tool_popularity', entry.count, {
+      this.primaryScheduler.recordMetric('ai.mcp.tool_popularity', entry.count, {
         tool: entry.tool,
         server: entry.server,
         ...teamAttrs,
