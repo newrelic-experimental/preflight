@@ -2379,3 +2379,157 @@ describe('homelab config fields', () => {
     expect(config.homelabServer.bindAddress).toBe('192.168.1.100');
   });
 });
+
+describe('loadMcpConfig() — tiers', () => {
+  it('synthesizes one implicit default tier when no tiers array is configured', () => {
+    const configPath = writeConfigFile({
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+    });
+    const config = loadMcpConfig({ config: configPath });
+
+    expect(config.tiers).toHaveLength(1);
+    expect(config.tiers[0].name).toBe('default');
+    expect(config.tiers[0].eventTypes).toEqual(['*']);
+    expect(config.tiers[0].destination).toEqual({
+      type: 'nr',
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+    });
+  });
+
+  it('resolves an explicit tiers array under mode=cloud', () => {
+    const configPath = writeConfigFile({
+      mode: 'cloud',
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-personal', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+        {
+          name: 'team',
+          destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+          eventTypes: ['AiCodingTask', 'AiSubagentTurn'],
+        },
+      ],
+    });
+    const config = loadMcpConfig({ config: configPath });
+
+    expect(config.tiers.map((t) => t.name)).toEqual(['personal', 'team']);
+    expect(config.tiers[1].eventTypes).toEqual(['AiCodingTask', 'AiSubagentTurn']);
+  });
+
+  it('resolves an explicit tiers array under mode=both', () => {
+    process.env.NR_AI_MODE = 'both';
+    const configPath = writeConfigFile({
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-personal', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+      ],
+    });
+    const config = loadMcpConfig({ config: configPath });
+
+    expect(config.mode).toBe('both');
+    expect(config.tiers).toHaveLength(1);
+  });
+
+  it("throws when an explicit tiers array is present under mode='local'", () => {
+    process.env.NR_AI_MODE = 'local';
+    const configPath = writeConfigFile({
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-personal', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+      ],
+    });
+
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(
+      /tiers.*mode='local'.*mode='cloud' or mode='both'/s,
+    );
+  });
+
+  it("throws on a tiers array under mode='local' even when the tiers themselves are malformed", () => {
+    process.env.NR_AI_MODE = 'local';
+    const configPath = writeConfigFile({ tiers: [{ name: '' }] });
+
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(/mode='local'/);
+  });
+
+  it("resolves tiers to an empty array under mode='local' when no tiers key is present", () => {
+    process.env.NR_AI_MODE = 'local';
+    const configPath = writeConfigFile({});
+    const config = loadMcpConfig({ config: configPath });
+
+    expect(config.tiers).toEqual([]);
+  });
+
+  it('propagates validateTiers() errors at config load (duplicate name)', () => {
+    const configPath = writeConfigFile({
+      mode: 'cloud',
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-a', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-b', accountId: '67890' },
+          eventTypes: ['*'],
+        },
+      ],
+    });
+
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(/Duplicate tier name "personal"/);
+  });
+
+  it('propagates validateTiers() errors at config load (unknown event type)', () => {
+    const configPath = writeConfigFile({
+      mode: 'cloud',
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-a', accountId: '12345' },
+          eventTypes: ['AiNotARealEvent'],
+        },
+      ],
+    });
+
+    expect(() => loadMcpConfig({ config: configPath })).toThrow(/unknown event type/);
+  });
+
+  it('does not warn about "tiers" as an unknown config key', () => {
+    const warnSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const configPath = writeConfigFile({
+      mode: 'cloud',
+      licenseKey: 'test-key-1234567890',
+      accountId: '12345',
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-a', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+      ],
+    });
+    loadMcpConfig({ config: configPath });
+
+    const written = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    warnSpy.mockRestore();
+    expect(written).not.toContain('Unknown keys in config file');
+  });
+});

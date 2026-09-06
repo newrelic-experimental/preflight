@@ -11,6 +11,8 @@ import type { PersonalAlertThresholds } from './alerts/types.js';
 import { DEFAULT_PERSONAL_THRESHOLDS } from './alerts/types.js';
 import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
+import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
+import type { ResolvedTier } from './transport/tier-types.js';
 
 const logger = createLogger('mcp-config');
 
@@ -82,6 +84,16 @@ export interface McpServerConfig {
   readonly retainSessionsDays: number | null;
   readonly personalAlertThresholds: PersonalAlertThresholds;
   readonly mode: Mode;
+  /**
+   * Multi-tier telemetry routing (issue #38). Resolved in-memory at load time
+   * and never persisted. When the config file has no `tiers` array, the flat
+   * `licenseKey`/`accountId` wrap into a single implicit tier
+   * (`name: 'default'`, `eventTypes: ['*']`), so existing single-account
+   * deployments need no migration. Always `[]` when `mode === 'local'`; an
+   * explicit `tiers` array under `mode: 'local'` is a config-load error.
+   * See docs/ADVANCED.md § Multi-Tier Telemetry Routing.
+   */
+  readonly tiers: readonly ResolvedTier[];
   readonly platformTarget?: PlatformTarget;
   /**
    * OTLP-related config, grouped to match the `dashboard`/`alerts` nesting
@@ -183,6 +195,11 @@ export const ConfigFileSchema = z
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
     collectorHost: z.string().nullable().optional(),
     proxyUpstreams: z.array(z.unknown()).optional(),
+    // Shape validation lives in validateTiers() (transport/tier-types.ts), not
+    // here — same split as `proxyUpstreams` above. Zod would otherwise
+    // pre-empt validateTiers()'s specific, actionable error messages with a
+    // generic union-mismatch issue.
+    tiers: z.array(z.unknown()).optional(),
     nrApiKey: z.string().nullable().optional(),
     customPricingFile: z.string().nullable().optional(),
     costRateMultiplier: z.number().nullable().optional(),
@@ -749,6 +766,35 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   // In local mode, undefined if accountId is missing (NR transport won't be used)
   const accountId = accountIdRaw;
 
+  // --- tiers: config file only (no env var / CLI flag — ticket #275) ---
+  // Fail closed on tiers-under-local BEFORE validating tier shape, so the
+  // mode conflict is always the reported error even for a malformed array.
+  const rawTiers: readonly unknown[] | undefined = Array.isArray(file.tiers)
+    ? file.tiers
+    : undefined;
+  let resolvedTiers: readonly ResolvedTier[];
+  if (rawTiers !== undefined) {
+    if (mode === 'local') {
+      throw new Error(
+        `Config at ${configFilePath} defines a "tiers" array but mode='local'. ` +
+          'Multi-tier telemetry routing fans out the cloud export path, so it requires ' +
+          "mode='cloud' or mode='both'. Remove the tiers array for local-only use, or set the mode.",
+      );
+    }
+    resolvedTiers = validateTiers(rawTiers);
+  } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
+    // Implicit single tier — byte-identical behavior to pre-#38 configs.
+    resolvedTiers = [
+      {
+        name: DEFAULT_TIER_NAME,
+        destination: { type: 'nr', licenseKey, accountId },
+        eventTypes: [WILDCARD_EVENT_TYPE],
+      },
+    ];
+  } else {
+    resolvedTiers = [];
+  }
+
   // --- Build config with priority: CLI > env > file > defaults ---
   const storagePath =
     process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ??
@@ -986,6 +1032,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     })(),
 
     mode,
+    tiers: resolvedTiers,
 
     // The 8 OTLP-related fields are grouped here (matching the dashboard/alerts
     // nesting precedent). Each still accepts the legacy flat top-level key for
