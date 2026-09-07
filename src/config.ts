@@ -85,7 +85,7 @@ export interface McpServerConfig {
   readonly personalAlertThresholds: PersonalAlertThresholds;
   readonly mode: Mode;
   /**
-   * Multi-tier telemetry routing (issue #38). Resolved in-memory at load time
+   * Multi-tier telemetry routing. Resolved in-memory at load time
    * and never persisted. When the config file has no `tiers` array, the flat
    * `licenseKey`/`accountId` wrap into a single implicit tier
    * (`name: 'default'`, `eventTypes: ['*']`), so existing single-account
@@ -766,7 +766,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
   // In local mode, undefined if accountId is missing (NR transport won't be used)
   const accountId = accountIdRaw;
 
-  // --- tiers: config file only (no env var / CLI flag — ticket #275) ---
+  // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
   // Fail closed on tiers-under-local BEFORE validating tier shape, so the
   // mode conflict is always the reported error even for a malformed array.
   const rawTiers: readonly unknown[] | undefined = Array.isArray(file.tiers)
@@ -783,7 +783,7 @@ export function loadMcpConfig(cliOptions?: Partial<CliOptions>): Readonly<McpSer
     }
     resolvedTiers = validateTiers(rawTiers);
   } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
-    // Implicit single tier — byte-identical behavior to pre-#38 configs.
+    // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [
       {
         name: DEFAULT_TIER_NAME,

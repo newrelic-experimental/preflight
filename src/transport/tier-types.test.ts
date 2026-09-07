@@ -241,8 +241,33 @@ describe('validateTiers()', () => {
     expect(calls.join('\n')).toContain('AiToolCall');
   });
 
-  it('warns when a non-default tier uses the wildcard', () => {
-    validateTiers([makeNrTier({ name: 'team' })]);
+  it('warns when a non-default, non-primary tier uses the wildcard', () => {
+    // The primary tier (first nr-type tier) is named "default" here, so the
+    // second tier ("team") is not primary — its wildcard is still suspicious.
+    validateTiers([
+      makeNrTier({ name: 'default' }),
+      makeNrTier({
+        name: 'team',
+        destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+        eventTypes: ['*'],
+      }),
+    ]);
+    const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+    expect(calls.join('\n')).toContain('ALL event types');
+  });
+
+  it('does not warn with the wildcard-only warning when a non-primary tier is not primary but IS the only wildcard-carrying tier', () => {
+    // A later nr-type tier (not first, so not primary) named something other
+    // than "default" that uses the wildcard should still trigger the
+    // wildcard-only warning (regression guard alongside the test above).
+    validateTiers([
+      makeNrTier({ name: 'default', eventTypes: ['AiCodingTask'] }),
+      makeNrTier({
+        name: 'audit-mirror',
+        destination: { type: 'nr', licenseKey: 'lk-mirror', accountId: '11111' },
+        eventTypes: ['*'],
+      }),
+    ]);
     const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
     expect(calls.join('\n')).toContain('ALL event types');
   });
@@ -251,6 +276,55 @@ describe('validateTiers()', () => {
     validateTiers([makeNrTier({ name: 'default', eventTypes: ['AiToolCall'] })]);
     const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
     expect(calls.join('\n')).not.toContain('personal-only');
+  });
+
+  describe('primary-tier privacy warning', () => {
+    it('warns naming the primary tier and what rides along, when it is not named "default"', () => {
+      // "personal" here matches the sole/primary wildcard tier shape used as
+      // the documented example in docs/ADVANCED.md.
+      const resolved = validateTiers([makeNrTier({ name: 'personal' })]);
+
+      expect(resolved).toHaveLength(1);
+      const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+      const joined = calls.join('\n');
+      expect(joined).toContain('Primary tier');
+      expect(joined).toContain('personal');
+      expect(joined).toMatch(/Metric API/);
+      expect(joined).toMatch(/Logs API/);
+      expect(joined).toMatch(/OTLP/);
+    });
+
+    it('does not warn about the primary tier when it is named "default"', () => {
+      validateTiers([makeNrTier({ name: 'default' })]);
+      const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+      expect(calls.join('\n')).not.toContain('Primary tier');
+    });
+
+    it('does not trigger the wildcard-only warning for the documented sole/primary wildcard tier named "personal"', () => {
+      // This is the exact shape documented as the recommended example in
+      // docs/ADVANCED.md: a single, primary, wildcard tier named "personal".
+      // It must not be flagged by the wildcard-only warning (that warning is
+      // for non-primary tiers) — only by the primary-tier warning above.
+      validateTiers([makeNrTier({ name: 'personal' })]);
+      const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+      expect(calls.join('\n')).not.toContain('ALL event types — including personal-only');
+    });
+
+    it('still fires the wildcard warning for a wildcard tier that is not primary and not named "default"', () => {
+      validateTiers([
+        makeNrTier({ name: 'default', eventTypes: ['AiCodingTask'] }),
+        makeNrTier({
+          name: 'team',
+          destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+          eventTypes: ['*'],
+        }),
+      ]);
+      const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+      const joined = calls.join('\n');
+      expect(joined).toContain('ALL event types — including personal-only');
+      // The primary tier ("default") should not trigger the primary-tier warning.
+      expect(joined).not.toContain('Primary tier');
+    });
   });
 
   it('honors an explicit knownEventTypes override', () => {

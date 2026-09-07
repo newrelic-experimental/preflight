@@ -26,6 +26,13 @@ let localDir: string;
 beforeEach(() => {
   stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
   localDir = mkdtempSync(resolve(tmpdir(), 'tier-routing-integration-'));
+  // mockSendMetrics/mockSendLogs are module-level (shared across every test
+  // in this file, unlike mockSendEvents which each test constructs fresh via
+  // makeRecordingTransport()) — clear them so a prior test's calls can't make
+  // a later assertion pass vacuously. Matches the convention in the sibling
+  // nr-ingest.test.ts's own beforeEach.
+  mockSendMetrics.mockClear();
+  mockSendLogs.mockClear();
 });
 
 afterEach(() => {
@@ -305,7 +312,7 @@ describe('backward compatibility (spec § Testing plan — no tiers array)', () 
     );
   });
 
-  it('produces one scheduler named default, matching pre-#38 behavior', () => {
+  it('produces one scheduler named default, matching the existing single-account behavior', () => {
     const manager = new NrIngestManager(makeOptions());
     expect(manager.getTierNames()).toEqual(['default']);
     expect(manager.getPrimaryTierName()).toBe('default');

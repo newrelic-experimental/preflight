@@ -3439,6 +3439,28 @@ describe('NrIngestManager — tier construction', () => {
     }
   });
 
+  it('throws on a duplicate tier name when constructed directly (bypassing validateTiers())', () => {
+    // validateTiers() already rejects duplicate names at config load, but the
+    // constructor can be called directly with a hand-built tiers array (as
+    // this test file does throughout) — without its own guard, the second
+    // tier's scheduler would silently overwrite the first's in `this.schedulers`.
+    expect(
+      () =>
+        new NrIngestManager(
+          makeIngestOptions({
+            tiers: [
+              makeTier({ name: 'personal' }),
+              makeTier({
+                name: 'personal',
+                destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+                eventTypes: ['AiCodingTask'],
+              }),
+            ],
+          }),
+        ),
+    ).toThrow(/duplicate tier name "personal"/i);
+  });
+
   it('sends metrics only through the primary tier', async () => {
     const manager = new NrIngestManager(
       makeIngestOptions({

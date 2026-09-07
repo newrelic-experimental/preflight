@@ -143,9 +143,9 @@ export interface NrIngestOptions {
    */
   companionMode?: boolean;
   /**
-   * Multi-tier telemetry routing (issue #38). Threaded from `config.tiers`.
+   * Multi-tier telemetry routing. Threaded from `config.tiers`.
    * Absent or empty → one implicit `default` tier is synthesized from
-   * `licenseKey` + `transportOptions.accountId`, reproducing the pre-#38
+   * `licenseKey` + `transportOptions.accountId`, reproducing the existing
    * single-scheduler behavior exactly.
    *
    * The FIRST nr-type tier in array order is the **primary tier**: it carries
@@ -1119,9 +1119,9 @@ export class NrIngestManager {
       clientVersion: VERSION,
     };
 
-    // Absent/empty tiers → one implicit tier reproducing the pre-#38 single
-    // scheduler exactly (same licenseKey, same transportOptions, same OTLP
-    // objects, same transport mode).
+    // Absent/empty tiers → one implicit tier reproducing the existing
+    // single-scheduler behavior exactly (same licenseKey, same
+    // transportOptions, same OTLP objects, same transport mode).
     const tiers: readonly ResolvedTier[] =
       options.tiers !== undefined && options.tiers.length > 0
         ? options.tiers
@@ -1145,8 +1145,24 @@ export class NrIngestManager {
     let primaryTierName: string | null = null;
     let primaryLicenseKey: string | null = null;
     let primaryTransportOptions: TransportOptions | null = null;
+    const seenTierNames = new Set<string>();
 
     for (const tier of tiers) {
+      // validateTiers() already rejects duplicate names at config load; this
+      // guard covers direct programmatic construction (several existing
+      // tests build a `tiers` array by hand, bypassing validateTiers()). Without
+      // it, `this.schedulers.set(tier.name, scheduler)` /
+      // `this.localWriters.set(tier.name, ...)` would silently let the second
+      // tier's scheduler/writer overwrite the first's, so events meant for two
+      // destinations would silently double up on whichever survives instead
+      // of reaching both — with no error.
+      if (seenTierNames.has(tier.name)) {
+        throw new Error(
+          `NrIngestManager received duplicate tier name "${tier.name}" — tier names must be unique.`,
+        );
+      }
+      seenTierNames.add(tier.name);
+
       if (tier.destination.type === 'local') {
         this.localWriters.set(
           tier.name,
@@ -1222,7 +1238,15 @@ export class NrIngestManager {
     };
   }
 
-  /** All configured tier names, in declaration order (nr tiers then local). */
+  /**
+   * All configured tier names — NOT in overall declaration order. All
+   * nr-type tier names come first (in their own declaration order relative
+   * to each other), followed by all local-type tier names (likewise in
+   * their own relative declaration order). A local tier declared before an
+   * nr tier in config still appears after every nr tier here, because this
+   * reads `this.schedulers.keys()` (nr tiers) then `this.localWriters.keys()`
+   * (local tiers) — two separate maps keyed by destination type.
+   */
   getTierNames(): readonly string[] {
     return [...this.schedulers.keys(), ...this.localWriters.keys()];
   }

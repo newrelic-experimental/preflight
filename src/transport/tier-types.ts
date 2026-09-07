@@ -202,6 +202,13 @@ export function validateTiers(
   const seenNames = new Set<string>();
   const resolved: ResolvedTier[] = [];
 
+  // The primary tier is the FIRST nr-type tier in array order — it alone
+  // carries the aggregated Metric API stream, NR Logs API audit entries,
+  // OTLP export, and event-send-health counters, regardless of its own
+  // eventTypes. Tracked as we walk `tiers` in order so the wildcard warning
+  // below can exempt it (see the primary-tier warning after the loop).
+  let primaryTierName: string | undefined;
+
   for (let i = 0; i < tiers.length; i++) {
     const raw = tiers[i];
     if (!isRecord(raw)) {
@@ -220,13 +227,21 @@ export function validateTiers(
     const destination = validateDestination(raw.destination, name);
     const eventTypes = validateEventTypes(raw.eventTypes, name, known);
 
+    const isPrimaryTier = destination.type === 'nr' && primaryTierName === undefined;
+    if (isPrimaryTier) primaryTierName = name;
+
     if (name !== DEFAULT_TIER_NAME) {
       for (const eventType of eventTypes) {
         if (eventType === WILDCARD_EVENT_TYPE) {
-          logger.warn(
-            'Tier routes ALL event types — including personal-only ones — to a non-default destination',
-            { tier: name, personalOnlyEventTypes: [...PERSONAL_ONLY_EVENT_TYPES] },
-          );
+          // A wildcard on the operator's own primary tier is expected —
+          // being primary is itself flagged by the dedicated warning below,
+          // regardless of eventTypes. Only warn here for a non-primary tier.
+          if (!isPrimaryTier) {
+            logger.warn(
+              'Tier routes ALL event types — including personal-only ones — to a non-default destination',
+              { tier: name, personalOnlyEventTypes: [...PERSONAL_ONLY_EVENT_TYPES] },
+            );
+          }
           continue;
         }
         if (EVENT_TYPE_SENSITIVITY[eventType as KnownEventType] === 'personal-only') {
@@ -246,6 +261,15 @@ export function validateTiers(
     throw new Error(
       "At least one tier must have destination.type='nr' — the aggregated Metric API stream " +
         'and NR Logs API audit entries are delivered through the first nr-type tier (the primary tier).',
+    );
+  }
+
+  if (primaryTierName !== undefined && primaryTierName !== DEFAULT_TIER_NAME) {
+    logger.warn(
+      'Primary tier is not named "default" — it carries the aggregated Metric API stream, ' +
+        'NR Logs API audit entries (file_path/command/redacted detail), OTLP export, and ' +
+        'event-send-health counters regardless of its own eventTypes',
+      { tier: primaryTierName },
     );
   }
 
