@@ -108,6 +108,17 @@ Local mode disables all cloud transport entirely. The local dashboard and analyt
 
 See [README.md → Local mode](./README.md#local-mode) for the full local-mode setup.
 
+### `tiers` — routes events to additional destinations
+
+Off unless you configure it. When a `tiers` array is present (requires `mode: "cloud"` or `"both"`), each configured tier is an **additional egress destination** for the event types it names — another New Relic account, or a directory on disk that may be a shared network share.
+
+Two things to know before enabling it:
+
+1. **Routing is event-type-level, not field-level.** A tier that receives `AiToolCall` receives the whole event, including the redacted-but-present `command` and `filePath` attributes. There is no per-tier field projection.
+2. **Preflight warns, but does not stop you.** Routing a `personal-only` event type (`AiToolCall`, `AiMcpToolCall`, `AiWorkflowRun`, `AiAntiPattern`, `AiAuditEvent`, `SecurityAlert`) to any tier other than `default` logs a warning on stderr and proceeds.
+
+The conservative shape is to keep `["*"]` on your own `default`/personal tier and give every shared tier an explicit list drawn only from the `safe-shared` category (`AiCodingTask`, `AiSubagentTurn`, `AiTurnCost`, `AiRetryAlert`, `AiContextSnapshot`, `AiBudgetWarning`, `AiProxyRequest`, `AiObservabilityHealth`). See [docs/ADVANCED.md § Multi-Tier Telemetry Routing](./docs/ADVANCED.md#multi-tier-telemetry-routing) for the field reference and the full categorization table.
+
 ---
 
 ## Data Retention in New Relic
@@ -116,7 +127,7 @@ Data sent to New Relic is subject to your account's retention settings. New Reli
 
 > [docs.newrelic.com → Data retention](https://docs.newrelic.com/docs/data-apis/manage-data/manage-data-retention/)
 
-Relevant event types emitted by this tool: `AiToolCall`, `AiMcpToolCall`, `AiProxyRequest`, `AiAuditEvent`, `SecurityAlert`, `AiCodingTask`, `AiAntiPattern`, `AiBudgetWarning`, `AiContextSnapshot`, `AiSubagentTurn`, `AiWorkflowRun`, `AiObservabilityHealth`, `AiRetryAlert`. Full per-field detail for every event type: [METRICS_TABLE.md](./docs/METRICS_TABLE.md).
+Relevant event types emitted by this tool: `AiToolCall`, `AiMcpToolCall`, `AiProxyRequest`, `AiAuditEvent`, `SecurityAlert`, `AiCodingTask`, `AiAntiPattern`, `AiBudgetWarning`, `AiContextSnapshot`, `AiSubagentTurn`, `AiWorkflowRun`, `AiObservabilityHealth`, `AiRetryAlert`, `AiTurnCost`. Full per-field detail for every event type: [METRICS_TABLE.md](./docs/METRICS_TABLE.md).
 
 Local data retention is controlled by `retainSessionsDays` in the config file. See [README.md → Key settings](./README.md#key-settings).
 

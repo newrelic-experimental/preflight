@@ -166,7 +166,7 @@ Key config interfaces:
 
 ### Additional Configuration Fields
 
-Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, the 8 `otlp.*` OTLP export/receiver fields, and `companionMode` (suppresses `ai.cost.*` gauges and tags cost-bearing Claude Code events when the same org also runs Claude Code's built-in OTel export). See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
+Beyond the fields above: per-developer/team/org identifiers, budget caps, digest delivery, session retention, the 8 `otlp.*` OTLP export/receiver fields, `companionMode` (suppresses `ai.cost.*` gauges and tags cost-bearing Claude Code events when the same org also runs Claude Code's built-in OTel export), and `tiers` (multi-tier telemetry routing — fan events out to several NR accounts and/or local JSONL directories, selected per `eventType`; requires `mode: 'cloud'` or `'both'`). See [ADVANCED.md](./docs/ADVANCED.md) for the full field reference, including the legacy flat-key backward-compatibility behavior and the `configVersion` convention.
 
 ### Event Types
 
@@ -205,6 +205,16 @@ All local persistence lives under `~/.newrelic-preflight/` by default:
 - `stop()` is idempotent — concurrent callers await the same flush promise
 
 `NrIngestManager` (in `src/transport/`) wraps `HarvestScheduler` and adds log ingestion.
+
+### Multi-Tier Telemetry Routing
+
+`NrIngestManager` holds one `HarvestScheduler` per NR-type tier (`schedulers: Map<tierName, HarvestScheduler>`) and one `TierLocalWriter` per local-type tier (`localWriters: Map<tierName, TierLocalWriter>`). Every `ingestX()` method emits through the private `routeEvent(event)`, which asks the stateless `TierRouter` (`src/transport/tier-router.ts`) which tiers want that `eventType` and forwards to each. `HarvestScheduler` itself is unmodified — it is simply instantiated more than once, so each tier keeps its own independent retry buffer and backoff and one unreachable NR account never affects another tier.
+
+The **primary tier** is the first NR-type tier in array order. It alone carries the aggregated Metric API stream, the NR Logs API audit entries, the OTLP bridge/transport, and the `getEventSendHealth()` counters — per-tier metrics, logs, and OTLP are explicit non-goals.
+
+`src/transport/tier-types.ts` owns `KNOWN_EVENT_TYPES` (all 14 emitted `eventType` values) and `EVENT_TYPE_SENSITIVITY`, which classifies each as `safe-shared` (aggregate counts/durations/costs) or `personal-only` (raw or lightly-redacted per-call detail: bash commands, file paths, agent descriptions, audit specifics). **Adding a new event type to `nr-ingest.ts` requires adding it to both** — `EVENT_TYPE_SENSITIVITY`'s `Record<KnownEventType, …>` type turns a forgotten entry into a compile error. `validateTiers()` warns (never blocks) when a `personal-only` type is routed to any tier other than `default`.
+
+When the config file has no `tiers` array, `loadMcpConfig()` synthesizes one implicit tier (`name: 'default'`, `eventTypes: ['*']`) from the flat `licenseKey`/`accountId`, in memory only — existing single-account deployments behave exactly as before. An explicit `tiers` array while `mode === 'local'` is a config-load error.
 
 ## Security
 

@@ -156,6 +156,92 @@ One consequence to plan for: two of the shipped alert conditions query the suppr
 
 ---
 
+## Multi-Tier Telemetry Routing
+
+Route each event type to a different destination — your own New Relic account, a shared team account, and/or a directory on disk — from a single Preflight process.
+
+Requires `mode: "cloud"` or `mode: "both"`. Tiers fan out the cloud export path; an explicit `tiers` array while `mode` is `"local"` is a config-load error.
+
+```jsonc
+{
+  "mode": "cloud",
+  "licenseKey": "...",
+  "accountId": "12345",
+  "tiers": [
+    {
+      "name": "personal",
+      "destination": { "type": "nr", "licenseKey": "...", "accountId": "12345" },
+      "eventTypes": ["*"],
+    },
+    {
+      "name": "team",
+      "destination": { "type": "nr", "licenseKey": "...", "accountId": "67890" },
+      "eventTypes": ["AiCodingTask", "AiSubagentTurn"],
+    },
+    {
+      "name": "org",
+      "destination": { "type": "local", "path": "/shared/nas/preflight-org" },
+      "eventTypes": ["AiCodingTask"],
+    },
+  ],
+}
+```
+
+### Tier fields
+
+| Field                    | Required     | Notes                                                                                                                                |
+| ------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                   | yes          | Unique, non-empty. `"default"` is the reserved name of the implicit tier and is the only name exempt from the personal-only warning. |
+| `destination.type`       | yes          | `"nr"` or `"local"`.                                                                                                                 |
+| `destination.licenseKey` | `nr` only    | This tier's own NR ingest license key.                                                                                               |
+| `destination.accountId`  | `nr` only    | 1–12 decimal digits, as a JSON string.                                                                                               |
+| `destination.path`       | `local` only | Directory for JSONL output. Relative paths are resolved to absolute at config load.                                                  |
+| `eventTypes`             | yes          | Non-empty. Either `["*"]` (everything) or an explicit list of known event types.                                                     |
+
+There is no environment variable or CLI flag for `tiers` — config file only.
+
+### Event-type sensitivity
+
+| Category                                                                                                                   | Event types                                                                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `safe-shared` — aggregated counts/durations/costs, no raw paths/commands/user text                                         | `AiProxyRequest`, `AiCodingTask`, `AiSubagentTurn`, `AiRetryAlert`, `AiTurnCost`, `AiContextSnapshot`, `AiBudgetWarning`, `AiObservabilityHealth` |
+| `personal-only` — raw or lightly-redacted per-call detail (bash commands, file paths, agent descriptions, audit specifics) | `AiToolCall`, `AiMcpToolCall`, `AiWorkflowRun`, `AiAntiPattern`, `AiAuditEvent`, `SecurityAlert`                                                  |
+
+Routing a `personal-only` type to a tier other than `default` logs a warning on stderr and proceeds — it is a deliberate, informed operator choice, not an error. Routing is **event-type-level only**: there is no per-tier field redaction or projection, so a tier that receives `AiToolCall` receives the whole event.
+
+### Primary tier
+
+The first `nr`-type tier in the array is the **primary tier**. It carries:
+
+- the aggregated Metric API stream (all `ai.*` gauges)
+- NR Logs API audit entries
+- the OTLP exporter, when `otlp.transport` is `otlp` or `both`
+- the `nr_observe_health` event-send health counters
+
+Per-tier metrics, per-tier logs, and per-tier OTLP are out of scope. At least one `nr`-type tier is required; a `tiers` array containing only `local` destinations fails config load.
+
+### Local-tier output
+
+Each `local` tier appends to `<path>/events-YYYY-MM-DD.jsonl` (one file per UTC day, one JSON object per line), creating directories with mode `0o700` and files with mode `0o600` — the same permission invariant as `~/.newrelic-preflight/`. Writes are best-effort: a failure (unmounted share, permission denied) logs a warning, increments a counter, and never throws, so a broken local tier cannot affect any other tier or the MCP server.
+
+### Failure isolation
+
+Every `nr` tier gets its own `HarvestScheduler`, so each keeps an independent retry buffer and backoff. One unreachable NR account retries on its own schedule while every other tier continues delivering normally.
+
+### Backward compatibility
+
+Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` become one implicit tier (`name: "default"`, `eventTypes: ["*"]`), resolved in memory and never written back to the config file.
+
+### Misconfiguration is fatal at startup
+
+The following throw at config load with a specific message, following the same fail-fast convention as the `licenseKey`/`accountId`/`homelabServerUrl` checks: an empty `tiers` array, a duplicate tier name, a blank name, an unknown `destination.type`, an `nr` destination missing `licenseKey` or with a malformed `accountId`, a `local` destination missing `path`, an empty or unknown-valued `eventTypes`, and an array with no `nr`-type tier.
+
+### Not covered
+
+Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a separate mechanism and is unaffected by tiers.
+
+---
+
 ## Setup Wizard — Environment Variable Pre-Fill
 
 If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are set in the environment when `preflight setup` is run, the wizard pre-fills those prompts and shows the env var name as the hint (`$NEW_RELIC_LICENSE_KEY`). Pressing Enter accepts the value — no copy-paste needed. This makes the wizard scriptable in CI pipelines or Docker-based dev environments where credentials are already injected as environment variables.
