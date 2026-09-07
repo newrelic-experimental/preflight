@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] - 2026-09-06
+
+### Added
+
+- **Multi-tier telemetry routing.** A new optional `tiers` array in the config file lets one Preflight instance fan events out to multiple destinations by event type — several New Relic accounts, local directories on disk, or a mix of both — instead of a single account. Each tier lists a destination and the event types it should receive (or `["*"]` for all of them); config loading warns when a tier other than the primary one is routed personal-only-grade data (raw file paths, commands, or audit-trail detail), and separately warns when the primary tier itself — the one that always carries the aggregated Metric API stream, NR Logs API audit entries, OTLP export, and event-send-health counters, regardless of its own event types — isn't the operator's own default account. Existing single-account configs are unaffected; omitting `tiers` keeps the previous single-destination behavior.
+
 ## [1.44.0] - 2026-09-04
 
 ### Fixed
