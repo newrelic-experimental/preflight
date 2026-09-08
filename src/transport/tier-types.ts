@@ -1,8 +1,6 @@
 /**
  * Multi-tier telemetry routing — shared types, the event-type inventory, and
  * the sensitivity categorization that `validateTiers()` warns against.
- *
- * See docs/superpowers/specs/2026-09-06-multi-tier-telemetry-design.md.
  */
 
 import { resolve } from 'node:path';
