@@ -38,7 +38,7 @@ describe('DiscreteBlockChart', () => {
   });
 
   it('lets an explicit isPeak override the quantized-count comparison', () => {
-    // #593: two hours can round to the same block count while only one is
+    // Two hours can round to the same block count while only one is
     // the true max-spend hour. The caller flags the real peak via isPeak;
     // the chart must defer to it instead of comparing quantized counts.
     const { container } = render(
