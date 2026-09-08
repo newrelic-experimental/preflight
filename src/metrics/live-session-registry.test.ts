@@ -107,6 +107,48 @@ describe('LiveSessionRegistry', () => {
     expect(DEFAULT_STALE_THRESHOLD_MS).toBe(180_000);
   });
 
+  describe('getTodaySessionIds', () => {
+    it('keeps a session in today-seen after it goes stale in getLiveSessions', () => {
+      const reg = new LiveSessionRegistry(5000);
+      reg.touch('sess-a');
+      jest.advanceTimersByTime(6000);
+      expect(reg.getLiveSessions()).toEqual([]);
+      expect(reg.getTodaySessionIds()).toEqual(['sess-a']);
+    });
+
+    it('excludes synthetic session IDs by default', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('real-session');
+      reg.touch('local-1234567890');
+      expect(reg.getTodaySessionIds()).toEqual(['real-session']);
+    });
+
+    it('includeSynthetic: true returns every session seen today', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('real-session');
+      reg.touch('local-1234567890');
+      const all = reg.getTodaySessionIds({ includeSynthetic: true });
+      expect(all).toEqual(expect.arrayContaining(['real-session', 'local-1234567890']));
+      expect(all).toHaveLength(2);
+    });
+
+    it('expires an entry once the calendar day rolls over', () => {
+      jest.setSystemTime(new Date(2026, 0, 15, 23, 59, 0));
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a');
+      expect(reg.getTodaySessionIds()).toEqual(['sess-a']);
+      jest.setSystemTime(new Date(2026, 0, 16, 0, 1, 0));
+      expect(reg.getTodaySessionIds()).toEqual([]);
+    });
+
+    it('is cleared on reset()', () => {
+      const reg = new LiveSessionRegistry();
+      reg.touch('sess-a');
+      reg.reset();
+      expect(reg.getTodaySessionIds()).toEqual([]);
+    });
+  });
+
   describe('concurrency tracking', () => {
     it('tracks peak concurrent sessions via touch()', () => {
       const reg = new LiveSessionRegistry(5000);

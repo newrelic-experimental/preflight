@@ -2056,6 +2056,29 @@ describe('Today view — Forecast card hourly-spend chart', () => {
     ).toBeInTheDocument();
   });
 
+  it('flags only the true max-spend hour as peak when two hours round to the same block count', async () => {
+    // #593: $5.00 and $4.60 both round to 5 blocks at blockUnit=1, but only
+    // the $5.00 hour is the real peak — the chart must not highlight both.
+    const dayStart = localStartOfDay();
+    const hourSession = (hour: number, cost: number) => ({
+      sessionId: `s-${hour}`,
+      startTime: dayStart + hour * 60 * 60 * 1000 + 5 * 60 * 1000,
+      durationMs: 10 * 60 * 1000,
+      toolCallCount: 1,
+      estimatedCostUsd: cost,
+    });
+    mockSessions([hourSession(9, 5.0), hourSession(14, 4.6)]);
+    renderToday();
+    const chart = await screen.findByRole('img', { name: /Hourly spend today/ });
+    const rects = chart.querySelectorAll('rect.heatmap-cell');
+    const peakColorRects = Array.from(rects).filter(
+      (r) => r.getAttribute('fill') === 'var(--color-chart-block-peak)',
+    );
+    // Both hour-9 and hour-14 columns render 5 blocks each (10 total); only
+    // hour-9's 5 blocks (the true peak) should carry the peak color.
+    expect(peakColorRects.length).toBe(5);
+  });
+
   it('does not render the chart when every hour rounds to 0 blocks at the smallest unit step', async () => {
     // maxCost=$0.001 picks the smallest NICE_UNIT (0.01) as the block unit,
     // and round(0.001 / 0.01) = 0 — every column renders 0 blocks even

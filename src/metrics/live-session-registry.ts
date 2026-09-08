@@ -4,6 +4,7 @@
  */
 
 import { basename } from 'node:path';
+import { localStartOfDay } from '../lib/date.js';
 import {
   isSyntheticSessionId,
   shouldReplaceSessionName,
@@ -21,6 +22,13 @@ export interface ConcurrencySample {
 
 export class LiveSessionRegistry {
   private readonly lastActivity = new Map<string, number>();
+  // Separate from `lastActivity`: survives the 3-minute `getLiveSessions()`
+  // staleness eviction so an idle-but-still-open window (e.g. no tool calls
+  // for >3 min) isn't treated as gone by consumers that need "seen at all
+  // today" rather than "actively coding right now" — buffer/cursor GC
+  // protection, the dashboard session list, and today's aggregate counts.
+  // Expires at local midnight via getTodaySessionIds() so it stays bounded.
+  private readonly seenToday = new Map<string, number>();
   private readonly sessionNames = new Map<string, string>();
   // Sessions whose name was set authoritatively (job-state title / transcript
   // ai-title). `touch()` must never overwrite these with a cwd basename.
@@ -41,6 +49,7 @@ export class LiveSessionRegistry {
 
   touch(sessionId: string, cwd?: string): void {
     this.lastActivity.set(sessionId, Date.now());
+    this.seenToday.set(sessionId, Date.now());
     // Streaming FALLBACK naming: skip when an authoritative name is set, and
     // (as before) only fill the first time we see a cwd for this session.
     if (cwd && !this.authoritativeNames.has(sessionId) && !this.sessionNames.has(sessionId)) {
@@ -132,8 +141,32 @@ export class LiveSessionRegistry {
     return options?.includeSynthetic ? live : live.filter((id) => !isSyntheticSessionId(id));
   }
 
+  /**
+   * Session IDs touched at any point today (local calendar day), regardless
+   * of whether they're still within the 3-minute `getLiveSessions()` window.
+   * Entries from a prior calendar day are evicted as a side effect so the
+   * map stays bounded across long-running processes.
+   */
+  getTodaySessionIds(options?: { includeSynthetic?: boolean }): string[] {
+    const startOfToday = localStartOfDay();
+    const today: string[] = [];
+    const stale: string[] = [];
+    for (const [id, ts] of this.seenToday) {
+      if (ts >= startOfToday) {
+        today.push(id);
+      } else {
+        stale.push(id);
+      }
+    }
+    for (const id of stale) {
+      this.seenToday.delete(id);
+    }
+    return options?.includeSynthetic ? today : today.filter((id) => !isSyntheticSessionId(id));
+  }
+
   reset(): void {
     this.lastActivity.clear();
+    this.seenToday.clear();
     this.sessionNames.clear();
     this.authoritativeNames.clear();
     this.authoritativeSources.clear();
