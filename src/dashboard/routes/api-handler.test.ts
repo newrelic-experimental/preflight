@@ -399,7 +399,7 @@ describe('api-handler GET /api/sessions', () => {
   });
 
   it('keeps a session in the list once it goes idle past the 3-minute live window', async () => {
-    // #508: an open-but-idle Claude Code window (no tool calls for >3 min)
+    // An open-but-idle Claude Code window (no tool calls for >3 min)
     // must not vanish from the Today tab's session list — getLiveSessions()
     // would evict it, but getTodaySessionIds() must not.
     const handler = createApiHandler({
@@ -2511,7 +2511,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
   });
 
   it('counts a session that is idle past the 3-minute live window but seen today', async () => {
-    // #508: the aggregate sessionCount must not undercount an open-but-idle
+    // The aggregate sessionCount must not undercount an open-but-idle
     // window that has neither fresh buffer events nor a persisted summary —
     // getTodaySessionIds() is the only remaining signal it exists.
     const handler = createApiHandler({
@@ -3974,7 +3974,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   });
 
   it("still folds in a session's buffered activity once it goes idle past the 3-minute live window", async () => {
-    // #508: getLiveSessions() would have evicted this session already (no
+    // getLiveSessions() would have evicted this session already (no
     // tool calls for >3 min), but it's still open today — its buffered
     // (not-yet-persisted) activity must still show up in the chart.
     const handler = createApiHandler({

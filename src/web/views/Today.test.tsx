@@ -2057,7 +2057,7 @@ describe('Today view — Forecast card hourly-spend chart', () => {
   });
 
   it('flags only the true max-spend hour as peak when two hours round to the same block count', async () => {
-    // #593: $5.00 and $4.60 both round to 5 blocks at blockUnit=1, but only
+    // $5.00 and $4.60 both round to 5 blocks at blockUnit=1, but only
     // the $5.00 hour is the real peak — the chart must not highlight both.
     const dayStart = localStartOfDay();
     const hourSession = (hour: number, cost: number) => ({

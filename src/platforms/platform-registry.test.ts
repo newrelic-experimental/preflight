@@ -268,14 +268,14 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('claude-code');
     });
 
-    // Regression test for #540: a real Claude Code process sets CLAUDECODE /
-    // CLAUDE_CODE_ENTRYPOINT / CLAUDE_CODE_SESSION_ID, not the legacy
-    // CLAUDE_CODE / CLAUDE_CODE_VERSION signals the other tests above use.
-    // This is the exact scenario the SessionSpan `ai.platform` attribute
-    // relies on (via createDefaultRegistry().getActive().platformName in
-    // src/index.ts) — already fixed by #539 (ClaudeCodeAdapter.isSupported())
-    // rather than needing its own workaround at that call site.
-    it('identifies Claude Code from the real ambient signals a Claude Code process sets (#540)', () => {
+    // A real Claude Code process sets CLAUDECODE / CLAUDE_CODE_ENTRYPOINT /
+    // CLAUDE_CODE_SESSION_ID, not the legacy CLAUDE_CODE / CLAUDE_CODE_VERSION
+    // signals the other tests above use. This is the exact scenario the
+    // SessionSpan `ai.platform` attribute relies on (via
+    // createDefaultRegistry().getActive().platformName in src/index.ts) —
+    // already correctly handled by ClaudeCodeAdapter.isSupported() rather
+    // than needing its own workaround at that call site.
+    it('identifies Claude Code from the real ambient signals a Claude Code process sets', () => {
       process.env.CLAUDECODE = '1';
       process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
       process.env.CLAUDE_CODE_SESSION_ID = 'session-abc';
