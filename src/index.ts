@@ -12,6 +12,7 @@ import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
 import type { McpServerConfig } from './config.js';
 import { DEFAULT_STORAGE_PATH, loadMcpConfig, redactSensitive } from './config.js';
+import { checkBasicAuthToken } from './dashboard/basic-auth.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
 import { LiveEventBus } from './dashboard/index.js';
 import type { ObservabilityHealthSnapshot } from './dashboard/routes/api-handler.js';
@@ -361,6 +362,14 @@ export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
       for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
         live.add(id);
       }
+      // Also protect sessions seen at any point today but no longer within the
+      // 3-minute live window (e.g. an open Claude Code window idle between
+      // prompts) — without this, gcOrphanBuffers/gcWatcherCursors would treat
+      // an idle-but-still-open session as orphaned and delete its buffer file
+      // before it's ever persisted.
+      for (const id of liveSessionRegistry.getTodaySessionIds({ includeSynthetic: true })) {
+        live.add(id);
+      }
     }
     localStore.gcOrphanBuffers(live);
     const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);
@@ -580,7 +589,7 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
     program
       .command('server')
       .description(
-        'Start Preflight in homelab server mode — receives events forwarded from remote clients and accumulates them to disk (no dashboard yet — see docs/homelab.md)',
+        'Start Preflight in homelab server mode — receives events forwarded from remote clients, accumulates them to disk, and serves a Basic-Auth-protected dashboard (see docs/homelab.md)',
       )
       .option(
         '--port <port>',
@@ -616,12 +625,29 @@ export async function dispatchSubcommand(argv: string[]): Promise<number | null>
         const accumulator = new HomelabAccumulator({ storagePath: config.storagePath });
         accumulator.start();
 
+        // Resolve symlinks (e.g. npm link) before dirname so staticDir points
+        // to the actual dist/ directory, not the symlink's parent — same
+        // resolution local mode uses below for its own DashboardServer.
+        const { dirname, resolve: resolvePath } = await import('node:path');
+        const entryScript = realpathSync(process.argv[1] ?? process.cwd());
+        const staticDir = resolvePath(dirname(entryScript), 'web');
+        const sessionStore = new SessionStore({ storagePath: config.storagePath });
+
         const bus = new LiveEventBus();
         const dashboardServer = new DashboardServer({
           port: config.homelabServer.port,
           host: config.homelabServer.bindAddress,
           bus,
           serverMode: true,
+          staticDir,
+          api: { sessionStore },
+          // Browser-facing routes (dashboard HTML, /api/*, /sse) authenticate
+          // with the same shared token via HTTP Basic Auth, so the browser's
+          // native login prompt sends it automatically on every request,
+          // including static assets and SSE which can't carry custom headers.
+          // /api/health and /ingest are exempt (see DashboardServer docs) —
+          // /ingest keeps its own independent Bearer check below.
+          isAuthorized: (authHeader) => checkBasicAuthToken(authHeader, token),
           ingestHandler: (authHeader, body) => {
             const expected = `Bearer ${token}`;
             const isAuthed =
@@ -1986,6 +2012,14 @@ async function main(): Promise<void> {
         );
       }
     });
+    // Cross-references a subagent's `agentType` (only known on ToolCallRecords
+    // the subagent's own hook-observed tool calls carry, via the native
+    // agent_type hook field) against its `agentId` — the ONLY link between
+    // the native hook pipeline and the transcript-derived subagent-token
+    // pipeline (onSubagentTurn below), which has no type of its own. Best
+    // effort: a subagent that never makes a hook-visible tool call has no
+    // entry here, so its cost is still counted but not broken out by type.
+    const agentTypeByAgentId = new Map<string, string>();
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2008,6 +2042,9 @@ async function main(): Promise<void> {
         localSessionAggregator.recordToolCall(rawRecord);
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
+        }
+        if (rawRecord.agentId && rawRecord.agentType) {
+          agentTypeByAgentId.set(rawRecord.agentId, rawRecord.agentType);
         }
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
@@ -2334,6 +2371,8 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
+        // Best-effort — see agentTypeByAgentId's doc comment above.
+        const agentType = agentTypeByAgentId.get(turn.agentId);
         const usage: TokenUsage = {
           inputTokens: turn.inputTokens,
           outputTokens: turn.outputTokens,
@@ -2354,6 +2393,7 @@ async function main(): Promise<void> {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,
           agentId: turn.agentId,
+          agentType,
         });
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
@@ -2366,6 +2406,7 @@ async function main(): Promise<void> {
         capturedNrIngest?.ingestSubagentTurn({
           workflow_run_id: turn.workflowRunId,
           agent_id: turn.agentId,
+          ...(agentType ? { agent_type: agentType } : {}),
           parent_session_id: turn.parentSessionId,
           message_id: turn.messageId,
           turn_uuid: turn.turnUuid,

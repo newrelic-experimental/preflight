@@ -2,6 +2,7 @@ import { jest } from '@jest/globals';
 import {
   createApiHandler,
   computeCrossProcessLiveSessionIds,
+  computeCrossProcessTodaySessionIds,
   buildContextReplayEvents,
 } from './api-handler.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
@@ -395,6 +396,35 @@ describe('api-handler GET /api/sessions', () => {
     expect(status()).toBe(200);
     const result = JSON.parse(body()) as Array<{ sessionId: string }>;
     expect(result.some((s) => s.sessionId === 'other-process-session')).toBe(true);
+  });
+
+  it('keeps a session in the list once it goes idle past the 3-minute live window', async () => {
+    // #508: an open-but-idle Claude Code window (no tool calls for >3 min)
+    // must not vanish from the Today tab's session list — getLiveSessions()
+    // would evict it, but getTodaySessionIds() must not.
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => ['idle-but-open-today'],
+        getLastActivity: () => null,
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+    expect(result.some((s) => s.sessionId === 'idle-but-open-today')).toBe(true);
   });
 });
 
@@ -2480,6 +2510,31 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.sparkline.points.length).toBeGreaterThan(0);
   });
 
+  it('counts a session that is idle past the 3-minute live window but seen today', async () => {
+    // #508: the aggregate sessionCount must not undercount an open-but-idle
+    // window that has neither fresh buffer events nor a persisted summary —
+    // getTodaySessionIds() is the only remaining signal it exists.
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => ['idle-but-open-today'],
+        getSessionName: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { sessionCount: number };
+    expect(parsed.sessionCount).toBeGreaterThanOrEqual(1);
+  });
+
   it('includes cross-session latency percentiles in the aggregate payload', async () => {
     const now = Date.now();
     const startOfDay = new Date(now);
@@ -3718,6 +3773,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
   > {
     return {
       getLiveSessions: () => [],
+      getTodaySessionIds: () => [],
       getSessionName: () => null,
       getLastActivity: () => null,
     };
@@ -3888,6 +3944,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['live-1'],
+        getTodaySessionIds: () => ['live-1'],
         getSessionName: () => null,
         getLastActivity: () => null,
       },
@@ -3916,6 +3973,36 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
     expect(result.buckets[3].count).toBe(0);
   });
 
+  it("still folds in a session's buffered activity once it goes idle past the 3-minute live window", async () => {
+    // #508: getLiveSessions() would have evicted this session already (no
+    // tool calls for >3 min), but it's still open today — its buffered
+    // (not-yet-persisted) activity must still show up in the chart.
+    const handler = createApiHandler({
+      concurrencyTracker: makeConcurrencyTracker(),
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => ['idle-but-open-1'],
+        getSessionName: () => null,
+        getLastActivity: () => null,
+      },
+      toolCallBuffer: {
+        getRecords: () => [makeBufferRecord('idle-but-open-1', 5)],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadAllSessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/concurrency' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.buckets[0].count).toBe(1);
+  });
+
   it('does not double-count a session that appears in both the persisted store and the live buffer', async () => {
     // The same session id contributes a persisted timeline AND a live buffer
     // record. Their timestamps are unioned per id and merged into one window
@@ -3924,6 +4011,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['dup-1'],
+        getTodaySessionIds: () => ['dup-1'],
         getSessionName: () => null,
         getLastActivity: () => null,
       },
@@ -3991,6 +4079,7 @@ describe('api-handler GET /api/concurrency (96-bucket grid)', () => {
       concurrencyTracker: makeConcurrencyTracker(),
       liveSessionRegistry: {
         getLiveSessions: () => ['sess-x'],
+        getTodaySessionIds: () => ['sess-x'],
         getSessionName: () => null,
         getLastActivity: () => null,
       },
@@ -6986,6 +7075,81 @@ describe('computeCrossProcessLiveSessionIds', () => {
 
   it('returns an empty array when neither dependency is available', () => {
     const ids = computeCrossProcessLiveSessionIds({} as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual([]);
+  });
+});
+
+describe('computeCrossProcessTodaySessionIds', () => {
+  it('unions registry today-seen ids with today-scoped buffer-only ids', () => {
+    const now = Date.now();
+    const ids = computeCrossProcessTodaySessionIds({
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => ['from-registry'],
+        getSessionName: () => null,
+      },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'from-buffer-only', timestamp: now - 1_000 },
+        ],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids.sort()).toEqual(['from-buffer-only', 'from-registry']);
+  });
+
+  it('keeps a session seen only via the registry beyond the 3-minute live window', () => {
+    // The whole point of this helper vs. computeCrossProcessLiveSessionIds:
+    // an idle-but-still-open session (no tool calls for >3 min) must still
+    // show up here even though getLiveSessions() would have evicted it.
+    const ids = computeCrossProcessTodaySessionIds({
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => ['idle-but-open-today'],
+        getSessionName: () => null,
+      },
+      localStore: { peekAllBuffers: () => [] },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual(['idle-but-open-today']);
+  });
+
+  it('excludes buffer ids from before local midnight', () => {
+    const startOfToday = localStartOfDay();
+    const ids = computeCrossProcessTodaySessionIds({
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => [],
+        getSessionName: () => null,
+      },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'yesterday', timestamp: startOfToday - 1_000 },
+          { mode: 'post', sessionId: 'today', timestamp: startOfToday + 1_000 },
+        ],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual(['today']);
+  });
+
+  it('excludes synthetic session ids seen only via the buffer', () => {
+    const now = Date.now();
+    const ids = computeCrossProcessTodaySessionIds({
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getTodaySessionIds: () => [],
+        getSessionName: () => null,
+      },
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'local-1730000000000', timestamp: now - 1_000 },
+          { mode: 'post', sessionId: 'real-session', timestamp: now - 1_000 },
+        ],
+      },
+    } as unknown as Parameters<typeof createApiHandler>[0]);
+    expect(ids).toEqual(['real-session']);
+  });
+
+  it('returns an empty array when neither dependency is available', () => {
+    const ids = computeCrossProcessTodaySessionIds({} as Parameters<typeof createApiHandler>[0]);
     expect(ids).toEqual([]);
   });
 });

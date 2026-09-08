@@ -5,11 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.45.0] - 2026-09-06
+## [1.47.0] - 2026-09-08
 
 ### Added
 
 - **Multi-tier telemetry routing.** A new optional `tiers` array in the config file lets one Preflight instance fan events out to multiple destinations by event type — several New Relic accounts, local directories on disk, or a mix of both — instead of a single account. Each tier lists a destination and the event types it should receive (or `["*"]` for all of them); config loading warns when a tier other than the primary one is routed personal-only-grade data (raw file paths, commands, or audit-trail detail), and separately warns when the primary tier itself — the one that always carries the aggregated Metric API stream, NR Logs API audit entries, OTLP export, and event-send-health counters, regardless of its own event types — isn't the operator's own default account. Existing single-account configs are unaffected; omitting `tiers` keeps the previous single-destination behavior.
+
+## [1.46.0] - 2026-09-08
+
+### Added
+
+- **Homelab server mode now serves a dashboard, protected by HTTP Basic Auth.** Previously `preflight server` only accepted forwarded events over `/ingest`; visiting the server's address in a browser 404'd, and the only way to view accumulated data was inspecting session files directly. The dashboard (and its `/api/*` and `/sse` routes) now render using the shared homelab token as an HTTP Basic Auth password — any username, the token as the password — so a browser's native login prompt authenticates automatically on first visit and on every subsequent request, including static assets and the live event stream. `GET /api/health` remains open, matching local mode. `POST /ingest` keeps its existing independent Bearer-token check.
+
+## [1.45.0] - 2026-09-08
+
+### Added
+
+- **Subagent cost can now be broken down by agent type, on a best-effort basis.** `nr_observe_get_cost_breakdown` gains a `by_agent_type` field, and the `AiSubagentTurn` event gains an `agent_type` attribute, alongside the existing per-agent-id data. Coverage depends on the subagent having made at least one tool call the harness reports a type for — a subagent that never does so is still counted in the overall subagent total but not broken out by type.
+
+## [1.44.7] - 2026-09-08
+
+### Fixed
+
+- **An open-but-idle Claude Code window no longer disappears from the Today tab, and its buffered activity is no longer at risk of being garbage-collected before it's persisted.** The dashboard treated "hasn't made a tool call in the last 3 minutes" the same as "this session no longer exists" — an idle-but-still-open window vanished from the session list and today's session count, and its buffer file could be deleted by the background GC pass as an orphan. Sessions seen at any point today are now tracked separately from the 3-minute "actively coding" window, so an idle window stays visible and its data stays safe until it's actually persisted.
+- **The hourly-spend chart on the Forecast card no longer double-highlights a "peak" hour.** Two different hours could round to the same number of blocks once cost was quantized for display, and both got the peak color even though only one was the real highest-spending hour. The chart now flags peak from the actual dollar amount instead of the rounded block count.
+
+## [1.44.6] - 2026-09-08
+
+### Changed
+
+- **`DedupRing` and `DedupRingRegistry` moved out of `event-processor.ts` into their own file, `src/hooks/dedup-ring.ts`.** No behavior change.
+
+### Added
+
+- **A regression test locks in Claude Code platform detection from its real ambient env signals (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`).** Existing coverage only exercised the legacy `CLAUDE_CODE_VERSION` signal at the registry level.
+
+## [1.44.5] - 2026-09-08
+
+### Security
+
+- Pinned transitive dependency overrides for 5 open Dependabot alerts: `fast-uri` (host-confusion/SSRF), `qs` and `browserslist` (DoS) in the root package, and `nanoid` and `js-yaml` (infinite loop / quadratic-time parsing) in `site/`. No user-visible behavior change.
 
 ## [1.44.0] - 2026-09-04
 

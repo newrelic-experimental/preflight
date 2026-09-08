@@ -653,3 +653,122 @@ describe('DashboardServer handle() defensive error handling', () => {
     }
   });
 });
+
+describe('DashboardServer isAuthorized gate', () => {
+  let server: DashboardServer;
+  afterEach(async () => {
+    await server?.stop();
+  });
+
+  function basicAuthHeader(password: string): string {
+    return `Basic ${Buffer.from(`ignored:${password}`).toString('base64')}`;
+  }
+
+  it('returns 401 with a WWW-Authenticate header for the static/root route when unauthorized', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      isAuthorized: () => false,
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toMatch(/^Basic realm=/);
+  });
+
+  it('returns 401 for /api/* routes when unauthorized', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      api: {},
+      isAuthorized: () => false,
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/whatever`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for /sse when unauthorized', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      isAuthorized: () => false,
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/sse`);
+    expect(res.status).toBe(401);
+  });
+
+  it('passes the Authorization header through to isAuthorized and allows the request when it returns true', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      api: {},
+      isAuthorized: (authHeader) => authHeader === basicAuthHeader('correct-token'),
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/whatever`, {
+      headers: { authorization: basicAuthHeader('correct-token') },
+    });
+    expect(res.status).not.toBe(401);
+  });
+
+  it('rejects the request when isAuthorized returns false for a wrong token', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      api: {},
+      isAuthorized: (authHeader) => authHeader === basicAuthHeader('correct-token'),
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/whatever`, {
+      headers: { authorization: basicAuthHeader('wrong-token') },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('never gates GET /api/health, even when isAuthorized always returns false', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      isAuthorized: () => false,
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    expect(res.status).toBe(200);
+  });
+
+  it('never gates POST /ingest, leaving its own Bearer-token check as the sole guard', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      isAuthorized: () => false,
+      ingestHandler: (authHeader) => (authHeader === 'Bearer real-token' ? 204 : 401),
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/ingest`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer real-token', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(204);
+  });
+
+  it('does not gate anything when isAuthorized is not provided', async () => {
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/`);
+    expect(res.status).not.toBe(401);
+  });
+});

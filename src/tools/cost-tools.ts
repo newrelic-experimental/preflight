@@ -169,6 +169,7 @@ export function handleGetCostBreakdown(costTracker: CostTracker, taskDetector?: 
   const result = {
     total_usd: metrics.sessionTotalCostUsd ?? 0,
     by_model: metrics.costByModel,
+    by_agent_type: metrics.subagentCostByAgentType,
     by_task: byTask,
     cost_per_line_of_code: metrics.costPerLineOfCode,
     cost_per_file_modified: metrics.costPerFileModified,

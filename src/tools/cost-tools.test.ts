@@ -250,6 +250,36 @@ describe('handleGetCostBreakdown()', () => {
     expect(body.rate_multiplier_applied).toBe(0.85);
     expect(body.total_usd).toBeCloseTo(9.0 * 0.85, 2);
   });
+
+  it('includes by_agent_type breakdown from subagent token usage', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 12_000,
+      },
+      'claude-sonnet-4',
+      { agentId: 'agent-1', agentType: 'general-purpose' },
+    );
+
+    const result = handleGetCostBreakdown(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.by_agent_type).toHaveProperty('general-purpose');
+    expect(body.by_agent_type['general-purpose']).toBeGreaterThan(0);
+  });
+
+  it('returns an empty by_agent_type when no subagent token usage has ctx.agentType', () => {
+    const tracker = new CostTracker();
+    const result = handleGetCostBreakdown(tracker);
+    const body = JSON.parse(result.content[0].text);
+
+    expect(body.by_agent_type).toEqual({});
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -284,6 +314,7 @@ describe('handleGetPromptCacheHealth()', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
+      subagentCostByAgentType: {},
       costRateMultiplierApplied: 1,
       ...overrides,
     } satisfies CostMetrics);
