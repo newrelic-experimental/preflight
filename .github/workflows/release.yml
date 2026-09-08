@@ -44,6 +44,27 @@ jobs:
       - name: Verify plugin hook bundle is up to date
         run: npm run verify:plugin-hook
 
+      # main is protected by rulesets with zero bypass actors, so this job
+      # can't push a fix-up commit — it can only fail loudly and point at
+      # the PR that needs to land first.
+      - name: Verify manifest versions are in sync
+        run: |
+          node -e "
+            const version = require('./package.json').version;
+            const mismatches = [];
+            for (const path of ['plugin/.claude-plugin/plugin.json', 'kiro-power/plugin.json']) {
+              const p = require('./' + path);
+              if (p.version !== version) {
+                mismatches.push(path + ' is at ' + p.version + ', expected ' + version);
+              }
+            }
+            if (mismatches.length) {
+              console.error(mismatches.join('\n'));
+              console.error('Fix these in a merged PR before releasing — this workflow cannot push directly to main.');
+              process.exit(1);
+            }
+          "
+
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -86,17 +107,20 @@ jobs:
 
       # The MCP Registry looks up the package on registry.npmjs.org to verify
       # it carries a matching `mcpName`, but npm's own registry API can take
-      # a few seconds to reflect a publish that just succeeded. Poll for the
-      # version instead of a fixed sleep, since propagation time varies.
+      # several minutes to reflect a publish made via OIDC trusted publishing
+      # (the provenance/attestation step adds latency on top of a normal
+      # publish). A previous 150s retry budget (5 attempts, 10-50s backoff)
+      # consistently failed here and only passed on a manual re-run minutes
+      # later, once propagation had caught up. Poll for up to 10 minutes.
       - name: Wait for npm package availability
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          for attempt in 1 2 3 4 5; do
+          for attempt in $(seq 1 20); do
             if npm view "@newrelic/preflight@$VERSION" version >/dev/null 2>&1; then
               exit 0
             fi
             echo "@newrelic/preflight@$VERSION not yet visible on npm, attempt $attempt"
-            sleep $((attempt * 10))
+            sleep 30
           done
           echo "@newrelic/preflight@$VERSION never became visible on npm" >&2
           exit 1
@@ -105,6 +129,11 @@ jobs:
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the
       # io.github.newrelic-experimental/* namespace with no extra secret.
+      # This mutates the job's local checkout only — main's ruleset (see
+      # above) means it can't be pushed back, so it exists purely to make
+      # this run's registry submission correct even if the checked-in
+      # server.json (which has no hard gate like the plugin manifests do)
+      # drifted.
       - name: Sync server.json version
         run: |
           node -e "
