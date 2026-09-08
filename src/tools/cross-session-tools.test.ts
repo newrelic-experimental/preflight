@@ -740,7 +740,7 @@ describe('Cross-session tool handlers', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 12. get_platform_comparison — error_rate uses tool success, not task success (#101)
+  // 12. get_platform_comparison — error_rate uses tool success, not task success
   // -------------------------------------------------------------------------
 
   it('handleGetPlatformComparison error_rate reflects tool failures, not test pass rate', () => {
