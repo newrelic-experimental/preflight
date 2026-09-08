@@ -42,6 +42,14 @@ export interface TokenRecordContext {
   readonly timestampMs?: number;
   readonly workflowRunId?: string | null;
   readonly agentId?: string;
+  /**
+   * Best-effort subagent type, cross-referenced by the caller from a
+   * `ToolCallRecord` sharing the same `agentId` (the transcript-derived
+   * subagent token pipeline carries no type of its own — see
+   * `subagentCostByAgentType`'s doc comment). Absent when no such record has
+   * been seen yet for this `agentId`.
+   */
+  readonly agentType?: string;
 }
 
 const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
@@ -116,6 +124,15 @@ export interface CostMetrics {
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
+  /**
+   * Subagent-attributed cost bucketed by `ctx.agentType` (best-effort — see
+   * `TokenRecordContext.agentType`). Entries only appear for `agentId`s a
+   * `ToolCallRecord` with a matching type has already been seen for; a
+   * subagent that never makes a hook-visible tool call has its cost counted
+   * in `subagentCostUsd` but not broken out here. In-memory only — unlike
+   * `costByModel`, this does NOT survive a process restart.
+   */
+  readonly subagentCostByAgentType: Record<string, number>;
   /**
    * The combined correction factor (`rateMultiplier` × the 1.1 data-residency
    * premium when configured — see `CostTrackerOptions`) applied to every
@@ -213,6 +230,8 @@ export class CostTracker implements Resettable {
 
   /** Subagent-attributed spend per local-day key, for a today-scoped KPI. */
   private subagentCostByDayUsd = new Map<string, number>();
+  /** Subagent-attributed spend per `ctx.agentType` — see `CostMetrics.subagentCostByAgentType`. */
+  private subagentCostByAgentType = new Map<string, number>();
   private parentCostUsd = 0;
   private totalLinesChanged = 0;
   private readonly rateMultiplier: number;
@@ -308,6 +327,12 @@ export class CostTracker implements Resettable {
       this.totalCacheSavingsUsd += breakdown.savingsFromCacheUsd;
       if (ctx?.agentId !== undefined) {
         this.subagentCostUsd += breakdown.totalUsd;
+        if (ctx.agentType !== undefined) {
+          this.subagentCostByAgentType.set(
+            ctx.agentType,
+            (this.subagentCostByAgentType.get(ctx.agentType) ?? 0) + breakdown.totalUsd,
+          );
+        }
       } else {
         this.parentCostUsd += breakdown.totalUsd;
       }
@@ -328,6 +353,12 @@ export class CostTracker implements Resettable {
     // Subagent vs parent split
     if (ctx?.agentId !== undefined) {
       this.subagentCostUsd += breakdown.totalUsd;
+      if (ctx.agentType !== undefined) {
+        this.subagentCostByAgentType.set(
+          ctx.agentType,
+          (this.subagentCostByAgentType.get(ctx.agentType) ?? 0) + breakdown.totalUsd,
+        );
+      }
     } else {
       this.parentCostUsd += breakdown.totalUsd;
     }
@@ -589,6 +620,7 @@ export class CostTracker implements Resettable {
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
+      subagentCostByAgentType: Object.fromEntries(this.subagentCostByAgentType),
       costRateMultiplierApplied: this.rateMultiplier,
     };
   }
@@ -655,6 +687,7 @@ export class CostTracker implements Resettable {
     this.costByModel = new Map();
     this.costByDayUsd = new Map();
     this.subagentCostByDayUsd = new Map();
+    this.subagentCostByAgentType = new Map();
     this.firstActivityMsByDay = new Map();
     this.costByWorkflowRunId = new Map();
     this.lastMutationMsByDay = new Map();

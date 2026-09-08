@@ -476,6 +476,13 @@ export interface ScriptWorkflowRunMetrics {
 export interface SubagentTurnMetrics {
   readonly workflow_run_id: string | null;
   readonly agent_id: string;
+  /**
+   * Best-effort subagent type, cross-referenced by the caller from a
+   * `ToolCallRecord` sharing this `agent_id` — see
+   * `TokenRecordContext.agentType` in cost-tracker.ts. Absent when no such
+   * record has been seen yet for this agent.
+   */
+  readonly agent_type?: string;
   readonly parent_session_id: string;
   readonly message_id: string;
   readonly turn_uuid: string;
@@ -544,6 +551,7 @@ export function subagentTurnToNrEvent(
   if (metrics.usd !== null) event.usd = metrics.usd;
   if (metrics.stop_reason !== null) event.stop_reason = metrics.stop_reason;
   if (metrics.schema_fingerprint) event.schema_fingerprint = metrics.schema_fingerprint;
+  if (metrics.agent_type) event.agent_type = metrics.agent_type;
   attachTeamAttribution(event, attrs);
   // Subagent turns are always derived from a Claude Code transcript — no
   // platform check needed, unlike codingTaskToNrEvent.

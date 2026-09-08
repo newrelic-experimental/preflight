@@ -6,12 +6,12 @@
     "url": "https://github.com/newrelic-experimental/preflight",
     "source": "github"
   },
-  "version": "1.44.4",
+  "version": "1.44.9",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@newrelic/preflight",
-      "version": "1.44.4",
+      "version": "1.44.9",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

@@ -37,6 +37,27 @@ describe('DiscreteBlockChart', () => {
     expect(rects[3]!.getAttribute('fill')).toBe('var(--color-chart-block-peak)');
   });
 
+  it('lets an explicit isPeak override the quantized-count comparison', () => {
+    // #593: two hours can round to the same block count while only one is
+    // the true max-spend hour. The caller flags the real peak via isPeak;
+    // the chart must defer to it instead of comparing quantized counts.
+    const { container } = render(
+      <DiscreteBlockChart
+        data={[
+          { count: 3, tooltip: 'false tie', isPeak: false },
+          { count: 3, tooltip: 'true peak', isPeak: true },
+        ]}
+        ariaLabel="chart"
+      />,
+    );
+    const rects = container.querySelectorAll('rect.heatmap-cell');
+    expect(rects.length).toBe(6);
+    // First column: count === effectiveMax, but isPeak: false wins.
+    expect(rects[0]!.getAttribute('fill')).toBe('var(--color-chart-block)');
+    // Second column: isPeak: true wins.
+    expect(rects[3]!.getAttribute('fill')).toBe('var(--color-chart-block-peak)');
+  });
+
   it('portals the tooltip to document.body on hover, escaping an overflow-hidden ancestor', () => {
     const { container } = render(
       <div style={{ overflow: 'hidden' }}>

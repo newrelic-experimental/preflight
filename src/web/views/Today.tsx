@@ -1957,6 +1957,9 @@ function hourlySpendToBlockItems(hours: readonly HourlyCostEntry[]): DiscreteBlo
   return hours.map((h) => ({
     count: Math.max(0, Math.round(h.cost / blockUnit)),
     tooltip: `${formatHourLabel(h.hour)}: ${formatUsd(h.cost)} (start hour)`,
+    // From the raw dollar value, not the quantized block count — two hours
+    // can round to the same block count while only one is the true peak.
+    isPeak: maxCost > 0 && h.cost === maxCost,
   }));
 }
 

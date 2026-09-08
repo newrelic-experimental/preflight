@@ -27,6 +27,15 @@ export interface DiscreteBlockChartItem {
    * grid, `"06-09: 3"` for the daily-peak grid).
    */
   readonly tooltip: string;
+  /**
+   * Explicit peak flag, sourced from the caller's raw (pre-quantization)
+   * value. When omitted, peak defaults to `count === effectiveMax` — correct
+   * for integer counts (ConcurrencyIndicator, History's daily-peak grid) but
+   * wrong when `count` is itself a quantized block count (e.g. dollars
+   * rounded into blocks), where two different raw values can round to the
+   * same top block and falsely tie for peak.
+   */
+  readonly isPeak?: boolean;
 }
 
 export interface DiscreteBlockChartProps {
@@ -100,7 +109,7 @@ export function DiscreteBlockChart({
         {data.map((item, colIdx) => {
           const blocks: JSX.Element[] = [];
           for (let b = 0; b < item.count; b++) {
-            const isPeak = item.count === effectiveMax;
+            const isPeak = item.isPeak ?? item.count === effectiveMax;
             blocks.push(
               <rect
                 key={`${colIdx}-${b}`}

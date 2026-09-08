@@ -362,6 +362,14 @@ export function runMaintenanceGcPass(deps: MaintenanceGcDeps): void {
       for (const id of liveSessionRegistry.getLiveSessions({ includeSynthetic: true })) {
         live.add(id);
       }
+      // Also protect sessions seen at any point today but no longer within the
+      // 3-minute live window (e.g. an open Claude Code window idle between
+      // prompts) — without this, gcOrphanBuffers/gcWatcherCursors would treat
+      // an idle-but-still-open session as orphaned and delete its buffer file
+      // before it's ever persisted.
+      for (const id of liveSessionRegistry.getTodaySessionIds({ includeSynthetic: true })) {
+        live.add(id);
+      }
     }
     localStore.gcOrphanBuffers(live);
     const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);
@@ -2003,6 +2011,14 @@ async function main(): Promise<void> {
         );
       }
     });
+    // Cross-references a subagent's `agentType` (only known on ToolCallRecords
+    // the subagent's own hook-observed tool calls carry, via the native
+    // agent_type hook field) against its `agentId` — the ONLY link between
+    // the native hook pipeline and the transcript-derived subagent-token
+    // pipeline (onSubagentTurn below), which has no type of its own. Best
+    // effort: a subagent that never makes a hook-visible tool call has no
+    // entry here, so its cost is still counted but not broken out by type.
+    const agentTypeByAgentId = new Map<string, string>();
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2025,6 +2041,9 @@ async function main(): Promise<void> {
         localSessionAggregator.recordToolCall(rawRecord);
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
+        }
+        if (rawRecord.agentId && rawRecord.agentType) {
+          agentTypeByAgentId.set(rawRecord.agentId, rawRecord.agentType);
         }
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
@@ -2351,6 +2370,8 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
+        // Best-effort — see agentTypeByAgentId's doc comment above.
+        const agentType = agentTypeByAgentId.get(turn.agentId);
         const usage: TokenUsage = {
           inputTokens: turn.inputTokens,
           outputTokens: turn.outputTokens,
@@ -2371,6 +2392,7 @@ async function main(): Promise<void> {
           timestampMs: turn.timestampMs,
           workflowRunId: turn.workflowRunId,
           agentId: turn.agentId,
+          agentType,
         });
         // Subagent turns are real model requests and cost real money, so they
         // belong in the model breakdown too — recording them only in the cost
@@ -2383,6 +2405,7 @@ async function main(): Promise<void> {
         capturedNrIngest?.ingestSubagentTurn({
           workflow_run_id: turn.workflowRunId,
           agent_id: turn.agentId,
+          ...(agentType ? { agent_type: agentType } : {}),
           parent_session_id: turn.parentSessionId,
           message_id: turn.messageId,
           turn_uuid: turn.turnUuid,
