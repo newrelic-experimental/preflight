@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.3] - 2026-09-09
+
+### Fixed
+
+- The efficiency score's speed component no longer scores zero-linesChanged tasks (investigations, reviews, delegated work) as a hard 0 — it's now excluded from the composite entirely for those tasks, renormalizing the remaining components. The speed component's own weight in the composite also dropped from 0.25 to 0.10, since a raw lines-changed-per-second ratio rewarded bulk regeneration as much as a careful, well-reasoned fix.
+
 ## [1.48.2] - 2026-09-09
 
 ### Fixed

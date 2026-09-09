@@ -258,6 +258,58 @@ describe('Speed normalization', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Zero-lines-changed tasks (issue #604): speed must not penalize
+// investigation/review/delegated tasks that made zero edits by design.
+// ---------------------------------------------------------------------------
+
+describe('Zero linesChanged tasks (issue #604)', () => {
+  it('excludes speed from the composite score entirely, renormalizing the rest', () => {
+    const scorer = new EfficiencyScorer();
+
+    const task = makeTask({
+      linesChanged: 0,
+      testsRun: 4,
+      testsPassed: 4,
+      askedUserQuestions: 0,
+      toolCallCount: 10,
+    });
+    const result = scorer.computeScore(task);
+
+    // The speed component still reports the raw (zero) rate for diagnostics...
+    expect(result.components.speed).toBe(0);
+    // ...but correctness=1, autonomy=1, firstAttemptQuality=1 average to a
+    // perfect score once speed is excluded rather than dragging it down.
+    expect(result.score).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Speed weight (issue #604): speed's influence on the composite score is
+// reduced from 0.25 to 0.10 so raw line-churn can no longer buy most of the
+// score on its own.
+// ---------------------------------------------------------------------------
+
+describe('Speed weight reduced (issue #604)', () => {
+  it('a fast bulk edit no longer dominates the composite score via speed alone', () => {
+    const scorer = new EfficiencyScorer();
+
+    const task = makeTask({
+      linesChanged: 400,
+      durationMs: 1_000, // 400 lines/sec, far above baseline → speed clamps to 1.0
+      testsRun: 0,
+      testsPassed: 0, // correctness defaults to 0.5
+      askedUserQuestions: 5,
+      toolCallCount: 10, // autonomy = 0.5
+    });
+    const result = scorer.computeScore(task);
+
+    expect(result.components.speed).toBe(1);
+    // 1*0.10 + 0.5*0.30 + 0.5*0.30 + 1*0.30 = 0.70
+    expect(result.score).toBeCloseTo(0.7, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Score clamping
 // ---------------------------------------------------------------------------
 

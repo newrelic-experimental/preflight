@@ -7,6 +7,12 @@
  *   3. Autonomy:             1 - (userQuestions / toolCalls)
  *   4. First-attempt quality: 1 - (thrashIterations / 3), floored at 0
  *
+ * Speed carries a deliberately small default weight (0.10 vs. 0.30 for the
+ * other three) — a raw lines/duration ratio rewards bulk regeneration as much
+ * as a careful fix, and zero-linesChanged tasks (investigation, review,
+ * delegated work) exclude speed from the composite entirely rather than
+ * scoring 0 on it, renormalizing across the remaining components instead.
+ *
  * Final score = weighted average, clamped to [0, 1].
  */
 
@@ -58,10 +64,10 @@ export interface EfficiencyScoreSeed {
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SPEED_WEIGHT = 0.25;
-const DEFAULT_CORRECTNESS_WEIGHT = 0.25;
-const DEFAULT_AUTONOMY_WEIGHT = 0.25;
-const DEFAULT_FIRST_ATTEMPT_QUALITY_WEIGHT = 0.25;
+const DEFAULT_SPEED_WEIGHT = 0.1;
+const DEFAULT_CORRECTNESS_WEIGHT = 0.3;
+const DEFAULT_AUTONOMY_WEIGHT = 0.3;
+const DEFAULT_FIRST_ATTEMPT_QUALITY_WEIGHT = 0.3;
 const DEFAULT_SPEED_BASELINE_LPS = 1; // 1 line per second = perfect speed
 
 const MAX_SCORES = 1_000;
@@ -107,13 +113,7 @@ export class EfficiencyScorer implements Resettable {
    */
   computeScore(task: AiCodingTask, antiPatterns?: AntiPattern[]): EfficiencyScore {
     const components = this.computeComponents(task, antiPatterns);
-    const raw =
-      components.speed * this.speedWeight +
-      components.correctness * this.correctnessWeight +
-      components.autonomy * this.autonomyWeight +
-      components.firstAttemptQuality * this.firstAttemptQualityWeight;
-
-    const score = clamp(Math.round(raw * 1000) / 1000, 0, 1);
+    const score = this.computeWeightedScore(components, task);
 
     const result: EfficiencyScore = {
       score,
@@ -205,13 +205,7 @@ export class EfficiencyScorer implements Resettable {
   updateScore(task: AiCodingTask, antiPatterns?: AntiPattern[]): EfficiencyScore {
     const idx = this.scores.findIndex((s) => s.taskId === task.taskId);
     const components = this.computeComponents(task, antiPatterns);
-    const raw =
-      components.speed * this.speedWeight +
-      components.correctness * this.correctnessWeight +
-      components.autonomy * this.autonomyWeight +
-      components.firstAttemptQuality * this.firstAttemptQualityWeight;
-
-    const score = clamp(Math.round(raw * 1000) / 1000, 0, 1);
+    const score = this.computeWeightedScore(components, task);
 
     const result: EfficiencyScore = {
       score,
@@ -275,6 +269,33 @@ export class EfficiencyScorer implements Resettable {
       autonomy: this.computeAutonomy(task),
       firstAttemptQuality: this.computeFirstAttemptQuality(antiPatterns),
     };
+  }
+
+  /**
+   * Weighted average of the four components, clamped to [0, 1]. When zero
+   * lines changed, speed is excluded entirely rather than scored as 0 —
+   * investigation/review/delegated tasks make no edits by design, so the
+   * remaining weights are renormalized to sum to 1 on their own.
+   */
+  private computeWeightedScore(components: EfficiencyScoreComponents, task: AiCodingTask): number {
+    if (task.linesChanged === 0) {
+      const remainingWeight =
+        this.correctnessWeight + this.autonomyWeight + this.firstAttemptQualityWeight;
+      if (remainingWeight <= 0) return 0;
+      const raw =
+        (components.correctness * this.correctnessWeight +
+          components.autonomy * this.autonomyWeight +
+          components.firstAttemptQuality * this.firstAttemptQualityWeight) /
+        remainingWeight;
+      return clamp(Math.round(raw * 1000) / 1000, 0, 1);
+    }
+
+    const raw =
+      components.speed * this.speedWeight +
+      components.correctness * this.correctnessWeight +
+      components.autonomy * this.autonomyWeight +
+      components.firstAttemptQuality * this.firstAttemptQualityWeight;
+    return clamp(Math.round(raw * 1000) / 1000, 0, 1);
   }
 
   /**
