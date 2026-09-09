@@ -685,6 +685,50 @@ describe('Over-delegation detection', () => {
     expect(overDelegation).toHaveLength(1);
     expect(overDelegation[0].agentCount).toBe(3);
   });
+
+  it('does NOT fire when agentInterrupted is explicitly false or a non-boolean value', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Agent', success: true, agentInterrupted: false }),
+      makeRecord({ toolName: 'Agent', success: true, agentInterrupted: false }),
+      // A truthy-but-non-boolean value must not satisfy the strict `=== true` check.
+      makeRecord({
+        toolName: 'Agent',
+        success: true,
+        agentInterrupted: 'true' as unknown as boolean,
+      }),
+    ];
+
+    const result = detector.analyze(calls);
+    expect(result.patterns.filter((p) => p.type === 'over_delegation')).toHaveLength(0);
+  });
+
+  it('does not interfere with an unrelated pattern (thrashing) detected in the same call sequence', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      // 3 thrash cycles on /a.ts
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Bash', isTestCommand: true, success: false }),
+      // 3 interrupted (but "successful") agent spawns
+      makeRecord({ toolName: 'Agent', success: true, agentInterrupted: true }),
+      makeRecord({ toolName: 'Agent', success: true, agentInterrupted: true }),
+      makeRecord({ toolName: 'Agent', success: true, agentInterrupted: true }),
+    ];
+
+    const result = detector.analyze(calls);
+    const types = result.patterns.map((p) => p.type);
+    expect(types).toContain('thrashing');
+    expect(types).toContain('over_delegation');
+
+    const overDelegation = result.patterns.filter((p) => p.type === 'over_delegation');
+    expect(overDelegation[0].agentCount).toBe(3);
+  });
 });
 
 // ---------------------------------------------------------------------------
