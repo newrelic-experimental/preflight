@@ -148,7 +148,8 @@ function computeWasteRecommendationText(
     re_reading: 'Read each file once and keep relevant sections in mind.',
     thrashing: 'Read the test failure output carefully before editing again.',
     blind_editing: 'Verify changes with tests between edit batches.',
-    over_delegation: 'Handle more work directly instead of spawning sub-agents.',
+    over_delegation:
+      'Multiple sub-agent spawns failed or were interrupted — investigate why before retrying.',
   };
 
   const advice = topPatternType !== null ? (patternAdvice[topPatternType] ?? null) : null;

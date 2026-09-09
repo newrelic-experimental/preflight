@@ -615,32 +615,75 @@ describe('Agent partitioning', () => {
 // ---------------------------------------------------------------------------
 
 describe('Over-delegation detection', () => {
-  it('detects 5 Agent calls', () => {
+  it('does NOT fire when 5 Agent calls all succeed', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [];
     for (let i = 0; i < 5; i++) {
-      calls.push(makeRecord({ toolName: 'Agent', agentDescription: `task-${i}` }));
+      calls.push(makeRecord({ toolName: 'Agent', agentDescription: `task-${i}`, success: true }));
     }
 
     const result = detector.analyze(calls);
     const overDelegation = result.patterns.filter((p) => p.type === 'over_delegation');
 
-    expect(overDelegation).toHaveLength(1);
-    expect(overDelegation[0].agentCount).toBe(5);
+    expect(overDelegation).toHaveLength(0);
   });
 
-  it('detects exactly 3 Agent calls (at threshold, >= comparison)', () => {
+  it('fires when exactly 3 Agent calls fail (at threshold, >= comparison)', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [];
     for (let i = 0; i < 3; i++) {
-      calls.push(makeRecord({ toolName: 'Agent' }));
+      calls.push(makeRecord({ toolName: 'Agent', success: false }));
     }
 
     const result = detector.analyze(calls);
     const overDelegation = result.patterns.filter((p) => p.type === 'over_delegation');
     expect(overDelegation).toHaveLength(1);
+    expect(overDelegation[0].agentCount).toBe(3);
+  });
+
+  it('fires when Agent calls are interrupted, even if success is true', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [];
+    for (let i = 0; i < 3; i++) {
+      calls.push(makeRecord({ toolName: 'Agent', success: true, agentInterrupted: true }));
+    }
+
+    const result = detector.analyze(calls);
+    const overDelegation = result.patterns.filter((p) => p.type === 'over_delegation');
+    expect(overDelegation).toHaveLength(1);
+    expect(overDelegation[0].agentCount).toBe(3);
+  });
+
+  it('does NOT fire with only 2 failed spawns (threshold-1)', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Agent', success: false }),
+      makeRecord({ toolName: 'Agent', success: false }),
+    ];
+
+    const result = detector.analyze(calls);
+    expect(result.patterns.filter((p) => p.type === 'over_delegation')).toHaveLength(0);
+  });
+
+  it('only counts failed/interrupted spawns toward the threshold, ignoring successful ones', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Agent', success: true }),
+      makeRecord({ toolName: 'Agent', success: true }),
+      makeRecord({ toolName: 'Agent', success: false }),
+      makeRecord({ toolName: 'Agent', success: false }),
+      makeRecord({ toolName: 'Agent', success: false }),
+    ];
+
+    const result = detector.analyze(calls);
+    const overDelegation = result.patterns.filter((p) => p.type === 'over_delegation');
+    expect(overDelegation).toHaveLength(1);
+    expect(overDelegation[0].agentCount).toBe(3);
   });
 });
 
@@ -737,11 +780,11 @@ describe('threshold boundary tests', () => {
 
   // ---- Over-delegation ----
 
-  it('over_delegation: 4 agents (first count that fires, since threshold is >3) fires with agentCount=4', () => {
+  it('over_delegation: 4 failed agents (first count that fires, since threshold is >3) fires with agentCount=4', () => {
     const detector = new AntiPatternDetector();
     const calls: ToolCallRecord[] = [];
     for (let i = 0; i < 4; i++) {
-      calls.push(makeRecord({ toolName: 'Agent', agentDescription: `task-${i}` }));
+      calls.push(makeRecord({ toolName: 'Agent', agentDescription: `task-${i}`, success: false }));
     }
     const result = detector.analyze(calls);
     const over = result.patterns.filter((p) => p.type === 'over_delegation');
@@ -847,9 +890,9 @@ describe('emitMetrics()', () => {
     const detector = new AntiPatternDetector();
 
     const calls: ToolCallRecord[] = [];
-    // Trigger over-delegation (5 agents)
+    // Trigger over-delegation (5 failed agent spawns)
     for (let i = 0; i < 5; i++) {
-      calls.push(makeRecord({ toolName: 'Agent' }));
+      calls.push(makeRecord({ toolName: 'Agent', success: false }));
     }
 
     const result = detector.analyze(calls);
@@ -929,11 +972,11 @@ describe('Edge cases', () => {
       makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
       makeRecord({ toolName: 'Edit', filePath: '/b.ts' }),
-      // Over-delegation (4 agents)
-      makeRecord({ toolName: 'Agent' }),
-      makeRecord({ toolName: 'Agent' }),
-      makeRecord({ toolName: 'Agent' }),
-      makeRecord({ toolName: 'Agent' }),
+      // Over-delegation (4 failed agent spawns)
+      makeRecord({ toolName: 'Agent', success: false }),
+      makeRecord({ toolName: 'Agent', success: false }),
+      makeRecord({ toolName: 'Agent', success: false }),
+      makeRecord({ toolName: 'Agent', success: false }),
     ];
 
     const result = detector.analyze(calls);
@@ -1024,6 +1067,22 @@ describe('Token waste annotation', () => {
     expect(patterns[0].type).toBe('re_reading');
     // calls[0] is the first (necessary) read; calls[1-3] are waste
     expect(patterns[0].tokensWasted).toBe(210 + 220 + 230); // 660
+  });
+
+  it('estimates tokensWasted for over_delegation (counts every failed spawn, not just overflow)', () => {
+    const detector = new AntiPatternDetector();
+    const calls = [
+      makeRecord({ toolName: 'Agent', success: true, inputTokens: 999, outputTokens: 999 }),
+      makeRecord({ toolName: 'Agent', success: false, inputTokens: 100, outputTokens: 50 }),
+      makeRecord({ toolName: 'Agent', success: false, inputTokens: 110, outputTokens: 60 }),
+      makeRecord({ toolName: 'Agent', success: false, inputTokens: 120, outputTokens: 70 }),
+    ];
+    const { patterns } = detector.analyze(calls);
+    const overDelegation = patterns.filter((p) => p.type === 'over_delegation');
+    expect(overDelegation).toHaveLength(1);
+    // All 3 failed spawns are wasted (unlike repeat-based patterns, there's no
+    // "first one is free" — the successful spawn's tokens must not be included.
+    expect(overDelegation[0].tokensWasted).toBe(100 + 50 + 110 + 60 + 120 + 70); // 510
   });
 
   it('getTotalAntiPatternWaste() sums tokensWasted across all patterns', () => {

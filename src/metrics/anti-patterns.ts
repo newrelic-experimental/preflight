@@ -7,7 +7,7 @@
  *   2. Re-reading: reading the same file excessively
  *   3. Stuck loop: running the same Bash command repeatedly
  *   4. Blind editing: multiple edits without verification
- *   5. Over-delegation: spawning too many sub-agents
+ *   5. Over-delegation: repeated sub-agent spawns that failed or were interrupted
  *
  * `analyze(toolCalls)` is pure — it returns detected patterns for a given
  * sequence (typically one task's worth of tool calls) without depending on
@@ -363,13 +363,7 @@ export class AntiPatternDetector implements Resettable {
   // ---------------------------------------------------------------------------
 
   private detectOverDelegation(toolCalls: ToolCallRecord[]): AntiPattern[] {
-    let agentCount = 0;
-
-    for (const call of toolCalls) {
-      if (call.toolName === 'Agent') {
-        agentCount++;
-      }
-    }
+    const agentCount = toolCalls.filter((call) => this.isFailedOrInterruptedAgentCall(call)).length;
 
     if (agentCount >= this.overDelegationThreshold) {
       return [
@@ -377,12 +371,17 @@ export class AntiPatternDetector implements Resettable {
           type: 'over_delegation',
           agentCount,
           tokensWasted: 0,
-          suggestion: 'Too many sub-agents spawned — consider handling more work directly',
+          suggestion:
+            'Multiple sub-agent spawns failed or were interrupted — investigate why before retrying rather than spawning more',
         },
       ];
     }
 
     return [];
+  }
+
+  private isFailedOrInterruptedAgentCall(call: ToolCallRecord): boolean {
+    return call.toolName === 'Agent' && (call.success === false || call.agentInterrupted === true);
   }
 
   private annotateTokenWaste(patterns: AntiPattern[], toolCalls: ToolCallRecord[]): AntiPattern[] {
@@ -437,8 +436,8 @@ export class AntiPatternDetector implements Resettable {
           return { ...p, tokensWasted: tokenSum(matching.slice(this.blindEditThreshold)) };
         }
         case 'over_delegation': {
-          const matching = toolCalls.filter((r) => r.toolName === 'Agent');
-          return { ...p, tokensWasted: tokenSum(matching.slice(this.overDelegationThreshold)) };
+          const matching = toolCalls.filter((r) => this.isFailedOrInterruptedAgentCall(r));
+          return { ...p, tokensWasted: tokenSum(matching) };
         }
         default:
           return p;
