@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.4] - 2026-09-09
+
+### Fixed
+
+- The tool selection score's "unused output" penalty no longer fires on `Grep`, `Glob`, `WebFetch`, `WebSearch`, or any MCP tool result, and the byte threshold for everything else rose from 4,000 to 20,000. Previously, any investigation-only tool call above 4,000 bytes — a single `Read` of a ~150-line file, one `Grep` result, one MCP query — was flagged as wasted output unless it was immediately followed by an edit, so a thorough investigation session scored close to the metric's floor while a shallow one that never looked anything up scored perfectly.
+
 ## [1.48.3] - 2026-09-09
 
 ### Fixed

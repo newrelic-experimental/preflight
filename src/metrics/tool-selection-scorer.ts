@@ -67,7 +67,7 @@ export interface ToolSelectionScorerOptions {
 const DEFAULT_REDUNDANT_READ_PENALTY = 0.03;
 const DEFAULT_REPEATED_FAILURE_PENALTY = 0.08;
 const DEFAULT_UNUSED_OUTPUT_PENALTY = 0.04;
-const DEFAULT_UNUSED_OUTPUT_SIZE_THRESHOLD = 4000;
+const DEFAULT_UNUSED_OUTPUT_SIZE_THRESHOLD = 20000;
 const DEFAULT_WORST_OFFENDER_COUNT = 10;
 
 // Tools whose output is terminal — they perform an action and their output is
@@ -87,6 +87,26 @@ const TERMINAL_OUTPUT_TOOLS = new Set([
   'EnterPlanMode',
   'ExitPlanMode',
 ]);
+
+// Discovery/search tools whose entire purpose is returning information for
+// the agent to reason about, not to be consumed by a downstream Edit/Write.
+// A thorough investigation is expected to produce large results here without
+// ever touching a file — penalizing that as "unused output" punishes the most
+// common legitimate action in a session. MCP tool results (any `mcp__`-
+// prefixed name, including this project's own tools and things like
+// codegraph_explore, whose entire value proposition is one large query result
+// replacing many small reads) get the same treatment via a prefix check
+// rather than an enumerable list, since new MCP tools appear constantly.
+// Trade-off: this is unconditional, so a hypothetical MCP tool whose job is
+// purely an action (analogous to Edit/Bash) is also exempt with no way to
+// carve it back out short of an "MCP action tools" allowlist — accepted here
+// because false negatives on that shape are rarer than the false positives
+// this fix removes.
+const DISCOVERY_OUTPUT_TOOLS = new Set(['Grep', 'Glob', 'WebFetch', 'WebSearch']);
+
+function isDiscoveryOutputTool(toolName: string): boolean {
+  return DISCOVERY_OUTPUT_TOOLS.has(toolName) || toolName.startsWith('mcp__');
+}
 
 // ---------------------------------------------------------------------------
 // ToolSelectionScorer
@@ -296,6 +316,7 @@ export class ToolSelectionScorer {
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
       if (TERMINAL_OUTPUT_TOOLS.has(call.toolName)) continue;
+      if (isDiscoveryOutputTool(call.toolName)) continue;
       const outputSize = call.outputSizeBytes ?? 0;
       if (outputSize < this.unusedOutputSizeThreshold) continue;
       if (!call.success) continue;

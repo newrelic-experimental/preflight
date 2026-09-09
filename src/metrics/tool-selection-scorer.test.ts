@@ -261,6 +261,58 @@ describe('ToolSelectionScorer', () => {
     const metrics = scorer.scoreSession(calls);
     expect(metrics.unusedOutputCount).toBe(0);
   });
+
+  it('does not penalize discovery/search tools (Grep, Glob, WebFetch, WebSearch) for large output', () => {
+    const scorer = new ToolSelectionScorer({ unusedOutputSizeThreshold: 1000 });
+    const calls = [
+      makeRecord({ toolName: 'Grep', outputSizeBytes: 5000 }),
+      makeRecord({ toolName: 'Glob', outputSizeBytes: 5000 }),
+      makeRecord({ toolName: 'WebFetch', outputSizeBytes: 5000 }),
+      makeRecord({ toolName: 'WebSearch', outputSizeBytes: 5000 }),
+    ];
+
+    const metrics = scorer.scoreSession(calls);
+    expect(metrics.unusedOutputCount).toBe(0);
+    expect(metrics.score).toBe(1);
+  });
+
+  it('does not penalize mcp__-prefixed tools for large output', () => {
+    const scorer = new ToolSelectionScorer({ unusedOutputSizeThreshold: 1000 });
+    const calls = [
+      makeRecord({ toolName: 'mcp__codegraph__codegraph_explore', outputSizeBytes: 20000 }),
+    ];
+
+    const metrics = scorer.scoreSession(calls);
+    expect(metrics.unusedOutputCount).toBe(0);
+  });
+
+  it('does not penalize an mcp__-prefixed tool at the default threshold, unbounded by its size', () => {
+    const scorer = new ToolSelectionScorer();
+    const calls = [
+      makeRecord({ toolName: 'mcp__codegraph__codegraph_explore', outputSizeBytes: 25000 }),
+    ];
+
+    const metrics = scorer.scoreSession(calls);
+    expect(metrics.unusedOutputCount).toBe(0);
+  });
+
+  it('does not penalize an ordinary investigation Read under the default threshold', () => {
+    const scorer = new ToolSelectionScorer();
+    const calls = [
+      makeRecord({ toolName: 'Read', filePath: '/investigate.ts', outputSizeBytes: 8000 }),
+    ];
+
+    const metrics = scorer.scoreSession(calls);
+    expect(metrics.unusedOutputCount).toBe(0);
+  });
+
+  it('still penalizes an unreferenced Read once output exceeds the default threshold', () => {
+    const scorer = new ToolSelectionScorer();
+    const calls = [makeRecord({ toolName: 'Read', filePath: '/huge.ts', outputSizeBytes: 25000 })];
+
+    const metrics = scorer.scoreSession(calls);
+    expect(metrics.unusedOutputCount).toBe(1);
+  });
 });
 
 describe('toToolSelectionSummary', () => {

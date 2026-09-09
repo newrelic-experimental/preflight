@@ -440,12 +440,9 @@ A single failure followed by a success does not count. The streak resets only on
 
 ### Unused large outputs
 
-**Triggered when:** a tool returns 4,000 bytes or more and the output is never acted on. This applies to all tool calls except file-modifying operations (edits, writes, commands). For `Read` calls, the penalty is waived if the same file is subsequently edited or written in the session.
+**Triggered when:** a tool returns 20,000 bytes or more and the output is never acted on. Discovery/search tools (`Grep`, `Glob`, `WebFetch`, `WebSearch`, and any MCP tool) are exempt entirely: their output is consumed by informing the agent's reasoning, not by producing a downstream edit, so requiring one would penalize ordinary investigation. For `Read`, the penalty is waived if the same file is subsequently edited or written in the session — in practice `Read` is almost always the tool this penalty applies to, though a handful of less common tool types get no such waiver either.
 
-**How to avoid:** Prefer targeted reads over broad ones when you only need to understand something, not change it. Use `grep`/`Bash` for lookups rather than reading entire files.
-
-- Instead of: _"Read `src/metrics/` for background."_
-- Use: _"Search for all callers of `getMetrics()` in `src/metrics/`."_
+**How to avoid:** Prefer targeted reads over reading whole files you only need to skim once. This penalty is rare in practice — a single Read has to exceed ~20,000 bytes (a genuinely large file) and never lead to an edit of that same file.
 
 ### Score floor
 
