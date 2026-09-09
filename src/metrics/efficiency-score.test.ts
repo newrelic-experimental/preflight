@@ -258,11 +258,11 @@ describe('Speed normalization', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Zero-lines-changed tasks (issue #604): speed must not penalize
-// investigation/review/delegated tasks that made zero edits by design.
+// Zero-lines-changed tasks: speed must not penalize investigation/review/
+// delegated tasks that made zero edits by design.
 // ---------------------------------------------------------------------------
 
-describe('Zero linesChanged tasks (issue #604)', () => {
+describe('Zero linesChanged tasks', () => {
   it('excludes speed from the composite score entirely, renormalizing the rest', () => {
     const scorer = new EfficiencyScorer();
 
@@ -331,12 +331,12 @@ describe('Zero linesChanged tasks (issue #604)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Speed weight (issue #604): speed's influence on the composite score is
-// reduced from 0.25 to 0.10 so raw line-churn can no longer buy most of the
-// score on its own.
+// Speed weight: speed's influence on the composite score is reduced from
+// 0.25 to 0.10 so raw line-churn can no longer buy most of the score on
+// its own.
 // ---------------------------------------------------------------------------
 
-describe('Speed weight reduced (issue #604)', () => {
+describe('Speed weight reduced', () => {
   it('a fast bulk edit no longer dominates the composite score via speed alone', () => {
     const scorer = new EfficiencyScorer();
 
