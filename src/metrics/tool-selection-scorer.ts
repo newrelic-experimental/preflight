@@ -1,3 +1,4 @@
+import { partitionByAgent } from './agent-partition.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 // ---------------------------------------------------------------------------
@@ -124,8 +125,15 @@ export class ToolSelectionScorer {
 
     const penalties: ToolSelectionPenalty[] = [];
 
-    penalties.push(...this.findRedundantReads(toolCalls));
-    penalties.push(...this.findRepeatedFailures(toolCalls));
+    // Redundant-read and repeated-failure detection both walk a flat,
+    // timestamp-ordered sequence looking for one agent repeating itself.
+    // Partition by agent (parent session + one group per subagent `agentId`)
+    // first, so parallel subagents each independently doing something once
+    // don't look like a single agent repeating itself. See issue #607.
+    for (const group of partitionByAgent(toolCalls)) {
+      penalties.push(...this.findRedundantReads(group));
+      penalties.push(...this.findRepeatedFailures(group));
+    }
     penalties.push(...this.findUnusedOutputs(toolCalls));
 
     const rawPenalty = penalties.reduce((sum, p) => sum + p.penaltyScore, 0);

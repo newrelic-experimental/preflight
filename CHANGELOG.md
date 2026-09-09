@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.1] - 2026-09-09
+
+### Fixed
+
+- Anti-pattern and tool-selection detectors (re-reading, stuck-loop, blind-editing, redundant-reads, repeated-failures) now analyze each subagent's tool calls separately from the parent session and from other subagents, instead of treating the whole session as one flat, timestamp-ordered sequence. Previously, parallel subagents each independently doing something once — e.g. three subagents each running the same test command, or each reading the same file — could be misread as a single agent stuck in a loop or re-reading unnecessarily.
+
 ## [1.48.0] - 2026-09-08
 
 ### Changed

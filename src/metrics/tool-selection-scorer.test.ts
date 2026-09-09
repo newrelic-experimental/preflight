@@ -73,6 +73,60 @@ describe('ToolSelectionScorer', () => {
     expect(metrics.repeatedFailureCount).toBe(2);
   });
 
+  describe('agent partitioning (issue #607)', () => {
+    it('does not penalize 3 different agents each reading the same file once', () => {
+      const scorer = new ToolSelectionScorer();
+      const calls = [
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-2' }),
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-3' }),
+      ];
+
+      const metrics = scorer.scoreSession(calls);
+      expect(metrics.redundantReadCount).toBe(0);
+      expect(metrics.score).toBe(1);
+    });
+
+    it('still penalizes redundant reads within a single agent amid other agents', () => {
+      const scorer = new ToolSelectionScorer();
+      const calls = [
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-2' }),
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+        makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+      ];
+
+      const metrics = scorer.scoreSession(calls);
+      // agent-1 read /a.ts 3 times — 3rd read (index 2 within its own group) is penalized
+      expect(metrics.redundantReadCount).toBe(1);
+    });
+
+    it('does not penalize 2 different agents each failing the same tool once, interleaved', () => {
+      const scorer = new ToolSelectionScorer();
+      const calls = [
+        makeRecord({ toolName: 'Bash', success: false, agentId: 'agent-1' }),
+        makeRecord({ toolName: 'Bash', success: false, agentId: 'agent-2' }),
+      ];
+
+      const metrics = scorer.scoreSession(calls);
+      expect(metrics.repeatedFailureCount).toBe(0);
+      expect(metrics.score).toBe(1);
+    });
+
+    it('still penalizes one agent failing the same tool consecutively amid other agents', () => {
+      const scorer = new ToolSelectionScorer();
+      const calls = [
+        makeRecord({ toolName: 'Bash', success: false, agentId: 'agent-1' }),
+        makeRecord({ toolName: 'Read', filePath: '/x.ts', agentId: 'agent-2' }),
+        makeRecord({ toolName: 'Bash', success: false, agentId: 'agent-1' }),
+        makeRecord({ toolName: 'Bash', success: false, agentId: 'agent-1' }),
+      ];
+
+      const metrics = scorer.scoreSession(calls);
+      expect(metrics.repeatedFailureCount).toBe(2);
+    });
+  });
+
   it('penalizes large unused outputs from non-terminal tools', () => {
     const scorer = new ToolSelectionScorer({ unusedOutputSizeThreshold: 1000 });
     const calls = [

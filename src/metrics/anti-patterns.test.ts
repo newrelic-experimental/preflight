@@ -459,6 +459,158 @@ describe('Blind editing detection', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cross-agent false positives (agent partitioning — issue #607)
+// ---------------------------------------------------------------------------
+
+describe('Agent partitioning', () => {
+  it('does not flag re-reading when 3 different agents each read the same file once', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-3' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const reReading = result.patterns.filter((p) => p.type === 're_reading');
+    expect(reReading).toHaveLength(0);
+  });
+
+  it('still flags re-reading when the same agent reads the file 3 times', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts', agentId: 'agent-1' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const reReading = result.patterns.filter((p) => p.type === 're_reading');
+    expect(reReading).toHaveLength(1);
+    expect(reReading[0].readCount).toBe(3);
+  });
+
+  it('does not flag a stuck loop when 3 different agents each run the same Bash command once', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-3' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const stuck = result.patterns.filter((p) => p.type === 'stuck_loop');
+    expect(stuck).toHaveLength(0);
+  });
+
+  it('still flags a stuck loop when one agent runs the same command 4 times consecutively', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Bash', command: 'npm test', agentId: 'agent-1' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const stuck = result.patterns.filter((p) => p.type === 'stuck_loop');
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0].repeatCount).toBe(4);
+  });
+
+  it('does not flag blind editing when 2 agents interleave 2 unverified edits each on the same file', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-2' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const blind = result.patterns.filter((p) => p.type === 'blind_editing');
+    expect(blind).toHaveLength(0);
+  });
+
+  it('still flags blind editing for a single agent editing without verification, even amid other agents', () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Read', filePath: '/b.ts', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-1' }),
+      makeRecord({ toolName: 'Edit', filePath: '/b.ts', agentId: 'agent-2' }),
+      makeRecord({ toolName: 'Edit', filePath: '/a.ts', agentId: 'agent-1' }),
+    ];
+
+    const result = detector.analyze(calls);
+    const blind = result.patterns.filter((p) => p.type === 'blind_editing');
+    expect(blind).toHaveLength(1);
+    expect(blind[0].file).toBe('/a.ts');
+    expect(blind[0].editCount).toBe(3);
+  });
+
+  it("computes tokensWasted for a per-agent pattern from that agent's calls only", () => {
+    const detector = new AntiPatternDetector();
+
+    const calls: ToolCallRecord[] = [
+      // agent-1 reads /a.ts 4 times — flagged, wasted tokens from its own reads only
+      makeRecord({
+        toolName: 'Read',
+        filePath: '/a.ts',
+        agentId: 'agent-1',
+        inputTokens: 10,
+        outputTokens: 100,
+      }),
+      // agent-2 reads /a.ts once, interleaved — must not contribute to agent-1's waste
+      makeRecord({
+        toolName: 'Read',
+        filePath: '/a.ts',
+        agentId: 'agent-2',
+        inputTokens: 10,
+        outputTokens: 9999,
+      }),
+      makeRecord({
+        toolName: 'Read',
+        filePath: '/a.ts',
+        agentId: 'agent-1',
+        inputTokens: 10,
+        outputTokens: 100,
+      }),
+      makeRecord({
+        toolName: 'Read',
+        filePath: '/a.ts',
+        agentId: 'agent-1',
+        inputTokens: 10,
+        outputTokens: 100,
+      }),
+      makeRecord({
+        toolName: 'Read',
+        filePath: '/a.ts',
+        agentId: 'agent-1',
+        inputTokens: 10,
+        outputTokens: 100,
+      }),
+    ];
+
+    const result = detector.analyze(calls);
+    const reReading = result.patterns.filter((p) => p.type === 're_reading');
+    expect(reReading).toHaveLength(1);
+    // 4 reads by agent-1 at 110 tokens each; annotateTokenWaste treats only the
+    // first read as "free", so reads #2-4 (330 tokens) are wasted. agent-2's
+    // 9999-token read must not leak into this total.
+    expect(reReading[0].tokensWasted).toBe(330);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Over-delegation detection
 // ---------------------------------------------------------------------------
 

@@ -17,6 +17,7 @@
 
 import type { MetricAggregator } from '../shared/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import { partitionByAgent } from './agent-partition.js';
 import type { Resettable } from './tracker-contracts.js';
 
 // ---------------------------------------------------------------------------
@@ -110,15 +111,31 @@ export class AntiPatternDetector implements Resettable {
   }
 
   analyze(toolCalls: ToolCallRecord[]): AntiPatternMetrics {
-    const rawPatterns: AntiPattern[] = [];
+    // Thrashing and over-delegation are inherently session-wide: thrashing
+    // is already isolated per file, and over-delegation counts delegation
+    // itself, so neither needs agent partitioning.
+    const wholeSessionPatterns: AntiPattern[] = [];
+    wholeSessionPatterns.push(...this.detectThrashing(toolCalls));
+    wholeSessionPatterns.push(...this.detectOverDelegation(toolCalls));
 
-    rawPatterns.push(...this.detectThrashing(toolCalls));
-    rawPatterns.push(...this.detectReReading(toolCalls));
-    rawPatterns.push(...this.detectStuckLoop(toolCalls));
-    rawPatterns.push(...this.detectBlindEditing(toolCalls));
-    rawPatterns.push(...this.detectOverDelegation(toolCalls));
+    // Re-reading, stuck-loop, and blind-editing all detect one agent
+    // repeating itself over a flat, timestamp-ordered sequence. Run each
+    // per agent (parent session + one group per subagent `agentId`) so
+    // parallel subagents each independently doing something once don't
+    // look like a single agent repeating itself. See issue #607.
+    const perAgentPatterns: AntiPattern[] = [];
+    for (const group of partitionByAgent(toolCalls)) {
+      const groupPatterns: AntiPattern[] = [];
+      groupPatterns.push(...this.detectReReading(group));
+      groupPatterns.push(...this.detectStuckLoop(group));
+      groupPatterns.push(...this.detectBlindEditing(group));
+      perAgentPatterns.push(...this.annotateTokenWaste(groupPatterns, group));
+    }
 
-    const patterns = this.annotateTokenWaste(rawPatterns, toolCalls);
+    const patterns = [
+      ...this.annotateTokenWaste(wholeSessionPatterns, toolCalls),
+      ...perAgentPatterns,
+    ];
 
     const metrics = {
       readEfficiency: this.computeReadEfficiency(toolCalls),
