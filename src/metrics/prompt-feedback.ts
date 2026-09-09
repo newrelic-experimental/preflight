@@ -51,7 +51,7 @@ export interface PromptRecommendation {
   readonly category: string;
   readonly message: string;
   readonly evidence: string;
-  readonly estimatedImpact: string;
+  readonly estimatedImpact?: string;
   readonly priority: 'high' | 'medium' | 'low';
 }
 
@@ -242,7 +242,6 @@ export class PromptFeedbackEngine {
         message:
           'Consider providing more context in initial prompts — your correction rate is high compared to team average',
         evidence: `Your correction rate is ${correctionPct}%, vs team average ${teamCorrectionPct}%`,
-        estimatedImpact: 'Fewer corrections could reduce session duration by 15-25%',
         priority: 'high',
       });
     }

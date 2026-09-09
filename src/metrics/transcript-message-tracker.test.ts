@@ -145,6 +145,12 @@ describe('TranscriptMessageTracker', () => {
     ["  no, that's not right"],
     ['Stop. I did not approve that.'],
     ["That's wrong, please redo it."],
+    ["Incorrect, that's not what I asked for."],
+    ["Actually, that's not right — try again."],
+    ['Undo that.'],
+    ["That approach won't work because there's a race condition."],
+    ['You missed the null case.'],
+    ['This is the third time — read the file first.'],
   ])('detects a correction for %j', (text) => {
     writeLines([userLine(text)]);
     const tracker = new TranscriptMessageTracker();
@@ -153,8 +159,15 @@ describe('TranscriptMessageTracker', () => {
     expect(tracker.getMetrics().userCorrections).toBe(1);
   });
 
-  it('does not count an ordinary message as a correction', () => {
-    writeLines([userLine('please add a new endpoint')]);
+  it.each([
+    ['please add a new endpoint'],
+    ["Actually, let's also add tests"],
+    ['Revert the last commit'],
+    ['Stop the dev server and restart it'],
+    ['no rush, whenever you get to it'],
+    ['Undo the last commit in git history'],
+  ])('does not count %j as a correction', (text) => {
+    writeLines([userLine(text)]);
     const tracker = new TranscriptMessageTracker();
     tracker.observeTranscriptPath(transcriptPath);
     tracker.refresh();

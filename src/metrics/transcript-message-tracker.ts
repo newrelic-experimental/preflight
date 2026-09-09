@@ -32,8 +32,44 @@ const SYNTHETIC_TEXT_PREFIXES = [
   'Another Claude session sent a message:',
 ];
 
-const CORRECTION_RE =
-  /^(no|nope|not\b|stop|don't|wrong|incorrect|actually|that's not|that's wrong|undo|revert)\b/i;
+/** "actually" alone is a refinement filler ("actually, let's also add tests"), not a rejection signal. */
+const OPTIONAL_ACTUALLY = '(?:actually,?\\s+)?';
+
+/** Leading "no"/"nope", guarded against reassurance phrases that aren't corrections. */
+const LEADING_NO_RE = new RegExp(
+  `^${OPTIONAL_ACTUALLY}(no|nope)\\b(?!\\s*(rush|worries|problem|prob\\b|biggie|need))`,
+  'i',
+);
+
+/** "wrong"/"incorrect" leading a message are rarely anything but a rejection. */
+const BARE_REJECTION_RE = /^(wrong|incorrect)\b/i;
+
+/** Explicit rejection of the assistant's last output, optionally softened by "actually". */
+const EXPLICIT_REJECTION_RE = new RegExp(
+  `^${OPTIONAL_ACTUALLY}(that'?s|this is) (not|wrong|incorrect)\\b`,
+  'i',
+);
+
+/** A trigger word immediately followed by punctuation reads as an interjection, not a task instruction ("Stop the dev server" has no punctuation there). */
+const LEADING_INTERJECTION_RE = /^(stop|wait|no|nope|undo|revert)[.,!]/i;
+
+/** Undo verbs only count as a correction when they target the assistant's own action ("undo that"), not a concrete noun ("revert the last commit", "stop the dev server"). */
+const TARGETED_UNDO_RE = /^(stop|undo|revert|don'?t)\b[^.!?]{0,20}\b(that|it|this)\b/i;
+
+/** Correction phrasing that doesn't require a trigger word at the start of the message. */
+const EMBEDDED_CORRECTION_RE =
+  /\b(won'?t work|you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+
+function isCorrectionMessage(text: string): boolean {
+  return (
+    LEADING_NO_RE.test(text) ||
+    BARE_REJECTION_RE.test(text) ||
+    EXPLICIT_REJECTION_RE.test(text) ||
+    LEADING_INTERJECTION_RE.test(text) ||
+    TARGETED_UNDO_RE.test(text) ||
+    EMBEDDED_CORRECTION_RE.test(text)
+  );
+}
 
 /** A content block carrying a `text` field — narrows before reading `.text`. */
 function hasStringText(block: unknown): block is { text: string } {
@@ -185,7 +221,7 @@ export class TranscriptMessageTracker {
       const text = classifyUserEntry(entry);
       if (text !== null) {
         this.userMessages++;
-        if (CORRECTION_RE.test(text.trim())) {
+        if (isCorrectionMessage(text.trim())) {
           this.userCorrections++;
         }
       }

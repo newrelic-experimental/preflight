@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.5] - 2026-09-09
+
+### Fixed
+
+- Correction detection now uses a small set of targeted phrase patterns instead of a single blunt first-word regex, and the unmeasured "15-25% session duration" impact estimate on the high correction rate recommendation has been removed. Previously, ordinary task instructions and refinements — "Revert the last commit", "Stop the dev server and restart it", "Actually, let's also add tests", "no rush" — were miscounted as corrections, while genuine corrections that didn't start with a trigger word — "That approach won't work because...", "You missed the null case", "This is the third time" — were missed entirely.
+
 ## [1.48.4] - 2026-09-09
 
 ### Fixed
