@@ -111,9 +111,13 @@ export class AntiPatternDetector implements Resettable {
   }
 
   analyze(toolCalls: ToolCallRecord[]): AntiPatternMetrics {
-    // Thrashing and over-delegation are inherently session-wide: thrashing
-    // is already isolated per file, and over-delegation counts delegation
-    // itself, so neither needs agent partitioning.
+    // Over-delegation counts delegation itself, so it's inherently
+    // session-wide and doesn't need agent partitioning. Thrashing's
+    // `fileCycles` counter is keyed by file, but its `lastEditFile` trigger
+    // is a single scalar shared across the whole flat sequence, so it isn't
+    // fully agent-aware either — left unpartitioned since a false positive
+    // still requires the same file to cycle through edit/test-fail more
+    // than once, a narrower risk than the detectors below.
     const wholeSessionPatterns: AntiPattern[] = [];
     wholeSessionPatterns.push(...this.detectThrashing(toolCalls));
     wholeSessionPatterns.push(...this.detectOverDelegation(toolCalls));
@@ -122,7 +126,7 @@ export class AntiPatternDetector implements Resettable {
     // repeating itself over a flat, timestamp-ordered sequence. Run each
     // per agent (parent session + one group per subagent `agentId`) so
     // parallel subagents each independently doing something once don't
-    // look like a single agent repeating itself. See issue #607.
+    // look like a single agent repeating itself.
     const perAgentPatterns: AntiPattern[] = [];
     for (const group of partitionByAgent(toolCalls)) {
       const groupPatterns: AntiPattern[] = [];

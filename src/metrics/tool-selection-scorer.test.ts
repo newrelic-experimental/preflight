@@ -73,7 +73,7 @@ describe('ToolSelectionScorer', () => {
     expect(metrics.repeatedFailureCount).toBe(2);
   });
 
-  describe('agent partitioning (issue #607)', () => {
+  describe('agent partitioning', () => {
     it('does not penalize 3 different agents each reading the same file once', () => {
       const scorer = new ToolSelectionScorer();
       const calls = [

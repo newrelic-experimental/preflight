@@ -129,7 +129,7 @@ export class ToolSelectionScorer {
     // timestamp-ordered sequence looking for one agent repeating itself.
     // Partition by agent (parent session + one group per subagent `agentId`)
     // first, so parallel subagents each independently doing something once
-    // don't look like a single agent repeating itself. See issue #607.
+    // don't look like a single agent repeating itself.
     for (const group of partitionByAgent(toolCalls)) {
       penalties.push(...this.findRedundantReads(group));
       penalties.push(...this.findRepeatedFailures(group));

@@ -459,7 +459,7 @@ describe('Blind editing detection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Cross-agent false positives (agent partitioning — issue #607)
+// Cross-agent false positives (agent partitioning)
 // ---------------------------------------------------------------------------
 
 describe('Agent partitioning', () => {
