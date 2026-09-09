@@ -281,6 +281,53 @@ describe('Zero linesChanged tasks (issue #604)', () => {
     // perfect score once speed is excluded rather than dragging it down.
     expect(result.score).toBe(1);
   });
+
+  it('renormalizes correctly when custom weights do not sum to 1', () => {
+    // correctness=0.9, autonomy=0.3, firstAttemptQuality=0.3 → sum 1.5, not 1.
+    const scorer = new EfficiencyScorer({
+      correctnessWeight: 0.9,
+      autonomyWeight: 0.3,
+      firstAttemptQualityWeight: 0.3,
+    });
+
+    const task = makeTask({
+      linesChanged: 0,
+      testsRun: 4,
+      testsPassed: 4, // correctness = 1
+      askedUserQuestions: 5,
+      toolCallCount: 10, // autonomy = 0.5
+    });
+    const antiPatterns: AntiPattern[] = [
+      { type: 'thrashing', file: '/a.ts', iterations: 3, tokensWasted: 0, suggestion: '' },
+    ];
+    // firstAttemptQuality = 1 - 3/3 = 0
+
+    const result = scorer.computeScore(task, antiPatterns);
+
+    // (1*0.9 + 0.5*0.3 + 0*0.3) / 1.5 = (0.9 + 0.15 + 0) / 1.5 = 0.7
+    expect(result.score).toBeCloseTo(0.7, 3);
+  });
+
+  it('scores 0 rather than NaN when the non-speed weights are all 0', () => {
+    const scorer = new EfficiencyScorer({
+      speedWeight: 1,
+      correctnessWeight: 0,
+      autonomyWeight: 0,
+      firstAttemptQualityWeight: 0,
+    });
+
+    const task = makeTask({
+      linesChanged: 0,
+      testsRun: 4,
+      testsPassed: 4,
+      askedUserQuestions: 0,
+      toolCallCount: 10,
+    });
+    const result = scorer.computeScore(task);
+
+    expect(result.score).toBe(0);
+    expect(Number.isNaN(result.score)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
