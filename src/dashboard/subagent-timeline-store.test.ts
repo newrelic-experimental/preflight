@@ -97,6 +97,23 @@ describe('SubagentTimelineStore', () => {
     expect(result.window.endMs).toBe(agent.endMs);
   });
 
+  it('includes a named-subagent transcript (Agent tool `name` param spawn shape)', () => {
+    // Claude Code writes `agent-a<name>-<16-hex>.jsonl` for a subagent spawned
+    // with an explicit `name` param — distinct from the plain `a<16-hex>` shape
+    // used by anonymous Task spawns (AGENT_A/AGENT_B/WF_AGENT above).
+    const namedAgentId = 'aconfluence-istio-investigator-ca0143b626a86424';
+    writeFileSync(
+      join(subDir, `agent-${namedAgentId}.jsonl`),
+      assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 10, output: 5 }) + '\n',
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const result = store.getSubagentsForSession(SESSION);
+
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]!.agentId).toBe(namedAgentId);
+  });
+
   it('dedups streaming-duplicate lines sharing one message.id (counts the turn once)', () => {
     // Claude Code logs one JSONL line per streaming snapshot of a single
     // assistant turn — same message.id, byte-identical per-prompt usage

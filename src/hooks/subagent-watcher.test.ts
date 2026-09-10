@@ -659,6 +659,71 @@ describe('SubagentWatcher', () => {
     expect(healthEvents).toHaveLength(1);
   });
 
+  it('discovers and processes a named subagent transcript (Agent tool `name` param)', () => {
+    // Claude Code writes `agent-a<name>-<16-hex>.jsonl` for a subagent spawned
+    // with an explicit `name` (Agent tool `name` param, addressable later via
+    // SendMessage) — distinct from the plain `agent-a<16-hex>.jsonl` shape used
+    // by anonymous Task spawns.
+    const namedAgentId = 'aconfluence-istio-investigator-ca0143b626a86424';
+    const namedFile = join(sessionDir, 'subagents', `agent-${namedAgentId}.jsonl`);
+    writeFileSync(namedFile, makeAssistantLine({ messageId: 'msg_named' }) + '\n');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    const lines = readFileSync(bufPath, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const healthEvents = lines.filter(
+      (l) => l.mode === 'observability_health' && l.event === 'discovery_skipped',
+    );
+    expect(healthEvents).toHaveLength(0);
+    const tokenLines = lines.filter((l) => l.mode === 'subagent_token');
+    expect(tokenLines).toHaveLength(1);
+    expect(tokenLines[0]).toMatchObject({
+      mode: 'subagent_token',
+      sessionId: PARENT_SESSION,
+      agentId: namedAgentId,
+      messageId: 'msg_named',
+    });
+  });
+
+  it('discovers and processes a named subagent transcript under a workflow run dir', () => {
+    const namedAgentId = 'aconfluence-istio-investigator-ca0143b626a86424';
+    const wfDir = join(sessionDir, 'subagents', 'workflows', 'wf_abc12345-6dd');
+    mkdirSync(wfDir, { recursive: true });
+    const namedFile = join(wfDir, `agent-${namedAgentId}.jsonl`);
+    writeFileSync(namedFile, makeAssistantLine({ messageId: 'msg_named_wf' }) + '\n');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    const lines = readFileSync(bufPath, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const healthEvents = lines.filter(
+      (l) => l.mode === 'observability_health' && l.event === 'discovery_skipped',
+    );
+    expect(healthEvents).toHaveLength(0);
+    const tokenLines = lines.filter((l) => l.mode === 'subagent_token');
+    expect(tokenLines).toHaveLength(1);
+    expect(tokenLines[0]).toMatchObject({
+      mode: 'subagent_token',
+      sessionId: PARENT_SESSION,
+      agentId: namedAgentId,
+      workflowRunId: 'wf_abc12345-6dd',
+      messageId: 'msg_named_wf',
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Memory-bound regression tests (OOM fix)
   //
