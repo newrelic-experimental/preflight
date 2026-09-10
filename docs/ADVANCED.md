@@ -444,6 +444,6 @@ A single failure followed by a success does not count. The streak resets only on
 
 **How to avoid:** Prefer targeted reads over reading whole files you only need to skim once. This penalty is rare in practice — a single Read has to exceed ~20,000 bytes (a genuinely large file) and never lead to an edit of that same file.
 
-### Score floor
+### Normalization and score floor
 
-Even with many penalties the score won't drop below 0.3, so the metric is intended to track trends over time, not penalize individual sessions heavily.
+Penalties are normalized against session size before being applied, one-sided: sessions of 15 calls or fewer apply the raw penalty as-is, while sessions above 15 calls have the raw penalty total scaled down by `15 / totalCalls`, so the same absolute number of violations counts for much less in a 1000-call session. This keeps busy sessions (e.g. many parallel subagent calls) from scoring worse than a short session with an identical defect rate, without the reverse effect of making short sessions score worse than before. After normalization, the score still won't drop below 0.3, so the metric is intended to track trends over time, not penalize individual sessions heavily.

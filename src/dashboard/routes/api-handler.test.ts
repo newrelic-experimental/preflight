@@ -5573,6 +5573,9 @@ describe('api-handler GET /api/tool-selection-score', () => {
     expect(parsed.totalCalls).toBe(3);
     expect(parsed.redundantReadCount).toBe(1);
     expect(parsed.penalizedCalls).toBe(1);
+    // 3 calls is below the 15-call reference session size, so normalization
+    // is a no-op here (it only dilutes penalties in sessions ABOVE the
+    // reference size — see tool-selection-scorer.ts's normalizePenalty()).
     expect(parsed.score).toBe(0.97); // 1 - (1 * DEFAULT_REDUNDANT_READ_PENALTY of 0.03)
   });
 
@@ -5684,7 +5687,8 @@ describe('api-handler GET /api/tool-selection-score', () => {
     const parsed = JSON.parse(body());
     // Combining {score:1, totalCalls:0, ...} (live, empty) with the persisted
     // summary above: repeatedFailureCount=3 * DEFAULT_REPEATED_FAILURE_PENALTY
-    // of 0.08 = 0.24 raw penalty -> score = 1 - 0.24 = 0.76.
+    // of 0.08 = 0.24 raw penalty. 5 calls is below the 15-call reference
+    // session size, so normalization is a no-op -> score = 1 - 0.24 = 0.76.
     expect(parsed.totalCalls).toBe(5);
     expect(parsed.penalizedCalls).toBe(3);
     expect(parsed.repeatedFailureCount).toBe(3);
