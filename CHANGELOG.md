@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.1] - 2026-09-10
+
+### Fixed
+
+- **Kiro Power's setup docs told users the MCP server needed a global install; it's launched via `npx` and only the hook binary needs one.** The hook command also now carries an explicit platform stamp, since it runs as a separate subprocess that doesn't inherit the MCP server's environment — without it, tool-call metrics for Kiro silently reported zero.
+
 ## [1.50.0] - 2026-09-09
 
 ### Added
