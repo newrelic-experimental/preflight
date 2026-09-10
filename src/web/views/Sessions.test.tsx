@@ -1172,3 +1172,149 @@ describe('Sessions view — Tools panel Context tab', () => {
     expect(screen.queryByText(/no context data/i)).toBeNull();
   });
 });
+
+describe('Sessions view — ?repo= deep-link filter', () => {
+  const MULTI_REPO_LIST = [
+    {
+      sessionId: 's1',
+      startTime: '2026-05-28T09:00:00Z',
+      toolCallCount: 42,
+      estimatedCostUsd: 1.23,
+      repoName: 'org/repo-a',
+    },
+    {
+      sessionId: 's2',
+      startTime: '2026-05-27T15:30:00Z',
+      toolCallCount: 18,
+      estimatedCostUsd: 0.45,
+      repoName: 'org/repo-b',
+    },
+  ];
+
+  it('narrows the list to sessions from the repo named in ?repo= on mount', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      search: '?repo=org%2Frepo-a',
+    } as unknown as string & Location;
+    renderSessions(MULTI_REPO_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.queryByText(/s2/)).toBeNull();
+    expect(screen.getByText(/Repo: org\/repo-a/)).toBeInTheDocument();
+    window.location = original as unknown as string & Location;
+  });
+
+  it("clears the repo filter and shows every session again when the chip's × is clicked", async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      search: '?repo=org%2Frepo-a',
+    } as unknown as string & Location;
+    renderSessions(MULTI_REPO_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.queryByText(/s2/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear repo filter' }));
+    await waitFor(() => expect(screen.getByText(/s2/)).toBeInTheDocument());
+    expect(screen.queryByText(/Repo: org\/repo-a/)).toBeNull();
+    window.location = original as unknown as string & Location;
+  });
+});
+
+describe('Sessions view — ?sessionIds= deep-link filter', () => {
+  const THREE_SESSION_LIST = [
+    {
+      sessionId: 's1',
+      startTime: '2026-05-28T09:00:00Z',
+      toolCallCount: 42,
+      estimatedCostUsd: 1.23,
+      repoName: 'org/repo-a',
+    },
+    {
+      sessionId: 's2',
+      startTime: '2026-05-27T15:30:00Z',
+      toolCallCount: 18,
+      estimatedCostUsd: 0.45,
+      repoName: 'org/repo-a',
+    },
+    {
+      sessionId: 's3',
+      startTime: '2026-05-26T15:30:00Z',
+      toolCallCount: 7,
+      estimatedCostUsd: 0.1,
+      repoName: 'org/repo-b',
+    },
+  ];
+
+  it('narrows the list to exactly the sessions named in ?sessionIds= on mount, more precise than repo alone', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      // s1 and s3 only — deliberately skips s2, which shares s1's repo, to
+      // prove this filters by exact session id, not by repo.
+      search: '?sessionIds=s1,s3',
+    } as unknown as string & Location;
+    renderSessions(THREE_SESSION_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.getByText(/s3/)).toBeInTheDocument();
+    expect(screen.queryByText(/s2/)).toBeNull();
+    expect(screen.getByText('2 sessions selected')).toBeInTheDocument();
+    window.location = original as unknown as string & Location;
+  });
+
+  it('flags a selected session id that is not in the loaded page, instead of silently dropping it', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      // 'old-session' isn't in THREE_SESSION_LIST at all — the kind of id a
+      // deep-link can carry when it points at a session older than the
+      // most-recent page this view loads.
+      search: '?sessionIds=s1,old-session',
+    } as unknown as string & Location;
+    renderSessions(THREE_SESSION_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.getByText('2 sessions selected')).toBeInTheDocument();
+    expect(screen.getByText(/1 of 2 not shown/)).toBeInTheDocument();
+    window.location = original as unknown as string & Location;
+  });
+
+  it('shows no missing-session note when every selected id is in the loaded page', async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      search: '?sessionIds=s1,s3',
+    } as unknown as string & Location;
+    renderSessions(THREE_SESSION_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.queryByText(/not shown/)).toBeNull();
+    window.location = original as unknown as string & Location;
+  });
+
+  it("clears the session filter and shows every session again when the chip's × is clicked", async () => {
+    const original = window.location;
+    // @ts-expect-error -- test-only reassignment of a read-only global
+    delete window.location;
+    window.location = {
+      ...original,
+      search: '?sessionIds=s1',
+    } as unknown as string & Location;
+    renderSessions(THREE_SESSION_LIST);
+    await waitFor(() => expect(screen.getByText(/s1/)).toBeInTheDocument());
+    expect(screen.queryByText(/s2/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session filter' }));
+    await waitFor(() => expect(screen.getByText(/s2/)).toBeInTheDocument());
+    expect(screen.queryByText(/session.*selected/)).toBeNull();
+    window.location = original as unknown as string & Location;
+  });
+});

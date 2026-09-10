@@ -311,6 +311,7 @@ export class LocalSessionAggregator {
         success: record.success !== false,
         ...(typeof record.filePath === 'string' && { filePath: record.filePath }),
         ...(typeof record.command === 'string' && { command: record.command }),
+        ...(typeof record.cwd === 'string' && { cwd: record.cwd }),
         ...(record.isTestCommand === true && { isTestCommand: true }),
         ...(record.isBuildCommand === true && { isBuildCommand: true }),
         ...(record.isLintCommand === true && { isLintCommand: true }),

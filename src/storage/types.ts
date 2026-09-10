@@ -329,6 +329,8 @@ export interface ReplayTimelineEntry {
   readonly success: boolean;
   readonly filePath?: string;
   readonly command?: string;
+  // Without cwd, replayed session git activity cannot be attributed to the specific git worktree.
+  readonly cwd?: string;
   readonly isTestCommand?: boolean;
   readonly isBuildCommand?: boolean;
   readonly isLintCommand?: boolean;

@@ -93,7 +93,7 @@ describe('App shell', () => {
   });
 
   it('navigates to the Git Efficiency view via the sidebar and renders its heading', async () => {
-    const gitEfficiencyPayload = {
+    const workspaceMetrics = {
       totalGitCommands: 1,
       mergeConflicts: 0,
       rebaseConflicts: 0,
@@ -152,20 +152,26 @@ describe('App shell', () => {
         prActivity: [],
         avgTimeToCreateMs: null,
       },
-      repoContext: { repoName: null, branch: null, remoteName: null, defaultBranch: null },
+      liveState: null,
+      commitTimestamps: [],
+      lastPushTimestamp: null,
+      editedFiles: [],
+      hasUsedBareForcePush: false,
+      bareForcePushCount: 0,
+      hasForcePushedToDefaultBranch: false,
+      mergeEventCount: 0,
+      rebaseEventCount: 0,
+    };
+    const gitWorkspaceReportPayload = {
+      scope: { kind: 'all' },
+      metrics: workspaceMetrics,
+      rows: [],
+      worstBehind: null,
     };
     globalThis.fetch = vi.fn((url: string) => {
-      if (url === '/api/git-efficiency') {
+      if (url.startsWith('/api/git-efficiency')) {
         return Promise.resolve(
-          new Response(JSON.stringify(gitEfficiencyPayload), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url === '/api/git-efficiency/repos') {
-        return Promise.resolve(
-          new Response(JSON.stringify({ repos: [], currentRepo: null }), {
+          new Response(JSON.stringify(gitWorkspaceReportPayload), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           }),

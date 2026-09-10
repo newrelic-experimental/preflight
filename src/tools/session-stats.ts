@@ -53,7 +53,11 @@ import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
 import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { TurnTracker } from '../metrics/turn-tracker.js';
+import type { GitActivityRecord } from '../metrics/git-activity-recorder.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
+import { resolveScopeParam, resolveWindowParam } from '../metrics/git-window-params.js';
+import type { ScopeRef } from '../metrics/git-workspace-report.js';
+import type { GitWorkspaceReportWithWindow } from '../metrics/git-workspace-reporter.js';
 import { registerAnalyticsTools } from './analytics-tools.js';
 import { registerExtendedAnalyticsTools } from './extended-analytics-tools.js';
 import { registerGenericMcpTools } from './generic-mcp-tools.js';
@@ -350,7 +354,18 @@ const GIT_EFFICIENCY_TOOL = {
     'Get Git workflow efficiency metrics: merge conflicts, aborted operations, force pushes, stale branch detection, and actionable suggestions to reduce Git friction.',
   inputSchema: {
     type: 'object' as const,
-    properties: {},
+    properties: {
+      window: {
+        type: 'string',
+        description:
+          "Time window: 'today' (default), 'yesterday', 'week', or a number of days back.",
+      },
+      scope: {
+        type: 'string',
+        description:
+          "Scope: 'all' (default), 'repo:<id>', or 'worktree:<id>' (ids come from a prior response's rows).",
+      },
+    },
   },
   annotations: { readOnlyHint: true },
 };
@@ -363,6 +378,31 @@ export function handleGetGitEfficiency(tracker: GitEfficiencyTracker): {
       {
         type: 'text' as const,
         text: JSON.stringify(tracker.getMetrics(), null, 2),
+      },
+    ],
+  };
+}
+
+export function handleGetGitWorkspaceReport(
+  reporter: {
+    report(input: {
+      scope: ScopeRef;
+      since: number;
+      until: number;
+      historical?: readonly GitActivityRecord[];
+    }): GitWorkspaceReportWithWindow;
+  },
+  args: { window?: unknown; scope?: unknown } | undefined,
+): { content: [{ type: 'text'; text: string }] } {
+  const { since, until } = resolveWindowParam(
+    typeof args?.window === 'string' ? args.window : null,
+  );
+  const scope = resolveScopeParam(typeof args?.scope === 'string' ? args.scope : null);
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(reporter.report({ scope, since, until }), null, 2),
       },
     ],
   };
@@ -405,6 +445,14 @@ export interface ToolRegistrationOptions {
   turnCostAttributor?: TurnCostAttributor;
   turnTracker?: TurnTracker;
   gitEfficiencyTracker?: GitEfficiencyTracker;
+  gitWorkspaceReporter?: {
+    report(input: {
+      scope: ScopeRef;
+      since: number;
+      until: number;
+      historical?: readonly GitActivityRecord[];
+    }): GitWorkspaceReportWithWindow;
+  };
   genericMcpAdapter?: GenericMcpAdapter;
   nrIngestManager?: {
     ingestToolCall(record: import('../storage/types.js').ToolCallRecord): void;
@@ -501,11 +549,14 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
     },
     {
       definition: GIT_EFFICIENCY_TOOL,
-      available: !!deps.gitEfficiencyTracker,
-      handle: () => {
-        const check = requireTracker(deps.gitEfficiencyTracker, 'GitEfficiencyTracker');
-        if (!check.ok) return check.result;
-        return handleGetGitEfficiency(check.value);
+      available: !!deps.gitWorkspaceReporter,
+      handle: (args) => {
+        const missing = requireAvailable(
+          !!deps.gitWorkspaceReporter,
+          'GitWorkspaceReporter not available',
+        );
+        if (missing) return missing;
+        return handleGetGitWorkspaceReport(deps.gitWorkspaceReporter!, args);
       },
     },
     {

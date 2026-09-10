@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.0] - 2026-09-09
+
+### Added
+
+- **The Git Efficiency tab now tracks multiple repos and concurrent git worktrees separately**, each with its own metrics, coaching checks, and live branch-divergence state, instead of assuming a single repo and branch. An explicit time-window picker (today, yesterday, last 7/30 days, etc.) replaces the previous fixed "today" view, and each row deep-links to the exact sessions behind its numbers.
+
 ## [1.49.0] - 2026-09-09
 
 ### Added

@@ -284,7 +284,13 @@ html.light .mesh-bg::after {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    /* transform: none (not translateY(0)) — the animation's fill-mode:
+       both holds this end state permanently after it finishes, and ANY
+       non-none transform on an ancestor establishes a new containing
+       block, which breaks position: sticky for descendants (e.g. a
+       sticky table header inside an AnimatedCard scrolled its header
+       into the middle of the table instead of pinning to the top). */
+    transform: none;
   }
 }
 

@@ -1,11 +1,8 @@
 import type { MetricAggregator } from '../shared/index.js';
-import { redactSensitive } from '../config.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import {
-  gitCommandTargetDir,
-  RepoNameResolver,
-  stripHeredocBodies,
-} from './local-session-aggregator.js';
+import { stripHeredocBodies } from './local-session-aggregator.js';
+import { classifyGitCommand, type GitEvent } from './git-event-classifier.js';
+import { RepoNameResolver } from './local-session-aggregator.js';
 
 /**
  * Parse `git symbolic-ref --short refs/remotes/<remoteName>/HEAD`'s stdout
@@ -23,55 +20,18 @@ export function parseDefaultBranchFromSymbolicRef(output: string, remoteName: st
   return 'main';
 }
 
-// ---------------------------------------------------------------------------
-// Git command classification patterns
-// ---------------------------------------------------------------------------
-
-const GIT_COMMAND_RE = /\bgit\s+/;
-
-const MERGE_CONFLICT_INDICATORS = [
-  /CONFLICT\s*\(/i,
-  /Automatic merge failed/i,
-  /fix conflicts and then commit/i,
-  /Merge conflict in/i,
-  /both modified:/i,
-];
-
-const REBASE_CONFLICT_RE = /\brebase\b.*(?:conflict|could not apply|patch does not apply)/i;
-
-const MERGE_ABORT_RE = /\bgit\s+merge\s+--abort\b/;
-const REBASE_ABORT_RE = /\bgit\s+rebase\s+--abort\b/;
-const CHERRY_PICK_ABORT_RE = /\bgit\s+cherry-pick\s+--abort\b/;
-
-const GIT_PULL_RE = /\bgit\s+pull\b/;
-const GIT_FETCH_RE = /\bgit\s+fetch\b/;
-const GIT_PUSH_RE = /\bgit\s+push\b/;
-// `(?!-)` excludes `--force-with-lease` — without it, a lease-protected force
-// push would also match this plain "unsafe force push" pattern, since
-// "--force-with-lease" starts with the literal text "--force".
-const GIT_PUSH_FORCE_RE = /\bgit\s+push\s+.*--force(?!-)|\bgit\s+push\s+-f\b/;
-const GIT_PUSH_FORCE_LEASE_RE = /--force-with-lease\b/;
-const GIT_MERGE_RE = /\bgit\s+merge\b/;
-const GIT_REBASE_RE = /\bgit\s+rebase\b/;
-const GIT_STASH_RE = /\bgit\s+stash\b/;
-const GIT_RESET_HARD_RE = /\bgit\s+reset\s+--hard\b/;
-const GIT_CHECKOUT_DASH_RE = /\bgit\s+checkout\s+--\s/;
-const GIT_RESTORE_RE = /\bgit\s+restore\b/;
-const GIT_BRANCH_RE = /\bgit\s+(?:branch|checkout\s+-b|switch\s+-c)\b/;
-const GIT_STATUS_RE = /\bgit\s+status\b/;
-const GIT_DIFF_RE = /\bgit\s+diff\b/;
-const GIT_LOG_RE = /\bgit\s+log\b/;
-const GIT_COMMIT_RE = /\bgit\s+commit\b/;
-const GIT_WORKTREE_RE = /\bgit\s+worktree\b/;
-// Only `add`/`remove` create or tear down real isolation — `list`/`prune`/
-// `lock`/etc. are read-only inspection and shouldn't inflate the "worktree
-// ops" count with commands that don't reflect any parallel-isolation work.
-const GIT_WORKTREE_ADD_REMOVE_RE = /\bgit\s+worktree\s+(?:add|remove)\b/;
+// Regex patterns needed by processEvent (others moved to git-event-classifier.ts)
 const GIT_CHECKOUT_OURS_RE = /\bgit\s+checkout\s+--ours\b/;
 const GIT_CHECKOUT_THEIRS_RE = /\bgit\s+checkout\s+--theirs\b/;
 const GIT_CHERRY_PICK_RE = /\bgit\s+cherry-pick\b/;
+const CHERRY_PICK_ABORT_RE = /\bgit\s+cherry-pick\s+--abort\b/;
+const GIT_WORKTREE_ADD_REMOVE_RE = /\bgit\s+worktree\s+(?:add|remove)\b/;
+const GIT_PULL_RE = /\bgit\s+pull\b/;
 
-// GitHub CLI patterns
+// Conflict file path extraction: "CONFLICT (content): Merge conflict in <path>"
+const CONFLICT_FILE_RE = /Merge conflict in (.+)/g;
+
+// GitHub CLI patterns (used by processGhCommand)
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
 const GH_PR_MERGE_RE = /\bgh\s+pr\s+merge\b/;
 const GH_PR_VIEW_RE = /\bgh\s+pr\s+view\b/;
@@ -120,58 +80,11 @@ const COMMIT_DEDUP_WINDOW_MS = 5_000;
 // hook-observed one and recover its hash.
 const HYDRATED_COMMIT_HASH_RE = /^git commit \((.+)\)$/;
 
-const REJECT_INDICATORS = [
-  /\[rejected\]/i,
-  /non-fast-forward/i,
-  /failed to push/i,
-  /Updates were rejected/i,
-];
-
-// Conflict file path extraction: "CONFLICT (content): Merge conflict in <path>"
-const CONFLICT_FILE_RE = /Merge conflict in (.+)/g;
-
 // ---------------------------------------------------------------------------
-// Types
+// Types (GitEvent and GitEventType are re-exported from git-event-classifier)
 // ---------------------------------------------------------------------------
 
-export interface GitEvent {
-  readonly timestamp: number;
-  readonly type: GitEventType;
-  readonly command?: string;
-  readonly success: boolean;
-  readonly durationMs: number | null;
-  /** `owner/name` of the repo this event belongs to, when known. */
-  readonly repo?: string | null;
-  /** Commit subject line, for events hydrated from `git log`. */
-  readonly subject?: string | null;
-  /** Browsable URL for the commit, when the remote could be mapped. */
-  readonly url?: string | null;
-}
-
-export type GitEventType =
-  | 'merge_conflict'
-  | 'rebase_conflict'
-  | 'merge_abort'
-  | 'rebase_abort'
-  | 'cherry_pick_abort'
-  | 'force_push'
-  | 'force_push_lease'
-  | 'reset_hard'
-  | 'discard_changes'
-  | 'pull'
-  | 'fetch'
-  | 'push'
-  | 'push_rejected'
-  | 'merge'
-  | 'rebase'
-  | 'stash'
-  | 'branch'
-  | 'commit'
-  | 'status'
-  | 'diff'
-  | 'log'
-  | 'worktree'
-  | 'other_git';
+export type { GitEvent, GitEventType } from './git-event-classifier.js';
 
 export interface MergeConflictRecord {
   readonly timestamp: number;
@@ -440,9 +353,9 @@ export class GitEfficiencyTracker {
       }
     }
 
-    if (!GIT_COMMAND_RE.test(command)) return;
+    if (!/\bgit\s+/.test(command)) return;
 
-    const event = this.classifyGitCommand(command, record);
+    const event = classifyGitCommand(command, record, (dir) => this.repoResolver.resolve(dir));
     // A hook-observed commit whose timestamp `hydrateGitLog()` already saw
     // (via `git log`) is the same commit, not a new one — hydrateGitLog()
     // can't dedupe this itself since a live event's `command` is the raw
@@ -811,57 +724,6 @@ export class GitEfficiencyTracker {
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
-
-  // Order matters: several patterns overlap (e.g. a force-push-with-lease
-  // command also matches the plain push/force-push patterns), so more
-  // specific checks must run before the more general ones they'd otherwise
-  // be shadowed by.
-  private classifyGitCommand(command: string, record: ToolCallRecord): GitEvent {
-    const base = {
-      timestamp: record.timestamp,
-      // The command is now surfaced in the dashboard's Detail column, so
-      // redact it: a git remote URL can carry an embedded access token.
-      command: redactSensitive(command),
-      success: record.success,
-      durationMs: record.durationMs,
-      // Live git events previously carried no repo at all, so the dashboard
-      // showed "—" for everything except commits hydrated from git log.
-      repo: this.repoResolver.resolve(
-        gitCommandTargetDir(command, record.cwd as string | undefined),
-      ),
-    };
-
-    const output = (record.error as string) ?? '';
-    const hasConflict = MERGE_CONFLICT_INDICATORS.some((re) => re.test(output));
-    const hasRebaseConflict = REBASE_CONFLICT_RE.test(output);
-    const hasRejection = REJECT_INDICATORS.some((re) => re.test(output));
-
-    if (hasConflict && !hasRebaseConflict) return { ...base, type: 'merge_conflict' };
-    if (hasRebaseConflict) return { ...base, type: 'rebase_conflict' };
-    if (MERGE_ABORT_RE.test(command)) return { ...base, type: 'merge_abort' };
-    if (REBASE_ABORT_RE.test(command)) return { ...base, type: 'rebase_abort' };
-    if (CHERRY_PICK_ABORT_RE.test(command)) return { ...base, type: 'cherry_pick_abort' };
-    if (GIT_PUSH_FORCE_LEASE_RE.test(command)) return { ...base, type: 'force_push_lease' };
-    if (GIT_PUSH_FORCE_RE.test(command)) return { ...base, type: 'force_push' };
-    if (GIT_RESET_HARD_RE.test(command)) return { ...base, type: 'reset_hard' };
-    if (GIT_CHECKOUT_DASH_RE.test(command) || GIT_RESTORE_RE.test(command))
-      return { ...base, type: 'discard_changes' };
-    if (GIT_WORKTREE_RE.test(command)) return { ...base, type: 'worktree' };
-    if (GIT_PULL_RE.test(command)) return { ...base, type: 'pull' };
-    if (GIT_FETCH_RE.test(command)) return { ...base, type: 'fetch' };
-    if (GIT_PUSH_RE.test(command) && hasRejection) return { ...base, type: 'push_rejected' };
-    if (GIT_PUSH_RE.test(command)) return { ...base, type: 'push' };
-    if (GIT_REBASE_RE.test(command)) return { ...base, type: 'rebase' };
-    if (GIT_MERGE_RE.test(command)) return { ...base, type: 'merge' };
-    if (GIT_STASH_RE.test(command)) return { ...base, type: 'stash' };
-    if (GIT_BRANCH_RE.test(command)) return { ...base, type: 'branch' };
-    if (GIT_COMMIT_RE.test(command)) return { ...base, type: 'commit' };
-    if (GIT_STATUS_RE.test(command)) return { ...base, type: 'status' };
-    if (GIT_DIFF_RE.test(command)) return { ...base, type: 'diff' };
-    if (GIT_LOG_RE.test(command)) return { ...base, type: 'log' };
-
-    return { ...base, type: 'other_git' };
-  }
 
   private processEvent(event: GitEvent, command: string, record: ToolCallRecord): void {
     // Attribute ours/theirs/cherry-pick resolution strategy to the oldest

@@ -149,6 +149,31 @@ describe('instructionPromptHash field', () => {
     const roundTripped = deserializeFullSessionSummary(raw);
     expect(roundTripped.instructionPromptHash).toBeNull();
   });
+
+  it('deserializeFullSessionSummary round-trips timeline[].cwd', () => {
+    // Without this field surviving a disk round-trip, a session read back via
+    // loadAllSessions()/loadSession() (any window wider than what a process
+    // already holds live) can never attribute its git activity to a
+    // worktree — replaySessionToActivityRecords resolves identity from this
+    // field, and it silently fell back to 'unattributed' for every historical
+    // session before this test existed.
+    const summary = makeSummary({
+      timeline: [
+        {
+          timestamp: Date.now(),
+          toolName: 'Bash',
+          durationMs: 50,
+          success: true,
+          command: 'git commit -m "x"',
+          cwd: '/Users/alice/repo/.claude/worktrees/feature-a',
+        },
+      ],
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(summary)) as Record<string, unknown>,
+    );
+    expect(roundTripped.timeline?.[0]?.cwd).toBe('/Users/alice/repo/.claude/worktrees/feature-a');
+  });
 });
 
 describe('sessionSummaryToDriftRecord', () => {

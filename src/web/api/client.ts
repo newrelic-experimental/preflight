@@ -186,6 +186,10 @@ export interface SessionListEntry {
   readonly tokensCacheRead?: number;
   readonly tokensCacheCreation?: number;
   readonly tokensThinking?: number;
+  /** Absent on live-session stub entries (see this interface's docstring) —
+   *  only persisted full summaries carry it. Powers the Git Efficiency tab's
+   *  "view sessions for this repo" deep link. */
+  readonly repoName?: string | null;
 }
 
 export interface LiveSessionEntry {
@@ -722,6 +726,7 @@ export interface MergeConflictRecord {
   readonly resolution: 'resolved' | 'aborted' | 'pending';
   readonly resolutionTimeMs: number | null;
   readonly command: string;
+  readonly files: readonly string[];
 }
 
 export interface GitEvent {
@@ -763,13 +768,6 @@ export interface RiskIndicators {
   readonly quickConflictResolutions: number;
 }
 
-export interface RepoContext {
-  readonly repoName: string | null;
-  readonly branch: string | null;
-  readonly remoteName: string | null;
-  readonly defaultBranch: string | null;
-}
-
 export interface PrEvent {
   readonly timestamp: number;
   readonly action: 'create' | 'merge' | 'view' | 'edit' | 'ready' | 'checks';
@@ -802,9 +800,33 @@ export interface ConflictResolutionStrategy {
   readonly totalResolutions: number;
 }
 
-// Mirrors GitEfficiencyTracker.getMetrics()'s return shape in
-// src/metrics/git-efficiency-tracker.ts (not importable).
-export interface GitEfficiencyData {
+// Mirrors WorktreeIdentity in src/metrics/git-workspace-identity.ts (not
+// importable — tsconfig.web.json excludes server source).
+export interface WorktreeIdentity {
+  readonly repoKey: string;
+  readonly worktreeKey: string;
+  readonly repoName: string | null;
+  readonly worktreeRoot: string | null;
+  readonly worktreeLabel: string;
+  readonly branch: string | null;
+}
+
+// Mirrors WorktreeLiveState in src/metrics/git-workspace-report.ts (not
+// importable). Only ever non-null when scope.kind === 'worktree'.
+export interface WorktreeLiveState {
+  readonly branch: string | null;
+  readonly defaultBranch: string | null;
+  readonly ahead: number | null;
+  readonly behind: number | null;
+  readonly measuredAtMs: number;
+}
+
+// Mirrors WorkspaceMetrics in src/metrics/git-workspace-report.ts (not
+// importable). Same fields GitEfficiencyData used to carry, minus
+// `repoContext` (there's no single repo context at rollup scope — the header
+// shows whichever scope is selected instead), plus `liveState` and the
+// rollup-support fields below.
+export interface WorkspaceMetrics {
   readonly totalGitCommands: number;
   readonly mergeConflicts: number;
   readonly rebaseConflicts: number;
@@ -829,19 +851,69 @@ export interface GitEfficiencyData {
   readonly velocityMetrics: VelocityMetrics;
   readonly conflictResolutionStrategy: ConflictResolutionStrategy;
   readonly prMetrics: PullRequestMetrics;
-  readonly repoContext: RepoContext;
+  readonly liveState: WorktreeLiveState | null;
+  readonly commitTimestamps: readonly number[];
+  readonly lastPushTimestamp: number | null;
+  readonly editedFiles: readonly string[];
+  readonly hasUsedBareForcePush: boolean;
+  readonly bareForcePushCount: number;
+  readonly hasForcePushedToDefaultBranch: boolean;
+  readonly mergeEventCount: number;
+  readonly rebaseEventCount: number;
+  readonly lastActivityMs: number | null;
+  readonly sessionIds: readonly string[];
 }
 
-export const fetchGitEfficiency = (): Promise<GitEfficiencyData> =>
-  getJson<GitEfficiencyData>('/api/git-efficiency');
-
-export interface GitEfficiencyReposResponse {
-  readonly repos: string[];
-  readonly currentRepo: string | null;
+// Mirrors ScopeRef in src/metrics/git-workspace-report.ts (not importable).
+export interface ScopeRef {
+  readonly kind: 'all' | 'repo' | 'worktree';
+  readonly id?: string;
 }
 
-export const fetchGitEfficiencyRepos = (): Promise<GitEfficiencyReposResponse> =>
-  getJson<GitEfficiencyReposResponse>('/api/git-efficiency/repos');
+// Client-side convenience shape for building a scope query string, kept
+// distinct from the wire-level `ScopeRef` so callers don't have to spell out
+// `{ kind: 'repo', id }` at every call site.
+export type ScopeRefInput = 'all' | { readonly repo: string } | { readonly worktree: string };
+
+/** Formats a `ScopeRefInput` into the `scope` query param the server parses
+ *  (`all` / `repo:<id>` / `worktree:<id>`). Does not encode — callers pass
+ *  the result through `encodeURIComponent` when building the URL. */
+export function formatScope(ref: ScopeRefInput): string {
+  if (ref === 'all') return 'all';
+  if ('repo' in ref) return `repo:${ref.repo}`;
+  return `worktree:${ref.worktree}`;
+}
+
+// Mirrors WorkspaceRow in src/metrics/git-workspace-report.ts (not importable).
+export interface WorkspaceRow {
+  readonly identity: WorktreeIdentity;
+  readonly metrics: WorkspaceMetrics;
+}
+
+// Mirrors GitWorkspaceReport in src/metrics/git-workspace-report.ts (not
+// importable) — the response shape GET /api/git-efficiency now returns.
+export interface GitWorkspaceReport {
+  readonly scope: ScopeRef;
+  readonly metrics: WorkspaceMetrics;
+  readonly rows: readonly WorkspaceRow[];
+  readonly worstBehind: {
+    readonly identity: WorktreeIdentity;
+    readonly behind: number;
+  } | null;
+  /** The exact `[since, until)` bounds the server resolved the requested
+   *  `window` string into — lets the UI render the real date range instead
+   *  of re-deriving "what 'week' means" itself. */
+  readonly since: number;
+  readonly until: number;
+}
+
+export const fetchGitEfficiency = (
+  window: string = 'today',
+  scope: string = 'all',
+): Promise<GitWorkspaceReport> =>
+  getJson<GitWorkspaceReport>(
+    `/api/git-efficiency?window=${encodeURIComponent(window)}&scope=${encodeURIComponent(scope)}`,
+  );
 
 export interface ModelStats {
   readonly requestCount: number;
@@ -1343,8 +1415,7 @@ export const qk = {
     ['session', sessionId, 'subagent', agentId, 'calls'] as const,
   qualityProxy: ['quality-proxy'] as const,
   toolSelectionScore: ['tool-selection-score'] as const,
-  gitEfficiency: ['git-efficiency'] as const,
-  gitEfficiencyRepos: ['git-efficiency-repos'] as const,
+  gitEfficiency: (window: string, scope: string) => ['git-efficiency', window, scope] as const,
   concurrency: ['concurrency'] as const,
   concurrencyHistory: (days: number) => ['concurrency', 'history', days] as const,
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,

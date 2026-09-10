@@ -21,6 +21,8 @@ import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 
 import type { ToolCallRecord } from '../../storage/types.js';
+import type { GitWorkspaceReport } from '../../metrics/git-workspace-report.js';
+import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
 
 jest.mock('../../install/diagnostics.js', () => ({
   runDiagnostics: jest.fn(async () => [
@@ -5911,233 +5913,137 @@ describe('api-handler GET /api/model-usage', () => {
 });
 
 describe('api-handler GET /api/git-efficiency', () => {
-  it('returns 503 when gitEfficiencyTracker is missing', async () => {
+  it('returns 503 when gitWorkspaceReporter is missing', async () => {
     const handler = createApiHandler({});
     const req = { method: 'GET', url: '/api/git-efficiency' } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(503);
-    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'gitEfficiencyTracker' });
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'gitWorkspaceReporter' });
   });
 
-  it('returns gitEfficiencyTracker.getMetrics() as JSON', async () => {
-    const fakeMetrics = {
-      totalGitCommands: 10,
-      mergeConflicts: 2,
-      rebaseConflicts: 0,
-      abortedOperations: 0,
-      forcePushes: 0,
-      resetHards: 0,
-      discardedChanges: 0,
-      pullCount: 2,
-      pushCount: 3,
-      commitCount: 5,
-      branchOperations: 1,
-      conflictResolutionRate: 1,
-      avgConflictResolutionMs: 5000,
-      staleBranchPulls: 0,
-      gitCommandTimeline: [],
-      conflictHistory: [],
-      suggestions: [],
-      bestPractices: [],
-      preventionScore: 0.8,
-      efficiencyScore: 0.9,
-      riskIndicators: {
-        syncedBeforeEditing: true,
-        timeSinceLastSyncMs: 5000,
-        commitsSinceLastSync: 1,
-        pushRejections: 0,
-        forceAfterReject: 0,
-        hotFiles: [],
-        usesWorktrees: false,
-        usesForceWithLease: false,
-        avgCommitsBetweenSyncs: null,
-        commitsAheadOfMain: null,
-        commitsBehindMain: null,
-        sessionDurationMs: 30000,
-        quickConflictResolutions: 0,
-      },
-      velocityMetrics: {
-        avgTimeBetweenCommitsMs: 10000,
-        commitBurstCount: 0,
-        longestGapMs: 20000,
-        worktreeCount: 0,
-        buildBeforePush: null,
-        testBeforePush: null,
-      },
-      conflictResolutionStrategy: {
-        oursCount: 0,
-        theirsCount: 0,
-        manualMergeCount: 0,
-        cherryPickCount: 0,
-        totalResolutions: 0,
-      },
-      prMetrics: {
-        created: 0,
-        merged: 2,
-        checksViewed: 0,
-        prsUpdated: 0,
-        prActivity: [],
-        avgTimeToCreateMs: null,
-      },
-      repoContext: {
-        repoName: 'preflight',
-        branch: 'main',
-        remoteName: 'origin',
-        defaultBranch: 'main',
-      },
+  it('parses window/scope query params and returns gitWorkspaceReporter.report() as JSON', async () => {
+    const fakeReport: GitWorkspaceReportWithWindow = {
+      scope: { kind: 'repo', id: '/repo/.git' },
+      metrics: { totalGitCommands: 3, commitCount: 3 } as GitWorkspaceReport['metrics'],
+      rows: [],
+      worstBehind: null,
+      since: Date.now() - 7 * 86_400_000,
+      until: Date.now(),
     };
+    const reportArgs: Parameters<
+      NonNullable<Parameters<typeof createApiHandler>[0]['gitWorkspaceReporter']>['report']
+    >[0][] = [];
     const handler = createApiHandler({
-      gitEfficiencyTracker: { getMetrics: () => fakeMetrics },
-    });
-    const req = { method: 'GET', url: '/api/git-efficiency' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    expect(JSON.parse(body())).toEqual(fakeMetrics);
-  });
-});
-
-describe('api-handler GET /api/git-efficiency/repos', () => {
-  it('returns 503 when sessionStore is missing', async () => {
-    const handler = createApiHandler({});
-    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(503);
-    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'sessionStore' });
-  });
-
-  it("dedupes repo names across today's sessions and sorts them", async () => {
-    const handler = createApiHandler({
-      sessionStore: {
-        loadTodaySessions: () => [
-          { sessionId: 's1', repoName: 'zeta-repo' },
-          { sessionId: 's2', repoName: 'alpha-repo' },
-          { sessionId: 's3', repoName: 'alpha-repo' },
-          { sessionId: 's4', repoName: null },
-        ],
-        loadAllSessions: () => [],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-    });
-    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
-    await handler(req, res);
-    expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.repos).toEqual(['alpha-repo', 'zeta-repo']);
-    expect(result.currentRepo).toBeNull();
-  });
-
-  it('includes and merges in the current repo from gitEfficiencyTracker', async () => {
-    const handler = createApiHandler({
-      sessionStore: {
-        loadTodaySessions: () => [{ sessionId: 's1', repoName: 'alpha-repo' }],
-        loadAllSessions: () => [],
-        listSessions: () => [],
-        loadSession: () => null,
-      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
-      gitEfficiencyTracker: {
-        getMetrics: () => ({
-          totalGitCommands: 0,
-          mergeConflicts: 0,
-          rebaseConflicts: 0,
-          abortedOperations: 0,
-          forcePushes: 0,
-          resetHards: 0,
-          discardedChanges: 0,
-          pullCount: 0,
-          pushCount: 0,
-          commitCount: 0,
-          branchOperations: 0,
-          conflictResolutionRate: null,
-          avgConflictResolutionMs: null,
-          staleBranchPulls: 0,
-          gitCommandTimeline: [],
-          conflictHistory: [],
-          suggestions: [],
-          bestPractices: [],
-          preventionScore: null,
-          efficiencyScore: null,
-          riskIndicators: {
-            syncedBeforeEditing: null,
-            timeSinceLastSyncMs: null,
-            commitsSinceLastSync: 0,
-            pushRejections: 0,
-            forceAfterReject: 0,
-            hotFiles: [],
-            usesWorktrees: false,
-            usesForceWithLease: false,
-            avgCommitsBetweenSyncs: null,
-            commitsAheadOfMain: null,
-            commitsBehindMain: null,
-            sessionDurationMs: null,
-            quickConflictResolutions: 0,
-          },
-          velocityMetrics: {
-            avgTimeBetweenCommitsMs: null,
-            commitBurstCount: 0,
-            longestGapMs: null,
-            worktreeCount: 0,
-            buildBeforePush: null,
-            testBeforePush: null,
-          },
-          conflictResolutionStrategy: {
-            oursCount: 0,
-            theirsCount: 0,
-            manualMergeCount: 0,
-            cherryPickCount: 0,
-            totalResolutions: 0,
-          },
-          prMetrics: {
-            created: 0,
-            merged: 0,
-            checksViewed: 0,
-            prsUpdated: 0,
-            prActivity: [],
-            avgTimeToCreateMs: null,
-          },
-          repoContext: {
-            repoName: 'current-repo',
-            branch: null,
-            remoteName: null,
-            defaultBranch: null,
-          },
-        }),
+      gitWorkspaceReporter: {
+        report: (input) => {
+          reportArgs.push(input);
+          return fakeReport;
+        },
+        knownWorkspaces: () => new Map(),
       },
     });
-    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
+    const req = {
+      method: 'GET',
+      url: '/api/git-efficiency?window=week&scope=repo%3A%2Frepo%2F.git',
+    } as IncomingMessage;
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.repos).toEqual(['alpha-repo', 'current-repo']);
-    expect(result.currentRepo).toBe('current-repo');
+    expect(JSON.parse(body())).toEqual(fakeReport);
+    expect(reportArgs).toHaveLength(1);
+    expect(reportArgs[0].scope).toEqual({ kind: 'repo', id: '/repo/.git' });
+    // 'week' is a 7-day window ending now, since < until.
+    expect(reportArgs[0].since).toBeLessThan(reportArgs[0].until);
   });
 
-  it("prefers loadSessionsOverlappingToday() so a cross-midnight session's repo is not dropped from the pills", async () => {
+  it('defaults to window=today and scope=all when no query params are given', async () => {
+    const fakeReport: GitWorkspaceReportWithWindow = {
+      scope: { kind: 'all' },
+      metrics: {} as GitWorkspaceReport['metrics'],
+      rows: [],
+      worstBehind: null,
+      since: Date.now() - 7 * 86_400_000,
+      until: Date.now(),
+    };
+    const reportArgs: Parameters<
+      NonNullable<Parameters<typeof createApiHandler>[0]['gitWorkspaceReporter']>['report']
+    >[0][] = [];
     const handler = createApiHandler({
+      gitWorkspaceReporter: {
+        report: (input) => {
+          reportArgs.push(input);
+          return fakeReport;
+        },
+        knownWorkspaces: () => new Map(),
+      },
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(reportArgs[0].scope).toEqual({ kind: 'all' });
+  });
+
+  it('replays sessionStore sessions into historical records and passes them to report()', async () => {
+    // Exercises the actual composition point of a real bug this route once
+    // had (double-counting a session replayed both at startup and here) —
+    // no other test drove this route with a real sessionStore, so the fix
+    // living in GitWorkspaceReporter.report() was covered, but this route's
+    // own construction of the `historical` array it hands to report() was not.
+    const fakeReport: GitWorkspaceReportWithWindow = {
+      scope: { kind: 'all' },
+      metrics: {} as GitWorkspaceReport['metrics'],
+      rows: [],
+      worstBehind: null,
+      since: Date.now() - 7 * 86_400_000,
+      until: Date.now(),
+    };
+    const reportArgs: Parameters<
+      NonNullable<Parameters<typeof createApiHandler>[0]['gitWorkspaceReporter']>['report']
+    >[0][] = [];
+    const handler = createApiHandler({
+      gitWorkspaceReporter: {
+        report: (input) => {
+          reportArgs.push(input);
+          return fakeReport;
+        },
+        knownWorkspaces: () => new Map(),
+      },
       sessionStore: {
-        // Excluded here — its filename date is yesterday's.
-        loadTodaySessions: () => [],
-        // loadSessionsOverlappingToday() must supply it instead, matching
-        // the day-boundary hydration path in src/index.ts.
-        loadSessionsOverlappingToday: () => [
-          { sessionId: 'cross-midnight', repoName: 'cross-midnight-repo' },
+        loadAllSessions: () => [
+          {
+            sessionId: 'hist-1',
+            timeline: [
+              {
+                timestamp: Date.now() - 3_600_000,
+                toolName: 'Bash',
+                durationMs: 50,
+                success: true,
+                command: 'git commit -m "historical commit"',
+                // Not a real repo — this test proves the replay wiring runs
+                // and reaches report(), not identity resolution (covered
+                // elsewhere); an unresolvable cwd still yields a record.
+                cwd: '/tmp/not-a-real-repo-xyz',
+              },
+            ],
+          },
         ],
-        loadAllSessions: () => [],
+        loadTodaySessions: () => [],
         listSessions: () => [],
         loadSession: () => null,
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
     });
-    const req = { method: 'GET', url: '/api/git-efficiency/repos' } as IncomingMessage;
-    const { res, status, body } = fakeRes();
+    const req = { method: 'GET', url: '/api/git-efficiency?window=week' } as IncomingMessage;
+    const { res, status } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    const result = JSON.parse(body());
-    expect(result.repos).toEqual(['cross-midnight-repo']);
+    expect(reportArgs).toHaveLength(1);
+    expect(reportArgs[0].historical).toBeDefined();
+    expect(reportArgs[0].historical!.length).toBeGreaterThan(0);
+    const gitRecord = reportArgs[0].historical!.find((r) => r.kind === 'git');
+    expect(gitRecord).toBeDefined();
+    expect(gitRecord!.recordId.startsWith('replay:hist-1:0')).toBe(true);
   });
 });
 

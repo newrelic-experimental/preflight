@@ -53,6 +53,7 @@ interface SessionRow {
   readonly toolCallCount?: number;
   readonly estimatedCostUsd?: number | null;
   readonly outcome?: string | null;
+  readonly repoName?: string | null;
 }
 
 interface CurrentSession {
@@ -153,6 +154,46 @@ function readSessionParam(search: string): string | null {
   return trimmed;
 }
 
+// `?repo=<repoName>` deep-link — narrows the master list to sessions from one
+// repo. Repo-only, not worktree-specific: which worktree a session ran in
+// only exists inside its (unfetched-at-list-time) timeline, not on the list
+// summary itself. Superseded for the Git Efficiency tab's own links by the
+// exact `?sessionIds=` below, which the report can resolve precisely per
+// repo OR per worktree — this stays as a coarser, still-useful manual
+// deep-link (e.g. pasted into a URL bar by hand).
+function readRepoParam(search: string): string | null {
+  let raw: string | null;
+  try {
+    raw = new URLSearchParams(search).get('repo');
+  } catch {
+    return null;
+  }
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > 256) return null;
+  return trimmed;
+}
+
+// `?sessionIds=id1,id2,...` deep-link — narrows the master list to exactly
+// these sessions. Used by the Git Efficiency tab's per-repo/per-worktree
+// "Sessions" column, which already knows precisely which sessions touched
+// that row (from GitActivityRecord.sessionId), so it can link far more
+// precisely than the repo-name-only `?repo=` above.
+function readSessionIdsParam(search: string): ReadonlySet<string> | null {
+  let raw: string | null;
+  try {
+    raw = new URLSearchParams(search).get('sessionIds');
+  } catch {
+    return null;
+  }
+  if (raw == null) return null;
+  const ids = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length <= 256);
+  return ids.length > 0 ? new Set(ids) : null;
+}
+
 function startTimeMs(row: SessionRow): number {
   return typeof row.startTime === 'number' ? row.startTime : new Date(row.startTime ?? 0).getTime();
 }
@@ -225,6 +266,28 @@ export function Sessions(): JSX.Element {
   useEffect(() => {
     if (sessionParam) setSelectedId(sessionParam);
   }, [sessionParam]);
+
+  // Mount-only initial repo filter, same pattern as selectedId above. A user
+  // can clear it (the "×" on the filter chip below), unlike selectedId which
+  // is only ever replaced, never cleared — so this is separate state rather
+  // than reusing sessionParam's effect.
+  const [repoFilter, setRepoFilter] = useState<string | null>(() =>
+    readRepoParam(window.location.search),
+  );
+  const repoParam = useMemo(() => readRepoParam(search), [search]);
+  useEffect(() => {
+    if (repoParam) setRepoFilter(repoParam);
+  }, [repoParam]);
+
+  // Same mount-only + reactive pattern as repoFilter above, for the more
+  // precise `?sessionIds=` deep-link.
+  const [sessionIdsFilter, setSessionIdsFilter] = useState<ReadonlySet<string> | null>(() =>
+    readSessionIdsParam(window.location.search),
+  );
+  const sessionIdsParam = useMemo(() => readSessionIdsParam(search), [search]);
+  useEffect(() => {
+    if (sessionIdsParam) setSessionIdsFilter(sessionIdsParam);
+  }, [sessionIdsParam]);
 
   const list = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
@@ -312,7 +375,11 @@ export function Sessions(): JSX.Element {
     return m;
   }, [filteredRuns]);
   const filtersActive =
-    activeWindow !== 'all' || runSourceFilter !== 'all' || statusFilter !== 'all';
+    activeWindow !== 'all' ||
+    runSourceFilter !== 'all' ||
+    statusFilter !== 'all' ||
+    repoFilter !== null ||
+    sessionIdsFilter !== null;
   // Run-specific filters (source/status) still narrow to sessions owning a
   // matching run — that's the whole point of those two filters. The time
   // window, however, must filter sessions by their OWN startTime: most
@@ -335,8 +402,28 @@ export function Sessions(): JSX.Element {
     if (runFiltersActive) {
       result = result.filter((r) => runsBySession.has(r.sessionId));
     }
+    if (repoFilter !== null) {
+      result = result.filter((r) => r.repoName === repoFilter);
+    }
+    if (sessionIdsFilter !== null) {
+      result = result.filter((r) => sessionIdsFilter.has(r.sessionId));
+    }
     return result;
-  }, [rows, activeWindow, runFiltersActive, runsBySession]);
+  }, [rows, activeWindow, runFiltersActive, runsBySession, repoFilter, sessionIdsFilter]);
+  // A deep-link's sessionIds are matched against `rows` — the most-recent-
+  // SESSIONS_PAGE_SIZE page, not the full session history — so a session
+  // older than that page silently has nothing to match and just vanishes
+  // from the list with no indication why. Surfaced below instead of left
+  // silent.
+  const missingSelectedSessionCount = useMemo(() => {
+    if (sessionIdsFilter === null) return 0;
+    const loadedIds = new Set(rows.map((r) => r.sessionId));
+    let missing = 0;
+    for (const id of sessionIdsFilter) {
+      if (!loadedIds.has(id)) missing++;
+    }
+    return missing;
+  }, [sessionIdsFilter, rows]);
   // The KPI strip above is built from filteredRuns, which come from
   // WorkflowStore.listRuns() — a machine-wide, 30-day-window, 500-run scan
   // with no relationship to `rows` (the session list's own most-recent-50
@@ -496,6 +583,44 @@ export function Sessions(): JSX.Element {
             );
           })}
         </div>
+        {repoFilter !== null && (
+          <>
+            <div className="h-4 w-px bg-border-subtle" aria-hidden="true" />
+            <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] bg-accent-cyan/20 text-accent-cyan font-medium">
+              Repo: {repoFilter}
+              <button
+                type="button"
+                onClick={() => setRepoFilter(null)}
+                aria-label="Clear repo filter"
+                className="hover:text-ink-base focus-visible:outline-none"
+              >
+                &#10005;
+              </button>
+            </span>
+          </>
+        )}
+        {sessionIdsFilter !== null && (
+          <>
+            <div className="h-4 w-px bg-border-subtle" aria-hidden="true" />
+            <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] bg-accent-cyan/20 text-accent-cyan font-medium">
+              {sessionIdsFilter.size} session{sessionIdsFilter.size === 1 ? '' : 's'} selected
+              <button
+                type="button"
+                onClick={() => setSessionIdsFilter(null)}
+                aria-label="Clear session filter"
+                className="hover:text-ink-base focus-visible:outline-none"
+              >
+                &#10005;
+              </button>
+            </span>
+            {missingSelectedSessionCount > 0 && (
+              <span className="text-[11px] text-accent-amber">
+                {missingSelectedSessionCount} of {sessionIdsFilter.size} not shown — older than the{' '}
+                {SESSIONS_PAGE_SIZE} most recent sessions
+              </span>
+            )}
+          </>
+        )}
         {filtersActive && (
           <button
             type="button"
@@ -503,6 +628,8 @@ export function Sessions(): JSX.Element {
               setActiveWindow('all');
               setRunSourceFilter('all');
               setStatusFilter('all');
+              setRepoFilter(null);
+              setSessionIdsFilter(null);
             }}
             className="text-[10px] text-ink-muted hover:text-ink-subtle underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40 rounded-sm"
           >

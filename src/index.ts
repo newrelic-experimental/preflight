@@ -61,6 +61,11 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './metrics/git-efficiency-tracker.js';
+import { WorktreeIdentityResolver } from './metrics/git-workspace-identity.js';
+import {
+  GitWorkspaceReporter,
+  replaySessionToActivityRecords,
+} from './metrics/git-workspace-reporter.js';
 import type { SessionOutcomeRecord } from './metrics/instruction-drift-tracker.js';
 import { InstructionDriftTracker } from './metrics/instruction-drift-tracker.js';
 import { LatencyDecompositionTracker } from './metrics/latency-decomposition.js';
@@ -1257,6 +1262,7 @@ async function main(): Promise<void> {
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
+    const gitWorkspaceReporter = new GitWorkspaceReporter();
     // Day-boundary reset bookkeeping for gitEfficiencyTracker: the
     // tracker has a reset() method but, unlike costTracker/modelUsageTracker/
     // contextCompositionTracker/turnCostAttributor (reset at session
@@ -1428,11 +1434,19 @@ async function main(): Promise<void> {
     // worked on in a different repo earlier today doesn't get counted
     // against whichever repo this process's header currently names.
     const todaySessions = sessionStore.loadSessionsOverlappingToday();
+    // Shared across every session in this loop (not one fresh resolver per
+    // session) so its per-directory cache stays warm across sessions that
+    // touch the same worktree.
+    const gitWorkspaceIdentityResolver = new WorktreeIdentityResolver();
     for (const session of todaySessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.timeline && session.timeline.length > 0) {
         gitEfficiencyTracker.replayTimeline(session.timeline, session.repoName);
       }
+
+      const replayed = replaySessionToActivityRecords(session, gitWorkspaceIdentityResolver);
+      if (replayed.records.length === 0) continue;
+      gitWorkspaceReporter.ingestRecords(replayed.records, replayed.identities);
     }
 
     // Hydrate instruction-drift tracker with the last 7 days of prior
@@ -1758,6 +1772,7 @@ async function main(): Promise<void> {
           toolCallBuffer: toolCallBufferAccessor,
           liveSessionRegistry,
           gitEfficiencyTracker,
+          gitWorkspaceReporter,
           concurrencyTracker: liveSessionRegistry,
           contextTracker,
           contextCompositionTracker,
@@ -2136,6 +2151,7 @@ async function main(): Promise<void> {
           }
         }
         gitEfficiencyTracker.recordToolCall(rawRecord);
+        gitWorkspaceReporter.recordToolCall(rawRecord);
 
         const record: ToolCallRecord = { ...rawRecord, turn_id: turnId, turn_number: turnNumber };
 
@@ -2974,6 +2990,7 @@ async function main(): Promise<void> {
         turnCostAttributor,
         turnTracker,
         gitEfficiencyTracker,
+        gitWorkspaceReporter,
         genericMcpAdapter,
         nrIngestManager: nrIngest,
         sessionTraceId: realId,
@@ -3163,6 +3180,7 @@ async function main(): Promise<void> {
           turnCostAttributor,
           turnTracker,
           gitEfficiencyTracker,
+          gitWorkspaceReporter,
           genericMcpAdapter,
           nrIngestManager: nrIngest,
           sessionTraceId,

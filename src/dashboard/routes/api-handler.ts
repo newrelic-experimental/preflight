@@ -28,7 +28,14 @@ import {
   type SessionLikeForCostOutcome,
 } from '../../metrics/cost-per-outcome.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
+import type { GitActivityRecord } from '../../metrics/git-activity-recorder.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
+import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-params.js';
+import type { WorktreeIdentity } from '../../metrics/git-workspace-identity.js';
+import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
+import type { ScopeRef } from '../../metrics/git-workspace-report.js';
+import { replaySessionToActivityRecords } from '../../metrics/git-workspace-reporter.js';
+import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
 import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
 import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
@@ -542,6 +549,16 @@ export interface ApiHandlerDeps {
   // Today KPI; richer per-task breakdowns ship via the existing MCP tool path.
   readonly efficiencyScorer?: { getSessionAverage: () => { score: number } | null };
   readonly gitEfficiencyTracker?: { getMetrics: () => GitEfficiencyMetrics };
+  readonly gitWorkspaceReporter?: {
+    report(input: {
+      scope: ScopeRef;
+      since: number;
+      until: number;
+      historical?: readonly GitActivityRecord[];
+      historicalIdentities?: ReadonlyMap<string, WorktreeIdentity>;
+    }): GitWorkspaceReportWithWindow;
+    knownWorkspaces(): ReadonlyMap<string, WorktreeIdentity>;
+  };
   readonly qualityProxyTracker?: {
     getMetrics: () => QualityProxyMetrics;
     getRawCounts: () => QualityProxyRawCounts;
@@ -2302,9 +2319,42 @@ export function createApiHandler(
     jsonOk(res, combined);
   });
 
-  routes.set('GET /api/git-efficiency', (_req, res) => {
-    if (!deps.gitEfficiencyTracker) return unavailable(res, 'gitEfficiencyTracker');
-    jsonOk(res, deps.gitEfficiencyTracker.getMetrics());
+  routes.set('GET /api/git-efficiency', (req, res) => {
+    if (!deps.gitWorkspaceReporter) return unavailable(res, 'gitWorkspaceReporter');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const { since, until } = resolveWindowParam(url.searchParams.get('window'));
+    const scope = resolveScopeParam(url.searchParams.get('scope'));
+
+    // Always include replayed history for the window, even a same-day one —
+    // the store's own recordId dedup makes this safe against double-counting
+    // anything also live in memory; this does slightly more work than
+    // strictly necessary for a same-day window, which could be optimized
+    // later by skipping this when `since` is provably within the live
+    // in-memory retention, but correctness-first for now.
+    let historical: GitActivityRecord[] = [];
+    const historicalIdentities = new Map<string, WorktreeIdentity>();
+    if (deps.sessionStore?.loadAllSessions) {
+      const identityResolver = new WorktreeIdentityResolver();
+      const sessions = deps.sessionStore.loadAllSessions({
+        since: new Date(since),
+      }) as unknown as readonly {
+        sessionId: string;
+        timeline?: readonly ReplayTimelineEntry[];
+        repoName?: string | null;
+      }[];
+      for (const session of sessions) {
+        const replayed = replaySessionToActivityRecords(session, identityResolver);
+        historical = historical.concat(replayed.records);
+        for (const [key, identity] of replayed.identities) {
+          historicalIdentities.set(key, identity);
+        }
+      }
+    }
+
+    jsonOk(
+      res,
+      deps.gitWorkspaceReporter.report({ scope, since, until, historical, historicalIdentities }),
+    );
   });
 
   routes.set('GET /api/context', (req, res) => {
@@ -2591,37 +2641,6 @@ export function createApiHandler(
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'internal_error' }));
     }
-  });
-
-  routes.set('GET /api/git-efficiency/repos', (_req, res) => {
-    if (!deps.sessionStore) return unavailable(res, 'sessionStore');
-    // Prefer loadSessionsOverlappingToday() so a session that started
-    // yesterday and crossed into today isn't invisible from these pills —
-    // loadTodaySessions() filters by filename date (= start date) and would
-    // otherwise silently drop it, even though its git activity still counts
-    // toward the KPIs shown alongside these pills — same reasoning as the
-    // day-boundary hydration in src/index.ts.
-    const todaySessions = (deps.sessionStore.loadSessionsOverlappingToday?.() ??
-      deps.sessionStore.loadTodaySessions()) as Array<{
-      repoName?: string | null;
-      sessionId: string;
-    }>;
-    const repoSet = new Set<string>();
-    for (const session of todaySessions) {
-      if (typeof session.repoName === 'string' && session.repoName) {
-        repoSet.add(session.repoName);
-      }
-    }
-    // Include the current repo from git efficiency tracker if available
-    let currentRepo: string | null = null;
-    if (deps.gitEfficiencyTracker) {
-      const trackerRepo = deps.gitEfficiencyTracker.getMetrics().repoContext.repoName;
-      if (trackerRepo) {
-        currentRepo = trackerRepo;
-        repoSet.add(trackerRepo);
-      }
-    }
-    jsonOk(res, { repos: [...repoSet].sort(), currentRepo });
   });
 
   // ── Diagnostics endpoint ────────────────────────────────────────────────
