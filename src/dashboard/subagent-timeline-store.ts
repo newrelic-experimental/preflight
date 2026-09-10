@@ -47,7 +47,13 @@ import type {
 const logger = createLogger('subagent-timeline-store');
 
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const AGENT_ID_RE = /^a[a-f0-9]{16}$/;
+/**
+ * A valid agentId is either the plain `a<16-hex>` shape (anonymous Task
+ * spawn) or `a<name>-<16-hex>` (a subagent spawned with an explicit `name`
+ * via `Agent({name: ...})`, addressable later via SendMessage) — `<name>`
+ * may itself contain hyphens.
+ */
+const AGENT_ID_RE = /^a(?:[A-Za-z0-9_-]{1,64}-)?[a-f0-9]{16}$/;
 const WORKFLOW_RUN_ID_RE = /^wf_[A-Za-z0-9_-]{1,128}$/;
 const PROJECTS_DIR_NAME = '.claude/projects';
 

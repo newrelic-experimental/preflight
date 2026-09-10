@@ -76,7 +76,13 @@ const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const AGENT_ID_RE = /^a[a-f0-9]{16}$/;
+/**
+ * A valid agentId is either the plain `a<16-hex>` shape (anonymous Task
+ * spawn) or `a<name>-<16-hex>` (a subagent spawned with an explicit `name`
+ * via `Agent({name: ...})`, addressable later via SendMessage) — `<name>`
+ * may itself contain hyphens.
+ */
+const AGENT_ID_RE = /^a(?:[A-Za-z0-9_-]{1,64}-)?[a-f0-9]{16}$/;
 const PROJECTS_DIR_NAME = '.claude/projects';
 
 // ---------------------------------------------------------------------------
@@ -267,8 +273,9 @@ export class SubagentWatcher {
   // Files that already emitted `discovery_skipped` so we don't re-emit on
   // every poll for the same too-old file.
   private readonly discoverySkippedAnnounced = new Set<string>();
-  // Files shaped like `agent-*.jsonl` whose id doesn't match AGENT_ID_RE that
-  // already emitted `discovery_skipped`, so we don't re-emit on every poll.
+  // Files shaped like `agent-*.jsonl` whose id doesn't match AGENT_ID_RE (see
+  // AGENT_ID_RE's doc comment for the two valid shapes) that already emitted
+  // `discovery_skipped`, so we don't re-emit on every poll.
   private readonly agentIdMismatchAnnounced = new Set<string>();
   private lastCostSelfCheckMs = 0;
 
