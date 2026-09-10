@@ -1,0 +1,47 @@
+name: CI
+
+# Runs the checks a contributor is expected to run locally before opening a
+# PR (per CLAUDE.md: `npm run build && npm test`), plus lint and the two
+# drift-checker scripts that otherwise never run automatically:
+# check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
+# bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
+# release.yml).
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Check docs/code inventory drift
+        run: npm run check:docs-inventory
+
+      - name: Check SPA bundle size
+        run: npm run check:bundle-size
