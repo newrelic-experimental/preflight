@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { createLogger } from '../shared/index.js';
+import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
 import type { HookEvent, AuditEntry } from './types.js';
 
 const logger = createLogger('local-store');
@@ -20,13 +21,14 @@ const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
  * Matches `.subagent-pos-<parentSessionId>-<agentId>` cursor filenames.
  * Group 1 (parentSessionId) is pinned to the UUID shape (mirrors
  * SubagentWatcher's SESSION_ID_RE) rather than a greedy `.+`, because group 2
- * (agentId) can itself contain internal hyphens for a named-subagent spawn
- * (`a<name>-<16-hex>`, via `Agent({name: ...})`) — a greedy `.+` combined with
- * a strict `a[a-f0-9]{16}$` tail would no longer reliably separate the two
- * groups once the agentId can contain its own hyphens.
+ * (agentId, see ../lib/agent-id.js) can itself contain internal hyphens for a
+ * named-subagent spawn — a greedy `.+` paired with a strict agentId tail
+ * would no longer reliably separate the two groups once the agentId can
+ * contain its own hyphens.
  */
-const SUBAGENT_CURSOR_RE =
-  /^\.subagent-pos-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})-(a(?:[A-Za-z0-9_-]{1,64}-)?[a-f0-9]{16})$/;
+const SUBAGENT_CURSOR_RE = new RegExp(
+  `^\\.subagent-pos-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})-(${AGENT_ID_PATTERN})$`,
+);
 const TRANSCRIPT_CURSOR_RE = /^\.transcript-pos-(.+)$/;
 const PARENT_TRANSCRIPT_CURSOR_RE = /^\.parent-transcript-pos-(.+)$/;
 

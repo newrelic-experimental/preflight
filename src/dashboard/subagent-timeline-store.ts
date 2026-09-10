@@ -36,6 +36,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { calculateCost, createLogger, type TokenUsage } from '../shared/index.js';
+import { AGENT_ID_RE } from '../lib/agent-id.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
 import type {
@@ -47,13 +48,8 @@ import type {
 const logger = createLogger('subagent-timeline-store');
 
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-/**
- * A valid agentId is either the plain `a<16-hex>` shape (anonymous Task
- * spawn) or `a<name>-<16-hex>` (a subagent spawned with an explicit `name`
- * via `Agent({name: ...})`, addressable later via SendMessage) — `<name>`
- * may itself contain hyphens.
- */
-const AGENT_ID_RE = /^a(?:[A-Za-z0-9_-]{1,64}-)?[a-f0-9]{16}$/;
+// AGENT_ID_RE imported from ../lib/agent-id.js — see its doc comment for the
+// two valid agentId shapes.
 const WORKFLOW_RUN_ID_RE = /^wf_[A-Za-z0-9_-]{1,128}$/;
 const PROJECTS_DIR_NAME = '.claude/projects';
 

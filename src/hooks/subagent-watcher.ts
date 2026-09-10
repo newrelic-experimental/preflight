@@ -43,6 +43,7 @@ import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
+import { AGENT_ID_RE } from '../lib/agent-id.js';
 import type { LocalStore } from '../storage/local-store.js';
 import type { RawTranscriptEntry, RawAssistantMessage, RawUsage } from './transcript-types.js';
 
@@ -76,13 +77,8 @@ const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-/**
- * A valid agentId is either the plain `a<16-hex>` shape (anonymous Task
- * spawn) or `a<name>-<16-hex>` (a subagent spawned with an explicit `name`
- * via `Agent({name: ...})`, addressable later via SendMessage) — `<name>`
- * may itself contain hyphens.
- */
-const AGENT_ID_RE = /^a(?:[A-Za-z0-9_-]{1,64}-)?[a-f0-9]{16}$/;
+// AGENT_ID_RE imported from ../lib/agent-id.js — see its doc comment for the
+// two valid agentId shapes.
 const PROJECTS_DIR_NAME = '.claude/projects';
 
 // ---------------------------------------------------------------------------
