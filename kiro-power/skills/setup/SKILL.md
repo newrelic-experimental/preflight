@@ -17,12 +17,14 @@ resolution, hook exit-code semantics) lives in `references/troubleshooting.md`
 
 ## Step 1: Confirm the MCP server connected
 
-Call `nr_observe_health`. If it errors or the tool isn't available, run
-`scripts/validate-deps.sh` (or `command -v preflight`) — this power's
-`mcp.json` launches the globally-installed `preflight` binary directly
-rather than through `npx`, so it needs `npm install -g @newrelic/preflight`
-run once first. Then ask the user to reconnect MCP servers from the Kiro MCP
-panel, or restart Kiro.
+Call `nr_observe_health`. If it errors or the tool isn't available, note that
+this power's `mcp.json` launches `preflight` via `npx -y
+@newrelic/preflight@latest --stdio` — no global install is required for the
+MCP tools themselves, so check that `npx` can resolve on `PATH` and reach the
+npm registry rather than looking for a global `preflight` binary. (Step 2's
+hook wiring is the part that does need a global install — see below.) Then
+ask the user to reconnect MCP servers from the Kiro MCP panel, or restart
+Kiro.
 
 ## Step 2: Wire up full tool-call visibility (hooks)
 
@@ -40,7 +42,7 @@ reflect the whole session instead of just the `nr_observe_*` calls.
    blocking, `PostToolUse` as not) — a hook command that isn't found on
    `PATH` would fail every tool call in the user's session, not just skip
    Preflight's own observability.
-   - If the script reports either binary missing, ask the user to run
+   - If the script reports the binary missing, ask the user to run
      `npm install -g @newrelic/preflight`, then re-run the script. **Do not
      proceed to step 2 until it passes.**
 2. Create `.kiro/hooks/preflight-observability.json` in the user's workspace
@@ -52,13 +54,13 @@ reflect the whole session instead of just the `nr_observe_*` calls.
        {
          "name": "Preflight: pre tool call",
          "trigger": "PreToolUse",
-         "action": { "type": "command", "command": "preflight-collector" },
+         "action": { "type": "command", "command": "MCP_CLIENT=kiro preflight-collector" },
          "timeout": 10
        },
        {
          "name": "Preflight: post tool call",
          "trigger": "PostToolUse",
-         "action": { "type": "command", "command": "preflight-collector" },
+         "action": { "type": "command", "command": "MCP_CLIENT=kiro preflight-collector" },
          "timeout": 10
        }
      ]
@@ -97,6 +99,28 @@ platform auto-detection falls through to the generic MCP adapter, Kiro's tool
 names are never normalized, and every file/edit/shell metric silently reports
 zero while the raw tool-call count still looks correct. Verify with
 `nr_observe_get_config` that `platform` reads `kiro`, not `generic-mcp`.
+
+## Step 4: Mention optional feature flags
+
+Once Steps 1-3 are done, briefly let the user know they can add more fields
+to that same `mcp.json` `env` block to unlock specific tools — don't ask about
+these proactively, just mention they exist:
+
+- `NEW_RELIC_AI_SESSION_BUDGET_USD` / `_DAILY_` / `_WEEKLY_BUDGET_USD` — set a
+  spend cap so `nr_observe_get_budget_status` reports non-null
+  `remainingUsd`/`pctUsed` and fires 50/80/100% alerts. Works in `local` mode.
+- `NEW_RELIC_AI_TEAM_ID` + `NEW_RELIC_API_KEY` (a NerdGraph **User** key,
+  `NRAK-...` — distinct from `NEW_RELIC_LICENSE_KEY`) — both are required
+  before `nr_observe_get_team_summary` will work at all; it errors with
+  `"teamId or nrApiKey not configured"` otherwise.
+
+Tell the user where to look for more — don't just say "check the docs" without
+the link, since they may not have this repo cloned locally:
+
+- Feature-flag table (includes `NEW_RELIC_AI_ORG_ID`/`_PROJECT_ID`/
+  `_MCP_DEVELOPER` too): https://newrelic-experimental.github.io/preflight/kiro-power/#optional-feature-flags
+- Every config field this server reads, env var and config-file key alike:
+  https://newrelic-experimental.github.io/preflight/advanced/
 
 Do not repeat this setup on every message — only run it once per Kiro
 workspace, or when the user explicitly asks to check Preflight's setup.

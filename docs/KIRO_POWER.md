@@ -118,18 +118,30 @@ preflight-collector` (or run
        {
          "name": "Preflight: pre tool call",
          "trigger": "PreToolUse",
-         "action": { "type": "command", "command": "preflight-collector" },
+         "action": { "type": "command", "command": "MCP_CLIENT=kiro preflight-collector" },
          "timeout": 10
        },
        {
          "name": "Preflight: post tool call",
          "trigger": "PostToolUse",
-         "action": { "type": "command", "command": "preflight-collector" },
+         "action": { "type": "command", "command": "MCP_CLIENT=kiro preflight-collector" },
          "timeout": 10
        }
      ]
    }
    ```
+
+   The `MCP_CLIENT=kiro` prefix is required, not decorative: Kiro spawns this
+   hook command as a process separate from the Power's MCP server, so it
+   never inherits `NEW_RELIC_AI_PLATFORM: "kiro"` from `mcp.json`'s `env`
+   block — that's scoped to the MCP server subprocess only. Without an
+   explicit stamp on the command itself, `collector-script.ts` has no
+   confirmed ambient signal to fall back on for this subprocess, the same
+   reasoning the Copilot, Droid, Gemini CLI, Codex, opencode, Kilo Code, and
+   Antigravity adapters document in [ADAPTERS.md](./ADAPTERS.md) for their
+   own hook commands. `kiro.dev/docs/hooks/` confirms `action.command` runs
+   as a real shell command, so the leading `VAR=value` assignment is parsed
+   normally — it is not a literal program name.
 
    Both entries run the same command — `preflight-collector` tells pre-
    from post-call apart from the hook payload's own `hook_event_name` field,
@@ -158,6 +170,26 @@ also layers in the host shell environment on top isn't documented. Never
 commit real credentials into a shared copy of `mcp.json` — keep source
 control on `local` mode with no credentials, same as this repo's copy. See
 [ADVANCED.md](./ADVANCED.md) for the full field reference.
+
+## Optional feature flags
+
+A handful of `nr_observe_*` tools stay inert (or error outright) until specific
+fields are set. All of these go in the same `mcp.json` `env` block as
+`NR_AI_MODE`/`NEW_RELIC_LICENSE_KEY` above — add only the ones you actually
+want; everything below is optional and independent of the others.
+
+| Env var                           | Unlocks                                                                                                                                        | Notes                                                                                                                                                                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEW_RELIC_AI_SESSION_BUDGET_USD` | Non-null `budgetUsd`/`remainingUsd`/`pctUsed` and 50/80/100% threshold alerts in `nr_observe_get_budget_status`, scoped to one session         | A positive USD number, e.g. `"5"`. Works in `local` mode — no NR account needed for this one.                                                                                                                                       |
+| `NEW_RELIC_AI_DAILY_BUDGET_USD`   | Same, scoped to the local calendar day                                                                                                         |                                                                                                                                                                                                                                     |
+| `NEW_RELIC_AI_WEEKLY_BUDGET_USD`  | Same, scoped to the ISO week                                                                                                                   |                                                                                                                                                                                                                                     |
+| `NEW_RELIC_AI_TEAM_ID`            | Tags every event with a team identifier; required (together with `NEW_RELIC_API_KEY`) for `nr_observe_get_team_summary` to be available at all | Any string you choose. For team-wide aggregation to mean anything, every teammate's `mcp.json` needs the **same** value and `NR_AI_MODE: "cloud"` or `"both"` — `local` mode never reaches the shared NR account this tool queries. |
+| `NEW_RELIC_API_KEY`               | Required (together with `NEW_RELIC_AI_TEAM_ID`) for `nr_observe_get_team_summary`                                                              | A NerdGraph **User** key (`NRAK-...`) — generated in the New Relic UI (profile menu → API keys → Create a key → User), not the same as the ingest `NEW_RELIC_LICENSE_KEY`.                                                          |
+| `NEW_RELIC_AI_ORG_ID`             | Tags every event with an org identifier                                                                                                        | No default; omitted from events if unset.                                                                                                                                                                                           |
+| `NEW_RELIC_AI_PROJECT_ID`         | Tags every event with a project identifier                                                                                                     | Auto-derived from the git remote (`org/repo`) if omitted — only set this to override that.                                                                                                                                          |
+| `NEW_RELIC_AI_MCP_DEVELOPER`      | Developer identity used to facet cross-session/team tools (`nr_observe_get_team_summary`, `nr_observe_get_personal_insights`, etc.)            | Defaults to `$USER`/`$USERNAME`, falling back to `git config user.name`, then `"unknown"` — only set this to override that.                                                                                                         |
+
+Restart Kiro after editing `mcp.json` — none of these are hot-reloaded.
 
 ## Why `NEW_RELIC_AI_PLATFORM` is set
 

@@ -273,11 +273,17 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
        "args": ["preflight", "--stdio"],
        "env": {
          "NEW_RELIC_LICENSE_KEY": "<your-key>",
-         "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
+         "NEW_RELIC_ACCOUNT_ID": "<your-account-id>",
+         "NEW_RELIC_AI_PLATFORM": "kiro"
        }
      }
    }
    ```
+   `NEW_RELIC_AI_PLATFORM: "kiro"` is required here, not optional — see the
+   "Known gap" note above: none of the 16 env vars Kiro passes this
+   subprocess are Kiro-specific, so without this forced stamp, detection
+   falls through to `generic-mcp` and every normalized-name metric reports
+   zero while the raw tool-call count still looks fine.
 2. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
 
 Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md) — it
