@@ -23,7 +23,7 @@ import { ContextBar } from '../components/ContextBar';
 import { Panel } from '../components/ui/Panel';
 import { HealthCard, type HealthCardRow, type HealthTone } from '../components/HealthCard';
 import { RankedBars, type RankedBarRow } from '../components/RankedBars';
-import { AttentionStrip, type AttentionFlag } from '../components/AttentionStrip';
+import { AttentionList, type AttentionRow } from '../components/AttentionList';
 import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
   fetchRecentAlerts,
@@ -110,6 +110,7 @@ interface CostApiResponse {
 // Minimal view of the /api/session/current payload.
 interface SessionAntiPattern {
   readonly type: string;
+  readonly sessionId?: string;
   readonly count?: number;
   readonly file?: string;
   readonly command?: string;
@@ -292,7 +293,10 @@ export function Today(): JSX.Element {
   // but its persisted session record (already fetched for the KPI strip)
   // still has it.
   const persistedAntiPatterns = useMemo(
-    () => (todaySessions ?? []).flatMap((s) => s.antiPatterns ?? []),
+    () =>
+      (todaySessions ?? []).flatMap((s) =>
+        (s.antiPatterns ?? []).map((a) => ({ ...a, sessionId: s.sessionId })),
+      ),
     [todaySessions],
   );
 
@@ -330,6 +334,12 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
+  const forecastKpiUsd = spendLoading
+    ? null
+    : (cost?.forecastEodUsd ??
+      aggregate?.forecastEndOfDayUsd ??
+      costApi?.forecast?.forecastEndOfDayUsd ??
+      null);
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate
@@ -463,6 +473,11 @@ export function Today(): JSX.Element {
                   label="spend today"
                   tone="good"
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
+                  sub={
+                    forecastKpiUsd != null && forecastKpiUsd > todayTotal
+                      ? `→ ${formatUsd(forecastKpiUsd)} by end of day`
+                      : undefined
+                  }
                   {...(!spendLoading
                     ? { animate: true, numericValue: todayTotal, format: formatUsd }
                     : {})}
@@ -499,30 +514,12 @@ export function Today(): JSX.Element {
             )}
           </AnimatedCard>
 
-          <AnimatedCard index={1} className="grid grid-cols-3 gap-3 mb-3">
-            <div className="col-span-2">
-              <NeedsAttentionPanel
-                antiPatterns={antiPatterns}
-                apiAntiPatterns={apiAntiPatterns}
-                persistedAntiPatterns={persistedAntiPatterns}
-                flagsCount={flagsCount}
-              />
-            </div>
-            <ForecastEodCard
-              todayTotal={forecastBreakdownTotalUsd}
-              forecastEod={
-                spendLoading
-                  ? null
-                  : (cost?.forecastEodUsd ??
-                    aggregate?.forecastEndOfDayUsd ??
-                    costApi?.forecast?.forecastEndOfDayUsd ??
-                    null)
-              }
-              hourlySpend={hourlySpend}
-              subagentUsd={forecastBreakdownSubagentUsd}
-              forecastSessionEnd={costApi?.forecast?.forecastSessionEndUsd ?? null}
-              forecastWeek={costApi?.forecast?.forecastEndOfWeekUsd ?? null}
-              confidenceNote={costApi?.forecast?.confidenceNote ?? null}
+          <AnimatedCard index={1} className="mb-3">
+            <NeedsAttentionPanel
+              antiPatterns={antiPatterns}
+              apiAntiPatterns={apiAntiPatterns}
+              persistedAntiPatterns={persistedAntiPatterns}
+              flagsCount={flagsCount}
             />
           </AnimatedCard>
 
@@ -543,7 +540,23 @@ export function Today(): JSX.Element {
             <ApiFailuresCard />
           </AnimatedCard>
 
-          <AnimatedCard index={5}>
+          <AnimatedCard index={5} className="grid grid-cols-2 gap-3">
+            <ForecastEodCard
+              todayTotal={forecastBreakdownTotalUsd}
+              forecastEod={
+                spendLoading
+                  ? null
+                  : (cost?.forecastEodUsd ??
+                    aggregate?.forecastEndOfDayUsd ??
+                    costApi?.forecast?.forecastEndOfDayUsd ??
+                    null)
+              }
+              hourlySpend={hourlySpend}
+              subagentUsd={forecastBreakdownSubagentUsd}
+              forecastSessionEnd={costApi?.forecast?.forecastSessionEndUsd ?? null}
+              forecastWeek={costApi?.forecast?.forecastEndOfWeekUsd ?? null}
+              confidenceNote={costApi?.forecast?.confidenceNote ?? null}
+            />
             <ActivityTodayPanel todayHeatmap={todayHeatmap} concurrency={concurrency} />
           </AnimatedCard>
         </>
@@ -555,29 +568,40 @@ export function Today(): JSX.Element {
 // --- Needs Attention Panel ---
 
 /**
- * One pill per anti-pattern type. Persisted sessions can carry hundreds of
- * per-file flags for a day; the reader wants "Repeated reads ×187 on 42 files",
- * not one pill per path.
+ * One row per anti-pattern type. Persisted sessions can carry hundreds of
+ * per-file flags for a day; the reader wants "Repeated reads ×187" with the
+ * files and sessions behind it, not one pill per path.
  */
-export function aggregateAttentionFlags(raw: readonly AttentionFlag[]): readonly AttentionFlag[] {
-  const byType = new Map<string, { count: number; targets: Set<string> }>();
+export interface RawAttentionFlag {
+  readonly type: string;
+  readonly count: number;
+  readonly target?: string;
+  readonly sessionId?: string;
+}
+
+export function aggregateAttentionFlags(raw: readonly RawAttentionFlag[]): readonly AttentionRow[] {
+  const byType = new Map<
+    string,
+    { count: number; targets: Set<string>; sessionIds: Set<string> }
+  >();
   for (const flag of raw) {
-    const entry = byType.get(flag.type) ?? { count: 0, targets: new Set<string>() };
+    const entry = byType.get(flag.type) ?? {
+      count: 0,
+      targets: new Set<string>(),
+      sessionIds: new Set<string>(),
+    };
     entry.count += flag.count;
     if (flag.target && flag.target !== 'unknown') entry.targets.add(flag.target);
+    if (flag.sessionId) entry.sessionIds.add(flag.sessionId);
     byType.set(flag.type, entry);
   }
   return [...byType.entries()]
-    .map(([type, { count, targets }]) => {
-      const [only] = targets;
-      const target =
-        targets.size > 1
-          ? `${targets.size} files`
-          : only !== undefined
-            ? only.split('/').pop() || only
-            : undefined;
-      return target === undefined ? { type, count } : { type, count, target };
-    })
+    .map(([type, { count, targets, sessionIds }]) => ({
+      type,
+      count,
+      targets: [...targets],
+      sessionIds: [...sessionIds],
+    }))
     .sort((a, b) => b.count - a.count);
 }
 
@@ -617,7 +641,7 @@ function NeedsAttentionPanel({
   // Same fallback priority the old banner used: prefer the live SSE list,
   // then this process's own /api/anti-patterns, then whatever's already
   // persisted in today's session records.
-  const rawFlags: readonly AttentionFlag[] =
+  const rawFlags: readonly RawAttentionFlag[] =
     antiPatterns.length > 0
       ? antiPatterns.map((a) => ({ type: a.type, count: a.count, target: a.target }))
       : apiAntiPatterns && apiAntiPatterns.length > 0
@@ -630,13 +654,14 @@ function NeedsAttentionPanel({
             type: a.type,
             count: resolveAntiPatternCount(a),
             target: a.file ?? a.command ?? 'unknown',
+            sessionId: a.sessionId,
           }));
   const aggregated = aggregateAttentionFlags(rawFlags);
   // The Flags KPI counts flags this process never saw in detail (other
   // sessions' aggregate totals), so never contradict it with "nothing".
   const flags =
     aggregated.length === 0 && flagsCount > 0
-      ? [{ type: 'anti_pattern_flags', count: flagsCount }]
+      ? [{ type: 'anti_pattern_flags', count: flagsCount, targets: [], sessionIds: [] }]
       : aggregated;
 
   return (
@@ -644,7 +669,7 @@ function NeedsAttentionPanel({
       {error && (
         <div className="text-accent-red text-[11px] mb-2">Error loading recent alerts.</div>
       )}
-      <AttentionStrip flags={flags} firingCount={firingCount} alertsHref="/alerts" />
+      <AttentionList rows={flags} firingCount={firingCount} alertsHref="/alerts" />
       {sortedEntries.length > 0 && (
         <table className="w-full text-xs mt-3">
           <thead className="text-ink-muted">

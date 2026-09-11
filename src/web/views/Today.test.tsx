@@ -416,7 +416,8 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    expect(await screen.findByText('Stuck loop ×5 on npm test')).toBeInTheDocument();
+    expect(await screen.findByText('Stuck loop ×5')).toBeInTheDocument();
+    expect(screen.getByText('npm test')).toBeInTheDocument();
   });
 
   it('renders a real count for blind_editing via the API-fallback path, humanized as a pill', async () => {
@@ -434,7 +435,8 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    expect(await screen.findByText('Blind editing ×3 on app.ts')).toBeInTheDocument();
+    expect(await screen.findByText('Blind editing ×3')).toBeInTheDocument();
+    expect(screen.getByText('app.ts')).toBeInTheDocument();
   });
 
   it('renders a real count for over_delegation with no target suffix when the source has none', async () => {
@@ -492,7 +494,8 @@ describe('Today view', () => {
 
     renderToday();
 
-    expect(await screen.findByText('Stuck loop ×6 on npm run build')).toBeInTheDocument();
+    expect(await screen.findByText('Stuck loop ×6')).toBeInTheDocument();
+    expect(screen.getByText('npm run build')).toBeInTheDocument();
   });
 
   it('does not show the empty state while concurrency/heatmap/liveSessions are still pending', async () => {
@@ -1546,7 +1549,8 @@ describe('Today view — Needs attention panel', () => {
     renderToday();
 
     // Humanized flag pill (not the raw `thrashing` enum).
-    expect(await screen.findByText('Edit/test thrashing ×4 on auth.ts')).toBeInTheDocument();
+    expect(await screen.findByText('Edit/test thrashing ×4')).toBeInTheDocument();
+    expect(screen.getByText('auth.ts')).toBeInTheDocument();
     // Firing count, linked to /alerts.
     const firingLink = await screen.findByText('1 firing');
     expect(firingLink).toHaveAttribute('href', '/alerts');
@@ -2536,14 +2540,20 @@ describe('aggregateAttentionFlags()', () => {
       { type: 'over_delegation', count: 2, target: 'unknown' },
     ]);
     expect(out).toEqual([
-      { type: 're_reading', count: 7, target: '2 files' },
-      { type: 'over_delegation', count: 2 },
+      { type: 're_reading', count: 7, targets: ['/a/one.ts', '/a/two.ts'], sessionIds: [] },
+      { type: 'over_delegation', count: 2, targets: [], sessionIds: [] },
     ]);
   });
 
-  it('keeps the basename when a type has a single target', () => {
+  it('collects distinct session ids per type', () => {
     expect(
-      aggregateAttentionFlags([{ type: 'blind_editing', count: 1, target: '/x/y/z.ts' }]),
-    ).toEqual([{ type: 'blind_editing', count: 1, target: 'z.ts' }]);
+      aggregateAttentionFlags([
+        { type: 'blind_editing', count: 1, target: '/x/y/z.ts', sessionId: 's1' },
+        { type: 'blind_editing', count: 2, target: '/x/y/z.ts', sessionId: 's2' },
+        { type: 'blind_editing', count: 1, sessionId: 's1' },
+      ]),
+    ).toEqual([
+      { type: 'blind_editing', count: 4, targets: ['/x/y/z.ts'], sessionIds: ['s1', 's2'] },
+    ]);
   });
 });
