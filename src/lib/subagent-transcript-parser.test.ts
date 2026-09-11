@@ -162,6 +162,36 @@ describe('parseAssistantTurnLine', () => {
     expect(a).not.toBe(b);
   });
 
+  it('produces a different usageKeysFingerprint when an output_tokens_details child key changes', () => {
+    const withReasoning = JSON.stringify({
+      type: 'assistant',
+      uuid: 'u',
+      timestamp: '2026-06-15T12:00:00.000Z',
+      message: {
+        id: 'msg_otd',
+        model: 'claude-opus-4-7',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          output_tokens_details: { reasoning_tokens: 5 },
+        },
+      },
+    });
+    const withoutReasoning = JSON.stringify({
+      type: 'assistant',
+      uuid: 'u',
+      timestamp: '2026-06-15T12:00:00.000Z',
+      message: {
+        id: 'msg_otd2',
+        model: 'claude-opus-4-7',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    });
+    const a = parseAssistantTurnLine(withReasoning).fields?.usageKeysFingerprint;
+    const b = parseAssistantTurnLine(withoutReasoning).fields?.usageKeysFingerprint;
+    expect(a).not.toBe(b);
+  });
+
   it('produces different contentBlockTypesFingerprints for different content-block shapes', () => {
     const a = parseAssistantTurnLine(makeLine({})).fields?.contentBlockTypesFingerprint;
     const line2 = JSON.stringify({

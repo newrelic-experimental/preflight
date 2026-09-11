@@ -272,6 +272,52 @@ describe('SubagentTimelineStore', () => {
     expect(result.agents[0]!.totalTokens).toBe(10 + 5 + 20 + 5);
   });
 
+  it('rejects a line with no timestamp field (no Date.now() fallback, unlike SubagentWatcher)', () => {
+    const lineWithNoTimestamp = JSON.stringify({
+      type: 'assistant',
+      uuid: 'u-no-ts',
+      message: {
+        id: 'msg-no-ts',
+        model: KNOWN_MODEL,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 20, output: 5 }),
+        lineWithNoTimestamp,
+      ].join('\n') + '\n',
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const result = store.getSubagentsForSession(SESSION);
+    expect(result.agents).toHaveLength(1);
+    // Only the line WITH a timestamp counts; the other is silently rejected.
+    expect(result.agents[0]!.turnCount).toBe(1);
+    expect(result.agents[0]!.totalTokens).toBe(20 + 5);
+  });
+
+  it('accepts a line with no model field, defaulting to "" (unlike SubagentWatcher, which rejects)', () => {
+    const lineWithNoModel = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-06-16T12:00:00.000Z',
+      uuid: 'u-no-model',
+      message: {
+        id: 'msg-no-model',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    writeFileSync(join(subDir, `agent-${AGENT_A}.jsonl`), lineWithNoModel + '\n');
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const result = store.getSubagentsForSession(SESSION);
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]!.turnCount).toBe(1);
+    expect(result.agents[0]!.model).toBe('');
+    expect(result.agents[0]!.totalTokens).toBe(10 + 5);
+  });
+
   it('skips files larger than the 64 MiB cap', () => {
     // Construct a >64 MiB file cheaply: one valid line, then pad with a giant
     // run of newlines so the byte size crosses the cap without huge memory.

@@ -105,6 +105,8 @@ export function num(v: unknown): number {
 function computeUsageKeysFingerprint(usage: Record<string, unknown>): string {
   const keys: string[] = [];
   for (const k of Object.keys(usage).sort()) keys.push(k);
+  // Include child keys of `output_tokens_details` so reasoning-token drift
+  // produces a distinct fingerprint without inflating the dimension space.
   const otd = usage.output_tokens_details;
   if (otd && typeof otd === 'object') {
     for (const k of Object.keys(otd as Record<string, unknown>).sort()) {

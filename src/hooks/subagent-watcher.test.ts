@@ -391,6 +391,68 @@ describe('SubagentWatcher', () => {
     expect(tokenLines).toHaveLength(0);
   });
 
+  it('accepts a line with no timestamp field, defaulting to Date.now()', () => {
+    const before = Date.now();
+    const line = JSON.stringify({
+      type: 'assistant',
+      agentId: AGENT_ID,
+      uuid: 'u',
+      sessionId: PARENT_SESSION,
+      message: {
+        id: 'msg_no_ts',
+        model: 'claude-opus-4-7',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    });
+    writeFileSync(agentJsonl, line + '\n');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const after = Date.now();
+    const buf = readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8');
+    const tokenLines = buf
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.mode === 'subagent_token');
+    expect(tokenLines).toHaveLength(1);
+    expect(tokenLines[0].timestamp).toBeGreaterThanOrEqual(before);
+    expect(tokenLines[0].timestamp).toBeLessThanOrEqual(after);
+  });
+
+  it('rejects a line with no model field (does not emit)', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      agentId: AGENT_ID,
+      uuid: 'u',
+      timestamp: '2026-06-15T12:00:00.000Z',
+      sessionId: PARENT_SESSION,
+      message: {
+        id: 'msg_no_model',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    });
+    writeFileSync(agentJsonl, line + '\n');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+    const tokenLines = !existsSync(bufPath)
+      ? []
+      : readFileSync(bufPath, 'utf-8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+          .filter((l) => l.mode === 'subagent_token');
+    expect(tokenLines).toHaveLength(0);
+  });
+
   it('extracts reasoning_tokens from output_tokens_details', () => {
     writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_r', reasoning: 750 }) + '\n');
     const watcher = new SubagentWatcher({
