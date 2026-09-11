@@ -39,13 +39,12 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
-import type { RawTranscriptEntry, RawAssistantMessage, RawUsage } from './transcript-types.js';
 
 const logger = createLogger('subagent-watcher');
 
@@ -751,59 +750,34 @@ export class SubagentWatcher {
    * with usage. Sets parseErrors counter on JSON parse failures.
    */
   private tryParseLine(line: string, _file: DiscoveredFile): ParsedAssistantTurn | null {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
+    const { fields, invalidJson } = parseAssistantTurnLine(line);
+    if (invalidJson) {
       this.parseErrors += 1;
       return null;
     }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const obj = parsed as RawTranscriptEntry;
-    if (obj.type !== 'assistant') return null;
-    const message = obj.message;
-    if (!message || typeof message !== 'object') return null;
-    const m = message as RawAssistantMessage;
-    const model = typeof m.model === 'string' ? m.model : null;
+    if (!fields) return null;
+
+    const model = fields.model;
     if (!model || model === '<synthetic>') return null;
-    const messageId = typeof m.id === 'string' ? m.id : null;
+    const messageId = fields.messageId;
     if (!messageId) return null;
-    const usage = m.usage;
-    if (!usage || typeof usage !== 'object') return null;
-    const u = usage as RawUsage;
 
-    const turnUuid = typeof obj.uuid === 'string' ? obj.uuid : '';
-    const tsRaw = typeof obj.timestamp === 'string' ? obj.timestamp : null;
-    const timestampMs = tsRaw ? Date.parse(tsRaw) : Date.now();
+    const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : Date.now();
     if (!Number.isFinite(timestampMs)) return null;
-
-    const inputTokens = num(u.input_tokens);
-    const outputTokens = num(u.output_tokens);
-    const cacheReadTokens = num(u.cache_read_input_tokens);
-    const cacheCreationTokens = num(u.cache_creation_input_tokens);
-    let reasoningTokens = 0;
-    const otd = u.output_tokens_details;
-    if (otd && typeof otd === 'object') {
-      reasoningTokens = num(otd.reasoning_tokens);
-    }
-    const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
-
-    const usageKeysFingerprint = computeUsageKeysFingerprint(u);
-    const contentBlockTypesFingerprint = computeContentBlockTypesFingerprint(m.content);
 
     return {
       timestampMs,
       messageId,
-      turnUuid,
+      turnUuid: fields.turnUuid,
       model,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-      reasoningTokens,
-      stopReason,
-      usageKeysFingerprint,
-      contentBlockTypesFingerprint,
+      inputTokens: fields.inputTokens,
+      outputTokens: fields.outputTokens,
+      cacheReadTokens: fields.cacheReadTokens,
+      cacheCreationTokens: fields.cacheCreationTokens,
+      reasoningTokens: fields.reasoningTokens,
+      stopReason: fields.stopReason,
+      usageKeysFingerprint: fields.usageKeysFingerprint,
+      contentBlockTypesFingerprint: fields.contentBlockTypesFingerprint,
     };
   }
 
@@ -1009,44 +983,6 @@ export class SubagentWatcher {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function num(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
-}
-
-function computeUsageKeysFingerprint(usage: Record<string, unknown>): string {
-  const keys: string[] = [];
-  for (const k of Object.keys(usage).sort()) keys.push(k);
-  // Include child keys of `output_tokens_details` so reasoning-token drift
-  // produces a distinct fingerprint without inflating the dimension space.
-  const otd = usage.output_tokens_details;
-  if (otd && typeof otd === 'object') {
-    for (const k of Object.keys(otd as Record<string, unknown>).sort()) {
-      keys.push(`output_tokens_details.${k}`);
-    }
-  }
-  return shortHash(keys.join('|'));
-}
-
-function computeContentBlockTypesFingerprint(content: unknown): string {
-  if (!Array.isArray(content)) return shortHash('');
-  const set = new Set<string>();
-  for (const block of content) {
-    if (
-      block &&
-      typeof block === 'object' &&
-      typeof (block as { type?: unknown }).type === 'string'
-    ) {
-      set.add(String((block as { type: string }).type));
-    }
-  }
-  const sorted = Array.from(set).sort();
-  return shortHash(sorted.join('|'));
-}
-
-function shortHash(input: string): string {
-  return createHash('sha1').update(input).digest('hex').slice(0, 16);
-}
 
 /**
  * Stable cursor file path computation, exported for tests that want to
