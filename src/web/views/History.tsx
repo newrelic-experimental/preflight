@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { JSX } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'wouter';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -94,14 +95,6 @@ const TOOLTIP_STYLE = {
 };
 const ACCENT = 'var(--color-accent-green)';
 const ACCENT_AMBER = 'var(--color-accent-amber)';
-
-function toolBarTone(toolName: string): string {
-  if (toolName === 'Read') return 'bg-accent-blue';
-  if (toolName === 'Edit' || toolName === 'Write') return 'bg-accent-green';
-  if (toolName === 'Bash') return 'bg-accent-purple';
-  if (toolName === 'Agent') return 'bg-accent-teal';
-  return 'bg-ink-muted';
-}
 
 function windowSubtitle(days: number): string {
   return `Last ${days} days`;
@@ -346,17 +339,13 @@ export function History(): JSX.Element {
   const dailySpendTruncated =
     rawSessions.length >= 200 && isDailySpendSampleTruncated(rawSessions, windowNum);
   const sampleSpanForWindow = dailySpendTruncated ? sampleSpanDays(rawSessions) : null;
-  const outcomeBars = buildOutcomeBars(costPerOutcome.data);
+  const outcomeRows = buildOutcomeData(costPerOutcome.data);
+  const outcomeTotalCost =
+    costPerOutcome.data?.totalCost ?? outcomeRows.reduce((sum, r) => sum + r.totalCost, 0);
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(windowSessions);
   const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + (m.avgCost ?? 0) * m.sessions, 0);
-  const toolBars = buildToolBars(windowSessions);
-  // aggregateToolUsage caps at the top 8 tools; surface how many were
-  // dropped so "Top tools" doesn't read as an exhaustive list.
-  const totalToolCount = new Set(
-    windowSessions.flatMap((r) => (r.toolBreakdown ? Object.keys(r.toolBreakdown) : [])),
-  ).size;
-  const hiddenToolCount = Math.max(0, totalToolCount - toolBars.length);
+  const toolTableRows = buildToolTableRows(windowSessions);
   const kpis = computeHistoryKpis(windowSessions);
 
   return (
@@ -466,10 +455,11 @@ export function History(): JSX.Element {
           data={usageInsights.data}
           isError={usageInsights.isError}
           windowDays={windowNum}
+          toolRows={toolTableRows}
         />
       </div>
 
-      <div className="grid grid-cols-3 gap-3 mt-3">
+      <div className="grid grid-cols-2 gap-3 mt-3">
         <Panel title="Model performance" subtitle={windowSubtitle(windowNum)}>
           {modelPerf.length === 0 ? (
             <EmptyState
@@ -531,20 +521,40 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
-        <Panel
-          title="Top tools"
-          subtitle={windowSubtitle(windowNum)}
-          footnote={
-            hiddenToolCount > 0
-              ? `+${hiddenToolCount} more tool${hiddenToolCount === 1 ? '' : 's'} not shown`
-              : undefined
-          }
-        >
-          <RankedBars rows={toolBars} max={8} emptyText="No tool data yet" />
-        </Panel>
-
         <Panel title="Cost per outcome" subtitle={windowSubtitle(windowNum)}>
-          <RankedBars rows={outcomeBars} emptyText="No outcomes yet" />
+          {outcomeRows.length === 0 ? (
+            <EmptyState icon="radar" title="No outcomes yet" />
+          ) : (
+            <ShareTable<(typeof outcomeRows)[number]>
+              title="Outcomes"
+              rows={outcomeRows}
+              rowKey={(row) => row.outcome}
+              defaultSort={{ column: 3, direction: 'desc' }}
+              columns={[
+                { header: 'Outcome', align: 'left', cell: (row) => row.outcome },
+                {
+                  header: 'Sessions',
+                  align: 'right',
+                  cell: (row) => row.count,
+                  sortValue: (row) => row.count,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsd(row.totalCost),
+                  sortValue: (row) => row.totalCost,
+                },
+                {
+                  header: 'Share',
+                  align: 'right',
+                  cell: (row) =>
+                    formatPct(outcomeTotalCost > 0 ? (row.totalCost / outcomeTotalCost) * 100 : 0),
+                  sortValue: (row) =>
+                    outcomeTotalCost > 0 ? (row.totalCost / outcomeTotalCost) * 100 : 0,
+                },
+              ]}
+            />
+          )}
         </Panel>
       </div>
 
@@ -649,10 +659,12 @@ function UsageContributionPanel({
   data,
   isError,
   windowDays,
+  toolRows,
 }: {
   data: UsageInsightsReport | undefined;
   isError: boolean;
   windowDays: 7 | 30 | 90;
+  toolRows: readonly ToolTableRow[];
 }): JSX.Element {
   if (isError) {
     return (
@@ -683,7 +695,7 @@ function UsageContributionPanel({
       )}
 
       {data.sessionCount > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 text-xs mt-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 text-xs mt-4">
           {data.skills.length > 0 && (
             <ShareTable<UsageShareRow>
               title="Skills"
@@ -775,7 +787,14 @@ function UsageContributionPanel({
                   align: 'left',
                   className: 'truncate',
                   title: (row) => row.sessionName || row.sessionId,
-                  cell: (row) => row.sessionName || row.sessionId.slice(0, 8),
+                  cell: (row) => (
+                    <Link
+                      href={`/sessions?sessionIds=${encodeURIComponent(row.sessionId)}`}
+                      className="text-accent-cyan hover:underline transition-colors duration-150"
+                    >
+                      {row.sessionName || row.sessionId.slice(0, 8)}
+                    </Link>
+                  ),
                 },
                 {
                   header: 'Runs',
@@ -807,6 +826,30 @@ function UsageContributionPanel({
                   className: 'text-ink-muted',
                   cell: (row) => formatRelativeTime(row.lastRunMs),
                   sortValue: (row) => row.lastRunMs,
+                },
+              ]}
+            />
+          )}
+
+          {toolRows.length > 0 && (
+            <ShareTable<ToolTableRow>
+              title="Tools"
+              rows={toolRows}
+              rowKey={(row) => row.tool}
+              defaultSort={{ column: 2, direction: 'desc' }}
+              columns={[
+                { header: 'Tool', align: 'left', cell: (row) => row.tool },
+                {
+                  header: 'Calls',
+                  align: 'right',
+                  cell: (row) => row.count,
+                  sortValue: (row) => row.count,
+                },
+                {
+                  header: 'Share of calls',
+                  align: 'right',
+                  cell: (row) => formatPct(row.sharePct),
+                  sortValue: (row) => row.sharePct,
                 },
               ]}
             />
@@ -1385,22 +1428,6 @@ export function buildOutcomeData(
 }
 
 /**
- * Builds `RankedBars` rows for the cost-per-outcome breakdown: share of
- * total spend per outcome, on a single accent hue (no per-outcome color
- * map).
- */
-export function buildOutcomeBars(resp: CostPerOutcomeResponse | undefined): RankedBarRow[] {
-  const rows = buildOutcomeData(resp);
-  const total = resp?.totalCost ?? rows.reduce((sum, r) => sum + r.totalCost, 0);
-  return rows.map((r) => ({
-    key: r.outcome,
-    label: r.outcome,
-    value: formatUsd(r.totalCost),
-    share: total > 0 ? (r.totalCost / total) * 100 : 0,
-  }));
-}
-
-/**
  * Pad daily-cost data to a fixed window of `days` columns ending today.
  * Days with no recorded cost are emitted with `cost: 0` so the chart
  * renders a full `days`-column bar chart instead of stretching a single
@@ -1558,23 +1585,25 @@ export function aggregateToolUsage(rows: SessionRow[]): Array<{ tool: string; co
     .slice(0, 8);
 }
 
+export interface ToolTableRow {
+  readonly tool: string;
+  readonly count: number;
+  readonly sharePct: number;
+}
+
 /**
- * Builds `RankedBars` rows for the top-tools breakdown: share of calls per
- * tool, tinted with the same per-tool tone used elsewhere in the dashboard.
+ * Builds `ShareTable` rows for the Tools breakdown: share of calls per
+ * tool. No windowed per-tool cost figure exists in the session list
+ * (`toolBreakdown` is call counts only), so share is of calls, not spend.
  */
-export function buildToolBars(rows: SessionRow[]): RankedBarRow[] {
+export function buildToolTableRows(rows: SessionRow[]): ToolTableRow[] {
   const tools = aggregateToolUsage(rows);
   const total = tools.reduce((sum, t) => sum + t.count, 0);
-  return tools.map((t) => {
-    const shortName = shortToolName(t.tool);
-    return {
-      key: t.tool,
-      label: shortName,
-      value: String(t.count),
-      share: total > 0 ? (t.count / total) * 100 : 0,
-      tone: toolBarTone(shortName),
-    };
-  });
+  return tools.map((t) => ({
+    tool: shortToolName(t.tool),
+    count: t.count,
+    sharePct: total > 0 ? (t.count / total) * 100 : 0,
+  }));
 }
 
 // Tooltip positioning here was previously `left: tooltip.x` (raw px in
