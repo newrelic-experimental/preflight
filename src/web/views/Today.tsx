@@ -326,8 +326,8 @@ export function Today(): JSX.Element {
   );
   const forecastKpiUsd = spendLoading
     ? null
-    : (cost?.forecastEodUsd ??
-      aggregate?.forecastEndOfDayUsd ??
+    : (aggregate?.forecastEndOfDayUsd ??
+      cost?.forecastEodUsd ??
       costApi?.forecast?.forecastEndOfDayUsd ??
       null);
 
