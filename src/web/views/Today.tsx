@@ -498,15 +498,14 @@ export function Today(): JSX.Element {
             )}
           </AnimatedCard>
 
-          <AnimatedCard index={1} className="mb-3">
-            <NeedsAttentionPanel
-              antiPatterns={antiPatterns}
-              apiAntiPatterns={apiAntiPatterns}
-              persistedAntiPatterns={persistedAntiPatterns}
-            />
-          </AnimatedCard>
-
-          <AnimatedCard index={2} className="grid grid-cols-2 gap-3 mb-3">
+          <AnimatedCard index={1} className="grid grid-cols-3 gap-3 mb-3">
+            <div className="col-span-2">
+              <NeedsAttentionPanel
+                antiPatterns={antiPatterns}
+                apiAntiPatterns={apiAntiPatterns}
+                persistedAntiPatterns={persistedAntiPatterns}
+              />
+            </div>
             <ForecastEodCard
               todayTotal={forecastBreakdownTotalUsd}
               forecastEod={
@@ -523,6 +522,9 @@ export function Today(): JSX.Element {
               forecastWeek={costApi?.forecast?.forecastEndOfWeekUsd ?? null}
               confidenceNote={costApi?.forecast?.confidenceNote ?? null}
             />
+          </AnimatedCard>
+
+          <AnimatedCard index={2} className="mb-3">
             <SpendBreakdownPanel />
           </AnimatedCard>
 
@@ -724,12 +726,6 @@ function SpendBreakdownPanel(): JSX.Element {
         .sort((a, b) => b[1].totalCostUsd - a[1].totalCostUsd)
     : [];
   const modelsTotalCost = models.reduce((sum, [, s]) => sum + s.totalCostUsd, 0);
-  const modelRows: RankedBarRow[] = models.map(([model, s]) => ({
-    key: model,
-    label: model,
-    value: `${formatUsd(s.totalCostUsd)} · ${s.requestCount} req · ${formatUsdOrDash(s.costPerMillionTokens)}/1M`,
-    share: modelsTotalCost > 0 ? (s.totalCostUsd / modelsTotalCost) * 100 : 0,
-  }));
 
   const tools = costData?.costByToolType
     ? Object.entries(costData.costByToolType).filter(([, e]) => e.totalCost > 0)
@@ -768,7 +764,43 @@ function SpendBreakdownPanel(): JSX.Element {
       <div className="grid grid-cols-3 gap-4">
         <div>
           <Eyebrow className="mb-1.5">Models</Eyebrow>
-          <RankedBars rows={modelRows} />
+          {models.length === 0 ? (
+            <EmptyState variant="inline" title="No model data yet" />
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-ink-muted">
+                  <th className="text-left pb-1">Model</th>
+                  <th className="text-right pb-1">Req</th>
+                  <th className="text-right pb-1">$/1M tok</th>
+                  <th className="text-right pb-1">Cost</th>
+                  <th className="text-right pb-1">Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map(([model, s]) => (
+                  <tr key={model} className="border-t border-border-subtle">
+                    <td
+                      className="py-1 text-ink-base font-mono truncate max-w-[12rem]"
+                      title={model}
+                    >
+                      {model}
+                    </td>
+                    <td className="text-right py-1 text-ink-subtle">{s.requestCount}</td>
+                    <td className="text-right py-1 text-ink-subtle">
+                      {formatUsdOrDash(s.costPerMillionTokens)}
+                    </td>
+                    <td className="text-right py-1 text-ink-base">{formatUsd(s.totalCostUsd)}</td>
+                    <td className="text-right py-1 text-ink-muted">
+                      {formatPct(
+                        modelsTotalCost > 0 ? (s.totalCostUsd / modelsTotalCost) * 100 : 0,
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
         <div>
           <Eyebrow className="mb-1.5">Tools</Eyebrow>

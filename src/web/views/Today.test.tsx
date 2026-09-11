@@ -2258,7 +2258,7 @@ describe('Today view — Spend breakdown panel', () => {
     expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
   });
 
-  it('renders a model row via RankedBars with cost, request count, and cost per million tokens', async () => {
+  it('renders a model table row with requests, cost per million tokens, cost, and share', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     qc.setQueryData(qk.modelUsage, {
       byModel: {
@@ -2268,9 +2268,12 @@ describe('Today view — Spend breakdown panel', () => {
     });
     renderToday(qc);
     await screen.findByText("Where today's spend went");
-    // RankedBars renders a row's value twice — a screen-reader table plus
-    // the visible presentational row.
-    expect(screen.getAllByText('$4.20 · 8 req · $0.75/1M').length).toBeGreaterThan(0);
+    const row = screen.getByText('claude-sonnet-5').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText('8')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('$0.75')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('$4.20')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('100%')).toBeInTheDocument();
   });
 
   it('renders a tool row via RankedBars using the tool color class', async () => {
