@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   History,
@@ -9,7 +9,22 @@ import {
   aggregateModelPerformance,
   aggregateToolUsage,
   padDailyCostWindow,
+  computeHistoryKpis,
+  filterSessionsToWindow,
 } from './History';
+import { formatUsd, formatPct, formatUsdOrDash } from '../lib/format';
+
+// Session dates are relative to the real clock (not fixed 2026 calendar
+// dates) because the redesigned page filters sessions to the selected
+// window client-side (`filterSessionsToWindow`) — a fixture dated in the
+// past relative to whenever the suite actually runs would fall outside
+// every window and silently empty every windowed panel.
+function daysAgo(n: number, hour = 9): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  d.setHours(hour, 0, 0, 0);
+  return d.toISOString();
+}
 
 const SAMPLE_WEEKLY = [
   {
@@ -38,10 +53,10 @@ const SAMPLE_WEEKLY = [
   },
 ];
 
-const SAMPLE_SESSIONS = [
+const SAMPLE_SESSIONS: Parameters<typeof aggregateModelPerformance>[0] = [
   {
     sessionId: 's1',
-    startTime: '2026-05-26T09:00:00Z',
+    startTime: daysAgo(3, 9),
     estimatedCostUsd: 1.2,
     model: 'claude-opus-4-6',
     toolSuccessRate: 0.95,
@@ -50,7 +65,7 @@ const SAMPLE_SESSIONS = [
   },
   {
     sessionId: 's2',
-    startTime: '2026-05-26T15:00:00Z',
+    startTime: daysAgo(3, 15),
     estimatedCostUsd: 0.8,
     model: 'claude-opus-4-6',
     toolSuccessRate: 0.92,
@@ -59,16 +74,17 @@ const SAMPLE_SESSIONS = [
   },
   {
     sessionId: 's3',
-    startTime: '2026-05-27T10:00:00Z',
+    startTime: daysAgo(2, 10),
     estimatedCostUsd: 2.4,
     model: 'claude-sonnet-4-6',
     toolSuccessRate: 0.88,
     efficiencyScore: 0.72,
     toolBreakdown: { Read: 12, Edit: 7 },
+    antiPatterns: [{ type: 'thrashing' }],
   },
   {
     sessionId: 's4',
-    startTime: '2026-05-28T11:00:00Z',
+    startTime: daysAgo(1, 11),
     estimatedCostUsd: 1.7,
     model: 'claude-opus-4-6',
     toolSuccessRate: 0.94,
@@ -171,6 +187,32 @@ const SAMPLE_CLAUDEMD_NO_CHANGES = {
   message: 'No instruction-file changes detected',
 };
 
+const DRIFT_EMPTY = {
+  currentPromptHash: null,
+  uniquePromptVariants: 0,
+  variantStats: [],
+  recentCorrelations: [],
+  currentVariantSessionCount: 0,
+};
+
+const DRIFT_DEGRADED = {
+  currentPromptHash: 'abc123',
+  uniquePromptVariants: 2,
+  variantStats: [],
+  recentCorrelations: [
+    {
+      fromHash: 'aaa',
+      toHash: 'bbb',
+      successRateDelta: -0.15,
+      tokensDelta: 6000,
+      thrashingDelta: 0.6,
+      efficiencyDelta: -0.1,
+      verdict: 'degraded',
+    },
+  ],
+  currentVariantSessionCount: 3,
+};
+
 const SAMPLE_COLLAB_PROFILE = {
   classification: 'Explorer',
   dimensions: { specificity: 0.78, autonomy: 0.61, correctionRate: 0.42, taskComplexity: 0.73 },
@@ -198,6 +240,16 @@ const SAMPLE_COLLAB_SINGLE_DEV = {
   developerCount: 1,
 };
 
+// Two-developer fixture: the minimal case where a team comparison exists at
+// all and the "vs team" rows must appear.
+const SAMPLE_COLLAB_TWO_DEVS = {
+  classification: 'Explorer',
+  dimensions: { specificity: 0.7, autonomy: 0.65, correctionRate: 0.55, taskComplexity: 0.6 },
+  sessionCount: 20,
+  teamDeltas: { specificity: 0.05, autonomy: 0.02, correctionRate: -0.03, taskComplexity: 0.01 },
+  developerCount: 2,
+};
+
 // The backend `correctionRate` dimension is a correction-free score — higher
 // means fewer corrections were needed. A developer who needs fewer
 // corrections than their team has a HIGHER correctionRate than the team, so
@@ -212,7 +264,7 @@ const SAMPLE_COLLAB_FEWER_CORRECTIONS = {
 };
 
 const SAMPLE_USAGE_INSIGHTS = {
-  windowDays: 7,
+  windowDays: 30,
   sessionCount: 12,
   totalCostUsd: 40,
   totalTokens: 200000,
@@ -262,13 +314,29 @@ const SAMPLE_USAGE_INSIGHTS = {
 };
 
 interface FetchOverrides {
+  weekly?: unknown;
   outcome?: unknown;
   coach?: unknown;
   recommendations?: unknown;
   claudemdImpact?: unknown;
+  drift?: unknown;
   collabProfile?: unknown;
   sessions?: unknown;
   usageInsights?: unknown;
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+// Locates a Panel by its title text. Panel titles render synchronously
+// regardless of the fetch that fills the panel's body, so this never needs
+// to be awaited.
+function findPanel(title: string): HTMLElement {
+  return screen.getByText(title).closest('.glass-card') as HTMLElement;
 }
 
 function renderHistory(overrides: FetchOverrides = {}) {
@@ -277,84 +345,39 @@ function renderHistory(overrides: FetchOverrides = {}) {
   globalThis.fetch = ((url: string) => {
     fetchedUrls.push(url);
     if (url.startsWith('/api/usage-insights')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.usageInsights ?? SAMPLE_USAGE_INSIGHTS), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.usageInsights ?? SAMPLE_USAGE_INSIGHTS));
     }
     if (url.startsWith('/api/weekly')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(SAMPLE_WEEKLY), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.weekly ?? SAMPLE_WEEKLY));
     }
     if (url.startsWith('/api/cost-per-outcome')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.outcome ?? SAMPLE_OUTCOME), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.outcome ?? SAMPLE_OUTCOME));
     }
     if (url.startsWith('/api/personal-coach')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.coach ?? SAMPLE_COACH_OK), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.coach ?? SAMPLE_COACH_OK));
     }
     if (url.startsWith('/api/recommendations')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.recommendations ?? SAMPLE_RECOMMENDATIONS_OK), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.recommendations ?? SAMPLE_RECOMMENDATIONS_OK));
     }
     if (url.startsWith('/api/claudemd-impact')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.claudemdImpact ?? SAMPLE_CLAUDEMD_IMPACT), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.claudemdImpact ?? SAMPLE_CLAUDEMD_IMPACT));
+    }
+    if (url.startsWith('/api/instruction-drift')) {
+      return Promise.resolve(jsonResponse(overrides.drift ?? DRIFT_EMPTY));
     }
     if (url.startsWith('/api/collaboration-profile')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.collabProfile ?? SAMPLE_COLLAB_PROFILE), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.collabProfile ?? SAMPLE_COLLAB_PROFILE));
     }
     if (url.startsWith('/api/sessions')) {
-      return Promise.resolve(
-        new Response(JSON.stringify(overrides.sessions ?? SAMPLE_SESSIONS), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse(overrides.sessions ?? SAMPLE_SESSIONS));
     }
     if (url.startsWith('/api/activity-heatmap')) {
       return Promise.resolve(
-        new Response(JSON.stringify({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
+        jsonResponse({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }),
       );
     }
     if (url.startsWith('/api/concurrency')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+      return Promise.resolve(jsonResponse({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }));
     }
     return Promise.resolve(new Response('null', { status: 200 }));
   }) as typeof globalThis.fetch;
@@ -369,8 +392,8 @@ function renderHistory(overrides: FetchOverrides = {}) {
 describe('History view', () => {
   it('renders the section headings', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/efficiency/i)).toBeInTheDocument());
-    expect(screen.getByText(/daily spend/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Weekly efficiency')).toBeInTheDocument());
+    expect(screen.getByText('Daily spend')).toBeInTheDocument();
   });
 
   it('renders a chart for weekly efficiency', async () => {
@@ -383,64 +406,34 @@ describe('History view', () => {
 
   it('renders the cost-per-outcome panel title', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/cost per outcome/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Cost per outcome')).toBeInTheDocument());
   });
 
   it('renders the anti-pattern frequency panel title', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/anti-pattern frequency/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Anti-pattern frequency')).toBeInTheDocument());
   });
 
   it('renders the model performance panel title', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/model performance/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Model performance')).toBeInTheDocument());
   });
 
   it('renders the top tools panel title', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/top tools/i)).toBeInTheDocument());
-  });
-
-  it('titles the weekly efficiency panel to match the real 12-week fetch default', async () => {
-    renderHistory();
-    await waitFor(() =>
-      expect(screen.getByText('Weekly Efficiency · Last 12')).toBeInTheDocument(),
-    );
-    expect(screen.queryByText('Weekly Efficiency · Last 8')).toBeNull();
-  });
-
-  it('labels the daily spend panel with the 200-session-cap clarification', async () => {
-    renderHistory();
-    await waitFor(() =>
-      expect(screen.getByText('Daily Spend · Last 30 Days (most recent 200)')).toBeInTheDocument(),
-    );
-  });
-
-  it('titles the top tools panel to disclose the 200-session cap instead of claiming "All Sessions"', async () => {
-    renderHistory();
-    await waitFor(() =>
-      expect(screen.getByText('Top Tools · Most Recent 200 Sessions')).toBeInTheDocument(),
-    );
-    expect(screen.queryByText('Top Tools · All Sessions')).toBeNull();
-  });
-
-  it('titles the model performance panel with the same 200-session-cap disclosure as the other sampled panels', async () => {
-    renderHistory();
-    await waitFor(() =>
-      expect(screen.getByText('Model Performance · Most Recent 200 Sessions')).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText('Top tools')).toBeInTheDocument());
   });
 
   it('does not show a "+N more" tools note when there are 8 or fewer distinct tools', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/top tools/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Top tools')).toBeInTheDocument());
     expect(screen.queryByText(/more tools? not shown/i)).not.toBeInTheDocument();
   });
 
   it('shows a "+N more" tools note when aggregateToolUsage\'s top-8 cap drops entries', async () => {
     const toolBreakdown: Record<string, number> = {};
     for (let i = 0; i < 11; i++) toolBreakdown[`tool_${i}`] = 11 - i;
-    renderHistory({ sessions: [{ sessionId: 's1', toolBreakdown }] });
+    renderHistory({ sessions: [{ sessionId: 's1', startTime: daysAgo(1), toolBreakdown }] });
     // 11 distinct tools, top 8 shown -> 3 hidden. Waits for the session
     // fetch to resolve — the panel briefly renders its empty state first.
     await waitFor(() => expect(screen.getByText('+3 more tools not shown')).toBeInTheDocument());
@@ -458,7 +451,7 @@ describe('History view', () => {
       toolBreakdown: { Read: 1 },
     }));
     renderHistory({ sessions: recentOnly });
-    await waitFor(() => expect(screen.getByText(/daily spend/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
     expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
   });
 
@@ -479,11 +472,9 @@ describe('History view', () => {
     );
   });
 
-  it('does not flag the daily spend chart when the session sample already spans the full 30-day window', async () => {
-    // Default SAMPLE_SESSIONS are dated well over 30 days before the
-    // current clock, so the sample already covers the whole window.
+  it('does not flag the daily spend chart when the session sample is well under the 200-row cap', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/daily spend/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
     expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
   });
 
@@ -494,15 +485,9 @@ describe('History view', () => {
     );
   });
 
-  it('labels Peak Concurrent Sessions with the real 30-day fetch window, not "All-Time"', async () => {
-    renderHistory();
-    await waitFor(() => expect(screen.getByText(/Peak Concurrent Sessions/)).toBeInTheDocument());
-    expect(screen.queryByText(/All-Time/)).toBeNull();
-  });
-
   it('renders the personal coach panel and shows the top recommendation', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/personal coach/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Personal coach')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/strong week/i)).toBeInTheDocument());
     expect(screen.getByText(/efficiency up 8 points/i)).toBeInTheDocument();
   });
@@ -517,21 +502,6 @@ describe('History view', () => {
     await waitFor(() => expect(screen.getByText(/no outcomes yet/i)).toBeInTheDocument());
   });
 
-  it('renders an SVG inside each of the four chart panels', async () => {
-    const { container } = renderHistory();
-    const titles = [
-      /weekly efficiency/i,
-      /daily spend/i,
-      /cost per outcome/i,
-      /anti-pattern frequency/i,
-    ];
-    for (const title of titles) {
-      await waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
-    }
-    const svgs = container.querySelectorAll('svg');
-    expect(svgs.length).toBeGreaterThanOrEqual(4);
-  });
-
   it('renders RecommendationsPanel with a high-priority item title and detail', async () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText('High failed attempt ratio')).toBeInTheDocument());
@@ -542,36 +512,12 @@ describe('History view', () => {
 
   it('renders no recommendations empty state when list is empty', async () => {
     renderHistory({ recommendations: SAMPLE_RECOMMENDATIONS_EMPTY });
-    await waitFor(() => expect(screen.getByText('No recommendations yet')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no recommendations yet/i)).toBeInTheDocument());
   });
 
   it('renders unavailable state when /api/recommendations returns 503', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     globalThis.fetch = ((url: string) => {
-      if (url.startsWith('/api/weekly')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_WEEKLY), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/cost-per-outcome')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_OUTCOME), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/personal-coach')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_COACH_OK), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
       if (url.startsWith('/api/recommendations')) {
         return Promise.resolve(
           new Response(JSON.stringify({ error: 'unavailable' }), {
@@ -580,14 +526,12 @@ describe('History view', () => {
           }),
         );
       }
-      if (url.startsWith('/api/sessions')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_SESSIONS), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
+      if (url.startsWith('/api/weekly')) return Promise.resolve(jsonResponse(SAMPLE_WEEKLY));
+      if (url.startsWith('/api/cost-per-outcome'))
+        return Promise.resolve(jsonResponse(SAMPLE_OUTCOME));
+      if (url.startsWith('/api/personal-coach'))
+        return Promise.resolve(jsonResponse(SAMPLE_COACH_OK));
+      if (url.startsWith('/api/sessions')) return Promise.resolve(jsonResponse(SAMPLE_SESSIONS));
       return Promise.resolve(new Response('null', { status: 200 }));
     }) as typeof globalThis.fetch;
     render(
@@ -600,40 +544,38 @@ describe('History view', () => {
     );
   });
 
-  it('renders ClaudeMdImpactPanel with verdict and metric rows', async () => {
-    renderHistory();
-    await waitFor(() => expect(screen.getByText(/instruction file impact/i)).toBeInTheDocument());
-    const panel = screen
-      .getByText(/instruction file impact/i)
-      .closest('.glass-card') as HTMLElement;
-    expect(within(panel).getByText(/Positive impact/)).toBeInTheDocument();
+  it('renders the merged Instruction file panel with verdict, metric rows, and the drift pill', async () => {
+    renderHistory({ drift: DRIFT_DEGRADED });
+    const panel = findPanel('Instruction file');
+    expect(await within(panel).findByText(/Positive impact/)).toBeInTheDocument();
     expect(within(panel).getByText('Efficiency')).toBeInTheDocument();
+    expect(within(panel).getByText('degraded')).toBeInTheDocument();
   });
 
-  it('renders the before/after sample size next to each ClaudeMdImpactPanel column', async () => {
+  it('renders the before/after sample size next to each Instruction file column', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/instruction file impact/i)).toBeInTheDocument());
-    expect(screen.getByText('Before (n=8)')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Instruction file')).toBeInTheDocument());
+    expect(await screen.findByText('Before (n=8)')).toBeInTheDocument();
     expect(screen.getByText('After (n=6)')).toBeInTheDocument();
   });
 
-  it('renders no-changes state for ClaudeMdImpactPanel', async () => {
-    renderHistory({ claudemdImpact: SAMPLE_CLAUDEMD_NO_CHANGES });
-    await waitFor(() =>
-      expect(screen.getByText('No instruction file changes yet')).toBeInTheDocument(),
-    );
+  it('renders an inline empty line for Instruction file when nothing is tracked', async () => {
+    renderHistory({ claudemdImpact: SAMPLE_CLAUDEMD_NO_CHANGES, drift: DRIFT_EMPTY });
+    const line = await screen.findByText(/no instruction file changes tracked yet/i);
+    expect(line.className).toContain('text-[11px]');
   });
 
   it('renders CollaborationProfilePanel with classification and dimension labels', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/collaboration profile/i)).toBeInTheDocument());
-    expect(screen.getByText('Explorer')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Collaboration profile')).toBeInTheDocument());
+    expect(await screen.findByText('Explorer')).toBeInTheDocument();
   });
 
-  it('does not show the no-team-data caveat when developerCount is above 1', async () => {
-    renderHistory();
+  it('shows the vs-team rows when developerCount is 2', async () => {
+    renderHistory({ collabProfile: SAMPLE_COLLAB_TWO_DEVS });
     await waitFor(() => expect(screen.getByText('Explorer')).toBeInTheDocument());
     expect(screen.queryByText(/no team data yet/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/vs team/).length).toBe(4);
   });
 
   it('renders the correction-rate delta in the "better" color when the developer corrects less than their team', async () => {
@@ -653,10 +595,11 @@ describe('History view', () => {
     expect(within(row!).getByText(/\(higher = better\)/)).toBeInTheDocument();
   });
 
-  it('shows a no-team-data caveat on CollaborationProfilePanel when developerCount is 1', async () => {
+  it('shows a no-team-data caveat and hides the vs-team rows when developerCount is 1', async () => {
     renderHistory({ collabProfile: SAMPLE_COLLAB_SINGLE_DEV });
     await waitFor(() => expect(screen.getByText('Power User')).toBeInTheDocument());
     expect(screen.getByText(/no team data yet/i)).toBeInTheDocument();
+    expect(screen.queryAllByText(/vs team/).length).toBe(0);
   });
 
   it('renders no-data state for CollaborationProfilePanel', async () => {
@@ -664,289 +607,193 @@ describe('History view', () => {
     await waitFor(() => expect(screen.getByText('No collaboration data yet')).toBeInTheDocument());
   });
 
+  it('shows the most recent drift verdict with deltas from the merged Instruction file panel', async () => {
+    renderHistory({ drift: DRIFT_DEGRADED });
+    expect(await screen.findByText('degraded')).toBeInTheDocument();
+    expect(screen.getByText(/-15%/)).toBeInTheDocument();
+  });
+
+  it('shows a neutral empty state with no correlations and no tracked change', async () => {
+    renderHistory({ claudemdImpact: SAMPLE_CLAUDEMD_NO_CHANGES, drift: DRIFT_EMPTY });
+    expect(await screen.findByText(/no instruction file changes tracked yet/i)).toBeInTheDocument();
+  });
+
   it('skips the anti-pattern panel chart when no weeks have anti-patterns', async () => {
-    const fetchOverrides = (url: string) => {
-      if (url.startsWith('/api/weekly')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify([
-              {
-                week: '2026-05-05',
-                avgEfficiencyScore: 0.91,
-                totalCostUsd: 12.75,
-                antiPatternCounts: {},
-              },
-            ]),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      }
-      return null;
-    };
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    globalThis.fetch = ((url: string) => {
-      const override = fetchOverrides(url);
-      if (override) return override;
-      if (url.startsWith('/api/cost-per-outcome')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_OUTCOME), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/personal-coach')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_COACH_OK), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/sessions')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_SESSIONS), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      return Promise.resolve(new Response('null', { status: 200 }));
-    }) as typeof globalThis.fetch;
-    render(
-      <QueryClientProvider client={qc}>
-        <History />
-      </QueryClientProvider>,
-    );
+    renderHistory({
+      weekly: [
+        {
+          week: '2026-05-05',
+          avgEfficiencyScore: 0.91,
+          totalCostUsd: 12.75,
+          antiPatternCounts: {},
+        },
+      ],
+    });
     await waitFor(() =>
       expect(screen.getAllByText(/no anti-patterns detected/i).length).toBeGreaterThanOrEqual(1),
     );
   });
 
   it('skips the anti-pattern panel chart when multiple loaded weeks all have zero anti-patterns', async () => {
-    const fetchOverrides = (url: string) => {
-      if (url.startsWith('/api/weekly')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify([
-              {
-                week: '2026-05-05',
-                avgEfficiencyScore: 0.91,
-                totalCostUsd: 12.75,
-                antiPatternCounts: {},
-              },
-              {
-                week: '2026-05-12',
-                avgEfficiencyScore: 0.88,
-                totalCostUsd: 10.5,
-                antiPatternCounts: {},
-              },
-            ]),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      }
-      return null;
-    };
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    globalThis.fetch = ((url: string) => {
-      const override = fetchOverrides(url);
-      if (override) return override;
-      if (url.startsWith('/api/cost-per-outcome')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_OUTCOME), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/personal-coach')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_COACH_OK), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/sessions')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_SESSIONS), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      return Promise.resolve(new Response('null', { status: 200 }));
-    }) as typeof globalThis.fetch;
-    render(
-      <QueryClientProvider client={qc}>
-        <History />
-      </QueryClientProvider>,
-    );
+    renderHistory({
+      weekly: [
+        {
+          week: '2026-05-05',
+          avgEfficiencyScore: 0.91,
+          totalCostUsd: 12.75,
+          antiPatternCounts: {},
+        },
+        { week: '2026-05-12', avgEfficiencyScore: 0.88, totalCostUsd: 10.5, antiPatternCounts: {} },
+      ],
+    });
     await waitFor(() =>
       expect(screen.getAllByText(/no anti-patterns detected/i).length).toBeGreaterThanOrEqual(1),
     );
   });
+});
 
-  it('shows the most recent drift verdict with deltas', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    globalThis.fetch = ((url: string) => {
-      if (url.startsWith('/api/instruction-drift')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              currentPromptHash: 'abc123',
-              uniquePromptVariants: 2,
-              variantStats: [],
-              recentCorrelations: [
-                {
-                  fromHash: 'aaa',
-                  toHash: 'bbb',
-                  successRateDelta: -0.15,
-                  tokensDelta: 6000,
-                  thrashingDelta: 0.6,
-                  efficiencyDelta: -0.1,
-                  verdict: 'degraded',
-                },
-              ],
-              currentVariantSessionCount: 3,
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      }
-      if (url.startsWith('/api/weekly')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_WEEKLY), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/cost-per-outcome')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_OUTCOME), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/personal-coach')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_COACH_OK), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/sessions')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_SESSIONS), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/activity-heatmap')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/concurrency')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      return Promise.resolve(new Response('null', { status: 200 }));
-    }) as typeof globalThis.fetch;
-    render(
-      <QueryClientProvider client={qc}>
-        <History />
-      </QueryClientProvider>,
+describe('History — window', () => {
+  it('changes the days passed to the usage-insights, cost-per-outcome, and concurrency fetches when a window tab is clicked', async () => {
+    const { fetchedUrls } = renderHistory();
+    await waitFor(() =>
+      expect(fetchedUrls.some((u) => u.startsWith('/api/usage-insights?days=30'))).toBe(true),
     );
-    expect(await screen.findByText(/degraded/i)).toBeInTheDocument();
-    expect(screen.getByText(/-15%/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '7d' }));
+    await waitFor(() =>
+      expect(fetchedUrls.some((u) => u.startsWith('/api/usage-insights?days=7'))).toBe(true),
+    );
+    expect(fetchedUrls.some((u) => u.startsWith('/api/cost-per-outcome?days=7'))).toBe(true);
+    expect(fetchedUrls.some((u) => u.startsWith('/api/concurrency?view=history&days=7'))).toBe(
+      true,
+    );
   });
 
-  it('shows a neutral empty state with no correlations yet', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    globalThis.fetch = ((url: string) => {
-      if (url.startsWith('/api/instruction-drift')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              currentPromptHash: null,
-              uniquePromptVariants: 0,
-              variantStats: [],
-              recentCorrelations: [],
-              currentVariantSessionCount: 0,
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      }
-      if (url.startsWith('/api/weekly')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_WEEKLY), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/cost-per-outcome')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_OUTCOME), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/personal-coach')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_COACH_OK), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/sessions')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_SESSIONS), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/activity-heatmap')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ days: [{ date: '2026-05-26', count: 3 }], maxCount: 3 }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/concurrency')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ dailyPeaks: [{ date: '2026-05-26', peak: 2 }] }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      return Promise.resolve(new Response('null', { status: 200 }));
-    }) as typeof globalThis.fetch;
-    render(
-      <QueryClientProvider client={qc}>
-        <History />
-      </QueryClientProvider>,
-    );
-    expect(await screen.findByText(/no instruction file changes tracked yet/i)).toBeInTheDocument();
+  it('labels every window-scoped breakdown panel with the current window', async () => {
+    renderHistory();
+    for (const title of [
+      'Daily spend',
+      'Model performance',
+      'Top tools',
+      'Cost per outcome',
+      'Peak concurrent sessions',
+    ]) {
+      expect(within(findPanel(title)).getByText('Last 30 days')).toBeInTheDocument();
+    }
+  });
+
+  it('labels the three fixed-window panels "Last 12 weeks" instead of the page window', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getAllByText('Last 12 weeks').length).toBe(3));
+  });
+});
+
+describe('History — KPI strip', () => {
+  it('renders Spend, Sessions, Avg efficiency, Avg cost / session, and Flags computed from the mocked sessions', async () => {
+    const { container } = renderHistory();
+    const kpis = computeHistoryKpis(filterSessionsToWindow(SAMPLE_SESSIONS, 30));
+    const strip = (await waitFor(() => {
+      const el = container.querySelector('.glow-green') as HTMLElement | null;
+      if (!el || !within(el).queryByText(formatUsd(kpis.spendUsd))) throw new Error('not ready');
+      return el;
+    })) as HTMLElement;
+    expect(within(strip).getByText(formatUsd(kpis.spendUsd))).toBeInTheDocument();
+    expect(within(strip).getByText(String(kpis.sessionCount))).toBeInTheDocument();
+    expect(within(strip).getByText(formatPct((kpis.avgEfficiency ?? 0) * 100))).toBeInTheDocument();
+    expect(within(strip).getByText(formatUsdOrDash(kpis.avgCostPerSession))).toBeInTheDocument();
+    expect(within(strip).getByText(String(kpis.flags))).toBeInTheDocument();
+    expect(within(strip).getByText(`${kpis.sessionCount} sessions`)).toBeInTheDocument();
+  });
+
+  it('adds the "oldest N days shown" note only when the 200-session cap truncates the window', async () => {
+    const cappedRecentOnly = Array.from({ length: 200 }, (_, i) => ({
+      sessionId: `recent-${i}`,
+      startTime: new Date(Date.now() - i * 60 * 1000).toISOString(),
+      estimatedCostUsd: 1,
+      model: 'claude-opus-4-6',
+    }));
+    const { container } = renderHistory({ sessions: cappedRecentOnly });
+    await waitFor(() => {
+      const el = container.querySelector('.glow-green') as HTMLElement | null;
+      expect(el && within(el).queryByText(/oldest \d+ days shown/)).toBeTruthy();
+    });
+  });
+});
+
+describe('History — RankedBars rows', () => {
+  it('renders a Top tools RankedBars row for the leading tool with its call share', async () => {
+    renderHistory();
+    const panel = findPanel('Top tools');
+    // aggregateToolUsage(SAMPLE_SESSIONS): Read=36, Edit=12, Bash=3, Write=2,
+    // total=53 -> Read's share = round(36/53*100) = 68%.
+    const cell = await within(panel).findByRole('cell', { name: 'Read' });
+    const row = cell.closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '36' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '68%' })).toBeInTheDocument();
+  });
+
+  it('tints the Top tools bars by the shared per-tool tone', async () => {
+    renderHistory();
+    const panel = findPanel('Top tools');
+    const bar = await within(panel).findByText('Read', { selector: 'span' });
+    const row = bar.closest('div') as HTMLElement;
+    const fill = row.querySelector('span > span') as HTMLElement;
+    expect(fill.className).toContain('bg-accent-blue');
+  });
+
+  it('renders a Cost per outcome RankedBars row for the leading outcome with its spend share', async () => {
+    renderHistory();
+    const panel = findPanel('Cost per outcome');
+    // buildOutcomeBars(SAMPLE_OUTCOME): bug fix totalCost=4.2 of totalCost=7.7
+    // -> round(4.2/7.7*100) = 55%.
+    const cell = await within(panel).findByRole('cell', { name: 'bug fix' });
+    const row = cell.closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '$4.20' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '55%' })).toBeInTheDocument();
+  });
+
+  it('uses a single accent hue for every Cost per outcome bar, not a per-outcome color map', async () => {
+    renderHistory();
+    const panel = findPanel('Cost per outcome');
+    const bar = await within(panel).findByText('bug fix', { selector: 'span' });
+    const row = bar.closest('div') as HTMLElement;
+    const fill = row.querySelector('span > span') as HTMLElement;
+    expect(fill.className).toBe('block h-1 rounded-full bg-accent-cyan');
+  });
+});
+
+describe('History — Model performance', () => {
+  it('computes the Share column from the mocked sessions costs', async () => {
+    // aggregateModelPerformance(SAMPLE_SESSIONS): opus avgCost*sessions = 3.7,
+    // sonnet avgCost*sessions = 2.4, total = 6.1 -> opus share = round(3.7/6.1*100) = 61%.
+    renderHistory();
+    await waitFor(() => expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument());
+    const row = screen.getByText('claude-opus-4-6').closest('tr') as HTMLElement;
+    const cells = within(row).getAllByRole('cell');
+    // Columns: Model, Sessions, Eff., Success, Avg $, Share, $/1M tok.
+    expect(cells[5].textContent).toBe('61%');
+  });
+
+  it("marks a flagged model's success cell with the ▲ glyph as well as color", async () => {
+    const flaggedSessions = [
+      {
+        sessionId: 'f1',
+        startTime: daysAgo(1),
+        model: 'claude-haiku-4-6',
+        toolSuccessRate: 0.5,
+      },
+      {
+        sessionId: 'f2',
+        startTime: daysAgo(1),
+        model: 'claude-haiku-4-6',
+        toolSuccessRate: 0.6,
+      },
+    ];
+    renderHistory({ sessions: flaggedSessions });
+    await waitFor(() => expect(screen.getByText('claude-haiku-4-6')).toBeInTheDocument());
+    const row = screen.getByText('claude-haiku-4-6').closest('tr') as HTMLElement;
+    const cells = within(row).getAllByRole('cell');
+    expect(cells[3].textContent).toContain('▲');
+    expect(cells[3].className).toContain('text-accent-amber');
   });
 });
 
@@ -957,46 +804,15 @@ describe('History — error handling', () => {
       if (url.startsWith('/api/weekly')) {
         return Promise.resolve(new Response('Internal Server Error', { status: 503 }));
       }
-      if (url.startsWith('/api/cost-per-outcome')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_OUTCOME), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/personal-coach')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_COACH_OK), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/sessions')) {
-        return Promise.resolve(
-          new Response(JSON.stringify(SAMPLE_SESSIONS), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/activity-heatmap')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ days: [], maxCount: 0 }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      if (url.startsWith('/api/concurrency')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ dailyPeaks: [] }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
+      if (url.startsWith('/api/cost-per-outcome'))
+        return Promise.resolve(jsonResponse(SAMPLE_OUTCOME));
+      if (url.startsWith('/api/personal-coach'))
+        return Promise.resolve(jsonResponse(SAMPLE_COACH_OK));
+      if (url.startsWith('/api/sessions')) return Promise.resolve(jsonResponse(SAMPLE_SESSIONS));
+      if (url.startsWith('/api/activity-heatmap'))
+        return Promise.resolve(jsonResponse({ days: [], maxCount: 0 }));
+      if (url.startsWith('/api/concurrency'))
+        return Promise.resolve(jsonResponse({ dailyPeaks: [] }));
       return Promise.resolve(new Response('Not Found', { status: 404 }));
     }) as typeof globalThis.fetch;
 
@@ -1014,11 +830,7 @@ describe('History — error handling', () => {
 
   it('shows no error banner when every query succeeds', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })) as typeof fetch;
+    globalThis.fetch = (async () => jsonResponse([])) as typeof fetch;
 
     render(
       <QueryClientProvider client={qc}>
@@ -1032,6 +844,66 @@ describe('History — error handling', () => {
 });
 
 describe('History data helpers', () => {
+  describe('computeHistoryKpis', () => {
+    it('sums spend, averages efficiency and cost per session, and counts flags', () => {
+      const kpis = computeHistoryKpis([
+        { sessionId: 'a', estimatedCostUsd: 1, efficiencyScore: 0.8 },
+        {
+          sessionId: 'b',
+          estimatedCostUsd: 2,
+          efficiencyScore: 0.6,
+          antiPatterns: [{ type: 'x' }],
+        },
+      ]);
+      expect(kpis).toEqual({
+        spendUsd: 3,
+        sessionCount: 2,
+        avgEfficiency: 0.7,
+        avgCostPerSession: 1.5,
+        flags: 1,
+      });
+    });
+
+    it('returns null avgEfficiency and avgCostPerSession for an empty session list', () => {
+      const kpis = computeHistoryKpis([]);
+      expect(kpis.avgEfficiency).toBeNull();
+      expect(kpis.avgCostPerSession).toBeNull();
+      expect(kpis.spendUsd).toBe(0);
+      expect(kpis.flags).toBe(0);
+    });
+
+    it('ignores sessions with a null cost or efficiency score', () => {
+      const kpis = computeHistoryKpis([
+        { sessionId: 'a', estimatedCostUsd: null, efficiencyScore: null },
+        { sessionId: 'b', estimatedCostUsd: 4, efficiencyScore: 0.9 },
+      ]);
+      expect(kpis.spendUsd).toBe(4);
+      expect(kpis.avgEfficiency).toBe(0.9);
+    });
+  });
+
+  describe('filterSessionsToWindow', () => {
+    it('keeps sessions within the last N days and drops older ones', () => {
+      const today = new Date('2026-06-15T12:00:00');
+      const rows = [
+        { sessionId: 'in', startTime: new Date('2026-06-10T09:00:00').getTime() },
+        { sessionId: 'out', startTime: new Date('2026-05-01T09:00:00').getTime() },
+      ];
+      const result = filterSessionsToWindow(rows, 7, today);
+      expect(result.map((r) => r.sessionId)).toEqual(['in']);
+    });
+
+    it('drops sessions with no startTime', () => {
+      const rows = [{ sessionId: 'no-date' }, { sessionId: 'has-date', startTime: Date.now() }];
+      const result = filterSessionsToWindow(rows, 30);
+      expect(result.map((r) => r.sessionId)).toEqual(['has-date']);
+    });
+
+    it('returns an empty array for an empty input', () => {
+      expect(filterSessionsToWindow([], 30)).toEqual([]);
+    });
+  });
+
   describe('aggregateDailyCost', () => {
     it('groups sessions by day, sums cost, and trims to N most recent days', () => {
       // Locally-constructed instants so the test is timezone-portable;
@@ -1420,19 +1292,6 @@ describe('History helpers with real API data shapes', () => {
 });
 
 describe('aggregateModelPerformance', () => {
-  it('sums only the costs sessions actually reported, so a live stub row does not inflate the total', () => {
-    const sessions = [
-      { sessionId: 's1', model: 'claude-opus-4-6', estimatedCostUsd: 2.0 },
-      { sessionId: 's2', model: 'claude-opus-4-6', estimatedCostUsd: 1.5 },
-      { sessionId: 'live', model: 'claude-opus-4-6' },
-    ];
-    const opus = aggregateModelPerformance(sessions)[0];
-    expect(opus.sessions).toBe(3);
-    expect(opus.costedSessions).toBe(2);
-    expect(opus.totalCost).toBeCloseTo(3.5);
-    expect(opus.avgCost).toBeCloseTo(1.75);
-  });
-
   it('groups sessions by model with computed averages', () => {
     const sessions = [
       {
@@ -1667,18 +1526,17 @@ describe('aggregateToolUsage', () => {
 describe('CoachMetricsTable', () => {
   it('renders all four metric row labels and the efficiency delta badge', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/personal coach/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Personal coach')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/strong week/i)).toBeInTheDocument());
-    const panel = screen.getByText(/personal coach/i).closest('.glass-card') as HTMLElement;
-    // Check for the four row labels (exact match with word boundaries)
+    const panel = findPanel('Personal coach');
     expect(within(panel).getByText('Efficiency')).toBeInTheDocument();
     expect(within(panel).getByText('Cost / session')).toBeInTheDocument();
     expect(within(panel).getByText('Anti-pattern rate')).toBeInTheDocument();
     expect(within(panel).getAllByText('Sessions').length).toBeGreaterThanOrEqual(1);
-    // Now check for the metrics table values
     expect(within(panel).getByText('72')).toBeInTheDocument(); // effValue = 0.72 * 100 = 72
     expect(within(panel).getByText('$0.42')).toBeInTheDocument(); // thisWeek cost
-    expect(within(panel).getByText('4.2%')).toBeInTheDocument(); // antiPatternRate as percentage
+    // antiPatternRate 0.042 -> formatPct rounds to whole percent, "4%" not "4.2%".
+    expect(within(panel).getByText('4%')).toBeInTheDocument();
     // SAMPLE_COACH_OK has efficiency 0.72 vs baseline 0.64 → delta = +8pts
     expect(within(panel).getByText('↑8pts')).toBeInTheDocument();
   });
@@ -1695,19 +1553,21 @@ describe('CoachMetricsTable', () => {
       },
     };
     renderHistory({ coach: coachNullBaseline });
-    await waitFor(() => expect(screen.getByText(/personal coach/i)).toBeInTheDocument());
-    // Verify the coach card renders with the null/zero baseline without crashing
-    // The component should handle null efficiency and zero-valued baseline metrics gracefully
-    expect(screen.getByText(/personal coach/i)).toBeInTheDocument();
-    expect(screen.getByText(/Efficiency/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Personal coach')).toBeInTheDocument());
+    // Verify the coach card renders with the null/zero baseline without crashing.
+    // "Efficiency" also labels a row in the Instruction file panel, so this
+    // must scope to the Personal coach panel specifically.
+    expect(await within(findPanel('Personal coach')).findByText('Efficiency')).toBeInTheDocument();
   });
 });
 
 describe('UsageContributionPanel', () => {
-  it('renders the contribution panel title', async () => {
+  it('renders the contribution panel title with the window subtitle and no per-panel toggle', async () => {
     renderHistory();
-    await waitFor(() => expect(screen.getByText(/daily spend/i)).toBeInTheDocument());
-    expect(screen.getByText("What's contributing to your spend")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
+    const panel = findPanel("What's contributing to your spend");
+    expect(within(panel).getByText('Last 30 days')).toBeInTheDocument();
+    expect(within(panel).queryByRole('tab')).toBeNull();
   });
 
   it('renders each insight headline, one row from each of the four tables, and the low-attribution footnote', async () => {
@@ -1774,72 +1634,5 @@ describe('UsageContributionPanel', () => {
       expect(screen.getByText('Nothing stands out in this window.')).toBeInTheDocument(),
     );
     expect(screen.getByText('code-review')).toBeInTheDocument();
-  });
-
-  it('calls fetchUsageInsights with 30 when the "30 days" tab is clicked', async () => {
-    const { fetchedUrls } = renderHistory({ usageInsights: SAMPLE_USAGE_INSIGHTS });
-    await waitFor(() => expect(screen.getByText('30 days')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('30 days'));
-    await waitFor(() =>
-      expect(fetchedUrls.some((u) => u.startsWith('/api/usage-insights?days=30'))).toBe(true),
-    );
-  });
-});
-
-describe('History share labels', () => {
-  it('computes the Model Performance Share column from the mocked sessions costs', async () => {
-    // aggregateModelPerformance(SAMPLE_SESSIONS): opus totalCost = 3.7,
-    // sonnet totalCost = 2.4, total = 6.1 -> opus share = round(3.7/6.1*100) = 61%.
-    renderHistory();
-    await waitFor(() => expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument());
-    const row = screen.getByText('claude-opus-4-6').closest('tr') as HTMLElement;
-    const cells = within(row).getAllByRole('cell');
-    // Columns: Model, Sessions, Eff., Success, Avg $, Share, $/1M tok.
-    expect(cells[5].textContent).toBe('61%');
-  });
-
-  it('renders a share percent for the top tool in the Top Tools tooltip', async () => {
-    // aggregateToolUsage(SAMPLE_SESSIONS): Read=36, Edit=12, Bash=3, Write=2,
-    // total=53 -> Read's tooltip share = round(36/53*100) = 68%.
-    renderHistory();
-    await waitFor(() => expect(screen.getByText(/top tools/i)).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText('Read (68%)')).toBeInTheDocument());
-    const panel = screen.getByText(/top tools/i).closest('.glass-card') as HTMLElement;
-    // Wait for the bars' entrance animation to finish mounting their shapes
-    // before hovering — Recharts renders the Bar's `<path>` asynchronously.
-    await waitFor(
-      () => expect(panel.querySelectorAll('path.recharts-rectangle').length).toBeGreaterThan(0),
-      { timeout: 3000 },
-    );
-    // Recharts binds its mouse tracking to the `.recharts-wrapper` div and
-    // resolves chart coordinates from `getBoundingClientRect`, which jsdom
-    // always reports as zero-sized — stub it to match the 500x200 size the
-    // shared ResizeObserver/clientWidth stubs (src/web/test-setup.ts) give
-    // the chart, so a real hover position maps to the right bar.
-    const wrapper = panel.querySelector('.recharts-wrapper') as Element;
-    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
-      left: 0,
-      top: 0,
-      width: 500,
-      height: 200,
-      right: 500,
-      bottom: 200,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    });
-    try {
-      // Read's bar spans roughly x:125-486, y:9-41 in the 500x200 viewBox
-      // (from the rendered path's x/y/width/height) — move inside it and
-      // let the tooltip's requestAnimationFrame-scheduled update flush.
-      await act(async () => {
-        fireEvent.mouseMove(wrapper, { clientX: 300, clientY: 25 });
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      });
-    } finally {
-      rectSpy.mockRestore();
-    }
-    expect(await screen.findByText(/36 \(68%\)/)).toBeInTheDocument();
-    expect(screen.getByText('Read (68%)')).toBeInTheDocument();
   });
 });
