@@ -21,6 +21,7 @@ const FLAG_LABELS: Record<string, string> = {
   stuck_loop: 'Stuck loop',
   blind_editing: 'Blind editing',
   thrashing: 'Edit/test thrashing',
+  anti_pattern_flags: 'Anti-pattern flags',
 };
 
 function humanizeFlagType(type: string): string {
