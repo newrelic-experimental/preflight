@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.3] - 2026-09-10
+
+### Fixed
+
+- **The README's "Works With" list and the npm package description only named the original eight supported platforms** — Codex, Droid, Gemini CLI, Cline, opencode, Kilo Code, Pi, Antigravity, and the additional Copilot variants were shipped but invisible to anyone reading the docs or the npm listing. Both now reflect the full, current set of supported platforms, and a test now guards against the list drifting out of sync again.
+
 ## [1.50.2] - 2026-09-10
 
 ### Fixed
