@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.6] - 2026-09-11
+
+### Changed
+
+- **The subagent-transcript token-usage watcher and the dashboard's subagent timeline no longer each re-implement their own JSONL line parser.** Both now share one parsing module for extracting an assistant turn's model, token usage, and schema-drift fingerprints from a transcript line. Each pipeline keeps its own existing acceptance policy (which fields are required) and output shape unchanged. No behavior change.
+
 ## [1.50.5] - 2026-09-11
 
 ### Fixed
