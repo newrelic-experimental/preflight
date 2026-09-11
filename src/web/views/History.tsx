@@ -8,7 +8,6 @@ import {
   Area,
   BarChart,
   Bar,
-  Cell,
   XAxis,
   YAxis,
   Tooltip,
@@ -19,7 +18,9 @@ import { EmptyState } from '../components/EmptyState';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
-import { Card, Eyebrow, Panel, Pill, Tabs, type PillTone } from '../components/ui';
+import { Kpi } from '../components/Kpi';
+import { RankedBars, type RankedBarRow } from '../components/RankedBars';
+import { Card, Panel, Pill, Tabs, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
   fetchSessionsList,
@@ -50,9 +51,13 @@ import {
   type LoopRow,
 } from '../api/client';
 import {
+  formatAxisDate,
+  formatAxisUsd,
+  formatAxisWeek,
   formatPct,
   formatRelativeTime,
   formatTokensCompact,
+  formatUsd,
   formatUsdOrDash,
   shortToolName,
 } from '../lib/format';
@@ -71,7 +76,10 @@ interface SessionRow {
   readonly tokensCacheRead?: number;
   readonly tokensCacheCreation?: number;
   readonly tokensThinking?: number;
+  readonly antiPatterns?: ReadonlyArray<{ readonly type: string }>;
 }
+
+type HistoryWindow = '7' | '30' | '90';
 
 const TICK_STYLE = { fill: 'var(--color-ink-muted)', fontSize: 10 };
 const GRID_STROKE = 'var(--color-border-subtle)';
@@ -82,111 +90,179 @@ const TOOLTIP_STYLE = {
   fontSize: 12,
   color: 'var(--color-ink-base)',
 };
-// Recharts falls back to a hardcoded #000 for tooltip item text whenever the
-// series has no explicit fill/stroke (e.g. Bars colored per-entry via Cell).
-// TOOLTIP_STYLE.color only reaches the tooltip label, not item rows, so this
-// has to be passed separately as `itemStyle`.
-const TOOLTIP_ITEM_STYLE = { color: 'var(--color-ink-base)' };
 const ACCENT = 'var(--color-accent-green)';
 const ACCENT_AMBER = 'var(--color-accent-amber)';
-const ACCENT_GREEN = 'var(--color-accent-green)';
-const ACCENT_PURPLE = 'var(--color-accent-purple)';
-const ACCENT_BLUE = 'var(--color-accent-blue)';
-const ACCENT_TEAL = 'var(--color-accent-teal)';
 
-function toolFillColor(toolName: string): string {
-  if (toolName === 'Read') return ACCENT_BLUE;
-  if (toolName === 'Edit' || toolName === 'Write') return ACCENT_GREEN;
-  if (toolName === 'Bash') return ACCENT_PURPLE;
-  if (toolName === 'Agent') return ACCENT_TEAL;
-  return 'var(--color-ink-muted)';
+function toolBarTone(toolName: string): string {
+  if (toolName === 'Read') return 'bg-accent-blue';
+  if (toolName === 'Edit' || toolName === 'Write') return 'bg-accent-green';
+  if (toolName === 'Bash') return 'bg-accent-purple';
+  if (toolName === 'Agent') return 'bg-accent-teal';
+  return 'bg-ink-muted';
 }
 
-function outcomeFillColor(outcome: string): string {
-  const lower = outcome.toLowerCase();
-  if (lower === 'bug fix' || lower === 'fix') return '#FF6B6B';
-  if (lower === 'feature') return ACCENT_GREEN;
-  if (lower === 'refactor') return ACCENT_BLUE;
-  if (lower === 'configuration' || lower === 'config') return ACCENT_AMBER;
-  if (lower === 'test') return ACCENT_TEAL;
-  if (lower === 'docs') return '#C4B5FD';
-  return ACCENT_PURPLE;
+function windowSubtitle(days: number): string {
+  return `Last ${days} days`;
 }
 
-// Render only the month-day portion of an ISO `YYYY-MM-DD` axis label
-// while keeping the full year-prefixed string in the chart data so
-// cross-year ticks remain unique.
-function shortMonthDay(value: string): string {
-  return typeof value === 'string' && value.length >= 10 ? value.slice(5, 10) : value;
+const INSTRUCTION_FILE_TOOLTIP =
+  "Compares session outcomes before and after your most recent edit to an instruction file (CLAUDE.md, or the active platform's equivalent) — efficiency, cost, and correction rate. The pill shows whether the most recent edit measured as an improvement.";
+
+const DRIFT_VERDICT_TONE: Record<DriftCorrelationEntry['verdict'], PillTone> = {
+  improved: 'success',
+  degraded: 'danger',
+  neutral: 'neutral',
+  insufficient_data: 'neutral',
+};
+
+function verdictColor(verdict: string): string {
+  if (verdict.startsWith('Positive')) return 'text-accent-green';
+  if (verdict.startsWith('Negative')) return 'text-accent-red';
+  return 'text-accent-amber';
 }
 
-const INSTRUCTION_DRIFT_TOOLTIP =
-  "Compares session outcomes before and after your most recent change to an instruction file (CLAUDE.md, or the active platform's equivalent) — success rate, token usage, and thrashing incidents. A degraded verdict means sessions got worse after the edit, not better.";
-
-function DriftStat({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <div>
-      <div className="text-[10px] text-ink-muted uppercase tracking-wider">{label}</div>
-      <div className="text-sm font-bold tabular-nums mt-0.5">{value}</div>
-    </div>
-  );
+function ptsDeltaText(delta: MetricDelta | null | undefined): string {
+  if (!delta) return '—';
+  if (delta.value === 0) return '0pts';
+  const pts = Math.round(Math.abs(delta.value) * 100);
+  return `${delta.value > 0 ? '↑' : '↓'}${pts}pts`;
 }
 
-function InstructionDriftCard({
-  data,
+function pctDeltaText(delta: MetricDelta | undefined): string {
+  if (!delta) return '—';
+  if (delta.percentChange == null) return '—';
+  if (delta.value === 0) return '0%';
+  const pct = Math.round(Math.abs(delta.percentChange));
+  return `${delta.value > 0 ? '↑' : '↓'}${pct}%`;
+}
+
+function InstructionFilePanel({
+  impact,
+  impactError,
+  drift,
 }: {
-  data: InstructionDriftResponse | undefined;
+  impact: ClaudeMdImpactApiResponse | undefined;
+  impactError: boolean;
+  drift: InstructionDriftResponse | undefined;
 }): JSX.Element {
-  if (!data) {
+  if (impactError) {
     return (
-      <Panel title="Instruction Drift" tooltip={INSTRUCTION_DRIFT_TOOLTIP}>
-        <EmptyState variant="loading" title="Loading drift data…" />
+      <Panel title="Instruction file" tooltip={INSTRUCTION_FILE_TOOLTIP}>
+        <EmptyState icon="radar" title="Instruction file impact unavailable" />
       </Panel>
     );
   }
-  const latest = data.recentCorrelations[data.recentCorrelations.length - 1];
-  if (!latest) {
+  if (!impact) {
     return (
-      <Panel title="Instruction Drift" tooltip={INSTRUCTION_DRIFT_TOOLTIP}>
-        <div className="text-ink-muted text-xs">No instruction file changes tracked yet.</div>
+      <Panel title="Instruction file" tooltip={INSTRUCTION_FILE_TOOLTIP}>
+        <EmptyState variant="loading" title="Loading instruction file impact…" />
       </Panel>
     );
   }
-  const verdictTone: Record<DriftCorrelationEntry['verdict'], PillTone> = {
-    improved: 'success',
-    degraded: 'danger',
-    neutral: 'neutral',
-    insufficient_data: 'neutral',
-  };
+
+  const driftLatest = drift?.recentCorrelations[drift.recentCorrelations.length - 1];
+  const pill = driftLatest ? (
+    <Pill tone={DRIFT_VERDICT_TONE[driftLatest.verdict]}>{driftLatest.verdict}</Pill>
+  ) : undefined;
+
+  if (
+    impact.message ||
+    !impact.change ||
+    !impact.before ||
+    !impact.after ||
+    !impact.deltas ||
+    !impact.verdict
+  ) {
+    if (!driftLatest) {
+      return (
+        <Panel title="Instruction file" tooltip={INSTRUCTION_FILE_TOOLTIP}>
+          <EmptyState variant="inline" title="No instruction file changes tracked yet." />
+        </Panel>
+      );
+    }
+    return (
+      <Panel title="Instruction file" tooltip={INSTRUCTION_FILE_TOOLTIP} action={pill}>
+        <EmptyState variant="inline" title="No instruction file impact tracked yet." />
+      </Panel>
+    );
+  }
+
+  const changeDate = new Date(impact.change.timestamp).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+  const beforeEff =
+    impact.before.avgEfficiencyScore !== null
+      ? Math.round(impact.before.avgEfficiencyScore * 100)
+      : null;
+  const afterEff =
+    impact.after.avgEfficiencyScore !== null
+      ? Math.round(impact.after.avgEfficiencyScore * 100)
+      : null;
+
   return (
-    <Panel
-      title="Instruction Drift — most recent instruction file change"
-      tooltip={INSTRUCTION_DRIFT_TOOLTIP}
-    >
-      <div className="flex items-center gap-6">
-        <Pill tone={verdictTone[latest.verdict]}>{latest.verdict}</Pill>
-        <DriftStat
-          label="Success"
-          value={
-            latest.successRateDelta !== null
-              ? `${latest.successRateDelta > 0 ? '+' : ''}${Math.round(latest.successRateDelta * 100)}%`
-              : '—'
-          }
-        />
-        <DriftStat
-          label="Tokens"
-          value={`${latest.tokensDelta > 0 ? '+' : ''}${latest.tokensDelta}`}
-        />
-        <DriftStat
-          label="Thrashing"
-          value={`${latest.thrashingDelta > 0 ? '+' : ''}${latest.thrashingDelta}`}
-        />
+    <Panel title="Instruction file" tooltip={INSTRUCTION_FILE_TOOLTIP} action={pill}>
+      <div className="text-xs mb-3">
+        <span className={`font-medium ${verdictColor(impact.verdict)}`}>{impact.verdict}</span>
+        <span className="text-[10px] text-ink-muted">
+          {' · '}
+          {impact.change.changeType} {impact.change.filePath.split('/').pop()} · {changeDate}
+        </span>
       </div>
+      <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-xs">
+        <span className="text-ink-muted" />
+        {/* Sample size next to each column — a 1-vs-1 session comparison
+            shouldn't read with the same confidence as a 50-vs-50 one. */}
+        <span className="text-ink-muted">Before (n={impact.before.sessionCount})</span>
+        <span className="text-ink-muted">After (n={impact.after.sessionCount})</span>
+        <span className="text-ink-muted">Δ</span>
+
+        <span className="text-ink-muted">Efficiency</span>
+        <span className="font-mono">{beforeEff ?? '—'}</span>
+        <span className="font-mono">{afterEff ?? '—'}</span>
+        <span
+          className={
+            impact.deltas.efficiencyScore == null
+              ? 'text-ink-muted'
+              : impact.deltas.efficiencyScore.improved
+                ? 'text-accent-green'
+                : 'text-accent-amber'
+          }
+        >
+          {ptsDeltaText(impact.deltas.efficiencyScore)}
+        </span>
+
+        <span className="text-ink-muted">Cost/session</span>
+        <span className="font-mono">{formatUsd(impact.before.avgCostUsd)}</span>
+        <span className="font-mono">{formatUsd(impact.after.avgCostUsd)}</span>
+        <span className={impact.deltas.cost.improved ? 'text-accent-green' : 'text-accent-amber'}>
+          {pctDeltaText(impact.deltas.cost)}
+        </span>
+
+        <span className="text-ink-muted">Correction rate</span>
+        <span className="font-mono">{formatPct(impact.before.avgCorrectionRate * 100)}</span>
+        <span className="font-mono">{formatPct(impact.after.avgCorrectionRate * 100)}</span>
+        <span
+          className={
+            impact.deltas.correctionRate.improved ? 'text-accent-green' : 'text-accent-amber'
+          }
+        >
+          {pctDeltaText(impact.deltas.correctionRate)}
+        </span>
+      </div>
+      {impact.contextTokensForClaudeMd != null && impact.contextTokensForClaudeMd > 0 && (
+        <div className="text-[10px] text-ink-muted italic mt-2">
+          Instruction file adds ~{impact.contextTokensForClaudeMd.toLocaleString()} tokens/turn
+        </div>
+      )}
     </Panel>
   );
 }
 
 export function History(): JSX.Element {
+  const [windowDays, setWindowDays] = useState<HistoryWindow>('30');
+  const windowNum = Number(windowDays) as 7 | 30 | 90;
+
   const weekly = useQuery<WeeklyRow[]>({
     queryKey: qk.weekly,
     queryFn: fetchWeekly,
@@ -198,8 +274,8 @@ export function History(): JSX.Element {
   });
 
   const costPerOutcome = useQuery<CostPerOutcomeResponse>({
-    queryKey: qk.costPerOutcome(30),
-    queryFn: () => fetchCostPerOutcome(30),
+    queryKey: qk.costPerOutcome(windowNum),
+    queryFn: () => fetchCostPerOutcome(windowNum),
   });
 
   const coach = useQuery<PersonalCoachResult>({
@@ -231,8 +307,8 @@ export function History(): JSX.Element {
   });
 
   const concurrencyHistory = useQuery<ConcurrencyHistoryResponse>({
-    queryKey: qk.concurrencyHistory(30),
-    queryFn: () => fetchConcurrencyHistory(30),
+    queryKey: qk.concurrencyHistory(windowNum),
+    queryFn: () => fetchConcurrencyHistory(windowNum),
   });
 
   const drift = useQuery<InstructionDriftResponse>({
@@ -240,10 +316,9 @@ export function History(): JSX.Element {
     queryFn: fetchInstructionDrift,
   });
 
-  const [usageInsightsDays, setUsageInsightsDays] = useState<7 | 30>(7);
   const usageInsights = useQuery<UsageInsightsReport>({
-    queryKey: qk.usageInsights(usageInsightsDays),
-    queryFn: () => fetchUsageInsights(usageInsightsDays),
+    queryKey: qk.usageInsights(windowNum),
+    queryFn: () => fetchUsageInsights(windowNum),
   });
 
   const hasLoadError =
@@ -256,36 +331,48 @@ export function History(): JSX.Element {
     return { week: w.week || '?', efficiency: score !== null ? Math.round(score * 100) : null };
   });
 
-  const dailyData = padDailyCostWindow(aggregateDailyCost(sessions.data ?? [], 30), 30);
+  const rawSessions = sessions.data ?? [];
+  const windowSessions = filterSessionsToWindow(rawSessions, windowNum);
+  const dailyData = padDailyCostWindow(aggregateDailyCost(rawSessions, windowNum), windowNum);
   // The 200-session sample can run out before it reaches back the full
-  // 30-day window (a busy account can churn through 200 sessions in far
-  // fewer than 30 days). When it does, the padded $0 days at the start of
-  // the window aren't confirmed zero-spend — they're simply outside the
-  // sample's reach. Flag that instead of presenting them as real zeros.
-  // Only flag it when the sample actually hit the 200-row cap; an account
-  // with fewer than 200 total sessions has nothing withheld, so its early
-  // zero-padded days are confirmed zero-spend rather than unsampled.
+  // window (a busy account can churn through 200 sessions in far fewer
+  // days than the window covers). When it does, the padded $0 days at the
+  // start of the window aren't confirmed zero-spend — they're simply
+  // outside the sample's reach. Flag that instead of presenting them as
+  // real zeros. Only flag it when the sample actually hit the 200-row cap;
+  // an account with fewer than 200 total sessions has nothing withheld.
   const dailySpendTruncated =
-    (sessions.data?.length ?? 0) >= 200 && isDailySpendSampleTruncated(sessions.data ?? [], 30);
-  const outcomeData = buildOutcomeData(costPerOutcome.data);
+    rawSessions.length >= 200 && isDailySpendSampleTruncated(rawSessions, windowNum);
+  const sampleSpanForWindow = dailySpendTruncated ? sampleSpanDays(rawSessions) : null;
+  const outcomeBars = buildOutcomeBars(costPerOutcome.data);
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
-  const modelPerf = aggregateModelPerformance(sessions.data ?? []);
-  const topTools = aggregateToolUsage(sessions.data ?? []);
-  const topToolsTotal = topTools.reduce((sum, t) => sum + t.count, 0);
-  const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + m.totalCost, 0);
+  const modelPerf = aggregateModelPerformance(windowSessions);
+  const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + (m.avgCost ?? 0) * m.sessions, 0);
+  const toolBars = buildToolBars(windowSessions);
   // aggregateToolUsage caps at the top 8 tools; surface how many were
-  // dropped so "Top Tools" doesn't read as an exhaustive list.
+  // dropped so "Top tools" doesn't read as an exhaustive list.
   const totalToolCount = new Set(
-    (sessions.data ?? []).flatMap((r) => (r.toolBreakdown ? Object.keys(r.toolBreakdown) : [])),
+    windowSessions.flatMap((r) => (r.toolBreakdown ? Object.keys(r.toolBreakdown) : [])),
   ).size;
-  const hiddenToolCount = Math.max(0, totalToolCount - topTools.length);
-  const concurrencyData = concurrencyHistory.data?.dailyPeaks ?? [];
-  const hasConcurrencyData = concurrencyData.some((d) => d.peak > 0);
+  const hiddenToolCount = Math.max(0, totalToolCount - toolBars.length);
+  const kpis = computeHistoryKpis(windowSessions);
 
   return (
     <section>
       <GeoBanner theme="history" />
-      <h1 className="text-xl font-semibold gradient-text mb-4">History</h1>
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <h1 className="text-xl font-semibold gradient-text">History</h1>
+        <Tabs<HistoryWindow>
+          value={windowDays}
+          onChange={setWindowDays}
+          options={[
+            { value: '7', label: '7d' },
+            { value: '30', label: '30d' },
+            { value: '90', label: '90d' },
+          ]}
+          ariaLabel="History window"
+        />
+      </div>
 
       {hasLoadError && (
         <div className="text-accent-red text-xs mb-3">
@@ -293,162 +380,95 @@ export function History(): JSX.Element {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
-        <Panel title="Weekly Efficiency · Last 12">
-          <div className="h-44 min-w-0">
-            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-              <AreaChart data={weeklyData}>
-                <defs>
-                  <linearGradient id="effGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={ACCENT} stopOpacity={0.3} />
-                    <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="week"
-                  tick={TICK_STYLE}
-                  stroke={GRID_STROKE}
-                  tickFormatter={shortMonthDay}
-                />
-                <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} domain={[0, 100]} unit="%" />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Area
-                  type="monotone"
-                  dataKey="efficiency"
-                  stroke={ACCENT}
-                  strokeWidth={2}
-                  fill="url(#effGradient)"
-                  dot={{ r: 2, fill: ACCENT }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </Panel>
-
-        <Panel title="Daily Spend · Last 30 Days (most recent 200)">
-          <div className="h-44 min-w-0">
-            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-              <BarChart data={dailyData}>
-                <defs>
-                  <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={ACCENT} stopOpacity={0.9} />
-                    <stop offset="100%" stopColor={ACCENT} stopOpacity={0.4} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="day"
-                  tick={TICK_STYLE}
-                  stroke={GRID_STROKE}
-                  tickFormatter={shortMonthDay}
-                  interval="preserveStartEnd"
-                  minTickGap={20}
-                />
-                <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} unit="$" />
-                {/* cursor={false}: with 30 days padded, most bars are zero.
-                    Recharts' default cursor draws a full-height rectangle
-                    over the hovered slot, which reads as a phantom bar on
-                    empty days. The tooltip already labels the date. */}
-                <Tooltip
-                  contentStyle={TOOLTIP_STYLE}
-                  labelFormatter={(label) => shortMonthDay(String(label))}
-                  cursor={false}
-                />
-                <Bar dataKey="cost" fill="url(#costGradient)" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          {dailySpendTruncated && (
-            <div className="text-[10px] text-ink-muted italic mt-1">
-              Sample doesn&apos;t reach back 30 days — early days in this chart may undercount
-              actual spend.
-            </div>
-          )}
-        </Panel>
-
-        <Panel title="Cost Per Outcome · Last 30 Days">
-          {outcomeData.length === 0 ? (
-            <EmptyState
-              icon="radar"
-              title="No outcomes yet"
-              subtitle="Finish a few sessions and check back."
-            />
-          ) : (
-            <div
-              className="min-w-0"
-              style={{ height: `${Math.max(176, outcomeData.length * 32 + 40)}px` }}
-            >
-              <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-                <BarChart data={outcomeData} layout="vertical">
-                  <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-                  <XAxis type="number" tick={TICK_STYLE} stroke={GRID_STROKE} unit="$" />
-                  <YAxis
-                    type="category"
-                    dataKey="outcome"
-                    tick={TICK_STYLE}
-                    stroke={GRID_STROKE}
-                    width={110}
-                  />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
-                  <Bar dataKey="totalCost" radius={[0, 3, 3, 0]}>
-                    {outcomeData.map((entry) => (
-                      <Cell
-                        key={entry.outcome}
-                        fill={outcomeFillColor(entry.outcome)}
-                        fillOpacity={0.8}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Panel>
-
-        <Panel title="Anti-Pattern Frequency · Weekly">
-          {antiPatternSeries.length === 0 || antiPatternSeries.every((d) => d.count === 0) ? (
-            <EmptyState
-              icon="checkmark"
-              title="No anti-patterns detected"
-              subtitle="No anti-patterns detected in the loaded weeks."
-            />
-          ) : (
-            <div className="h-44 min-w-0">
-              <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-                <BarChart data={antiPatternSeries}>
-                  <defs>
-                    <linearGradient id="antiPatternGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={ACCENT_AMBER} stopOpacity={0.9} />
-                      <stop offset="100%" stopColor={ACCENT_AMBER} stopOpacity={0.4} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="week"
-                    tick={TICK_STYLE}
-                    stroke={GRID_STROKE}
-                    tickFormatter={shortMonthDay}
-                  />
-                  <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Bar dataKey="count" fill="url(#antiPatternGradient)" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Panel>
-
-        <div className="col-span-full">
-          <UsageContributionPanel
-            data={usageInsights.data}
-            isError={usageInsights.isError}
-            windowDays={usageInsightsDays}
-            onWindowChange={setUsageInsightsDays}
+      <Card padding="lg" tone="elevated" glow="green" className="mb-4">
+        <div className="grid grid-cols-5 gap-4">
+          <Kpi
+            label="spend"
+            value={formatUsd(kpis.spendUsd)}
+            animate
+            numericValue={kpis.spendUsd}
+            format={formatUsd}
+          />
+          <Kpi
+            label="sessions"
+            value={String(kpis.sessionCount)}
+            animate
+            numericValue={kpis.sessionCount}
+          />
+          <Kpi
+            label="avg efficiency"
+            value={kpis.avgEfficiency !== null ? formatPct(kpis.avgEfficiency * 100) : '—'}
+            {...(kpis.avgEfficiency !== null
+              ? { animate: true, numericValue: Math.round(kpis.avgEfficiency * 100), suffix: '%' }
+              : {})}
+          />
+          <Kpi label="avg cost / session" value={formatUsdOrDash(kpis.avgCostPerSession)} />
+          <Kpi
+            label="flags"
+            tone={kpis.flags > 0 ? 'warn' : 'neutral'}
+            value={String(kpis.flags)}
+            animate
+            numericValue={kpis.flags}
           />
         </div>
+        <div className="text-[10px] text-ink-muted mt-3">
+          {kpis.sessionCount} sessions
+          {sampleSpanForWindow !== null && ` · oldest ${sampleSpanForWindow} days shown`}
+        </div>
+      </Card>
 
-        <Panel title="Model Performance · Most Recent 200 Sessions">
+      <Panel title="Daily spend" subtitle={windowSubtitle(windowNum)} className="mb-3">
+        <div className="h-44 min-w-0">
+          <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+            <BarChart data={dailyData}>
+              <defs>
+                <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={ACCENT} stopOpacity={0.9} />
+                  <stop offset="100%" stopColor={ACCENT} stopOpacity={0.4} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="day"
+                tick={TICK_STYLE}
+                stroke={GRID_STROKE}
+                tickFormatter={formatAxisDate}
+                interval="preserveStartEnd"
+                minTickGap={20}
+              />
+              <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} tickFormatter={formatAxisUsd} />
+              {/* cursor={false}: with the window padded, most bars are zero.
+                  Recharts' default cursor draws a full-height rectangle over
+                  the hovered slot, which reads as a phantom bar on empty
+                  days. The tooltip already labels the date. */}
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                labelFormatter={(label) => formatAxisDate(String(label))}
+                formatter={(value) => formatUsd(Number(value))}
+                cursor={false}
+              />
+              <Bar dataKey="cost" fill="url(#costGradient)" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        {dailySpendTruncated && (
+          <div className="text-[10px] text-ink-muted italic mt-1">
+            Sample doesn&apos;t reach back {windowNum} days — early days in this chart may
+            undercount actual spend.
+          </div>
+        )}
+      </Panel>
+
+      <div className="mt-3">
+        <UsageContributionPanel
+          data={usageInsights.data}
+          isError={usageInsights.isError}
+          windowDays={windowNum}
+        />
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 mt-3">
+        <Panel title="Model performance" subtitle={windowSubtitle(windowNum)}>
           {modelPerf.length === 0 ? (
             <EmptyState
               icon="radar"
@@ -476,20 +496,21 @@ export function History(): JSX.Element {
                       <td className="py-1 text-right tabular-nums">{m.sessions}</td>
                       <td className="py-1 text-right tabular-nums">
                         {m.avgEfficiency !== null
-                          ? `${Math.min(100, Math.round(m.avgEfficiency * 100))}%`
+                          ? formatPct(Math.min(100, m.avgEfficiency * 100))
                           : '—'}
                       </td>
                       <td
                         className={`py-1 text-right tabular-nums ${m.flagged ? 'text-accent-amber' : ''}`}
                       >
+                        {m.flagged && '▲ '}
                         {m.avgSuccessRate !== null
-                          ? `${Math.min(100, Math.round(m.avgSuccessRate * 100))}%`
+                          ? formatPct(Math.min(100, m.avgSuccessRate * 100))
                           : '—'}
                       </td>
                       <td className="py-1 text-right tabular-nums">{formatUsdOrDash(m.avgCost)}</td>
                       <td className="py-1 text-right tabular-nums">
-                        {modelPerfTotalCost > 0 && m.costedSessions > 0
-                          ? `${Math.round((m.totalCost / modelPerfTotalCost) * 100)}%`
+                        {modelPerfTotalCost > 0 && m.avgCost != null
+                          ? formatPct(((m.avgCost * m.sessions) / modelPerfTotalCost) * 100)
                           : '—'}
                       </td>
                       <td className="py-1 text-right tabular-nums text-ink-subtle">
@@ -501,126 +522,115 @@ export function History(): JSX.Element {
               </table>
               {modelPerf.some((m) => m.flagged) && (
                 <div className="text-accent-amber text-[10px] mt-1">
-                  ⚠ Highlighted models had sessions with elevated error rates
+                  ▲ Highlighted models had sessions with elevated error rates
                 </div>
               )}
             </div>
           )}
         </Panel>
 
-        <Panel title="Top Tools · Most Recent 200 Sessions">
-          {topTools.length === 0 ? (
+        <Panel
+          title="Top tools"
+          subtitle={windowSubtitle(windowNum)}
+          footnote={
+            hiddenToolCount > 0
+              ? `+${hiddenToolCount} more tool${hiddenToolCount === 1 ? '' : 's'} not shown`
+              : undefined
+          }
+        >
+          <RankedBars rows={toolBars} max={8} emptyText="No tool data yet" />
+        </Panel>
+
+        <Panel title="Cost per outcome" subtitle={windowSubtitle(windowNum)}>
+          <RankedBars rows={outcomeBars} emptyText="No outcomes yet" />
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 mt-3">
+        <Panel title="Weekly efficiency" subtitle="Last 12 weeks">
+          <div className="h-44 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+              <AreaChart data={weeklyData}>
+                <defs>
+                  <linearGradient id="effGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={ACCENT} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="week"
+                  tick={TICK_STYLE}
+                  stroke={GRID_STROKE}
+                  tickFormatter={formatAxisWeek}
+                />
+                <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} domain={[0, 100]} unit="%" />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Area
+                  type="monotone"
+                  dataKey="efficiency"
+                  stroke={ACCENT}
+                  strokeWidth={2}
+                  fill="url(#effGradient)"
+                  dot={{ r: 2, fill: ACCENT }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+
+        <Panel title="Anti-pattern frequency" subtitle="Last 12 weeks">
+          {antiPatternSeries.length === 0 || antiPatternSeries.every((d) => d.count === 0) ? (
             <EmptyState
-              icon="code"
-              title="No tool data yet"
-              subtitle="Tool usage data will appear after coding sessions."
+              icon="checkmark"
+              title="No anti-patterns detected"
+              subtitle="No anti-patterns detected in the loaded weeks."
             />
           ) : (
-            <div
-              className="min-w-0"
-              style={{ height: `${Math.max(176, topTools.length * 28 + 40)}px` }}
-            >
+            <div className="h-44 min-w-0">
               <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-                <BarChart data={topTools} layout="vertical">
+                <BarChart data={antiPatternSeries}>
+                  <defs>
+                    <linearGradient id="antiPatternGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={ACCENT_AMBER} stopOpacity={0.9} />
+                      <stop offset="100%" stopColor={ACCENT_AMBER} stopOpacity={0.4} />
+                    </linearGradient>
+                  </defs>
                   <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-                  <XAxis type="number" tick={TICK_STYLE} stroke={GRID_STROKE} />
-                  <YAxis
-                    type="category"
-                    dataKey="tool"
+                  <XAxis
+                    dataKey="week"
                     tick={TICK_STYLE}
-                    tickFormatter={(value: string) => {
-                      const match = topTools.find((t) => t.tool === value);
-                      const pct =
-                        topToolsTotal > 0 && match
-                          ? Math.round((match.count / topToolsTotal) * 100)
-                          : 0;
-                      return `${shortToolName(value)} (${pct}%)`;
-                    }}
                     stroke={GRID_STROKE}
-                    width={120}
+                    tickFormatter={formatAxisWeek}
                   />
-                  <Tooltip
-                    contentStyle={TOOLTIP_STYLE}
-                    itemStyle={TOOLTIP_ITEM_STYLE}
-                    labelFormatter={(label) => shortToolName(String(label))}
-                    formatter={(value) => {
-                      const share =
-                        topToolsTotal > 0 ? Math.round((Number(value) / topToolsTotal) * 100) : 0;
-                      return `${value} (${share}%)`;
-                    }}
-                  />
-                  <Bar dataKey="count" radius={[0, 3, 3, 0]}>
-                    {topTools.map((entry) => (
-                      <Cell
-                        key={entry.tool}
-                        fill={toolFillColor(shortToolName(entry.tool))}
-                        fillOpacity={0.8}
-                      />
-                    ))}
-                  </Bar>
+                  <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Bar dataKey="count" fill="url(#antiPatternGradient)" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           )}
-          {hiddenToolCount > 0 && (
-            <div className="text-[10px] text-ink-muted italic mt-1">
-              +{hiddenToolCount} more tool{hiddenToolCount === 1 ? '' : 's'} not shown
-            </div>
-          )}
         </Panel>
+
+        <ActivityPanel data={activityGrid.data} />
       </div>
 
       <div className="grid grid-cols-2 gap-3 mt-3">
-        {activityGrid.data && activityGrid.data.days.length > 0 && (
-          <Panel title="Activity · Last 12 Weeks">
-            <ActivityHeatmap
-              variant="grid"
-              buckets={[]}
-              maxCount={activityGrid.data.maxCount}
-              days={activityGrid.data.days}
-              ariaLabel="Daily activity heatmap for the last 12 weeks"
-            />
-          </Panel>
-        )}
-
-        {/* Always render the panel so it doesn't silently disappear on
-            a fresh install with no historical concurrency yet — the
-            dashboard previously omitted the entire Panel when every
-            day's peak was 0, which read as a missing feature. */}
-        <Card padding="md" className="flex flex-col">
-          <Eyebrow className="mb-3">
-            Peak Concurrent Sessions · Last 30 Days
-            {hasConcurrencyData && `: ${Math.max(...concurrencyData.map((d) => d.peak))}`}
-          </Eyebrow>
-          {hasConcurrencyData ? (
-            <div className="flex-1 flex items-end justify-center">
-              <ConcurrencyBlockChart data={concurrencyData} />
-            </div>
-          ) : (
-            <EmptyState
-              icon="code"
-              title="No concurrent sessions yet"
-              subtitle="Run two or more Claude Code sessions at the same time to populate this chart."
-            />
-          )}
-        </Card>
-      </div>
-
-      <div className="mt-3 space-y-3">
-        <CollaborationProfilePanel data={collabProfile.data} isError={collabProfile.isError} />
-        <ClaudeMdImpactPanel data={claudeMdImpact.data} isError={claudeMdImpact.isError} />
-      </div>
-
-      <div className="mt-3">
-        <InstructionDriftCard data={drift.data} />
-      </div>
-
-      <div className="mt-3">
         <CoachCard data={coach.data} />
+        <RecommendationsPanel data={recommendations.data} isError={recommendations.isError} />
       </div>
 
       <div className="mt-3">
-        <RecommendationsPanel data={recommendations.data} isError={recommendations.isError} />
+        <InstructionFilePanel
+          impact={claudeMdImpact.data}
+          impactError={claudeMdImpact.isError}
+          drift={drift.data}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 mt-3">
+        <CollaborationProfilePanel data={collabProfile.data} isError={collabProfile.isError} />
+        <ConcurrencyPanel data={concurrencyHistory.data} windowNum={windowNum} />
       </div>
     </section>
   );
@@ -637,45 +647,32 @@ function UsageContributionPanel({
   data,
   isError,
   windowDays,
-  onWindowChange,
 }: {
   data: UsageInsightsReport | undefined;
   isError: boolean;
-  windowDays: 7 | 30;
-  onWindowChange: (days: 7 | 30) => void;
+  windowDays: 7 | 30 | 90;
 }): JSX.Element {
   if (isError) {
     return (
-      <Panel title="What's contributing to your spend">
+      <Panel title="What's contributing to your spend" subtitle={windowSubtitle(windowDays)}>
         <EmptyState icon="radar" title="Usage insights unavailable" />
       </Panel>
     );
   }
   if (!data) {
     return (
-      <Panel title="What's contributing to your spend">
+      <Panel title="What's contributing to your spend" subtitle={windowSubtitle(windowDays)}>
         <EmptyState variant="loading" title="Loading usage insights…" />
       </Panel>
     );
   }
 
   return (
-    <Panel title="What's contributing to your spend">
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-ink-muted">
-          Approximate, based on sessions recorded on this machine. These are independent
-          characteristics of your spend, not a breakdown.
-        </p>
-        <Tabs<'7' | '30'>
-          value={String(windowDays) as '7' | '30'}
-          onChange={(value) => onWindowChange(Number(value) as 7 | 30)}
-          options={[
-            { value: '7', label: '7 days' },
-            { value: '30', label: '30 days' },
-          ]}
-          ariaLabel="Usage window"
-        />
-      </div>
+    <Panel title="What's contributing to your spend" subtitle={windowSubtitle(windowDays)}>
+      <p className="text-xs text-ink-muted mb-3">
+        Approximate, based on sessions recorded on this machine. These are independent
+        characteristics of your spend, not a breakdown.
+      </p>
 
       {data.sessionCount === 0 ? (
         <EmptyState icon="clock" title="No sessions in this window." />
@@ -930,7 +927,7 @@ function CoachMetricsTable({
     return `${delta > 0 ? '↑' : '↓'}${Math.abs(delta)}pts`;
   }
 
-  function pctDeltaText(delta: number | null): string {
+  function pctDeltaTextLocal(delta: number | null): string {
     if (delta === null) return '—';
     if (delta === 0) return '0%';
     return `${delta > 0 ? '↑' : '↓'}${Math.abs(Math.round(delta * 100))}%`;
@@ -957,12 +954,12 @@ function CoachMetricsTable({
       <span className={effColor(effDelta)}>{effDeltaText(effDelta)}</span>
 
       <span className="text-ink-muted">Cost / session</span>
-      <span className="font-mono">${thisWeek.avgCostPerSession.toFixed(2)}</span>
-      <span className={costColor(costDelta)}>{pctDeltaText(costDelta)}</span>
+      <span className="font-mono">{formatUsd(thisWeek.avgCostPerSession)}</span>
+      <span className={costColor(costDelta)}>{pctDeltaTextLocal(costDelta)}</span>
 
       <span className="text-ink-muted">Anti-pattern rate</span>
-      <span className="font-mono">{(thisWeek.antiPatternRate * 100).toFixed(1)}%</span>
-      <span className={apColor(apDelta)}>{pctDeltaText(apDelta)}</span>
+      <span className="font-mono">{formatPct(thisWeek.antiPatternRate * 100)}</span>
+      <span className={apColor(apDelta)}>{pctDeltaTextLocal(apDelta)}</span>
 
       <span className="text-ink-muted">Sessions</span>
       <span className="font-mono">{Math.round(thisWeek.sessionsCount)}</span>
@@ -1017,9 +1014,9 @@ function RecommendationsPanel({
     return (
       <Panel title="Recommendations">
         <EmptyState
-          icon="radar"
+          variant="inline"
           title="No recommendations yet"
-          subtitle="Keep using Preflight — recommendations appear after a few sessions of data."
+          subtitle="Recommendations appear after a few sessions of data."
         />
       </Panel>
     );
@@ -1072,135 +1069,6 @@ function RecommendationsPanel({
   );
 }
 
-function verdictColor(verdict: string): string {
-  if (verdict.startsWith('Positive')) return 'text-accent-green';
-  if (verdict.startsWith('Negative')) return 'text-accent-red';
-  return 'text-accent-amber';
-}
-
-function ptsDeltaText(delta: MetricDelta | null | undefined): string {
-  if (!delta) return '—';
-  if (delta.value === 0) return '0pts';
-  const pts = Math.round(Math.abs(delta.value) * 100);
-  return `${delta.value > 0 ? '↑' : '↓'}${pts}pts`;
-}
-
-function pctDeltaText(delta: MetricDelta | undefined): string {
-  if (!delta) return '—';
-  if (delta.percentChange == null) return '—';
-  if (delta.value === 0) return '0%';
-  const pct = Math.round(Math.abs(delta.percentChange));
-  return `${delta.value > 0 ? '↑' : '↓'}${pct}%`;
-}
-
-function ClaudeMdImpactPanel({
-  data,
-  isError,
-}: {
-  data: ClaudeMdImpactApiResponse | undefined;
-  isError: boolean;
-}): JSX.Element {
-  if (isError) {
-    return (
-      <Panel title="Instruction File Impact">
-        <EmptyState icon="radar" title="Instruction file impact unavailable" />
-      </Panel>
-    );
-  }
-  if (!data) {
-    return (
-      <Panel title="Instruction File Impact">
-        <EmptyState variant="loading" title="Loading instruction file impact…" />
-      </Panel>
-    );
-  }
-  if (
-    data.message ||
-    !data.change ||
-    !data.before ||
-    !data.after ||
-    !data.deltas ||
-    !data.verdict
-  ) {
-    return (
-      <Panel title="Instruction File Impact">
-        <EmptyState
-          icon="radar"
-          title="No instruction file changes yet"
-          subtitle="Edit your instruction file (CLAUDE.md, or your platform's equivalent) to start tracking impact."
-        />
-      </Panel>
-    );
-  }
-  const changeDate = new Date(data.change.timestamp).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-  });
-  const beforeEff =
-    data.before.avgEfficiencyScore !== null
-      ? Math.round(data.before.avgEfficiencyScore * 100)
-      : null;
-  const afterEff =
-    data.after.avgEfficiencyScore !== null ? Math.round(data.after.avgEfficiencyScore * 100) : null;
-  return (
-    <Panel title="Instruction File Impact">
-      <div className="text-xs mb-3">
-        <span className={`font-medium ${verdictColor(data.verdict)}`}>{data.verdict}</span>
-        <span className="text-[10px] text-ink-muted">
-          {' · '}
-          {data.change.changeType} {data.change.filePath.split('/').pop()} · {changeDate}
-        </span>
-      </div>
-      <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-xs">
-        <span className="text-ink-muted" />
-        {/* Sample size next to each column — a 1-vs-1 session comparison
-            shouldn't read with the same confidence as a 50-vs-50 one. */}
-        <span className="text-ink-muted">Before (n={data.before.sessionCount})</span>
-        <span className="text-ink-muted">After (n={data.after.sessionCount})</span>
-        <span className="text-ink-muted">Δ</span>
-
-        <span className="text-ink-muted">Efficiency</span>
-        <span className="font-mono">{beforeEff ?? '—'}</span>
-        <span className="font-mono">{afterEff ?? '—'}</span>
-        <span
-          className={
-            data.deltas.efficiencyScore == null
-              ? 'text-ink-muted'
-              : data.deltas.efficiencyScore.improved
-                ? 'text-accent-green'
-                : 'text-accent-amber'
-          }
-        >
-          {ptsDeltaText(data.deltas.efficiencyScore)}
-        </span>
-
-        <span className="text-ink-muted">Cost/session</span>
-        <span className="font-mono">${data.before.avgCostUsd.toFixed(2)}</span>
-        <span className="font-mono">${data.after.avgCostUsd.toFixed(2)}</span>
-        <span className={data.deltas.cost.improved ? 'text-accent-green' : 'text-accent-amber'}>
-          {pctDeltaText(data.deltas.cost)}
-        </span>
-
-        <span className="text-ink-muted">Correction rate</span>
-        <span className="font-mono">{Math.round(data.before.avgCorrectionRate * 100)}%</span>
-        <span className="font-mono">{Math.round(data.after.avgCorrectionRate * 100)}%</span>
-        <span
-          className={
-            data.deltas.correctionRate.improved ? 'text-accent-green' : 'text-accent-amber'
-          }
-        >
-          {pctDeltaText(data.deltas.correctionRate)}
-        </span>
-      </div>
-      {data.contextTokensForClaudeMd != null && data.contextTokensForClaudeMd > 0 && (
-        <div className="text-[10px] text-ink-muted italic mt-2">
-          Instruction file adds ~{data.contextTokensForClaudeMd.toLocaleString()} tokens/turn
-        </div>
-      )}
-    </Panel>
-  );
-}
-
 function CollaborationProfilePanel({
   data,
   isError,
@@ -1210,21 +1078,21 @@ function CollaborationProfilePanel({
 }): JSX.Element {
   if (isError) {
     return (
-      <Panel title="Collaboration Profile">
+      <Panel title="Collaboration profile">
         <EmptyState icon="radar" title="Collaboration profile unavailable" />
       </Panel>
     );
   }
   if (!data) {
     return (
-      <Panel title="Collaboration Profile">
+      <Panel title="Collaboration profile">
         <EmptyState variant="loading" title="Loading collaboration profile…" />
       </Panel>
     );
   }
   if (data.sessionCount === 0) {
     return (
-      <Panel title="Collaboration Profile">
+      <Panel title="Collaboration profile">
         <EmptyState
           icon="radar"
           title="No collaboration data yet"
@@ -1271,68 +1139,58 @@ function CollaborationProfilePanel({
       note: '',
     },
   ];
+
+  const bars: RankedBarRow[] = dims.map((d) => ({
+    key: d.key,
+    label: d.name,
+    value: formatPct(d.value),
+    share: d.value,
+  }));
+
   return (
-    <Panel title="Collaboration Profile">
+    <Panel
+      title="Collaboration profile"
+      subtitle={data.developerCount <= 1 ? 'No team data yet' : undefined}
+    >
       <div className="text-xs mb-3">
         <span className="text-sm font-medium text-ink-base">{data.classification}</span>
         <span className="text-ink-muted"> · {data.sessionCount} sessions</span>
       </div>
+      <RankedBars rows={bars} max={4} />
       {/* The "vs team" deltas below are computed against a baseline of
           whatever developers have recorded sessions. With developerCount <= 1
           that baseline is just this developer, so every delta is trivially
           ~0 and reads as "right on target" rather than "no comparison data
-          exists yet". */}
-      {data.developerCount <= 1 && (
-        <div className="text-[10px] text-ink-muted italic mb-2">
-          No team data yet — &quot;vs team&quot; comparisons below will reflect other developers
-          once their sessions are recorded.
+          exists yet" — so they're hidden entirely rather than shown as
+          misleading zeros. */}
+      {data.developerCount > 1 && (
+        <div className="space-y-1 mt-2">
+          {dims.map((d) => {
+            const pct = Math.round(Math.abs(d.delta) * 100);
+            const positive = d.lowerIsBetter ? d.delta < 0 : d.delta > 0;
+            const color =
+              d.delta === 0
+                ? 'text-ink-muted'
+                : positive
+                  ? 'text-accent-green'
+                  : 'text-accent-amber';
+            const sign = d.delta > 0 ? '+' : d.delta < 0 ? '-' : '';
+            const note = d.lowerIsBetter ? ' (lower = better)' : d.note;
+            return (
+              <div key={d.key} className="flex items-center justify-between text-[10px]">
+                <span className="text-ink-muted">
+                  {d.name}
+                  {note}
+                </span>
+                <span className={color}>
+                  {sign}
+                  {pct}% vs team
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
-      <div className="min-w-0" style={{ height: `${dims.length * 28 + 40}px` }}>
-        <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-          <BarChart data={dims} layout="vertical">
-            <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-            <XAxis
-              type="number"
-              domain={[0, 100]}
-              tick={TICK_STYLE}
-              stroke={GRID_STROKE}
-              tickFormatter={(v: number) => `${v}%`}
-            />
-            <YAxis
-              type="category"
-              dataKey="name"
-              tick={TICK_STYLE}
-              stroke={GRID_STROKE}
-              width={110}
-            />
-            <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v}%`]} />
-            <Bar dataKey="value" fill={ACCENT_TEAL} fillOpacity={0.8} radius={[0, 3, 3, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="space-y-1 mt-2">
-        {dims.map((d) => {
-          const pct = Math.round(Math.abs(d.delta) * 100);
-          const positive = d.lowerIsBetter ? d.delta < 0 : d.delta > 0;
-          const color =
-            d.delta === 0 ? 'text-ink-muted' : positive ? 'text-accent-green' : 'text-accent-amber';
-          const sign = d.delta > 0 ? '+' : d.delta < 0 ? '-' : '';
-          const note = d.lowerIsBetter ? ' (lower = better)' : d.note;
-          return (
-            <div key={d.key} className="flex items-center justify-between text-[10px]">
-              <span className="text-ink-muted">
-                {d.name}
-                {note}
-              </span>
-              <span className={color}>
-                {sign}
-                {pct}% vs team
-              </span>
-            </div>
-          );
-        })}
-      </div>
     </Panel>
   );
 }
@@ -1340,14 +1198,14 @@ function CollaborationProfilePanel({
 function CoachCard({ data }: { data: PersonalCoachResult | undefined }): JSX.Element {
   if (!data) {
     return (
-      <Panel title="Personal Coach">
+      <Panel title="Personal coach">
         <EmptyState variant="loading" title="Loading coaching insights…" />
       </Panel>
     );
   }
   if (data.status === 'insufficient_data') {
     return (
-      <Panel title="Personal Coach">
+      <Panel title="Personal coach">
         <div className="text-ink-muted text-xs">{data.message}</div>
       </Panel>
     );
@@ -1382,6 +1240,61 @@ function CoachCard({ data }: { data: PersonalCoachResult | undefined }): JSX.Ele
           </ul>
         )}
       </div>
+    </Panel>
+  );
+}
+
+function ActivityPanel({
+  data,
+}: {
+  data: ActivityHeatmapHistoryResponse | undefined;
+}): JSX.Element {
+  return (
+    <Panel title="Activity heatmap" subtitle="Last 12 weeks">
+      {!data ? (
+        <EmptyState variant="loading" title="Loading activity…" />
+      ) : data.days.length === 0 ? (
+        <EmptyState variant="inline" title="No activity yet" />
+      ) : (
+        <ActivityHeatmap
+          variant="grid"
+          buckets={[]}
+          maxCount={data.maxCount}
+          days={data.days}
+          ariaLabel="Daily activity heatmap for the last 12 weeks"
+        />
+      )}
+    </Panel>
+  );
+}
+
+function ConcurrencyPanel({
+  data,
+  windowNum,
+}: {
+  data: ConcurrencyHistoryResponse | undefined;
+  windowNum: number;
+}): JSX.Element {
+  const concurrencyData = data?.dailyPeaks ?? [];
+  const hasConcurrencyData = concurrencyData.some((d) => d.peak > 0);
+  return (
+    <Panel title="Peak concurrent sessions" subtitle={windowSubtitle(windowNum)}>
+      {!data ? (
+        <EmptyState variant="loading" title="Loading concurrency…" />
+      ) : hasConcurrencyData ? (
+        <div className="flex flex-col items-center gap-2">
+          <div className="text-2xl font-bold tabular-nums gradient-text">
+            {Math.max(...concurrencyData.map((d) => d.peak))}
+          </div>
+          <ConcurrencyBlockChart data={concurrencyData} />
+        </div>
+      ) : (
+        <EmptyState
+          icon="code"
+          title="No concurrent sessions yet"
+          subtitle="Run two or more Claude Code sessions at the same time to populate this chart."
+        />
+      )}
     </Panel>
   );
 }
@@ -1433,6 +1346,78 @@ export function isDailySpendSampleTruncated(
   return oldest > windowStart.getTime();
 }
 
+/**
+ * Number of calendar days between the oldest session in `rows` and `today`,
+ * inclusive. Used to tell the reader how far back a capped sample actually
+ * reaches when it doesn't cover the full requested window (see
+ * `isDailySpendSampleTruncated`). Returns `0` when `rows` has no dated
+ * sessions.
+ */
+export function sampleSpanDays(rows: SessionRow[], today: Date = new Date()): number {
+  let oldest: number | null = null;
+  for (const r of rows) {
+    if (r.startTime == null) continue;
+    const t = new Date(r.startTime).getTime();
+    if (Number.isNaN(t)) continue;
+    if (oldest === null || t < oldest) oldest = t;
+  }
+  if (oldest === null) return 0;
+  const diffMs = today.getTime() - oldest;
+  return Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+}
+
+/**
+ * Filters a session list down to the ones that started within the last
+ * `days` calendar days ending today (local time), inclusive. Used to derive
+ * a window-scoped subset from the shared 200-session fetch instead of
+ * issuing a second request.
+ */
+export function filterSessionsToWindow(
+  rows: SessionRow[],
+  days: number,
+  today: Date = new Date(),
+): SessionRow[] {
+  const windowStart = new Date(today);
+  windowStart.setDate(windowStart.getDate() - (days - 1));
+  windowStart.setHours(0, 0, 0, 0);
+  const startMs = windowStart.getTime();
+  return rows.filter((r) => {
+    if (r.startTime == null) return false;
+    const t = new Date(r.startTime).getTime();
+    return Number.isFinite(t) && t >= startMs;
+  });
+}
+
+export interface HistoryKpis {
+  readonly spendUsd: number;
+  readonly sessionCount: number;
+  readonly avgEfficiency: number | null;
+  readonly avgCostPerSession: number | null;
+  readonly flags: number;
+}
+
+export function computeHistoryKpis(rows: SessionRow[]): HistoryKpis {
+  let spend = 0;
+  let effSum = 0;
+  let effCount = 0;
+  let flags = 0;
+  for (const r of rows) {
+    if (r.estimatedCostUsd != null) spend += r.estimatedCostUsd;
+    if (r.efficiencyScore != null) {
+      effSum += r.efficiencyScore;
+      effCount++;
+    }
+    flags += r.antiPatterns?.length ?? 0;
+  }
+  return {
+    spendUsd: spend,
+    sessionCount: rows.length,
+    avgEfficiency: effCount > 0 ? effSum / effCount : null,
+    avgCostPerSession: rows.length > 0 ? spend / rows.length : null,
+    flags,
+  };
+}
+
 export function buildOutcomeData(
   resp: CostPerOutcomeResponse | undefined,
 ): Array<{ outcome: string; totalCost: number; count: number }> {
@@ -1444,14 +1429,27 @@ export function buildOutcomeData(
         totalCost: Number(b.totalCost.toFixed(2)),
         count: b.count,
       }))
-      // Drop zero-cost outcomes. Recharts auto-domains a horizontal bar chart
-      // whose only data points are zero into a default [0,4] range, which
-      // renders an empty plot area that visually reads as a full-width bar
-      // even though the underlying value is 0. Filtering here lets the
-      // existing `outcomeData.length === 0` empty-state branch take over.
+      // Drop zero-cost outcomes so a distribution with $0 entries doesn't
+      // render a row of empty bars.
       .filter((d) => d.totalCost > 0)
       .sort((a, b) => b.totalCost - a.totalCost)
   );
+}
+
+/**
+ * Builds `RankedBars` rows for the cost-per-outcome breakdown: share of
+ * total spend per outcome, on a single accent hue (no per-outcome color
+ * map).
+ */
+export function buildOutcomeBars(resp: CostPerOutcomeResponse | undefined): RankedBarRow[] {
+  const rows = buildOutcomeData(resp);
+  const total = resp?.totalCost ?? rows.reduce((sum, r) => sum + r.totalCost, 0);
+  return rows.map((r) => ({
+    key: r.outcome,
+    label: r.outcome,
+    value: formatUsd(r.totalCost),
+    share: total > 0 ? (r.totalCost / total) * 100 : 0,
+  }));
 }
 
 /**
@@ -1492,11 +1490,6 @@ export interface ModelPerformanceRow {
   readonly avgEfficiency: number | null;
   readonly avgSuccessRate: number | null;
   readonly avgCost: number | null;
-  // Sum of the costs actually reported for this model, and how many of its
-  // sessions reported one. Live/stub rows carry no cost, so a share computed
-  // from avgCost * sessions would extrapolate onto them; use these instead.
-  readonly totalCost: number;
-  readonly costedSessions: number;
   // Blended rate across sessions for this model that report both cost and
   // token counts — (totalCost / totalTokens) * 1e6, input+output tokens only
   // (matching ModelUsageTracker's server-side per-model figure, which is a
@@ -1592,8 +1585,6 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       avgEfficiency: e.effCount > 0 ? e.effSum / e.effCount : null,
       avgSuccessRate: e.successCount > 0 ? e.successSum / e.successCount : null,
       avgCost: e.costCount > 0 ? e.costSum / e.costCount : null,
-      totalCost: e.costSum,
-      costedSessions: e.costCount,
       costPerMillionTokens:
         e.blendedTokensSum > 0 ? (e.blendedCostSum / e.blendedTokensSum) * 1_000_000 : null,
       flagged:
@@ -1617,6 +1608,25 @@ export function aggregateToolUsage(rows: SessionRow[]): Array<{ tool: string; co
     .map(([tool, count]) => ({ tool, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
+}
+
+/**
+ * Builds `RankedBars` rows for the top-tools breakdown: share of calls per
+ * tool, tinted with the same per-tool tone used elsewhere in the dashboard.
+ */
+export function buildToolBars(rows: SessionRow[]): RankedBarRow[] {
+  const tools = aggregateToolUsage(rows);
+  const total = tools.reduce((sum, t) => sum + t.count, 0);
+  return tools.map((t) => {
+    const shortName = shortToolName(t.tool);
+    return {
+      key: t.tool,
+      label: shortName,
+      value: String(t.count),
+      share: total > 0 ? (t.count / total) * 100 : 0,
+      tone: toolBarTone(shortName),
+    };
+  });
 }
 
 // Tooltip positioning here was previously `left: tooltip.x` (raw px in
