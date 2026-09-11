@@ -20,8 +20,7 @@ export function ConcurrencyIndicator({
   peak,
   allTimePeak,
   buckets,
-  bare = false,
-}: ConcurrencyData & { readonly bare?: boolean }): JSX.Element {
+}: ConcurrencyData): JSX.Element {
   const [celebration, setCelebration] = useState(false);
   const prevPeakRef = useRef<number | null>(null);
   const hasData = buckets.some((b) => b.count > 0);
@@ -54,10 +53,10 @@ export function ConcurrencyIndicator({
     };
   });
 
-  const content = (
-    <>
+  return (
+    <Card padding="sm" className={`relative overflow-hidden${celebration ? ' new-peak-glow' : ''}`}>
       {celebration && <CelebrationBurst />}
-      {!bare && <Eyebrow className="mb-1.5">Concurrent Sessions</Eyebrow>}
+      <Eyebrow className="mb-1.5">Concurrent Sessions</Eyebrow>
       <div className="flex items-baseline gap-3">
         <span className="text-lg font-semibold text-accent-teal tabular-nums">{current}</span>
         <span className="text-xs text-ink-muted tabular-nums">
@@ -75,16 +74,6 @@ export function ConcurrencyIndicator({
           <DiscreteBlockChart data={items} ariaLabel={`Concurrency over time, peak ${peak}`} />
         </div>
       )}
-    </>
-  );
-
-  if (bare) {
-    return <div className="relative overflow-hidden">{content}</div>;
-  }
-
-  return (
-    <Card padding="sm" className={`relative overflow-hidden${celebration ? ' new-peak-glow' : ''}`}>
-      {content}
     </Card>
   );
 }

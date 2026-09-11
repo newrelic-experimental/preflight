@@ -16,8 +16,7 @@ import { SessionTrace } from '../components/SessionTrace';
 import { WorkflowRunDetail } from '../components/WorkflowRunDetail';
 import { SessionDetailDialog } from '../components/SessionDetailDialog';
 import type { AgentSpan } from '../components/AgentSwimlanes';
-import { ConcurrencyIndicator, type ConcurrencyData } from '../components/ConcurrencyIndicator';
-import { ActivityHeatmap } from '../components/ActivityHeatmap';
+import type { ConcurrencyData } from '../components/ConcurrencyIndicator';
 import { GeoBanner } from '../components/GeoBanner';
 import { ContextBar } from '../components/ContextBar';
 import { Panel } from '../components/ui/Panel';
@@ -172,7 +171,7 @@ function computeWasteRecommendationText(
   return advice ?? 'Review anti-patterns to reduce repeated tool calls.';
 }
 
-interface SessionSummary {
+export interface SessionSummary {
   readonly sessionId: string;
   readonly sessionName?: string | null;
   readonly startTime?: number;
@@ -376,6 +375,18 @@ export function Today(): JSX.Element {
     aggregate && aggregate.totalCostUsd >= todayTotal ? aggregate.totalCostUsd : todayTotal;
   const forecastBreakdownSubagentUsd =
     aggregate && aggregate.totalCostUsd >= todayTotal ? (aggregate.subagentUsd ?? 0) : subagentUsd;
+  // End-of-week projection, computed client-side from the same persisted
+  // session list already fetched for the KPI strip — see buildWeekForecast.
+  // Replaces the server's rate-based forecastEndOfWeekUsd (no longer shown).
+  const weekForecast =
+    forecastKpiUsd !== null
+      ? buildWeekForecast(
+          todaySessions ?? [],
+          forecastKpiUsd,
+          forecastBreakdownTotalUsd,
+          Date.now(),
+        )
+      : null;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
   );
@@ -543,19 +554,15 @@ export function Today(): JSX.Element {
           <AnimatedCard index={5} className="grid grid-cols-2 gap-3">
             <ForecastEodCard
               todayTotal={forecastBreakdownTotalUsd}
-              forecastEod={
-                spendLoading
-                  ? null
-                  : (cost?.forecastEodUsd ??
-                    aggregate?.forecastEndOfDayUsd ??
-                    costApi?.forecast?.forecastEndOfDayUsd ??
-                    null)
-              }
-              hourlySpend={hourlySpend}
+              forecastEod={forecastKpiUsd}
               subagentUsd={forecastBreakdownSubagentUsd}
-              forecastWeek={costApi?.forecast?.forecastEndOfWeekUsd ?? null}
+              weekForecast={weekForecast}
             />
-            <ActivityTodayPanel todayHeatmap={todayHeatmap} concurrency={concurrency} />
+            <ActivityTodayPanel
+              hourlySpend={hourlySpend}
+              todayHeatmap={todayHeatmap}
+              concurrency={concurrency}
+            />
           </AnimatedCard>
         </>
       )}
@@ -1139,46 +1146,105 @@ function ApiFailuresCard(): JSX.Element {
 
 // --- Activity Today Panel ---
 
+// Formats a 15-minute heatmap bucket's start time as a bare 24-hour
+// "HH:MM" label (e.g. "10:15") — deliberately not fmtTimeOfDay's AM/PM
+// format, to match the tooltip convention used elsewhere for this chart.
+function bucketTimeLabel(startTimestamp: number, bucketSizeMs: number, index: number): string {
+  const d = new Date(startTimestamp + index * bucketSizeMs);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function heatmapBucketsToBlockItems(
+  buckets: readonly number[],
+  startTimestamp: number,
+  bucketSizeMs: number,
+): DiscreteBlockChartItem[] {
+  const maxCount = Math.max(0, ...buckets);
+  return buckets.map((count, index) => ({
+    count,
+    tooltip: `${bucketTimeLabel(startTimestamp, bucketSizeMs, index)} — ${count} calls`,
+    isPeak: maxCount > 0 && count === maxCount,
+  }));
+}
+
+function heatmapCaption(data: ActivityHeatmapTodayResponse | undefined): string {
+  if (!data || !data.buckets || data.buckets.length === 0) return 'No calls recorded yet.';
+  const maxCount = Math.max(0, ...data.buckets);
+  if (maxCount === 0) return 'No calls recorded yet.';
+  const peakIndex = data.buckets.indexOf(maxCount);
+  return `Peak ${bucketTimeLabel(data.startTimestamp, data.bucketSizeMs, peakIndex)} — ${maxCount} calls`;
+}
+
+function hourlySpendCaption(hours: readonly HourlyCostEntry[]): string {
+  const max = hours.reduce((m, h) => Math.max(m, h.cost), 0);
+  const peak = hours.find((h) => h.cost === max);
+  if (!peak || max === 0) return 'No spend yet today.';
+  return `Peak ${formatUsd(max)} at ${formatHourLabel(peak.hour)}`;
+}
+
 function ActivityTodayPanel({
+  hourlySpend,
   todayHeatmap,
   concurrency,
 }: {
+  hourlySpend: readonly HourlyCostEntry[];
   todayHeatmap: ActivityHeatmapTodayResponse | undefined;
   concurrency: ConcurrencyData | undefined;
 }): JSX.Element {
+  const hasHourlySpend = hourlySpend.some((h) => h.cost > 0);
+  const heatmapItems =
+    todayHeatmap && todayHeatmap.buckets && todayHeatmap.buckets.length > 0
+      ? heatmapBucketsToBlockItems(
+          todayHeatmap.buckets,
+          todayHeatmap.startTimestamp,
+          todayHeatmap.bucketSizeMs,
+        )
+      : [];
+  const concurrencyItems: DiscreteBlockChartItem[] = (concurrency?.buckets ?? []).map((bucket) => ({
+    count: bucket.count,
+    tooltip: `${fmtTimeOfDay(bucket.timestamp)} — ${bucket.count} concurrent`,
+  }));
+
   return (
     <Panel title="Activity today">
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <div>
-          <Eyebrow className="mb-1.5">Heatmap</Eyebrow>
-          {todayHeatmap && todayHeatmap.buckets?.length > 0 ? (
-            <ActivityHeatmap
-              variant="strip"
-              buckets={todayHeatmap.buckets}
-              maxCount={todayHeatmap.maxCount}
-              bucketSizeMs={todayHeatmap.bucketSizeMs}
-              startTimestamp={todayHeatmap.startTimestamp}
+          <Eyebrow className="mb-1.5">Spend by hour</Eyebrow>
+          {hasHourlySpend ? (
+            <DiscreteBlockChart
+              data={hourlySpendToBlockItems(hourlySpend)}
+              ariaLabel={describeHourlySpend(hourlySpend)}
+            />
+          ) : (
+            <EmptyState variant="inline" title="No spend data yet" />
+          )}
+          <p className="mt-1.5 text-[10px] text-ink-muted">{hourlySpendCaption(hourlySpend)}</p>
+        </div>
+        <div>
+          <Eyebrow className="mb-1.5">Tool calls</Eyebrow>
+          {heatmapItems.length > 0 ? (
+            <DiscreteBlockChart
+              data={heatmapItems}
               ariaLabel="Today's activity density in 15-minute blocks"
             />
           ) : (
             <EmptyState variant="inline" title="No heatmap data yet" />
           )}
+          <p className="mt-1.5 text-[10px] text-ink-muted">{heatmapCaption(todayHeatmap)}</p>
         </div>
         <div>
           <Eyebrow className="mb-1.5">Concurrent sessions</Eyebrow>
-          {concurrency && concurrency.buckets ? (
-            <ConcurrencyIndicator
-              current={concurrency.current}
-              peak={concurrency.peak}
-              allTimePeak={concurrency.allTimePeak}
-              bucketSizeMs={concurrency.bucketSizeMs}
-              startTimestamp={concurrency.startTimestamp}
-              buckets={concurrency.buckets}
-              bare
+          {concurrencyItems.length > 0 ? (
+            <DiscreteBlockChart
+              data={concurrencyItems}
+              ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
             />
           ) : (
             <EmptyState variant="inline" title="No session data yet" />
           )}
+          <p className="mt-1.5 text-[10px] text-ink-muted">
+            now {concurrency?.current ?? 0} · peak {concurrency?.peak ?? 0}
+          </p>
         </div>
       </div>
     </Panel>
@@ -1826,72 +1892,112 @@ function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   return buckets.map((cost, hour) => ({ hour, cost }));
 }
 
+const MS_PER_DAY = 86_400_000;
+
+/** Local midnight of the Monday starting the ISO week containing `nowMs`. */
+function isoWeekMonday(nowMs: number): number {
+  const todayStart = localStartOfDay(nowMs);
+  const weekday = new Date(todayStart).getDay(); // 0 = Sunday .. 6 = Saturday
+  const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
+  return todayStart - daysSinceMonday * MS_PER_DAY;
+}
+
+/**
+ * Projects end-of-week spend from the same basis as the end-of-day forecast:
+ * `weekToDateExcludingToday + forecastEod + avgDailySpend * remainingFullDays`.
+ *
+ * `weekToDateExcludingToday` attributes each persisted session's full cost to
+ * its local start day (rather than prorating cross-midnight sessions by
+ * overlap, as `todayPortionOfSession` does) and sums the days from this
+ * week's Monday up to, but excluding, today — sessions from a previous week
+ * are excluded by the Monday floor. `forecastEod` is clamped to at least
+ * `todayTotal` first (mirroring ForecastEodCard's own clamp) so the
+ * projection never regresses below money already spent today.
+ *
+ * `avgDailySpend` divides that same numerator by the number of days elapsed
+ * so far this week including today, then multiplies by the full days
+ * remaining through Sunday — zero on a Sunday, since there are none left.
+ * The result is never below the end-of-day figure it's built on.
+ */
+export function buildWeekForecast(
+  sessions: readonly SessionSummary[],
+  forecastEod: number,
+  todayTotal: number,
+  nowMs: number,
+): number {
+  const effectiveEod = Math.max(forecastEod, todayTotal);
+  const todayStart = localStartOfDay(nowMs);
+  const weekMonday = isoWeekMonday(nowMs);
+
+  let weekToDateExcludingToday = 0;
+  for (const s of sessions) {
+    if (s.startTime == null || s.estimatedCostUsd == null || s.estimatedCostUsd <= 0) continue;
+    if (s.startTime < weekMonday || s.startTime >= todayStart) continue;
+    weekToDateExcludingToday += s.estimatedCostUsd;
+  }
+
+  const daysElapsedIncludingToday = Math.round((todayStart - weekMonday) / MS_PER_DAY) + 1;
+  const weekday = new Date(todayStart).getDay();
+  const remainingFullDays = weekday === 0 ? 0 : 7 - weekday;
+  const avgDailySpend =
+    (weekToDateExcludingToday + effectiveEod) / Math.max(1, daysElapsedIncludingToday);
+
+  const endOfWeek = weekToDateExcludingToday + effectiveEod + avgDailySpend * remainingFullDays;
+  return Math.max(endOfWeek, effectiveEod);
+}
+
+const FORECAST_TOOLTIP =
+  "Projects today's total spend by midnight, based on the spending trend so far this hour-by-hour.";
+
 function ForecastEodCard({
   todayTotal,
   forecastEod,
-  hourlySpend,
   subagentUsd = 0,
-  forecastWeek,
+  weekForecast,
 }: {
   todayTotal: number;
   forecastEod: number | null;
-  hourlySpend: HourlyCostEntry[];
   subagentUsd?: number;
-  forecastWeek: number | null;
+  weekForecast: number | null;
 }): JSX.Element {
   const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
-  const effectiveForecast = hasForecast ? Math.max(forecastEod, todayTotal) : 0;
-  const delta = hasForecast ? effectiveForecast - todayTotal : 0;
-  const hasSpend = hourlySpend.some((h) => h.cost > 0);
+
+  if (!hasForecast) {
+    return (
+      <HealthCard
+        title="Forecast · End of Day"
+        tooltip={FORECAST_TOOLTIP}
+        value="—"
+        status={{ tone: 'neutral', label: 'no data' }}
+        detail="Insufficient data — forecast appears once burn rate stabilizes."
+      />
+    );
+  }
+
+  const effectiveForecast = Math.max(forecastEod, todayTotal);
+  const delta = effectiveForecast - todayTotal;
   // The caller passes todayTotal/subagentUsd from the same source whenever
   // possible, so subagentUsd is normally guaranteed <= todayTotal. Clamp to 0
   // defensively anyway (the server clamps its own parentUsd the same way) for
   // the brief window before that shared source has resolved.
   const parentUsd = subagentUsd > 0 ? Math.max(0, todayTotal - subagentUsd) : 0;
 
+  const rows: HealthCardRow[] = [];
+  if (subagentUsd > 0) {
+    rows.push({ label: 'Parent', value: formatUsd(parentUsd) });
+    rows.push({ label: 'Subagent', value: formatUsd(subagentUsd) });
+  }
+  if (weekForecast !== null) {
+    rows.push({ label: 'End of week', value: formatUsd(weekForecast) });
+  }
+
   return (
-    <Card padding="sm" className="mb-3 h-full">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <Eyebrow>Forecast · End of Day</Eyebrow>
-        <InfoTooltip text="Projects today's total spend by midnight, based on the spending trend so far this hour-by-hour." />
-      </div>
-      {hasForecast ? (
-        <>
-          <div className="flex items-baseline gap-3">
-            <span className="text-lg font-semibold text-accent-cyan tabular-nums">
-              {formatUsd(effectiveForecast)}
-            </span>
-            <span className="text-xs text-ink-muted tabular-nums">
-              {delta > 0 ? <>{formatUsd(delta)} more than now</> : <>on pace</>}
-            </span>
-          </div>
-          {hasSpend && (
-            <div className="mt-2">
-              <DiscreteBlockChart
-                data={hourlySpendToBlockItems(hourlySpend)}
-                ariaLabel={describeHourlySpend(hourlySpend)}
-              />
-              {subagentUsd > 0 && (
-                <div className="flex gap-3 mt-1 text-[10px] text-ink-muted tabular-nums">
-                  <span>parent {formatUsd(parentUsd)}</span>
-                  <span className="text-ink-subtle">·</span>
-                  <span>subagent {formatUsd(subagentUsd)}</span>
-                </div>
-              )}
-            </div>
-          )}
-          {forecastWeek !== null && (
-            <div className="mt-2 pt-2 border-t border-border-subtle text-xs">
-              <div className="text-ink-muted">End of week</div>
-              <div className="font-mono tabular-nums">~{formatUsd(forecastWeek)}</div>
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="text-ink-muted text-xs">
-          Insufficient data — forecast appears once burn rate stabilizes.
-        </div>
-      )}
-    </Card>
+    <HealthCard
+      title="Forecast · End of Day"
+      tooltip={FORECAST_TOOLTIP}
+      value={formatUsd(effectiveForecast)}
+      detail={delta > 0 ? `${formatUsd(delta)} more than now` : 'on pace'}
+      rows={rows}
+    />
   );
 }

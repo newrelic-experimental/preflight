@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Today, aggregateAttentionFlags } from './Today';
+import { Today, aggregateAttentionFlags, buildWeekForecast, type SessionSummary } from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
 import { localStartOfDay } from '../../lib/date.js';
@@ -731,11 +731,16 @@ describe('Today view', () => {
     // observing a transitional DOM state where only some values have
     // committed.
     await waitFor(() => {
-      expect(screen.getByText(/parent \$2\.00/)).toBeInTheDocument();
-      expect(screen.getByText(/subagent \$8\.00/)).toBeInTheDocument();
+      const forecastCard = screen
+        .getByText('Forecast · End of Day')
+        .closest('.glass-card') as HTMLElement;
+      const parentRow = within(forecastCard).getByText('Parent').closest('div') as HTMLElement;
+      expect(within(parentRow).getByText('$2.00')).toBeInTheDocument();
+      const subagentRow = within(forecastCard).getByText('Subagent').closest('div') as HTMLElement;
+      expect(within(subagentRow).getByText('$8.00')).toBeInTheDocument();
       // Must never clamp "parent" to $0 just because the page-wide
       // todayTotal/subagentUsd picked different underlying sources.
-      expect(screen.queryByText(/parent \$0\.00/)).toBeNull();
+      expect(within(parentRow).queryByText('$0.00')).toBeNull();
       // parent ($2.00) + subagent ($8.00) sums to the $10.00 the "spend today"
       // KPI shows for the same aggregate-sourced total.
       const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
@@ -790,10 +795,15 @@ describe('Today view', () => {
     await waitFor(() => {
       const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
       expect(within(spendTile).getByText('$8.00')).toBeInTheDocument();
-      expect(screen.getByText(/parent \$6\.00/)).toBeInTheDocument();
-      expect(screen.getByText(/subagent \$2\.00/)).toBeInTheDocument();
-      expect(screen.queryByText(/parent \$0\.00/)).toBeNull();
-      expect(screen.queryByText(/parent \$8\.00/)).toBeNull();
+      const forecastCard = screen
+        .getByText('Forecast · End of Day')
+        .closest('.glass-card') as HTMLElement;
+      const parentRow = within(forecastCard).getByText('Parent').closest('div') as HTMLElement;
+      expect(within(parentRow).getByText('$6.00')).toBeInTheDocument();
+      const subagentRow = within(forecastCard).getByText('Subagent').closest('div') as HTMLElement;
+      expect(within(subagentRow).getByText('$2.00')).toBeInTheDocument();
+      expect(within(parentRow).queryByText('$0.00')).toBeNull();
+      expect(within(parentRow).queryByText('$8.00')).toBeNull();
     });
   });
 
@@ -1930,7 +1940,7 @@ describe('Today view — cross-midnight session proration', () => {
   });
 });
 
-describe('Today view — Forecast card hourly-spend chart', () => {
+describe('Today view — Activity today spend-by-hour chart', () => {
   beforeEach(() => {
     resetStore();
   });
@@ -2480,17 +2490,32 @@ describe('Today view — Activity today panel', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders the heatmap strip and the bare concurrency content without its old standalone label', async () => {
+  it('renders three equal columns — spend by hour, tool calls, and concurrent sessions', async () => {
     const now = Date.now();
+    const dayStart = localStartOfDay();
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 's1',
+              startTime: dayStart + 9 * 60 * 60 * 1000 + 5 * 60 * 1000,
+              durationMs: 10 * 60 * 1000,
+              toolCallCount: 3,
+              estimatedCostUsd: 2,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       if (url.includes('/api/activity-heatmap')) {
         return new Response(
           JSON.stringify({
             buckets: [1, 2, 0, 3],
             maxCount: 3,
             bucketSizeMs: 900_000,
-            startTimestamp: now,
+            startTimestamp: dayStart,
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
@@ -2517,18 +2542,23 @@ describe('Today view — Activity today panel', () => {
     renderToday();
 
     const panel = (await screen.findByText('Activity today')).closest('.glass-card') as HTMLElement;
+    expect(within(panel).getByText('Spend by hour')).toBeInTheDocument();
+    expect(within(panel).getByText('Tool calls')).toBeInTheDocument();
+    expect(within(panel).getByText('Concurrent sessions')).toBeInTheDocument();
+    // The old standalone "Concurrent Sessions" Eyebrow label (rendered by
+    // ConcurrencyIndicator) is gone — Today builds the chart itself now.
+    expect(within(panel).queryByText('Concurrent Sessions')).toBeNull();
+
     expect(
       await within(panel).findByRole('img', {
         name: "Today's activity density in 15-minute blocks",
       }),
     ).toBeInTheDocument();
-    // The bare ConcurrencyIndicator renders current/peak without its old
-    // standalone "Concurrent Sessions" Eyebrow label — only the panel
-    // column's own lowercase "Concurrent sessions" header remains.
-    expect(within(panel).getByText('Concurrent sessions')).toBeInTheDocument();
-    expect(within(panel).queryByText('Concurrent Sessions')).toBeNull();
-    expect(await within(panel).findByText(/today peak 3/)).toBeInTheDocument();
-    expect(within(panel).getByText('2')).toBeInTheDocument();
+    expect(await within(panel).findByText('Peak $2.00 at 9am')).toBeInTheDocument();
+    // Peak heatmap bucket is index 3 (count 3) at 15-min blocks from local
+    // midnight: dayStart + 3 * 15m = 00:45.
+    expect(within(panel).getByText('Peak 00:45 — 3 calls')).toBeInTheDocument();
+    expect(within(panel).getByText('now 2 · peak 3')).toBeInTheDocument();
   });
 });
 
@@ -2555,5 +2585,72 @@ describe('aggregateAttentionFlags()', () => {
     ).toEqual([
       { type: 'blind_editing', count: 4, targets: ['/x/y/z.ts'], sessionIds: ['s1', 's2'] },
     ]);
+  });
+});
+
+describe('buildWeekForecast()', () => {
+  // Fixed local calendar dates (not Date.now()) so the test is deterministic
+  // regardless of which day it actually runs on.
+  function nextWeekday(base: Date, targetDay: number): Date {
+    const d = new Date(base);
+    while (d.getDay() !== targetDay) d.setDate(d.getDate() + 1);
+    d.setHours(12, 0, 0, 0);
+    return d;
+  }
+
+  function makeSession(startTime: number, estimatedCostUsd: number): SessionSummary {
+    return { sessionId: `s-${startTime}`, startTime, estimatedCostUsd };
+  }
+
+  it('sums week-to-date (Monday through yesterday) and projects the remaining days from the average daily pace', () => {
+    const wednesday = nextWeekday(new Date(2026, 0, 1), 3); // Wednesday
+    const todayStart = localStartOfDay(wednesday.getTime());
+    const monday = todayStart - 2 * 86_400_000;
+    const sessions = [
+      makeSession(monday + 60_000, 10),
+      makeSession(monday + 86_400_000 + 60_000, 10), // Tuesday
+    ];
+
+    // weekToDateExcludingToday = 20, effectiveEod = max(15, 12) = 15.
+    // daysElapsedIncludingToday = 3 (Mon/Tue/Wed), remainingFullDays = 4 (Thu-Sun).
+    // avgDailySpend = (20 + 15) / 3 = 11.666...; endOfWeek = 20 + 15 + 11.666...*4.
+    const result = buildWeekForecast(sessions, 15, 12, wednesday.getTime());
+    expect(result).toBeCloseTo(20 + 15 + ((20 + 15) / 3) * 4, 5);
+  });
+
+  it('projects zero remaining days on a Sunday, so end of week is exactly week-to-date plus the end-of-day forecast', () => {
+    const sunday = nextWeekday(new Date(2026, 0, 1), 0);
+    const todayStart = localStartOfDay(sunday.getTime());
+    const monday = todayStart - 6 * 86_400_000;
+    const sessions = [
+      makeSession(monday + 60_000, 10), // Monday
+      makeSession(monday + 86_400_000 + 60_000, 5), // Tuesday
+    ];
+
+    const result = buildWeekForecast(sessions, 8, 8, sunday.getTime());
+    expect(result).toBe(15 + 8);
+  });
+
+  it('never returns less than the end-of-day forecast', () => {
+    const wednesday = nextWeekday(new Date(2026, 0, 1), 3);
+    // No week-to-date sessions and a forecast below todayTotal — the
+    // effective floor (todayTotal) must still be respected.
+    const result = buildWeekForecast([], 5, 20, wednesday.getTime());
+    expect(result).toBeGreaterThanOrEqual(20);
+  });
+
+  it('excludes sessions from a previous week', () => {
+    const wednesday = nextWeekday(new Date(2026, 0, 1), 3);
+    const todayStart = localStartOfDay(wednesday.getTime());
+    const monday = todayStart - 2 * 86_400_000;
+    const thisWeekOnly = [makeSession(monday + 60_000, 10)];
+    const withLastWeek = [
+      ...thisWeekOnly,
+      makeSession(monday - 7 * 86_400_000 + 60_000, 1000), // last week's Monday
+    ];
+
+    const baseline = buildWeekForecast(thisWeekOnly, 15, 12, wednesday.getTime());
+    const withStale = buildWeekForecast(withLastWeek, 15, 12, wednesday.getTime());
+    expect(withStale).toBe(baseline);
   });
 });
