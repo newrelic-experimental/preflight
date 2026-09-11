@@ -37,13 +37,10 @@ import { join } from 'node:path';
 
 import { calculateCost, createLogger, type TokenUsage } from '../shared/index.js';
 import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
-import type {
-  RawTranscriptEntry,
-  RawAssistantMessage,
-  RawUsage,
-} from '../hooks/transcript-types.js';
+import type { RawTranscriptEntry, RawAssistantMessage } from '../hooks/transcript-types.js';
 
 const logger = createLogger('subagent-timeline-store');
 
@@ -907,21 +904,10 @@ interface AssistantTurn {
  * malformed or not an assistant turn with usage. Never throws.
  */
 function parseAssistantTurn(line: string): AssistantTurn | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object') return null;
-  const obj = parsed as RawTranscriptEntry;
-  if (obj.type !== 'assistant') return null;
+  const { fields } = parseAssistantTurnLine(line);
+  if (!fields) return null;
 
-  const message = obj.message;
-  if (!message || typeof message !== 'object') return null;
-  const m = message as RawAssistantMessage;
-
-  const model = typeof m.model === 'string' ? m.model : '';
+  const model = fields.model ?? '';
   // `<synthetic>` turns carry no real usage and no priceable model.
   if (model === '<synthetic>') return null;
 
@@ -931,30 +917,21 @@ function parseAssistantTurn(line: string): AssistantTurn | null {
   // snapshots can be deduped in parseTranscript — mirroring the cost path's
   // `${agentId}|${messageId}` dedup in event-processor.ts. Lines without an id
   // are skipped, exactly as the CostTracker feed (SubagentWatcher) skips them.
-  const messageId = typeof m.id === 'string' ? m.id : '';
+  const messageId = fields.messageId ?? '';
   if (messageId.length === 0) return null;
 
-  const usage = m.usage;
-  if (!usage || typeof usage !== 'object') return null;
-  const u = usage as RawUsage;
-
-  const tsRaw = typeof obj.timestamp === 'string' ? obj.timestamp : null;
-  const timestampMs = tsRaw ? Date.parse(tsRaw) : NaN;
+  const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : NaN;
   if (!Number.isFinite(timestampMs)) return null;
 
   return {
     messageId,
     timestampMs,
     model,
-    inputTokens: num(u.input_tokens),
-    outputTokens: num(u.output_tokens),
-    cacheReadTokens: num(u.cache_read_input_tokens),
-    cacheCreationTokens: num(u.cache_creation_input_tokens),
+    inputTokens: fields.inputTokens,
+    outputTokens: fields.outputTokens,
+    cacheReadTokens: fields.cacheReadTokens,
+    cacheCreationTokens: fields.cacheCreationTokens,
   };
-}
-
-function num(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 /**
