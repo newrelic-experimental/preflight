@@ -553,9 +553,7 @@ export function Today(): JSX.Element {
               }
               hourlySpend={hourlySpend}
               subagentUsd={forecastBreakdownSubagentUsd}
-              forecastSessionEnd={costApi?.forecast?.forecastSessionEndUsd ?? null}
               forecastWeek={costApi?.forecast?.forecastEndOfWeekUsd ?? null}
-              confidenceNote={costApi?.forecast?.confidenceNote ?? null}
             />
             <ActivityTodayPanel todayHeatmap={todayHeatmap} concurrency={concurrency} />
           </AnimatedCard>
@@ -1833,17 +1831,13 @@ function ForecastEodCard({
   forecastEod,
   hourlySpend,
   subagentUsd = 0,
-  forecastSessionEnd,
   forecastWeek,
-  confidenceNote,
 }: {
   todayTotal: number;
   forecastEod: number | null;
   hourlySpend: HourlyCostEntry[];
   subagentUsd?: number;
-  forecastSessionEnd: number | null;
   forecastWeek: number | null;
-  confidenceNote: string | null;
 }): JSX.Element {
   const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
   const effectiveForecast = hasForecast ? Math.max(forecastEod, todayTotal) : 0;
@@ -1886,24 +1880,11 @@ function ForecastEodCard({
               )}
             </div>
           )}
-          {(forecastSessionEnd !== null || forecastWeek !== null) && (
-            <div className="grid grid-cols-2 gap-x-3 mt-2 pt-2 border-t border-border-subtle text-xs">
-              {forecastSessionEnd !== null && (
-                <div>
-                  <div className="text-ink-muted">End of session</div>
-                  <div className="font-mono tabular-nums">~{formatUsd(forecastSessionEnd)}</div>
-                </div>
-              )}
-              {forecastWeek !== null && (
-                <div>
-                  <div className="text-ink-muted">End of week</div>
-                  <div className="font-mono tabular-nums">~{formatUsd(forecastWeek)}</div>
-                </div>
-              )}
+          {forecastWeek !== null && (
+            <div className="mt-2 pt-2 border-t border-border-subtle text-xs">
+              <div className="text-ink-muted">End of week</div>
+              <div className="font-mono tabular-nums">~{formatUsd(forecastWeek)}</div>
             </div>
-          )}
-          {confidenceNote && (
-            <div className="text-[10px] text-ink-muted italic mt-1">{confidenceNote}</div>
           )}
         </>
       ) : (

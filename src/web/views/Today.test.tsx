@@ -2230,7 +2230,7 @@ describe('Today view — forecast end-of-week and session chips', () => {
   it('renders end-of-week and end-of-session forecast chips when API returns them', async () => {
     renderToday();
     await waitFor(() => expect(screen.getByText('End of week')).toBeInTheDocument());
-    expect(screen.getByText('End of session')).toBeInTheDocument();
+    expect(screen.queryByText('End of session')).toBeNull();
   });
 });
 
