@@ -19,7 +19,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
-import { Card, Eyebrow, InfoTooltip, Pill, Tabs, type PillTone } from '../components/ui';
+import { Card, Eyebrow, Panel, Pill, Tabs, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
   fetchSessionsList,
@@ -50,6 +50,7 @@ import {
   type LoopRow,
 } from '../api/client';
 import {
+  formatPct,
   formatRelativeTime,
   formatTokensCompact,
   formatUsdOrDash,
@@ -626,13 +627,10 @@ export function History(): JSX.Element {
 }
 
 // A row with real spend can carry a sharePct that's already floored to 0 by
-// the backend — render that as "<1%" rather than "0%", which reads as no
-// spend at all.
+// the backend — nudge it above 0 so formatPct renders "<1%" rather than
+// "0%", which reads as no spend at all.
 function formatSharePct(row: UsageShareRow): string {
-  if (row.costUsd > 0 && row.sharePct === 0) {
-    return '<1%';
-  }
-  return `${Math.round(row.sharePct)}%`;
+  return formatPct(row.costUsd > 0 && row.sharePct === 0 ? 0.1 : row.sharePct);
 }
 
 function UsageContributionPanel({
@@ -878,26 +876,6 @@ function ShareTable<Row>({
         </table>
       </div>
     </div>
-  );
-}
-
-function Panel({
-  title,
-  tooltip,
-  children,
-}: {
-  title: string;
-  tooltip?: string;
-  children: React.ReactNode;
-}): JSX.Element {
-  return (
-    <Card padding="md">
-      <div className="flex items-center gap-1.5">
-        <Eyebrow>{title}</Eyebrow>
-        {tooltip && <InfoTooltip text={tooltip} />}
-      </div>
-      <div className="mt-3">{children}</div>
-    </Card>
   );
 }
 
