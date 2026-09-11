@@ -2454,6 +2454,78 @@ describe('api-handler GET /api/usage-insights', () => {
     await handler(req, res);
     expect(JSON.parse(body()).windowDays).toBe(1);
   });
+
+  it('window=today scopes to local midnight, not a rolling 24h window', async () => {
+    const todayStart = localStartOfDay();
+    const sinceLastMidnight = { sessionId: 'today', startTime: todayStart + 60_000 };
+    // 20h before now but before local midnight — must be excluded even though
+    // it falls inside a rolling 24h window.
+    const beforeMidnight = { sessionId: 'yesterday', startTime: todayStart - 4 * 3_600_000 };
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [
+            {
+              ...sinceLastMidnight,
+              estimatedCostUsd: 2,
+              durationMs: 0,
+              subagentCostUsd: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+              tokensCacheRead: 0,
+              tokensCacheCreation: 0,
+              toolBreakdown: {},
+            },
+            {
+              ...beforeMidnight,
+              estimatedCostUsd: 100,
+              durationMs: 0,
+              subagentCostUsd: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+              tokensCacheRead: 0,
+              tokensCacheCreation: 0,
+              toolBreakdown: {},
+            },
+          ];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?window=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(receivedSince).toBeInstanceOf(Date);
+    const sinceAgeMs = Date.now() - (receivedSince as Date).getTime();
+    expect(sinceAgeMs).toBeGreaterThanOrEqual(2 * 86_400_000 - 1000);
+    const result = JSON.parse(body());
+    expect(result.windowDays).toBe(1);
+    expect(result.sessionCount).toBe(1);
+    expect(result.totalCostUsd).toBe(2);
+  });
+
+  it('window=today takes precedence over days, which stays unaffected when omitted', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/usage-insights?window=today&days=30',
+    } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).windowDays).toBe(1);
+  });
 });
 
 describe('api-handler GET /api/alerts/recent', () => {
