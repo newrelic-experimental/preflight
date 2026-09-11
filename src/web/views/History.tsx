@@ -20,6 +20,8 @@ import { GeoBanner } from '../components/GeoBanner';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { Kpi } from '../components/Kpi';
 import { RankedBars, type RankedBarRow } from '../components/RankedBars';
+import { ShareTable } from '../components/ShareTable';
+import { UsageInsightsList } from '../components/UsageInsightsList';
 import { Card, Panel, Pill, Tabs, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
@@ -676,17 +678,8 @@ function UsageContributionPanel({
 
       {data.sessionCount === 0 ? (
         <EmptyState icon="clock" title="No sessions in this window." />
-      ) : data.insights.length === 0 ? (
-        <p className="text-xs text-ink-muted">Nothing stands out in this window.</p>
       ) : (
-        <div className="mb-4 space-y-2">
-          {data.insights.map((insight) => (
-            <div key={insight.id} className="text-xs">
-              <p className="text-ink-base font-medium">{insight.headline}</p>
-              <p className="text-ink-muted">{insight.advice}</p>
-            </div>
-          ))}
-        </div>
+        <UsageInsightsList insights={data.insights} />
       )}
 
       {data.sessionCount > 0 && (
@@ -695,20 +688,27 @@ function UsageContributionPanel({
             <ShareTable<UsageShareRow>
               title="Skills"
               rows={data.skills}
-              totalCount={data.skillsTotalCount}
               rowKey={(row) => row.key}
+              defaultSort={{ column: 3, direction: 'desc' }}
               columns={[
                 { header: 'Skill', align: 'left', cell: (row) => row.key },
-                { header: 'Calls', align: 'right', cell: (row) => row.count },
+                {
+                  header: 'Calls',
+                  align: 'right',
+                  cell: (row) => row.count,
+                  sortValue: (row) => row.count,
+                },
                 {
                   header: 'Tokens',
                   align: 'right',
                   cell: (row) => formatTokensCompact(row.tokens),
+                  sortValue: (row) => row.tokens,
                 },
                 {
                   header: '% of spend',
                   align: 'right',
                   cell: (row) => formatSharePct(row),
+                  sortValue: (row) => row.sharePct,
                 },
               ]}
             />
@@ -718,20 +718,27 @@ function UsageContributionPanel({
             <ShareTable<UsageShareRow>
               title="Subagents"
               rows={data.subagents}
-              totalCount={data.subagentsTotalCount}
               rowKey={(row) => row.key}
+              defaultSort={{ column: 3, direction: 'desc' }}
               columns={[
                 { header: 'Type', align: 'left', cell: (row) => row.key },
-                { header: 'Requests', align: 'right', cell: (row) => row.count },
+                {
+                  header: 'Requests',
+                  align: 'right',
+                  cell: (row) => row.count,
+                  sortValue: (row) => row.count,
+                },
                 {
                   header: 'Tokens',
                   align: 'right',
                   cell: (row) => formatTokensCompact(row.tokens),
+                  sortValue: (row) => row.tokens,
                 },
                 {
                   header: '% of spend',
                   align: 'right',
                   cell: (row) => formatSharePct(row),
+                  sortValue: (row) => row.sharePct,
                 },
               ]}
             />
@@ -741,14 +748,15 @@ function UsageContributionPanel({
             <ShareTable<UsageShareRow>
               title="Plugins"
               rows={data.plugins}
-              totalCount={data.pluginsTotalCount}
               rowKey={(row) => row.key}
+              defaultSort={{ column: 1, direction: 'desc' }}
               columns={[
                 { header: 'Plugin', align: 'left', cell: (row) => row.key },
                 {
                   header: '% of spend',
                   align: 'right',
                   cell: (row) => formatSharePct(row),
+                  sortValue: (row) => row.sharePct,
                 },
               ]}
             />
@@ -759,8 +767,8 @@ function UsageContributionPanel({
               title="Loops"
               className="md:col-span-2"
               rows={data.loops}
-              totalCount={data.loopsTotalCount}
               rowKey={(row) => row.sessionId}
+              defaultSort={{ column: 4, direction: 'desc' }}
               columns={[
                 {
                   header: 'Session',
@@ -769,23 +777,36 @@ function UsageContributionPanel({
                   title: (row) => row.sessionName || row.sessionId,
                   cell: (row) => row.sessionName || row.sessionId.slice(0, 8),
                 },
-                { header: 'Runs', align: 'right', cell: (row) => row.runs },
+                {
+                  header: 'Runs',
+                  align: 'right',
+                  cell: (row) => row.runs,
+                  sortValue: (row) => row.runs,
+                },
                 {
                   header: 'Tokens',
                   align: 'right',
                   cell: (row) => formatTokensCompact(row.tokens),
+                  sortValue: (row) => row.tokens,
                 },
                 {
                   header: 'Per run',
                   align: 'right',
                   cell: (row) => formatTokensCompact(row.tokensPerRun),
+                  sortValue: (row) => row.tokensPerRun,
                 },
-                { header: 'Cost', align: 'right', cell: (row) => formatUsdOrDash(row.costUsd) },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsdOrDash(row.costUsd),
+                  sortValue: (row) => row.costUsd,
+                },
                 {
                   header: 'Last run',
                   align: 'right',
                   className: 'text-ink-muted',
                   cell: (row) => formatRelativeTime(row.lastRunMs),
+                  sortValue: (row) => row.lastRunMs,
                 },
               ]}
             />
@@ -800,79 +821,6 @@ function UsageContributionPanel({
         </p>
       )}
     </Panel>
-  );
-}
-
-interface ShareTableColumn<Row> {
-  readonly header: string;
-  readonly align: 'left' | 'right';
-  readonly cell: (row: Row) => React.ReactNode;
-  readonly className?: string;
-  readonly title?: (row: Row) => string;
-}
-
-function ShareTable<Row>({
-  title,
-  columns,
-  rows,
-  rowKey,
-  className,
-  totalCount,
-}: {
-  title: string;
-  columns: ReadonlyArray<ShareTableColumn<Row>>;
-  rows: readonly Row[];
-  rowKey: (row: Row) => string;
-  className?: string;
-  totalCount?: number;
-}): JSX.Element {
-  const dropped = totalCount !== undefined && totalCount > rows.length;
-  return (
-    <div className={className}>
-      <h4 className="text-ink-muted font-medium mb-2">
-        {title}
-        {dropped && (
-          <span className="text-ink-subtle font-normal ml-1">
-            top {rows.length} of {totalCount}
-          </span>
-        )}
-      </h4>
-      <div className="max-h-40 overflow-auto">
-        <table className="w-full">
-          <thead className="text-ink-muted sticky top-0 bg-bg-panel">
-            <tr>
-              {columns.map((col) => (
-                <th
-                  key={col.header}
-                  className={col.align === 'right' ? 'text-right pb-1' : 'text-left pb-1'}
-                >
-                  {col.header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={rowKey(row)} className="border-t border-bg-line">
-                {columns.map((col) => {
-                  const base =
-                    col.align === 'right' ? 'py-1 text-right tabular-nums' : 'py-1 text-ink-base';
-                  return (
-                    <td
-                      key={col.header}
-                      className={col.className ? `${base} ${col.className}` : base}
-                      title={col.title?.(row)}
-                    >
-                      {col.cell(row)}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
   );
 }
 
