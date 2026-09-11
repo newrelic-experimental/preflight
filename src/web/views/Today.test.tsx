@@ -68,72 +68,8 @@ describe('Today view', () => {
     expect(screen.getByText('efficiency')).toBeInTheDocument();
   });
 
-  it('renders an anti-pattern banner when patterns exist', () => {
-    renderToday();
-    expect(screen.getByText(/thrashing/i)).toBeInTheDocument();
-    expect(screen.getByText(/auth\.ts/)).toBeInTheDocument();
-  });
-
-  it('hides the banner when no anti-patterns', () => {
-    useLiveStore.setState({ antiPatterns: [] });
-    renderToday();
-    expect(screen.queryByText(/thrashing/i)).toBeNull();
-  });
-
-  it('renders a generic fallback banner when the flags KPI is nonzero but every anti-pattern source is empty', async () => {
-    useLiveStore.setState({ antiPatterns: [] });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify({ antiPatternCount: 3 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-    expect(await screen.findByText(/3 flag\(s\) detected today/i)).toBeInTheDocument();
-  });
-
-  it('does not show a retry-detector tokens-wasted annotation on the thrashing banner', async () => {
-    // Even when a retry-alerts entry happens to share a name with the
-    // anti-pattern's file-path target, the banner must not cross-reference
-    // it — RetryDetector groups by literal tool name, an unrelated key.
-    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }] });
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url === '/api/retry-alerts') {
-        return new Response(
-          JSON.stringify({
-            alerts: [
-              {
-                toolName: 'auth.ts',
-                occurrences: 4,
-                windowSize: 5,
-                similarity: 0.9,
-                tokensWastedEstimate: 750,
-                timestamp: Date.now(),
-              },
-            ],
-            totalTokensWasted: 750,
-            totalAlertsEmitted: 1,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    renderToday();
-    expect(await screen.findByText(/thrashing/i)).toBeInTheDocument();
-    expect(screen.queryByText(/tokens wasted/i)).toBeNull();
-  });
+  // Anti-pattern/flag rendering moved to the "Needs attention" panel — see
+  // the dedicated "Today view — Needs attention panel" describe block below.
 
   function stubTurnCostsAndDecisionTree(turnCount = 1): void {
     globalThis.fetch = vi.fn(async (input) => {
@@ -465,7 +401,7 @@ describe('Today view', () => {
     expect(trigger.textContent).toBe('session detail →');
   });
 
-  it('renders a real count for stuck_loop via the API-fallback path, not "?"', async () => {
+  it('renders a real count for stuck_loop via the API-fallback path, humanized as a pill', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/anti-patterns') {
@@ -480,11 +416,10 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    await waitFor(() => expect(screen.getByText(/5× on/)).toBeInTheDocument());
-    expect(screen.queryByText(/\?× on/)).toBeNull();
+    expect(await screen.findByText('Stuck loop ×5 on npm test')).toBeInTheDocument();
   });
 
-  it('renders a real count for blind_editing via the API-fallback path, not "?"', async () => {
+  it('renders a real count for blind_editing via the API-fallback path, humanized as a pill', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/anti-patterns') {
@@ -499,11 +434,10 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    await waitFor(() => expect(screen.getByText(/3× on/)).toBeInTheDocument());
-    expect(screen.queryByText(/\?× on/)).toBeNull();
+    expect(await screen.findByText('Blind editing ×3 on app.ts')).toBeInTheDocument();
   });
 
-  it('renders a real count for over_delegation via the API-fallback path, not "?"', async () => {
+  it('renders a real count for over_delegation with no target suffix when the source has none', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/anti-patterns') {
@@ -518,8 +452,10 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    await waitFor(() => expect(screen.getByText(/7× on/)).toBeInTheDocument());
-    expect(screen.queryByText(/\?× on/)).toBeNull();
+    // No file/command on this source → target resolves to 'unknown', which
+    // AttentionStrip suppresses rather than rendering "on unknown".
+    expect(await screen.findByText('Over-delegation ×7')).toBeInTheDocument();
+    expect(screen.queryByText(/on unknown/)).toBeNull();
   });
 
   it('renders anti-pattern detail from a persisted session when no live/API detail exists', async () => {
@@ -556,8 +492,7 @@ describe('Today view', () => {
 
     renderToday();
 
-    await waitFor(() => expect(screen.getByText(/6× on/)).toBeInTheDocument());
-    expect(screen.getByText(/npm run build/)).toBeInTheDocument();
+    expect(await screen.findByText('Stuck loop ×6 on npm run build')).toBeInTheDocument();
   });
 
   it('does not show the empty state while concurrency/heatmap/liveSessions are still pending', async () => {
@@ -620,7 +555,7 @@ describe('Today view', () => {
   it('shows the delta from current spend to forecast', () => {
     // todayTotal=12.17, forecastEodUsd=18.4 → delta=6.23
     renderToday();
-    expect(screen.getByText(/\+\$6\.23/)).toBeInTheDocument();
+    expect(screen.getByText(/\$6\.23 more than now/)).toBeInTheDocument();
   });
 
   // After 45b17db the forecast is clamped to at least todayTotal (you can't
@@ -641,12 +576,13 @@ describe('Today view', () => {
     expect(screen.queryByText(/\$8\.00/)).toBeNull();
   });
 
-  it('still renders a positive delta with "+$"', () => {
+  it('renders a positive delta as "$X more than now" with no leading +', () => {
     useLiveStore.setState({
       cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 12 },
     });
     renderToday();
-    expect(screen.getByText(/\+\$2\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/\$2\.00 more than now/)).toBeInTheDocument();
+    expect(screen.queryByText(/\+\$2\.00/)).toBeNull();
   });
 
   it('shows an "insufficient data" message when forecast is null', () => {
@@ -684,7 +620,7 @@ describe('Today view', () => {
     renderToday();
     await waitFor(() => expect(screen.getByText('$8.00')).toBeInTheDocument());
     // delta = 8 - 5 = 3
-    expect(screen.getByText(/\+\$3\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/\$3\.00 more than now/)).toBeInTheDocument();
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
@@ -703,26 +639,14 @@ describe('Today view', () => {
     }) as typeof fetch;
   }
 
-  it('shows the env-var-disabled banner when watcherDisabledReason is env_var', async () => {
-    stubObservabilityHealth({
-      watcherActive: false,
-      watcherDisabledByLock: false,
-      watcherDisabledReason: 'env_var',
-    });
-
-    renderToday();
-    expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
-    expect(screen.getByText(/NR_AI_ENABLE_SUBAGENT_WATCHER=0/)).toBeInTheDocument();
-  });
-
-  it('falls back to the env-var-disabled banner when watcherDisabledReason is absent (older server)', async () => {
-    // No watcherDisabledReason field at all — simulates a dashboard daemon
-    // running an older build that predates this field. Must not silently
-    // hide the (still broadly correct) message in that case.
+  it('shows the muted watcher-off line when watcherActive is false and no subagent turns have been recorded', async () => {
+    // Both watcherDisabledReason variants (env_var, mode_mismatch) collapse
+    // into the same single condition and the same muted line — the reason
+    // no longer changes what's displayed.
     stubObservabilityHealth({ watcherActive: false, watcherDisabledByLock: false });
 
     renderToday();
-    expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Subagent cost tracking is disabled/)).toBeInTheDocument();
   });
 
   it('does not show the watcher-disabled banner when the cross-session aggregate reports nonzero subagent spend, even though its turn count is 0', async () => {
@@ -735,11 +659,7 @@ describe('Today view', () => {
       const url = String(input);
       if (url.includes('/api/observability-health')) {
         return new Response(
-          JSON.stringify({
-            watcherActive: false,
-            watcherDisabledByLock: false,
-            watcherDisabledReason: 'env_var',
-          }),
+          JSON.stringify({ watcherActive: false, watcherDisabledByLock: false }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
@@ -756,7 +676,7 @@ describe('Today view', () => {
     }) as typeof fetch;
 
     renderToday();
-    await screen.findAllByText('$5.50');
+    await waitFor(() => expect(screen.getByText('efficiency')).toBeInTheDocument());
     expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
     expect(screen.queryByText(/subagent activity from other sessions/i)).toBeNull();
   });
@@ -939,7 +859,7 @@ describe('Today view', () => {
 
     await waitFor(() => expect(screen.getByText('$12.00')).toBeInTheDocument());
     // delta = 12 - 5 = 7
-    expect(screen.getByText(/\+\$7\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/\$7\.00 more than now/)).toBeInTheDocument();
   });
 });
 
@@ -1166,11 +1086,16 @@ describe('Today view — aggregate endpoint', () => {
 
     renderToday();
 
-    expect(await screen.findByText('111')).toBeInTheDocument();
-    expect(screen.getByText('222')).toBeInTheDocument();
-    expect(screen.getByText('333')).toBeInTheDocument();
-    expect(screen.getByText('444ms p95')).toBeInTheDocument();
-    expect(screen.getByText('555ms p95')).toBeInTheDocument();
+    // Hero value is p95 via formatMs; p50/p99 are HealthCard rows, and the
+    // two slowest tools (by p95, descending) are additional rows keyed by
+    // their own label/value cells rather than a combined "Nms p95" string.
+    expect(await screen.findByText('222 ms')).toBeInTheDocument();
+    expect(screen.getByText('111 ms')).toBeInTheDocument();
+    expect(screen.getByText('333 ms')).toBeInTheDocument();
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(screen.getByText('555 ms')).toBeInTheDocument();
+    expect(screen.getByText('Read')).toBeInTheDocument();
+    expect(screen.getByText('444 ms')).toBeInTheDocument();
   });
 });
 
@@ -1419,7 +1344,10 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/↑5pts vs last week/i)).toBeInTheDocument();
+    // HealthCard renders a row as separate label/value cells, not one
+    // combined string.
+    expect(await screen.findByText('vs last week')).toBeInTheDocument();
+    expect(screen.getByText('+5pts')).toBeInTheDocument();
   });
 
   it('shows week-over-week decline chip when delta is negative', async () => {
@@ -1470,25 +1398,13 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/↓3pts vs last week/i)).toBeInTheDocument();
+    expect(await screen.findByText('vs last week')).toBeInTheDocument();
+    expect(screen.getByText('-3pts')).toBeInTheDocument();
   });
 
-  it('includes actual hit rate pct in recommendation text', async () => {
+  it('shows total savings in the detail line', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.includes('/api/cache-health')) {
-        return new Response(
-          JSON.stringify({
-            status: 'needs_attention',
-            cache_hit_rate_pct: 12,
-            total_cache_read_tokens: 3000,
-            total_cache_creation_tokens: 500,
-            total_savings_usd: 0,
-            week_over_week_delta_pts: null,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
       if (url.includes('/api/sessions/today/aggregate')) {
         return new Response(
           JSON.stringify({
@@ -1503,7 +1419,7 @@ describe('Today view — Cache Health panel', () => {
               cacheHitRatePct: 12,
               totalCacheReadTokens: 3000,
               totalCacheCreationTokens: 500,
-              totalSavingsUsd: 0,
+              totalSavingsUsd: 1.5,
             },
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
@@ -1521,8 +1437,7 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/Cache hit rate is 12%/)).toBeInTheDocument();
-    expect(await screen.findByText(/above 60%/)).toBeInTheDocument();
+    expect(await screen.findByText('$1.50 saved today')).toBeInTheDocument();
   });
 
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
@@ -1579,33 +1494,67 @@ describe('Today view — Cache Health panel', () => {
   });
 });
 
-describe('Today view — Recent alerts panel', () => {
+describe('Today view — Needs attention panel', () => {
   beforeEach(() => {
-    resetStore();
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
   });
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('calls /api/alerts/recent and renders an empty state when the log is empty', async () => {
-    const fetchSpy = vi.fn(
-      async (_url: RequestInfo | URL) =>
-        new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-    );
-    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  it('shows "Nothing needs attention" when there are no flags and no alerts', async () => {
+    renderToday();
+    expect(await screen.findByText(/Nothing needs attention/)).toBeInTheDocument();
+  });
+
+  it('shows a humanized flag pill and a firing count linking to /alerts, together with an alert row', async () => {
+    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }] });
+    const now = Date.now();
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: 'rule-cost',
+              state: 'firing',
+              severity: 'warning',
+              title: 'Cost spike',
+              description: 'desc',
+              value: 12.5,
+              threshold: 10,
+              firedAt: now - 5 * 60_000,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    ) as typeof fetch;
 
     renderToday();
 
-    await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
-    });
-    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
-    expect(calls.some((u) => u.includes('/api/alerts/recent'))).toBe(true);
-
-    expect(await screen.findByText(/No alerts in recent history/i)).toBeInTheDocument();
+    // Humanized flag pill (not the raw `thrashing` enum).
+    expect(await screen.findByText('Edit/test thrashing ×4 on auth.ts')).toBeInTheDocument();
+    // Firing count, linked to /alerts.
+    const firingLink = await screen.findByText('1 firing');
+    expect(firingLink).toHaveAttribute('href', '/alerts');
+    // Alert row: when / severity / rule / value-threshold / state.
+    expect(screen.getByText('Cost spike')).toBeInTheDocument();
+    expect(screen.getByText('warning')).toBeInTheDocument();
+    expect(screen.getByText(/12\.5 \/ 10\.0/)).toBeInTheDocument();
+    expect(screen.getByText('firing')).toBeInTheDocument();
   });
 
   it('renders rows from a non-empty response', async () => {
@@ -1632,13 +1581,19 @@ describe('Today view — Recent alerts panel', () => {
         firedAt: now - 60 * 60_000,
       },
     ];
-    globalThis.fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify(fakeAlerts), {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/alerts/recent')) {
+        return new Response(JSON.stringify(fakeAlerts), {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
-    ) as typeof fetch;
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
 
     renderToday();
 
@@ -1739,13 +1694,19 @@ describe('Today view — Recent alerts panel', () => {
       firedAt: 3000,
     };
     // Server returns in append order (oldest first); UI must reverse.
-    globalThis.fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify([oldAlert, middleAlert, newAlert]), {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/alerts/recent')) {
+        return new Response(JSON.stringify([oldAlert, middleAlert, newAlert]), {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
-    ) as typeof fetch;
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
 
     renderToday();
 
@@ -1793,12 +1754,12 @@ describe('Today view — Compute Waste panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/~0 wasted tokens/)).toBeInTheDocument();
+    expect(await screen.findByText('~0 tokens')).toBeInTheDocument();
     expect(screen.getByText('clean')).toBeInTheDocument();
     expect(screen.getByText('No compute waste detected this session.')).toBeInTheDocument();
   });
 
-  it('shows needs_attention status with top offender chip', async () => {
+  it('shows needs_attention status with a hero token count and top-offender advice', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/compute-waste')) {
@@ -1820,13 +1781,18 @@ describe('Today view — Compute Waste panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/~2,400 wasted tokens/)).toBeInTheDocument();
+    // Hero value via formatTokensCompact (2400 → "2.4k").
+    expect(await screen.findByText('~2.4k tokens')).toBeInTheDocument();
     expect(screen.getByText('needs attention')).toBeInTheDocument();
-    expect(screen.getByText(/stuck loop/i)).toBeInTheDocument();
-    expect(screen.getByText(/~1,600 tokens/)).toBeInTheDocument();
+    // Detail is the top offender's advice text, not the raw pattern name.
+    expect(
+      screen.getByText('Address the command output before re-running the same command.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Anti-pattern')).toBeInTheDocument();
+    expect(screen.getByText('~1.6k')).toBeInTheDocument();
   });
 
-  it('shows per-source breakdown sub-line', async () => {
+  it('shows per-source breakdown rows', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/compute-waste')) {
@@ -1848,8 +1814,10 @@ describe('Today view — Compute Waste panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/retry: ~200/)).toBeInTheDocument();
-    expect(screen.getByText(/anti-pattern: ~400/)).toBeInTheDocument();
+    expect(await screen.findByText('Retry')).toBeInTheDocument();
+    expect(screen.getByText('~200')).toBeInTheDocument();
+    expect(screen.getByText('Anti-pattern')).toBeInTheDocument();
+    expect(screen.getByText('~400')).toBeInTheDocument();
   });
 
   it('shows the top contributing session when by_session is present', async () => {
@@ -1877,40 +1845,8 @@ describe('Today view — Compute Waste panel', () => {
     renderToday();
     // liveSessions resolves to [] under the generic mock above, so
     // sessionPillLabel falls back to the truncated session id.
-    expect(await screen.findByText(/top session: abcdef12/)).toBeInTheDocument();
-  });
-
-  it('shows the most recent retry alert live, ahead of the next REST poll', async () => {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/compute-waste')) {
-        return new Response(
-          JSON.stringify({
-            total_tokens_wasted: 300,
-            retry_tokens_wasted: 300,
-            anti_pattern_tokens_wasted: 0,
-            breakdown: [],
-            status: 'moderate',
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    useLiveStore.setState({
-      retryAlerts: [{ sessionId: 'sess-a', toolName: 'Bash', occurrences: 4, tokensWasted: 300 }],
-    });
-
-    renderToday();
-    await screen.findByText(/~300 wasted tokens/);
-    expect(screen.getByText('Bash')).toBeInTheDocument();
-    expect(screen.getByText(/retried 4×/)).toBeInTheDocument();
-    // liveSessions resolves to [] under the generic mock above, so
-    // sessionPillLabel falls back to the raw session id (already ≤8 chars).
-    expect(screen.getByText(/Session: sess-a/)).toBeInTheDocument();
+    expect(await screen.findByText('Top session')).toBeInTheDocument();
+    expect(screen.getByText('abcdef12 (~900)')).toBeInTheDocument();
   });
 });
 
@@ -2294,7 +2230,7 @@ describe('Today view — forecast end-of-week and session chips', () => {
   });
 });
 
-describe('Today view — Cost by Tool panel', () => {
+describe('Today view — Spend breakdown panel', () => {
   beforeEach(() => {
     useLiveStore.setState({
       connected: true,
@@ -2304,67 +2240,84 @@ describe('Today view — Cost by Tool panel', () => {
       firingAlerts: new Map(),
       dismissedAlerts: new Set(),
     });
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
-        return new Response(
-          JSON.stringify({
-            costByToolType: {
-              Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
-              Read: { totalCost: 0.52, callCount: 61, avgCost: 0.0085 },
-            },
-            totalAttributedCost: 4.72,
-            attributionRate: 0.88,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify(null), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(null), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('renders Cost by Tool panel with a chart instead of the empty state', async () => {
-    // Recharts' ResponsiveContainer measures 0x0 under jsdom, so bar/axis
-    // content doesn't render meaningfully in tests — assert the panel
-    // rendered its chart branch (no empty state), matching the same
-    // convention History.test.tsx uses for its own Recharts panels.
+  it('renders the panel title', async () => {
     renderToday();
-    await waitFor(() => expect(screen.queryByText('No cost data yet')).toBeNull());
-    expect(screen.getByText('Cost by Tool')).toBeInTheDocument();
+    expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
   });
 
-  it('caps the chart to the top 12 tools by cost and notes how many were dropped', async () => {
+  it('renders a model row via RankedBars with cost, request count, and cost per million tokens', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.modelUsage, {
+      byModel: {
+        'claude-sonnet-5': { requestCount: 8, totalCostUsd: 4.2, costPerMillionTokens: 0.75 },
+      },
+      mostUsedModel: 'claude-sonnet-5',
+    });
+    renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    // RankedBars renders a row's value twice — a screen-reader table plus
+    // the visible presentational row.
+    expect(screen.getAllByText('$4.20 · 8 req · $0.75/1M').length).toBeGreaterThan(0);
+  });
+
+  it('renders a tool row via RankedBars using the tool color class', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: { Bash: { totalCost: 3, callCount: 2, avgCost: 1.5 } },
+      totalAttributedCost: 3,
+      attributionRate: 1,
+    });
+    const { container } = renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    expect(screen.getAllByText('$3.00').length).toBeGreaterThan(0);
+    expect(container.querySelector('.bg-accent-purple')).toBeInTheDocument();
+  });
+
+  it('shows a skill row with its cost and share', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType: {},
+      costBySkill: {
+        'skill-a': { callCount: 5, attributedCallCount: 5, totalCost: 6, avgCost: 1.2 },
+        'skill-b': { callCount: 3, attributedCallCount: 3, totalCost: 4, avgCost: 1.33 },
+      },
+      totalAttributedCost: 10,
+      attributionRate: 1,
+    });
+    renderToday(qc);
+    const row = (await screen.findByText('skill-a')).closest('tr') as HTMLElement;
+    expect(within(row).getByText('$6.00')).toBeInTheDocument();
+    expect(within(row).getByText('60%')).toBeInTheDocument();
+  });
+
+  it('caps the Tools column with a "+N more not shown" footnote', async () => {
     const costByToolType = Object.fromEntries(
-      Array.from({ length: 14 }, (_, i) => [
+      Array.from({ length: 10 }, (_, i) => [
         `Tool${i}`,
-        { totalCost: 14 - i, callCount: 1, avgCost: 14 - i },
+        { totalCost: 10 - i, callCount: 1, avgCost: 10 - i },
       ]),
     );
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
-        return new Response(
-          JSON.stringify({ costByToolType, totalAttributedCost: 105, attributionRate: 0.9 }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify(null), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    renderToday();
-    await waitFor(() => expect(screen.queryByText('No cost data yet')).toBeNull());
-    expect(screen.getByText('+2 more tools not shown')).toBeInTheDocument();
-    const panel = screen.getByText('Cost by Tool').closest('.glass-card') as HTMLElement;
-    await waitFor(() => expect(panel.querySelectorAll('path.recharts-rectangle').length).toBe(12), {
-      timeout: 3000,
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.costPerTool, {
+      costByToolType,
+      totalAttributedCost: 55,
+      attributionRate: 1,
     });
+    renderToday(qc);
+    expect(await screen.findByText('+2 more not shown')).toBeInTheDocument();
   });
 
   it('renders Cost attribution unavailable when /api/cost-per-tool returns 503', async () => {
@@ -2378,22 +2331,24 @@ describe('Today view — Cost by Tool panel', () => {
       });
     }) as typeof fetch;
     renderToday();
+    // EmptyState's inline variant concatenates title and subtitle into one
+    // text node ("Cost attribution unavailable · Start a Claude Code...").
     await waitFor(() =>
-      expect(screen.getByText('Cost attribution unavailable')).toBeInTheDocument(),
+      expect(screen.getByText(/Cost attribution unavailable/)).toBeInTheDocument(),
     );
   });
 
-  it('renders the empty state instead of crashing when the query settles with a null value', async () => {
+  it('renders empty states across all three columns instead of crashing when the query settles with a null value', async () => {
     // A 200 response whose body is the JSON literal `null` (distinct from a
     // request that errors) resolves the query successfully with `data` set
-    // to `null`, not `undefined` — asserting against the pending state's
-    // identical "No cost data yet" text wouldn't distinguish the two, so
-    // seed the cache directly with the already-settled value instead of
-    // waiting on the mocked fetch to resolve.
+    // to `null`, not `undefined` — seed the cache directly with the
+    // already-settled value instead of waiting on the mocked fetch.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     qc.setQueryData(qk.costPerTool, null);
     renderToday(qc);
-    expect(screen.getByText('No cost data yet')).toBeInTheDocument();
+    expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
+    expect(screen.getAllByText('No data yet').length).toBeGreaterThan(0);
+    expect(screen.getByText('No skill data yet')).toBeInTheDocument();
   });
 
   it('shows the low-attribution footnote when attributionRate is below 50%', async () => {
@@ -2406,145 +2361,9 @@ describe('Today view — Cost by Tool panel', () => {
       attributionRate: 0.3,
     });
     renderToday(qc);
-    expect(screen.getByText('Based on 30% of session cost')).toBeInTheDocument();
-  });
-});
-
-describe('Today view — Cost by Skill panel', () => {
-  beforeEach(() => {
-    useLiveStore.setState({
-      connected: true,
-      recentToolCalls: [],
-      cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
-      antiPatterns: [],
-      firingAlerts: new Map(),
-      dismissedAlerts: new Set(),
-    });
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('renders the Cost by Skill eyebrow and one row per skill with the formatted calls, cost, and time values visible', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {
-        'skill-1': {
-          callCount: 5,
-          attributedCallCount: 5,
-          totalCost: 0.15,
-          avgCost: 0.03,
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 100,
-          totalDurationMs: 5000,
-        },
-        'skill-2': {
-          callCount: 3,
-          attributedCallCount: 3,
-          totalCost: 0.08,
-          avgCost: 0.0267,
-          inputTokens: 800,
-          outputTokens: 400,
-          cacheReadTokens: 0,
-          totalDurationMs: 3000,
-        },
-      },
-      totalAttributedCost: 0.23,
-      attributionRate: 0.95,
-    });
-    renderToday(qc);
-    expect(screen.getByText('Cost by Skill')).toBeInTheDocument();
-    expect(screen.getByText('skill-1')).toBeInTheDocument();
-    expect(screen.getByText('skill-2')).toBeInTheDocument();
-    expect(screen.getByText('$0.15')).toBeInTheDocument();
-    expect(screen.getByText('$0.080')).toBeInTheDocument();
-  });
-
-  it('sorts by cost descending', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {
-        'expensive-skill': {
-          callCount: 10,
-          attributedCallCount: 10,
-          totalCost: 1.5,
-          avgCost: 0.15,
-          inputTokens: 5000,
-          outputTokens: 3000,
-          cacheReadTokens: 200,
-          totalDurationMs: 10000,
-        },
-        'cheap-skill': {
-          callCount: 2,
-          attributedCallCount: 2,
-          totalCost: 0.05,
-          avgCost: 0.025,
-          inputTokens: 500,
-          outputTokens: 200,
-          cacheReadTokens: 0,
-          totalDurationMs: 1000,
-        },
-      },
-      totalAttributedCost: 1.55,
-      attributionRate: 0.9,
-    });
-    renderToday(qc);
-    const rows = screen.getAllByRole('row');
-    const firstDataRow = rows[1];
-    expect(firstDataRow.textContent).toContain('expensive-skill');
-  });
-
-  it('renders nothing when costBySkill is an empty object', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {},
-      totalAttributedCost: 0,
-      attributionRate: 1.0,
-    });
-    renderToday(qc);
-    expect(screen.queryByText('Cost by Skill')).not.toBeInTheDocument();
-  });
-
-  it('renders nothing when the response has no costBySkill field at all', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {
-        Read: { totalCost: 0.1, callCount: 10, avgCost: 0.01 },
-      },
-      totalAttributedCost: 0.1,
-      attributionRate: 1.0,
-    });
-    renderToday(qc);
-    expect(screen.queryByText('Cost by Skill')).not.toBeInTheDocument();
-  });
-
-  it('sets the title attribute on the cost cell when attributedCallCount is less than callCount', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {
-        'partial-skill': {
-          callCount: 5,
-          attributedCallCount: 2,
-          totalCost: 0.1,
-          avgCost: 0.05,
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 0,
-          totalDurationMs: 2000,
-        },
-      },
-      totalAttributedCost: 0.1,
-      attributionRate: 0.8,
-    });
-    renderToday(qc);
-    const costCell = screen.getByText('$0.10');
-    expect(costCell).toHaveAttribute('title', 'Cost covers 2 of 5 calls');
+    expect(
+      await screen.findByText('Tool and skill shares are based on 30% of session cost'),
+    ).toBeInTheDocument();
   });
 });
 
@@ -2577,7 +2396,7 @@ describe('Today view — API Failures panel', () => {
     unknown: 0,
   };
 
-  it('shows the empty state when there are no failures', async () => {
+  it('shows the zero/good state when there are no failures', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/api-failures')) {
@@ -2605,10 +2424,12 @@ describe('Today view — API Failures panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText('No API failures')).toBeInTheDocument();
+    const card = (await screen.findByText('API Failures')).closest('.glass-card') as HTMLElement;
+    expect(within(card).getByText('0')).toBeInTheDocument();
+    expect(within(card).getByText('none')).toBeInTheDocument();
   });
 
-  it('shows failure count and error-type breakdown when failures exist', async () => {
+  it('shows failure count, failing status, and an error-type breakdown row when failures exist', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/api-failures')) {
@@ -2636,45 +2457,15 @@ describe('Today view — API Failures panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText('rate_limit: 2, server_error: 1')).toBeInTheDocument();
-    expect(screen.getByText('API Failures')).toBeInTheDocument();
-  });
-
-  it('shows a throttle-alert warning line when throttleAlerts is non-empty', async () => {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/api-failures')) {
-        return new Response(
-          JSON.stringify({
-            totalFailures: 4,
-            byErrorType: { ...zeroByErrorType, rate_limit: 4 },
-            byModel: {},
-            bySessionPhase: { early: 0, middle: 0, late: 4 },
-            totalTokensLost: 0,
-            totalEstimatedCostLostUsd: 0,
-            meanTimeToRecoveryMs: null,
-            throttleAlerts: [
-              { model: 'claude-sonnet-5', count: 3, windowMinutes: 10, timestamp: Date.now() },
-            ],
-            recentFailures: [],
-            dataAvailable: true,
-            note: '',
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-    expect(await screen.findByText(/Rate-limit throttling detected/)).toBeInTheDocument();
+    const card = (await screen.findByText('API Failures')).closest('.glass-card') as HTMLElement;
+    await waitFor(() => expect(within(card).getByText('failing')).toBeInTheDocument());
+    expect(within(card).getByText('3')).toBeInTheDocument();
+    expect(within(card).getByText('rate_limit')).toBeInTheDocument();
+    expect(within(card).getByText('server_error')).toBeInTheDocument();
   });
 });
 
-describe('Today view — Cost by Skill / Cost by Tool share labels', () => {
+describe('Today view — Activity today panel', () => {
   beforeEach(() => {
     resetStore();
   });
@@ -2682,39 +2473,30 @@ describe('Today view — Cost by Skill / Cost by Tool share labels', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses entry.tokens when present and the input+output+cacheRead sum when absent', async () => {
+  it('renders the heatmap strip and the bare concurrency content without its old standalone label', async () => {
+    const now = Date.now();
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.includes('/api/cost-per-tool')) {
+      if (url.includes('/api/activity-heatmap')) {
         return new Response(
           JSON.stringify({
-            turns: [],
-            costByToolType: {},
-            costBySkill: {
-              'skill-with-tokens': {
-                callCount: 3,
-                attributedCallCount: 3,
-                totalCost: 1.2,
-                avgCost: 0.4,
-                inputTokens: 100,
-                outputTokens: 50,
-                cacheReadTokens: 20,
-                totalDurationMs: 500,
-                tokens: 9999,
-              },
-              'skill-without-tokens': {
-                callCount: 2,
-                attributedCallCount: 2,
-                totalCost: 0.6,
-                avgCost: 0.3,
-                inputTokens: 200,
-                outputTokens: 100,
-                cacheReadTokens: 30,
-                totalDurationMs: 300,
-              },
-            },
-            totalAttributedCost: 1.8,
-            attributionRate: 1,
+            buckets: [1, 2, 0, 3],
+            maxCount: 3,
+            bucketSizeMs: 900_000,
+            startTimestamp: now,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url === '/api/concurrency') {
+        return new Response(
+          JSON.stringify({
+            current: 2,
+            peak: 3,
+            allTimePeak: 3,
+            bucketSizeMs: 900_000,
+            startTimestamp: now,
+            buckets: [{ timestamp: now, count: 2 }],
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
@@ -2726,40 +2508,19 @@ describe('Today view — Cost by Skill / Cost by Tool share labels', () => {
     }) as typeof fetch;
 
     renderToday();
-    await waitFor(() => expect(screen.getByText('Cost by Skill')).toBeInTheDocument());
-    const withTokensRow = screen.getByText('skill-with-tokens').closest('tr') as HTMLElement;
-    // formatTokensCompact(9999) === '10.0k'
-    expect(within(withTokensRow).getByText('10.0k')).toBeInTheDocument();
-    const withoutTokensRow = screen.getByText('skill-without-tokens').closest('tr') as HTMLElement;
-    // 200 + 100 + 30 = 330, below the 1000 threshold so rendered unrounded
-    expect(within(withoutTokensRow).getByText('330')).toBeInTheDocument();
-  });
 
-  it('labels the top tool in the Cost by Tool panel with its share percent', async () => {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/cost-per-tool')) {
-        return new Response(
-          JSON.stringify({
-            turns: [],
-            costByToolType: {
-              Bash: { totalCost: 6, callCount: 2, avgCost: 3 },
-              Read: { totalCost: 4, callCount: 1, avgCost: 4 },
-            },
-            totalAttributedCost: 10,
-            attributionRate: 1,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-    // Bash: totalCost 6 of 10 total -> round(6/10*100) = 60%
-    expect(await screen.findByText('Bash (2 · 60%)')).toBeInTheDocument();
+    const panel = (await screen.findByText('Activity today')).closest('.glass-card') as HTMLElement;
+    expect(
+      await within(panel).findByRole('img', {
+        name: "Today's activity density in 15-minute blocks",
+      }),
+    ).toBeInTheDocument();
+    // The bare ConcurrencyIndicator renders current/peak without its old
+    // standalone "Concurrent Sessions" Eyebrow label — only the panel
+    // column's own lowercase "Concurrent sessions" header remains.
+    expect(within(panel).getByText('Concurrent sessions')).toBeInTheDocument();
+    expect(within(panel).queryByText('Concurrent Sessions')).toBeNull();
+    expect(await within(panel).findByText(/today peak 3/)).toBeInTheDocument();
+    expect(within(panel).getByText('2')).toBeInTheDocument();
   });
 });
