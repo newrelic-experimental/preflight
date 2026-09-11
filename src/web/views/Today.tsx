@@ -21,7 +21,8 @@ import { GeoBanner } from '../components/GeoBanner';
 import { ContextBar } from '../components/ContextBar';
 import { Panel } from '../components/ui/Panel';
 import { HealthCard, type HealthCardRow, type HealthTone } from '../components/HealthCard';
-import { RankedBars, type RankedBarRow } from '../components/RankedBars';
+import { ShareTable } from '../components/ShareTable';
+import { UsageInsightsList } from '../components/UsageInsightsList';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
 import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
@@ -56,6 +57,7 @@ import {
   fetchLiveSessions,
   fetchTodayAggregate,
   fetchObservabilityHealth,
+  fetchUsageInsights,
   TodayAggregateResponse,
   ActivityHeatmapTodayResponse,
   LiveSessionEntry,
@@ -65,6 +67,7 @@ import {
   qk,
   type SessionSubagentsResponse,
   type LatencyPercentiles,
+  type UsageInsightsReport,
 } from '../api/client';
 import {
   fmtTimeOfDay,
@@ -211,18 +214,6 @@ interface ToolSelectionMetrics {
 }
 
 const QUALITY_REFETCH_MS = 10_000;
-
-// Mirrors History.tsx's toolFillColor grouping, translated to the Tailwind
-// utility classes RankedBars' `tone` prop expects (a bg-* class, not a CSS
-// color value) — so a tool's color is consistent whether viewed here (by
-// cost) or in History's Top Tools panel (by call count).
-function toolToneClass(toolName: string): string {
-  if (toolName === 'Read') return 'bg-accent-blue';
-  if (toolName === 'Edit' || toolName === 'Write') return 'bg-accent-green';
-  if (toolName === 'Bash') return 'bg-accent-purple';
-  if (toolName === 'Agent') return 'bg-accent-teal';
-  return 'bg-ink-muted';
-}
 
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
@@ -457,13 +448,14 @@ export function Today(): JSX.Element {
             <SpendBreakdownPanel />
           </AnimatedCard>
 
-          <AnimatedCard index={2}>
+          <AnimatedCard index={2} className="grid grid-cols-2 gap-3">
             <NeedsAttentionPanel
               antiPatterns={antiPatterns}
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
             />
+            <ContributingTodayPanel />
           </AnimatedCard>
         </>
       ) : (
@@ -525,13 +517,14 @@ export function Today(): JSX.Element {
             )}
           </AnimatedCard>
 
-          <AnimatedCard index={1} className="mb-3">
+          <AnimatedCard index={1} className="grid grid-cols-2 gap-3 mb-3">
             <NeedsAttentionPanel
               antiPatterns={antiPatterns}
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
             />
+            <ContributingTodayPanel />
           </AnimatedCard>
 
           <AnimatedCard index={2} className="mb-3">
@@ -720,6 +713,33 @@ function NeedsAttentionPanel({
   );
 }
 
+// --- Contributing Today Panel ---
+
+function ContributingTodayPanel(): JSX.Element {
+  const { data, isError } = useQuery<UsageInsightsReport>({
+    queryKey: qk.usageInsights('today'),
+    queryFn: () => fetchUsageInsights('today'),
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
+
+  if (isError) {
+    return (
+      <Panel title="What's contributing to today's spend" subtitle="Since midnight">
+        <EmptyState variant="inline" title="Usage insights unavailable" />
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title="What's contributing to today's spend" subtitle="Since midnight">
+      <UsageInsightsList
+        insights={data?.insights ?? []}
+        emptyText="Nothing stands out yet today."
+      />
+    </Panel>
+  );
+}
+
 // --- Spend Breakdown Panel ---
 
 interface ModelStats {
@@ -731,6 +751,29 @@ interface ModelStats {
 interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
+}
+
+interface ModelShareRow {
+  readonly model: string;
+  readonly requestCount: number;
+  readonly costPerMillionTokens: number | null;
+  readonly totalCostUsd: number;
+  readonly sharePct: number;
+}
+
+interface ToolShareRow {
+  readonly tool: string;
+  readonly label: string;
+  readonly calls: number;
+  readonly costUsd: number;
+  readonly sharePct: number;
+}
+
+interface SkillShareRow {
+  readonly skill: string;
+  readonly calls: number;
+  readonly costUsd: number;
+  readonly sharePct: number;
 }
 
 function SpendBreakdownPanel(): JSX.Element {
@@ -761,32 +804,37 @@ function SpendBreakdownPanel(): JSX.Element {
   }
 
   const models = modelData?.byModel
-    ? Object.entries(modelData.byModel)
-        .filter(([, s]) => s.requestCount > 0)
-        .sort((a, b) => b[1].totalCostUsd - a[1].totalCostUsd)
+    ? Object.entries(modelData.byModel).filter(([, s]) => s.requestCount > 0)
     : [];
   const modelsTotalCost = models.reduce((sum, [, s]) => sum + s.totalCostUsd, 0);
+  const modelRows: ModelShareRow[] = models.map(([model, s]) => ({
+    model,
+    requestCount: s.requestCount,
+    costPerMillionTokens: s.costPerMillionTokens,
+    totalCostUsd: s.totalCostUsd,
+    sharePct: modelsTotalCost > 0 ? (s.totalCostUsd / modelsTotalCost) * 100 : 0,
+  }));
 
   const tools = costData?.costByToolType
     ? Object.entries(costData.costByToolType).filter(([, e]) => e.totalCost > 0)
     : [];
   const toolsTotalCost = tools.reduce((sum, [, e]) => sum + e.totalCost, 0);
-  const toolRows: RankedBarRow[] = [...tools]
-    .sort((a, b) => b[1].totalCost - a[1].totalCost)
-    .map(([tool, e]) => ({
-      key: tool,
-      label: shortToolName(tool),
-      value: formatUsd(e.totalCost),
-      share: toolsTotalCost > 0 ? (e.totalCost / toolsTotalCost) * 100 : 0,
-      tone: toolToneClass(shortToolName(tool)),
-    }));
+  const toolRows: ToolShareRow[] = tools.map(([tool, e]) => ({
+    tool,
+    label: shortToolName(tool),
+    calls: e.callCount,
+    costUsd: e.totalCost,
+    sharePct: toolsTotalCost > 0 ? (e.totalCost / toolsTotalCost) * 100 : 0,
+  }));
 
-  const skills = costData?.costBySkill
-    ? Object.entries(costData.costBySkill).sort(
-        (a, b) => b[1].totalCost - a[1].totalCost || b[1].callCount - a[1].callCount,
-      )
-    : [];
+  const skills = costData?.costBySkill ? Object.entries(costData.costBySkill) : [];
   const skillsTotalCost = skills.reduce((sum, [, e]) => sum + e.totalCost, 0);
+  const skillRows: SkillShareRow[] = skills.map(([skill, e]) => ({
+    skill,
+    calls: e.callCount,
+    costUsd: e.totalCost,
+    sharePct: skillsTotalCost > 0 ? (e.totalCost / skillsTotalCost) * 100 : 0,
+  }));
 
   const attributionRate = costData?.attributionRate ?? 1;
   const lowAttribution = costData != null && attributionRate < 0.5;
@@ -803,78 +851,123 @@ function SpendBreakdownPanel(): JSX.Element {
     >
       <div className="grid grid-cols-3 gap-4">
         <div>
-          <Eyebrow className="mb-1.5">Models</Eyebrow>
-          {models.length === 0 ? (
-            <EmptyState variant="inline" title="No model data yet" />
+          {modelRows.length === 0 ? (
+            <>
+              <Eyebrow className="mb-1.5">Models</Eyebrow>
+              <EmptyState variant="inline" title="No model data yet" />
+            </>
           ) : (
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="text-ink-muted">
-                  <th className="text-left pb-1">Model</th>
-                  <th className="text-right pb-1">Req</th>
-                  <th className="text-right pb-1">$/1M tok</th>
-                  <th className="text-right pb-1">Cost</th>
-                  <th className="text-right pb-1">Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {models.map(([model, s]) => (
-                  <tr key={model} className="border-t border-border-subtle">
-                    <td
-                      className="py-1 text-ink-base font-mono truncate max-w-[12rem]"
-                      title={model}
-                    >
-                      {model}
-                    </td>
-                    <td className="text-right py-1 text-ink-subtle">{s.requestCount}</td>
-                    <td className="text-right py-1 text-ink-subtle">
-                      {formatUsdOrDash(s.costPerMillionTokens)}
-                    </td>
-                    <td className="text-right py-1 text-ink-base">{formatUsd(s.totalCostUsd)}</td>
-                    <td className="text-right py-1 text-ink-muted">
-                      {formatPct(
-                        modelsTotalCost > 0 ? (s.totalCostUsd / modelsTotalCost) * 100 : 0,
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ShareTable<ModelShareRow>
+              title="Models"
+              rows={modelRows}
+              rowKey={(row) => row.model}
+              defaultSort={{ column: 4, direction: 'desc' }}
+              columns={[
+                {
+                  header: 'Model',
+                  align: 'left',
+                  className: 'font-mono truncate max-w-[12rem]',
+                  title: (row) => row.model,
+                  cell: (row) => row.model,
+                },
+                {
+                  header: 'Req',
+                  align: 'right',
+                  cell: (row) => row.requestCount,
+                  sortValue: (row) => row.requestCount,
+                },
+                {
+                  header: '$/1M tok',
+                  align: 'right',
+                  cell: (row) => formatUsdOrDash(row.costPerMillionTokens),
+                  sortValue: (row) => row.costPerMillionTokens ?? 0,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsd(row.totalCostUsd),
+                  sortValue: (row) => row.totalCostUsd,
+                },
+                {
+                  header: 'Share',
+                  align: 'right',
+                  cell: (row) => formatPct(row.sharePct),
+                  sortValue: (row) => row.sharePct,
+                },
+              ]}
+            />
           )}
         </div>
         <div>
-          <Eyebrow className="mb-1.5">Tools</Eyebrow>
-          <RankedBars rows={toolRows} max={8} />
+          {toolRows.length === 0 ? (
+            <>
+              <Eyebrow className="mb-1.5">Tools</Eyebrow>
+              <EmptyState variant="inline" title="No tool data yet" />
+            </>
+          ) : (
+            <ShareTable<ToolShareRow>
+              title="Tools"
+              rows={toolRows}
+              rowKey={(row) => row.tool}
+              defaultSort={{ column: 3, direction: 'desc' }}
+              columns={[
+                { header: 'Tool', align: 'left', cell: (row) => row.label },
+                {
+                  header: 'Calls',
+                  align: 'right',
+                  cell: (row) => row.calls,
+                  sortValue: (row) => row.calls,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsd(row.costUsd),
+                  sortValue: (row) => row.costUsd,
+                },
+                {
+                  header: 'Share',
+                  align: 'right',
+                  cell: (row) => formatPct(row.sharePct),
+                  sortValue: (row) => row.sharePct,
+                },
+              ]}
+            />
+          )}
         </div>
         <div>
-          <Eyebrow className="mb-1.5">Skills</Eyebrow>
-          {skills.length === 0 ? (
-            <EmptyState variant="inline" title="No skill data yet" />
+          {skillRows.length === 0 ? (
+            <>
+              <Eyebrow className="mb-1.5">Skills</Eyebrow>
+              <EmptyState variant="inline" title="No skill data yet" />
+            </>
           ) : (
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="text-ink-muted">
-                  <th className="text-left pb-1">Skill</th>
-                  <th className="text-right pb-1">Calls</th>
-                  <th className="text-right pb-1">Cost</th>
-                  <th className="text-right pb-1">Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {skills.slice(0, 10).map(([skillName, entry]) => (
-                  <tr key={skillName} className="border-t border-border-subtle">
-                    <td className="py-1 text-ink-base font-mono">{skillName}</td>
-                    <td className="text-right py-1 text-ink-subtle">{entry.callCount}</td>
-                    <td className="text-right py-1 text-ink-base">{formatUsd(entry.totalCost)}</td>
-                    <td className="text-right py-1 text-ink-muted">
-                      {formatPct(
-                        skillsTotalCost > 0 ? (entry.totalCost / skillsTotalCost) * 100 : 0,
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ShareTable<SkillShareRow>
+              title="Skills"
+              rows={skillRows}
+              rowKey={(row) => row.skill}
+              defaultSort={{ column: 3, direction: 'desc' }}
+              columns={[
+                { header: 'Skill', align: 'left', cell: (row) => row.skill },
+                {
+                  header: 'Calls',
+                  align: 'right',
+                  cell: (row) => row.calls,
+                  sortValue: (row) => row.calls,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsd(row.costUsd),
+                  sortValue: (row) => row.costUsd,
+                },
+                {
+                  header: 'Share',
+                  align: 'right',
+                  cell: (row) => formatPct(row.sharePct),
+                  sortValue: (row) => row.sharePct,
+                },
+              ]}
+            />
           )}
         </div>
       </div>

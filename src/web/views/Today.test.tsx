@@ -2290,17 +2290,19 @@ describe('Today view — Spend breakdown panel', () => {
     expect(within(row as HTMLElement).getByText('100%')).toBeInTheDocument();
   });
 
-  it('renders a tool row via RankedBars using the tool color class', async () => {
+  it('renders a tool row via ShareTable with calls, cost, and share', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     qc.setQueryData(qk.costPerTool, {
       costByToolType: { Bash: { totalCost: 3, callCount: 2, avgCost: 1.5 } },
       totalAttributedCost: 3,
       attributionRate: 1,
     });
-    const { container } = renderToday(qc);
+    renderToday(qc);
     await screen.findByText("Where today's spend went");
-    expect(screen.getAllByText('$3.00').length).toBeGreaterThan(0);
-    expect(container.querySelector('.bg-accent-purple')).toBeInTheDocument();
+    const row = screen.getByText('Bash').closest('tr') as HTMLElement;
+    expect(within(row).getByText('2')).toBeInTheDocument();
+    expect(within(row).getByText('$3.00')).toBeInTheDocument();
+    expect(within(row).getByText('100%')).toBeInTheDocument();
   });
 
   it('shows a skill row with its cost and share', async () => {
@@ -2320,21 +2322,36 @@ describe('Today view — Spend breakdown panel', () => {
     expect(within(row).getByText('60%')).toBeInTheDocument();
   });
 
-  it('caps the Tools column with a "+N more not shown" footnote', async () => {
-    const costByToolType = Object.fromEntries(
-      Array.from({ length: 10 }, (_, i) => [
-        `Tool${i}`,
-        { totalCost: 10 - i, callCount: 1, avgCost: 10 - i },
-      ]),
-    );
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+  it('sorts the Tools table by a column and reverses on a second click', async () => {
+    // A nonzero todayTotalUsd keeps `noActivityToday` false for the whole
+    // test — otherwise the other today-scoped queries in this describe
+    // block's zero-spend fixture settle mid-test and flip Today from the
+    // KPI branch to the empty-state branch, remounting SpendBreakdownPanel
+    // (and losing the ShareTable's just-applied sort) between the clicks.
+    useLiveStore.setState({ cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0, staleTime: Infinity } } });
     qc.setQueryData(qk.costPerTool, {
-      costByToolType,
-      totalAttributedCost: 55,
+      costByToolType: {
+        Bash: { totalCost: 1, callCount: 9, avgCost: 1 },
+        Read: { totalCost: 5, callCount: 2, avgCost: 2.5 },
+      },
+      totalAttributedCost: 6,
       attributionRate: 1,
     });
     renderToday(qc);
-    expect(await screen.findByText('+2 more not shown')).toBeInTheDocument();
+    await screen.findByText("Where today's spend went");
+
+    const table = (await screen.findByText('Tools')).closest('div') as HTMLElement;
+    const firstToolCell = () => within(table).getAllByRole('row')[1]!.querySelector('td');
+
+    // Default sort is Share desc, so the higher-cost tool (Read) leads.
+    expect(firstToolCell()!.textContent).toBe('Read');
+
+    fireEvent.click(within(table).getByRole('button', { name: 'Calls' }));
+    expect(firstToolCell()!.textContent).toBe('Bash');
+
+    fireEvent.click(within(table).getByRole('button', { name: 'Calls' }));
+    expect(firstToolCell()!.textContent).toBe('Read');
   });
 
   it('renders Cost attribution unavailable when /api/cost-per-tool returns 503', async () => {
@@ -2364,7 +2381,8 @@ describe('Today view — Spend breakdown panel', () => {
     qc.setQueryData(qk.costPerTool, null);
     renderToday(qc);
     expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
-    expect(screen.getAllByText('No data yet').length).toBeGreaterThan(0);
+    expect(screen.getByText('No model data yet')).toBeInTheDocument();
+    expect(screen.getByText('No tool data yet')).toBeInTheDocument();
     expect(screen.getByText('No skill data yet')).toBeInTheDocument();
   });
 
