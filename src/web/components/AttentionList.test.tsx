@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { AttentionList, humanizeFlagType, type AttentionRow } from './AttentionList';
@@ -51,6 +51,20 @@ describe('AttentionList', () => {
       'href',
       '/sessions?sessionIds=s1,s2',
     );
+  });
+
+  it('places the sessions link inline at the end of the advice line, not in a separate column', () => {
+    render(
+      <AttentionList
+        rows={[makeRow({ sessionIds: ['s1'] })]}
+        firingCount={0}
+        alertsHref="/alerts"
+      />,
+    );
+    const link = screen.getByText('View sessions →');
+    const adviceRow = link.parentElement as HTMLElement;
+    expect(adviceRow.className).toContain('justify-between');
+    expect(within(adviceRow).getByText(/Read a file once/)).toBeInTheDocument();
   });
 
   it('omits the sessions link and the target line when there is nothing to show', () => {

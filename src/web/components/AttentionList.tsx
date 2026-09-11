@@ -72,29 +72,28 @@ export function AttentionList({ rows, firingCount, alertsHref }: AttentionListPr
             const hidden = row.targets.length - shown.length;
             const advice = FLAG_ADVICE[row.type];
             return (
-              <li
-                key={row.type}
-                className="flex items-start justify-between gap-3 py-1.5 first:pt-0 last:pb-0"
-              >
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-ink-base">
-                    {humanizeFlagType(row.type)} ×{row.count}
-                  </div>
-                  {shown.length > 0 && (
-                    <div className="text-[11px] font-mono text-ink-muted truncate">
-                      {shown.join(' · ')}
-                      {hidden > 0 ? ` +${hidden} more` : ''}
-                    </div>
-                  )}
-                  {advice && <div className="text-[11px] text-ink-muted">{advice}</div>}
+              <li key={row.type} className="py-1.5 first:pt-0 last:pb-0">
+                <div className="text-xs font-medium text-ink-base">
+                  {humanizeFlagType(row.type)} ×{row.count}
                 </div>
-                {row.sessionIds.length > 0 && (
-                  <a
-                    href={`/sessions?sessionIds=${row.sessionIds.join(',')}`}
-                    className="shrink-0 text-[11px] text-accent-cyan hover:underline"
-                  >
-                    View sessions →
-                  </a>
+                {shown.length > 0 && (
+                  <div className="text-[11px] font-mono text-ink-muted truncate">
+                    {shown.join(' · ')}
+                    {hidden > 0 ? ` +${hidden} more` : ''}
+                  </div>
+                )}
+                {(advice || row.sessionIds.length > 0) && (
+                  <div className="flex items-start justify-between gap-3">
+                    {advice && <div className="text-[11px] text-ink-muted">{advice}</div>}
+                    {row.sessionIds.length > 0 && (
+                      <a
+                        href={`/sessions?sessionIds=${row.sessionIds.join(',')}`}
+                        className="shrink-0 text-[11px] text-accent-cyan hover:underline"
+                      >
+                        View sessions →
+                      </a>
+                    )}
+                  </div>
                 )}
               </li>
             );
