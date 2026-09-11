@@ -550,6 +550,33 @@ export function Today(): JSX.Element {
 
 // --- Needs Attention Panel ---
 
+/**
+ * One pill per anti-pattern type. Persisted sessions can carry hundreds of
+ * per-file flags for a day; the reader wants "Repeated reads ×187 on 42 files",
+ * not one pill per path.
+ */
+export function aggregateAttentionFlags(raw: readonly AttentionFlag[]): readonly AttentionFlag[] {
+  const byType = new Map<string, { count: number; targets: Set<string> }>();
+  for (const flag of raw) {
+    const entry = byType.get(flag.type) ?? { count: 0, targets: new Set<string>() };
+    entry.count += flag.count;
+    if (flag.target && flag.target !== 'unknown') entry.targets.add(flag.target);
+    byType.set(flag.type, entry);
+  }
+  return [...byType.entries()]
+    .map(([type, { count, targets }]) => {
+      const [only] = targets;
+      const target =
+        targets.size > 1
+          ? `${targets.size} files`
+          : only !== undefined
+            ? only.split('/').pop() || only
+            : undefined;
+      return target === undefined ? { type, count } : { type, count, target };
+    })
+    .sort((a, b) => b.count - a.count);
+}
+
 function NeedsAttentionPanel({
   antiPatterns,
   apiAntiPatterns,
@@ -584,7 +611,7 @@ function NeedsAttentionPanel({
   // Same fallback priority the old banner used: prefer the live SSE list,
   // then this process's own /api/anti-patterns, then whatever's already
   // persisted in today's session records.
-  const flags: readonly AttentionFlag[] =
+  const rawFlags: readonly AttentionFlag[] =
     antiPatterns.length > 0
       ? antiPatterns.map((a) => ({ type: a.type, count: a.count, target: a.target }))
       : apiAntiPatterns && apiAntiPatterns.length > 0
@@ -598,6 +625,7 @@ function NeedsAttentionPanel({
             count: resolveAntiPatternCount(a),
             target: a.file ?? a.command ?? 'unknown',
           }));
+  const flags = aggregateAttentionFlags(rawFlags);
 
   return (
     <Panel title="Needs attention">

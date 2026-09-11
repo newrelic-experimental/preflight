@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Today } from './Today';
+import { Today, aggregateAttentionFlags } from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
 import { localStartOfDay } from '../../lib/date.js';
@@ -2522,5 +2522,25 @@ describe('Today view — Activity today panel', () => {
     expect(within(panel).queryByText('Concurrent Sessions')).toBeNull();
     expect(await within(panel).findByText(/today peak 3/)).toBeInTheDocument();
     expect(within(panel).getByText('2')).toBeInTheDocument();
+  });
+});
+
+describe('aggregateAttentionFlags()', () => {
+  it('collapses per-file flags into one pill per type with a file count', () => {
+    const out = aggregateAttentionFlags([
+      { type: 're_reading', count: 3, target: '/a/one.ts' },
+      { type: 're_reading', count: 4, target: '/a/two.ts' },
+      { type: 'over_delegation', count: 2, target: 'unknown' },
+    ]);
+    expect(out).toEqual([
+      { type: 're_reading', count: 7, target: '2 files' },
+      { type: 'over_delegation', count: 2 },
+    ]);
+  });
+
+  it('keeps the basename when a type has a single target', () => {
+    expect(
+      aggregateAttentionFlags([{ type: 'blind_editing', count: 1, target: '/x/y/z.ts' }]),
+    ).toEqual([{ type: 'blind_editing', count: 1, target: 'z.ts' }]);
   });
 });
