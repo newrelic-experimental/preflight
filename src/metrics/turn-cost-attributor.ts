@@ -37,7 +37,15 @@ export interface ToolTypeCostEntry {
   readonly avgCost: number;
 }
 
-/** Per-skill row. `callCount` and `totalDurationMs` are measured on every call; cost and tokens cover `attributedCallCount` of them. */
+/**
+ * Per-skill row aggregating both `Skill` tool invocations and slash-command
+ * invocations. A `Skill` tool call (channel `Skill`) receives an even split
+ * of its turn's cost; a slash invocation (channel `SlashCommand`) receives the
+ * full cost from that prompt to the next. `callCount` counts both channels
+ * (one per `Skill` tool call, one per slash invocation); `totalDurationMs`
+ * measures only `Skill` calls (slash commands have none). Cost and tokens
+ * cover `attributedCallCount` of them.
+ */
 export interface SkillCostEntry {
   readonly callCount: number;
   readonly attributedCallCount: number;
@@ -96,7 +104,10 @@ const MAX_TURNS = 200;
 
 interface BucketIdentity {
   readonly toolName: string;
-  /** Set only for `Skill` records that carried a skill name. */
+  /**
+   * Set only for `Skill` tool records that carried a skill name, or for
+   * `SlashCommand` records from slash-invoked skills.
+   */
   readonly skillName: string | null;
 }
 
@@ -154,6 +165,7 @@ interface SessionState {
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
+  activeSlashSkill: string | null;
 }
 
 function createSessionState(): SessionState {
@@ -164,6 +176,7 @@ function createSessionState(): SessionState {
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
+    activeSlashSkill: null,
   };
 }
 
@@ -293,6 +306,19 @@ export class TurnCostAttributor {
     }
   }
 
+  recordSlashCommand(sessionId: string | null | undefined, skillName: string | null): void {
+    const state = this.getOrCreateSession(sessionId);
+    if (skillName) {
+      state.activeSlashSkill = skillName;
+      const id: BucketIdentity = { toolName: 'SlashCommand', skillName };
+      const key = bucketKeyOf(id);
+      const bucket = getOrCreateBucket(state.buckets, key, id);
+      bucket.callCount++;
+    } else {
+      state.activeSlashSkill = null;
+    }
+  }
+
   recordTokenEvent(event: TokenEvent): ClosedTurn | null {
     const state = this.getOrCreateSession(event.sessionId);
     if (!state.pendingTurn) return null;
@@ -350,6 +376,17 @@ export class TurnCostAttributor {
       bucket.inputTokens += event.inputTokens / toolCount;
       bucket.outputTokens += event.outputTokens / toolCount;
       bucket.cacheReadTokens += event.cacheReadTokens / toolCount;
+    }
+
+    if (state.activeSlashSkill !== null) {
+      const id: BucketIdentity = { toolName: 'SlashCommand', skillName: state.activeSlashSkill };
+      const key = bucketKeyOf(id);
+      const slashBucket = getOrCreateBucket(state.buckets, key, id);
+      slashBucket.attributedCallCount++;
+      slashBucket.totalCost += costUsd;
+      slashBucket.inputTokens += event.inputTokens;
+      slashBucket.outputTokens += event.outputTokens;
+      slashBucket.cacheReadTokens += event.cacheReadTokens;
     }
 
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
@@ -439,7 +476,7 @@ export class TurnCostAttributor {
 
   private static buildMetrics(state: SessionState): CostAttributionMetrics {
     const toolTypeAccum = new Map<string, { totalCost: number; callCount: number }>();
-    const costBySkill: Record<string, SkillCostEntry> = {};
+    const skillAccum = new Map<string, Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>>();
 
     for (const bucket of state.buckets.values()) {
       // costByToolType predates the buckets table and only ever listed tools
@@ -455,18 +492,28 @@ export class TurnCostAttributor {
       }
 
       if (bucket.skillName !== null) {
-        costBySkill[bucket.skillName] = {
-          callCount: bucket.callCount,
-          attributedCallCount: bucket.attributedCallCount,
-          totalCost: bucket.totalCost,
-          avgCost:
-            bucket.attributedCallCount > 0 ? bucket.totalCost / bucket.attributedCallCount : 0,
-          inputTokens: Math.round(bucket.inputTokens),
-          outputTokens: Math.round(bucket.outputTokens),
-          cacheReadTokens: Math.round(bucket.cacheReadTokens),
-          totalDurationMs: bucket.totalDurationMs,
-        };
+        let entry = skillAccum.get(bucket.skillName);
+        if (entry === undefined) {
+          entry = {} as Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>;
+          for (const counter of BUCKET_COUNTERS) entry[counter] = 0;
+          skillAccum.set(bucket.skillName, entry);
+        }
+        for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
       }
+    }
+
+    const costBySkill: Record<string, SkillCostEntry> = {};
+    for (const [skillName, entry] of skillAccum) {
+      costBySkill[skillName] = {
+        callCount: entry.callCount,
+        attributedCallCount: entry.attributedCallCount,
+        totalCost: entry.totalCost,
+        avgCost: entry.attributedCallCount > 0 ? entry.totalCost / entry.attributedCallCount : 0,
+        inputTokens: Math.round(entry.inputTokens),
+        outputTokens: Math.round(entry.outputTokens),
+        cacheReadTokens: Math.round(entry.cacheReadTokens),
+        totalDurationMs: entry.totalDurationMs,
+      };
     }
 
     const costByToolType: Record<string, ToolTypeCostEntry> = {};

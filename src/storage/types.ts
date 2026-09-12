@@ -207,13 +207,15 @@ export interface ModelSwitchHookEvent extends HookEventBase {
 /**
  * Emitted by Claude Code's UserPromptSubmit hook, which fires when the user
  * submits a prompt, before Claude processes it (code.claude.com/docs/en/hooks.md).
- * Deliberately carries no content — the `prompt` field itself is free text
- * this file has no reason to capture; only its timestamp matters, as a
- * precise "a new task started here" boundary for `TaskDetector`.
+ * The prompt body is never captured; only a leading `/name` token is, as a
+ * skill identifier, so slash-invoked skills can be attributed the way
+ * `Skill` tool calls are. The timestamp also serves as a precise "a new task
+ * started here" boundary for `TaskDetector`.
  */
 export interface UserPromptSubmitHookEvent extends HookEventBase {
   readonly mode: 'user_prompt_submit';
   readonly sessionId?: string;
+  readonly slashCommand?: string;
 }
 
 /**

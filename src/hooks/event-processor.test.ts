@@ -13,6 +13,7 @@ import type {
   PreHookEvent,
   PostHookEvent,
   ToolCallRecord,
+  UserPromptSubmitHookEvent,
 } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -2033,6 +2034,49 @@ describe('HookEventProcessor', () => {
       expect(frames).toHaveLength(1);
       expect(frames[0].timestamp).toBe(1700000000000);
       expect(frames[0].sessionId).toBe('s1');
+    });
+
+    it('includes slashCommand in onUserPromptSubmit frame when present', () => {
+      const frames: import('./event-processor.js').BoundaryFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onUserPromptSubmit: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+          slashCommand: 'simplify',
+        } as UserPromptSubmitHookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].slashCommand).toBe('simplify');
+    });
+
+    it('omits slashCommand from onUserPromptSubmit frame when absent', () => {
+      const frames: import('./event-processor.js').BoundaryFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onUserPromptSubmit: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].slashCommand).toBeUndefined();
     });
 
     it('defaults sessionId to null when absent, for both user_prompt_submit and stop', () => {

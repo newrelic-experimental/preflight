@@ -47,6 +47,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -95,10 +96,12 @@ describe('aggregateSessions prototype-pollution resistance', () => {
         sessionId: 'proto-sess',
         startTime: start.getTime() + 1000,
         // keys that would shadow Object.prototype on a regular {} accumulator
-        toolBreakdown: { __proto__: 1, constructor: 2, Read: 5 } as unknown as Record<
-          string,
-          number
-        >,
+        toolBreakdown: {
+          __proto__: 1,
+          constructor: 2,
+          Read: 5,
+        } as unknown as Record<string, number>,
+        skillBreakdown: {},
       }),
     );
 
@@ -152,6 +155,7 @@ describe('WeeklySummaryGenerator', () => {
           testPassCount: 2,
           efficiencyScore: 0.8,
           toolBreakdown: { Read: 4, Edit: 3, Bash: 3 },
+          skillBreakdown: {},
           antiPatterns: [{ type: 'thrashing' }],
         }),
       );

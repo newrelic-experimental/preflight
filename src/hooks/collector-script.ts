@@ -422,6 +422,11 @@ interface HookInput {
   context_tokens?: number;
   prompt_cache_likely_expired?: boolean;
   estimated_cache_write_usd?: number;
+  // UserPromptSubmit (code.claude.com/docs/en/hooks.md): the prompt text
+  // submitted by the user. Only the leading slash token is captured as a
+  // skill identifier (the same class as tool_input.skill on Skill calls);
+  // no other prompt content is read.
+  prompt?: string;
   // Cursor (https://cursor.com/docs/agent/hooks) sends a different field
   // vocabulary per hook type instead of the uniform tool_name/tool_input
   // Claude Code and Kiro use. conversation_id is Cursor's closest analog to
@@ -1220,13 +1225,17 @@ function processHook(raw: string): void {
     // Fires when the user submits a prompt, before Claude processes it
     // (code.claude.com/docs/en/hooks.md). Pure notification — no decision
     // control used here (this hook CAN block/modify the prompt via a JSON
-    // decision, but this collector never emits one). Deliberately no
-    // content captured — `data.prompt` is free text this collector has no
-    // reason to read; only the timestamp matters, as a precise task-start
-    // boundary for TaskDetector.
+    // decision, but this collector never emits one). Only the leading slash
+    // token is captured because it is a skill identifier, the same class as
+    // tool_input.skill already captured by parseSkill() — no other prompt
+    // content is read. Not gated behind recordContent, matching skillName on
+    // Skill tool calls.
+    const slashCommand =
+      typeof data.prompt === 'string' ? /^\/([A-Za-z0-9_:.\-]+)/.exec(data.prompt)?.[1] : undefined;
     event = {
       mode: 'user_prompt_submit' as const,
       timestamp,
+      ...(slashCommand !== undefined && { slashCommand }),
     };
   } else if (eventName === 'stop') {
     // Fires when the main agent has finished responding

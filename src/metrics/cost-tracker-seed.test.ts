@@ -19,6 +19,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: {},
+    skillBreakdown: {},
     filesRead: [],
     filesModified: [],
     linesAdded: 0,

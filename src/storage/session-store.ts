@@ -45,6 +45,10 @@ import {
   type QualityProxyRawCounts,
   ZERO_QUALITY_PROXY_COUNTS,
 } from '../metrics/quality-proxy-tracker.js';
+import type {
+  CostAttributionMetrics,
+  TurnCostAttributor,
+} from '../metrics/turn-cost-attributor.js';
 
 const logger = createLogger('session-store');
 
@@ -99,6 +103,8 @@ export interface FullSessionSummary extends SessionSummary {
   readonly repoName: string | null;
   readonly model: string | null;
   readonly toolBreakdown: Record<string, number>;
+  /** Invocation count per skill name, both Skill tool calls and slash commands. */
+  readonly skillBreakdown: Record<string, number>;
   readonly filesRead: string[];
   readonly filesModified: string[];
   readonly linesAdded: number;
@@ -377,6 +383,7 @@ export function mergeSummaries(
         : (existing.platform ?? incoming.platform),
     instructionPromptHash: incoming.instructionPromptHash ?? existing.instructionPromptHash,
     toolBreakdown: mergeCounts(existing.toolBreakdown, incoming.toolBreakdown),
+    skillBreakdown: mergeCounts(existing.skillBreakdown, incoming.skillBreakdown),
     filesRead: union(existing.filesRead, incoming.filesRead),
     filesModified: union(existing.filesModified, incoming.filesModified),
     linesAdded: maxNum(existing.linesAdded, incoming.linesAdded),
@@ -679,6 +686,7 @@ export interface BuildSessionSummarySources {
   toolSelectionScorer?: ToolSelectionScorer;
   modelUsageTracker?: ModelUsageTracker;
   qualityProxyTracker?: QualityProxyTracker;
+  turnCostAttributor?: TurnCostAttributor;
   developer: string;
   repoName?: string | null;
   /**
@@ -691,6 +699,17 @@ export interface BuildSessionSummarySources {
   outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
+}
+
+function skillInvocationCounts(
+  metrics: CostAttributionMetrics | undefined,
+): Record<string, number> {
+  if (!metrics) return {};
+  const result: Record<string, number> = {};
+  for (const [skillName, entry] of Object.entries(metrics.costBySkill)) {
+    result[skillName] = entry.callCount;
+  }
+  return result;
 }
 
 export function buildSessionSummary(sources: BuildSessionSummarySources): FullSessionSummary {
@@ -818,6 +837,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     developer,
     model: costMetrics?.model ?? null,
     toolBreakdown: { ...sessionMetrics.toolCallCountByTool },
+    skillBreakdown: skillInvocationCounts(
+      sources.turnCostAttributor?.getMetrics(sessionMetrics.sessionId),
+    ),
     filesRead: [...allFilesRead].sort().map((f) => redactSensitive(f)),
     filesModified: [...allFilesModified].sort().map((f) => redactSensitive(f)),
     linesAdded: totalLinesAdded,
@@ -916,6 +938,7 @@ interface SerializedFullSessionSummary {
   readonly developer?: unknown;
   readonly model?: unknown;
   readonly toolBreakdown?: Record<string, unknown>;
+  readonly skillBreakdown?: Record<string, unknown>;
   readonly filesRead?: unknown[];
   readonly filesModified?: unknown[];
   readonly linesAdded?: unknown;
@@ -989,6 +1012,13 @@ export function deserializeFullSessionSummary(
   if (typeof obj.toolBreakdown === 'object' && obj.toolBreakdown !== null) {
     for (const [k, v] of Object.entries(obj.toolBreakdown)) {
       if (typeof v === 'number') toolBreakdown[k] = v;
+    }
+  }
+
+  const skillBreakdown = Object.create(null) as Record<string, number>;
+  if (typeof obj.skillBreakdown === 'object' && obj.skillBreakdown !== null) {
+    for (const [k, v] of Object.entries(obj.skillBreakdown)) {
+      if (typeof v === 'number') skillBreakdown[k] = v;
     }
   }
 
@@ -1162,6 +1192,7 @@ export function deserializeFullSessionSummary(
     developer: typeof obj.developer === 'string' ? obj.developer : 'unknown',
     model: typeof obj.model === 'string' ? obj.model : null,
     toolBreakdown,
+    skillBreakdown,
     filesRead: Array.isArray(obj.filesRead)
       ? obj.filesRead.filter((f): f is string => typeof f === 'string')
       : [],

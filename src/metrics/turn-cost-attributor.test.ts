@@ -621,6 +621,103 @@ describe('TurnCostAttributor', () => {
     });
   });
 
+  describe('recordSlashCommand()', () => {
+    it('records a slash command and charges its cost to costBySkill', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordSlashCommand('sess-001', 'pstack:poteto-mode');
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      const metrics = attributor.getMetrics();
+      const entry = metrics.costBySkill['pstack:poteto-mode'];
+      expect(entry).toBeDefined();
+      expect(entry!.callCount).toBe(1);
+      expect(entry!.attributedCallCount).toBe(1);
+      expect(entry!.totalCost).toBe(metrics.turns[0].estimatedCostUsd);
+      expect(entry!.inputTokens).toBe(makeTokenEvent().inputTokens);
+      expect(entry!.outputTokens).toBe(makeTokenEvent().outputTokens);
+    });
+
+    it('charges two consecutive tokens to the same slash command', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordSlashCommand('sess-001', 'simplify');
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_002', timestamp: 5000 }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 5100 }));
+
+      const metrics = attributor.getMetrics();
+      const entry = metrics.costBySkill.simplify;
+      expect(entry).toBeDefined();
+      expect(entry!.attributedCallCount).toBe(2);
+      const costPerEvent = metrics.turns[0].estimatedCostUsd;
+      expect(entry!.totalCost).toBeCloseTo(costPerEvent * 2, 10);
+    });
+
+    it('slash command is not charged after calling recordSlashCommand with null', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordSlashCommand('sess-001', 'simplify');
+      attributor.recordSlashCommand('sess-001', null);
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 2000 }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 2100 }));
+
+      const metrics = attributor.getMetrics();
+      const entry = metrics.costBySkill.simplify;
+      expect(entry).toBeDefined();
+      expect(entry!.callCount).toBe(1);
+      expect(entry!.attributedCallCount).toBe(0);
+      expect(entry!.totalCost).toBe(0);
+    });
+
+    it('folds Skill and SlashCommand buckets for the same skill into one costBySkill row', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'design',
+          timestamp: 1000,
+          toolUseId: 'skill-1',
+        }),
+      );
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
+
+      attributor.recordSlashCommand('sess-001', 'design');
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_002', timestamp: 5000 }));
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 5100 }));
+
+      const metrics = attributor.getMetrics();
+      const entry = metrics.costBySkill.design;
+      expect(entry).toBeDefined();
+      expect(entry!.callCount).toBe(2);
+      expect(entry!.attributedCallCount).toBe(2);
+    });
+
+    it('aggregates slash command across sessions in no-arg getMetrics()', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordSlashCommand('sess-001', 'code-review');
+      attributor.recordToolCall(
+        makeRecord({ sessionId: 'sess-001', toolUseId: 'toolu_001', timestamp: 1000 }),
+      );
+      attributor.recordTokenEvent(makeTokenEvent({ sessionId: 'sess-001', timestamp: 1100 }));
+
+      attributor.recordSlashCommand('sess-002', 'code-review');
+      attributor.recordToolCall(
+        makeRecord({ sessionId: 'sess-002', toolUseId: 'toolu_002', timestamp: 5000 }),
+      );
+      attributor.recordTokenEvent(makeTokenEvent({ sessionId: 'sess-002', timestamp: 5100 }));
+
+      const metrics = attributor.getMetrics();
+      const entry = metrics.costBySkill['code-review'];
+      expect(entry).toBeDefined();
+      expect(entry!.attributedCallCount).toBe(2);
+    });
+  });
+
   describe('recordTokenEvent() return value (ClosedTurn)', () => {
     it('returns null with no pending turn', () => {
       const attributor = new TurnCostAttributor();

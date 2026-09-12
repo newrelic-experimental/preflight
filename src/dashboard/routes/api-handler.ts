@@ -3077,6 +3077,7 @@ export function createApiHandler(
               modelBreakdown,
               outcome: 'in progress',
               toolBreakdown: live.toolCallCountByTool,
+              skillBreakdown: {},
               antiPatterns,
               qualityProxy: quality && quality.totalSignals > 0 ? quality : undefined,
               toolSelectionScore:
@@ -3155,6 +3156,7 @@ export function createApiHandler(
             model: null,
             outcome: 'in progress',
             toolBreakdown: breakdown,
+            skillBreakdown: {},
             antiPatterns,
             qualityProxy: quality.totalSignals > 0 ? quality : undefined,
             toolSelectionScore:

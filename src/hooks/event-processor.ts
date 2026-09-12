@@ -203,6 +203,7 @@ export interface ModelSwitchFrame {
 export interface BoundaryFrame {
   readonly timestamp: number;
   readonly sessionId: string | null;
+  readonly slashCommand?: string;
 }
 
 function numAttr(v: unknown): number {
@@ -1065,12 +1066,14 @@ export class HookEventProcessor {
     callbackName: string,
   ): void {
     if (!callback) return;
+    const slashCommand = event.mode === 'user_prompt_submit' ? event.slashCommand : undefined;
     const frame: BoundaryFrame = {
       timestamp:
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
           ? event.timestamp
           : Date.now(),
       sessionId: event.sessionId ?? null,
+      ...(slashCommand !== undefined ? { slashCommand } : {}),
     };
     try {
       callback(frame);

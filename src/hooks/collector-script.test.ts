@@ -1104,6 +1104,28 @@ describe('collector-script', () => {
       expect(JSON.stringify(event)).not.toContain('sk-1234567890abcdef');
       expect(event.prompt).toBeUndefined();
     });
+
+    it('captures leading slash token as slashCommand', () => {
+      processHook(makeUserPromptSubmit({ prompt: '/pstack:poteto-mode what model am I' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.slashCommand).toBe('pstack:poteto-mode');
+      expect(JSON.stringify(event)).not.toContain('what model');
+    });
+
+    it('captures simple slash command without colon', () => {
+      processHook(makeUserPromptSubmit({ prompt: '/simplify this code' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.slashCommand).toBe('simplify');
+    });
+
+    it('omits slashCommand when prompt does not start with slash', () => {
+      processHook(makeUserPromptSubmit({ prompt: 'hello /not-a-command' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.slashCommand).toBeUndefined();
+    });
   });
 
   describe('processHook() — Stop', () => {

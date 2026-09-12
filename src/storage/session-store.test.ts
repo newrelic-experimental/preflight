@@ -22,6 +22,7 @@ import { ToolSelectionScorer, toToolSelectionSummary } from '../metrics/tool-sel
 import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
+import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -57,6 +58,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -173,6 +175,79 @@ describe('instructionPromptHash field', () => {
       JSON.parse(JSON.stringify(summary)) as Record<string, unknown>,
     );
     expect(roundTripped.timeline?.[0]?.cwd).toBe('/Users/alice/repo/.claude/worktrees/feature-a');
+  });
+});
+
+describe('skillBreakdown field', () => {
+  it('buildSessionSummary reads skillBreakdown from turnCostAttributor.getMetrics().costBySkill', () => {
+    const sessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'sess-skill',
+        sessionName: null,
+        sessionStartTime: Date.now(),
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        bashCommandsRun: 0,
+        toolSuccessRate: null,
+      }),
+    } as unknown as SessionTracker;
+    const turnCostAttributor = {
+      getMetrics: () => ({
+        turns: [],
+        costByToolType: {},
+        costBySkill: {
+          'pstack:poteto-mode': { callCount: 3 },
+          simplify: { callCount: 1 },
+        },
+        totalAttributedCost: 0,
+        attributionRate: 0,
+      }),
+    } as unknown as TurnCostAttributor;
+
+    const summary = buildSessionSummary({ sessionTracker, turnCostAttributor, developer: 'dev1' });
+
+    expect(summary.skillBreakdown).toEqual({ 'pstack:poteto-mode': 3, simplify: 1 });
+  });
+
+  it('buildSessionSummary defaults skillBreakdown to {} when no turnCostAttributor is passed', () => {
+    const sessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'sess-skill-none',
+        sessionName: null,
+        sessionStartTime: Date.now(),
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        bashCommandsRun: 0,
+        toolSuccessRate: null,
+      }),
+    } as unknown as SessionTracker;
+
+    const summary = buildSessionSummary({ sessionTracker, developer: 'dev1' });
+
+    expect(summary.skillBreakdown).toEqual({});
+  });
+
+  it('mergeSummaries merges skillBreakdown with the same max-per-key, union-of-keys semantics mergeCounts gives toolBreakdown', () => {
+    const existing = makeSummary({ skillBreakdown: { simplify: 5, 'code-review': 2 } });
+    const incoming = makeSummary({ skillBreakdown: { simplify: 3, 'pstack:how': 4 } });
+
+    const merged = mergeSummaries(existing, incoming);
+
+    expect(merged.skillBreakdown).toEqual({ simplify: 5, 'code-review': 2, 'pstack:how': 4 });
+  });
+
+  it('deserializeFullSessionSummary defaults skillBreakdown to {} when the field is missing', () => {
+    const raw = JSON.parse(JSON.stringify(makeSummary())) as Record<string, unknown>;
+    delete raw.skillBreakdown;
+
+    expect(deserializeFullSessionSummary(raw).skillBreakdown).toEqual({});
+  });
+
+  it('deserializeFullSessionSummary drops non-number values from skillBreakdown', () => {
+    const raw = JSON.parse(JSON.stringify(makeSummary())) as Record<string, unknown>;
+    raw.skillBreakdown = { simplify: 3, 'code-review': 'not-a-number' };
+
+    expect(deserializeFullSessionSummary(raw).skillBreakdown).toEqual({ simplify: 3 });
   });
 });
 

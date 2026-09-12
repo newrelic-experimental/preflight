@@ -77,6 +77,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -175,6 +176,28 @@ describe('Cross-session tool handlers', () => {
 
     expect(result.isError).toBe(true);
     expect(parsed.error).toBe('Invalid since date');
+  });
+
+  it('handleGetSessionHistory exposes skills as the sorted keys of skillBreakdown', () => {
+    store.saveSession(
+      makeSummary({
+        sessionId: 'sess-with-skills',
+        skillBreakdown: { simplify: 2, 'pstack:how': 1 },
+      }),
+    );
+    store.saveSession(makeSummary({ sessionId: 'sess-no-skills', skillBreakdown: {} }));
+
+    const result = handleGetSessionHistory(store, {});
+    const parsed = JSON.parse(result.content[0]!.text);
+
+    const withSkills = parsed.sessions.find(
+      (s: { session_id: string }) => s.session_id === 'sess-with-skills',
+    );
+    const withoutSkills = parsed.sessions.find(
+      (s: { session_id: string }) => s.session_id === 'sess-no-skills',
+    );
+    expect(withSkills.skills).toEqual(['pstack:how', 'simplify']);
+    expect(withoutSkills.skills).toEqual([]);
   });
 
   // -------------------------------------------------------------------------

@@ -737,9 +737,11 @@ function processHook(raw) {
       ...typeof data.source === "string" && { source: data.source }
     };
   } else if (eventName === "userpromptsubmit") {
+    const slashCommand = typeof data.prompt === "string" ? /^\/([A-Za-z0-9_:.\-]+)/.exec(data.prompt)?.[1] : void 0;
     event = {
       mode: "user_prompt_submit",
-      timestamp
+      timestamp,
+      ...slashCommand !== void 0 && { slashCommand }
     };
   } else if (eventName === "stop") {
     event = {

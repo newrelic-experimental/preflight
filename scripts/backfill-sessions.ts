@@ -344,6 +344,7 @@ async function main(): Promise<void> {
       developer,
       model: null,
       toolBreakdown: toolBreakdowns.get(sessionId) ?? {},
+      skillBreakdown: {},
       filesRead: [], // not recoverable from NR event data
       filesModified: [], // not recoverable from NR event data
       linesAdded: tasks?.linesAdded ?? 0,
