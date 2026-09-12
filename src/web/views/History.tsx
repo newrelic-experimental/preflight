@@ -22,6 +22,7 @@ import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/D
 import { Kpi } from '../components/Kpi';
 import { RankedBars, type RankedBarRow } from '../components/RankedBars';
 import { ShareTable } from '../components/ShareTable';
+import { SpendBars, type SpendBarsDatum } from '../components/SpendBars';
 import { UsageInsightsList } from '../components/UsageInsightsList';
 import { Card, Panel, Pill, Tabs, type PillTone } from '../components/ui';
 import {
@@ -55,7 +56,6 @@ import {
 } from '../api/client';
 import {
   formatAxisDate,
-  formatAxisUsd,
   formatAxisWeek,
   formatPct,
   formatRelativeTime,
@@ -410,37 +410,17 @@ export function History(): JSX.Element {
 
       <Panel title="Daily spend" subtitle={windowSubtitle(windowNum)} className="mb-3">
         <div className="h-44 min-w-0">
-          <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-            <BarChart data={dailyData}>
-              <defs>
-                <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={ACCENT} stopOpacity={0.9} />
-                  <stop offset="100%" stopColor={ACCENT} stopOpacity={0.4} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-              <XAxis
-                dataKey="day"
-                tick={TICK_STYLE}
-                stroke={GRID_STROKE}
-                tickFormatter={formatAxisDate}
-                interval="preserveStartEnd"
-                minTickGap={20}
-              />
-              <YAxis tick={TICK_STYLE} stroke={GRID_STROKE} tickFormatter={formatAxisUsd} />
-              {/* cursor={false}: with the window padded, most bars are zero.
-                  Recharts' default cursor draws a full-height rectangle over
-                  the hovered slot, which reads as a phantom bar on empty
-                  days. The tooltip already labels the date. */}
-              <Tooltip
-                contentStyle={TOOLTIP_STYLE}
-                labelFormatter={(label) => formatAxisDate(String(label))}
-                formatter={(value) => formatUsd(Number(value))}
-                cursor={false}
-              />
-              <Bar dataKey="cost" fill="url(#costGradient)" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <SpendBars
+            data={dailyData.map((d): SpendBarsDatum => ({
+              key: d.day,
+              label: d.day,
+              spendUsd: d.cost,
+              cumulativeUsd: null,
+              projectedUsd: null,
+            }))}
+            xTickFormatter={formatAxisDate}
+            tooltipLabel={(d) => formatAxisDate(d.key)}
+          />
         </div>
         {dailySpendTruncated && (
           <div className="text-[10px] text-ink-muted italic mt-1">
