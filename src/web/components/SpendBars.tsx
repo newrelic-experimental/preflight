@@ -104,11 +104,12 @@ export function SpendBars({
             )}
             cursor={false}
           />
-          <Bar dataKey="spendUsd" fill={BAR_FILL} radius={[3, 3, 0, 0]} />
+          <Bar dataKey="spendUsd" fill={BAR_FILL} radius={[3, 3, 0, 0]} isAnimationActive={false} />
           {hasCumulative && (
             <Line
               type="monotone"
               dataKey="cumulativeUsd"
+              isAnimationActive={false}
               stroke={LINE_STROKE}
               strokeWidth={2}
               dot={false}
@@ -118,6 +119,7 @@ export function SpendBars({
             <Line
               type="monotone"
               dataKey="projectedUsd"
+              isAnimationActive={false}
               stroke={LINE_STROKE}
               strokeWidth={2}
               strokeDasharray="4 3"
