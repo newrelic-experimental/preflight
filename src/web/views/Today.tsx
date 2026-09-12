@@ -22,6 +22,7 @@ import { ContextBar } from '../components/ContextBar';
 import { Panel } from '../components/ui/Panel';
 import { HealthCard, type HealthCardRow, type HealthTone } from '../components/HealthCard';
 import { ShareTable } from '../components/ShareTable';
+import { SpendBars, type SpendBarsDatum } from '../components/SpendBars';
 import { UsageInsightsList } from '../components/UsageInsightsList';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
 import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
@@ -348,35 +349,16 @@ export function Today(): JSX.Element {
   // The watcher-off caveat only matters while this process has recorded no
   // subagent turns of its own — once it has, the KPI is clearly live.
   const watcherOff = healthApi?.watcherActive === false && subagentUsd === 0;
-  // The Forecast card's parent/subagent breakdown must always sum to the
-  // total it displays. aggregate.totalCostUsd and aggregate.subagentUsd come
-  // from the same request and are guaranteed consistent (subagent cost is
-  // already a subset of total cost by construction), whereas todayTotal and
-  // subagentUsd above are each independently maxed across sources that don't
-  // share that guarantee (e.g. a live SSE subagent tick can outrun a
-  // stale-low SSE/aggregate total). Prefer the aggregate's own pair for the
-  // breakdown, but only when the aggregate is actually the dominant source —
-  // aggregate.totalCostUsd can legitimately read 0 while a fresher SSE/REST
-  // source already knows about real spend (its disk-only sources see no
-  // events from today yet), and switching to the aggregate pair in that case
-  // would present a stale-zero breakdown under an already-higher KPI. When
-  // the aggregate isn't dominant, fall back to the independently-maxed
-  // page-wide values instead.
-  const forecastBreakdownTotalUsd =
+  // buildWeekForecast clamps its own projection to at least the total it's
+  // given, so that total must be the most trustworthy total available.
+  // Prefer aggregate.totalCostUsd once it's the dominant source — it can
+  // legitimately read 0 before its disk-only sources see today's events,
+  // even though a fresher SSE/REST source already knows about real spend.
+  const weekForecastTotalUsd =
     aggregate && aggregate.totalCostUsd >= todayTotal ? aggregate.totalCostUsd : todayTotal;
-  const forecastBreakdownSubagentUsd =
-    aggregate && aggregate.totalCostUsd >= todayTotal ? (aggregate.subagentUsd ?? 0) : subagentUsd;
-  // End-of-week projection, computed client-side from the same persisted
-  // session list already fetched for the KPI strip — see buildWeekForecast.
-  // Replaces the server's rate-based forecastEndOfWeekUsd (no longer shown).
   const weekForecast =
     forecastKpiUsd !== null
-      ? buildWeekForecast(
-          todaySessions ?? [],
-          forecastKpiUsd,
-          forecastBreakdownTotalUsd,
-          Date.now(),
-        )
+      ? buildWeekForecast(todaySessions ?? [], forecastKpiUsd, weekForecastTotalUsd, Date.now())
       : null;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
@@ -517,7 +499,18 @@ export function Today(): JSX.Element {
             )}
           </AnimatedCard>
 
-          <AnimatedCard index={1} className="grid grid-cols-2 gap-3 mb-3">
+          <AnimatedCard index={1} className="grid grid-cols-3 gap-3 mb-3 items-start">
+            <div className="col-span-2">
+              <SpendTodayPanel
+                hourlySpend={hourlySpend}
+                forecastEod={forecastKpiUsd}
+                weekForecast={weekForecast}
+              />
+            </div>
+            <ActivityTodayPanel todayHeatmap={todayHeatmap} concurrency={concurrency} />
+          </AnimatedCard>
+
+          <AnimatedCard index={2} className="grid grid-cols-2 gap-3 mb-3">
             <NeedsAttentionPanel
               antiPatterns={antiPatterns}
               apiAntiPatterns={apiAntiPatterns}
@@ -527,35 +520,21 @@ export function Today(): JSX.Element {
             <ContributingTodayPanel />
           </AnimatedCard>
 
-          <AnimatedCard index={2} className="mb-3">
+          <AnimatedCard index={3} className="mb-3">
             <SpendBreakdownPanel />
           </AnimatedCard>
 
-          <AnimatedCard index={3}>
+          <AnimatedCard index={4}>
             <LiveSessionPane sessions={todaySessions ?? []} liveSessions={liveSessions ?? []} />
           </AnimatedCard>
 
-          <AnimatedCard index={4} className="grid grid-cols-3 gap-3 mb-3">
+          <AnimatedCard index={5} className="grid grid-cols-3 gap-3 mb-3">
             <CacheHealthCard aggregate={aggregate} />
             <ToolSelectionCard />
             <QualityCard />
             <ComputeWasteCard liveSessions={liveSessions ?? []} />
             <LatencyCard aggregate={aggregate} />
             <ApiFailuresCard />
-          </AnimatedCard>
-
-          <AnimatedCard index={5} className="grid grid-cols-2 gap-3 items-start">
-            <ForecastEodCard
-              todayTotal={forecastBreakdownTotalUsd}
-              forecastEod={forecastKpiUsd}
-              subagentUsd={forecastBreakdownSubagentUsd}
-              weekForecast={weekForecast}
-            />
-            <ActivityTodayPanel
-              hourlySpend={hourlySpend}
-              todayHeatmap={todayHeatmap}
-              concurrency={concurrency}
-            />
           </AnimatedCard>
         </>
       )}
@@ -1237,6 +1216,45 @@ function ApiFailuresCard(): JSX.Element {
   );
 }
 
+// --- Spend Today Panel ---
+
+function SpendTodayPanel({
+  hourlySpend,
+  forecastEod,
+  weekForecast,
+}: {
+  hourlySpend: readonly HourlyCostEntry[];
+  forecastEod: number | null;
+  weekForecast: number | null;
+}): JSX.Element {
+  const hasSpend = hourlySpend.some((h) => h.cost > 0);
+  const series = useMemo(
+    () => buildSpendTodaySeries(hourlySpend, forecastEod, Date.now()),
+    [hourlySpend, forecastEod],
+  );
+
+  return (
+    <Panel title="Spend by hour" subtitle="Today">
+      {hasSpend ? (
+        <>
+          <SpendBars
+            data={series}
+            xTickFormatter={(key) => hourOfDayLabel(Number(key))}
+            tooltipLabel={(d) => d.label}
+          />
+          {weekForecast !== null && (
+            <p className="mt-1.5 text-[10px] text-ink-muted">
+              On pace for ~{formatUsd(weekForecast)} this week
+            </p>
+          )}
+        </>
+      ) : (
+        <EmptyState variant="inline" title="No spend data yet" />
+      )}
+    </Panel>
+  );
+}
+
 // --- Activity Today Panel ---
 
 /**
@@ -1279,28 +1297,16 @@ function hourlyCountsCaption(counts: readonly number[], unit: string): string {
   return `Peak ${hourOfDayLabel(peakHour)} — ${max} ${unit}`;
 }
 
-function hourlySpendCaption(hours: readonly HourlyCostEntry[]): string {
-  const max = hours.reduce((m, h) => Math.max(m, h.cost), 0);
-  const peak = hours.find((h) => h.cost === max);
-  if (!peak || max === 0) return 'No spend yet today.';
-  return `Peak ${formatUsd(max)} at ${formatHourLabel(peak.hour)}`;
-}
-
 function ActivityTodayPanel({
-  hourlySpend,
   todayHeatmap,
   concurrency,
 }: {
-  hourlySpend: readonly HourlyCostEntry[];
   todayHeatmap: ActivityHeatmapTodayResponse | undefined;
   concurrency: ConcurrencyData | undefined;
 }): JSX.Element {
   const now = Date.now();
-  const hasHourlySpend = hourlySpend.some((h) => h.cost > 0);
   const hasHeatmapData = (todayHeatmap?.buckets?.length ?? 0) > 0;
   const hasConcurrencyData = (concurrency?.buckets?.length ?? 0) > 0;
-
-  const spendItems = hourlySpendToBlockItems(hourlySpend);
 
   const heatmapHourly = hasHeatmapData
     ? bucketByHour(
@@ -1330,22 +1336,7 @@ function ActivityTodayPanel({
 
   return (
     <Panel title="Activity today">
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <Eyebrow className="mb-1.5">Spend by hour</Eyebrow>
-          <div className="h-[72px] flex items-end">
-            {hasHourlySpend ? (
-              <DiscreteBlockChart
-                data={spendItems}
-                levels={6}
-                ariaLabel={describeHourlySpend(hourlySpend)}
-              />
-            ) : (
-              <EmptyState variant="inline" title="No spend data yet" />
-            )}
-          </div>
-          <p className="mt-1.5 text-[10px] text-ink-muted">{hourlySpendCaption(hourlySpend)}</p>
-        </div>
+      <div className="flex flex-col gap-4">
         <div>
           <Eyebrow className="mb-1.5">Tool calls</Eyebrow>
           <div className="h-[72px] flex items-end">
@@ -1931,28 +1922,6 @@ interface HourlyCostEntry {
   readonly cost: number;
 }
 
-function formatHourLabel(hour: number): string {
-  if (hour === 0) return '12am';
-  if (hour < 12) return `${hour}am`;
-  if (hour === 12) return '12pm';
-  return `${hour - 12}pm`;
-}
-
-function describeHourlySpend(hours: readonly HourlyCostEntry[]): string {
-  const total = hours.reduce((s, h) => s + h.cost, 0);
-  const max = hours.reduce((m, h) => Math.max(m, h.cost), 0);
-  const peak = hours.find((h) => h.cost === max);
-  if (peak === undefined || max === 0) return 'Hourly spend today: no activity yet.';
-  return `Hourly spend today: ${formatUsd(total)} total, peak ${formatUsd(max)} at ${formatHourLabel(peak.hour)}`;
-}
-
-function hourlySpendToBlockItems(hours: readonly HourlyCostEntry[]): DiscreteBlockChartItem[] {
-  return hours.map((h) => ({
-    count: h.cost,
-    tooltip: `${hourOfDayLabel(h.hour)} — ${formatUsd(h.cost)}`,
-  }));
-}
-
 function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
   // The /api/sessions route always injects the live session with its current
   // in-memory cost (when not yet persisted) or returns the persisted entry
@@ -2004,6 +1973,46 @@ function buildHourlySpend(sessions: SessionSummary[]): HourlyCostEntry[] {
     }
   }
   return buckets.map((cost, hour) => ({ hour, cost }));
+}
+
+export function buildSpendTodaySeries(
+  hourlySpend: readonly HourlyCostEntry[],
+  forecastEod: number | null,
+  nowMs: number,
+): SpendBarsDatum[] {
+  const currentHour = new Date(nowMs).getHours();
+  const lastHour = 23;
+
+  const cumulativeByHour = new Array<number>(24);
+  let running = 0;
+  for (let hour = 0; hour < 24; hour++) {
+    running += hourlySpend[hour]?.cost ?? 0;
+    cumulativeByHour[hour] = running;
+  }
+  const cumulativeAtNow = cumulativeByHour[currentHour] ?? 0;
+
+  const hasProjection =
+    forecastEod != null && Number.isFinite(forecastEod) && forecastEod > cumulativeAtNow;
+  const projectedSlope =
+    hasProjection && lastHour > currentHour
+      ? (forecastEod! - cumulativeAtNow) / (lastHour - currentHour)
+      : 0;
+
+  return Array.from({ length: 24 }, (_, hour) => {
+    const cumulativeUsd = hour <= currentHour ? cumulativeByHour[hour]! : null;
+    let projectedUsd: number | null = null;
+    if (hasProjection && hour >= currentHour) {
+      projectedUsd =
+        hour === lastHour ? forecastEod! : cumulativeAtNow + projectedSlope * (hour - currentHour);
+    }
+    return {
+      key: String(hour),
+      label: hourOfDayLabel(hour),
+      spendUsd: hourlySpend[hour]?.cost ?? 0,
+      cumulativeUsd,
+      projectedUsd,
+    };
+  });
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -2058,60 +2067,4 @@ export function buildWeekForecast(
 
   const endOfWeek = weekToDateExcludingToday + effectiveEod + avgDailySpend * remainingFullDays;
   return Math.max(endOfWeek, effectiveEod);
-}
-
-const FORECAST_TOOLTIP =
-  "Projects today's total spend by midnight, based on the spending trend so far this hour-by-hour.";
-
-function ForecastEodCard({
-  todayTotal,
-  forecastEod,
-  subagentUsd = 0,
-  weekForecast,
-}: {
-  todayTotal: number;
-  forecastEod: number | null;
-  subagentUsd?: number;
-  weekForecast: number | null;
-}): JSX.Element {
-  const hasForecast = forecastEod !== null && Number.isFinite(forecastEod);
-
-  if (!hasForecast) {
-    return (
-      <HealthCard
-        title="Forecast · End of Day"
-        tooltip={FORECAST_TOOLTIP}
-        value="—"
-        status={{ tone: 'neutral', label: 'no data' }}
-        detail="Insufficient data — forecast appears once burn rate stabilizes."
-      />
-    );
-  }
-
-  const effectiveForecast = Math.max(forecastEod, todayTotal);
-  const delta = effectiveForecast - todayTotal;
-  // The caller passes todayTotal/subagentUsd from the same source whenever
-  // possible, so subagentUsd is normally guaranteed <= todayTotal. Clamp to 0
-  // defensively anyway (the server clamps its own parentUsd the same way) for
-  // the brief window before that shared source has resolved.
-  const parentUsd = subagentUsd > 0 ? Math.max(0, todayTotal - subagentUsd) : 0;
-
-  const rows: HealthCardRow[] = [];
-  if (subagentUsd > 0) {
-    rows.push({ label: 'Parent', value: formatUsd(parentUsd) });
-    rows.push({ label: 'Subagent', value: formatUsd(subagentUsd) });
-  }
-  if (weekForecast !== null) {
-    rows.push({ label: 'End of week', value: formatUsd(weekForecast) });
-  }
-
-  return (
-    <HealthCard
-      title="Forecast · End of Day"
-      tooltip={FORECAST_TOOLTIP}
-      value={formatUsd(effectiveForecast)}
-      detail={delta > 0 ? `${formatUsd(delta)} more than now` : 'on pace'}
-      rows={rows}
-    />
-  );
 }

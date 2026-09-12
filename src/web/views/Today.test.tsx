@@ -6,6 +6,7 @@ import {
   aggregateAttentionFlags,
   bucketByHour,
   buildWeekForecast,
+  buildSpendTodaySeries,
   type SessionSummary,
 } from './Today';
 import { useLiveStore } from '../store/liveStore';
@@ -72,6 +73,15 @@ describe('Today view', () => {
   it('renders the efficiency score KPI', () => {
     renderToday();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
+  });
+
+  it('renders the spend chart before Needs attention in page order', async () => {
+    renderToday();
+    const spendHeading = await screen.findByText('Spend by hour');
+    const attentionHeading = await screen.findByText('Needs attention');
+    expect(
+      spendHeading.compareDocumentPosition(attentionHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   // Anti-pattern/flag rendering moved to the "Needs attention" panel — see
@@ -555,59 +565,12 @@ describe('Today view', () => {
     expect(screen.queryByText(/No activity yet today/)).toBeNull();
   });
 
-  it('renders the forecast-EOD card with the projected end-of-day spend', () => {
-    renderToday();
-    expect(screen.getByText(/forecast/i)).toBeInTheDocument();
-    expect(screen.getByText('$18.40')).toBeInTheDocument();
-  });
-
-  it('shows the delta from current spend to forecast', () => {
-    // todayTotal=12.17, forecastEodUsd=18.4 → delta=6.23
-    renderToday();
-    expect(screen.getByText(/\$6\.23 more than now/)).toBeInTheDocument();
-  });
-
-  // After 45b17db the forecast is clamped to at least todayTotal (you can't
-  // un-spend money), so a raw forecast below current spend renders the
-  // clamped value with an "on pace" annotation (delta ≤ 0 branch in
-  // ForecastEodCard) — never a negative delta.
-  it('clamps forecast to todayTotal when raw forecast is lower', () => {
+  it('shows no end-of-day projection on the spend KPI when the forecast is not above current spend', () => {
     useLiveStore.setState({
       cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 8 },
     });
     renderToday();
-    // Clamped forecast = todayTotal = 10, delta is zero → "on pace"
-    expect(screen.getByText(/on pace/)).toBeInTheDocument();
-    // Legacy bug substrings must never appear
-    expect(screen.queryByText(/\+\$-2\.00/)).toBeNull();
-    expect(screen.queryByText(/\+\$0\.00/)).toBeNull();
-    // Raw (uncramped) forecast value must not surface either
-    expect(screen.queryByText(/\$8\.00/)).toBeNull();
-  });
-
-  it('renders a positive delta as "$X more than now" with no leading +', () => {
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 12 },
-    });
-    renderToday();
-    expect(screen.getByText(/\$2\.00 more than now/)).toBeInTheDocument();
-    expect(screen.queryByText(/\+\$2\.00/)).toBeNull();
-  });
-
-  it('shows an "insufficient data" message when forecast is null', () => {
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: null },
-    });
-    renderToday();
-    expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
-    // Should not display a dollar value for the forecast.
-    expect(screen.queryByText(/\$18\.40/)).toBeNull();
-  });
-
-  it('shows insufficient-data when cost has not loaded', () => {
-    useLiveStore.setState({ cost: null });
-    renderToday();
-    expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
+    expect(screen.queryByText(/by end of day/)).toBeNull();
   });
 
   it('falls back to the cross-process aggregate forecast when the SSE cost push is unavailable', async () => {
@@ -627,9 +590,7 @@ describe('Today view', () => {
     }) as typeof fetch;
 
     renderToday();
-    await waitFor(() => expect(screen.getByText('$8.00')).toBeInTheDocument());
-    // delta = 8 - 5 = 3
-    expect(screen.getByText(/\$3\.00 more than now/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('→ $8.00 by end of day')).toBeInTheDocument());
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
@@ -688,129 +649,6 @@ describe('Today view', () => {
     await waitFor(() => expect(screen.getByText('efficiency')).toBeInTheDocument());
     expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
     expect(screen.queryByText(/subagent activity from other sessions/i)).toBeNull();
-  });
-
-  it('keeps the ForecastEodCard parent+subagent breakdown summing to the displayed total even when the page-wide todayTotal/subagentUsd would disagree', async () => {
-    // A fresh live SSE subagent tick (todaySubagentUsd) has landed while the
-    // SSE total-spend push is stale-low and the polled aggregate hasn't
-    // caught up to that subagent tick either. Maxing todayTotal and
-    // subagentUsd independently across their own, different endpoint pairs
-    // would let subagentUsd (15) exceed todayTotal (10), clamping "parent"
-    // to $0 even though aggregate.totalCostUsd (10) and aggregate.subagentUsd
-    // (8) — sourced together in one request — agree that parent is $2.
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3, todayTotalUsd: 5, forecastEodUsd: 20 },
-      todaySubagentUsd: 15,
-      todaySubagentTurnCount: 3,
-    });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(
-          JSON.stringify({ totalCostUsd: 10, subagentUsd: 8, forecastEndOfDayUsd: 20 }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      if (url.includes('/api/sessions?limit=')) {
-        return new Response(
-          JSON.stringify([
-            {
-              sessionId: 's1',
-              startTime: Date.now() - 60_000,
-              estimatedCostUsd: 5,
-              toolCallCount: 3,
-            },
-          ]),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-
-    // All four assertions must hold together in the same settled render —
-    // splitting them across separate waitFor/synchronous checks risks
-    // observing a transitional DOM state where only some values have
-    // committed.
-    await waitFor(() => {
-      const forecastCard = screen
-        .getByText('Forecast · End of Day')
-        .closest('.glass-card') as HTMLElement;
-      const parentRow = within(forecastCard).getByText('Parent').closest('div') as HTMLElement;
-      expect(within(parentRow).getByText('$2.00')).toBeInTheDocument();
-      const subagentRow = within(forecastCard).getByText('Subagent').closest('div') as HTMLElement;
-      expect(within(subagentRow).getByText('$8.00')).toBeInTheDocument();
-      // Must never clamp "parent" to $0 just because the page-wide
-      // todayTotal/subagentUsd picked different underlying sources.
-      expect(within(parentRow).queryByText('$0.00')).toBeNull();
-      // parent ($2.00) + subagent ($8.00) sums to the $10.00 the "spend today"
-      // KPI shows for the same aggregate-sourced total.
-      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
-      expect(within(spendTile).getByText('$10.00')).toBeInTheDocument();
-    });
-  });
-
-  it('does not let a legitimate zero from the aggregate override the forecast breakdown total when other sources already know about real spend', async () => {
-    // The aggregate endpoint can legitimately resolve to 0 while its
-    // disk-only sources haven't yet seen any events from today, even though
-    // the SSE push and a persisted session both already know about real
-    // spend. The Forecast card's breakdown must still be computed against
-    // that already-higher total, not the aggregate's zero, or it would
-    // contradict the "spend today" KPI shown directly above it.
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 8, todayTotalUsd: 8, forecastEodUsd: 12 },
-      todaySubagentUsd: 2,
-      todaySubagentTurnCount: 1,
-    });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify({ totalCostUsd: 0, subagentUsd: 0 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/sessions?limit=')) {
-        return new Response(
-          JSON.stringify([
-            {
-              sessionId: 's1',
-              startTime: Date.now() - 60_000,
-              estimatedCostUsd: 6,
-              toolCallCount: 3,
-            },
-          ]),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-
-    // All assertions must hold together in the same settled render — see
-    // the sibling test above for why these aren't split across separate
-    // waitFor/synchronous checks.
-    await waitFor(() => {
-      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
-      expect(within(spendTile).getByText('$8.00')).toBeInTheDocument();
-      const forecastCard = screen
-        .getByText('Forecast · End of Day')
-        .closest('.glass-card') as HTMLElement;
-      const parentRow = within(forecastCard).getByText('Parent').closest('div') as HTMLElement;
-      expect(within(parentRow).getByText('$6.00')).toBeInTheDocument();
-      const subagentRow = within(forecastCard).getByText('Subagent').closest('div') as HTMLElement;
-      expect(within(subagentRow).getByText('$2.00')).toBeInTheDocument();
-      expect(within(parentRow).queryByText('$0.00')).toBeNull();
-      expect(within(parentRow).queryByText('$8.00')).toBeNull();
-    });
   });
 
   it('folds the /api/cost REST fallback into todayTotal so the KPI does not flash $0.00 before the first SSE frame arrives', async () => {
@@ -876,9 +714,7 @@ describe('Today view', () => {
 
     renderToday();
 
-    await waitFor(() => expect(screen.getByText('$12.00')).toBeInTheDocument());
-    // delta = 12 - 5 = 7
-    expect(screen.getByText(/\$7\.00 more than now/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('→ $12.00 by end of day')).toBeInTheDocument());
   });
 });
 
@@ -1941,105 +1777,10 @@ describe('Today view — cross-midnight session proration', () => {
     expect(screen.getByText('5')).toBeInTheDocument();
     // buildHourlySpend must not skip a session that didn't *start* today
     // entirely (a naive `!isToday(s.startTime)` → continue would drop it),
-    // or the hourly chart would be absent here even though todayTotal > 0.
-    expect(screen.getByRole('img', { name: /Hourly spend today/ })).toBeInTheDocument();
-  });
-});
-
-describe('Today view — Activity today spend-by-hour chart', () => {
-  beforeEach(() => {
-    resetStore();
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  function mockSessions(sessions: unknown[]): void {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions?limit=')) {
-        return new Response(JSON.stringify(sessions), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-  }
-
-  it('does not render the chart when no session has spent anything today', async () => {
-    mockSessions([]);
-    renderToday();
-    await waitFor(() => {
-      expect(screen.queryByRole('img', { name: /Hourly spend today/ })).toBeNull();
-    });
-  });
-
-  it("describes today's total and peak hour in the chart's aria-label", async () => {
-    const dayStart = localStartOfDay();
-    const hourSession = (hour: number, cost: number) => ({
-      sessionId: `s-${hour}`,
-      startTime: dayStart + hour * 60 * 60 * 1000 + 5 * 60 * 1000,
-      durationMs: 10 * 60 * 1000,
-      toolCallCount: 1,
-      estimatedCostUsd: cost,
-    });
-    mockSessions([hourSession(9, 1.5), hourSession(14, 0.5)]);
-    renderToday();
-    expect(
-      await screen.findByRole('img', {
-        name: 'Hourly spend today: $2.00 total, peak $1.50 at 9am',
-      }),
-    ).toBeInTheDocument();
-  });
-
-  it('flags only the true max-spend hour as peak when both hours quantize to the same block count', async () => {
-    // Quantized by DiscreteBlockChart's levels=6 against raw dollar counts:
-    // $5.00 (the effectiveMax) -> 6 blocks, $4.60 -> ceil(4.6/5*6)=6 blocks
-    // too, but only the $5.00 hour is the real peak — the chart must not
-    // highlight both.
-    const dayStart = localStartOfDay();
-    const hourSession = (hour: number, cost: number) => ({
-      sessionId: `s-${hour}`,
-      startTime: dayStart + hour * 60 * 60 * 1000 + 5 * 60 * 1000,
-      durationMs: 10 * 60 * 1000,
-      toolCallCount: 1,
-      estimatedCostUsd: cost,
-    });
-    mockSessions([hourSession(9, 5.0), hourSession(14, 4.6)]);
-    renderToday();
-    const chart = await screen.findByRole('img', { name: /Hourly spend today/ });
-    const rects = chart.querySelectorAll('rect.heatmap-cell');
-    const peakColorRects = Array.from(rects).filter(
-      (r) => r.getAttribute('fill') === 'var(--color-chart-block-peak)',
-    );
-    // Both hour-9 and hour-14 columns render 6 blocks each (12 total); only
-    // hour-9's 6 blocks (the true peak) should carry the peak color.
-    expect(rects.length).toBe(12);
-    expect(peakColorRects.length).toBe(6);
-  });
-
-  it('renders a single quantized column instead of vanishing when spend is a fraction of a cent', async () => {
-    // A lone $0.001 hour is still charted on raw dollar counts — the chart
-    // no longer pre-quantizes into whole-dollar blocks, so it renders
-    // rather than rounding every column to 0 and returning null.
-    const dayStart = localStartOfDay();
-    mockSessions([
-      {
-        sessionId: 'tiny-cost',
-        startTime: dayStart + 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
-        durationMs: 10 * 60 * 1000,
-        toolCallCount: 1,
-        estimatedCostUsd: 0.001,
-      },
-    ]);
-    renderToday();
-    const chart = await screen.findByRole('img', { name: /Hourly spend today/ });
-    const rects = chart.querySelectorAll('rect.heatmap-cell');
-    expect(rects.length).toBe(1);
+    // or the spend chart would render its empty state here even though
+    // todayTotal > 0.
+    const spendPanel = screen.getByText('Spend by hour').closest('.glass-card') as HTMLElement;
+    expect(within(spendPanel).queryByText('No spend data yet')).toBeNull();
   });
 });
 
@@ -2235,6 +1976,19 @@ describe('Today view — forecast end-of-week and session chips', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
+      if (typeof url === 'string' && url.includes('/api/sessions?limit=')) {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 's1',
+              startTime: Date.now() - 60_000,
+              estimatedCostUsd: 4.8,
+              toolCallCount: 3,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       return new Response(JSON.stringify(null), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2246,10 +2000,11 @@ describe('Today view — forecast end-of-week and session chips', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders end-of-week and end-of-session forecast chips when API returns them', async () => {
+  it('shows the on-pace-this-week caption under the spend chart when the API returns an end-of-day forecast', async () => {
     renderToday();
-    await waitFor(() => expect(screen.getByText('End of week')).toBeInTheDocument());
-    expect(screen.queryByText('End of session')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByText(/On pace for ~\$[\d.]+ this week/)).toBeInTheDocument(),
+    );
   });
 });
 
@@ -2517,7 +2272,7 @@ describe('Today view — Activity today panel', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders three equal columns — spend by hour, tool calls, and concurrent sessions', async () => {
+  it('renders two stacked charts — tool calls above concurrent sessions', async () => {
     const now = Date.now();
     const dayStart = localStartOfDay();
     globalThis.fetch = vi.fn(async (input) => {
@@ -2569,29 +2324,30 @@ describe('Today view — Activity today panel', () => {
     renderToday();
 
     const panel = (await screen.findByText('Activity today')).closest('.glass-card') as HTMLElement;
-    expect(within(panel).getByText('Spend by hour')).toBeInTheDocument();
     expect(within(panel).getByText('Tool calls')).toBeInTheDocument();
     expect(within(panel).getByText('Concurrent sessions')).toBeInTheDocument();
-    // The old standalone "Concurrent Sessions" Eyebrow label (rendered by
-    // ConcurrencyIndicator) is gone — Today builds the chart itself now.
-    expect(within(panel).queryByText('Concurrent Sessions')).toBeNull();
+    expect(within(panel).queryByText('Spend by hour')).toBeNull();
 
-    const spendChart = await within(panel).findByRole('img', {
-      name: 'Hourly spend today: $2.00 total, peak $2.00 at 9am',
-    });
     const heatmapChart = await within(panel).findByRole('img', {
       name: "Today's activity density by hour",
     });
     const concurrencyChart = await within(panel).findByRole('img', {
       name: 'Concurrency over time, peak 3',
     });
-    expect(within(panel).getAllByRole('img').length).toBe(3);
-    // All three charts share the same 24-hourly-bucket granularity.
-    for (const chart of [spendChart, heatmapChart, concurrencyChart]) {
+    expect(within(panel).getAllByRole('img').length).toBe(2);
+    // Both charts share the same 24-hourly-bucket granularity.
+    for (const chart of [heatmapChart, concurrencyChart]) {
       expect(chart.querySelectorAll('g').length).toBe(24);
     }
 
-    expect(await within(panel).findByText('Peak $2.00 at 9am')).toBeInTheDocument();
+    // DOM order: Tool calls before Concurrent sessions
+    const toolCallsHeading = within(panel).getByText('Tool calls');
+    const concurrencyHeading = within(panel).getByText('Concurrent sessions');
+    expect(
+      toolCallsHeading.compareDocumentPosition(concurrencyHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
     // All 4 heatmap buckets ([1, 2, 0, 3], 15 minutes each) fall inside
     // hour 0 once re-bucketed hourly: 1+2+0+3 = 6.
     expect(within(panel).getByText('Peak 00:00 — 6 calls')).toBeInTheDocument();
@@ -2684,6 +2440,38 @@ describe('aggregateAttentionFlags()', () => {
     ).toEqual([
       { type: 'blind_editing', count: 4, targets: ['/x/y/z.ts'], sessionIds: ['s1', 's2'] },
     ]);
+  });
+});
+
+describe('buildSpendTodaySeries()', () => {
+  function hourlySpendFixture(costs: Record<number, number>): { hour: number; cost: number }[] {
+    return Array.from({ length: 24 }, (_, hour) => ({ hour, cost: costs[hour] ?? 0 }));
+  }
+
+  it('keeps the cumulative and projected lines continuous at the current hour', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 20, nowMs);
+    const atHour10 = series[10]!;
+    expect(atHour10.cumulativeUsd).toBe(6);
+    expect(atHour10.projectedUsd).toBe(6);
+  });
+
+  it('projects the last hour to exactly the forecasted end-of-day total', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 20, nowMs);
+    expect(series[23]!.projectedUsd).toBe(20);
+  });
+
+  it('has no projected series when the forecast is null', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 10: 3 }), null, nowMs);
+    expect(series.every((d) => d.projectedUsd === null)).toBe(true);
+  });
+
+  it('has no projected series when the forecast does not exceed spend so far', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 6, nowMs);
+    expect(series.every((d) => d.projectedUsd === null)).toBe(true);
   });
 });
 
