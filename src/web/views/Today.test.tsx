@@ -1292,7 +1292,7 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText('$1.50 saved today')).toBeInTheDocument();
+    expect(await screen.findByText(/\$1\.50 saved today/)).toBeInTheDocument();
   });
 
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
@@ -1611,7 +1611,7 @@ describe('Today view — Compute Waste panel', () => {
 
     renderToday();
     expect(await screen.findByText('~0 tokens')).toBeInTheDocument();
-    expect(screen.getByText('clean')).toBeInTheDocument();
+    expect(screen.getAllByText('Healthy').length).toBeGreaterThan(0);
     expect(screen.getByText('No compute waste detected this session.')).toBeInTheDocument();
   });
 
@@ -1639,7 +1639,7 @@ describe('Today view — Compute Waste panel', () => {
     renderToday();
     // Hero value via formatTokensCompact (2400 → "2.4k").
     expect(await screen.findByText('~2.4k tokens')).toBeInTheDocument();
-    expect(screen.getByText('needs attention')).toBeInTheDocument();
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
     // Detail is the top offender's advice text, not the raw pattern name.
     expect(
       screen.getByText('Address the command output before re-running the same command.'),
@@ -2225,7 +2225,7 @@ describe('Today view — API Failures panel', () => {
     renderToday();
     const card = (await screen.findByText('API Failures')).closest('.glass-card') as HTMLElement;
     expect(within(card).getByText('0')).toBeInTheDocument();
-    expect(within(card).getByText('none')).toBeInTheDocument();
+    expect(within(card).getByText('Healthy')).toBeInTheDocument();
   });
 
   it('shows failure count, failing status, and an error-type breakdown row when failures exist', async () => {
@@ -2257,7 +2257,7 @@ describe('Today view — API Failures panel', () => {
 
     renderToday();
     const card = (await screen.findByText('API Failures')).closest('.glass-card') as HTMLElement;
-    await waitFor(() => expect(within(card).getByText('failing')).toBeInTheDocument());
+    await waitFor(() => expect(within(card).getByText('Needs attention')).toBeInTheDocument());
     expect(within(card).getByText('3')).toBeInTheDocument();
     expect(within(card).getByText('rate_limit')).toBeInTheDocument();
     expect(within(card).getByText('server_error')).toBeInTheDocument();

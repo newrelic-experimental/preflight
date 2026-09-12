@@ -956,6 +956,19 @@ function SpendBreakdownPanel(): JSX.Element {
 
 // --- Health grid cards ---
 
+function cacheBandText(status: CacheHealthResponse['status']): string {
+  switch (status) {
+    case 'excellent':
+      return 'Hit rate above 60%';
+    case 'can_improve':
+      return 'Hit rate between 30% and 60%';
+    case 'needs_attention':
+      return 'Hit rate below 30%';
+    default:
+      return 'No cache activity';
+  }
+}
+
 function CacheHealthCard({
   aggregate,
 }: {
@@ -978,7 +991,7 @@ function CacheHealthCard({
         title="Cache Health"
         tooltip={tooltip}
         value="—"
-        status={{ tone: 'neutral', label: 'no data' }}
+        tone="neutral"
         detail="Appears once token usage with cache reads is reported."
       />
     );
@@ -986,7 +999,6 @@ function CacheHealthCard({
 
   const tone: HealthTone =
     data.status === 'excellent' ? 'good' : data.status === 'can_improve' ? 'warn' : 'bad';
-  const statusLabel = data.status === 'excellent' ? 'excellent' : data.status.replace('_', ' ');
 
   const rows: HealthCardRow[] = [
     { label: 'Cache read', value: formatTokensCompact(data.totalCacheReadTokens) },
@@ -1002,8 +1014,8 @@ function CacheHealthCard({
       title="Cache Health"
       tooltip={tooltip}
       value={formatPct(data.cacheHitRatePct)}
-      status={{ tone, label: statusLabel }}
-      detail={`${formatUsd(data.totalSavingsUsd)} saved today`}
+      tone={tone}
+      detail={`${cacheBandText(data.status)} · ${formatUsd(data.totalSavingsUsd)} saved today`}
       rows={rows}
     />
   );
@@ -1024,21 +1036,20 @@ function ToolSelectionCard(): JSX.Element {
         title="Tool Selection"
         tooltip={tooltip}
         value="—"
-        status={{ tone: 'neutral', label: 'no data' }}
+        tone="neutral"
         detail="Waiting for tool calls."
       />
     );
   }
 
   const tone: HealthTone = data.score >= 0.9 ? 'good' : data.score >= 0.7 ? 'warn' : 'bad';
-  const statusLabel = tone === 'good' ? 'good' : tone === 'warn' ? 'fair' : 'poor';
 
   return (
     <HealthCard
       title="Tool Selection"
       tooltip={tooltip}
       value={formatPct(data.score * 100)}
-      status={{ tone, label: statusLabel }}
+      tone={tone}
       detail={`${data.penalizedCalls} of ${data.totalCalls} calls penalized`}
       rows={[
         { label: 'Re-reads', value: String(data.redundantReadCount) },
@@ -1064,7 +1075,7 @@ function QualityCard(): JSX.Element {
         title="Quality"
         tooltip={tooltip}
         value="—"
-        status={{ tone: 'neutral', label: 'no data' }}
+        tone="neutral"
         detail="Waiting for edits and test runs."
       />
     );
@@ -1077,7 +1088,7 @@ function QualityCard(): JSX.Element {
       title="Quality"
       tooltip={tooltip}
       value={data.diffApplyRate !== null ? formatPct(data.diffApplyRate * 100) : '—'}
-      status={{ tone, label: data.degradationDetected ? 'degrading' : 'stable' }}
+      tone={tone}
       rows={[
         {
           label: 'Test pass',
@@ -1105,7 +1116,7 @@ function ComputeWasteCard({ liveSessions }: { liveSessions: LiveSessionEntry[] }
         title="Compute Waste"
         tooltip={tooltip}
         value="—"
-        status={{ tone: 'neutral', label: 'no data' }}
+        tone="neutral"
         detail="No compute waste data yet."
       />
     );
@@ -1113,8 +1124,6 @@ function ComputeWasteCard({ liveSessions }: { liveSessions: LiveSessionEntry[] }
 
   const tone: HealthTone =
     data.status === 'clean' ? 'good' : data.status === 'moderate' ? 'warn' : 'bad';
-  const statusLabel =
-    data.status === 'clean' ? 'clean' : data.status === 'moderate' ? 'moderate' : 'needs attention';
   const topSession = data.by_session?.[0] ?? null;
   const topOffender = data.breakdown[0] ?? null;
 
@@ -1134,7 +1143,7 @@ function ComputeWasteCard({ liveSessions }: { liveSessions: LiveSessionEntry[] }
       title="Compute Waste"
       tooltip={tooltip}
       value={`~${formatTokensCompact(data.total_tokens_wasted)} tokens`}
-      status={{ tone, label: statusLabel }}
+      tone={tone}
       detail={computeWasteRecommendationText(data.status, topOffender?.type ?? null)}
       rows={rows}
     />
@@ -1156,7 +1165,7 @@ function LatencyCard({
         title="Latency"
         tooltip={tooltip}
         value="—"
-        status={{ tone: 'neutral', label: 'no data' }}
+        tone="neutral"
         detail="Waiting for tool calls."
       />
     );
@@ -1205,7 +1214,7 @@ function ApiFailuresCard(): JSX.Element {
       title="API Failures"
       tooltip={tooltip}
       value={String(count)}
-      status={{ tone, label: count === 0 ? 'none' : 'failing' }}
+      tone={tone}
       detail="Reflects Claude Code's StopFailure hook"
       rows={
         errorTypeEntries.length > 0
