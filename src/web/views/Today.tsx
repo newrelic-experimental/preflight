@@ -1348,7 +1348,7 @@ function ActivityTodayPanel({
       <div className="flex flex-col gap-4">
         <div>
           <Eyebrow className="mb-1.5">Tool calls</Eyebrow>
-          <div className="h-[72px] flex items-end">
+          <div className="flex items-end">
             {hasHeatmapData ? (
               <DiscreteBlockChart
                 data={heatmapItems}
@@ -1365,7 +1365,7 @@ function ActivityTodayPanel({
         </div>
         <div>
           <Eyebrow className="mb-1.5">Concurrent sessions</Eyebrow>
-          <div className="h-[72px] flex items-end">
+          <div className="flex items-end">
             {hasConcurrencyData ? (
               <DiscreteBlockChart
                 data={concurrencyItems}
