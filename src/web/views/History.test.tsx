@@ -745,6 +745,13 @@ describe('History — Tools and Cost per outcome tables', () => {
     expect(within(row).getByRole('cell', { name: '$4.20' })).toBeInTheDocument();
     expect(within(row).getByRole('cell', { name: '55%' })).toBeInTheDocument();
   });
+
+  it('does not repeat an "Outcomes" heading inside the Cost per outcome panel', async () => {
+    renderHistory();
+    const panel = findPanel('Cost per outcome');
+    await within(panel).findByRole('cell', { name: 'bug fix' });
+    expect(within(panel).queryByText('Outcomes')).toBeNull();
+  });
 });
 
 describe('History — Model performance', () => {
@@ -780,6 +787,32 @@ describe('History — Model performance', () => {
     const cells = within(row).getAllByRole('cell');
     expect(cells[3].textContent).toContain('▲');
     expect(cells[3].className).toContain('text-accent-amber');
+  });
+
+  it('sorts the Model performance table by its clicked column', async () => {
+    renderHistory();
+    const panel = findPanel('Model performance');
+    await within(panel).findByText('claude-opus-4-6');
+    const modelForRow = (row: HTMLElement) => within(row).getAllByRole('cell')[0]!.textContent;
+
+    // Default sort is Share descending: opus (61%) then sonnet (39%).
+    expect(within(panel).getAllByRole('row').slice(1).map(modelForRow)).toEqual([
+      'claude-opus-4-6',
+      'claude-sonnet-4-6',
+    ]);
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Share' }));
+    expect(within(panel).getAllByRole('row').slice(1).map(modelForRow)).toEqual([
+      'claude-sonnet-4-6',
+      'claude-opus-4-6',
+    ]);
+  });
+
+  it('does not repeat a "Model performance" heading', async () => {
+    renderHistory();
+    const panel = findPanel('Model performance');
+    await waitFor(() => expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument());
+    expect(within(panel).getAllByText('Model performance').length).toBe(1);
   });
 });
 

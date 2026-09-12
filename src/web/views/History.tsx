@@ -460,7 +460,15 @@ export function History(): JSX.Element {
       </div>
 
       <div className="grid grid-cols-2 gap-3 mt-3">
-        <Panel title="Model performance" subtitle={windowSubtitle(windowNum)}>
+        <Panel
+          title="Model performance"
+          subtitle={windowSubtitle(windowNum)}
+          footnote={
+            modelPerf.some((m) => m.flagged)
+              ? '▲ Highlighted models had sessions with elevated error rates'
+              : undefined
+          }
+        >
           {modelPerf.length === 0 ? (
             <EmptyState
               icon="radar"
@@ -468,56 +476,72 @@ export function History(): JSX.Element {
               subtitle="Complete a few sessions to see model performance."
             />
           ) : (
-            <div className="h-44 overflow-y-auto text-xs">
-              <table className="w-full">
-                <thead className="text-ink-muted sticky top-0 bg-bg-panel">
-                  <tr>
-                    <th className="text-left pb-1">Model</th>
-                    <th className="text-right pb-1">Sessions</th>
-                    <th className="text-right pb-1">Eff.</th>
-                    <th className="text-right pb-1">Success</th>
-                    <th className="text-right pb-1">Avg $</th>
-                    <th className="text-right pb-1">Share</th>
-                    <th className="text-right pb-1">$/1M tok</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {modelPerf.map((m) => (
-                    <tr key={m.model} className="border-t border-bg-line">
-                      <td className="py-1 font-medium">{m.model}</td>
-                      <td className="py-1 text-right tabular-nums">{m.sessions}</td>
-                      <td className="py-1 text-right tabular-nums">
-                        {m.avgEfficiency !== null
-                          ? formatPct(Math.min(100, m.avgEfficiency * 100))
-                          : '—'}
-                      </td>
-                      <td
-                        className={`py-1 text-right tabular-nums ${m.flagged ? 'text-accent-amber' : ''}`}
-                      >
-                        {m.flagged && '▲ '}
-                        {m.avgSuccessRate !== null
-                          ? formatPct(Math.min(100, m.avgSuccessRate * 100))
-                          : '—'}
-                      </td>
-                      <td className="py-1 text-right tabular-nums">{formatUsdOrDash(m.avgCost)}</td>
-                      <td className="py-1 text-right tabular-nums">
-                        {modelPerfTotalCost > 0 && m.avgCost != null
-                          ? formatPct(((m.avgCost * m.sessions) / modelPerfTotalCost) * 100)
-                          : '—'}
-                      </td>
-                      <td className="py-1 text-right tabular-nums text-ink-subtle">
-                        {formatUsdOrDash(m.costPerMillionTokens)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {modelPerf.some((m) => m.flagged) && (
-                <div className="text-accent-amber text-[10px] mt-1">
-                  ▲ Highlighted models had sessions with elevated error rates
-                </div>
-              )}
-            </div>
+            <ShareTable<ModelPerformanceRow>
+              title="Model performance"
+              hideTitle
+              rows={modelPerf}
+              rowKey={(row) => row.model}
+              defaultSort={{ column: 5, direction: 'desc' }}
+              columns={[
+                {
+                  header: 'Model',
+                  align: 'left',
+                  className: 'font-medium',
+                  cell: (row) => row.model,
+                },
+                {
+                  header: 'Sessions',
+                  align: 'right',
+                  cell: (row) => row.sessions,
+                  sortValue: (row) => row.sessions,
+                },
+                {
+                  header: 'Eff.',
+                  align: 'right',
+                  cell: (row) =>
+                    row.avgEfficiency !== null
+                      ? formatPct(Math.min(100, row.avgEfficiency * 100))
+                      : '—',
+                  sortValue: (row) => row.avgEfficiency ?? -1,
+                },
+                {
+                  header: 'Success',
+                  align: 'right',
+                  className: (row) => (row.flagged ? 'text-accent-amber' : undefined),
+                  cell: (row) => (
+                    <>
+                      {row.flagged && '▲ '}
+                      {row.avgSuccessRate !== null
+                        ? formatPct(Math.min(100, row.avgSuccessRate * 100))
+                        : '—'}
+                    </>
+                  ),
+                  sortValue: (row) => row.avgSuccessRate ?? -1,
+                },
+                {
+                  header: 'Avg $',
+                  align: 'right',
+                  cell: (row) => formatUsdOrDash(row.avgCost),
+                  sortValue: (row) => row.avgCost ?? -1,
+                },
+                {
+                  header: 'Share',
+                  align: 'right',
+                  cell: (row) => {
+                    const share = modelSharePct(row, modelPerfTotalCost);
+                    return share !== null ? formatPct(share) : '—';
+                  },
+                  sortValue: (row) => modelSharePct(row, modelPerfTotalCost) ?? -1,
+                },
+                {
+                  header: '$/1M tok',
+                  align: 'right',
+                  className: 'text-ink-subtle',
+                  cell: (row) => formatUsdOrDash(row.costPerMillionTokens),
+                  sortValue: (row) => row.costPerMillionTokens ?? -1,
+                },
+              ]}
+            />
           )}
         </Panel>
 
@@ -527,6 +551,7 @@ export function History(): JSX.Element {
           ) : (
             <ShareTable<(typeof outcomeRows)[number]>
               title="Outcomes"
+              hideTitle
               rows={outcomeRows}
               rowKey={(row) => row.outcome}
               defaultSort={{ column: 3, direction: 'desc' }}
@@ -1474,6 +1499,11 @@ export interface ModelPerformanceRow {
   // models' actual spend efficiency.
   readonly costPerMillionTokens: number | null;
   readonly flagged: boolean;
+}
+
+function modelSharePct(row: ModelPerformanceRow, totalCost: number): number | null {
+  if (totalCost <= 0 || row.avgCost == null) return null;
+  return ((row.avgCost * row.sessions) / totalCost) * 100;
 }
 
 const FLAGGED_SUCCESS_THRESHOLD = 0.85;
