@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Today, aggregateAttentionFlags, buildWeekForecast, type SessionSummary } from './Today';
+import {
+  Today,
+  aggregateAttentionFlags,
+  bucketByHour,
+  buildWeekForecast,
+  type SessionSummary,
+} from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
 import { localStartOfDay } from '../../lib/date.js';
@@ -1990,9 +1996,11 @@ describe('Today view — Activity today spend-by-hour chart', () => {
     ).toBeInTheDocument();
   });
 
-  it('flags only the true max-spend hour as peak when two hours round to the same block count', async () => {
-    // $5.00 and $4.60 both round to 5 blocks at blockUnit=1, but only
-    // the $5.00 hour is the real peak — the chart must not highlight both.
+  it('flags only the true max-spend hour as peak when both hours quantize to the same block count', async () => {
+    // Quantized by DiscreteBlockChart's levels=6 against raw dollar counts:
+    // $5.00 (the effectiveMax) -> 6 blocks, $4.60 -> ceil(4.6/5*6)=6 blocks
+    // too, but only the $5.00 hour is the real peak — the chart must not
+    // highlight both.
     const dayStart = localStartOfDay();
     const hourSession = (hour: number, cost: number) => ({
       sessionId: `s-${hour}`,
@@ -2008,15 +2016,16 @@ describe('Today view — Activity today spend-by-hour chart', () => {
     const peakColorRects = Array.from(rects).filter(
       (r) => r.getAttribute('fill') === 'var(--color-chart-block-peak)',
     );
-    // Both hour-9 and hour-14 columns render 5 blocks each (10 total); only
-    // hour-9's 5 blocks (the true peak) should carry the peak color.
-    expect(peakColorRects.length).toBe(5);
+    // Both hour-9 and hour-14 columns render 6 blocks each (12 total); only
+    // hour-9's 6 blocks (the true peak) should carry the peak color.
+    expect(rects.length).toBe(12);
+    expect(peakColorRects.length).toBe(6);
   });
 
-  it('does not render the chart when every hour rounds to 0 blocks at the smallest unit step', async () => {
-    // maxCost=$0.001 picks the smallest NICE_UNIT (0.01) as the block unit,
-    // and round(0.001 / 0.01) = 0 — every column renders 0 blocks even
-    // though hasSpend is true, so DiscreteBlockChart returns null.
+  it('renders a single quantized column instead of vanishing when spend is a fraction of a cent', async () => {
+    // A lone $0.001 hour is still charted on raw dollar counts — the chart
+    // no longer pre-quantizes into whole-dollar blocks, so it renders
+    // rather than rounding every column to 0 and returning null.
     const dayStart = localStartOfDay();
     mockSessions([
       {
@@ -2028,9 +2037,9 @@ describe('Today view — Activity today spend-by-hour chart', () => {
       },
     ]);
     renderToday();
-    await waitFor(() => {
-      expect(screen.queryByRole('img', { name: /Hourly spend today/ })).toBeNull();
-    });
+    const chart = await screen.findByRole('img', { name: /Hourly spend today/ });
+    const rects = chart.querySelectorAll('rect.heatmap-cell');
+    expect(rects.length).toBe(1);
   });
 });
 
@@ -2567,16 +2576,88 @@ describe('Today view — Activity today panel', () => {
     // ConcurrencyIndicator) is gone — Today builds the chart itself now.
     expect(within(panel).queryByText('Concurrent Sessions')).toBeNull();
 
-    expect(
-      await within(panel).findByRole('img', {
-        name: "Today's activity density in 15-minute blocks",
-      }),
-    ).toBeInTheDocument();
+    const spendChart = await within(panel).findByRole('img', {
+      name: 'Hourly spend today: $2.00 total, peak $2.00 at 9am',
+    });
+    const heatmapChart = await within(panel).findByRole('img', {
+      name: "Today's activity density by hour",
+    });
+    const concurrencyChart = await within(panel).findByRole('img', {
+      name: 'Concurrency over time, peak 3',
+    });
+    expect(within(panel).getAllByRole('img').length).toBe(3);
+    // All three charts share the same 24-hourly-bucket granularity.
+    for (const chart of [spendChart, heatmapChart, concurrencyChart]) {
+      expect(chart.querySelectorAll('g').length).toBe(24);
+    }
+
     expect(await within(panel).findByText('Peak $2.00 at 9am')).toBeInTheDocument();
-    // Peak heatmap bucket is index 3 (count 3) at 15-min blocks from local
-    // midnight: dayStart + 3 * 15m = 00:45.
-    expect(within(panel).getByText('Peak 00:45 — 3 calls')).toBeInTheDocument();
+    // All 4 heatmap buckets ([1, 2, 0, 3], 15 minutes each) fall inside
+    // hour 0 once re-bucketed hourly: 1+2+0+3 = 6.
+    expect(within(panel).getByText('Peak 00:00 — 6 calls')).toBeInTheDocument();
     expect(within(panel).getByText('now 2 · peak 3')).toBeInTheDocument();
+
+    // The concurrency sample (count 2) lands in whichever hour `now` falls
+    // in; the chart tooltip for that column still reads the raw count.
+    const nowHour = new Date(now).getHours();
+    const concurrencyGroups = concurrencyChart.querySelectorAll('g');
+    fireEvent.mouseEnter(concurrencyGroups[nowHour]!);
+    expect(
+      await screen.findByText(`${String(nowHour).padStart(2, '0')}:00 — 2 concurrent`),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('bucketByHour()', () => {
+  it('sums multiple points landing in the same hour by default', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const hour9Start = dayStart + 9 * 60 * 60 * 1000;
+    const buckets = bucketByHour(
+      [
+        { ts: hour9Start + 60_000, value: 2 },
+        { ts: hour9Start + 30 * 60_000, value: 3 },
+      ],
+      nowMs,
+    );
+    expect(buckets[9]).toBe(5);
+    expect(buckets.filter((_, i) => i !== 9).every((v) => v === 0)).toBe(true);
+  });
+
+  it('takes the max instead of summing when mode is "max"', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const hour9Start = dayStart + 9 * 60 * 60 * 1000;
+    const buckets = bucketByHour(
+      [
+        { ts: hour9Start + 60_000, value: 2 },
+        { ts: hour9Start + 30 * 60_000, value: 5 },
+        { ts: hour9Start + 45 * 60_000, value: 1 },
+      ],
+      nowMs,
+      'max',
+    );
+    expect(buckets[9]).toBe(5);
+  });
+
+  it('drops a point before local midnight', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const buckets = bucketByHour([{ ts: dayStart - 1, value: 9 }], nowMs);
+    expect(buckets.every((v) => v === 0)).toBe(true);
+  });
+
+  it('drops a point at or after local midnight + 24h', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const buckets = bucketByHour([{ ts: dayStart + 86_400_000, value: 9 }], nowMs);
+    expect(buckets.every((v) => v === 0)).toBe(true);
+  });
+
+  it('returns a 24-length array of zeros for an empty points array', () => {
+    const buckets = bucketByHour([], Date.now());
+    expect(buckets.length).toBe(24);
+    expect(buckets.every((v) => v === 0)).toBe(true);
   });
 });
 

@@ -544,7 +544,7 @@ export function Today(): JSX.Element {
             <ApiFailuresCard />
           </AnimatedCard>
 
-          <AnimatedCard index={5} className="grid grid-cols-2 gap-3">
+          <AnimatedCard index={5} className="grid grid-cols-2 gap-3 items-start">
             <ForecastEodCard
               todayTotal={forecastBreakdownTotalUsd}
               forecastEod={forecastKpiUsd}
@@ -1239,33 +1239,44 @@ function ApiFailuresCard(): JSX.Element {
 
 // --- Activity Today Panel ---
 
-// Formats a 15-minute heatmap bucket's start time as a bare 24-hour
-// "HH:MM" label (e.g. "10:15") — deliberately not fmtTimeOfDay's AM/PM
-// format, to match the tooltip convention used elsewhere for this chart.
-function bucketTimeLabel(startTimestamp: number, bucketSizeMs: number, index: number): string {
-  const d = new Date(startTimestamp + index * bucketSizeMs);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+/**
+ * Re-buckets a raw timestamped series into 24 hourly buckets (0..23) for
+ * the local day containing `nowMs`. Lets Spend by hour (already hourly),
+ * Tool calls (15-minute heatmap buckets) and Concurrent sessions (its own
+ * bucket size) share one granularity so their charts scale identically.
+ * Points outside the local day are dropped. `mode: 'max'` is for gauges
+ * like concurrency, where summing sub-hour samples would double-count;
+ * `'sum'` (the default) is for counts and costs.
+ */
+export function bucketByHour(
+  points: ReadonlyArray<{ ts: number; value: number }>,
+  nowMs: number,
+  mode: 'sum' | 'max' = 'sum',
+): number[] {
+  const dayStart = localStartOfDay(nowMs);
+  const dayEnd = dayStart + 86_400_000;
+  const buckets = new Array<number>(24).fill(0);
+  for (const { ts, value } of points) {
+    if (ts < dayStart || ts >= dayEnd) continue;
+    const hour = Math.min(23, Math.floor((ts - dayStart) / 3_600_000));
+    buckets[hour] = mode === 'max' ? Math.max(buckets[hour]!, value) : buckets[hour]! + value;
+  }
+  return buckets;
 }
 
-function heatmapBucketsToBlockItems(
-  buckets: readonly number[],
-  startTimestamp: number,
-  bucketSizeMs: number,
-): DiscreteBlockChartItem[] {
-  const maxCount = Math.max(0, ...buckets);
-  return buckets.map((count, index) => ({
-    count,
-    tooltip: `${bucketTimeLabel(startTimestamp, bucketSizeMs, index)} — ${count} calls`,
-    isPeak: maxCount > 0 && count === maxCount,
-  }));
+// "10:00" — zero-padded 24-hour label for an hour index, the shared
+// tooltip convention for all three Activity-today charts.
+function hourOfDayLabel(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00`;
 }
 
-function heatmapCaption(data: ActivityHeatmapTodayResponse | undefined): string {
-  if (!data || !data.buckets || data.buckets.length === 0) return 'No calls recorded yet.';
-  const maxCount = Math.max(0, ...data.buckets);
-  if (maxCount === 0) return 'No calls recorded yet.';
-  const peakIndex = data.buckets.indexOf(maxCount);
-  return `Peak ${bucketTimeLabel(data.startTimestamp, data.bucketSizeMs, peakIndex)} — ${maxCount} calls`;
+// "Peak 10:00 — 38 calls" / "No calls recorded yet." for an already
+// hourly-bucketed count series.
+function hourlyCountsCaption(counts: readonly number[], unit: string): string {
+  const max = Math.max(0, ...counts);
+  if (max === 0) return `No ${unit} recorded yet.`;
+  const peakHour = counts.indexOf(max);
+  return `Peak ${hourOfDayLabel(peakHour)} — ${max} ${unit}`;
 }
 
 function hourlySpendCaption(hours: readonly HourlyCostEntry[]): string {
@@ -1284,18 +1295,37 @@ function ActivityTodayPanel({
   todayHeatmap: ActivityHeatmapTodayResponse | undefined;
   concurrency: ConcurrencyData | undefined;
 }): JSX.Element {
+  const now = Date.now();
   const hasHourlySpend = hourlySpend.some((h) => h.cost > 0);
-  const heatmapItems =
-    todayHeatmap && todayHeatmap.buckets && todayHeatmap.buckets.length > 0
-      ? heatmapBucketsToBlockItems(
-          todayHeatmap.buckets,
-          todayHeatmap.startTimestamp,
-          todayHeatmap.bucketSizeMs,
-        )
-      : [];
-  const concurrencyItems: DiscreteBlockChartItem[] = (concurrency?.buckets ?? []).map((bucket) => ({
-    count: bucket.count,
-    tooltip: `${fmtTimeOfDay(bucket.timestamp)} — ${bucket.count} concurrent`,
+  const hasHeatmapData = (todayHeatmap?.buckets?.length ?? 0) > 0;
+  const hasConcurrencyData = (concurrency?.buckets?.length ?? 0) > 0;
+
+  const spendItems = hourlySpendToBlockItems(hourlySpend);
+
+  const heatmapHourly = hasHeatmapData
+    ? bucketByHour(
+        todayHeatmap!.buckets.map((count, index) => ({
+          ts: todayHeatmap!.startTimestamp + index * todayHeatmap!.bucketSizeMs,
+          value: count,
+        })),
+        now,
+      )
+    : [];
+  const heatmapItems: DiscreteBlockChartItem[] = heatmapHourly.map((count, hour) => ({
+    count,
+    tooltip: `${hourOfDayLabel(hour)} — ${count} calls`,
+  }));
+
+  const concurrencyHourly = hasConcurrencyData
+    ? bucketByHour(
+        concurrency!.buckets.map((b) => ({ ts: b.timestamp, value: b.count })),
+        now,
+        'max',
+      )
+    : [];
+  const concurrencyItems: DiscreteBlockChartItem[] = concurrencyHourly.map((count, hour) => ({
+    count,
+    tooltip: `${hourOfDayLabel(hour)} — ${count} concurrent`,
   }));
 
   return (
@@ -1303,38 +1333,49 @@ function ActivityTodayPanel({
       <div className="grid grid-cols-3 gap-4">
         <div>
           <Eyebrow className="mb-1.5">Spend by hour</Eyebrow>
-          {hasHourlySpend ? (
-            <DiscreteBlockChart
-              data={hourlySpendToBlockItems(hourlySpend)}
-              ariaLabel={describeHourlySpend(hourlySpend)}
-            />
-          ) : (
-            <EmptyState variant="inline" title="No spend data yet" />
-          )}
+          <div className="h-[72px] flex items-end">
+            {hasHourlySpend ? (
+              <DiscreteBlockChart
+                data={spendItems}
+                levels={6}
+                ariaLabel={describeHourlySpend(hourlySpend)}
+              />
+            ) : (
+              <EmptyState variant="inline" title="No spend data yet" />
+            )}
+          </div>
           <p className="mt-1.5 text-[10px] text-ink-muted">{hourlySpendCaption(hourlySpend)}</p>
         </div>
         <div>
           <Eyebrow className="mb-1.5">Tool calls</Eyebrow>
-          {heatmapItems.length > 0 ? (
-            <DiscreteBlockChart
-              data={heatmapItems}
-              ariaLabel="Today's activity density in 15-minute blocks"
-            />
-          ) : (
-            <EmptyState variant="inline" title="No heatmap data yet" />
-          )}
-          <p className="mt-1.5 text-[10px] text-ink-muted">{heatmapCaption(todayHeatmap)}</p>
+          <div className="h-[72px] flex items-end">
+            {hasHeatmapData ? (
+              <DiscreteBlockChart
+                data={heatmapItems}
+                levels={6}
+                ariaLabel="Today's activity density by hour"
+              />
+            ) : (
+              <EmptyState variant="inline" title="No heatmap data yet" />
+            )}
+          </div>
+          <p className="mt-1.5 text-[10px] text-ink-muted">
+            {hourlyCountsCaption(heatmapHourly, 'calls')}
+          </p>
         </div>
         <div>
           <Eyebrow className="mb-1.5">Concurrent sessions</Eyebrow>
-          {concurrencyItems.length > 0 ? (
-            <DiscreteBlockChart
-              data={concurrencyItems}
-              ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
-            />
-          ) : (
-            <EmptyState variant="inline" title="No session data yet" />
-          )}
+          <div className="h-[72px] flex items-end">
+            {hasConcurrencyData ? (
+              <DiscreteBlockChart
+                data={concurrencyItems}
+                levels={6}
+                ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
+              />
+            ) : (
+              <EmptyState variant="inline" title="No session data yet" />
+            )}
+          </div>
           <p className="mt-1.5 text-[10px] text-ink-muted">
             now {concurrency?.current ?? 0} · peak {concurrency?.peak ?? 0}
           </p>
@@ -1890,21 +1931,6 @@ interface HourlyCostEntry {
   readonly cost: number;
 }
 
-// Friendly per-block cost values for the Forecast card's hourly-spend chart;
-// we pick the smallest one that yields no more than TARGET_PEAK_BLOCKS rows
-// for the peak hour. Keeps stack heights legible regardless of whether today
-// is a $0.40 day or a $40 day.
-const HOURLY_SPEND_NICE_UNITS = [
-  0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000,
-];
-const HOURLY_SPEND_TARGET_PEAK_BLOCKS = 5;
-
-function pickHourlySpendBlockUnit(raw: number): number {
-  if (raw <= 0) return 0.01;
-  for (const c of HOURLY_SPEND_NICE_UNITS) if (c >= raw) return c;
-  return HOURLY_SPEND_NICE_UNITS[HOURLY_SPEND_NICE_UNITS.length - 1]!;
-}
-
 function formatHourLabel(hour: number): string {
   if (hour === 0) return '12am';
   if (hour < 12) return `${hour}am`;
@@ -1921,14 +1947,9 @@ function describeHourlySpend(hours: readonly HourlyCostEntry[]): string {
 }
 
 function hourlySpendToBlockItems(hours: readonly HourlyCostEntry[]): DiscreteBlockChartItem[] {
-  const maxCost = hours.reduce((m, h) => Math.max(m, h.cost), 0);
-  const blockUnit = pickHourlySpendBlockUnit(maxCost / HOURLY_SPEND_TARGET_PEAK_BLOCKS);
   return hours.map((h) => ({
-    count: Math.max(0, Math.round(h.cost / blockUnit)),
-    tooltip: `${formatHourLabel(h.hour)}: ${formatUsd(h.cost)} (start hour)`,
-    // From the raw dollar value, not the quantized block count — two hours
-    // can round to the same block count while only one is the true peak.
-    isPeak: maxCost > 0 && h.cost === maxCost,
+    count: h.cost,
+    tooltip: `${hourOfDayLabel(h.hour)} — ${formatUsd(h.cost)}`,
   }));
 }
 
