@@ -215,7 +215,7 @@ function parseAgentOutput(output: Record<string, unknown>): ToolFields {
     fields.agentInterrupted = output.agentInterrupted;
   if (typeof output.agentResultLength === 'number')
     fields.agentResultLength = output.agentResultLength;
-  if (typeof output.agentId === 'string') fields.spawnedAgentId = output.agentId;
+  if (typeof output.spawnedAgentId === 'string') fields.spawnedAgentId = output.spawnedAgentId;
   return fields;
 }
 

@@ -498,13 +498,13 @@ describe('parseToolSpecificFields', () => {
       expect(fields.agentCompleted).toBeUndefined();
     });
 
-    it('captures the spawned agentId from the Agent tool response', () => {
+    it('captures the spawned agentId from the extractOutputMeta-shaped output', () => {
       const fields = parseToolSpecificFields(
         'Agent',
         { prompt: 'Do work' },
         {
-          agentId: 'a4d2c8f1e0b3a297',
-          completed: true,
+          spawnedAgentId: 'a4d2c8f1e0b3a297',
+          agentCompleted: true,
         },
       );
 
