@@ -311,12 +311,15 @@ export interface ToolCallRecord {
   readonly outputSizeBytes?: number;
   readonly inputHash?: string;
   /**
-   * Which subagent made this tool call, straight from the hook payload's
-   * `agent_id` (see `PreHookEvent.agentId`/`PostHookEvent.agentId`). Absent
-   * for tool calls made by the parent/orchestrator session. Distinct from —
-   * and a different signal than — the `agentId` `SubagentWatcher` derives
-   * from transcript filenames for subagent *token usage* attribution; that
-   * pipeline is untouched by this field.
+   * Which subagent made this tool call. The hook payload's own `agent_id`
+   * field (`PreHookEvent.agentId`/`PostHookEvent.agentId`) is documented by
+   * Claude Code as present on every hook event fired inside a subagent call,
+   * but in practice never populates (#656) — this field is backfilled
+   * instead via `backfillAgentId()` (agent-partition.ts), joining on
+   * `toolUseId` against tool_use blocks `SubagentWatcher` finds while
+   * tailing that subagent's own transcript. Absent for tool calls made by
+   * the parent/orchestrator session, or for a subagent call this join
+   * hasn't caught up with yet (best-effort, not persisted retroactively).
    */
   readonly agentId?: string;
   readonly agentType?: string;

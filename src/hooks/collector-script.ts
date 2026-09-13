@@ -358,13 +358,15 @@ interface HookInput {
   transcript_path?: string;
   error?: string;
   is_interrupt?: boolean;
-  // Present on every hook event (code.claude.com/docs/en/hooks.md): agent_id
-  // identifies the subagent that fired this hook (absent for the parent
-  // session), agent_type names its kind (subagents, and sessions started
-  // with `--agent`). Attached to every ToolCallRecord below — previously
-  // there was no per-tool-call subagent attribution at all; the only
-  // existing agentId (SubagentWatcher, from transcript filenames) tracks
-  // subagent token usage, a separate signal this doesn't replace.
+  // Claude Code's docs (code.claude.com/docs/en/hooks.md) document agent_id
+  // as present on every hook event fired inside a subagent call (agent_type
+  // similarly), but empirically this never populates in production (#656) —
+  // confirmed via a live dogfooding check on Claude Code v2.1.236 with a real
+  // subagent spawn. Still parsed here (harmless if Claude Code ever starts
+  // sending it), but ToolCallRecord.agentId's real source is now the
+  // toolUseId join in agent-partition.ts's backfillAgentId — see its doc
+  // comment. Left in place rather than removed: a future Claude Code release
+  // fixing this on their end would need zero changes here to start working.
   agent_id?: string;
   agent_type?: string;
   // PostToolUse/PostToolUseFailure (code.claude.com/docs/en/hooks.md): tool
