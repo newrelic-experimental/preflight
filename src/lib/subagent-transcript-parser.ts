@@ -1,19 +1,16 @@
 import { createHash } from 'node:crypto';
 
-import type {
-  RawTranscriptEntry,
-  RawAssistantMessage,
-  RawUsage,
-} from '../hooks/transcript-types.js';
+import type { RawTranscriptEntry, RawAssistantMessage, RawUsage } from './transcript-types.js';
 
 /**
  * Field-level result of parsing one JSONL transcript line as an assistant
  * turn with token usage. Deliberately does not reject on missing
- * model/messageId/timestamp — `SubagentWatcher` and `SubagentTimelineStore`
- * apply slightly different acceptance policies for those (see each call
- * site), so this module only does the parsing genuinely identical between
- * them: JSON validity, type/shape checks, numeric field extraction, and the
- * two schema-drift fingerprints.
+ * model/messageId/timestamp/isSidechain — `SubagentWatcher`,
+ * `SubagentTimelineStore`, and `ParentTranscriptWatcher` apply slightly
+ * different acceptance policies for those (see each call site), so this
+ * module only does the parsing genuinely identical between them: JSON
+ * validity, type/shape checks, numeric field extraction, and the two
+ * schema-drift fingerprints.
  */
 export interface ParsedAssistantTurnFields {
   readonly messageId: string | null;
@@ -28,6 +25,8 @@ export interface ParsedAssistantTurnFields {
   readonly stopReason: string | null;
   readonly usageKeysFingerprint: string;
   readonly contentBlockTypesFingerprint: string;
+  /** True for subagent/Task-tool turns inlined into the main transcript — `ParentTranscriptWatcher` rejects these. */
+  readonly isSidechain: boolean;
 }
 
 export interface ParseAssistantTurnLineResult {
@@ -65,6 +64,7 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
   const turnUuid = typeof obj.uuid === 'string' ? obj.uuid : '';
   const rawTimestamp = typeof obj.timestamp === 'string' ? obj.timestamp : null;
   const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
+  const isSidechain = obj.isSidechain === true;
 
   const inputTokens = num(u.input_tokens);
   const outputTokens = num(u.output_tokens);
@@ -93,6 +93,7 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
       stopReason,
       usageKeysFingerprint,
       contentBlockTypesFingerprint,
+      isSidechain,
     },
     invalidJson: false,
   };

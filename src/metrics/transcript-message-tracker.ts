@@ -1,6 +1,6 @@
 import { openSync, closeSync, readSync, statSync, constants as fsConstants } from 'node:fs';
 
-import type { RawTranscriptEntry, RawAssistantMessage } from '../hooks/transcript-types.js';
+import type { RawTranscriptEntry, RawAssistantMessage } from '../lib/transcript-types.js';
 
 // ---------------------------------------------------------------------------
 // Types

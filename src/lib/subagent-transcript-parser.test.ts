@@ -5,6 +5,7 @@ function makeLine(overrides: {
   uuid?: string;
   timestamp?: string | null;
   message?: Record<string, unknown> | null;
+  isSidechain?: boolean;
 }): string {
   const base = {
     type: 'assistant',
@@ -46,7 +47,27 @@ describe('parseAssistantTurnLine', () => {
       stopReason: 'end_turn',
       usageKeysFingerprint: expect.any(String),
       contentBlockTypesFingerprint: expect.any(String),
+      isSidechain: false,
     });
+  });
+
+  it('extracts isSidechain:true for a subagent turn inlined into the main transcript', () => {
+    const line = makeLine({ isSidechain: true });
+    const { fields } = parseAssistantTurnLine(line);
+    expect(fields?.isSidechain).toBe(true);
+  });
+
+  it('defaults isSidechain to false when the field is absent', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg_1',
+        model: 'claude-opus-4-7',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    });
+    const { fields } = parseAssistantTurnLine(line);
+    expect(fields?.isSidechain).toBe(false);
   });
 
   it('extracts reasoning_tokens from output_tokens_details', () => {

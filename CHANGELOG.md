@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.1] - 2026-09-13
+
+### Fixed
+
+- **A third copy of the transcript-line parsing logic already unified across two other files had drifted out of that shared module.** The parent-session transcript watcher now calls the same shared parser, which has been extended to also carry the sidechain flag it needs to skip subagent turns inlined into the main transcript.
+
 ## [1.51.0] - 2026-09-13
 
 ### Added
