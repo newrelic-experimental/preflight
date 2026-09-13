@@ -136,6 +136,42 @@ describe('SubagentWatcher', () => {
     });
   });
 
+  it('includes tool_use ids from the transcript line on the emitted subagent_token event', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'turn-uuid-1',
+      timestamp: '2026-06-15T12:00:00.000Z',
+      sessionId: PARENT_SESSION,
+      isSidechain: true,
+      message: {
+        id: 'msg_1',
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        stop_reason: 'end_turn',
+        content: [
+          { type: 'text', text: 'Running a command' },
+          { type: 'tool_use', id: 'toolu_xyz789', name: 'Bash', input: {} },
+        ],
+        usage: { input_tokens: 100, output_tokens: 50 },
+      },
+    });
+    writeFileSync(agentJsonl, line + '\n');
+    const watcher = new SubagentWatcher({
+      storagePath,
+      projectsDir,
+      parentSessionId: PARENT_SESSION,
+    });
+    watcher.poll();
+    const buf = readFileSync(join(storagePath, `buffer-${PARENT_SESSION}.jsonl`), 'utf-8');
+    const tokenLines = buf
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.mode === 'subagent_token');
+    expect(tokenLines).toHaveLength(1);
+    expect(tokenLines[0].toolUseIds).toEqual(['toolu_xyz789']);
+  });
+
   it('does not re-emit lines on a second poll (cursor persisted)', () => {
     writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
     const watcher = new SubagentWatcher({
