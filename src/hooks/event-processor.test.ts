@@ -1484,6 +1484,40 @@ describe('HookEventProcessor', () => {
       expect(turns[0].inputTokens).toBe(100);
     });
 
+    it('passes toolUseIds through from the buffer event to onSubagentTurn', () => {
+      const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onSubagentTurn: (t) => turns.push(t),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'subagent_token' as const,
+          tool: 'subagent',
+          timestamp: 1700000000000,
+          sessionId: 'sess-1',
+          agentId: 'a1234567890abcdef',
+          workflowRunId: null,
+          messageId: 'msg_1',
+          turnUuid: 'u1',
+          model: 'claude-opus-4-7',
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 1000,
+          cacheCreationTokens: 200,
+          reasoningTokens: 0,
+          stopReason: 'end_turn',
+          schemaFingerprint: 'fp',
+          toolUseIds: ['toolu_abc'],
+        } as HookEvent,
+      ]);
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0].toolUseIds).toEqual(['toolu_abc']);
+    });
+
     it('dedups subagent_token entries by (agentId, messageId)', () => {
       const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
       const processor = new HookEventProcessor({

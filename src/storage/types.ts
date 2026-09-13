@@ -112,6 +112,7 @@ export interface SubagentTokenHookEvent extends HookEventBase {
   readonly reasoningTokens?: number;
   readonly stopReason?: string | null;
   readonly schemaFingerprint?: string;
+  readonly toolUseIds?: readonly string[];
 }
 
 /** Emitted by the WorkflowWatcher / SubagentWatcher with pipeline health counters. */
