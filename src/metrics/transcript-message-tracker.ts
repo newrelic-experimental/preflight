@@ -53,8 +53,8 @@ const EXPLICIT_REJECTION_RE = new RegExp(
 /** A trigger word immediately followed by punctuation reads as an interjection, not a task instruction ("Stop the dev server" has no punctuation there). "no"/"nope" are handled by LEADING_NO_RE instead, so its reassurance/acknowledgment guard isn't bypassed. */
 const LEADING_INTERJECTION_RE = /^(stop|wait|undo|revert)[.,!]/i;
 
-/** Common adverbs that can trail a standalone undo pronoun ("undo it now", "don't do that again") without turning it into a noun-phrase modifier. Not exhaustive — hand-picked, not data-derived. */
-const UNDO_TRAILING_ADVERBS = 'again|now|already|please|instead|first';
+/** Common adverbs that can trail a standalone undo pronoun ("undo it now", "don't do that again") without turning it into a noun-phrase modifier. Not exhaustive — hand-picked, not data-derived. Deliberately excludes "first": it's an ordinal adjective as often as an adverb ("revert that first commit"), so allowing it would reopen the exact noun-phrase false positive this regex exists to close. */
+const UNDO_TRAILING_ADVERBS = 'again|now|already|please|instead';
 
 /** Undo verbs only count as a correction when they target the assistant's own action as a standalone object ("undo that", "don't do that", "undo it now") — a pronoun followed by any other word is modifying that noun ("revert that commit", "don't push to that branch"), not standing in for the assistant's prior action. */
 const TARGETED_UNDO_RE = new RegExp(

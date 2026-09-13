@@ -171,6 +171,7 @@ describe('TranscriptMessageTracker', () => {
     ['no rush, whenever you get to it'],
     ['Undo the last commit in git history'],
     ["Don't push directly to that branch"],
+    ['Revert that first commit'],
     ['No, thanks'],
     ["No, that's fine"],
   ])('does not count %j as a correction', (text) => {
