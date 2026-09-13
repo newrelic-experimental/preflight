@@ -414,6 +414,25 @@ describe('LocalSessionAggregator timeline persistence', () => {
     const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
     expect(timeline[0]?.success).toBe(false);
   });
+
+  it('threads agentId onto the timeline entry so replay can partition by agent (#625)', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'edit',
+      timestamp: 1,
+      agentId: 'agent-a',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]?.agentId).toBe('agent-a');
+  });
+
+  it('omits agentId when the tool call was made by the parent session', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'edit', timestamp: 1 });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline[0]).not.toHaveProperty('agentId');
+  });
 });
 
 describe('LocalSessionAggregator panel rehydration', () => {
