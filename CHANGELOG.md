@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.1] - 2026-09-13
+
+### Fixed
+
+- **Correction detection could still false-positive on a few phrasings the original regex redesign didn't cover:** a standing instruction referencing a noun with "that" nearby (e.g. "don't push directly to that branch") no longer counts as undoing the assistant's last action, and a polite decline ("no, thanks" / "no, that's fine") no longer counts as a rejection.
+
 ## [1.51.0] - 2026-09-13
 
 ### Added
