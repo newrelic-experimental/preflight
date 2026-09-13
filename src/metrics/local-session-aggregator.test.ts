@@ -415,7 +415,7 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.success).toBe(false);
   });
 
-  it('threads agentId onto the timeline entry so replay can partition by agent (#625)', () => {
+  it('threads agentId onto the timeline entry so replay can partition by agent', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
       sessionId: REAL_ID,

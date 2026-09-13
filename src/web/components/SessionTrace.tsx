@@ -39,6 +39,7 @@ interface ParentEntry {
   readonly success: boolean;
   readonly filePath?: string;
   readonly command?: string;
+  readonly agentId?: string;
 }
 
 // Anti-pattern highlight spans for the PARENT lane only (thrashing, stuck loop,
@@ -50,6 +51,8 @@ interface ParentSegment {
   readonly startIndex: number;
   readonly endIndex: number;
   readonly severity: 'warning' | 'critical';
+  readonly agentId?: string;
+  readonly agentScoped?: boolean;
 }
 
 export interface SessionTraceProps {

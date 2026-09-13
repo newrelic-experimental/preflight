@@ -1031,7 +1031,7 @@ describe('api-handler GET /api/sessions/:id/replay', () => {
     expect(parsed.timeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
   });
 
-  it('threads agentId onto live-buffer timeline entries so replay can partition by agent (#625)', async () => {
+  it('threads agentId onto live-buffer timeline entries so replay can partition by agent', async () => {
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],

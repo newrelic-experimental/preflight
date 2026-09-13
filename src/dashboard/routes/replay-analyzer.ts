@@ -20,6 +20,15 @@ export interface AntiPatternSegment {
   readonly iterations: number;
   readonly target: string;
   readonly severity: 'warning' | 'critical';
+  // Owning agent, only meaningful when agentScoped is true — undefined then
+  // means "owned by the parent session", not "agent-agnostic".
+  readonly agentId?: string;
+  // True for segments from a per-agent detector (stuck-loop, blind-editing,
+  // re-reading). A segment's index range can span a gap occupied by a
+  // different agent's unrelated call — this tells the renderer
+  // (GanttTimeline.tsx) to only highlight rows that actually belong to it.
+  // False/absent for agent-agnostic segments (thrashing).
+  readonly agentScoped?: boolean;
 }
 
 export interface ReplayAnalysis {
@@ -41,23 +50,30 @@ export function analyzeReplayTimeline(timeline: ReplayTimelineEntry[]): ReplayAn
   // false positive still requires the same file to cycle through
   // edit/test-fail more than once, a narrower risk than the detectors below.
   // Mirrors the same left-unpartitioned decision `AntiPatternDetector` made
-  // for #607 (see src/metrics/anti-patterns.ts).
+  // for the same false-positive class (see src/metrics/anti-patterns.ts).
   segments.push(...detectThrashingSegments(timeline));
 
   // Stuck-loop, blind-editing, and re-reading all detect one agent repeating
   // itself over a timestamp-ordered sequence. Run each per agent (parent
   // session + one group per distinct subagent `agentId`) so parallel
   // subagents each independently doing something once don't look like a
-  // single agent repeating itself (#625).
+  // single agent repeating itself.
   const indexed: IndexedEntry[] = timeline.map((entry, index) => ({
     entry,
     index,
     agentId: entry.agentId,
   }));
   for (const group of partitionByAgent(indexed)) {
-    segments.push(...detectStuckLoopSegments(group));
-    segments.push(...detectBlindEditSegments(group));
-    segments.push(...detectReReadingSegments(group));
+    // Every entry in a partitioned group shares the same agentId by
+    // construction (see partitionByAgent) — stamp it onto each emitted
+    // segment so the renderer can tell which rows in the segment's index
+    // range actually belong to it (see AntiPatternSegment.agentId).
+    const groupAgentId = group[0]?.agentId;
+    const stampAgent = (segs: AntiPatternSegment[]): AntiPatternSegment[] =>
+      segs.map((seg) => ({ ...seg, agentId: groupAgentId, agentScoped: true }));
+    segments.push(...stampAgent(detectStuckLoopSegments(group)));
+    segments.push(...stampAgent(detectBlindEditSegments(group)));
+    segments.push(...stampAgent(detectReReadingSegments(group)));
   }
 
   let worstSegment: AntiPatternSegment | null = null;

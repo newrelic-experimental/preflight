@@ -193,6 +193,19 @@ describe('analyzeReplayTimeline', () => {
       expect(stuck[0]!.iterations).toBe(3);
     });
 
+    it('stamps agentScoped true with agentId undefined for a parent-session-only segment', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Bash', command: 'npm test' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test' }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      const stuck = result.segments.filter((s) => s.type === 'stuck_loop');
+      expect(stuck).toHaveLength(1);
+      expect(stuck[0]!.agentScoped).toBe(true);
+      expect(stuck[0]!.agentId).toBeUndefined();
+    });
+
     it('does not flag blind_editing when 4 different subagents each edit the same file once', () => {
       const timeline = [
         makeEntry({ toolName: 'Edit', filePath: '/src/x.ts', agentId: 'agent-a' }),
@@ -229,6 +242,11 @@ describe('analyzeReplayTimeline', () => {
       expect(stuck[0]!.iterations).toBe(3);
       expect(stuck[0]!.startIndex).toBe(0);
       expect(stuck[0]!.endIndex).toBe(3);
+      // agentScoped + agentId let the renderer skip non-owning rows within
+      // this range (e.g. agent-b's entry at index 1) instead of painting
+      // every index in [startIndex, endIndex] as part of the segment.
+      expect(stuck[0]!.agentScoped).toBe(true);
+      expect(stuck[0]!.agentId).toBe('agent-a');
     });
 
     it('leaves thrashing unpartitioned across agents (matches AntiPatternDetector precedent)', () => {
@@ -262,6 +280,9 @@ describe('analyzeReplayTimeline', () => {
       const thrash = result.segments.filter((s) => s.type === 'thrashing');
       expect(thrash).toHaveLength(1);
       expect(thrash[0]!.iterations).toBe(3);
+      // Not agent-scoped — GanttTimeline must still highlight every row in
+      // range for this type, regardless of which agent made each call.
+      expect(thrash[0]!.agentScoped).toBeFalsy();
     });
   });
 
