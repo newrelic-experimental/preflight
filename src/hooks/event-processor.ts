@@ -209,6 +209,38 @@ function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
+/**
+ * The attribution fields every record shape carries. Pre wins over post for
+ * `cwd`, `agentId`, `agentType`, and `platform`: the collector stamps both,
+ * and pre is the event that observed the call start.
+ */
+function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
+  const cwd = pre?.cwd ?? post?.cwd;
+  const agentId = pre?.agentId ?? post?.agentId;
+  const agentType = pre?.agentType ?? post?.agentType;
+  const platform = pre?.platform ?? post?.platform;
+  return {
+    ...(pre?.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
+    ...(pre?.inputHash !== undefined && { inputHash: pre.inputHash }),
+    ...(pre?.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
+    ...(pre?.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
+    ...(cwd !== undefined && { cwd }),
+    ...(agentId !== undefined && { agentId }),
+    ...(agentType !== undefined && { agentType }),
+    ...(platform !== undefined && { platform }),
+  };
+}
+
+/** What the post event says about how the call ended. */
+function outcomeFields(post: PostHookEvent) {
+  return {
+    success: post.success ?? true,
+    ...(post.isInterrupt === true && { errorType: 'interrupted' }),
+    ...(post.error !== undefined && { error: post.error }),
+    ...(post.outputSize !== undefined && { outputSizeBytes: post.outputSize }),
+  };
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_ORPHAN_TIMEOUT_MS = 60_000;
 // Permission prompts legitimately dwell — a user thinking for 90 seconds is
@@ -625,12 +657,7 @@ export class HookEventProcessor {
       success: false,
       errorType: 'denied',
       ...(event.deniedReason !== undefined && { error: event.deniedReason }),
-      ...(pre.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
-      ...(pre.inputHash !== undefined && { inputHash: pre.inputHash }),
-      ...(pre.cwd !== undefined && { cwd: pre.cwd }),
-      ...(pre.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
-      ...(pre.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
-      ...(pre.platform !== undefined && { platform: pre.platform }),
+      ...attributionFields(pre),
       ...toolFields,
     });
   }
@@ -667,28 +694,8 @@ export class HookEventProcessor {
         permissionWaitMs: hasNativeDuration
           ? Math.max(0, wallClockMs - (event.nativeDurationMs as number))
           : null,
-        success: event.success ?? true,
-        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
-        ...(event.error !== undefined && { error: event.error }),
-        ...(preEvent.inputSize !== undefined && { inputSizeBytes: preEvent.inputSize }),
-        ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
-        ...(preEvent.inputHash !== undefined && { inputHash: preEvent.inputHash }),
-        ...(preEvent.cwd !== undefined && { cwd: preEvent.cwd }),
-        ...(preEvent.transcriptPath !== undefined && {
-          transcriptPath: preEvent.transcriptPath,
-        }),
-        ...(preEvent.permissionMode !== undefined && {
-          permissionMode: preEvent.permissionMode,
-        }),
-        ...((preEvent.agentId ?? event.agentId) !== undefined && {
-          agentId: preEvent.agentId ?? event.agentId,
-        }),
-        ...((preEvent.agentType ?? event.agentType) !== undefined && {
-          agentType: preEvent.agentType ?? event.agentType,
-        }),
-        ...((preEvent.platform ?? event.platform) !== undefined && {
-          platform: preEvent.platform ?? event.platform,
-        }),
+        ...outcomeFields(event),
+        ...attributionFields(preEvent, event),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -709,14 +716,8 @@ export class HookEventProcessor {
           typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
             ? event.nativeDurationMs
             : null,
-        success: event.success ?? true,
-        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
-        ...(event.error !== undefined && { error: event.error }),
-        ...(event.cwd !== undefined && { cwd: event.cwd }),
-        ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
-        ...(event.agentId !== undefined && { agentId: event.agentId }),
-        ...(event.agentType !== undefined && { agentType: event.agentType }),
-        ...(event.platform !== undefined && { platform: event.platform }),
+        ...outcomeFields(event),
+        ...attributionFields(undefined, event),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -790,10 +791,7 @@ export class HookEventProcessor {
       durationMs: null,
       success: false,
       errorType: entry.phase === 'permission_requested' ? 'rejected' : 'timeout',
-      ...(event.cwd !== undefined && { cwd: event.cwd }),
-      ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
-      ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
-      ...(event.platform !== undefined && { platform: event.platform }),
+      ...attributionFields(event),
       ...toolFields,
     });
   }

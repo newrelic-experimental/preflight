@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.11] - 2026-09-12
+
+### Fixed
+
+- **A subagent's tool call that timed out or was denied was attributed to the main agent.** The timeout and denied record shapes never carried the subagent id, and the timeout shape also dropped the transcript path and permission mode. Every record shape now copies the same attribution fields from the hook events through one helper, so a field added to the pre event reaches all of them at once.
+
 ## [1.50.10] - 2026-09-12
 
 ### Fixed
