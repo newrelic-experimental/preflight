@@ -46,6 +46,7 @@ describe('parseAssistantTurnLine', () => {
       stopReason: 'end_turn',
       usageKeysFingerprint: expect.any(String),
       contentBlockTypesFingerprint: expect.any(String),
+      toolUseIds: [],
     });
   });
 
@@ -207,6 +208,46 @@ describe('parseAssistantTurnLine', () => {
     });
     const b = parseAssistantTurnLine(line2).fields?.contentBlockTypesFingerprint;
     expect(a).not.toBe(b);
+  });
+
+  it('extracts tool_use block ids from message.content', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'turn-1',
+      timestamp: '2026-09-13T00:00:00.000Z',
+      message: {
+        id: 'msg_1',
+        model: 'claude-sonnet-5',
+        usage: { input_tokens: 10, output_tokens: 5 },
+        content: [
+          { type: 'text', text: 'Running a command' },
+          { type: 'tool_use', id: 'toolu_abc123', name: 'Bash', input: {} },
+          { type: 'tool_use', id: 'toolu_def456', name: 'Read', input: {} },
+        ],
+      },
+    });
+
+    const { fields } = parseAssistantTurnLine(line);
+
+    expect(fields?.toolUseIds).toEqual(['toolu_abc123', 'toolu_def456']);
+  });
+
+  it('returns an empty toolUseIds array when the turn has no tool_use blocks', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'turn-2',
+      timestamp: '2026-09-13T00:00:00.000Z',
+      message: {
+        id: 'msg_2',
+        model: 'claude-sonnet-5',
+        usage: { input_tokens: 10, output_tokens: 5 },
+        content: [{ type: 'text', text: 'Just talking, no tools' }],
+      },
+    });
+
+    const { fields } = parseAssistantTurnLine(line);
+
+    expect(fields?.toolUseIds).toEqual([]);
   });
 });
 

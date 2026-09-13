@@ -28,6 +28,7 @@ export interface ParsedAssistantTurnFields {
   readonly stopReason: string | null;
   readonly usageKeysFingerprint: string;
   readonly contentBlockTypesFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 export interface ParseAssistantTurnLineResult {
@@ -78,6 +79,7 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
 
   const usageKeysFingerprint = computeUsageKeysFingerprint(u);
   const contentBlockTypesFingerprint = computeContentBlockTypesFingerprint(m.content);
+  const toolUseIds = extractToolUseIds(m.content);
 
   return {
     fields: {
@@ -93,6 +95,7 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
       stopReason,
       usageKeysFingerprint,
       contentBlockTypesFingerprint,
+      toolUseIds,
     },
     invalidJson: false,
   };
@@ -130,6 +133,22 @@ function computeContentBlockTypesFingerprint(content: unknown): string {
   }
   const sorted = Array.from(set).sort();
   return shortHash(sorted.join('|'));
+}
+
+export function extractToolUseIds(content: unknown): readonly string[] {
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'tool_use' &&
+      typeof (block as { id?: unknown }).id === 'string'
+    ) {
+      ids.push((block as { id: string }).id);
+    }
+  }
+  return ids;
 }
 
 function shortHash(input: string): string {
