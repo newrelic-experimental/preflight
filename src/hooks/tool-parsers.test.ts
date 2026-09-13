@@ -497,6 +497,19 @@ describe('parseToolSpecificFields', () => {
       const fields = parseToolSpecificFields('Agent', { prompt: 'x' }, null);
       expect(fields.agentCompleted).toBeUndefined();
     });
+
+    it('captures the spawned agentId from the Agent tool response', () => {
+      const fields = parseToolSpecificFields(
+        'Agent',
+        { prompt: 'Do work' },
+        {
+          agentId: 'a4d2c8f1e0b3a297',
+          completed: true,
+        },
+      );
+
+      expect(fields.spawnedAgentId).toBe('a4d2c8f1e0b3a297');
+    });
   });
 
   describe('unknown tools', () => {

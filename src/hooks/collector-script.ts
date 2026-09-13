@@ -672,6 +672,7 @@ function extractOutputMeta(toolName: string, output: unknown): Record<string, un
       }
       if (totalLen > 0) meta.agentResultLength = totalLen;
     }
+    if (typeof obj.agentId === 'string') meta.spawnedAgentId = obj.agentId;
     return Object.keys(meta).length > 0 ? meta : undefined;
   }
 

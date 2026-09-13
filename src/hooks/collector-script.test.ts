@@ -450,6 +450,17 @@ describe('collector-script', () => {
       });
     });
 
+    it('extracts Agent spawnedAgentId from tool_response', () => {
+      const response = { agentId: 'a4d2c8f1e0b3a297', completed: true };
+      processHook(makePostToolUse({ tool_name: 'Agent', tool_response: response }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolOutput).toEqual({
+        agentCompleted: true,
+        spawnedAgentId: 'a4d2c8f1e0b3a297',
+      });
+    });
+
     it('extracts Agent interrupted flag', () => {
       const response = { interrupted: true };
       processHook(makePostToolUse({ tool_name: 'Agent', tool_response: response }));
