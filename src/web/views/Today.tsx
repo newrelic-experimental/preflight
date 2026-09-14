@@ -710,7 +710,7 @@ function ContributingTodayPanel({
       isError={isError}
       title="What's contributing to today's spend"
       subtitle="Since midnight"
-      toolRows={buildToolTableRows(todaySessions)}
+      toolRows={buildToolTableRows(todaySessions.filter((s) => todayOverlapRatio(s) > 0))}
     />
   );
 }

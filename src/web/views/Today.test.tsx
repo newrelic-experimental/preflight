@@ -1732,18 +1732,54 @@ describe('Today view — Contributing panel', () => {
     expect(within(row).getByText('30%')).toBeInTheDocument();
   });
 
-  it('renders a Tools row built from today’s session list, alongside the usage-insights tables', async () => {
+  it("renders a Tools row built from today's session list, alongside the usage-insights tables", async () => {
+    const now = Date.now();
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
     qc.setQueryData(qk.sessionsList(200), [
-      { sessionId: 's1', toolBreakdown: { Read: 6, Edit: 2 } },
-      { sessionId: 's2', toolBreakdown: { Read: 2 } },
+      {
+        sessionId: 's1',
+        startTime: now - 1_800_000,
+        durationMs: 1_800_000,
+        toolBreakdown: { Read: 6, Edit: 2 },
+      },
+      {
+        sessionId: 's2',
+        startTime: now - 600_000,
+        durationMs: 600_000,
+        toolBreakdown: { Read: 2 },
+      },
     ]);
     renderToday(qc);
     await screen.findByText('code-review');
     const row = screen.getByText('Read').closest('tr') as HTMLElement;
     expect(within(row).getByText('8')).toBeInTheDocument();
     expect(within(row).getByText('80%')).toBeInTheDocument();
+  });
+
+  it("excludes sessions outside today's window from the Tools table", async () => {
+    const dayStart = localStartOfDay();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.sessionsList(200), [
+      {
+        sessionId: 's1',
+        startTime: dayStart - 3 * 24 * 60 * 60 * 1000,
+        durationMs: 1_800_000,
+        toolBreakdown: { Read: 100, Edit: 50 },
+      },
+      {
+        sessionId: 's2',
+        startTime: Date.now() - 600_000,
+        durationMs: 600_000,
+        toolBreakdown: { Read: 2 },
+      },
+    ]);
+    renderToday(qc);
+    await screen.findByText('code-review');
+    const row = screen.getByText('Read').closest('tr') as HTMLElement;
+    expect(within(row).getByText('2')).toBeInTheDocument();
+    expect(within(row).getByText('100%')).toBeInTheDocument();
   });
 
   it('shows "No sessions in this window." when sessionCount is 0', async () => {
