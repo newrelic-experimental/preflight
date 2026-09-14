@@ -590,7 +590,7 @@ describe('Today view', () => {
     }) as typeof fetch;
 
     renderToday();
-    await waitFor(() => expect(screen.getByText('→ $8.00 by end of day')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
@@ -714,7 +714,7 @@ describe('Today view', () => {
 
     renderToday();
 
-    await waitFor(() => expect(screen.getByText('→ $12.00 by end of day')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^→ \$12\.00 by end of day/)).toBeInTheDocument());
   });
 });
 

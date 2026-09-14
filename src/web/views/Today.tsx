@@ -460,7 +460,9 @@ export function Today(): JSX.Element {
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
                     forecastKpiUsd != null && forecastKpiUsd > todayTotal
-                      ? `→ ${formatUsd(forecastKpiUsd)} by end of day`
+                      ? weekForecast != null
+                        ? `→ ${formatUsd(forecastKpiUsd)} by end of day · ~${formatUsd(weekForecast)} by end of week`
+                        : `→ ${formatUsd(forecastKpiUsd)} by end of day`
                       : undefined
                   }
                   {...(!spendLoading
