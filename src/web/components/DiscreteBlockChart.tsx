@@ -117,7 +117,7 @@ export function DiscreteBlockChart({
     <>
       <svg
         width="100%"
-        style={{ height: 'auto', display: 'block' }}
+        style={{ height: 'auto', maxHeight: chartHeight, display: 'block' }}
         role="img"
         aria-label={ariaLabel}
         viewBox={`0 0 ${chartWidth} ${chartHeight}`}
