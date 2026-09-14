@@ -1782,6 +1782,30 @@ describe("Today view — Where today's spend went panel", () => {
     expect(within(row).getByRole('cell', { name: '$3.00' })).toBeInTheDocument();
   });
 
+  it('shows attribution caveat when cost attribution is low', async () => {
+    const now = Date.now();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.costPerTool(), {
+      costByToolType: { Read: { totalCost: 3, callCount: 8, avgCost: 0.375, tokens: 1000 } },
+      totalAttributedCost: 3,
+      attributionRate: 0.4,
+    });
+    qc.setQueryData(qk.sessionsList(200), [
+      {
+        sessionId: 's1',
+        startTime: now - 1_800_000,
+        durationMs: 1_800_000,
+        toolBreakdown: { Read: 6, Edit: 2 },
+      },
+    ]);
+    renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    expect(
+      screen.getByText(/Tool and skill shares are based on 40% of session cost/),
+    ).toBeInTheDocument();
+  });
+
   it("excludes sessions outside today's window from the Tools table", async () => {
     const dayStart = localStartOfDay();
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });

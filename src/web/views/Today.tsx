@@ -753,6 +753,9 @@ function SpendBreakdownPanel({
     costData?.costByToolType,
   );
 
+  const attributionRate = costData?.attributionRate ?? 1;
+  const lowAttribution = costData != null && attributionRate < 0.5;
+
   return (
     <UsageContributionPanel
       data={usageData}
@@ -762,11 +765,14 @@ function SpendBreakdownPanel({
       modelRows={modelRows}
       toolRows={toolRows}
       toolCostAvailable={true}
-      // /api/cost-per-tool only reports attributedSessionCount/totalSessionCount
-      // (the coverage figures a caveat needs) on its windowed (?days=) path —
-      // Today's unwindowed call never carries them, so there's nothing to
-      // caveat yet. See the TurnCostsResponse field comments in api/client.ts.
-      toolCoverageCaveat={null}
+      // /api/cost-per-tool returns attributionRate (the share of session cost
+      // captured in its tool-type breakdown). When attribution is low, we caveat
+      // the Tools and Skills shares to explain they're partial.
+      toolCoverageCaveat={
+        lowAttribution
+          ? `Tool and skill shares are based on ${formatPct(attributionRate * 100)} of session cost`
+          : null
+      }
     />
   );
 }
