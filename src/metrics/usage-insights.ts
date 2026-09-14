@@ -130,7 +130,9 @@ function sharePct(costUsd: number, totalCostUsd: number): number {
 }
 
 function sessionTotalTokens(s: FullSessionSummary): number {
-  return s.tokensInput + s.tokensOutput + s.tokensCacheRead + s.tokensCacheCreation;
+  return (
+    s.tokensInput + s.tokensOutput + s.tokensCacheRead + s.tokensCacheCreation + s.tokensThinking
+  );
 }
 
 /** Prefix before the first `:` in a plugin-namespaced skill/agent-type key (`pstack:unslop` -> `pstack`); null when the key carries no plugin prefix. */

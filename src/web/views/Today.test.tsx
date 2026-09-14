@@ -53,7 +53,7 @@ describe('Today view', () => {
   it('renders the four KPI labels', () => {
     renderToday();
     expect(screen.getByText('spend today')).toBeInTheDocument();
-    expect(screen.getByText('tool calls')).toBeInTheDocument();
+    expect(screen.getByText('sessions today')).toBeInTheDocument();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
     expect(screen.getByText('flags')).toBeInTheDocument();
   });
@@ -737,7 +737,7 @@ describe('Today view — empty state', () => {
     renderToday();
     expect(await screen.findByText('No activity yet today')).toBeInTheDocument();
     expect(screen.queryByText('spend today')).toBeNull();
-    expect(screen.queryByText('tool calls')).toBeNull();
+    expect(screen.queryByText('sessions today')).toBeNull();
   });
 
   it('still renders the header with "Today" title in empty state', async () => {
@@ -835,7 +835,7 @@ describe('Today view — aggregate endpoint', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders KPIs from /api/sessions/today/aggregate (calls + flags + spend)', async () => {
+  it('renders KPIs from /api/sessions/today/aggregate (sessions + flags + spend)', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/sessions/today/aggregate')) {
@@ -858,7 +858,7 @@ describe('Today view — aggregate endpoint', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText('42')).toBeInTheDocument();
+    expect(await screen.findByText('2')).toBeInTheDocument();
     expect(screen.getByText('$7.75')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
   });
@@ -1818,7 +1818,7 @@ describe('Today view — cross-midnight session proration', () => {
     vi.restoreAllMocks();
   });
 
-  it("prorates a cross-midnight session's tool-call/flag counts and hourly spend by its today-portion, instead of its full lifetime count or excluding it entirely", async () => {
+  it("prorates a cross-midnight session's flag counts and hourly spend by its today-portion, instead of its full lifetime count or excluding it entirely", async () => {
     const dayStart = localStartOfDay();
     // Started 2h before local midnight and ran 4h total (ends 2h into
     // today) — half the session's lifetime overlaps today, ratio 0.5.
@@ -1843,7 +1843,7 @@ describe('Today view — cross-midnight session proration', () => {
             totalCostUsd: 0,
             antiPatternCount: 0,
             avgDurationMs: 0,
-            sessionCount: 0,
+            sessionCount: 1,
             sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
             forecastEndOfDayUsd: 5,
           }),
@@ -1864,13 +1864,10 @@ describe('Today view — cross-midnight session proration', () => {
 
     renderToday();
 
-    // 100 tool calls * 0.5 ratio = 50 — not the full lifetime count of 100.
-    // Using ratio only as an inclusion gate and adding the entire
-    // toolCallCount once the session qualifies would show 100 instead.
-    expect(await screen.findByText('50')).toBeInTheDocument();
-    // 10 flags * 0.5 ratio = 5 — not the full lifetime count of 10, for the
-    // same reason.
-    expect(screen.getByText('5')).toBeInTheDocument();
+    // 10 flags * 0.5 ratio = 5 — not the full lifetime count of 10, for
+    // the same reason. This verifies the pro-rating logic works for
+    // cross-midnight sessions in the persisted data path.
+    expect(await screen.findByText('5')).toBeInTheDocument();
     // buildHourlySpend must not skip a session that didn't *start* today
     // entirely (a naive `!isToday(s.startTime)` → continue would drop it),
     // or the spend chart would render its empty state here even though

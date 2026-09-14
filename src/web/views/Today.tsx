@@ -269,10 +269,6 @@ export function Today(): JSX.Element {
     () => computeTodaySpend(todaySessions ?? []),
     [todaySessions],
   );
-  const persistedTodayCalls = useMemo(
-    () => computeTodayToolCalls(todaySessions ?? []),
-    [todaySessions],
-  );
   const persistedTodayFlags = useMemo(
     () => computeTodayFlags(todaySessions ?? []),
     [todaySessions],
@@ -304,7 +300,6 @@ export function Today(): JSX.Element {
   // alongside the SSE and aggregate sources so the KPI reflects real spend
   // as soon as any one source resolves, instead of waiting on the first SSE
   // frame while the aggregate still legitimately reads 0.
-  const calls = Math.max(aggregate?.toolCallCount ?? 0, persistedTodayCalls);
   const spendLoading =
     (costPending || sessionsPending || aggregatePending) &&
     !cost &&
@@ -347,6 +342,7 @@ export function Today(): JSX.Element {
     subagentHasData && todayTotal > 0
       ? `${formatPct((subagentUsd / todayTotal) * 100)} of today`
       : undefined;
+  void subagentSub; // Preserved for future Subagents breakdown table
   // The watcher-off caveat only matters while this process has recorded no
   // subagent turns of its own — once it has, the KPI is clearly live.
   const watcherOff = healthApi?.watcherActive === false && subagentUsd === 0;
@@ -405,7 +401,7 @@ export function Today(): JSX.Element {
     !concurrencyPending &&
     !todayHeatmapPending &&
     !liveSessionsPending &&
-    calls === 0 &&
+    (aggregate?.sessionCount ?? 0) === 0 &&
     todayTotal === 0 &&
     flagsCount === 0;
 
@@ -470,20 +466,19 @@ export function Today(): JSX.Element {
                     ? { animate: true, numericValue: todayTotal, format: formatUsd }
                     : {})}
                 />
-                <div className="relative">
-                  <Kpi
-                    label="subagent spend"
-                    value={!subagentHasData ? '—' : formatUsd(subagentUsd)}
-                    sub={subagentSub}
-                    {...(subagentHasData
-                      ? { animate: true, numericValue: subagentUsd, format: formatUsd }
-                      : {})}
-                  />
-                  <span className="absolute top-0 right-1">
-                    <InfoTooltip text="Cost from subagent (Task tool) invocations today. Combines this session's live tracking with other sessions' saved totals; some dashboard processes don't track subagents live." />
-                  </span>
-                </div>
-                <Kpi label="tool calls" value={String(calls)} animate numericValue={calls} />
+                <Kpi
+                  label="avg cost / session"
+                  value={formatUsdOrDash(
+                    aggregate && aggregate.sessionCount > 0
+                      ? todayTotal / aggregate.sessionCount
+                      : null,
+                  )}
+                />
+                <Kpi
+                  label="sessions today"
+                  value={!aggregate ? '—' : String(aggregate.sessionCount)}
+                  {...(aggregate ? { animate: true, numericValue: aggregate.sessionCount } : {})}
+                />
                 <Kpi
                   label="flags"
                   tone={flagsCount > 0 ? 'warn' : 'neutral'}
@@ -1878,9 +1873,9 @@ const isToday = (ts: number): boolean => isSameLocalDay(ts);
  * `todayPortionOfSessionCost`, instead of reimplementing it here.
  *
  * Used to prorate every "how much of this session counts toward today"
- * metric consistently — cost, tool calls, and anti-pattern flags — so a
+ * metric consistently — cost and anti-pattern flags — so a
  * cross-midnight session contributes its today-portion everywhere, not just
- * for cost. Without this, `computeTodayToolCalls`/`computeTodayFlags` would
+ * for cost. Without this, `computeTodayFlags` would
  * add a cross-midnight session's *entire lifetime* count once
  * `todayPortionOfSession(s) > 0`, rather than prorating the count itself.
  */
@@ -1914,15 +1909,6 @@ function computeTodaySpend(sessions: SessionSummary[]): number {
   let total = 0;
   for (const s of sessions) total += todayPortionOfSession(s);
   return total;
-}
-
-function computeTodayToolCalls(sessions: SessionSummary[]): number {
-  let total = 0;
-  for (const s of sessions) {
-    const ratio = todayOverlapRatio(s);
-    if (ratio > 0) total += (s.toolCallCount ?? 0) * ratio;
-  }
-  return Math.round(total);
 }
 
 function computeTodayFlags(sessions: SessionSummary[]): number {
