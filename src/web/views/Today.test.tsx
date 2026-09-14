@@ -2250,7 +2250,7 @@ describe('Today view — Spend breakdown panel', () => {
 
   it('renders a tool row via ShareTable with calls, cost, and share', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
+    qc.setQueryData(qk.costPerTool(), {
       costByToolType: { Bash: { totalCost: 3, callCount: 2, avgCost: 1.5 } },
       totalAttributedCost: 3,
       attributionRate: 1,
@@ -2265,7 +2265,7 @@ describe('Today view — Spend breakdown panel', () => {
 
   it('shows a skill row with its cost and share', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
+    qc.setQueryData(qk.costPerTool(), {
       costByToolType: {},
       costBySkill: {
         'skill-a': { callCount: 5, attributedCallCount: 5, totalCost: 6, avgCost: 1.2 },
@@ -2288,7 +2288,7 @@ describe('Today view — Spend breakdown panel', () => {
     // (and losing the ShareTable's just-applied sort) between the clicks.
     useLiveStore.setState({ cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null } });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0, staleTime: Infinity } } });
-    qc.setQueryData(qk.costPerTool, {
+    qc.setQueryData(qk.costPerTool(), {
       costByToolType: {
         Bash: { totalCost: 1, callCount: 9, avgCost: 1 },
         Read: { totalCost: 5, callCount: 2, avgCost: 2.5 },
@@ -2336,7 +2336,7 @@ describe('Today view — Spend breakdown panel', () => {
     // to `null`, not `undefined` — seed the cache directly with the
     // already-settled value instead of waiting on the mocked fetch.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, null);
+    qc.setQueryData(qk.costPerTool(), null);
     renderToday(qc);
     expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
     expect(screen.getByText('No model data yet')).toBeInTheDocument();
@@ -2346,7 +2346,7 @@ describe('Today view — Spend breakdown panel', () => {
 
   it('shows the low-attribution footnote when attributionRate is below 50%', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
+    qc.setQueryData(qk.costPerTool(), {
       costByToolType: {
         Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
       },

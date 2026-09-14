@@ -2368,6 +2368,163 @@ describe('api-handler GET /api/cost-per-tool', () => {
     expect(result.totalAttributedCost).toBeCloseTo(0.08, 10);
     expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
   });
+
+  it('returns 503 for ?days= when sessionStore.loadAllSessions is missing', async () => {
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => ({
+          turns: [],
+          costByToolType: {},
+          costBySkill: {},
+          totalAttributedCost: 0,
+          attributionRate: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=7' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('?days= builds costByToolType/costBySkill from loadAllSessions alone, reporting attribution coverage', async () => {
+    const attributedSession = {
+      sessionId: 'attributed',
+      startTime: Date.now() - 2 * 86_400_000,
+      estimatedCostUsd: 1,
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.5, tokens: 200, count: 4, durationMs: 100 } },
+          skill: { unslop: { costUsd: 0.1, tokens: 50, count: 1, durationMs: 20 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    // No `attribution` field at all — a pre-attribution historical session.
+    const unattributedSession = {
+      sessionId: 'unattributed',
+      startTime: Date.now() - 3 * 86_400_000,
+      estimatedCostUsd: 2,
+    };
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => {
+          throw new Error('windowed path must not read the live tracker');
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => {
+          throw new Error('windowed path must not read loadTodaySessions');
+        },
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [attributedSession, unattributedSession];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=7' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(receivedSince).toBeInstanceOf(Date);
+    // Widened by one extra day past the 7-day window, same as usage-insights.
+    const ageMs = Date.now() - (receivedSince as Date).getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(8 * 86_400_000);
+    const result = JSON.parse(body());
+    expect(result.turns).toEqual([]);
+    expect(result.costByToolType.Read).toEqual({
+      totalCost: 0.5,
+      callCount: 4,
+      avgCost: 0.125,
+      tokens: 200,
+    });
+    expect(result.costBySkill.unslop.totalCost).toBe(0.1);
+    expect(result.attributedSessionCount).toBe(1);
+    expect(result.totalSessionCount).toBe(2);
+    expect(result.totalAttributedCost).toBeCloseTo(0.5, 10);
+    // totalCost basis is the sum of every window session's estimatedCostUsd
+    // (1 + 2 = 3), not just the attributed session's — matches the
+    // unwindowed path's cost-based (not call-based) attributionRate.
+    expect(result.attributionRate).toBeCloseTo(0.5 / 3, 10);
+  });
+
+  it('clamps ?days= to [1,90], same as GET /api/usage-insights', async () => {
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => ({
+          turns: [],
+          costByToolType: {},
+          costBySkill: {},
+          totalAttributedCost: 0,
+          attributionRate: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=9999' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(receivedSince).toBeInstanceOf(Date);
+    const ageMs = Date.now() - (receivedSince as Date).getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
+    const result = JSON.parse(body());
+    expect(result.totalSessionCount).toBe(0);
+    expect(result.attributedSessionCount).toBe(0);
+  });
+
+  it('applies an exact startTime cutoff on top of the widened loadAllSessions() fetch', async () => {
+    const inWindow = {
+      sessionId: 'in',
+      startTime: Date.now() - 2 * 86_400_000,
+      estimatedCostUsd: 1,
+    };
+    // Simulates loadAllSessions()'s own coarse day-prefix pre-filter
+    // over-returning a session older than the requested window.
+    const outOfWindow = {
+      sessionId: 'out',
+      startTime: Date.now() - 10 * 86_400_000,
+      estimatedCostUsd: 5,
+    };
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => ({
+          turns: [],
+          costByToolType: {},
+          costBySkill: {},
+          totalAttributedCost: 0,
+          attributionRate: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [inWindow, outOfWindow],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=7' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).totalSessionCount).toBe(1);
+  });
 });
 
 describe('api-handler GET /api/usage-insights', () => {

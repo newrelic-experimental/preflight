@@ -644,7 +644,8 @@ function mergeToolTypeCostEntry(
 ): ToolTypeCostEntry {
   const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
   const callCount = (existing?.callCount ?? 0) + bucket.count;
-  return { totalCost, callCount, avgCost: callCount > 0 ? totalCost / callCount : 0 };
+  const tokens = (existing?.tokens ?? 0) + bucket.tokens;
+  return { totalCost, callCount, avgCost: callCount > 0 ? totalCost / callCount : 0, tokens };
 }
 
 /**
@@ -672,6 +673,74 @@ function mergeSkillCostEntry(
     cacheReadTokens: existing?.cacheReadTokens ?? 0,
     totalDurationMs: (existing?.totalDurationMs ?? 0) + bucket.durationMs,
     tokens: (existing?.tokens ?? 0) + bucket.tokens,
+  };
+}
+
+/**
+ * Folds one session's persisted tool/skill attribution buckets into the
+ * given accumulators (mutated in place) — shared by both GET
+ * /api/cost-per-tool paths that merge persisted sessions: the unwindowed
+ * (today, live-tracker-merged) path and the windowed (persisted-only,
+ * multi-day) path. Returns the cost attributed to this session's tool
+ * buckets, for callers tracking a running total.
+ */
+function foldSessionAttributionBuckets(
+  costByToolType: Record<string, ToolTypeCostEntry>,
+  costBySkill: Record<string, SkillCostEntry>,
+  session: FullSessionSummary,
+): number {
+  let attributedCost = 0;
+  for (const [tool, bucket] of Object.entries(session.attribution?.buckets.tool ?? {})) {
+    costByToolType[tool] = mergeToolTypeCostEntry(costByToolType[tool], bucket);
+    attributedCost += bucket.costUsd;
+  }
+  for (const [skill, bucket] of Object.entries(session.attribution?.buckets.skill ?? {})) {
+    costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], bucket);
+  }
+  return attributedCost;
+}
+
+interface WindowedCostPerToolResponse {
+  readonly turns: never[];
+  readonly costByToolType: Record<string, ToolTypeCostEntry>;
+  readonly costBySkill: Record<string, SkillCostEntry>;
+  readonly totalAttributedCost: number;
+  readonly attributionRate: number;
+  /** How many of the window's sessions actually carry attribution.buckets data — most historical sessions predate it. */
+  readonly attributedSessionCount: number;
+  readonly totalSessionCount: number;
+}
+
+/**
+ * Builds a windowed GET /api/cost-per-tool response purely from persisted
+ * sessions — no live TurnCostAttributor merge, unlike the unwindowed path
+ * below: "this dashboard process's own live session" isn't a meaningful
+ * concept over a multi-day historical window. attributedSessionCount /
+ * totalSessionCount let the frontend caveat the Tools table honestly when
+ * the window reaches back further than the attribution data does.
+ */
+function buildWindowedCostPerTool(
+  sessions: readonly FullSessionSummary[],
+): WindowedCostPerToolResponse {
+  const costByToolType: Record<string, ToolTypeCostEntry> = {};
+  const costBySkill: Record<string, SkillCostEntry> = {};
+  let totalAttributedCost = 0;
+  let totalCost = 0;
+  let attributedSessionCount = 0;
+  for (const session of sessions) {
+    totalCost += session.estimatedCostUsd ?? 0;
+    if (!session.attribution) continue;
+    attributedSessionCount++;
+    totalAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
+  }
+  return {
+    turns: [],
+    costByToolType,
+    costBySkill,
+    totalAttributedCost,
+    attributionRate: totalCost > 0 ? totalAttributedCost / totalCost : 0,
+    attributedSessionCount,
+    totalSessionCount: sessions.length,
   };
 }
 
@@ -2148,6 +2217,30 @@ export function createApiHandler(
       return;
     }
 
+    // ?days= scopes to a multi-day historical window instead of today —
+    // same widen-the-fetch-by-one-day pattern as GET /api/usage-insights
+    // below (loadAllSessions() filters by the session file's date prefix,
+    // coarse day granularity, not the session's real startTime, so a
+    // boundary-day session could otherwise be excluded before the exact
+    // cutoff filter below applies). Takes precedence over the unwindowed
+    // merge path below, which stays exactly as it was for callers that omit
+    // `days` (Today.tsx's unscoped call).
+    const daysParam = url.searchParams.get('days');
+    if (daysParam !== null) {
+      if (!deps.sessionStore?.loadAllSessions)
+        return unavailable(res, 'sessionStore.loadAllSessions');
+      const nowMs = Date.now();
+      const parsedDays = parseInt(daysParam, 10);
+      const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
+      const cutoffMs = nowMs - windowDays * 86_400_000;
+      const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
+      const sessions = deps.sessionStore
+        .loadAllSessions({ since })
+        .filter((s) => s.startTime >= cutoffMs);
+      jsonOk(res, buildWindowedCostPerTool(sessions));
+      return;
+    }
+
     // Same own-live + persisted-today, excluding-own-already-persisted-
     // session pattern as GET /api/model-usage above: this process's live
     // breakdown is always included, and every OTHER today session's
@@ -2170,13 +2263,7 @@ export function createApiHandler(
     for (const session of deps.sessionStore?.loadTodaySessions() ?? []) {
       if (session.sessionId === ownSessionId || !session.attribution) continue;
       mergedEstimatedCost += session.estimatedCostUsd ?? 0;
-      for (const [tool, bucket] of Object.entries(session.attribution.buckets.tool ?? {})) {
-        costByToolType[tool] = mergeToolTypeCostEntry(costByToolType[tool], bucket);
-        mergedAttributedCost += bucket.costUsd;
-      }
-      for (const [skill, bucket] of Object.entries(session.attribution.buckets.skill ?? {})) {
-        costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], bucket);
-      }
+      mergedAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
     }
 
     const totalAttributedCost = live.totalAttributedCost + mergedAttributedCost;
