@@ -1456,12 +1456,78 @@ function LiveSessionPane({
     return set;
   }, [liveSessions, current]);
 
+  // Filter to sessions that count as "today", then merge in any live
+  // sessions that haven't yet persisted to disk so the selector shows them
+  // immediately (sort order is applied below, by last activity). A session
+  // counts as "today" if it started today
+  // OR is currently live OR had recent activity today (last activity within
+  // RECENT_ACTIVITY_MS of now AND falling on today's calendar date).
+  //
+  // The recent-activity window matters because lastActivity = startTime +
+  // durationMs naively: a session that started yesterday at 23:55 with
+  // durationMs=10min has lastActivity=00:05 today and would be classified
+  // "active today" — but the work was almost entirely yesterday. On a
+  // busy day with 11+ today-started sessions, the slice(0, 10) below would
+  // silently drop a real today-started session in favor of this stale entry.
+  // Live sessions are always included regardless of the window — the
+  // registry already enforces a 3-min staleness threshold upstream.
+  // Limit to 10.
+  const todaySessions = useMemo(() => {
+    const RECENT_ACTIVITY_MS = 6 * 60 * 60 * 1000; // 6 hours
+    const recentCutoff = Date.now() - RECENT_ACTIVITY_MS;
+    const liveById = new Map<string, LiveSessionEntry>();
+    for (const ls of liveSessions) liveById.set(ls.sessionId, ls);
+
+    const byId = new Map<string, SessionSummary>();
+    for (const s of sessions) {
+      // Skip malformed entries — defensive against `[]`-style fixtures and
+      // fetch mocks that may not include sessionId on every record.
+      if (!s.sessionId) continue;
+      const startedToday = s.startTime != null && isToday(s.startTime);
+      const isLiveNow = liveById.has(s.sessionId);
+      const lastActivity =
+        s.startTime != null && s.durationMs != null ? s.startTime + s.durationMs : null;
+      const recentlyActive =
+        lastActivity != null && lastActivity >= recentCutoff && isToday(lastActivity);
+      if (startedToday || isLiveNow || recentlyActive) byId.set(s.sessionId, s);
+    }
+    for (const ls of liveSessions) {
+      if (!ls.sessionId) continue;
+      if (!byId.has(ls.sessionId)) {
+        byId.set(ls.sessionId, {
+          sessionId: ls.sessionId,
+          sessionName: ls.sessionName,
+          startTime: ls.startTime,
+          toolCallCount: 0,
+          estimatedCostUsd: null,
+        });
+      }
+    }
+    // Sort by last activity so a long-running session whose start time has
+    // dropped out of the top-N still surfaces while it's actively in use.
+    // For live sessions the live registry's `lastActivity` is authoritative
+    // (fresh per touch); for persisted ones fall back to `startTime +
+    // durationMs`, then `startTime`.
+    const lastActivityFor = (s: SessionSummary): number => {
+      const live = liveById.get(s.sessionId);
+      if (live) return live.lastActivity;
+      if (s.startTime != null && s.durationMs != null) return s.startTime + s.durationMs;
+      return s.startTime ?? 0;
+    };
+    return [...byId.values()].sort((a, b) => lastActivityFor(b) - lastActivityFor(a)).slice(0, 10);
+  }, [sessions, liveSessions]);
+
   // Most-recently-active live session — sorted server-side. Falls back to the
   // first id in the liveSessionIds set when the API didn't supply ordering
-  // (e.g. during the legacy fallback path).
+  // (e.g. during the legacy fallback path). When nothing is currently live,
+  // falls back to the most recently active session in today's history (see
+  // `todaySessions` above) so the trace pane shows real history instead of
+  // an empty "waiting for tool calls" state.
   const mostRecentlyActiveId = liveSessions.length > 0 ? liveSessions[0]!.sessionId : null;
   const firstLiveId =
-    mostRecentlyActiveId ?? (liveSessionIds.size > 0 ? [...liveSessionIds][0]! : null);
+    mostRecentlyActiveId ??
+    (liveSessionIds.size > 0 ? [...liveSessionIds][0]! : null) ??
+    (todaySessions.length > 0 ? todaySessions[0]!.sessionId : null);
   const activeId = selectedId ?? firstLiveId;
   const isLive = activeId !== null && liveSessionIds.has(activeId);
   // "Session ended" badge — true when the user explicitly
@@ -1552,68 +1618,7 @@ function LiveSessionPane({
     if (isLive && tailRef.current) {
       tailRef.current.scrollTop = tailRef.current.scrollHeight;
     }
-  }, [replay?.timeline.length, isLive]);
-
-  // Filter to sessions that count as "today", then merge in any live
-  // sessions that haven't yet persisted to disk so the selector shows them
-  // immediately (sort order is applied below, by last activity). A session
-  // counts as "today" if it started today
-  // OR is currently live OR had recent activity today (last activity within
-  // RECENT_ACTIVITY_MS of now AND falling on today's calendar date).
-  //
-  // The recent-activity window matters because lastActivity = startTime +
-  // durationMs naively: a session that started yesterday at 23:55 with
-  // durationMs=10min has lastActivity=00:05 today and would be classified
-  // "active today" — but the work was almost entirely yesterday. On a
-  // busy day with 11+ today-started sessions, the slice(0, 10) below would
-  // silently drop a real today-started session in favor of this stale entry.
-  // Live sessions are always included regardless of the window — the
-  // registry already enforces a 3-min staleness threshold upstream.
-  // Limit to 10.
-  const todaySessions = useMemo(() => {
-    const RECENT_ACTIVITY_MS = 6 * 60 * 60 * 1000; // 6 hours
-    const recentCutoff = Date.now() - RECENT_ACTIVITY_MS;
-    const liveById = new Map<string, LiveSessionEntry>();
-    for (const ls of liveSessions) liveById.set(ls.sessionId, ls);
-
-    const byId = new Map<string, SessionSummary>();
-    for (const s of sessions) {
-      // Skip malformed entries — defensive against `[]`-style fixtures and
-      // fetch mocks that may not include sessionId on every record.
-      if (!s.sessionId) continue;
-      const startedToday = s.startTime != null && isToday(s.startTime);
-      const isLiveNow = liveById.has(s.sessionId);
-      const lastActivity =
-        s.startTime != null && s.durationMs != null ? s.startTime + s.durationMs : null;
-      const recentlyActive =
-        lastActivity != null && lastActivity >= recentCutoff && isToday(lastActivity);
-      if (startedToday || isLiveNow || recentlyActive) byId.set(s.sessionId, s);
-    }
-    for (const ls of liveSessions) {
-      if (!ls.sessionId) continue;
-      if (!byId.has(ls.sessionId)) {
-        byId.set(ls.sessionId, {
-          sessionId: ls.sessionId,
-          sessionName: ls.sessionName,
-          startTime: ls.startTime,
-          toolCallCount: 0,
-          estimatedCostUsd: null,
-        });
-      }
-    }
-    // Sort by last activity so a long-running session whose start time has
-    // dropped out of the top-N still surfaces while it's actively in use.
-    // For live sessions the live registry's `lastActivity` is authoritative
-    // (fresh per touch); for persisted ones fall back to `startTime +
-    // durationMs`, then `startTime`.
-    const lastActivityFor = (s: SessionSummary): number => {
-      const live = liveById.get(s.sessionId);
-      if (live) return live.lastActivity;
-      if (s.startTime != null && s.durationMs != null) return s.startTime + s.durationMs;
-      return s.startTime ?? 0;
-    };
-    return [...byId.values()].sort((a, b) => lastActivityFor(b) - lastActivityFor(a)).slice(0, 10);
-  }, [sessions, liveSessions]);
+  }, [replay?.timeline?.length, isLive]);
 
   const timeline = useMemo<ReplayTimelineEntry[]>(() => replay?.timeline ?? [], [replay]);
 

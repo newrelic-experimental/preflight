@@ -1114,6 +1114,64 @@ describe('Today view — selector default + Session ended badge', () => {
       expect(screen.getByTestId('session-ended-badge')).toBeInTheDocument();
     });
   });
+
+  // Regression test: when nothing is currently live, the pane must still
+  // default to the most recently active historical session instead of
+  // leaving activeId null and showing the trace pane's empty state.
+  it('defaults to the most recently active historical session when nothing is live', async () => {
+    const historicalSession = {
+      sessionId: 'yesterday-id',
+      sessionName: 'legacy-work',
+      startTime: localStartOfDay() + 60 * 60 * 1000,
+      durationMs: 5 * 60 * 1000,
+      toolCallCount: 3,
+      estimatedCostUsd: 0.1,
+    };
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/live')) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/session/current')) {
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(JSON.stringify([historicalSession]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions/yesterday-id/replay')) {
+        return new Response(
+          JSON.stringify({
+            sessionId: 'yesterday-id',
+            timeline: [{ timestamp: 1, toolName: 'Read', durationMs: 10, success: true }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText('legacy-work')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(useLiveStore.getState().activeSessionId).toBe('yesterday-id');
+    });
+    expect(screen.queryByText('Select a session to view its timeline.')).toBeNull();
+    expect(screen.queryByText('Waiting for tool calls')).toBeNull();
+    expect(screen.queryByText('No tool calls')).toBeNull();
+  });
 });
 
 describe('Today view — Cache Health panel', () => {
