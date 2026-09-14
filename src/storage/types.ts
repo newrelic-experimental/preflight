@@ -314,7 +314,7 @@ export interface ToolCallRecord {
    * Which subagent made this tool call. The hook payload's own `agent_id`
    * field (`PreHookEvent.agentId`/`PostHookEvent.agentId`) is documented by
    * Claude Code as present on every hook event fired inside a subagent call,
-   * but in practice never populates (#656) — this field is backfilled
+   * but in practice never populates — this field is backfilled
    * instead via `backfillAgentId()` (agent-partition.ts), joining on
    * `toolUseId` against tool_use blocks `SubagentWatcher` finds while
    * tailing that subagent's own transcript. Absent for tool calls made by
@@ -322,7 +322,7 @@ export interface ToolCallRecord {
    * hasn't caught up with yet (best-effort, not persisted retroactively).
    */
   readonly agentId?: string;
-  /** Never populates in practice, same as agentId above — see its doc comment (#656). */
+  /** Never populates in practice, same as agentId above — see its doc comment. */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;

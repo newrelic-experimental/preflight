@@ -360,7 +360,7 @@ interface HookInput {
   is_interrupt?: boolean;
   // Claude Code's docs (code.claude.com/docs/en/hooks.md) document agent_id
   // as present on every hook event fired inside a subagent call (agent_type
-  // similarly), but empirically this never populates in production (#656) —
+  // similarly), but empirically this never populates in production —
   // confirmed via a live dogfooding check on Claude Code v2.1.236 with a real
   // subagent spawn. Still parsed here (harmless if Claude Code ever starts
   // sending it), but ToolCallRecord.agentId's real source is now the

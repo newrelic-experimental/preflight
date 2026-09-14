@@ -39,7 +39,7 @@ export function partitionByAgent<T extends { readonly agentId?: string }>(
  * Fills in `ToolCallRecord.agentId` from a `toolUseId → agentId` map when the
  * record's own `agentId` is absent — Claude Code's hook envelope documents
  * `agent_id`/`agent_type` as present on every hook event fired inside a
- * subagent call, but in practice it never populates (see #656). `toolUseId`
+ * subagent call, but in practice it never populates. `toolUseId`
  * is reliable on both sides: it's already captured correctly on every
  * ToolCallRecord, and it's the same id Claude Code assigns to the matching
  * `tool_use` block in that subagent's own transcript, which `SubagentWatcher`

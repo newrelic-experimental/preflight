@@ -2073,7 +2073,7 @@ async function main(): Promise<void> {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
         // The hook envelope's own agent_id/agent_type never populate in practice
-        // (#656) — correlate via the Agent tool's own record instead: its
+        // — correlate via the Agent tool's own record instead: its
         // subagentType (tool_input.subagent_type, already captured) and
         // spawnedAgentId (tool_response.agentId) are both real, working signals
         // that live on the same ToolCallRecord.
