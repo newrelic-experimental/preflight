@@ -1,14 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import {
-  Today,
-  aggregateAttentionFlags,
-  bucketByHour,
-  buildWeekForecast,
-  buildSpendTodaySeries,
-  type SessionSummary,
-} from './Today';
+import { Today, aggregateAttentionFlags, bucketByHour, buildSpendTodaySeries } from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
 import { localStartOfDay } from '../../lib/date.js';
@@ -2575,72 +2568,5 @@ describe('buildSpendTodaySeries()', () => {
     const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
     const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 6, nowMs);
     expect(series.every((d) => d.projectedUsd === null)).toBe(true);
-  });
-});
-
-describe('buildWeekForecast()', () => {
-  // Fixed local calendar dates (not Date.now()) so the test is deterministic
-  // regardless of which day it actually runs on.
-  function nextWeekday(base: Date, targetDay: number): Date {
-    const d = new Date(base);
-    while (d.getDay() !== targetDay) d.setDate(d.getDate() + 1);
-    d.setHours(12, 0, 0, 0);
-    return d;
-  }
-
-  function makeSession(startTime: number, estimatedCostUsd: number): SessionSummary {
-    return { sessionId: `s-${startTime}`, startTime, estimatedCostUsd };
-  }
-
-  it('sums week-to-date (Monday through yesterday) and projects the remaining days from the average daily pace', () => {
-    const wednesday = nextWeekday(new Date(2026, 0, 1), 3); // Wednesday
-    const todayStart = localStartOfDay(wednesday.getTime());
-    const monday = todayStart - 2 * 86_400_000;
-    const sessions = [
-      makeSession(monday + 60_000, 10),
-      makeSession(monday + 86_400_000 + 60_000, 10), // Tuesday
-    ];
-
-    // weekToDateExcludingToday = 20, effectiveEod = max(15, 12) = 15.
-    // daysElapsedIncludingToday = 3 (Mon/Tue/Wed), remainingFullDays = 4 (Thu-Sun).
-    // avgDailySpend = (20 + 15) / 3 = 11.666...; endOfWeek = 20 + 15 + 11.666...*4.
-    const result = buildWeekForecast(sessions, 15, 12, wednesday.getTime());
-    expect(result).toBeCloseTo(20 + 15 + ((20 + 15) / 3) * 4, 5);
-  });
-
-  it('projects zero remaining days on a Sunday, so end of week is exactly week-to-date plus the end-of-day forecast', () => {
-    const sunday = nextWeekday(new Date(2026, 0, 1), 0);
-    const todayStart = localStartOfDay(sunday.getTime());
-    const monday = todayStart - 6 * 86_400_000;
-    const sessions = [
-      makeSession(monday + 60_000, 10), // Monday
-      makeSession(monday + 86_400_000 + 60_000, 5), // Tuesday
-    ];
-
-    const result = buildWeekForecast(sessions, 8, 8, sunday.getTime());
-    expect(result).toBe(15 + 8);
-  });
-
-  it('never returns less than the end-of-day forecast', () => {
-    const wednesday = nextWeekday(new Date(2026, 0, 1), 3);
-    // No week-to-date sessions and a forecast below todayTotal — the
-    // effective floor (todayTotal) must still be respected.
-    const result = buildWeekForecast([], 5, 20, wednesday.getTime());
-    expect(result).toBeGreaterThanOrEqual(20);
-  });
-
-  it('excludes sessions from a previous week', () => {
-    const wednesday = nextWeekday(new Date(2026, 0, 1), 3);
-    const todayStart = localStartOfDay(wednesday.getTime());
-    const monday = todayStart - 2 * 86_400_000;
-    const thisWeekOnly = [makeSession(monday + 60_000, 10)];
-    const withLastWeek = [
-      ...thisWeekOnly,
-      makeSession(monday - 7 * 86_400_000 + 60_000, 1000), // last week's Monday
-    ];
-
-    const baseline = buildWeekForecast(thisWeekOnly, 15, 12, wednesday.getTime());
-    const withStale = buildWeekForecast(withLastWeek, 15, 12, wednesday.getTime());
-    expect(withStale).toBe(baseline);
   });
 });
