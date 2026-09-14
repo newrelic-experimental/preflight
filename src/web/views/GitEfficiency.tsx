@@ -124,6 +124,11 @@ function behindTone(n: number | null): 'neutral' | 'good' | 'warn' | 'bad' {
   return 'good';
 }
 
+function formatPrCell(created: number, merged: number): string {
+  if (created === 0) return '—';
+  return merged > 0 ? `${created} (${merged} merged)` : String(created);
+}
+
 function ScoreRing({ score }: { score: number | null }): JSX.Element {
   if (score === null) {
     return (
@@ -292,6 +297,7 @@ function WorkspaceTree({
             <th className="text-left p-2">Conflicts</th>
             <th className="text-left p-2">Best practices</th>
             <th className="text-left p-2">Sessions</th>
+            <th className="text-left p-2">PRs</th>
           </tr>
         </thead>
         <tbody>
@@ -307,7 +313,7 @@ function WorkspaceTree({
                 <tr
                   className={`border-t border-border-subtle ${repoSelected ? 'bg-accent-blue/10' : ''}`}
                 >
-                  <td className="p-2 whitespace-nowrap" colSpan={5}>
+                  <td className="p-2 whitespace-nowrap" colSpan={6}>
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
@@ -361,6 +367,12 @@ function WorkspaceTree({
                       </button>
                     ) : (
                       <span className="text-ink-muted">—</span>
+                    )}
+                  </td>
+                  <td className="p-2 tabular-nums">
+                    {formatPrCell(
+                      group.rows.reduce((sum, r) => sum + r.metrics.prMetrics.created, 0),
+                      group.rows.reduce((sum, r) => sum + r.metrics.prMetrics.merged, 0),
                     )}
                   </td>
                 </tr>
@@ -419,6 +431,12 @@ function WorkspaceTree({
                             </button>
                           ) : (
                             <span className="text-ink-muted">—</span>
+                          )}
+                        </td>
+                        <td className="p-2 tabular-nums">
+                          {formatPrCell(
+                            row.metrics.prMetrics.created,
+                            row.metrics.prMetrics.merged,
                           )}
                         </td>
                       </tr>
