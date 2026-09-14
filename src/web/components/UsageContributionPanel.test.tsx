@@ -5,6 +5,7 @@ import {
   UsageContributionPanel,
   aggregateToolUsage,
   buildToolTableRows,
+  type ModelShareRow,
 } from './UsageContributionPanel';
 import type { UsageInsightsReport } from '../api/client';
 
@@ -406,5 +407,104 @@ describe('UsageContributionPanel', () => {
       />,
     );
     expect(screen.getByText('Usage insights unavailable')).toBeInTheDocument();
+  });
+});
+
+describe('UsageContributionPanel — Models table', () => {
+  const SAMPLE_MODEL_ROWS: ModelShareRow[] = [
+    {
+      model: 'claude-sonnet-5',
+      requestCount: 8,
+      costPerMillionTokens: 0.75,
+      totalCostUsd: 4.2,
+      sharePct: 100,
+    },
+  ];
+
+  it('renders a Models row with requests, cost per million tokens, cost, and share, ahead of Skills', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        modelRows={SAMPLE_MODEL_ROWS}
+        toolRows={[]}
+      />,
+    );
+    const row = screen.getByRole('cell', { name: 'claude-sonnet-5' }).closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '8' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '$0.75' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '$4.20' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '100%' })).toBeInTheDocument();
+
+    const modelsHeading = screen.getByText('Models', { selector: 'h4' });
+    const skillsHeading = screen.getByText('Skills', { selector: 'h4' });
+    expect(
+      modelsHeading.compareDocumentPosition(skillsHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('renders no Models table when modelRows is omitted', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+      />,
+    );
+    expect(screen.queryByText('Models')).toBeNull();
+  });
+
+  it('renders no Models table when modelRows is empty', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        modelRows={[]}
+        toolRows={[]}
+      />,
+    );
+    expect(screen.queryByText('Models')).toBeNull();
+  });
+});
+
+describe('UsageContributionPanel — Skills/Subagents/Plugins column consistency', () => {
+  it('shows a Cost column on the Skills and Subagents tables', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+      />,
+    );
+    const skillRow = screen.getByRole('cell', { name: 'code-review' }).closest('tr') as HTMLElement;
+    expect(within(skillRow).getByRole('cell', { name: '$5.00' })).toBeInTheDocument();
+
+    const subagentRow = screen
+      .getByRole('cell', { name: 'general-purpose' })
+      .closest('tr') as HTMLElement;
+    expect(within(subagentRow).getByRole('cell', { name: '$4.00' })).toBeInTheDocument();
+  });
+
+  it('shows Calls and Tokens columns on the Plugins table', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+      />,
+    );
+    const pluginRow = screen.getByRole('cell', { name: 'pstack' }).closest('tr') as HTMLElement;
+    expect(within(pluginRow).getByRole('cell', { name: '1' })).toBeInTheDocument();
+    expect(within(pluginRow).getByRole('cell', { name: '3.0k' })).toBeInTheDocument();
   });
 });

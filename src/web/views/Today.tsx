@@ -21,9 +21,12 @@ import { GeoBanner } from '../components/GeoBanner';
 import { ContextBar } from '../components/ContextBar';
 import { Panel } from '../components/ui/Panel';
 import { HealthCard, type HealthCardRow, type HealthTone } from '../components/HealthCard';
-import { ShareTable } from '../components/ShareTable';
 import { SpendBars, type SpendBarsDatum } from '../components/SpendBars';
-import { UsageContributionPanel, buildToolTableRows } from '../components/UsageContributionPanel';
+import {
+  UsageContributionPanel,
+  buildToolTableRows,
+  type ModelShareRow,
+} from '../components/UsageContributionPanel';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
 import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
@@ -425,17 +428,16 @@ export function Today(): JSX.Element {
           </AnimatedCard>
 
           <AnimatedCard index={1} className="mb-3">
-            <SpendBreakdownPanel />
+            <SpendBreakdownPanel todaySessions={todaySessions ?? []} />
           </AnimatedCard>
 
-          <AnimatedCard index={2} className="grid grid-cols-2 gap-3">
+          <AnimatedCard index={2}>
             <NeedsAttentionPanel
               antiPatterns={antiPatterns}
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
             />
-            <ContributingTodayPanel todaySessions={todaySessions ?? []} />
           </AnimatedCard>
         </>
       ) : (
@@ -509,18 +511,17 @@ export function Today(): JSX.Element {
             <ActivityTodayPanel todayHeatmap={todayHeatmap} concurrency={concurrency} />
           </AnimatedCard>
 
-          <AnimatedCard index={2} className="grid grid-cols-2 gap-3 mb-3">
+          <AnimatedCard index={2} className="mb-3">
             <NeedsAttentionPanel
               antiPatterns={antiPatterns}
               apiAntiPatterns={apiAntiPatterns}
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
             />
-            <ContributingTodayPanel todaySessions={todaySessions ?? []} />
           </AnimatedCard>
 
           <AnimatedCard index={3} className="mb-3">
-            <SpendBreakdownPanel />
+            <SpendBreakdownPanel todaySessions={todaySessions ?? []} />
           </AnimatedCard>
 
           <AnimatedCard index={4}>
@@ -691,31 +692,14 @@ function NeedsAttentionPanel({
   );
 }
 
-// --- Contributing Today Panel ---
-
-function ContributingTodayPanel({
-  todaySessions,
-}: {
-  todaySessions: readonly SessionSummary[];
-}): JSX.Element {
-  const { data, isError } = useQuery<UsageInsightsReport>({
-    queryKey: qk.usageInsights('today'),
-    queryFn: () => fetchUsageInsights('today'),
-    refetchInterval: QUALITY_REFETCH_MS,
-  });
-
-  return (
-    <UsageContributionPanel
-      data={data}
-      isError={isError}
-      title="What's contributing to today's spend"
-      subtitle="Since midnight"
-      toolRows={buildToolTableRows(todaySessions.filter((s) => todayOverlapRatio(s) > 0))}
-    />
-  );
-}
-
 // --- Spend Breakdown Panel ---
+//
+// Consolidates what used to be two separate panels (a cost-based Models/
+// Tools/Skills breakdown, and a Skills/Subagents/Plugins/Loops/Tools
+// "contribution" panel built on the shared UsageContributionPanel) into one.
+// The two panels showed an identical Skills table and disagreeing Tools
+// tables — merging onto UsageContributionPanel with an added Models table
+// (see ModelShareRow / UsageContributionPanel's modelRows prop) removes both.
 
 interface ModelStats {
   readonly requestCount: number;
@@ -728,31 +712,12 @@ interface ModelUsageMetrics {
   readonly mostUsedModel: string | null;
 }
 
-interface ModelShareRow {
-  readonly model: string;
-  readonly requestCount: number;
-  readonly costPerMillionTokens: number | null;
-  readonly totalCostUsd: number;
-  readonly sharePct: number;
-}
-
-interface ToolShareRow {
-  readonly tool: string;
-  readonly label: string;
-  readonly calls: number;
-  readonly costUsd: number;
-  readonly sharePct: number;
-}
-
-interface SkillShareRow {
-  readonly skill: string;
-  readonly calls: number;
-  readonly costUsd: number;
-  readonly sharePct: number;
-}
-
-function SpendBreakdownPanel(): JSX.Element {
-  const { data: costData, isError: costError } = useQuery<TurnCostsResponse>({
+function SpendBreakdownPanel({
+  todaySessions,
+}: {
+  todaySessions: readonly SessionSummary[];
+}): JSX.Element {
+  const { data: costData } = useQuery<TurnCostsResponse>({
     queryKey: qk.costPerTool(),
     queryFn: () => fetchCostPerTool(),
     refetchInterval: QUALITY_REFETCH_MS,
@@ -765,18 +730,11 @@ function SpendBreakdownPanel(): JSX.Element {
     queryFn: fetchModelUsage,
     refetchInterval: QUALITY_REFETCH_MS,
   });
-
-  if (costError) {
-    return (
-      <Panel title="Where today's spend went">
-        <EmptyState
-          variant="inline"
-          title="Cost attribution unavailable"
-          subtitle="Start a Claude Code session to enable cost attribution."
-        />
-      </Panel>
-    );
-  }
+  const { data: usageData, isError: usageError } = useQuery<UsageInsightsReport>({
+    queryKey: qk.usageInsights('today'),
+    queryFn: () => fetchUsageInsights('today'),
+    refetchInterval: QUALITY_REFETCH_MS,
+  });
 
   const models = modelData?.byModel
     ? Object.entries(modelData.byModel).filter(([, s]) => s.requestCount > 0)
@@ -790,163 +748,26 @@ function SpendBreakdownPanel(): JSX.Element {
     sharePct: modelsTotalCost > 0 ? (s.totalCostUsd / modelsTotalCost) * 100 : 0,
   }));
 
-  const tools = costData?.costByToolType
-    ? Object.entries(costData.costByToolType).filter(([, e]) => e.totalCost > 0)
-    : [];
-  const toolsTotalCost = tools.reduce((sum, [, e]) => sum + e.totalCost, 0);
-  const toolRows: ToolShareRow[] = tools.map(([tool, e]) => ({
-    tool,
-    label: shortToolName(tool),
-    calls: e.callCount,
-    costUsd: e.totalCost,
-    sharePct: toolsTotalCost > 0 ? (e.totalCost / toolsTotalCost) * 100 : 0,
-  }));
-
-  const skills = costData?.costBySkill ? Object.entries(costData.costBySkill) : [];
-  const skillsTotalCost = skills.reduce((sum, [, e]) => sum + e.totalCost, 0);
-  const skillRows: SkillShareRow[] = skills.map(([skill, e]) => ({
-    skill,
-    calls: e.callCount,
-    costUsd: e.totalCost,
-    sharePct: skillsTotalCost > 0 ? (e.totalCost / skillsTotalCost) * 100 : 0,
-  }));
-
-  const attributionRate = costData?.attributionRate ?? 1;
-  const lowAttribution = costData != null && attributionRate < 0.5;
+  const toolRows = buildToolTableRows(
+    todaySessions.filter((s) => todayOverlapRatio(s) > 0),
+    costData?.costByToolType,
+  );
 
   return (
-    <Panel
+    <UsageContributionPanel
+      data={usageData}
+      isError={usageError}
       title="Where today's spend went"
-      tooltip="How today's spend breaks down by model, tool, and skill."
-      footnote={
-        lowAttribution
-          ? `Tool and skill shares are based on ${formatPct(attributionRate * 100)} of session cost`
-          : undefined
-      }
-    >
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          {modelRows.length === 0 ? (
-            <>
-              <Eyebrow className="mb-1.5">Models</Eyebrow>
-              <EmptyState variant="inline" title="No model data yet" />
-            </>
-          ) : (
-            <ShareTable<ModelShareRow>
-              title="Models"
-              rows={modelRows}
-              rowKey={(row) => row.model}
-              defaultSort={{ column: 4, direction: 'desc' }}
-              columns={[
-                {
-                  header: 'Model',
-                  align: 'left',
-                  className: 'font-mono truncate max-w-[12rem]',
-                  title: (row) => row.model,
-                  cell: (row) => row.model,
-                },
-                {
-                  header: 'Req',
-                  align: 'right',
-                  cell: (row) => row.requestCount,
-                  sortValue: (row) => row.requestCount,
-                },
-                {
-                  header: '$/1M tok',
-                  align: 'right',
-                  cell: (row) => formatUsdOrDash(row.costPerMillionTokens),
-                  sortValue: (row) => row.costPerMillionTokens ?? 0,
-                },
-                {
-                  header: 'Cost',
-                  align: 'right',
-                  cell: (row) => formatUsd(row.totalCostUsd),
-                  sortValue: (row) => row.totalCostUsd,
-                },
-                {
-                  header: 'Share',
-                  align: 'right',
-                  cell: (row) => formatPct(row.sharePct),
-                  sortValue: (row) => row.sharePct,
-                },
-              ]}
-            />
-          )}
-        </div>
-        <div>
-          {toolRows.length === 0 ? (
-            <>
-              <Eyebrow className="mb-1.5">Tools</Eyebrow>
-              <EmptyState variant="inline" title="No tool data yet" />
-            </>
-          ) : (
-            <ShareTable<ToolShareRow>
-              title="Tools"
-              rows={toolRows}
-              rowKey={(row) => row.tool}
-              defaultSort={{ column: 3, direction: 'desc' }}
-              columns={[
-                { header: 'Tool', align: 'left', cell: (row) => row.label },
-                {
-                  header: 'Calls',
-                  align: 'right',
-                  cell: (row) => row.calls,
-                  sortValue: (row) => row.calls,
-                },
-                {
-                  header: 'Cost',
-                  align: 'right',
-                  cell: (row) => formatUsd(row.costUsd),
-                  sortValue: (row) => row.costUsd,
-                },
-                {
-                  header: 'Share',
-                  align: 'right',
-                  cell: (row) => formatPct(row.sharePct),
-                  sortValue: (row) => row.sharePct,
-                },
-              ]}
-            />
-          )}
-        </div>
-        <div>
-          {skillRows.length === 0 ? (
-            <>
-              <Eyebrow className="mb-1.5">Skills</Eyebrow>
-              <EmptyState variant="inline" title="No skill data yet" />
-            </>
-          ) : (
-            <ShareTable<SkillShareRow>
-              title="Skills"
-              rows={skillRows}
-              rowKey={(row) => row.skill}
-              defaultSort={{ column: 3, direction: 'desc' }}
-              columns={[
-                { header: 'Skill', align: 'left', cell: (row) => row.skill },
-                {
-                  header: 'Calls',
-                  align: 'right',
-                  cell: (row) => row.calls,
-                  sortValue: (row) => row.calls,
-                },
-                {
-                  header: 'Cost',
-                  align: 'right',
-                  cell: (row) => formatUsd(row.costUsd),
-                  sortValue: (row) => row.costUsd,
-                },
-                {
-                  header: 'Share',
-                  align: 'right',
-                  cell: (row) => formatPct(row.sharePct),
-                  sortValue: (row) => row.sharePct,
-                },
-              ]}
-            />
-          )}
-        </div>
-      </div>
-    </Panel>
+      subtitle="Since midnight"
+      modelRows={modelRows}
+      toolRows={toolRows}
+      toolCostAvailable={true}
+      // /api/cost-per-tool only reports attributedSessionCount/totalSessionCount
+      // (the coverage figures a caveat needs) on its windowed (?days=) path —
+      // Today's unwindowed call never carries them, so there's nothing to
+      // caveat yet. See the TurnCostsResponse field comments in api/client.ts.
+      toolCoverageCaveat={null}
+    />
   );
 }
 

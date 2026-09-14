@@ -1668,7 +1668,7 @@ describe('Today view — Needs attention panel', () => {
   });
 });
 
-describe('Today view — Contributing panel', () => {
+describe("Today view — Where today's spend went panel", () => {
   const SAMPLE_USAGE_INSIGHTS = {
     windowDays: 1,
     sessionCount: 3,
@@ -1688,8 +1688,8 @@ describe('Today view — Contributing panel', () => {
       },
     ],
     skills: [{ key: 'code-review', costUsd: 3, tokens: 6000, count: 4, sharePct: 30 }],
-    subagents: [],
-    plugins: [],
+    subagents: [{ key: 'general-purpose', costUsd: 2, tokens: 4000, count: 3, sharePct: 20 }],
+    plugins: [{ key: 'pstack', costUsd: 1, tokens: 2000, count: 2, sharePct: 10 }],
     loops: [],
     attributionRatePct: 80,
   };
@@ -1716,26 +1716,51 @@ describe('Today view — Contributing panel', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders the panel title with "Since midnight"', async () => {
-    renderToday();
-    expect(await screen.findByText("What's contributing to today's spend")).toBeInTheDocument();
-    expect(screen.getAllByText('Since midnight').length).toBeGreaterThan(0);
-  });
-
-  it('renders an insight headline and a Skills table row from usage insights', async () => {
+  it('renders the consolidated title exactly once, with the old contributing title gone', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
     renderToday(qc);
-    expect(await screen.findByText('High-context sessions are driving spend')).toBeInTheDocument();
-    const row = screen.getByText('code-review').closest('tr') as HTMLElement;
-    expect(within(row).getByText('6.0k')).toBeInTheDocument();
-    expect(within(row).getByText('30%')).toBeInTheDocument();
+    expect(await screen.findAllByText("Where today's spend went")).toHaveLength(1);
+    expect(screen.queryByText("What's contributing to today's spend")).toBeNull();
+    expect(screen.getAllByText('Since midnight').length).toBeGreaterThan(0);
   });
 
-  it("renders a Tools row built from today's session list, alongside the usage-insights tables", async () => {
+  it('proves the Skills-shown-twice bug is gone: exactly one Skills table renders', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    await screen.findByText('code-review');
+    expect(screen.getAllByRole('columnheader', { name: 'Skill' })).toHaveLength(1);
+    expect(screen.getAllByText('code-review')).toHaveLength(1);
+  });
+
+  it('renders a Models table row with requests, cost per million tokens, cost, and share', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.modelUsage, {
+      byModel: {
+        'claude-sonnet-5': { requestCount: 8, totalCostUsd: 4.2, costPerMillionTokens: 0.75 },
+      },
+      mostUsedModel: 'claude-sonnet-5',
+    });
+    renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    const row = screen.getByText('claude-sonnet-5').closest('tr') as HTMLElement;
+    expect(within(row).getByText('8')).toBeInTheDocument();
+    expect(within(row).getByText('$0.75')).toBeInTheDocument();
+    expect(within(row).getByText('$4.20')).toBeInTheDocument();
+    expect(within(row).getByText('100%')).toBeInTheDocument();
+  });
+
+  it("renders a Tools row with a Cost column, built from today's session list plus windowed cost data", async () => {
     const now = Date.now();
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.costPerTool(), {
+      costByToolType: { Read: { totalCost: 3, callCount: 8, avgCost: 0.375, tokens: 1000 } },
+      totalAttributedCost: 3,
+      attributionRate: 1,
+    });
     qc.setQueryData(qk.sessionsList(200), [
       {
         sessionId: 's1',
@@ -1751,10 +1776,10 @@ describe('Today view — Contributing panel', () => {
       },
     ]);
     renderToday(qc);
-    await screen.findByText('code-review');
-    const row = screen.getByText('Read').closest('tr') as HTMLElement;
-    expect(within(row).getByText('8')).toBeInTheDocument();
-    expect(within(row).getByText('80%')).toBeInTheDocument();
+    await screen.findByText("Where today's spend went");
+    const row = screen.getByRole('cell', { name: 'Read' }).closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '8' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '$3.00' })).toBeInTheDocument();
   });
 
   it("excludes sessions outside today's window from the Tools table", async () => {
@@ -1777,9 +1802,27 @@ describe('Today view — Contributing panel', () => {
     ]);
     renderToday(qc);
     await screen.findByText('code-review');
-    const row = screen.getByText('Read').closest('tr') as HTMLElement;
-    expect(within(row).getByText('2')).toBeInTheDocument();
-    expect(within(row).getByText('100%')).toBeInTheDocument();
+    const row = screen.getByRole('cell', { name: 'Read' }).closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '2' })).toBeInTheDocument();
+  });
+
+  it('shows a Cost column on the Skills and Subagents tables', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    const skillRow = (await screen.findByText('code-review')).closest('tr') as HTMLElement;
+    expect(within(skillRow).getByText('$3.00')).toBeInTheDocument();
+    const subagentRow = screen.getByText('general-purpose').closest('tr') as HTMLElement;
+    expect(within(subagentRow).getByText('$2.00')).toBeInTheDocument();
+  });
+
+  it('shows Calls and Tokens columns on the Plugins table', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    const pluginRow = (await screen.findByText('pstack')).closest('tr') as HTMLElement;
+    expect(within(pluginRow).getByText('2')).toBeInTheDocument();
+    expect(within(pluginRow).getByText('2.0k')).toBeInTheDocument();
   });
 
   it('shows "No sessions in this window." when sessionCount is 0', async () => {
@@ -2235,164 +2278,6 @@ describe('Today view — forecast end-of-week and session chips', () => {
     await waitFor(() =>
       expect(screen.getByText(/On pace for ~\$[\d.]+ this week/)).toBeInTheDocument(),
     );
-  });
-});
-
-describe('Today view — Spend breakdown panel', () => {
-  beforeEach(() => {
-    useLiveStore.setState({
-      connected: true,
-      recentToolCalls: [],
-      cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
-      antiPatterns: [],
-      firingAlerts: new Map(),
-      dismissedAlerts: new Set(),
-    });
-    globalThis.fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify(null), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-    ) as typeof fetch;
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('renders the panel title', async () => {
-    renderToday();
-    expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
-  });
-
-  it('renders a model table row with requests, cost per million tokens, cost, and share', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.modelUsage, {
-      byModel: {
-        'claude-sonnet-5': { requestCount: 8, totalCostUsd: 4.2, costPerMillionTokens: 0.75 },
-      },
-      mostUsedModel: 'claude-sonnet-5',
-    });
-    renderToday(qc);
-    await screen.findByText("Where today's spend went");
-    const row = screen.getByText('claude-sonnet-5').closest('tr');
-    expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText('8')).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('$0.75')).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('$4.20')).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('100%')).toBeInTheDocument();
-  });
-
-  it('renders a tool row via ShareTable with calls, cost, and share', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool(), {
-      costByToolType: { Bash: { totalCost: 3, callCount: 2, avgCost: 1.5 } },
-      totalAttributedCost: 3,
-      attributionRate: 1,
-    });
-    renderToday(qc);
-    await screen.findByText("Where today's spend went");
-    const row = screen.getByText('Bash').closest('tr') as HTMLElement;
-    expect(within(row).getByText('2')).toBeInTheDocument();
-    expect(within(row).getByText('$3.00')).toBeInTheDocument();
-    expect(within(row).getByText('100%')).toBeInTheDocument();
-  });
-
-  it('shows a skill row with its cost and share', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool(), {
-      costByToolType: {},
-      costBySkill: {
-        'skill-a': { callCount: 5, attributedCallCount: 5, totalCost: 6, avgCost: 1.2 },
-        'skill-b': { callCount: 3, attributedCallCount: 3, totalCost: 4, avgCost: 1.33 },
-      },
-      totalAttributedCost: 10,
-      attributionRate: 1,
-    });
-    renderToday(qc);
-    const row = (await screen.findByText('skill-a')).closest('tr') as HTMLElement;
-    expect(within(row).getByText('$6.00')).toBeInTheDocument();
-    expect(within(row).getByText('60%')).toBeInTheDocument();
-  });
-
-  it('sorts the Tools table by a column and reverses on a second click', async () => {
-    // A nonzero todayTotalUsd keeps `noActivityToday` false for the whole
-    // test — otherwise the other today-scoped queries in this describe
-    // block's zero-spend fixture settle mid-test and flip Today from the
-    // KPI branch to the empty-state branch, remounting SpendBreakdownPanel
-    // (and losing the ShareTable's just-applied sort) between the clicks.
-    useLiveStore.setState({ cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null } });
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0, staleTime: Infinity } } });
-    qc.setQueryData(qk.costPerTool(), {
-      costByToolType: {
-        Bash: { totalCost: 1, callCount: 9, avgCost: 1 },
-        Read: { totalCost: 5, callCount: 2, avgCost: 2.5 },
-      },
-      totalAttributedCost: 6,
-      attributionRate: 1,
-    });
-    renderToday(qc);
-    await screen.findByText("Where today's spend went");
-
-    const table = (await screen.findByText('Tools')).closest('div') as HTMLElement;
-    const firstToolCell = () => within(table).getAllByRole('row')[1]!.querySelector('td');
-
-    // Default sort is Share desc, so the higher-cost tool (Read) leads.
-    expect(firstToolCell()!.textContent).toBe('Read');
-
-    fireEvent.click(within(table).getByRole('button', { name: 'Calls' }));
-    expect(firstToolCell()!.textContent).toBe('Bash');
-
-    fireEvent.click(within(table).getByRole('button', { name: 'Calls' }));
-    expect(firstToolCell()!.textContent).toBe('Read');
-  });
-
-  it('renders Cost attribution unavailable when /api/cost-per-tool returns 503', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
-        return new Response('Service Unavailable', { status: 503 });
-      }
-      return new Response(JSON.stringify(null), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    renderToday();
-    // EmptyState's inline variant concatenates title and subtitle into one
-    // text node ("Cost attribution unavailable · Start a Claude Code...").
-    await waitFor(() =>
-      expect(screen.getByText(/Cost attribution unavailable/)).toBeInTheDocument(),
-    );
-  });
-
-  it('renders empty states across all three columns instead of crashing when the query settles with a null value', async () => {
-    // A 200 response whose body is the JSON literal `null` (distinct from a
-    // request that errors) resolves the query successfully with `data` set
-    // to `null`, not `undefined` — seed the cache directly with the
-    // already-settled value instead of waiting on the mocked fetch.
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool(), null);
-    renderToday(qc);
-    expect(await screen.findByText("Where today's spend went")).toBeInTheDocument();
-    expect(screen.getByText('No model data yet')).toBeInTheDocument();
-    expect(screen.getByText('No tool data yet')).toBeInTheDocument();
-    expect(screen.getByText('No skill data yet')).toBeInTheDocument();
-  });
-
-  it('shows the low-attribution footnote when attributionRate is below 50%', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool(), {
-      costByToolType: {
-        Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
-      },
-      totalAttributedCost: 4.2,
-      attributionRate: 0.3,
-    });
-    renderToday(qc);
-    expect(
-      await screen.findByText('Tool and skill shares are based on 30% of session cost'),
-    ).toBeInTheDocument();
   });
 });
 

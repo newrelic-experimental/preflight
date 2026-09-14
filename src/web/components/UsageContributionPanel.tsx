@@ -10,6 +10,7 @@ import {
   formatPct,
   formatRelativeTime,
   formatTokensCompact,
+  formatUsd,
   formatUsdOrDash,
   shortToolName,
 } from '../lib/format';
@@ -45,6 +46,14 @@ export interface ToolTableRow {
   /** Undefined when no windowed cost data was supplied at all, or when this specific tool has calls but isn't attributed yet. */
   readonly costUsd?: number;
   readonly tokens?: number;
+}
+
+export interface ModelShareRow {
+  readonly model: string;
+  readonly requestCount: number;
+  readonly costPerMillionTokens: number | null;
+  readonly totalCostUsd: number;
+  readonly sharePct: number;
 }
 
 /**
@@ -98,6 +107,7 @@ export function UsageContributionPanel({
   isError,
   title,
   subtitle,
+  modelRows,
   toolRows,
   toolCostAvailable = false,
   toolCoverageCaveat = null,
@@ -106,6 +116,8 @@ export function UsageContributionPanel({
   isError: boolean;
   title: string;
   subtitle: string;
+  /** Adds a Models table as the first table in the grid. Omit (History's call site) to render no Models table at all. */
+  modelRows?: readonly ModelShareRow[];
   toolRows: readonly ToolTableRow[];
   /** Whether toolRows carries real cost/token data (History's windowed fetch) — adds Cost/Tokens columns and switches the share column to cost-based. Today's calls-only toolRows omits this. */
   toolCostAvailable?: boolean;
@@ -152,12 +164,54 @@ export function UsageContributionPanel({
 
       {data.sessionCount > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 text-xs mt-4">
+          {modelRows && modelRows.length > 0 && (
+            <ShareTable<ModelShareRow>
+              title="Models"
+              rows={modelRows}
+              rowKey={(row) => row.model}
+              defaultSort={{ column: 4, direction: 'desc' }}
+              columns={[
+                {
+                  header: 'Model',
+                  align: 'left',
+                  className: 'font-mono truncate max-w-[12rem]',
+                  title: (row) => row.model,
+                  cell: (row) => row.model,
+                },
+                {
+                  header: 'Req',
+                  align: 'right',
+                  cell: (row) => row.requestCount,
+                  sortValue: (row) => row.requestCount,
+                },
+                {
+                  header: '$/1M tok',
+                  align: 'right',
+                  cell: (row) => formatUsdOrDash(row.costPerMillionTokens),
+                  sortValue: (row) => row.costPerMillionTokens ?? 0,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsd(row.totalCostUsd),
+                  sortValue: (row) => row.totalCostUsd,
+                },
+                {
+                  header: 'Share',
+                  align: 'right',
+                  cell: (row) => formatPct(row.sharePct),
+                  sortValue: (row) => row.sharePct,
+                },
+              ]}
+            />
+          )}
+
           {skills.length > 0 && (
             <ShareTable<UsageShareRow>
               title="Skills"
               rows={skills}
               rowKey={(row) => row.key}
-              defaultSort={{ column: 3, direction: 'desc' }}
+              defaultSort={{ column: 4, direction: 'desc' }}
               columns={[
                 { header: 'Skill', align: 'left', cell: (row) => row.key },
                 {
@@ -171,6 +225,12 @@ export function UsageContributionPanel({
                   align: 'right',
                   cell: (row) => formatTokensCompact(row.tokens),
                   sortValue: (row) => row.tokens,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsdOrDash(row.costUsd),
+                  sortValue: (row) => row.costUsd,
                 },
                 {
                   header: '% of spend',
@@ -187,7 +247,7 @@ export function UsageContributionPanel({
               title="Subagents"
               rows={subagents}
               rowKey={(row) => row.key}
-              defaultSort={{ column: 3, direction: 'desc' }}
+              defaultSort={{ column: 4, direction: 'desc' }}
               columns={[
                 { header: 'Type', align: 'left', cell: (row) => row.key },
                 {
@@ -201,6 +261,12 @@ export function UsageContributionPanel({
                   align: 'right',
                   cell: (row) => formatTokensCompact(row.tokens),
                   sortValue: (row) => row.tokens,
+                },
+                {
+                  header: 'Cost',
+                  align: 'right',
+                  cell: (row) => formatUsdOrDash(row.costUsd),
+                  sortValue: (row) => row.costUsd,
                 },
                 {
                   header: '% of spend',
@@ -217,9 +283,21 @@ export function UsageContributionPanel({
               title="Plugins"
               rows={plugins}
               rowKey={(row) => row.key}
-              defaultSort={{ column: 1, direction: 'desc' }}
+              defaultSort={{ column: 3, direction: 'desc' }}
               columns={[
                 { header: 'Plugin', align: 'left', cell: (row) => row.key },
+                {
+                  header: 'Calls',
+                  align: 'right',
+                  cell: (row) => row.count,
+                  sortValue: (row) => row.count,
+                },
+                {
+                  header: 'Tokens',
+                  align: 'right',
+                  cell: (row) => formatTokensCompact(row.tokens),
+                  sortValue: (row) => row.tokens,
+                },
                 {
                   header: '% of spend',
                   align: 'right',
