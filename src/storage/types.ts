@@ -322,6 +322,7 @@ export interface ToolCallRecord {
    * hasn't caught up with yet (best-effort, not persisted retroactively).
    */
   readonly agentId?: string;
+  /** Never populates in practice, same as agentId above — see its doc comment (#656). */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;

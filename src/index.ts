@@ -2282,7 +2282,10 @@ async function main(): Promise<void> {
             platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
             taskId: task.taskId,
           };
-          const { patterns } = antiPatternDetector.analyze(task.toolCalls);
+          const enrichedToolCalls = task.toolCalls.map((r) =>
+            backfillAgentId(r, toolUseIdToAgentId),
+          );
+          const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
           efficiencyScorer.computeScore(task, patterns);
           for (const pattern of patterns) {
             capturedNrIngest?.ingestAntiPattern(pattern, context);
