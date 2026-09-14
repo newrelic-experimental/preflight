@@ -5,11 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.51.1] - 2026-09-13
+## [1.51.3] - 2026-09-14
 
 ### Fixed
 
 - **A third copy of the transcript-line parsing logic already unified across two other files had drifted out of that shared module.** The parent-session transcript watcher now calls the same shared parser, which has been extended to also carry the sidechain flag it needs to skip subagent turns inlined into the main transcript.
+
+## [1.51.2] - 2026-09-14
+
+### Fixed
+
+- **Correction detection could still false-positive on a few phrasings the original regex redesign didn't cover:** a standing instruction referencing a noun with "that" nearby (e.g. "don't push directly to that branch") no longer counts as undoing the assistant's last action, and a polite decline ("no, thanks" / "no, that's fine") no longer counts as a rejection.
+
+## [1.51.1] - 2026-09-13
+
+### Fixed
+
+- **The Replay UI's anti-pattern overlay could flag parallel subagents as a single agent stuck in a loop.** Its stuck-loop, blind-editing, and re-reading detectors ran over the flat tool-call timeline with no notion of which subagent made each call, so three subagents each running the same command once (or reading the same file once) rendered as one false anti-pattern segment. These detectors now partition by agent before running, the same fix already applied to the session-wide anti-pattern tracker.
 
 ## [1.51.0] - 2026-09-13
 

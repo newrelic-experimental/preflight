@@ -9,6 +9,7 @@ interface GanttTimelineEntry {
   readonly success: boolean;
   readonly filePath?: string;
   readonly command?: string;
+  readonly agentId?: string;
 }
 
 interface GanttSegment {
@@ -16,6 +17,17 @@ interface GanttSegment {
   readonly startIndex: number;
   readonly endIndex: number;
   readonly severity: 'warning' | 'critical';
+  // Owning agent, only meaningful when agentScoped is true — undefined then
+  // means "owned by the parent session", not "agent-agnostic" (see below).
+  readonly agentId?: string;
+  // True for segments from a per-agent detector (stuck-loop, blind-editing,
+  // re-reading). Such a segment's index range can span a gap occupied by a
+  // different agent's unrelated call, so rows are only highlighted when
+  // their own agentId matches. False/absent for agent-agnostic segments
+  // (e.g. thrashing), which highlight every row in range as before —
+  // distinct from agentId itself being undefined, which for a scoped
+  // segment means "owned by the parent session" rather than "match all".
+  readonly agentScoped?: boolean;
 }
 
 interface GanttTimelineProps {
@@ -108,6 +120,11 @@ export function GanttTimeline({
       for (let i = start; i <= end; i++) {
         const sIdx = originalToSorted.get(i);
         if (sIdx === undefined) continue;
+        // A per-agent segment's range can span a gap occupied by a
+        // different agent's unrelated call; only highlight rows that were
+        // actually part of it. Agent-agnostic segments (agentScoped false/
+        // absent) still highlight every row in range, as before.
+        if (seg.agentScoped && entries[i]?.agentId !== seg.agentId) continue;
         if (
           segmentAt[sIdx] === null ||
           (seg.severity === 'critical' && segmentAt[sIdx]!.severity !== 'critical')
@@ -117,7 +134,11 @@ export function GanttTimeline({
       }
     }
     return segmentAt;
-  }, [sorted, segments, entries.length]);
+    // `entries` (not just its length) is now read directly for per-row
+    // agentId comparison — but `sorted` already recomputes (new reference)
+    // whenever `entries` does, since sorted's own memo depends on it, so
+    // listing both here doesn't add any extra re-computation.
+  }, [sorted, segments, entries]);
 
   if (entries.length === 0) {
     return <div className="text-ink-muted text-xs">No tool calls recorded.</div>;

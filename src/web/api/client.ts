@@ -106,6 +106,7 @@ export interface ReplayTimelineEntry {
   readonly isBuildCommand?: boolean;
   readonly isLintCommand?: boolean;
   readonly errorType?: string;
+  readonly agentId?: string;
 }
 
 export interface AntiPatternSegment {
@@ -115,6 +116,8 @@ export interface AntiPatternSegment {
   readonly iterations: number;
   readonly target: string;
   readonly severity: 'warning' | 'critical';
+  readonly agentId?: string;
+  readonly agentScoped?: boolean;
 }
 
 export interface SessionReplayResponse {

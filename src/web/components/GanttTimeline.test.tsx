@@ -57,4 +57,72 @@ describe('GanttTimeline', () => {
     expect(screen.getByTitle('Edit').parentElement).toHaveClass('border-l-accent-amber');
     expect(screen.getByTitle('Bash').parentElement).toHaveClass('border-l-transparent');
   });
+
+  it('does not highlight a row belonging to a different agent than the segment, even inside its index range', () => {
+    const entries = [
+      { timestamp: 0, toolName: 'Bash', durationMs: 100, success: false, agentId: 'agent-a' },
+      { timestamp: 100, toolName: 'Read', durationMs: 100, success: true, agentId: 'agent-b' },
+      { timestamp: 200, toolName: 'Bash', durationMs: 100, success: false, agentId: 'agent-a' },
+    ];
+    render(
+      <GanttTimeline
+        entries={entries}
+        segments={[
+          {
+            type: 'stuck_loop',
+            startIndex: 0,
+            endIndex: 2,
+            severity: 'critical',
+            agentId: 'agent-a',
+            agentScoped: true,
+          },
+        ]}
+      />,
+    );
+    expect(screen.getAllByTitle('Bash')[0]!.parentElement).toHaveClass('border-l-accent-red');
+    expect(screen.getByTitle('Read').parentElement).toHaveClass('border-l-transparent');
+    expect(screen.getAllByTitle('Bash')[1]!.parentElement).toHaveClass('border-l-accent-red');
+  });
+
+  it('does not highlight a subagent row for an agent-scoped segment owned by the parent session (agentId undefined)', () => {
+    const entries = [
+      { timestamp: 0, toolName: 'Bash', durationMs: 100, success: false },
+      { timestamp: 100, toolName: 'Read', durationMs: 100, success: true, agentId: 'agent-b' },
+      { timestamp: 200, toolName: 'Bash', durationMs: 100, success: false },
+    ];
+    render(
+      <GanttTimeline
+        entries={entries}
+        segments={[
+          {
+            type: 'stuck_loop',
+            startIndex: 0,
+            endIndex: 2,
+            severity: 'critical',
+            agentScoped: true,
+          },
+        ]}
+      />,
+    );
+    expect(screen.getAllByTitle('Bash')[0]!.parentElement).toHaveClass('border-l-accent-red');
+    expect(screen.getByTitle('Read').parentElement).toHaveClass('border-l-transparent');
+    expect(screen.getAllByTitle('Bash')[1]!.parentElement).toHaveClass('border-l-accent-red');
+  });
+
+  it('still highlights every row in range for an agent-agnostic segment (e.g. thrashing)', () => {
+    const entries = [
+      { timestamp: 0, toolName: 'Edit', durationMs: 100, success: true, agentId: 'agent-a' },
+      { timestamp: 100, toolName: 'Read', durationMs: 100, success: true, agentId: 'agent-b' },
+      { timestamp: 200, toolName: 'Bash', durationMs: 100, success: false, agentId: 'agent-a' },
+    ];
+    render(
+      <GanttTimeline
+        entries={entries}
+        segments={[{ type: 'thrashing', startIndex: 0, endIndex: 2, severity: 'critical' }]}
+      />,
+    );
+    expect(screen.getByTitle('Edit').parentElement).toHaveClass('border-l-accent-red');
+    expect(screen.getByTitle('Read').parentElement).toHaveClass('border-l-accent-red');
+    expect(screen.getByTitle('Bash').parentElement).toHaveClass('border-l-accent-red');
+  });
 });
