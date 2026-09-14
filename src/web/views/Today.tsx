@@ -23,7 +23,7 @@ import { Panel } from '../components/ui/Panel';
 import { HealthCard, type HealthCardRow, type HealthTone } from '../components/HealthCard';
 import { ShareTable } from '../components/ShareTable';
 import { SpendBars, type SpendBarsDatum } from '../components/SpendBars';
-import { UsageInsightsList } from '../components/UsageInsightsList';
+import { UsageContributionPanel, buildToolTableRows } from '../components/UsageContributionPanel';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
 import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
 import {
@@ -187,6 +187,7 @@ export interface SessionSummary {
   readonly antiPatterns?: SessionAntiPattern[];
   readonly model?: string | null;
   readonly toolSuccessRate?: number | null;
+  readonly toolBreakdown?: Record<string, number>;
 }
 
 interface QualityProxyMetrics {
@@ -434,7 +435,7 @@ export function Today(): JSX.Element {
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
             />
-            <ContributingTodayPanel />
+            <ContributingTodayPanel todaySessions={todaySessions ?? []} />
           </AnimatedCard>
         </>
       ) : (
@@ -515,7 +516,7 @@ export function Today(): JSX.Element {
               persistedAntiPatterns={persistedAntiPatterns}
               flagsCount={flagsCount}
             />
-            <ContributingTodayPanel />
+            <ContributingTodayPanel todaySessions={todaySessions ?? []} />
           </AnimatedCard>
 
           <AnimatedCard index={3} className="mb-3">
@@ -692,28 +693,25 @@ function NeedsAttentionPanel({
 
 // --- Contributing Today Panel ---
 
-function ContributingTodayPanel(): JSX.Element {
+function ContributingTodayPanel({
+  todaySessions,
+}: {
+  todaySessions: readonly SessionSummary[];
+}): JSX.Element {
   const { data, isError } = useQuery<UsageInsightsReport>({
     queryKey: qk.usageInsights('today'),
     queryFn: () => fetchUsageInsights('today'),
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
-  if (isError) {
-    return (
-      <Panel title="What's contributing to today's spend" subtitle="Since midnight">
-        <EmptyState variant="inline" title="Usage insights unavailable" />
-      </Panel>
-    );
-  }
-
   return (
-    <Panel title="What's contributing to today's spend" subtitle="Since midnight">
-      <UsageInsightsList
-        insights={data?.insights ?? []}
-        emptyText="Nothing stands out yet today."
-      />
-    </Panel>
+    <UsageContributionPanel
+      data={data}
+      isError={isError}
+      title="What's contributing to today's spend"
+      subtitle="Since midnight"
+      toolRows={buildToolTableRows(todaySessions)}
+    />
   );
 }
 

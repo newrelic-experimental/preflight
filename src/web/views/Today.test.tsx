@@ -1668,6 +1668,107 @@ describe('Today view — Needs attention panel', () => {
   });
 });
 
+describe('Today view — Contributing panel', () => {
+  const SAMPLE_USAGE_INSIGHTS = {
+    windowDays: 1,
+    sessionCount: 3,
+    totalCostUsd: 10,
+    totalTokens: 50000,
+    insights: [
+      {
+        id: 'high_context',
+        key: 'high_context',
+        costUsd: 6,
+        tokens: 30000,
+        count: 2,
+        sharePct: 60,
+        sessionCount: 3,
+        headline: 'High-context sessions are driving spend',
+        advice: 'Trim context before starting new sessions.',
+      },
+    ],
+    skills: [{ key: 'code-review', costUsd: 3, tokens: 6000, count: 4, sharePct: 30 }],
+    subagents: [],
+    plugins: [],
+    loops: [],
+    attributionRatePct: 80,
+  };
+
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(null), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the panel title with "Since midnight"', async () => {
+    renderToday();
+    expect(await screen.findByText("What's contributing to today's spend")).toBeInTheDocument();
+    expect(screen.getAllByText('Since midnight').length).toBeGreaterThan(0);
+  });
+
+  it('renders an insight headline and a Skills table row from usage insights', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    expect(await screen.findByText('High-context sessions are driving spend')).toBeInTheDocument();
+    const row = screen.getByText('code-review').closest('tr') as HTMLElement;
+    expect(within(row).getByText('6.0k')).toBeInTheDocument();
+    expect(within(row).getByText('30%')).toBeInTheDocument();
+  });
+
+  it('renders a Tools row built from today’s session list, alongside the usage-insights tables', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.sessionsList(200), [
+      { sessionId: 's1', toolBreakdown: { Read: 6, Edit: 2 } },
+      { sessionId: 's2', toolBreakdown: { Read: 2 } },
+    ]);
+    renderToday(qc);
+    await screen.findByText('code-review');
+    const row = screen.getByText('Read').closest('tr') as HTMLElement;
+    expect(within(row).getByText('8')).toBeInTheDocument();
+    expect(within(row).getByText('80%')).toBeInTheDocument();
+  });
+
+  it('shows "No sessions in this window." when sessionCount is 0', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), { ...SAMPLE_USAGE_INSIGHTS, sessionCount: 0 });
+    renderToday(qc);
+    expect(await screen.findByText('No sessions in this window.')).toBeInTheDocument();
+  });
+
+  it('shows the unavailable empty state when the usage-insights query errors', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/api/usage-insights')) {
+        return new Response('Service Unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    expect(await screen.findByText('Usage insights unavailable')).toBeInTheDocument();
+  });
+});
+
 describe('Today view — Compute Waste panel', () => {
   beforeEach(() => {
     useLiveStore.setState({
