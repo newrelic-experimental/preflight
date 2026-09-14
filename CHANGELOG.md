@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.1] - 2026-09-13
+
+### Fixed
+
+- **A fourth, independent copy of the same subagent-turn/synthetic-turn rejection rule used by the shared transcript parser had drifted apart from it.** The message tracker that counts user/assistant turns and the parent-session transcript watcher now both call one shared predicate for deciding whether an assistant turn is a real, in-session turn.
+
 ## [1.51.0] - 2026-09-13
 
 ### Added

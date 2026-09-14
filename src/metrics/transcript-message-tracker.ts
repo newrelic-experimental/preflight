@@ -1,6 +1,8 @@
 import { openSync, closeSync, readSync, statSync, constants as fsConstants } from 'node:fs';
 
-import type { RawTranscriptEntry, RawAssistantMessage } from '../hooks/transcript-types.js';
+import { isRealAssistantTurn } from '../lib/subagent-transcript-parser.js';
+
+import type { RawTranscriptEntry } from '../hooks/transcript-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -113,12 +115,6 @@ function classifyUserEntry(entry: RawTranscriptEntry): string | null {
   return text;
 }
 
-function isRealAssistantEntry(entry: RawTranscriptEntry): boolean {
-  if (entry.isSidechain === true) return false;
-  const message = entry.message as RawAssistantMessage | undefined;
-  return message?.model !== '<synthetic>';
-}
-
 // ---------------------------------------------------------------------------
 // TranscriptMessageTracker
 // ---------------------------------------------------------------------------
@@ -226,7 +222,7 @@ export class TranscriptMessageTracker {
         }
       }
     } else if (entry.type === 'assistant') {
-      if (isRealAssistantEntry(entry)) {
+      if (isRealAssistantTurn(entry)) {
         this.assistantMessages++;
       }
     }

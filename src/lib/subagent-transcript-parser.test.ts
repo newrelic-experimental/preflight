@@ -1,4 +1,5 @@
-import { parseAssistantTurnLine, num } from './subagent-transcript-parser.js';
+import { parseAssistantTurnLine, isRealAssistantTurn, num } from './subagent-transcript-parser.js';
+import type { RawTranscriptEntry } from '../hooks/transcript-types.js';
 
 function makeLine(overrides: {
   type?: string;
@@ -207,6 +208,34 @@ describe('parseAssistantTurnLine', () => {
     });
     const b = parseAssistantTurnLine(line2).fields?.contentBlockTypesFingerprint;
     expect(a).not.toBe(b);
+  });
+});
+
+describe('isRealAssistantTurn', () => {
+  function makeEntry(overrides: Partial<RawTranscriptEntry> = {}): RawTranscriptEntry {
+    return {
+      type: 'assistant',
+      message: { model: 'claude-opus-4-7' },
+      ...overrides,
+    };
+  }
+
+  it('returns true for a real, non-sidechain assistant turn', () => {
+    expect(isRealAssistantTurn(makeEntry())).toBe(true);
+  });
+
+  it('returns false when isSidechain is true', () => {
+    expect(isRealAssistantTurn(makeEntry({ isSidechain: true }))).toBe(false);
+  });
+
+  it('returns false when message.model is <synthetic>', () => {
+    expect(isRealAssistantTurn(makeEntry({ message: { model: '<synthetic>' } }))).toBe(false);
+  });
+
+  it('returns false when both isSidechain and synthetic model apply', () => {
+    expect(
+      isRealAssistantTurn(makeEntry({ isSidechain: true, message: { model: '<synthetic>' } })),
+    ).toBe(false);
   });
 });
 
