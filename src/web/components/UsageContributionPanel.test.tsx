@@ -146,6 +146,105 @@ describe('UsageContributionPanel — Tools table', () => {
       'Read',
     ]);
   });
+
+  // Edit intentionally has no entry — a tool with calls but no attributed
+  // cost yet (a windowed fetch mixing attributed and unattributed sessions).
+  const SAMPLE_COST_BY_TOOL = {
+    Read: { totalCost: 4, callCount: 18, avgCost: 4 / 18, tokens: 9000 },
+    Bash: { totalCost: 1, callCount: 3, avgCost: 1 / 3, tokens: 500 },
+  };
+
+  it('shows Cost and Tokens columns, and "% of spend" as share, when toolCostAvailable is set', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={buildToolTableRows(SAMPLE_TOOL_SESSIONS, SAMPLE_COST_BY_TOOL)}
+        toolCostAvailable
+      />,
+    );
+    const panel = findPanel("What's contributing to your spend");
+    // Skills/Subagents/Plugins already have their own "% of spend" columns,
+    // so scope to the Tools table specifically.
+    const toolsTable = within(panel)
+      .getByText('Tools', { selector: 'h4' })
+      .closest('div') as HTMLElement;
+    expect(
+      within(toolsTable).getByRole('columnheader', { name: '% of spend' }),
+    ).toBeInTheDocument();
+    expect(within(toolsTable).queryByRole('columnheader', { name: 'Share of calls' })).toBeNull();
+
+    // Read=$4, Bash=$1, total attributed cost=$5 -> Read's share = 80%.
+    const readRow = within(toolsTable)
+      .getByRole('cell', { name: 'Read' })
+      .closest('tr') as HTMLElement;
+    expect(within(readRow).getByRole('cell', { name: '$4.00' })).toBeInTheDocument();
+    expect(within(readRow).getByRole('cell', { name: '9.0k' })).toBeInTheDocument();
+    expect(within(readRow).getByRole('cell', { name: '80%' })).toBeInTheDocument();
+
+    // Edit has calls but no cost entry — its cost/tokens cells show a dash,
+    // not a fabricated 0, and its share of the $5 attributed total is 0%.
+    const editRow = within(toolsTable)
+      .getByRole('cell', { name: 'Edit' })
+      .closest('tr') as HTMLElement;
+    expect(within(editRow).getAllByRole('cell', { name: '—' })).toHaveLength(2);
+    expect(within(editRow).getByRole('cell', { name: '0%' })).toBeInTheDocument();
+  });
+
+  it('renders the tool coverage caveat only when set', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+        toolCoverageCaveat="Cost/token breakdown only available for 3 of 4 sessions in this window — older sessions predate per-tool attribution."
+      />,
+    );
+    expect(
+      screen.getByText(/Cost\/token breakdown only available for 3 of 4 sessions/),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the tool coverage caveat when unset', () => {
+    render(
+      <UsageContributionPanel
+        data={SAMPLE_USAGE_INSIGHTS}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+      />,
+    );
+    expect(screen.queryByText(/predate per-tool attribution/)).toBeNull();
+  });
+});
+
+describe('buildToolTableRows with cost data', () => {
+  it('switches share to cost-share and leaves an unattributed tool undefined', () => {
+    const rows = buildToolTableRows(SAMPLE_TOOL_SESSIONS, {
+      Read: { totalCost: 4, tokens: 9000 },
+      Bash: { totalCost: 1 },
+    });
+    const read = rows.find((r) => r.tool === 'Read')!;
+    const edit = rows.find((r) => r.tool === 'Edit')!;
+    expect(read.costUsd).toBe(4);
+    expect(read.tokens).toBe(9000);
+    expect(read.sharePct).toBe(80);
+    expect(edit.costUsd).toBeUndefined();
+    expect(edit.tokens).toBeUndefined();
+    expect(edit.sharePct).toBe(0);
+  });
+
+  it('falls back to call-share when no tool in costByToolType has any cost', () => {
+    const rows = buildToolTableRows(SAMPLE_TOOL_SESSIONS, {});
+    const read = rows.find((r) => r.tool === 'Read')!;
+    // aggregateToolUsage total = 35, Read = 18 -> same call-based share as the no-cost-data case.
+    expect(read.sharePct).toBeCloseTo((18 / 35) * 100, 10);
+  });
 });
 
 describe('UsageContributionPanel', () => {

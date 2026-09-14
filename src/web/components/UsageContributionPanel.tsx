@@ -42,28 +42,55 @@ export interface ToolTableRow {
   readonly tool: string;
   readonly count: number;
   readonly sharePct: number;
+  /** Undefined when no windowed cost data was supplied at all, or when this specific tool has calls but isn't attributed yet. */
+  readonly costUsd?: number;
+  readonly tokens?: number;
 }
 
 /**
- * Builds `ShareTable` rows for the Tools breakdown: share of calls per
- * tool. No windowed per-tool cost figure exists in the session list
- * (`toolBreakdown` is call counts only), so share is of calls, not spend.
+ * Builds `ShareTable` rows for the Tools breakdown. With no `costByToolType`
+ * (Today's call — no windowed per-tool cost figure exists in the session
+ * list, `toolBreakdown` is call counts only), share is of calls. When
+ * `costByToolType` is supplied (History's windowed `/api/cost-per-tool`
+ * fetch) and carries any cost, share switches to share of cost — a tool with
+ * calls but no attributed cost yet keeps `costUsd`/`tokens` undefined rather
+ * than a fabricated 0.
  */
-export function buildToolTableRows(rows: readonly ToolBreakdownSession[]): ToolTableRow[] {
+export function buildToolTableRows(
+  rows: readonly ToolBreakdownSession[],
+  costByToolType?: Record<string, { readonly totalCost: number; readonly tokens?: number }>,
+): ToolTableRow[] {
   const tools = aggregateToolUsage(rows);
-  const total = tools.reduce((sum, t) => sum + t.count, 0);
-  return tools.map((t) => ({
-    tool: shortToolName(t.tool),
-    count: t.count,
-    sharePct: total > 0 ? (t.count / total) * 100 : 0,
-  }));
+  const totalCalls = tools.reduce((sum, t) => sum + t.count, 0);
+  const totalCost = costByToolType
+    ? tools.reduce((sum, t) => sum + (costByToolType[t.tool]?.totalCost ?? 0), 0)
+    : 0;
+  return tools.map((t) => {
+    const costEntry = costByToolType?.[t.tool];
+    const sharePct =
+      totalCost > 0
+        ? ((costEntry?.totalCost ?? 0) / totalCost) * 100
+        : totalCalls > 0
+          ? (t.count / totalCalls) * 100
+          : 0;
+    return {
+      tool: shortToolName(t.tool),
+      count: t.count,
+      sharePct,
+      costUsd: costEntry?.totalCost,
+      tokens: costEntry?.tokens,
+    };
+  });
 }
 
 // A row with real spend can carry a sharePct that's already floored to 0 by
 // the backend — nudge it above 0 so formatPct renders "<1%" rather than
-// "0%", which reads as no spend at all.
-function formatSharePct(row: UsageShareRow): string {
-  return formatPct(row.costUsd > 0 && row.sharePct === 0 ? 0.1 : row.sharePct);
+// "0%", which reads as no spend at all. costUsd is optional so this also
+// covers ToolTableRow, whose per-tool cost can be genuinely unattributed.
+function formatSharePct(row: { readonly costUsd?: number; readonly sharePct: number }): string {
+  return formatPct(
+    row.costUsd !== undefined && row.costUsd > 0 && row.sharePct === 0 ? 0.1 : row.sharePct,
+  );
 }
 
 export function UsageContributionPanel({
@@ -72,12 +99,18 @@ export function UsageContributionPanel({
   title,
   subtitle,
   toolRows,
+  toolCostAvailable = false,
+  toolCoverageCaveat = null,
 }: {
   data: UsageInsightsReport | undefined;
   isError: boolean;
   title: string;
   subtitle: string;
   toolRows: readonly ToolTableRow[];
+  /** Whether toolRows carries real cost/token data (History's windowed fetch) — adds Cost/Tokens columns and switches the share column to cost-based. Today's calls-only toolRows omits this. */
+  toolCostAvailable?: boolean;
+  /** Set only when the Tools table's cost/token coverage is partial — e.g. "N of M sessions in this window have attribution data". Rendered as its own caveat line, mirroring History's dailySpendTruncated caveat. */
+  toolCoverageCaveat?: string | null;
 }): JSX.Element {
   if (isError) {
     return (
@@ -259,7 +292,7 @@ export function UsageContributionPanel({
               title="Tools"
               rows={toolRows}
               rowKey={(row) => row.tool}
-              defaultSort={{ column: 2, direction: 'desc' }}
+              defaultSort={{ column: toolCostAvailable ? 4 : 2, direction: 'desc' }}
               columns={[
                 { header: 'Tool', align: 'left', cell: (row) => row.tool },
                 {
@@ -268,10 +301,28 @@ export function UsageContributionPanel({
                   cell: (row) => row.count,
                   sortValue: (row) => row.count,
                 },
+                ...(toolCostAvailable
+                  ? [
+                      {
+                        header: 'Cost',
+                        align: 'right' as const,
+                        cell: (row: ToolTableRow) => formatUsdOrDash(row.costUsd),
+                        sortValue: (row: ToolTableRow) => row.costUsd ?? 0,
+                      },
+                      {
+                        header: 'Tokens',
+                        align: 'right' as const,
+                        cell: (row: ToolTableRow) =>
+                          row.tokens !== undefined ? formatTokensCompact(row.tokens) : '—',
+                        sortValue: (row: ToolTableRow) => row.tokens ?? 0,
+                      },
+                    ]
+                  : []),
                 {
-                  header: 'Share of calls',
+                  header: toolCostAvailable ? '% of spend' : 'Share of calls',
                   align: 'right',
-                  cell: (row) => formatPct(row.sharePct),
+                  cell: (row) =>
+                    toolCostAvailable ? formatSharePct(row) : formatPct(row.sharePct),
                   sortValue: (row) => row.sharePct,
                 },
               ]}
@@ -285,6 +336,10 @@ export function UsageContributionPanel({
           Skill and tool shares are based on {Math.round(data.attributionRatePct)}% of spend with
           attribution.
         </p>
+      )}
+
+      {toolCoverageCaveat && (
+        <p className="text-[10px] text-ink-muted italic mt-3">{toolCoverageCaveat}</p>
       )}
     </Panel>
   );

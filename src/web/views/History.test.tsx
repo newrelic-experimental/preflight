@@ -308,6 +308,22 @@ const SAMPLE_USAGE_INSIGHTS = {
   attributionRatePct: 40,
 };
 
+// Read/Edit costs are attributed; Bash/Write (present in SAMPLE_SESSIONS'
+// toolBreakdown) intentionally have no entry — calls with no attributed
+// cost yet, per a mix of attributed/unattributed sessions in the window.
+const SAMPLE_COST_PER_TOOL = {
+  turns: [],
+  costByToolType: {
+    Read: { totalCost: 3.5, callCount: 36, avgCost: 3.5 / 36, tokens: 12000 },
+    Edit: { totalCost: 1.5, callCount: 12, avgCost: 0.125, tokens: 4000 },
+  },
+  costBySkill: {},
+  totalAttributedCost: 5,
+  attributionRate: 0.8,
+  attributedSessionCount: 3,
+  totalSessionCount: 4,
+};
+
 interface FetchOverrides {
   weekly?: unknown;
   outcome?: unknown;
@@ -319,6 +335,7 @@ interface FetchOverrides {
   sessions?: unknown;
   usageInsights?: unknown;
   todayAggregate?: unknown;
+  costPerTool?: unknown;
 }
 
 function jsonResponse(body: unknown): Response {
@@ -348,6 +365,9 @@ function renderHistory(overrides: FetchOverrides = {}) {
     }
     if (url.startsWith('/api/cost-per-outcome')) {
       return Promise.resolve(jsonResponse(overrides.outcome ?? SAMPLE_OUTCOME));
+    }
+    if (url.startsWith('/api/cost-per-tool')) {
+      return Promise.resolve(jsonResponse(overrides.costPerTool ?? null));
     }
     if (url.startsWith('/api/personal-coach')) {
       return Promise.resolve(jsonResponse(overrides.coach ?? SAMPLE_COACH_OK));
@@ -1586,5 +1606,75 @@ describe('CoachMetricsTable', () => {
     // "Efficiency" also labels a row in the Instruction file panel, so this
     // must scope to the Personal coach panel specifically.
     expect(await within(findPanel('Personal coach')).findByText('Efficiency')).toBeInTheDocument();
+  });
+});
+
+describe('History — Tools table cost/token columns', () => {
+  // Skills/Subagents/Plugins already have their own "% of spend" columns
+  // (SAMPLE_USAGE_INSIGHTS), so assertions about the Tools table's own
+  // header/columns scope to its own table, not the whole panel.
+  function findToolsTable(panel: HTMLElement): HTMLElement {
+    return within(panel).getByText('Tools', { selector: 'h4' }).closest('div') as HTMLElement;
+  }
+
+  it('fetches the windowed /api/cost-per-tool for the selected window and shows Cost/Tokens columns with a coverage caveat', async () => {
+    const { fetchedUrls } = renderHistory({ costPerTool: SAMPLE_COST_PER_TOOL });
+    await waitFor(() =>
+      expect(fetchedUrls.some((u) => u.startsWith('/api/cost-per-tool?days=30'))).toBe(true),
+    );
+    const panel = findPanel("What's contributing to your spend");
+    await waitFor(() =>
+      expect(
+        within(findToolsTable(panel)).getByRole('columnheader', { name: '% of spend' }),
+      ).toBeInTheDocument(),
+    );
+    const toolsTable = findToolsTable(panel);
+
+    const readRow = within(toolsTable)
+      .getByRole('cell', { name: 'Read' })
+      .closest('tr') as HTMLElement;
+    expect(within(readRow).getByRole('cell', { name: '$3.50' })).toBeInTheDocument();
+    expect(within(readRow).getByRole('cell', { name: '12.0k' })).toBeInTheDocument();
+
+    // Bash has calls (from SAMPLE_SESSIONS' toolBreakdown) but no entry in
+    // SAMPLE_COST_PER_TOOL.costByToolType — not yet attributed, so its cost
+    // and tokens cells must both show a dash instead of a fabricated 0.
+    const bashRow = within(toolsTable)
+      .getByRole('cell', { name: 'Bash' })
+      .closest('tr') as HTMLElement;
+    expect(within(bashRow).getAllByRole('cell', { name: '—' })).toHaveLength(2);
+
+    expect(
+      screen.getByText(
+        'Cost/token breakdown only available for 3 of 4 sessions in this window — older sessions predate per-tool attribution.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the coverage caveat when every session in the window has attribution data', async () => {
+    renderHistory({
+      costPerTool: { ...SAMPLE_COST_PER_TOOL, attributedSessionCount: 4, totalSessionCount: 4 },
+    });
+    const panel = findPanel("What's contributing to your spend");
+    await waitFor(() =>
+      expect(
+        within(findToolsTable(panel)).getByRole('columnheader', { name: '% of spend' }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/predate per-tool attribution/)).toBeNull();
+  });
+
+  it('falls back to calls-based "Share of calls" when /api/cost-per-tool has no data', async () => {
+    renderHistory();
+    const panel = findPanel("What's contributing to your spend");
+    await waitFor(() =>
+      expect(
+        within(findToolsTable(panel)).getByRole('columnheader', { name: 'Share of calls' }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(findToolsTable(panel)).queryByRole('columnheader', { name: '% of spend' }),
+    ).toBeNull();
+    expect(screen.queryByText(/predate per-tool attribution/)).toBeNull();
   });
 });

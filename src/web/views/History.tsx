@@ -28,6 +28,7 @@ import {
   fetchWeekly,
   fetchSessionsList,
   fetchCostPerOutcome,
+  fetchCostPerTool,
   fetchPersonalCoach,
   fetchRecommendations,
   fetchClaudeMdImpact,
@@ -40,6 +41,7 @@ import {
   qk,
   type WeeklyRow,
   type CostPerOutcomeResponse,
+  type TurnCostsResponse,
   type PersonalCoachResult,
   type PersonalWeekMetrics,
   type ConcurrencyHistoryResponse,
@@ -270,6 +272,11 @@ export function History(): JSX.Element {
     queryFn: () => fetchCostPerOutcome(windowNum),
   });
 
+  const costPerTool = useQuery<TurnCostsResponse>({
+    queryKey: qk.costPerTool(windowNum),
+    queryFn: () => fetchCostPerTool(undefined, windowNum),
+  });
+
   const coach = useQuery<PersonalCoachResult>({
     queryKey: qk.personalCoach,
     queryFn: fetchPersonalCoach,
@@ -369,8 +376,20 @@ export function History(): JSX.Element {
     costPerOutcome.data?.totalCost ?? outcomeRows.reduce((sum, r) => sum + r.totalCost, 0);
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(windowSessions);
-  const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + m.totalCost, 0);
-  const toolTableRows = buildToolTableRows(windowSessions);
+  const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + (m.avgCost ?? 0) * m.sessions, 0);
+  const toolTableRows = buildToolTableRows(windowSessions, costPerTool.data?.costByToolType);
+  const toolCostAvailable = costPerTool.data?.costByToolType !== undefined;
+  // attribution.buckets.tool is a recently-added persisted field — most
+  // historical sessions in the window predate it and simply lack it, so the
+  // Tools table's cost/token columns go sparse the further back the window
+  // reaches. Only caveat when that's actually true for this window's data.
+  const { attributedSessionCount, totalSessionCount } = costPerTool.data ?? {};
+  const toolCoverageCaveat =
+    attributedSessionCount !== undefined &&
+    totalSessionCount !== undefined &&
+    attributedSessionCount < totalSessionCount
+      ? `Cost/token breakdown only available for ${attributedSessionCount} of ${totalSessionCount} sessions in this window — older sessions predate per-tool attribution.`
+      : null;
   const kpis = computeHistoryKpis(windowSessions);
 
   return (
@@ -465,6 +484,8 @@ export function History(): JSX.Element {
           title="What's contributing to your spend"
           subtitle={windowSubtitle(windowNum)}
           toolRows={toolTableRows}
+          toolCostAvailable={toolCostAvailable}
+          toolCoverageCaveat={toolCoverageCaveat}
         />
       </div>
 
@@ -1280,11 +1301,6 @@ export interface ModelPerformanceRow {
   readonly avgEfficiency: number | null;
   readonly avgSuccessRate: number | null;
   readonly avgCost: number | null;
-  // Sum of the costs actually reported for this model, and how many of its
-  // sessions reported one. Live/stub rows carry no cost, so a share computed
-  // from avgCost * sessions would extrapolate onto them; use these instead.
-  readonly totalCost: number;
-  readonly costedSessions: number;
   // Blended rate across sessions for this model that report both cost and
   // token counts — (totalCost / totalTokens) * 1e6, input+output tokens only
   // (matching ModelUsageTracker's server-side per-model figure, which is a
@@ -1297,8 +1313,8 @@ export interface ModelPerformanceRow {
 }
 
 function modelSharePct(row: ModelPerformanceRow, totalCost: number): number | null {
-  if (totalCost <= 0 || row.costedSessions === 0) return null;
-  return (row.totalCost / totalCost) * 100;
+  if (totalCost <= 0 || row.avgCost == null) return null;
+  return ((row.avgCost * row.sessions) / totalCost) * 100;
 }
 
 const FLAGGED_SUCCESS_THRESHOLD = 0.85;
@@ -1385,8 +1401,6 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       avgEfficiency: e.effCount > 0 ? e.effSum / e.effCount : null,
       avgSuccessRate: e.successCount > 0 ? e.successSum / e.successCount : null,
       avgCost: e.costCount > 0 ? e.costSum / e.costCount : null,
-      totalCost: e.costSum,
-      costedSessions: e.costCount,
       costPerMillionTokens:
         e.blendedTokensSum > 0 ? (e.blendedCostSum / e.blendedTokensSum) * 1_000_000 : null,
       flagged:
