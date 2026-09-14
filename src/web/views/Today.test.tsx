@@ -1570,6 +1570,51 @@ describe('Today view — Needs attention panel', () => {
     const titles = screen.getAllByText(/(?:Old|Middle|New) alert/);
     expect(titles.map((el) => el.textContent)).toEqual(['New alert', 'Middle alert', 'Old alert']);
   });
+
+  // Regression test: persistedAntiPatterns (the panel's third-priority
+  // fallback, used when both the live SSE list and /api/anti-patterns are
+  // empty) must scope to today the same way every sibling KPI does via
+  // todayOverlapRatio. Without the filter, a days-old session with
+  // antiPatterns still surfaces here even though it has zero overlap with
+  // today.
+  it("excludes a days-old session's anti-patterns while still showing today's", async () => {
+    const todayStart = localStartOfDay();
+    const oldSession = {
+      sessionId: 'old-session',
+      startTime: todayStart - 5 * 24 * 60 * 60 * 1000,
+      durationMs: 30 * 60 * 1000,
+      toolCallCount: 20,
+      estimatedCostUsd: 1,
+      antiPatterns: [{ type: 'blind_editing', target: 'auth.ts', count: 7 }],
+    };
+    const todaySession = {
+      sessionId: 'today-session',
+      startTime: todayStart + 60 * 60 * 1000,
+      durationMs: 10 * 60 * 1000,
+      toolCallCount: 5,
+      estimatedCostUsd: 0.5,
+      antiPatterns: [{ type: 'stuck_loop', target: 'npm test', count: 3 }],
+    };
+
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(JSON.stringify([oldSession, todaySession]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText('Stuck loop ×3')).toBeInTheDocument();
+    expect(screen.queryByText(/Blind editing/)).toBeNull();
+  });
 });
 
 describe('Today view — Compute Waste panel', () => {

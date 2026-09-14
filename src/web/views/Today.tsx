@@ -285,9 +285,9 @@ export function Today(): JSX.Element {
   // still has it.
   const persistedAntiPatterns = useMemo(
     () =>
-      (todaySessions ?? []).flatMap((s) =>
-        (s.antiPatterns ?? []).map((a) => ({ ...a, sessionId: s.sessionId })),
-      ),
+      (todaySessions ?? [])
+        .filter((s) => todayOverlapRatio(s) > 0)
+        .flatMap((s) => (s.antiPatterns ?? []).map((a) => ({ ...a, sessionId: s.sessionId }))),
     [todaySessions],
   );
 
