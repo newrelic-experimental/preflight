@@ -344,6 +344,13 @@ export interface ReplayTimelineEntry {
   readonly isBuildCommand?: boolean;
   readonly isLintCommand?: boolean;
   readonly errorType?: string;
+  /**
+   * Which subagent made this tool call — same signal as `ToolCallRecord.agentId`,
+   * threaded through so Replay UI sequence detectors can partition by agent
+   * (see `analyzeReplayTimeline` in `dashboard/routes/replay-analyzer.ts`).
+   * Absent for tool calls made by the parent/orchestrator session.
+   */
+  readonly agentId?: string;
 }
 
 export interface AuditEntry {

@@ -148,6 +148,10 @@ describe('TranscriptMessageTracker', () => {
     ["Incorrect, that's not what I asked for."],
     ["Actually, that's not right — try again."],
     ['Undo that.'],
+    ["Don't do that."],
+    ["Don't do that again."],
+    ['Undo it now.'],
+    ['Revert that already.'],
     ["That approach won't work because there's a race condition."],
     ['You missed the null case.'],
     ['This is the third time — read the file first.'],
@@ -166,6 +170,10 @@ describe('TranscriptMessageTracker', () => {
     ['Stop the dev server and restart it'],
     ['no rush, whenever you get to it'],
     ['Undo the last commit in git history'],
+    ["Don't push directly to that branch"],
+    ['Revert that first commit'],
+    ['No, thanks'],
+    ["No, that's fine"],
   ])('does not count %j as a correction', (text) => {
     writeLines([userLine(text)]);
     const tracker = new TranscriptMessageTracker();
