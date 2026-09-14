@@ -170,6 +170,122 @@ describe('analyzeReplayTimeline', () => {
     });
   });
 
+  describe('agent partitioning', () => {
+    it('does not flag stuck_loop when 3 different subagents each run the same command once', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-b' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-c' }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      expect(result.segments.filter((s) => s.type === 'stuck_loop')).toHaveLength(0);
+    });
+
+    it('still flags stuck_loop when one subagent repeats a command 3+ times', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      const stuck = result.segments.filter((s) => s.type === 'stuck_loop');
+      expect(stuck).toHaveLength(1);
+      expect(stuck[0]!.iterations).toBe(3);
+    });
+
+    it('stamps agentScoped true with agentId undefined for a parent-session-only segment', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Bash', command: 'npm test' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test' }),
+        makeEntry({ toolName: 'Bash', command: 'npm test' }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      const stuck = result.segments.filter((s) => s.type === 'stuck_loop');
+      expect(stuck).toHaveLength(1);
+      expect(stuck[0]!.agentScoped).toBe(true);
+      expect(stuck[0]!.agentId).toBeUndefined();
+    });
+
+    it('does not flag blind_editing when 4 different subagents each edit the same file once', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Edit', filePath: '/src/x.ts', agentId: 'agent-a' }),
+        makeEntry({ toolName: 'Edit', filePath: '/src/x.ts', agentId: 'agent-b' }),
+        makeEntry({ toolName: 'Edit', filePath: '/src/x.ts', agentId: 'agent-c' }),
+        makeEntry({ toolName: 'Edit', filePath: '/src/x.ts', agentId: 'agent-d' }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      expect(result.segments.filter((s) => s.type === 'blind_editing')).toHaveLength(0);
+    });
+
+    it('does not flag re_reading when 4 different subagents each read the same file once', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Read', filePath: '/src/big.ts', agentId: 'agent-a' }),
+        makeEntry({ toolName: 'Read', filePath: '/src/big.ts', agentId: 'agent-b' }),
+        makeEntry({ toolName: 'Read', filePath: '/src/big.ts', agentId: 'agent-c' }),
+        makeEntry({ toolName: 'Read', filePath: '/src/big.ts', agentId: 'agent-d' }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      expect(result.segments.filter((s) => s.type === 're_reading')).toHaveLength(0);
+    });
+
+    it('maps a per-agent segment back to the correct original indices when another agent interleaves', () => {
+      // agent-a: stuck loop at original indices 0, 2, 3 (idx 1 belongs to agent-b)
+      const timeline = [
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }), // 0
+        makeEntry({ toolName: 'Read', filePath: '/other.ts', agentId: 'agent-b' }), // 1
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }), // 2
+        makeEntry({ toolName: 'Bash', command: 'npm test', agentId: 'agent-a' }), // 3
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      const stuck = result.segments.filter((s) => s.type === 'stuck_loop');
+      expect(stuck).toHaveLength(1);
+      expect(stuck[0]!.iterations).toBe(3);
+      expect(stuck[0]!.startIndex).toBe(0);
+      expect(stuck[0]!.endIndex).toBe(3);
+      // agentScoped + agentId let the renderer skip non-owning rows within
+      // this range (e.g. agent-b's entry at index 1) instead of painting
+      // every index in [startIndex, endIndex] as part of the segment.
+      expect(stuck[0]!.agentScoped).toBe(true);
+      expect(stuck[0]!.agentId).toBe('agent-a');
+    });
+
+    it('leaves thrashing unpartitioned across agents (matches AntiPatternDetector precedent)', () => {
+      const timeline = [
+        makeEntry({ toolName: 'Edit', filePath: '/src/bug.ts', agentId: 'agent-a' }),
+        makeEntry({
+          toolName: 'Bash',
+          command: 'npm test',
+          isTestCommand: true,
+          success: false,
+          agentId: 'agent-a',
+        }),
+        makeEntry({ toolName: 'Edit', filePath: '/src/bug.ts', agentId: 'agent-b' }),
+        makeEntry({
+          toolName: 'Bash',
+          command: 'npm test',
+          isTestCommand: true,
+          success: false,
+          agentId: 'agent-b',
+        }),
+        makeEntry({ toolName: 'Edit', filePath: '/src/bug.ts', agentId: 'agent-c' }),
+        makeEntry({
+          toolName: 'Bash',
+          command: 'npm test',
+          isTestCommand: true,
+          success: false,
+          agentId: 'agent-c',
+        }),
+      ];
+      const result = analyzeReplayTimeline(timeline);
+      const thrash = result.segments.filter((s) => s.type === 'thrashing');
+      expect(thrash).toHaveLength(1);
+      expect(thrash[0]!.iterations).toBe(3);
+      // Not agent-scoped — GanttTimeline must still highlight every row in
+      // range for this type, regardless of which agent made each call.
+      expect(thrash[0]!.agentScoped).toBeFalsy();
+    });
+  });
+
   describe('worstSegment', () => {
     it('selects stuck_loop with highest weighted score', () => {
       const timeline: ReplayTimelineEntry[] = [];

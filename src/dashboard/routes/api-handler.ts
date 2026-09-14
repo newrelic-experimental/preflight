@@ -983,6 +983,7 @@ function toolCallToTimelineEntry(tc: ToolCallRecord): ReplayTimelineEntry {
     isBuildCommand: (tc.isBuildCommand as boolean | undefined) || undefined,
     isLintCommand: (tc.isLintCommand as boolean | undefined) || undefined,
     errorType: tc.errorType || undefined,
+    agentId: tc.agentId || undefined,
   };
 }
 

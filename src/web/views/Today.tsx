@@ -1276,6 +1276,7 @@ interface ReplayTimelineEntry {
   readonly success: boolean;
   readonly filePath?: string;
   readonly command?: string;
+  readonly agentId?: string;
 }
 
 interface ReplaySegment {
@@ -1283,6 +1284,8 @@ interface ReplaySegment {
   readonly startIndex: number;
   readonly endIndex: number;
   readonly severity: 'warning' | 'critical';
+  readonly agentId?: string;
+  readonly agentScoped?: boolean;
 }
 
 interface ReplayData {
