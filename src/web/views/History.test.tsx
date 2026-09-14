@@ -323,6 +323,7 @@ interface FetchOverrides {
   collabProfile?: unknown;
   sessions?: unknown;
   usageInsights?: unknown;
+  todayAggregate?: unknown;
 }
 
 function jsonResponse(body: unknown): Response {
@@ -367,6 +368,20 @@ function renderHistory(overrides: FetchOverrides = {}) {
     }
     if (url.startsWith('/api/collaboration-profile')) {
       return Promise.resolve(jsonResponse(overrides.collabProfile ?? SAMPLE_COLLAB_PROFILE));
+    }
+    if (url.startsWith('/api/sessions/today/aggregate')) {
+      return Promise.resolve(
+        jsonResponse(
+          overrides.todayAggregate ?? {
+            toolCallCount: 0,
+            totalCostUsd: 0,
+            antiPatternCount: 0,
+            avgDurationMs: 0,
+            sessionCount: 0,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 1000, points: [] },
+          },
+        ),
+      );
     }
     if (url.startsWith('/api/sessions')) {
       return Promise.resolve(jsonResponse(overrides.sessions ?? SAMPLE_SESSIONS));
@@ -456,6 +471,63 @@ describe('History view', () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
     expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
+  });
+
+  it('renders forecast caption with this week and this month when todayAggregate provides forecastEndOfDayUsd', async () => {
+    const sessions = [
+      {
+        sessionId: 's1',
+        startTime: daysAgo(3, 9),
+        estimatedCostUsd: 1.2,
+        model: 'claude-opus-4-6',
+        toolBreakdown: { Read: 1 },
+      },
+      {
+        sessionId: 's2',
+        startTime: daysAgo(1, 10),
+        estimatedCostUsd: 2.5,
+        model: 'claude-opus-4-6',
+        toolBreakdown: { Read: 1 },
+      },
+    ];
+    const todayAggregate = {
+      toolCallCount: 5,
+      totalCostUsd: 2.0,
+      antiPatternCount: 0,
+      avgDurationMs: 1000,
+      sessionCount: 1,
+      sparkline: { startTimestamp: Date.now(), bucketSizeMs: 1000, points: [2, 3, 1, 5] },
+      forecastEndOfDayUsd: 3.5,
+    };
+    renderHistory({ sessions, todayAggregate });
+    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/On pace for/i)).toBeInTheDocument());
+    expect(screen.getByText(/this week/i)).toBeInTheDocument();
+    expect(screen.getByText(/this month/i)).toBeInTheDocument();
+  });
+
+  it('does not render forecast caption when todayAggregate does not provide forecastEndOfDayUsd', async () => {
+    const sessions = [
+      {
+        sessionId: 's1',
+        startTime: daysAgo(3, 9),
+        estimatedCostUsd: 1.2,
+        model: 'claude-opus-4-6',
+        toolBreakdown: { Read: 1 },
+      },
+    ];
+    const todayAggregate = {
+      toolCallCount: 0,
+      totalCostUsd: 0,
+      antiPatternCount: 0,
+      avgDurationMs: 0,
+      sessionCount: 0,
+      sparkline: { startTimestamp: Date.now(), bucketSizeMs: 1000, points: [] },
+      forecastEndOfDayUsd: null,
+    };
+    renderHistory({ sessions, todayAggregate });
+    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
+    expect(screen.queryByText(/On pace for/)).not.toBeInTheDocument();
   });
 
   it('uses the real 12-week window in the activity heatmap aria-label', async () => {

@@ -37,6 +37,7 @@ import {
   fetchConcurrencyHistory,
   fetchInstructionDrift,
   fetchUsageInsights,
+  fetchTodayAggregate,
   qk,
   type WeeklyRow,
   type CostPerOutcomeResponse,
@@ -53,6 +54,7 @@ import {
   type UsageInsightsReport,
   type UsageShareRow,
   type LoopRow,
+  type TodayAggregateResponse,
 } from '../api/client';
 import {
   formatAxisDate,
@@ -64,6 +66,7 @@ import {
   formatUsdOrDash,
   shortToolName,
 } from '../lib/format';
+import { buildWeekForecast, buildMonthForecast } from '../lib/forecast.js';
 
 interface SessionRow {
   readonly sessionId: string;
@@ -316,6 +319,12 @@ export function History(): JSX.Element {
     queryFn: () => fetchUsageInsights(windowNum),
   });
 
+  const todayAggregate = useQuery<TodayAggregateResponse>({
+    queryKey: qk.sessionsTodayAggregate,
+    queryFn: fetchTodayAggregate,
+    refetchInterval: 10_000,
+  });
+
   const hasLoadError =
     weekly.isError || sessions.isError || costPerOutcome.isError || concurrencyHistory.isError;
 
@@ -339,6 +348,28 @@ export function History(): JSX.Element {
   const dailySpendTruncated =
     rawSessions.length >= 200 && isDailySpendSampleTruncated(rawSessions, windowNum);
   const sampleSpanForWindow = dailySpendTruncated ? sampleSpanDays(rawSessions) : null;
+
+  const forecastEodUsd = todayAggregate.data?.forecastEndOfDayUsd ?? null;
+  const todayTotalUsd = todayAggregate.data?.totalCostUsd ?? 0;
+  const normalizedSessions = rawSessions.map((s) => ({
+    startTime: typeof s.startTime === 'string' ? new Date(s.startTime).getTime() : s.startTime,
+    estimatedCostUsd: s.estimatedCostUsd,
+  }));
+  const weekForecast =
+    forecastEodUsd != null
+      ? buildWeekForecast(normalizedSessions, forecastEodUsd, todayTotalUsd, Date.now())
+      : null;
+  const monthForecast =
+    forecastEodUsd != null
+      ? buildMonthForecast(normalizedSessions, forecastEodUsd, todayTotalUsd, Date.now())
+      : null;
+  const forecastCaption =
+    [
+      weekForecast != null ? `~${formatUsd(weekForecast)} this week` : null,
+      monthForecast != null ? `~${formatUsd(monthForecast)} this month` : null,
+    ]
+      .filter((s): s is string => s != null)
+      .join(' · ') || null;
   const outcomeRows = buildOutcomeData(costPerOutcome.data);
   const outcomeTotalCost =
     costPerOutcome.data?.totalCost ?? outcomeRows.reduce((sum, r) => sum + r.totalCost, 0);
@@ -422,6 +453,9 @@ export function History(): JSX.Element {
             tooltipLabel={(d) => formatAxisDate(d.key)}
           />
         </div>
+        {forecastCaption && (
+          <p className="mt-1.5 text-[10px] text-ink-muted">On pace for {forecastCaption}</p>
+        )}
         {dailySpendTruncated && (
           <div className="text-[10px] text-ink-muted italic mt-1">
             Sample doesn&apos;t reach back {windowNum} days — early days in this chart may
