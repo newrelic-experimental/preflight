@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `ToolCallRecord.agentId`/`agentType` from the hook payload never populate in practice, despite Claude Code's docs saying they should — this silently defeated per-agent anti-pattern grouping and the subagent cost-by-type breakdown. Replaced with a `toolUseId` join against subagent transcripts and a correlation on the parent's own Agent-tool-call record. (#656)
+- `ToolCallRecord.agentId`/`agentType` from the hook payload never populate in practice, despite Claude Code's docs saying they should — this silently defeated per-agent anti-pattern grouping and the subagent cost-by-type breakdown. Replaced with a `toolUseId` join against subagent transcripts and a correlation on the parent's own Agent-tool-call record.
 
 ## [1.51.0] - 2026-09-13
 
