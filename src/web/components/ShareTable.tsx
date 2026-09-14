@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { JSX, ReactNode } from 'react';
+import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 
 export interface ShareTableColumn<Row> {
   readonly header: string;
@@ -26,6 +27,21 @@ export interface ShareTableProps<Row> {
   readonly hideTitle?: boolean;
   /** Distinct rows before the caller capped `rows`; when larger, the table says so. */
   readonly totalCount?: number;
+}
+
+interface SortIconProps {
+  readonly direction: 'asc' | 'desc' | null;
+}
+
+function SortIcon({ direction }: SortIconProps): JSX.Element {
+  if (direction === null) {
+    return <ArrowUpDown className="w-3 h-3 opacity-30" aria-hidden="true" />;
+  }
+  return direction === 'asc' ? (
+    <ArrowUp className="w-3 h-3 text-accent-amber" aria-hidden="true" />
+  ) : (
+    <ArrowDown className="w-3 h-3 text-accent-amber" aria-hidden="true" />
+  );
 }
 
 function compareSortValues(a: number | string, b: number | string): number {
@@ -103,9 +119,10 @@ export function ShareTable<Row>({
                     <button
                       type="button"
                       onClick={() => handleSort(columnIndex)}
-                      className="hover:text-ink-subtle"
+                      className="inline-flex items-center gap-1 hover:text-ink-subtle"
                     >
                       {col.header}
+                      <SortIcon direction={activeDirection} />
                     </button>
                   </th>
                 );
