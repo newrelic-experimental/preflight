@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.52.4] - 2026-09-15
+## [1.54.1] - 2026-09-15
 
 ### Fixed
 
@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The efficiency score's first-attempt-quality component was a hard cliff that could only ever produce exactly 1.0 or 0.0, and only reacted to thrashing. It's now a gradient based on the worst severity across all five detected anti-pattern types, not just thrashing.
 - The collaboration profile's "Delegator" classification no longer fires for a chatty, low-detail-looking session with no actual subagent spawns — it now requires real delegation (average agent spawns per task) in addition to high autonomy.
 - CLAUDE.md A/B comparison no longer labels a small or statistically incomparable effect size as "significant" — effect-size labels (small/medium/large/negligible, per Cohen's own thresholds) are now reported separately from sample-size adequacy, and comparisons below a minimum sample count per group are labeled as having insufficient data rather than being scored at all.
+
+## [1.52.3] - 2026-09-15
+
+### Fixed
+
+- `TurnCostAttributor` dropped almost every turn's cost on models with long thinking times: a token event closing a burst of tool calls had to arrive within a fixed 5-second window, but the model's own response can take anywhere from milliseconds to minutes. Replaced the fixed window with an unbounded, order-based match — a token event now closes the oldest still-open tool-call burst regardless of how long it takes — backed by a small queue (instead of a single slot) so a new burst starting before the previous one's token event arrives no longer silently discards it. `nr_observe_get_cost_per_tool` now also reports `droppedTokenEvents` so a low `attributionRate` is explainable from the tool output.
 
 ## [1.52.2] - 2026-09-15
 

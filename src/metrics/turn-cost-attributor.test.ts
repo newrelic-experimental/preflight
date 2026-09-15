@@ -103,14 +103,18 @@ describe('TurnCostAttributor', () => {
       expect(metrics.turns[1].toolNames).toEqual(['Read']);
     });
 
-    it('ignores token events that arrive too late (>5s after turn end)', () => {
+    it('attributes a token event that arrives long after turn end (extended thinking)', () => {
       const attributor = new TurnCostAttributor();
 
       attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
-      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 7000 }));
+      // 90s later — well past the old fixed 5s window, well within what
+      // extended-thinking models routinely take between a tool result and
+      // their next response.
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 91_050 }));
 
       const metrics = attributor.getMetrics();
-      expect(metrics.turns).toHaveLength(0);
+      expect(metrics.turns).toHaveLength(1);
+      expect(metrics.turns[0].toolCalls).toEqual(['toolu_001']);
     });
 
     it('ignores token events when no pending turn exists', () => {
@@ -120,6 +124,89 @@ describe('TurnCostAttributor', () => {
 
       const metrics = attributor.getMetrics();
       expect(metrics.turns).toHaveLength(0);
+      expect(metrics.droppedTokenEvents).toBe(1);
+    });
+
+    it('ignores a token event that predates the pending turn it would close', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({ toolUseId: 'toolu_001', timestamp: 1000, durationMs: 500 }),
+      );
+      // Turn ends at 1500; an event timestamped before that can't be the
+      // response that followed it.
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1200 }));
+
+      const metrics = attributor.getMetrics();
+      expect(metrics.turns).toHaveLength(0);
+      expect(metrics.droppedTokenEvents).toBe(1);
+    });
+
+    it('queues a second burst of tool calls instead of dropping the first when its token event is still outstanding', () => {
+      const attributor = new TurnCostAttributor();
+
+      // Burst 1
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      // Burst 2 starts >2s later, before burst 1's token event has arrived —
+      // this used to silently overwrite and lose burst 1 entirely.
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_002', timestamp: 5000 }));
+
+      // Two token events arrive in order and close both bursts, oldest first.
+      const result1 = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 6000 }));
+      const result2 = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 6100 }));
+
+      expect(result1).not.toBeNull();
+      expect(result1!.calls.map((c) => c.toolUseId)).toEqual(['toolu_001']);
+      expect(result2).not.toBeNull();
+      expect(result2!.calls.map((c) => c.toolUseId)).toEqual(['toolu_002']);
+
+      const metrics = attributor.getMetrics();
+      expect(metrics.turns).toHaveLength(2);
+      expect(metrics.droppedTokenEvents).toBe(0);
+    });
+
+    it('evicts a pending turn that has sat unclosed far longer than any plausible thinking time', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
+      // 11 minutes later — beyond the self-heal threshold, meaning the real
+      // closing event for toolu_001 must have been lost, not just delayed.
+      attributor.recordToolCall(
+        makeRecord({ toolUseId: 'toolu_002', timestamp: 1000 + 11 * 60 * 1000 }),
+      );
+      const result = attributor.recordTokenEvent(
+        makeTokenEvent({ timestamp: 1000 + 11 * 60 * 1000 + 100 }),
+      );
+
+      // toolu_001's turn was evicted as stale; the event closes toolu_002's.
+      expect(result).not.toBeNull();
+      expect(result!.calls.map((c) => c.toolUseId)).toEqual(['toolu_002']);
+
+      const metrics = attributor.getMetrics();
+      expect(metrics.turns).toHaveLength(1);
+      expect(metrics.droppedTokenEvents).toBe(1);
+    });
+
+    it('evicts the oldest queued burst once more than MAX_PENDING_TURNS bursts are outstanding', () => {
+      const attributor = new TurnCostAttributor();
+
+      // 21 separate bursts (>2s apart, so each queues separately), no token
+      // events in between — this is the "token events stopped arriving
+      // entirely" safety valve, not the normal extended-thinking case.
+      for (let i = 0; i < 21; i++) {
+        attributor.recordToolCall(
+          makeRecord({ toolUseId: `toolu_${i}`, timestamp: 1000 + i * 3000 }),
+        );
+      }
+
+      const metrics = attributor.getMetrics();
+      expect(metrics.droppedTokenEvents).toBe(1);
+
+      // The oldest (toolu_0) was evicted; the next token event closes
+      // whatever is now the front of the queue (toolu_1).
+      const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1000 + 21 * 3000 }));
+      expect(result).not.toBeNull();
+      expect(result!.calls.map((c) => c.toolUseId)).toEqual(['toolu_1']);
     });
   });
 
@@ -132,6 +219,7 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.attributionRate).toBe(0);
+      expect(metrics.droppedTokenEvents).toBe(0);
     });
 
     it('tracks costByToolType across multiple turns', () => {
@@ -193,6 +281,8 @@ describe('TurnCostAttributor', () => {
       attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
       attributor.recordTokenEvent(makeTokenEvent({ timestamp: 1100 }));
 
+      attributor.recordTokenEvent(makeTokenEvent({ timestamp: 9000 })); // dropped, no pending turn
+
       attributor.reset();
 
       const metrics = attributor.getMetrics();
@@ -200,6 +290,7 @@ describe('TurnCostAttributor', () => {
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.totalAttributedCost).toBe(0);
       expect(metrics.attributionRate).toBe(0);
+      expect(metrics.droppedTokenEvents).toBe(0);
     });
   });
 
@@ -768,11 +859,11 @@ describe('TurnCostAttributor', () => {
       expect(result).toBeNull();
     });
 
-    it('returns null outside the 5s window', () => {
+    it('closes the turn even when the token event arrives well outside the old fixed window', () => {
       const attributor = new TurnCostAttributor();
       attributor.recordToolCall(makeRecord({ toolUseId: 'toolu_001', timestamp: 1000 }));
       const result = attributor.recordTokenEvent(makeTokenEvent({ timestamp: 7000 }));
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
     });
 
     it('returns ClosedTurn with id on successful attribution', () => {
