@@ -33,6 +33,7 @@ import {
   resolveFromJobDir,
   resolveSessionId,
   resolveSessionName,
+  watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
 import { SubagentWatcher } from './hooks/subagent-watcher.js';
@@ -3084,12 +3085,16 @@ async function main(): Promise<void> {
     const startPpidCorrectionWatch = (staleId: string): void => {
       armPendingConfirmation();
       ppidCorrectionAbort = new AbortController();
+      // Guards against both watches below firing: in practice only one ever
+      // can (see the win32 branch's own comment), but a shared flag makes
+      // that a documented invariant rather than an accident of timing.
+      let corrected = false;
       void watchPpidBreadcrumb({
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
       })
         .then(async (ppidId) => {
-          if (ppidCorrectionAbort?.signal.aborted) return;
+          if (ppidCorrectionAbort?.signal.aborted || corrected) return;
           if (ppidId === staleId) {
             // The cwd guess turned out to be correct — no correction needed,
             // so no reason to keep suppressing checkpoints for the rest of
@@ -3101,6 +3106,7 @@ async function main(): Promise<void> {
             clearPendingConfirmation();
             return;
           }
+          corrected = true;
           logger.info('Correcting cwd-sourced session id from PPID breadcrumb', {
             staleId,
             correctedId: ppidId,
@@ -3114,6 +3120,30 @@ async function main(): Promise<void> {
           }
           clearPendingConfirmation();
         });
+
+      // On native Windows the ppid breadcrumb above never matches (see #686
+      // and watchCwdBreadcrumbForCorrection's own doc comment), so the watch
+      // just started is a permanent no-op there. Also watch the cwd
+      // breadcrumb directly, sharing the same abort controller so shutdown
+      // cancels both.
+      if (process.platform === 'win32') {
+        void watchCwdBreadcrumbForCorrection({
+          staleId,
+          storagePath: config!.storagePath,
+          signal: ppidCorrectionAbort.signal,
+        })
+          .then(async (cwdId) => {
+            if (ppidCorrectionAbort?.signal.aborted || corrected) return;
+            corrected = true;
+            await adoptRealSessionId(cwdId, { isCorrection: true });
+            clearPendingConfirmation();
+          })
+          .catch((err) => {
+            if (!ppidCorrectionAbort?.signal.aborted) {
+              logger.warn('Windows cwd correction watch failed', { error: String(err) });
+            }
+          });
+      }
     };
 
     startWatchers(sessionTraceId);

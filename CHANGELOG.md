@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.5] - 2026-09-14
+
+### Fixed
+
+- Native Windows: a cwd-breadcrumb race could permanently bind the MCP to a short-lived, unrelated session id with no recovery path, since the PPID correction watch relies on a breadcrumb that's never written for the MCP's own `process.ppid` on that platform. The correction watch now also re-polls the cwd breadcrumb on Windows, adopting a differing session id only once its own buffer file shows real activity.
+
 ## [1.51.4] - 2026-09-14
 
 ### Fixed

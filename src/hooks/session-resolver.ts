@@ -499,6 +499,111 @@ export async function watchPpidBreadcrumb(
 }
 
 /**
+ * Whether `<storagePath>/buffer-<sessionId>.jsonl` exists and is non-empty —
+ * i.e. the hook collector has actually appended at least one event for this
+ * session. Mirrors `LocalStore`'s buffer-naming convention
+ * (`buffer-<sessionId>.jsonl`) without importing `LocalStore` itself (this
+ * module has no storage-layer dependency today); the file is only ever
+ * created by `LocalStore.appendEvent()`'s `appendFileSync`, so existence
+ * already implies non-empty content in practice — the size check is a cheap
+ * extra guard, not load-bearing.
+ */
+function hasActiveBuffer(storagePath: string, sessionId: string): boolean {
+  try {
+    return statSync(resolve(storagePath, `buffer-${sessionId}.jsonl`)).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Windows-only safety net for the race #686 reported: on native Windows the
+ * MCP's own `process.ppid` is an interposed `cmd.exe`, so `watchPpidBreadcrumb()`
+ * above is a permanent no-op there (see the module doc comment and
+ * process-ancestry.ts's win32 branch, which deliberately doesn't walk
+ * ancestors). If the initial resolution adopted a cwd-breadcrumb value that
+ * turns out to be a short-lived, unrelated prior process (the collector wrote
+ * the real session's id moments later, overwriting it), there was previously
+ * no recovery path at all — the buffer for the wrongly-adopted id never
+ * drains and every metric stays at zero for the whole session.
+ *
+ * Polls the cwd breadcrumb (same file `resolveFromCwd()` reads) on the same
+ * exponential-backoff schedule as `watchPpidBreadcrumb`. Resolves only when
+ * BOTH hold:
+ *   - the breadcrumb's current value differs from `staleId`, and
+ *   - that candidate's OWN buffer file is non-empty — i.e. hooks are
+ *     actively reporting for it (`hasActiveBuffer`).
+ * The second condition is the actual fix: it requires positive evidence the
+ * candidate is a real, live session rather than blindly trusting whatever the
+ * cwd file says next, which is exactly the collision-prone behavior the
+ * initial cwd fallback already accepts as a tradeoff (see resolveFromCwd's
+ * doc comment) — this only widens the SAME risk (an unrelated concurrent
+ * session in the same cwd could in principle satisfy both conditions) rather
+ * than introducing a new one, and only on the one platform where there is no
+ * more precise signal available at all.
+ *
+ * Runs until aborted; never resolves to `staleId` itself.
+ */
+export async function watchCwdBreadcrumbForCorrection(
+  options: {
+    readonly staleId: string;
+    readonly storagePath?: string;
+    readonly cwd?: string;
+    readonly signal?: AbortSignal;
+  } = { staleId: '' },
+): Promise<string> {
+  const { staleId } = options;
+  const cwd = options.cwd ?? process.cwd();
+  const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
+
+  let attempt = 0;
+
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    const onAbort = () => {
+      rejectPromise(new Error('cwd correction watch aborted'));
+    };
+    if (options.signal) {
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+    }
+
+    const tick = () => {
+      if (options.signal?.aborted) {
+        options.signal.removeEventListener('abort', onAbort);
+        return;
+      }
+      const candidate = resolveFromCwd(storagePath, cwd);
+      if (candidate && candidate !== staleId && hasActiveBuffer(storagePath, candidate)) {
+        logger.info(
+          'Correcting cwd-sourced session id from a newer, buffer-confirmed cwd breadcrumb',
+          {
+            staleId,
+            correctedId: candidate,
+          },
+        );
+        if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        resolvePromise(candidate);
+        return;
+      }
+      const delay = nextDelayMs(attempt++);
+      const handle = setTimeout(tick, delay);
+      handle.unref?.();
+    };
+
+    const delay = nextDelayMs(attempt++);
+    const handle = setTimeout(tick, delay);
+    handle.unref?.();
+  });
+}
+
+/**
  * Returns true for session IDs that are MCP-internal synthetic identifiers
  * (not real Claude Code session IDs). These should be hidden from user-facing
  * surfaces such as the dashboard session list and audit trail.
