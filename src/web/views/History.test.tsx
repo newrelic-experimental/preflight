@@ -760,8 +760,8 @@ describe('History — Tools and Cost per outcome tables', () => {
 
 describe('History — Model performance', () => {
   it('computes the Share column from the mocked sessions costs', async () => {
-    // aggregateModelPerformance(SAMPLE_SESSIONS): opus avgCost*sessions = 3.7,
-    // sonnet avgCost*sessions = 2.4, total = 6.1 -> opus share = round(3.7/6.1*100) = 61%.
+    // aggregateModelPerformance(SAMPLE_SESSIONS): opus totalCost = 3.7,
+    // sonnet totalCost = 2.4, total = 6.1 -> opus share = round(3.7/6.1*100) = 61%.
     renderHistory();
     await waitFor(() => expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument());
     const row = screen.getByText('claude-opus-4-6').closest('tr') as HTMLElement;
@@ -1315,6 +1315,19 @@ describe('History helpers with real API data shapes', () => {
 });
 
 describe('aggregateModelPerformance', () => {
+  it('sums only the costs sessions actually reported, so a live stub row does not inflate the total', () => {
+    const sessions = [
+      { sessionId: 's1', model: 'claude-opus-4-6', estimatedCostUsd: 2.0 },
+      { sessionId: 's2', model: 'claude-opus-4-6', estimatedCostUsd: 1.5 },
+      { sessionId: 'live', model: 'claude-opus-4-6' },
+    ];
+    const opus = aggregateModelPerformance(sessions)[0];
+    expect(opus.sessions).toBe(3);
+    expect(opus.costedSessions).toBe(2);
+    expect(opus.totalCost).toBeCloseTo(3.5);
+    expect(opus.avgCost).toBeCloseTo(1.75);
+  });
+
   it('groups sessions by model with computed averages', () => {
     const sessions = [
       {
