@@ -23,10 +23,7 @@ import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.j
 import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
 import type { CostForecast } from '../../metrics/cost-forecast.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
-import {
-  attributeSessionCosts,
-  type SessionLikeForCostOutcome,
-} from '../../metrics/cost-per-outcome.js';
+import { attributeSessionCosts } from '../../metrics/cost-per-outcome.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
 import type { GitActivityRecord } from '../../metrics/git-activity-recorder.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
@@ -58,7 +55,12 @@ import type {
   ToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { toToolSelectionSummary } from '../../metrics/tool-selection-scorer.js';
-import type { CostAttributionMetrics } from '../../metrics/turn-cost-attributor.js';
+import type {
+  CostAttributionMetrics,
+  SkillCostEntry,
+  ToolTypeCostEntry,
+} from '../../metrics/turn-cost-attributor.js';
+import { computeUsageInsights } from '../../metrics/usage-insights.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 import type {
   FullSessionSummary,
@@ -66,7 +68,12 @@ import type {
   SessionFileInfo,
 } from '../../storage/session-store.js';
 import { hasAttributableActivity, toPersistedAntiPatterns } from '../../storage/session-store.js';
-import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import type {
+  AttributionBucket,
+  HookEvent,
+  ReplayTimelineEntry,
+  ToolCallRecord,
+} from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
@@ -387,7 +394,7 @@ export interface ApiHandlerDeps {
     loadAllSessions?: (opts?: {
       since?: Date;
       developer?: string;
-    }) => readonly SessionLikeForCostOutcome[];
+    }) => readonly FullSessionSummary[];
   };
   readonly costTracker?: {
     getMetrics: () => {
@@ -628,6 +635,44 @@ function unavailable(res: ServerResponse, what: string): void {
     'content-length': String(Buffer.byteLength(payload)),
   });
   res.end(payload);
+}
+
+/** Folds one persisted attribution bucket into an existing (or absent) ToolTypeCostEntry — see GET /api/cost-per-tool. */
+function mergeToolTypeCostEntry(
+  existing: ToolTypeCostEntry | undefined,
+  bucket: AttributionBucket,
+): ToolTypeCostEntry {
+  const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
+  const callCount = (existing?.callCount ?? 0) + bucket.count;
+  return { totalCost, callCount, avgCost: callCount > 0 ? totalCost / callCount : 0 };
+}
+
+/**
+ * Folds one persisted attribution bucket into an existing (or absent)
+ * SkillCostEntry — see GET /api/cost-per-tool. A persisted bucket carries no
+ * input/output/cache-read split, so `inputTokens`/`outputTokens`/
+ * `cacheReadTokens` stay live-only; `tokens` (the authoritative total) gets
+ * the merged sum.
+ */
+function mergeSkillCostEntry(
+  existing: SkillCostEntry | undefined,
+  bucket: AttributionBucket,
+): SkillCostEntry {
+  const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
+  const callCount = (existing?.callCount ?? 0) + bucket.count;
+  // A persisted bucket only ever holds attributed cost, so every call it counts is attributed.
+  const attributedCallCount = (existing?.attributedCallCount ?? 0) + bucket.count;
+  return {
+    callCount,
+    attributedCallCount,
+    totalCost,
+    avgCost: attributedCallCount > 0 ? totalCost / attributedCallCount : 0,
+    inputTokens: existing?.inputTokens ?? 0,
+    outputTokens: existing?.outputTokens ?? 0,
+    cacheReadTokens: existing?.cacheReadTokens ?? 0,
+    totalDurationMs: (existing?.totalDurationMs ?? 0) + bucket.durationMs,
+    tokens: (existing?.tokens ?? 0) + bucket.tokens,
+  };
 }
 
 // Formats RetryDetector's pre-aggregated by-session breakdown (a --local
@@ -2094,10 +2139,75 @@ export function createApiHandler(
   routes.set('GET /api/cost-per-tool', (req, res) => {
     if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
     // Same reasoning as /api/turn-costs above — optional ?sessionId= scopes
-    // this process-global tracker's data to one session.
+    // this process-global tracker's data to one session; the merge below
+    // only applies to the unscoped (Today panel) call.
     const url = new URL(req.url ?? '/', 'http://localhost');
     const sessionId = url.searchParams.get('sessionId') ?? undefined;
-    jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
+    if (sessionId !== undefined) {
+      jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
+      return;
+    }
+
+    // Same own-live + persisted-today, excluding-own-already-persisted-
+    // session pattern as GET /api/model-usage above: this process's live
+    // breakdown is always included, and every OTHER today session's
+    // persisted tool/skill buckets are summed on top — different sessions,
+    // so sum, not the max-merge session-store.ts uses to reconcile two
+    // writers of the SAME session.
+    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const live = deps.turnCostAttributor.getMetrics();
+    const costByToolType: Record<string, ToolTypeCostEntry> = { ...live.costByToolType };
+    const costBySkill: Record<string, SkillCostEntry> = { ...live.costBySkill };
+
+    // live.attributionRate is tool-call-based (attributedToolCalls /
+    // totalToolCalls — see turn-cost-attributor.ts), which reads as "0% of
+    // session cost" once persisted sessions dominate this merged response.
+    // Recompute a cost-based rate instead: attributed cost (live +
+    // every merged session's tool buckets) over total cost (live session
+    // total + every merged session's estimated cost).
+    let mergedAttributedCost = 0;
+    let mergedEstimatedCost = 0;
+    for (const session of deps.sessionStore?.loadTodaySessions() ?? []) {
+      if (session.sessionId === ownSessionId || !session.attribution) continue;
+      mergedEstimatedCost += session.estimatedCostUsd ?? 0;
+      for (const [tool, bucket] of Object.entries(session.attribution.buckets.tool ?? {})) {
+        costByToolType[tool] = mergeToolTypeCostEntry(costByToolType[tool], bucket);
+        mergedAttributedCost += bucket.costUsd;
+      }
+      for (const [skill, bucket] of Object.entries(session.attribution.buckets.skill ?? {})) {
+        costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], bucket);
+      }
+    }
+
+    const totalAttributedCost = live.totalAttributedCost + mergedAttributedCost;
+    const totalCost =
+      (deps.costTracker?.getMetrics().sessionTotalCostUsd ?? 0) + mergedEstimatedCost;
+    const attributionRate = totalCost > 0 ? totalAttributedCost / totalCost : 0;
+
+    jsonOk(res, {
+      ...live,
+      costByToolType,
+      costBySkill,
+      totalAttributedCost,
+      attributionRate,
+    });
+  });
+
+  routes.set('GET /api/usage-insights', (req, res) => {
+    if (!deps.sessionStore?.loadAllSessions)
+      return unavailable(res, 'sessionStore.loadAllSessions');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const parsedDays = parseInt(url.searchParams.get('days') ?? '', 10);
+    const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
+    const nowMs = Date.now();
+    // Widen the fetch by one extra day past the precise window — same
+    // reasoning as GET /api/cost-per-outcome above: loadAllSessions() filters
+    // by the session file's date prefix (coarse, day granularity), not the
+    // session's real startTime, so a boundary-day session could otherwise be
+    // excluded before computeUsageInsights applies the exact cutoff itself.
+    const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
+    const sessions = deps.sessionStore.loadAllSessions({ since });
+    jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays }));
   });
 
   routes.set('GET /api/cost-per-outcome', (req, res) => {

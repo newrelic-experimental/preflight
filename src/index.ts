@@ -2327,6 +2327,7 @@ async function main(): Promise<void> {
         };
         const breakdown = costTracker.recordTokenUsage(usage, tokenEvent.model, {
           timestampMs: tokenEvent.timestamp,
+          ...(tokenEvent.responseMs !== undefined && { responseMs: tokenEvent.responseMs }),
         });
         modelUsageTracker.recordUsage(tokenEvent.model, usage, breakdown.totalUsd);
         localSessionAggregator.recordTokenUsage(tokenEvent.sessionId, {
@@ -2587,6 +2588,7 @@ async function main(): Promise<void> {
         const summary = buildSessionSummary({
           sessionTracker,
           costTracker,
+          turnCostAttributor,
           taskDetector,
           antiPatternDetector,
           efficiencyScorer,

@@ -1642,7 +1642,9 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
-      subagentCostByAgentType: {},
+      subagentByAgentType: {},
+      highContextCostUsd: 0,
+      apiDurationMs: null,
       costRateMultiplierApplied: 1,
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
@@ -1682,7 +1684,9 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
       subagentCostByDayUsd: {},
-      subagentCostByAgentType: {},
+      subagentByAgentType: {},
+      highContextCostUsd: 0,
+      apiDurationMs: null,
       costRateMultiplierApplied: 1,
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
@@ -2528,6 +2532,100 @@ describe('buildSessionSummary timeline', () => {
     expect(loaded2).not.toBeNull();
     expect(loaded2!['timeline']).toBeUndefined();
   });
+
+  it('carries skillName through for Skill entries and agentType through for Agent entries', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'skill-agent-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 30_000,
+        toolCallCount: 2,
+        toolCallCountByTool: { Skill: 1, Agent: 1 },
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const mockTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        totalTasksCompleted: 1,
+        currentTaskActive: false,
+        currentTaskToolCalls: 0,
+        averageTaskDurationMs: 30_000,
+        averageToolCallsPerTask: 2,
+        completedTasks: [
+          {
+            taskId: 't1',
+            startTime: 1700000000000,
+            endTime: 1700000030000,
+            durationMs: 30_000,
+            toolCallCount: 2,
+            toolCallsByType: { Skill: 1, Agent: 1 },
+            filesRead: [],
+            filesModified: [],
+            linesChanged: 0,
+            linesAdded: 0,
+            linesRemoved: 0,
+            bashCommandsRun: 0,
+            testsRun: 0,
+            testsPassed: 0,
+            buildRun: 0,
+            buildPassed: 0,
+            estimatedCostUsd: 0.02,
+            tokensUsed: 1000,
+            askedUserQuestions: 0,
+            subAgentsSpawned: 1,
+            toolCalls: [
+              {
+                id: 'tc1',
+                sessionId: 'skill-agent-session',
+                toolName: 'Skill',
+                toolUseId: 'tu1',
+                timestamp: 1700000001000,
+                durationMs: 30,
+                success: true,
+                skillName: 'unslop',
+              },
+              {
+                id: 'tc2',
+                sessionId: 'skill-agent-session',
+                toolName: 'Agent',
+                toolUseId: 'tu2',
+                timestamp: 1700000010000,
+                durationMs: 5000,
+                success: true,
+                agentType: 'general-purpose',
+              },
+            ],
+          },
+        ],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      developer: 'alice',
+    });
+
+    expect(summary.timeline).toHaveLength(2);
+    expect(summary.timeline![0]!.toolName).toBe('Skill');
+    expect(summary.timeline![0]!.skillName).toBe('unslop');
+    expect(summary.timeline![0]!.agentType).toBeUndefined();
+    expect(summary.timeline![1]!.toolName).toBe('Agent');
+    expect(summary.timeline![1]!.agentType).toBe('general-purpose');
+    expect(summary.timeline![1]!.skillName).toBeUndefined();
+  });
 });
 
 // deserializeSession — explicit field extraction
@@ -3093,6 +3191,212 @@ describe('saveSession cross-process merge', () => {
       correctness: 0.8,
       autonomy: 0.8,
       firstAttemptQuality: 0.8,
+    });
+  });
+});
+
+describe('attribution field', () => {
+  function makeTurnCostAttributor(metrics: {
+    costByToolType?: Record<string, { totalCost: number; callCount: number; avgCost: number }>;
+    costBySkill?: Record<
+      string,
+      {
+        callCount: number;
+        attributedCallCount: number;
+        totalCost: number;
+        avgCost: number;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        totalDurationMs: number;
+      }
+    >;
+  }) {
+    return {
+      getMetrics: () => ({
+        turns: [],
+        costByToolType: metrics.costByToolType ?? {},
+        costBySkill: metrics.costBySkill ?? {},
+        totalAttributedCost: 0,
+        attributionRate: 0,
+      }),
+    } as unknown as import('../metrics/turn-cost-attributor.js').TurnCostAttributor;
+  }
+
+  it('composes buckets.tool and buckets.skill from the turn cost attributor', () => {
+    const turnCostAttributor = makeTurnCostAttributor({
+      costByToolType: { Read: { totalCost: 0.02, callCount: 4, avgCost: 0.005 } },
+      costBySkill: {
+        unslop: {
+          callCount: 2,
+          attributedCallCount: 2,
+          totalCost: 0.03,
+          avgCost: 0.015,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 10,
+          totalDurationMs: 4000,
+        },
+      },
+    });
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      turnCostAttributor,
+      developer: 'alice',
+    });
+
+    expect(summary.attribution).toEqual({
+      buckets: {
+        tool: { Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 } },
+        skill: {
+          unslop: { costUsd: 0.03, tokens: 160, count: 2, durationMs: 4000 },
+        },
+      },
+      highContextCostUsd: 0,
+      apiDurationMs: null,
+    });
+  });
+
+  it('reads subagentByAgentType/highContextCostUsd/apiDurationMs from CostMetrics when present', () => {
+    const costTracker = {
+      getMetrics: () => ({
+        subagentByAgentType: {
+          'general-purpose': { costUsd: 0.5, tokens: 2000, count: 3, durationMs: 0 },
+        },
+        highContextCostUsd: 0.75,
+        apiDurationMs: 12_000,
+      }),
+    } as unknown as CostTracker;
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      costTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.attribution).toEqual({
+      buckets: {
+        subagent: {
+          'general-purpose': { costUsd: 0.5, tokens: 2000, count: 3, durationMs: 0 },
+        },
+      },
+      highContextCostUsd: 0.75,
+      apiDurationMs: 12_000,
+    });
+  });
+
+  it('drops facets with no entries instead of persisting an empty object', () => {
+    const turnCostAttributor = makeTurnCostAttributor({
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+    });
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      turnCostAttributor,
+      developer: 'alice',
+    });
+
+    expect(summary.attribution?.buckets.skill).toBeUndefined();
+    expect(summary.attribution?.buckets.subagent).toBeUndefined();
+    expect(summary.attribution?.buckets.tool).toBeDefined();
+  });
+
+  it('leaves attribution undefined when neither costTracker nor turnCostAttributor is supplied', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      developer: 'alice',
+    });
+
+    expect(summary.attribution).toBeUndefined();
+  });
+
+  it('round-trips attribution through JSON serialization', () => {
+    const original = makeSummary({
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 } },
+          skill: { unslop: { costUsd: 0.03, tokens: 160, count: 2, durationMs: 4000 } },
+        },
+        highContextCostUsd: 0.75,
+        apiDurationMs: 12_000,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution).toEqual(original.attribution);
+  });
+
+  it('parses to undefined for a legacy summary without the field', () => {
+    const legacy = makeSummary();
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(legacy)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution).toBeUndefined();
+  });
+
+  it('drops a malformed bucket (missing numeric field) rather than throwing', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      attribution: {
+        buckets: {
+          tool: {
+            Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 },
+            Bash: { costUsd: 0.01 }, // missing tokens/count/durationMs
+          },
+        },
+        highContextCostUsd: 0.1,
+        apiDurationMs: null,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution?.buckets.tool).toEqual({
+      Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 },
+    });
+  });
+
+  it('merge takes a field-wise max across matching bucket keys', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-attr-${Date.now()}`;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            tool: { Read: { costUsd: 0.02, tokens: 100, count: 4, durationMs: 500 } },
+          },
+          highContextCostUsd: 0.1,
+          apiDurationMs: 1000,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        toolCallCount: 20,
+        attribution: {
+          buckets: {
+            tool: { Read: { costUsd: 0.05, tokens: 40, count: 6, durationMs: 300 } },
+            skill: { unslop: { costUsd: 0.01, tokens: 20, count: 1, durationMs: 200 } },
+          },
+          highContextCostUsd: 0.05,
+          apiDurationMs: 3000,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.attribution).toEqual({
+      buckets: {
+        tool: { Read: { costUsd: 0.05, tokens: 100, count: 6, durationMs: 500 } },
+        skill: { unslop: { costUsd: 0.01, tokens: 20, count: 1, durationMs: 200 } },
+      },
+      highContextCostUsd: 0.1,
+      apiDurationMs: 3000,
     });
   });
 });

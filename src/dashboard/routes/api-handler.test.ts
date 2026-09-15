@@ -2250,6 +2250,212 @@ describe('api-handler GET /api/cost-per-outcome', () => {
   });
 });
 
+describe('api-handler GET /api/cost-per-tool', () => {
+  it('returns 503 when turnCostAttributor is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/cost-per-tool' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('scopes to one session via ?sessionId= without merging persisted data', async () => {
+    const fakeMetrics = {
+      turns: [],
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+      costBySkill: {},
+      totalAttributedCost: 0.01,
+      attributionRate: 1,
+    };
+    let receivedSessionId: string | undefined;
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: (sessionId?: string) => {
+          receivedSessionId = sessionId;
+          return fakeMetrics;
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?sessionId=sess-x' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(receivedSessionId).toBe('sess-x');
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+
+  it("merges another today session's persisted buckets into the live totals, excluding the process's own session id", async () => {
+    const liveMetrics = {
+      turns: [],
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+      costBySkill: {
+        unslop: {
+          callCount: 1,
+          attributedCallCount: 1,
+          totalCost: 0.02,
+          avgCost: 0.02,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          totalDurationMs: 200,
+          tokens: 150,
+        },
+      },
+      totalAttributedCost: 0.03,
+      attributionRate: 1,
+    };
+    const ownSession = {
+      sessionId: 'own-session',
+      attribution: {
+        buckets: { tool: { Read: { costUsd: 999, tokens: 0, count: 999, durationMs: 0 } } },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const otherSession = {
+      sessionId: 'other-session',
+      estimatedCostUsd: 0.4,
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.05, tokens: 0, count: 2, durationMs: 0 } },
+          skill: { unslop: { costUsd: 0.01, tokens: 40, count: 1, durationMs: 100 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const handler = createApiHandler({
+      sessionTracker: { getMetrics: () => ({ sessionId: 'own-session' }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['sessionTracker'],
+      turnCostAttributor: {
+        getMetrics: () => liveMetrics,
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [ownSession, otherSession],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.5 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // own-session's bucket (cost 999) must never be folded in — only
+    // other-session's.
+    expect(result.costByToolType.Read.callCount).toBe(3);
+    expect(result.costByToolType.Read.totalCost).toBeCloseTo(0.06, 10);
+    expect(result.costByToolType.Read.avgCost).toBeCloseTo(0.02, 10);
+    expect(result.costBySkill.unslop).toEqual({
+      callCount: 2,
+      attributedCallCount: 2,
+      totalCost: 0.03,
+      avgCost: 0.015,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      totalDurationMs: 300,
+      tokens: 190,
+    });
+    // Recomputed cost-based rate, not the live tracker's tool-call-based one
+    // (liveMetrics.attributionRate: 1): attributed = live 0.03 + other
+    // session's tool bucket 0.05 = 0.08; total = costTracker's session total
+    // 0.5 + other session's estimatedCostUsd 0.4 = 0.9.
+    expect(result.totalAttributedCost).toBeCloseTo(0.08, 10);
+    expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
+  });
+});
+
+describe('api-handler GET /api/usage-insights', () => {
+  it('returns 503 when sessionStore.loadAllSessions is missing', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('defaults to a 7-day window and returns computeUsageInsights output', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [
+          {
+            sessionId: 's1',
+            startTime: Date.now() - 86_400_000,
+            estimatedCostUsd: 2,
+            durationMs: 0,
+            subagentCostUsd: 0,
+            tokensInput: 0,
+            tokensOutput: 0,
+            tokensCacheRead: 0,
+            tokensCacheCreation: 0,
+            toolBreakdown: {},
+          },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.windowDays).toBe(7);
+    expect(result.totalCostUsd).toBe(2);
+    expect(result.sessionCount).toBe(1);
+  });
+
+  it('clamps the days parameter to [1,90]', async () => {
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?days=9999' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const result = JSON.parse(body());
+    expect(result.windowDays).toBe(90);
+    expect(receivedSince).toBeInstanceOf(Date);
+    const ageMs = Date.now() - (receivedSince as Date).getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
+  });
+
+  it('clamps a sub-1 or non-numeric days parameter up to 1', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?days=0' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).windowDays).toBe(1);
+  });
+});
+
 describe('api-handler GET /api/alerts/recent', () => {
   it('returns alertLog.readRecent(50) entries as JSON', async () => {
     const fakeEntries = [

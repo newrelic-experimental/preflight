@@ -467,9 +467,35 @@ describe('TurnCostAttributor', () => {
         outputTokens: 0,
         cacheReadTokens: 0,
         totalDurationMs: 500,
+        tokens: 0,
       });
       expect(metrics.costByToolType).toEqual({});
       expect(metrics.attributionRate).toBe(0);
+    });
+
+    it('tokens equals inputTokens + outputTokens + cacheReadTokens for a live entry', () => {
+      const attributor = new TurnCostAttributor();
+
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'design',
+          timestamp: 1000,
+          toolUseId: 'skill-1',
+        }),
+      );
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          inputTokens: 900,
+          outputTokens: 100,
+          cacheReadTokens: 50,
+        }),
+      );
+
+      const entry = attributor.getMetrics().costBySkill.design!;
+      expect(entry.tokens).toBe(entry.inputTokens + entry.outputTokens + entry.cacheReadTokens);
+      expect(entry.tokens).toBe(1050);
     });
 
     it('costByToolType.Skill equals the sum of costBySkill rows', () => {

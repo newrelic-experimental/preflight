@@ -91,6 +91,27 @@ interface ParsedParentTurn {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /**
+   * Gap (ms) between this line's timestamp and the previous raw transcript
+   * line's timestamp — an estimate of time spent waiting on the model API.
+   * Set only on the first line seen for `messageId`, and only when a
+   * previous line exists with a positive gap of at most 30 minutes; absent
+   * otherwise, including on every later line of the same message.
+   */
+  readonly responseMs?: number;
+}
+
+/** See `ParsedParentTurn.responseMs`'s doc comment. */
+const MAX_RESPONSE_GAP_MS = 30 * 60 * 1000;
+
+/** Timestamp of any transcript line, assistant or not; NaN when absent or unparseable. */
+function lineTimestampMs(line: string): number {
+  try {
+    const obj = JSON.parse(line) as { timestamp?: unknown };
+    return typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+  } catch {
+    return NaN;
+  }
 }
 
 interface CursorState {
@@ -138,6 +159,10 @@ export class ParentTranscriptWatcher {
 
   private readonly partialByPath = new Map<string, string>();
   private readonly decoderByPath = new Map<string, StringDecoder>();
+  /** Timestamp (ms) of the last parseable raw line seen for each file, any role — see `ParsedParentTurn.responseMs`. */
+  private readonly previousLineTimestampByPath = new Map<string, number>();
+  /** Message ids already seen for each file, so only the first line of a message computes `responseMs`. */
+  private readonly seenMessageIdsByPath = new Map<string, Set<string>>();
 
   private filesWatched = 0;
   private linesRead = 0;
@@ -374,7 +399,11 @@ export class ParentTranscriptWatcher {
     const startCursor: CursorState = switchedFile
       ? { bytePos: 0, partialLine: '', path }
       : persisted;
-    if (switchedFile) this.partialByPath.delete(path);
+    if (switchedFile) {
+      this.partialByPath.delete(path);
+      this.previousLineTimestampByPath.delete(path);
+      this.seenMessageIdsByPath.delete(path);
+    }
     if (startCursor.bytePos >= size) return;
 
     const remaining = size - startCursor.bytePos;
@@ -440,7 +469,7 @@ export class ParentTranscriptWatcher {
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
-      const parsed = this.tryParseLine(line);
+      const parsed = this.tryParseLine(line, path);
       if (parsed === null) continue;
 
       const event: Record<string, unknown> = {
@@ -454,6 +483,7 @@ export class ParentTranscriptWatcher {
         outputTokens: parsed.outputTokens,
         cacheReadTokens: parsed.cacheReadTokens,
         cacheCreationTokens: parsed.cacheCreationTokens,
+        ...(parsed.responseMs !== undefined && { responseMs: parsed.responseMs }),
       };
       this.appendToParentBuffer(sessionId, event);
     }
@@ -472,7 +502,14 @@ export class ParentTranscriptWatcher {
    * live file set. The persisted cursor is left untouched.
    */
   private evictStalePartials(files: Array<{ path: string; sessionId: string }>): void {
-    if (this.partialByPath.size === 0 && this.decoderByPath.size === 0) return;
+    if (
+      this.partialByPath.size === 0 &&
+      this.decoderByPath.size === 0 &&
+      this.previousLineTimestampByPath.size === 0 &&
+      this.seenMessageIdsByPath.size === 0
+    ) {
+      return;
+    }
     const live = new Set<string>();
     for (const f of files) live.add(f.path);
     for (const path of this.partialByPath.keys()) {
@@ -481,18 +518,34 @@ export class ParentTranscriptWatcher {
     for (const path of this.decoderByPath.keys()) {
       if (!live.has(path)) this.decoderByPath.delete(path);
     }
+    for (const path of this.previousLineTimestampByPath.keys()) {
+      if (!live.has(path)) this.previousLineTimestampByPath.delete(path);
+    }
+    for (const path of this.seenMessageIdsByPath.keys()) {
+      if (!live.has(path)) this.seenMessageIdsByPath.delete(path);
+    }
   }
 
   /**
    * Parse a JSONL line, returning non-null only for a real, non-sidechain
    * assistant turn with a usable model, message id, and usage object.
    */
-  private tryParseLine(line: string): ParsedParentTurn | null {
+  private tryParseLine(line: string, path: string): ParsedParentTurn | null {
     const { fields, invalidJson } = parseAssistantTurnLine(line);
     if (invalidJson) {
       this.parseErrors += 1;
       return null;
     }
+
+    // Every parseable line's timestamp is remembered, whatever its role, so a
+    // qualifying assistant line can be timed against whatever came right
+    // before it (a user message, a tool result, or another assistant chunk).
+    const rawTimestampMs = lineTimestampMs(line);
+    const previousLineTimestampMs = this.previousLineTimestampByPath.get(path);
+    if (Number.isFinite(rawTimestampMs)) {
+      this.previousLineTimestampByPath.set(path, rawTimestampMs);
+    }
+
     if (!fields) return null;
     // Subagent turns are inlined into the main transcript too — skip them so
     // they're never double-attributed as parent-session cost. Mirrors
@@ -507,6 +560,22 @@ export class ParentTranscriptWatcher {
     const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : Date.now();
     if (!Number.isFinite(timestampMs)) return null;
 
+    let seen = this.seenMessageIdsByPath.get(path);
+    if (seen === undefined) {
+      seen = new Set<string>();
+      this.seenMessageIdsByPath.set(path, seen);
+    }
+    let responseMs: number | undefined;
+    if (!seen.has(messageId)) {
+      seen.add(messageId);
+      if (previousLineTimestampMs !== undefined) {
+        const gap = timestampMs - previousLineTimestampMs;
+        if (gap > 0 && gap <= MAX_RESPONSE_GAP_MS) {
+          responseMs = gap;
+        }
+      }
+    }
+
     return {
       timestampMs,
       messageId,
@@ -515,6 +584,7 @@ export class ParentTranscriptWatcher {
       outputTokens: fields.outputTokens,
       cacheReadTokens: fields.cacheReadTokens,
       cacheCreationTokens: fields.cacheCreationTokens,
+      responseMs,
     };
   }
 
