@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { partitionByAgent } from './agent-partition.js';
+import { partitionByAgent, backfillAgentId } from './agent-partition.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
@@ -38,5 +38,43 @@ describe('partitionByAgent', () => {
 
   it('returns an empty array for an empty input', () => {
     expect(partitionByAgent([])).toEqual([]);
+  });
+});
+
+describe('backfillAgentId', () => {
+  it('backfills agentId from the toolUseId map when the record has none', () => {
+    const record = makeRecord({ toolUseId: 'toolu_abc', agentId: undefined });
+    const map = new Map([['toolu_abc', 'a1234567890abcdef']]);
+
+    const result = backfillAgentId(record, map);
+
+    expect(result.agentId).toBe('a1234567890abcdef');
+  });
+
+  it('leaves an already-attributed record unchanged', () => {
+    const record = makeRecord({ toolUseId: 'toolu_abc', agentId: 'existing-agent' });
+    const map = new Map([['toolu_abc', 'a1234567890abcdef']]);
+
+    const result = backfillAgentId(record, map);
+
+    expect(result).toBe(record);
+  });
+
+  it('leaves the record unchanged when the toolUseId has no map entry', () => {
+    const record = makeRecord({ toolUseId: 'toolu_unknown', agentId: undefined });
+    const map = new Map([['toolu_abc', 'a1234567890abcdef']]);
+
+    const result = backfillAgentId(record, map);
+
+    expect(result).toBe(record);
+  });
+
+  it('leaves the record unchanged when it has no toolUseId', () => {
+    const record = makeRecord({ toolUseId: undefined, agentId: undefined });
+    const map = new Map([['toolu_abc', 'a1234567890abcdef']]);
+
+    const result = backfillAgentId(record, map);
+
+    expect(result).toBe(record);
   });
 });

@@ -2,7 +2,7 @@ import { openSync, closeSync, readSync, statSync, constants as fsConstants } fro
 
 import { isRealAssistantTurn } from '../lib/subagent-transcript-parser.js';
 
-import type { RawTranscriptEntry } from '../hooks/transcript-types.js';
+import type { RawTranscriptEntry } from '../lib/transcript-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,9 +37,9 @@ const SYNTHETIC_TEXT_PREFIXES = [
 /** "actually" alone is a refinement filler ("actually, let's also add tests"), not a rejection signal. */
 const OPTIONAL_ACTUALLY = '(?:actually,?\\s+)?';
 
-/** Leading "no"/"nope", guarded against reassurance phrases that aren't corrections. */
+/** Leading "no"/"nope", guarded against reassurance phrases and acknowledgments that aren't corrections. */
 const LEADING_NO_RE = new RegExp(
-  `^${OPTIONAL_ACTUALLY}(no|nope)\\b(?!\\s*(rush|worries|problem|prob\\b|biggie|need))`,
+  `^${OPTIONAL_ACTUALLY}(no|nope)\\b(?!,?\\s*(rush|worries|problem|prob\\b|biggie|need|thanks|that'?s (fine|ok|okay)))`,
   'i',
 );
 
@@ -52,11 +52,17 @@ const EXPLICIT_REJECTION_RE = new RegExp(
   'i',
 );
 
-/** A trigger word immediately followed by punctuation reads as an interjection, not a task instruction ("Stop the dev server" has no punctuation there). */
-const LEADING_INTERJECTION_RE = /^(stop|wait|no|nope|undo|revert)[.,!]/i;
+/** A trigger word immediately followed by punctuation reads as an interjection, not a task instruction ("Stop the dev server" has no punctuation there). "no"/"nope" are handled by LEADING_NO_RE instead, so its reassurance/acknowledgment guard isn't bypassed. */
+const LEADING_INTERJECTION_RE = /^(stop|wait|undo|revert)[.,!]/i;
 
-/** Undo verbs only count as a correction when they target the assistant's own action ("undo that"), not a concrete noun ("revert the last commit", "stop the dev server"). */
-const TARGETED_UNDO_RE = /^(stop|undo|revert|don'?t)\b[^.!?]{0,20}\b(that|it|this)\b/i;
+/** Common adverbs that can trail a standalone undo pronoun ("undo it now", "don't do that again") without turning it into a noun-phrase modifier. Not exhaustive — hand-picked, not data-derived. Deliberately excludes "first": it's an ordinal adjective as often as an adverb ("revert that first commit"), so allowing it would reopen the exact noun-phrase false positive this regex exists to close. */
+const UNDO_TRAILING_ADVERBS = 'again|now|already|please|instead';
+
+/** Undo verbs only count as a correction when they target the assistant's own action as a standalone object ("undo that", "don't do that", "undo it now") — a pronoun followed by any other word is modifying that noun ("revert that commit", "don't push to that branch"), not standing in for the assistant's prior action. */
+const TARGETED_UNDO_RE = new RegExp(
+  `^(stop|undo|revert|don'?t)\\b[^.!?]{0,20}\\b(that|it|this)\\b(?!\\s+(?!(?:${UNDO_TRAILING_ADVERBS})\\b)\\S)`,
+  'i',
+);
 
 /** Correction phrasing that doesn't require a trigger word at the start of the message. */
 const EMBEDDED_CORRECTION_RE =

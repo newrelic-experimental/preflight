@@ -40,7 +40,7 @@ import { AGENT_ID_RE } from '../lib/agent-id.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import { findWorkflowScriptPath, WorkflowStore } from './workflow-store.js';
 import { parseWorkflowScript, type DeclaredTopology } from '../hooks/workflow-script-parser.js';
-import type { RawTranscriptEntry, RawAssistantMessage } from '../hooks/transcript-types.js';
+import type { RawTranscriptEntry, RawAssistantMessage } from '../lib/transcript-types.js';
 
 const logger = createLogger('subagent-timeline-store');
 

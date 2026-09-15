@@ -118,6 +118,7 @@ export interface SubagentTokenEvent {
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 /**
@@ -211,6 +212,7 @@ interface ParsedAssistantTurn {
   readonly stopReason: string | null;
   readonly usageKeysFingerprint: string;
   readonly contentBlockTypesFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 interface DiscoveredFile {
@@ -770,6 +772,7 @@ export class SubagentWatcher {
         reasoningTokens: parsed.reasoningTokens,
         stopReason: parsed.stopReason,
         schemaFingerprint: parsed.usageKeysFingerprint,
+        toolUseIds: parsed.toolUseIds,
       };
       this.appendToParentBuffer(file.parentSessionId, event);
     }
@@ -854,6 +857,7 @@ export class SubagentWatcher {
       stopReason: fields.stopReason,
       usageKeysFingerprint: fields.usageKeysFingerprint,
       contentBlockTypesFingerprint: fields.contentBlockTypesFingerprint,
+      toolUseIds: fields.toolUseIds,
     };
   }
 

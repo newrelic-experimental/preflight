@@ -40,6 +40,7 @@ import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
+import { backfillAgentId } from './metrics/agent-partition.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
 import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
@@ -2035,14 +2036,18 @@ async function main(): Promise<void> {
         );
       }
     });
-    // Cross-references a subagent's `agentType` (only known on ToolCallRecords
-    // the subagent's own hook-observed tool calls carry, via the native
-    // agent_type hook field) against its `agentId` — the ONLY link between
-    // the native hook pipeline and the transcript-derived subagent-token
-    // pipeline (onSubagentTurn below), which has no type of its own. Best
-    // effort: a subagent that never makes a hook-visible tool call has no
-    // entry here, so its cost is still counted but not broken out by type.
+    // Cross-references a subagent's type against its `agentId` — the ONLY link
+    // between the native hook pipeline and the transcript-derived
+    // subagent-token pipeline (onSubagentTurn below), which has no type of its
+    // own. Populated from the parent's own Agent tool call (see onRecord), the
+    // one record that carries both signals. Best effort: a subagent whose
+    // spawning Agent call was never paired by the hook processor has no entry
+    // here, so its cost is still counted but not broken out by type.
     const agentTypeByAgentId = new Map<string, string>();
+    // toolUseId -> agentId, built from SubagentWatcher's tool_use extraction
+    // (see agent-partition.ts's backfillAgentId doc comment for why this join
+    // exists instead of trusting the hook envelope's own agent_id field).
+    const toolUseIdToAgentId = new Map<string, string>();
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2050,7 +2055,8 @@ async function main(): Promise<void> {
       // live sessions' events. After real session ID resolution the processor
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
-      onRecord: (rawRecord) => {
+      onRecord: (incomingRecord) => {
+        const rawRecord = backfillAgentId(incomingRecord, toolUseIdToAgentId);
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2066,8 +2072,19 @@ async function main(): Promise<void> {
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
-        if (rawRecord.agentId && rawRecord.agentType) {
-          agentTypeByAgentId.set(rawRecord.agentId, rawRecord.agentType);
+        // The hook envelope's own agent_id/agent_type never populate in practice
+        // — correlate via the Agent tool's own record instead: its
+        // subagentType (tool_input.subagent_type, already captured) and
+        // spawnedAgentId (tool_response.agentId) are both real, working signals
+        // that live on the same ToolCallRecord.
+        if (rawRecord.toolName === 'Agent') {
+          const spawnedAgentId =
+            typeof rawRecord.spawnedAgentId === 'string' ? rawRecord.spawnedAgentId : undefined;
+          const subagentType =
+            typeof rawRecord.subagentType === 'string' ? rawRecord.subagentType : undefined;
+          if (spawnedAgentId && subagentType) {
+            agentTypeByAgentId.set(spawnedAgentId, subagentType);
+          }
         }
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
@@ -2265,7 +2282,10 @@ async function main(): Promise<void> {
             platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
             taskId: task.taskId,
           };
-          const { patterns } = antiPatternDetector.analyze(task.toolCalls);
+          const enrichedToolCalls = task.toolCalls.map((r) =>
+            backfillAgentId(r, toolUseIdToAgentId),
+          );
+          const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
           efficiencyScorer.computeScore(task, patterns);
           for (const pattern of patterns) {
             capturedNrIngest?.ingestAntiPattern(pattern, context);
@@ -2395,6 +2415,9 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
+        for (const toolUseId of turn.toolUseIds) {
+          toolUseIdToAgentId.set(toolUseId, turn.agentId);
+        }
         // Best-effort — see agentTypeByAgentId's doc comment above.
         const agentType = agentTypeByAgentId.get(turn.agentId);
         const usage: TokenUsage = {

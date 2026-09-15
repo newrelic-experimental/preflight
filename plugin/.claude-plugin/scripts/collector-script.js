@@ -415,6 +415,7 @@ function extractOutputMeta(toolName, output) {
       }
       if (totalLen > 0) meta.agentResultLength = totalLen;
     }
+    if (typeof obj.agentId === "string") meta.spawnedAgentId = obj.agentId;
     return Object.keys(meta).length > 0 ? meta : void 0;
   }
   return void 0;

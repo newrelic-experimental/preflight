@@ -1030,6 +1030,48 @@ describe('api-handler GET /api/sessions/:id/replay', () => {
     const parsed = JSON.parse(body()) as { timeline: Array<{ timestamp: number }> };
     expect(parsed.timeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
   });
+
+  it('threads agentId onto live-buffer timeline entries so replay can partition by agent', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      toolCallBuffer: {
+        getRecords: () => [
+          {
+            id: '1',
+            sessionId: 'sess-agent',
+            toolName: 'Bash',
+            toolUseId: 'u1',
+            timestamp: 1,
+            durationMs: 1,
+            success: true,
+            command: 'npm test',
+            agentId: 'agent-a',
+          },
+          {
+            id: '2',
+            sessionId: 'sess-agent',
+            toolName: 'Bash',
+            toolUseId: 'u2',
+            timestamp: 2,
+            durationMs: 1,
+            success: true,
+            command: 'npm test',
+          },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
+    });
+    const req2 = { method: 'GET', url: '/api/sessions/sess-agent/replay' } as IncomingMessage;
+    const { res: res2, status: status2, body: body2 } = fakeRes();
+    await handler(req2, res2);
+    expect(status2()).toBe(200);
+    const parsed2 = JSON.parse(body2()) as { timeline: Array<{ agentId?: string }> };
+    expect(parsed2.timeline[0]?.agentId).toBe('agent-a');
+    expect(parsed2.timeline[1]).not.toHaveProperty('agentId');
+  });
 });
 
 describe('api-handler GET /api/sessions/:sessionId/subagents', () => {

@@ -130,6 +130,7 @@ export interface SubagentTurnEvent {
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 /** Wire-shape data extracted from a `mode: 'observability_health'` entry. */
@@ -875,6 +876,7 @@ export class HookEventProcessor {
       reasoningTokens: numAttr(event.reasoningTokens),
       stopReason: event.stopReason ?? null,
       schemaFingerprint: event.schemaFingerprint ?? '',
+      toolUseIds: event.toolUseIds ?? [],
     };
     if (this.onSubagentTurn) {
       try {

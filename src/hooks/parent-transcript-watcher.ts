@@ -42,11 +42,9 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
-import { isRealAssistantTurn } from '../lib/subagent-transcript-parser.js';
 import { createLogger } from '../shared/index.js';
+import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
-
-import type { RawTranscriptEntry, RawAssistantMessage, RawUsage } from './transcript-types.js';
 
 const logger = createLogger('parent-transcript-watcher');
 
@@ -490,42 +488,33 @@ export class ParentTranscriptWatcher {
    * assistant turn with a usable model, message id, and usage object.
    */
   private tryParseLine(line: string): ParsedParentTurn | null {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
+    const { fields, invalidJson } = parseAssistantTurnLine(line);
+    if (invalidJson) {
       this.parseErrors += 1;
       return null;
     }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const obj = parsed as RawTranscriptEntry;
-    if (obj.type !== 'assistant') return null;
+    if (!fields) return null;
     // Subagent turns are inlined into the main transcript too — skip them so
-    // they're never double-attributed as parent-session cost.
-    if (!isRealAssistantTurn(obj)) return null;
-    const message = obj.message;
-    if (!message || typeof message !== 'object') return null;
-    const m = message as RawAssistantMessage;
-    const model = typeof m.model === 'string' ? m.model : null;
-    if (!model) return null;
-    const messageId = typeof m.id === 'string' ? m.id : null;
-    if (!messageId) return null;
-    const usage = m.usage;
-    if (!usage || typeof usage !== 'object') return null;
-    const u = usage as RawUsage;
+    // they're never double-attributed as parent-session cost. Mirrors
+    // TranscriptMessageTracker's identical check via the shared isRealAssistantTurn() predicate.
+    if (fields.isSidechain) return null;
 
-    const tsRaw = typeof obj.timestamp === 'string' ? obj.timestamp : null;
-    const timestampMs = tsRaw ? Date.parse(tsRaw) : Date.now();
+    const model = fields.model;
+    if (!model || model === '<synthetic>') return null;
+    const messageId = fields.messageId;
+    if (!messageId) return null;
+
+    const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : Date.now();
     if (!Number.isFinite(timestampMs)) return null;
 
     return {
       timestampMs,
       messageId,
       model,
-      inputTokens: num(u.input_tokens),
-      outputTokens: num(u.output_tokens),
-      cacheReadTokens: num(u.cache_read_input_tokens),
-      cacheCreationTokens: num(u.cache_creation_input_tokens),
+      inputTokens: fields.inputTokens,
+      outputTokens: fields.outputTokens,
+      cacheReadTokens: fields.cacheReadTokens,
+      cacheCreationTokens: fields.cacheCreationTokens,
     };
   }
 
@@ -597,10 +586,6 @@ export class ParentTranscriptWatcher {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function num(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
-}
 
 /**
  * Stable cursor file path computation, exported for tests that want to
