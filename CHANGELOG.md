@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.5] - 2026-09-14
+
+### Fixed
+
+- `TurnCostAttributor` dropped almost every turn's cost on models with long thinking times: a token event closing a burst of tool calls had to arrive within a fixed 5-second window, but the model's own response can take anywhere from milliseconds to minutes. Replaced the fixed window with an unbounded, order-based match — a token event now closes the oldest still-open tool-call burst regardless of how long it takes — backed by a small queue (instead of a single slot) so a new burst starting before the previous one's token event arrives no longer silently discards it. `nr_observe_get_cost_per_tool` now also reports `droppedTokenEvents` so a low `attributionRate` is explainable from the tool output.
+
 ## [1.51.4] - 2026-09-14
 
 ### Fixed

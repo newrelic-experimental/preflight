@@ -79,6 +79,12 @@ export interface CostAttributionMetrics {
   readonly costBySkill: Record<string, SkillCostEntry>;
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
+  /**
+   * Count of token events (or, on overflow/staleness, whole pending turns)
+   * that could not be attributed to any tool call. A rising count alongside
+   * a low `attributionRate` means turns are being lost — see `recordTokenEvent()`.
+   */
+  readonly droppedTokenEvents: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,11 +95,23 @@ export interface CostAttributionMetrics {
 // LLM response driving a burst of tool use). Chosen to bridge normal
 // back-to-back tool latency without merging genuinely separate turns.
 const TURN_GAP_MS = 2_000;
-// A token event is attributed to the pending turn only if it arrives within
-// this window after the turn's last tool call — token usage is reported
-// asynchronously, so some slack is needed, but too much risks attributing
-// a later turn's tokens to this one.
-const TOKEN_MATCH_WINDOW_MS = 5_000;
+// A token event closes the OLDEST still-open pending turn (see `pendingTurns`
+// below) as long as it arrives after that turn ended — no upper bound.
+// Token usage is reported asynchronously (transcript polling) and the model
+// may spend anywhere from milliseconds to minutes (extended thinking) between
+// a tool call ending and the response that consumes its result, so there is
+// no fixed delay that is both short enough to avoid false negatives and long
+// enough to avoid false positives.
+//
+// `STALE_PENDING_TURN_MS` exists only to self-heal the queue if a closing
+// token event is ever genuinely lost (not merely delayed) — a crashed
+// watcher, a rotated/truncated transcript. Without it, one truly-lost event
+// would permanently shift every later token event onto the wrong pending
+// turn. It is deliberately far longer than any plausible thinking time.
+const STALE_PENDING_TURN_MS = 10 * 60 * 1000;
+// Safety cap on the queue itself so a sustained failure to emit token events
+// (not just one lost event) can't grow this unboundedly.
+const MAX_PENDING_TURNS = 20;
 // Bounds memory for long sessions; only the most recent turns are needed for
 // the cost-by-tool-type breakdown this class serves.
 const MAX_TURNS = 200;
@@ -160,23 +178,31 @@ const DEFAULT_MAX_SESSIONS = 50;
 
 interface SessionState {
   turns: TurnCostAttribution[];
-  pendingTurn: PendingTurn | null;
+  /**
+   * FIFO queue of tool-call bursts awaiting a closing token event, oldest
+   * first. A queue (not a single slot) so a burst of tool calls started
+   * before the previous burst's token event has arrived is never silently
+   * discarded — see `recordToolCall()`.
+   */
+  pendingTurns: PendingTurn[];
   buckets: Map<string, AttributionBucket>;
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
   activeSlashSkill: string | null;
+  droppedTokenEvents: number;
 }
 
 function createSessionState(): SessionState {
   return {
     turns: [],
-    pendingTurn: null,
+    pendingTurns: [],
     buckets: new Map(),
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
     activeSlashSkill: null,
+    droppedTokenEvents: 0,
   };
 }
 
@@ -280,29 +306,39 @@ export class TurnCostAttributor {
     bucket.callCount++;
     bucket.totalDurationMs += record.durationMs ?? 0;
 
-    if (state.pendingTurn && record.timestamp - state.pendingTurn.endTime <= TURN_GAP_MS) {
-      state.pendingTurn.endTime = endTime;
-      state.pendingTurn.toolCalls.push({
+    const last = state.pendingTurns[state.pendingTurns.length - 1];
+    if (last && record.timestamp - last.endTime <= TURN_GAP_MS) {
+      last.endTime = endTime;
+      last.toolCalls.push({
         toolUseId: record.toolUseId,
         toolName: record.toolName,
         skillName: id.skillName,
         bucketKey: key,
       });
-    } else {
-      state.pendingTurn = {
-        turnId: turnId ?? randomUUID(),
-        startTime: record.timestamp,
-        endTime,
-        toolCalls: [
-          {
-            toolUseId: record.toolUseId,
-            toolName: record.toolName,
-            skillName: id.skillName,
-            bucketKey: key,
-          },
-        ],
-        platform: typeof record.platform === 'string' ? record.platform : undefined,
-      };
+      return;
+    }
+
+    state.pendingTurns.push({
+      turnId: turnId ?? randomUUID(),
+      startTime: record.timestamp,
+      endTime,
+      toolCalls: [
+        {
+          toolUseId: record.toolUseId,
+          toolName: record.toolName,
+          skillName: id.skillName,
+          bucketKey: key,
+        },
+      ],
+      platform: typeof record.platform === 'string' ? record.platform : undefined,
+    });
+
+    // A new burst starting while MAX_PENDING_TURNS earlier bursts are still
+    // unclosed means token events have stopped arriving entirely (not just
+    // been delayed) — evict the oldest rather than grow unboundedly.
+    if (state.pendingTurns.length > MAX_PENDING_TURNS) {
+      state.pendingTurns.shift();
+      state.droppedTokenEvents++;
     }
   }
 
@@ -321,14 +357,36 @@ export class TurnCostAttributor {
 
   recordTokenEvent(event: TokenEvent): ClosedTurn | null {
     const state = this.getOrCreateSession(event.sessionId);
-    if (!state.pendingTurn) return null;
 
-    // A token event outside the match window can't be reliably tied to the
-    // pending turn — silently drop it rather than risk mis-attributing cost
-    // to the wrong turn. Dropped events show up as a lower `attributionRate`
-    // in getMetrics(), not as an error.
-    const timeSinceLastTool = event.timestamp - state.pendingTurn.endTime;
-    if (timeSinceLastTool < 0 || timeSinceLastTool > TOKEN_MATCH_WINDOW_MS) return null;
+    // Self-heal: a pending turn sitting unclosed for longer than any
+    // plausible thinking time means its real closing event was lost, not
+    // merely delayed. Evict it so this event can't be misattributed to it —
+    // and so every turn queued behind it doesn't inherit the same offset.
+    while (
+      state.pendingTurns.length > 0 &&
+      event.timestamp - state.pendingTurns[0].endTime > STALE_PENDING_TURN_MS
+    ) {
+      state.pendingTurns.shift();
+      state.droppedTokenEvents++;
+    }
+
+    const pendingTurn = state.pendingTurns[0];
+    if (!pendingTurn) {
+      state.droppedTokenEvents++;
+      return null;
+    }
+
+    // The event must postdate the turn it's closing — one that doesn't can't
+    // belong to it (this turn hadn't even finished yet). Silently drop it
+    // rather than risk mis-attributing cost to the wrong turn. Dropped
+    // events show up as a lower `attributionRate` and a rising
+    // `droppedTokenEvents`, not as an error.
+    const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
+    if (timeSinceLastTool < 0) {
+      state.droppedTokenEvents++;
+      return null;
+    }
+    state.pendingTurns.shift();
 
     const usage: TokenUsage = {
       inputTokens: event.inputTokens,
@@ -341,15 +399,15 @@ export class TurnCostAttributor {
 
     const breakdown = calculateCost(event.model, usage);
     const costUsd = breakdown.totalUsd * this.rateMultiplier;
-    const toolCount = state.pendingTurn.toolCalls.length;
+    const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
 
     const attribution: TurnCostAttribution = {
-      turnId: state.pendingTurn.turnId,
-      startTime: state.pendingTurn.startTime,
-      endTime: state.pendingTurn.endTime,
-      toolCalls: state.pendingTurn.toolCalls.map((tc) => tc.toolUseId),
-      toolNames: state.pendingTurn.toolCalls.map((tc) => tc.toolName),
+      turnId: pendingTurn.turnId,
+      startTime: pendingTurn.startTime,
+      endTime: pendingTurn.endTime,
+      toolCalls: pendingTurn.toolCalls.map((tc) => tc.toolUseId),
+      toolNames: pendingTurn.toolCalls.map((tc) => tc.toolName),
       inputTokens: event.inputTokens,
       outputTokens: event.outputTokens,
       cacheReadTokens: event.cacheReadTokens,
@@ -368,7 +426,7 @@ export class TurnCostAttributor {
     state.totalAttributedCost += costUsd;
     state.attributedToolCalls += toolCount;
 
-    for (const tc of state.pendingTurn.toolCalls) {
+    for (const tc of pendingTurn.toolCalls) {
       const bucket = state.buckets.get(tc.bucketKey);
       if (bucket === undefined) continue;
       bucket.attributedCallCount++;
@@ -395,15 +453,14 @@ export class TurnCostAttributor {
     const closedTurn: ClosedTurn = {
       id: randomUUID(),
       attribution,
-      calls: state.pendingTurn.toolCalls.map((tc) => ({
+      calls: pendingTurn.toolCalls.map((tc) => ({
         toolUseId: tc.toolUseId,
         toolName: tc.toolName,
         skillName: tc.skillName,
       })),
-      platform: state.pendingTurn.platform,
+      platform: pendingTurn.platform,
     };
 
-    state.pendingTurn = null;
     return closedTurn;
   }
 
@@ -440,6 +497,7 @@ export class TurnCostAttributor {
       costBySkill: {},
       totalAttributedCost: 0,
       attributionRate: 0,
+      droppedTokenEvents: 0,
     };
 
     if (sessionId !== undefined) {
@@ -460,6 +518,7 @@ export class TurnCostAttributor {
       aggregate.totalAttributedCost += state.totalAttributedCost;
       aggregate.totalToolCalls += state.totalToolCalls;
       aggregate.attributedToolCalls += state.attributedToolCalls;
+      aggregate.droppedTokenEvents += state.droppedTokenEvents;
       for (const [key, bucket] of state.buckets) {
         const merged = getOrCreateBucket(aggregate.buckets, key, bucket);
         for (const counter of BUCKET_COUNTERS) merged[counter] += bucket[counter];
@@ -536,6 +595,7 @@ export class TurnCostAttributor {
       totalAttributedCost: state.totalAttributedCost,
       attributionRate:
         state.totalToolCalls > 0 ? state.attributedToolCalls / state.totalToolCalls : 0,
+      droppedTokenEvents: state.droppedTokenEvents,
     };
   }
 
