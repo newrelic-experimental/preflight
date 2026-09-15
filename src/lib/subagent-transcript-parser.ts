@@ -102,6 +102,21 @@ export function parseAssistantTurnLine(line: string): ParseAssistantTurnLineResu
   };
 }
 
+/**
+ * Rejects a `type: 'assistant'` transcript entry that isn't a real,
+ * priceable parent-session turn: a subagent/Task-tool turn inlined into the
+ * parent transcript (`isSidechain`), or a synthetic no-usage turn
+ * (`model === '<synthetic>'`). Shared by pipelines that read the *parent*
+ * transcript, where both kinds of entry need filtering out — pipelines that
+ * read a subagent's own transcript (every line already sidechain by
+ * definition) only need the synthetic-model half, via `fields.model`.
+ */
+export function isRealAssistantTurn(entry: RawTranscriptEntry): boolean {
+  if (entry.isSidechain === true) return false;
+  const message = entry.message as RawAssistantMessage | undefined;
+  return message?.model !== '<synthetic>';
+}
+
 export function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }

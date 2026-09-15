@@ -5,11 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.51.5] - 2026-09-14
+## [1.52.2] - 2026-09-15
 
 ### Fixed
 
 - Native Windows: a cwd-breadcrumb race could permanently bind the MCP to a short-lived, unrelated session id with no recovery path, since the PPID correction watch relies on a breadcrumb that's never written for the MCP's own `process.ppid` on that platform. The correction watch now also re-polls the cwd breadcrumb on Windows, adopting a differing session id only once its own buffer file shows real activity.
+
+## [1.52.1] - 2026-09-15
+
+### Fixed
+
+- **A fourth, independent copy of the same subagent-turn/synthetic-turn rejection rule used by the shared transcript parser had drifted apart from it.** The message tracker that counts user/assistant turns and the parent-session transcript watcher now both call one shared predicate for deciding whether an assistant turn is a real, in-session turn.
+
+## [1.52.0] - 2026-09-15
+
+### Added
+
+- Session records now persist spend attribution by tool, skill, and subagent type, plus high-context spend and estimated API wait time, and a new `/api/usage-insights` endpoint surfaces share-of-spend insights (high-context sessions, subagent-heavy sessions, long-running sessions, loops, and plugins) across a configurable day window.
 
 ## [1.51.4] - 2026-09-14
 
