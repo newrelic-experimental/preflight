@@ -305,6 +305,10 @@ const SAMPLE_USAGE_INSIGHTS = {
       lastRunMs: Date.now() - 5 * 60 * 1000,
     },
   ],
+  skillsTotalCount: 1,
+  subagentsTotalCount: 1,
+  pluginsTotalCount: 1,
+  loopsTotalCount: 1,
   attributionRatePct: 40,
 };
 

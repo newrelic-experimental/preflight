@@ -1691,6 +1691,10 @@ describe("Today view — Where today's spend went panel", () => {
     subagents: [{ key: 'general-purpose', costUsd: 2, tokens: 4000, count: 3, sharePct: 20 }],
     plugins: [{ key: 'pstack', costUsd: 1, tokens: 2000, count: 2, sharePct: 10 }],
     loops: [],
+    skillsTotalCount: 1,
+    subagentsTotalCount: 1,
+    pluginsTotalCount: 1,
+    loopsTotalCount: 0,
     attributionRatePct: 80,
   };
 

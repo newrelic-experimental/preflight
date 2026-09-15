@@ -210,6 +210,7 @@ export function UsageContributionPanel({
             <ShareTable<UsageShareRow>
               title="Skills"
               rows={skills}
+              totalCount={data.skillsTotalCount}
               rowKey={(row) => row.key}
               defaultSort={{ column: 4, direction: 'desc' }}
               columns={[
@@ -246,6 +247,7 @@ export function UsageContributionPanel({
             <ShareTable<UsageShareRow>
               title="Subagents"
               rows={subagents}
+              totalCount={data.subagentsTotalCount}
               rowKey={(row) => row.key}
               defaultSort={{ column: 4, direction: 'desc' }}
               columns={[
@@ -282,6 +284,7 @@ export function UsageContributionPanel({
             <ShareTable<UsageShareRow>
               title="Plugins"
               rows={plugins}
+              totalCount={data.pluginsTotalCount}
               rowKey={(row) => row.key}
               defaultSort={{ column: 3, direction: 'desc' }}
               columns={[
@@ -313,6 +316,7 @@ export function UsageContributionPanel({
               title="Loops"
               className="md:col-span-2"
               rows={loops}
+              totalCount={data.loopsTotalCount}
               rowKey={(row) => row.sessionId}
               defaultSort={{ column: 4, direction: 'desc' }}
               columns={[

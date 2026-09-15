@@ -52,6 +52,10 @@ const SAMPLE_USAGE_INSIGHTS: UsageInsightsReport = {
       lastRunMs: Date.now() - 5 * 60 * 1000,
     },
   ],
+  skillsTotalCount: 1,
+  subagentsTotalCount: 1,
+  pluginsTotalCount: 1,
+  loopsTotalCount: 1,
   attributionRatePct: 40,
 };
 
@@ -115,6 +119,21 @@ describe('UsageContributionPanel — Tools table', () => {
     // No windowed per-tool cost figure exists, so the header says what the
     // share is actually of.
     expect(within(panel).getByRole('columnheader', { name: 'Share of calls' })).toBeInTheDocument();
+  });
+
+  it('says how many rows a capped share table dropped', () => {
+    render(
+      <UsageContributionPanel
+        data={{ ...SAMPLE_USAGE_INSIGHTS, skillsTotalCount: 14 }}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={buildToolTableRows(SAMPLE_TOOL_SESSIONS)}
+      />,
+    );
+    const panel = findPanel("What's contributing to your spend");
+    expect(within(panel).getByText('top 1 of 14')).toBeInTheDocument();
+    expect(within(panel).queryByText('top 1 of 1')).not.toBeInTheDocument();
   });
 
   it('sorts the Tools table by its clicked column', () => {
