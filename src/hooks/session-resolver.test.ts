@@ -12,6 +12,7 @@ import {
   isSyntheticSessionId,
   isUnscopedAggregatorSessionId,
   watchPpidBreadcrumb,
+  watchCwdBreadcrumbForCorrection,
   readJobState,
   readTranscriptTitle,
   findLastAiTitleInText,
@@ -608,6 +609,84 @@ describe('session-resolver', () => {
           ppid,
           storagePath: tmpDir,
           suppressWarn: true,
+          signal: ac.signal,
+        }),
+      ).rejects.toThrow(/aborted/);
+    });
+  });
+
+  describe('watchCwdBreadcrumbForCorrection()', () => {
+    it('resolves once the cwd breadcrumb points at a different, buffer-confirmed session', async () => {
+      const cwdDir = resolve(tmpDir, 'session-by-cwd');
+      mkdirSync(cwdDir, { recursive: true });
+      writeFileSync(resolve(cwdDir, '-projects-win686.txt'), 'stale-short-lived-id');
+
+      // Real session appears a bit later, as the collector overwrites the
+      // cwd breadcrumb — plus its buffer, the positive-evidence signal this
+      // function requires before trusting the new value.
+      setTimeout(() => {
+        writeFileSync(resolve(cwdDir, '-projects-win686.txt'), 'real-session-id');
+        writeFileSync(resolve(tmpDir, 'buffer-real-session-id.jsonl'), '{"hook_event_name":"x"}\n');
+      }, 150);
+
+      const sid = await watchCwdBreadcrumbForCorrection({
+        staleId: 'stale-short-lived-id',
+        cwd: '/projects/win686',
+        storagePath: tmpDir,
+      });
+      expect(sid).toBe('real-session-id');
+    });
+
+    it('keeps polling when the cwd breadcrumb changes but the candidate has no buffer yet (unconfirmed)', async () => {
+      const cwdDir = resolve(tmpDir, 'session-by-cwd');
+      mkdirSync(cwdDir, { recursive: true });
+      writeFileSync(resolve(cwdDir, '-projects-unconfirmed.txt'), 'stale-id');
+
+      // A different id appears in the breadcrumb, but its buffer file never
+      // shows up (e.g. a stale leftover from an unrelated session that never
+      // ran here) — must not be adopted.
+      setTimeout(() => {
+        writeFileSync(resolve(cwdDir, '-projects-unconfirmed.txt'), 'unconfirmed-candidate');
+      }, 100);
+
+      const ac = new AbortController();
+      const watch = watchCwdBreadcrumbForCorrection({
+        staleId: 'stale-id',
+        cwd: '/projects/unconfirmed',
+        storagePath: tmpDir,
+        signal: ac.signal,
+      });
+      // Give the candidate several poll ticks to be (wrongly) accepted, then
+      // abort and confirm it never resolved.
+      setTimeout(() => ac.abort(), 500);
+      await expect(watch).rejects.toThrow(/aborted/);
+    });
+
+    it('ignores a breadcrumb that still matches staleId', async () => {
+      const cwdDir = resolve(tmpDir, 'session-by-cwd');
+      mkdirSync(cwdDir, { recursive: true });
+      writeFileSync(resolve(cwdDir, '-projects-samevalue.txt'), 'same-id');
+      writeFileSync(resolve(tmpDir, 'buffer-same-id.jsonl'), '{"hook_event_name":"x"}\n');
+
+      const ac = new AbortController();
+      const watch = watchCwdBreadcrumbForCorrection({
+        staleId: 'same-id',
+        cwd: '/projects/samevalue',
+        storagePath: tmpDir,
+        signal: ac.signal,
+      });
+      setTimeout(() => ac.abort(), 300);
+      await expect(watch).rejects.toThrow(/aborted/);
+    });
+
+    it('aborts via signal', async () => {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 50);
+      await expect(
+        watchCwdBreadcrumbForCorrection({
+          staleId: 'whatever',
+          cwd: '/projects/abort-test',
+          storagePath: tmpDir,
           signal: ac.signal,
         }),
       ).rejects.toThrow(/aborted/);

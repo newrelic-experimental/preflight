@@ -1164,7 +1164,7 @@ describe('subagent token support', () => {
     expect(metrics.subagentCostUsd).toBe(0);
   });
 
-  it('ctx.agentId + ctx.agentType set → cost accumulates in subagentCostByAgentType[agentType]', () => {
+  it('ctx.agentId + ctx.agentType set → cost/tokens/count accumulate in subagentByAgentType[agentType]', () => {
     const tracker = new CostTracker();
     tracker.recordTokenUsage(
       makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
@@ -1183,14 +1183,17 @@ describe('subagent token support', () => {
     );
 
     const metrics = tracker.getMetrics();
-    expect(metrics.subagentCostByAgentType).toHaveProperty('general-purpose');
-    expect(metrics.subagentCostByAgentType).toHaveProperty('Explore');
-    expect(metrics.subagentCostByAgentType['general-purpose']).toBeGreaterThan(
-      metrics.subagentCostByAgentType['Explore']!,
+    expect(metrics.subagentByAgentType).toHaveProperty('general-purpose');
+    expect(metrics.subagentByAgentType).toHaveProperty('Explore');
+    expect(metrics.subagentByAgentType['general-purpose']!.count).toBe(2);
+    expect(metrics.subagentByAgentType['general-purpose']!.tokens).toBe(18_000);
+    expect(metrics.subagentByAgentType['general-purpose']!.durationMs).toBe(0);
+    expect(metrics.subagentByAgentType['general-purpose']!.costUsd).toBeGreaterThan(
+      metrics.subagentByAgentType['Explore']!.costUsd,
     );
   });
 
-  it('ctx.agentId set but ctx.agentType absent → no entry added to subagentCostByAgentType', () => {
+  it('ctx.agentId set but ctx.agentType absent → no entry added to subagentByAgentType', () => {
     const tracker = new CostTracker();
     tracker.recordTokenUsage(
       makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
@@ -1199,11 +1202,11 @@ describe('subagent token support', () => {
     );
 
     const metrics = tracker.getMetrics();
-    expect(metrics.subagentCostByAgentType).toEqual({});
+    expect(metrics.subagentByAgentType).toEqual({});
     expect(metrics.subagentCostUsd).toBeGreaterThan(0);
   });
 
-  it('late arrival (>48h) with ctx.agentType: subagentCostByAgentType still accumulates', () => {
+  it('late arrival (>48h) with ctx.agentType: subagentByAgentType still accumulates', () => {
     const tracker = new CostTracker();
     const oldTs = Date.now() - 49 * 60 * 60 * 1000; // 49h ago
 
@@ -1214,21 +1217,120 @@ describe('subagent token support', () => {
     );
 
     const metrics = tracker.getMetrics();
-    expect(metrics.subagentCostByAgentType['general-purpose']).toBeGreaterThan(0);
+    expect(metrics.subagentByAgentType['general-purpose']!.costUsd).toBeGreaterThan(0);
   });
 
-  it('reset() clears subagentCostByAgentType', () => {
+  it('reset() clears subagentByAgentType', () => {
     const tracker = new CostTracker();
     tracker.recordTokenUsage(
       makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
       'claude-sonnet-4',
       { agentId: 'agent-abc', agentType: 'general-purpose' },
     );
-    expect(tracker.getMetrics().subagentCostByAgentType).toHaveProperty('general-purpose');
+    expect(tracker.getMetrics().subagentByAgentType).toHaveProperty('general-purpose');
 
     tracker.reset('session-1');
 
-    expect(tracker.getMetrics().subagentCostByAgentType).toEqual({});
+    expect(tracker.getMetrics().subagentByAgentType).toEqual({});
+  });
+
+  it('prompt of exactly HIGH_CONTEXT_TOKENS is NOT high context', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 150_000, outputTokens: 100, totalTokens: 150_100 }),
+      'claude-sonnet-4',
+    );
+
+    expect(tracker.getMetrics().highContextCostUsd).toBe(0);
+  });
+
+  it('prompt of HIGH_CONTEXT_TOKENS + 1 IS high context', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 150_001, outputTokens: 100, totalTokens: 150_101 }),
+      'claude-sonnet-4',
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.highContextCostUsd).toBeGreaterThan(0);
+    expect(metrics.highContextCostUsd).toBe(metrics.sessionTotalCostUsd);
+  });
+
+  it('high-context threshold sums cacheReadTokens and cacheCreationTokens with inputTokens', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({
+        inputTokens: 100_000,
+        cacheReadTokens: 30_000,
+        cacheCreationTokens: 20_001,
+        outputTokens: 100,
+        totalTokens: 150_101,
+      }),
+      'claude-sonnet-4',
+    );
+
+    expect(tracker.getMetrics().highContextCostUsd).toBeGreaterThan(0);
+  });
+
+  it('reset() clears highContextCostUsd', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 150_001, outputTokens: 100, totalTokens: 150_101 }),
+      'claude-sonnet-4',
+    );
+    expect(tracker.getMetrics().highContextCostUsd).toBeGreaterThan(0);
+
+    tracker.reset('session-1');
+
+    expect(tracker.getMetrics().highContextCostUsd).toBe(0);
+  });
+
+  it('apiDurationMs is null until the first ctx.responseMs observation, then sums', () => {
+    const tracker = new CostTracker();
+    expect(tracker.getMetrics().apiDurationMs).toBeNull();
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 100, outputTokens: 100, totalTokens: 200 }),
+      'claude-sonnet-4',
+      { responseMs: 4_000 },
+    );
+    expect(tracker.getMetrics().apiDurationMs).toBe(4_000);
+
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 100, outputTokens: 100, totalTokens: 200 }),
+      'claude-sonnet-4',
+      { responseMs: 2_500 },
+    );
+    expect(tracker.getMetrics().apiDurationMs).toBe(6_500);
+  });
+
+  it('apiDurationMs stays unchanged when a token event carries no responseMs', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 100, outputTokens: 100, totalTokens: 200 }),
+      'claude-sonnet-4',
+      { responseMs: 4_000 },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 100, outputTokens: 100, totalTokens: 200 }),
+      'claude-sonnet-4',
+    );
+
+    expect(tracker.getMetrics().apiDurationMs).toBe(4_000);
+  });
+
+  it('reset() clears apiDurationMs back to null', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 100, outputTokens: 100, totalTokens: 200 }),
+      'claude-sonnet-4',
+      { responseMs: 4_000 },
+    );
+    expect(tracker.getMetrics().apiDurationMs).toBe(4_000);
+
+    tracker.reset('session-1');
+
+    expect(tracker.getMetrics().apiDurationMs).toBeNull();
   });
 
   it('ctx.workflowRunId set → cost appears in costByWorkflowRunId[runId][dayKey]', () => {

@@ -94,6 +94,14 @@ export interface TokenHookEvent extends HookEventBase {
   readonly sessionId?: string;
   /** Anthropic message id (msg_...) — used to dedupe replayed turns after a cursor-based re-read. */
   readonly messageId?: string;
+  /**
+   * Time (ms) spent waiting on the model API for this turn, from
+   * `ParentTranscriptWatcher`'s gap between this transcript line and the
+   * line before it. Absent when no previous line was observed, the gap was
+   * non-positive or exceeded 30 minutes, or this is not the first line seen
+   * for `messageId`.
+   */
+  readonly responseMs?: number;
 }
 
 /** Emitted by the SubagentWatcher for each subagent assistant turn. */
@@ -268,6 +276,8 @@ export interface TokenEvent {
   readonly cacheCreationTokens: number;
   readonly model: string;
   readonly sessionId?: string;
+  /** See `TokenHookEvent.responseMs`'s doc comment. */
+  readonly responseMs?: number;
 }
 
 export interface SessionSummary {
@@ -351,7 +361,45 @@ export interface ReplayTimelineEntry {
    * Absent for tool calls made by the parent/orchestrator session.
    */
   readonly agentId?: string;
+  /** Only on `toolName === 'Skill'` entries; lets History count loops and per-skill calls without the live attributor. */
+  readonly skillName?: string;
+  /** Only on `toolName === 'Agent'` entries, from the hook payload's `subagent_type`. */
+  readonly agentType?: string;
 }
+
+/**
+ * Where a session's spend went, sliced by one of these facets. Every facet
+ * value is a {@link AttributionBucket}; History aggregates buckets across
+ * sessions and expresses each as a share of total spend. `plugin` is not a
+ * persisted facet: it is derived at read time from the `<plugin>:` prefix
+ * Claude Code puts on plugin skills and agents.
+ */
+export type AttributionFacet = 'tool' | 'skill' | 'subagent';
+
+export interface AttributionBucket {
+  readonly costUsd: number;
+  /** input + output + cache-read + cache-creation tokens; 0 when the facet has no token signal. */
+  readonly tokens: number;
+  /** Tool calls for `tool`/`skill`, API requests for `subagent`. */
+  readonly count: number;
+  /** Summed tool-call wall time; 0 when not measured. */
+  readonly durationMs: number;
+}
+
+export interface SessionAttribution {
+  readonly buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>>;
+  /** USD spent on API requests whose prompt (input + cache read + cache creation) exceeded {@link HIGH_CONTEXT_TOKENS}. */
+  readonly highContextCostUsd: number;
+  /**
+   * Sum over assistant turns of the gap between the assistant transcript line
+   * and the line before it: an estimate of time spent waiting on the model
+   * API. null when no transcript was observed.
+   */
+  readonly apiDurationMs: number | null;
+}
+
+/** Prompt size above which a request counts toward `highContextCostUsd`. */
+export const HIGH_CONTEXT_TOKENS = 150_000;
 
 export interface AuditEntry {
   readonly timestamp: number;

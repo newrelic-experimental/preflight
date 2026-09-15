@@ -13,6 +13,8 @@ import { calculateCost, createLogger } from '../shared/index.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
+import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
+import type { AttributionBucket } from '../storage/types.js';
 
 const logger = createLogger('cost-tracker');
 
@@ -46,10 +48,19 @@ export interface TokenRecordContext {
    * Best-effort subagent type, cross-referenced by the caller from a
    * `ToolCallRecord` sharing the same `agentId` (the transcript-derived
    * subagent token pipeline carries no type of its own — see
-   * `subagentCostByAgentType`'s doc comment). Absent when no such record has
+   * `subagentByAgentType`'s doc comment). Absent when no such record has
    * been seen yet for this `agentId`.
    */
   readonly agentType?: string;
+  /**
+   * Time (ms) spent waiting on the model API for this turn, from
+   * `ParentTranscriptWatcher`'s gap between the assistant transcript line
+   * and the line before it (see `TokenHookEvent.responseMs`). Absent when
+   * no transcript was observed for this token event. Accumulates into
+   * `CostMetrics.apiDurationMs`, which stays `null` until the first
+   * observation.
+   */
+  readonly responseMs?: number;
 }
 
 const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
@@ -125,14 +136,27 @@ export interface CostMetrics {
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
   /**
-   * Subagent-attributed cost bucketed by `ctx.agentType` (best-effort — see
+   * Subagent-attributed spend bucketed by `ctx.agentType` (best-effort — see
    * `TokenRecordContext.agentType`). Entries only appear for `agentId`s a
    * `ToolCallRecord` with a matching type has already been seen for; a
    * subagent that never makes a hook-visible tool call has its cost counted
-   * in `subagentCostUsd` but not broken out here. In-memory only — unlike
+   * in `subagentCostUsd` but not broken out here. `count` is the number of
+   * token events attributed to that agent type; `durationMs` is always 0 (no
+   * per-call duration signal reaches this tracker). In-memory only — unlike
    * `costByModel`, this does NOT survive a process restart.
    */
-  readonly subagentCostByAgentType: Record<string, number>;
+  readonly subagentByAgentType: Record<string, AttributionBucket>;
+  /**
+   * Cumulative cost of every token event whose prompt (input + cache-read +
+   * cache-creation tokens) exceeded {@link HIGH_CONTEXT_TOKENS}.
+   */
+  readonly highContextCostUsd: number;
+  /**
+   * Sum of every token event's `ctx.responseMs` (see `TokenRecordContext`) —
+   * an estimate of cumulative time spent waiting on the model API. `null`
+   * until the first token event that carries a `responseMs`.
+   */
+  readonly apiDurationMs: number | null;
   /**
    * The combined correction factor (`rateMultiplier` × the 1.1 data-residency
    * premium when configured — see `CostTrackerOptions`) applied to every
@@ -230,8 +254,12 @@ export class CostTracker implements Resettable {
 
   /** Subagent-attributed spend per local-day key, for a today-scoped KPI. */
   private subagentCostByDayUsd = new Map<string, number>();
-  /** Subagent-attributed spend per `ctx.agentType` — see `CostMetrics.subagentCostByAgentType`. */
-  private subagentCostByAgentType = new Map<string, number>();
+  /** Subagent-attributed spend per `ctx.agentType` — see `CostMetrics.subagentByAgentType`. */
+  private subagentByAgentType = new Map<string, AttributionBucket>();
+  /** See `CostMetrics.highContextCostUsd`. */
+  private highContextCostUsd = 0;
+  /** See `CostMetrics.apiDurationMs`; null until the first `ctx.responseMs` observation. */
+  private apiDurationMs: number | null = null;
   private parentCostUsd = 0;
   private totalLinesChanged = 0;
   private readonly rateMultiplier: number;
@@ -288,6 +316,42 @@ export class CostTracker implements Resettable {
     return this.accumulateTokens(usage, model);
   }
 
+  /**
+   * Shared by both the late-arrival and normal paths of `accumulateTokens`:
+   * per-agent-type subagent bucketing, high-context spend, and API-duration
+   * accumulation. All three are session-level totals like `subagentCostUsd`/
+   * `parentCostUsd` above, so — like those — they still accumulate on a late
+   * arrival even though day bucketing is skipped for one.
+   */
+  private recordAttributionSideEffects(
+    usage: TokenUsage,
+    ctx: TokenRecordContext | undefined,
+    breakdown: CostBreakdown,
+  ): void {
+    if (ctx?.agentId !== undefined && ctx.agentType !== undefined) {
+      const tokens =
+        usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
+      const existing = this.subagentByAgentType.get(ctx.agentType);
+      this.subagentByAgentType.set(ctx.agentType, {
+        costUsd: (existing?.costUsd ?? 0) + breakdown.totalUsd,
+        tokens: (existing?.tokens ?? 0) + tokens,
+        count: (existing?.count ?? 0) + 1,
+        durationMs: 0,
+      });
+    }
+
+    if (
+      usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens >
+      HIGH_CONTEXT_TOKENS
+    ) {
+      this.highContextCostUsd += breakdown.totalUsd;
+    }
+
+    if (ctx?.responseMs !== undefined) {
+      this.apiDurationMs = (this.apiDurationMs ?? 0) + ctx.responseMs;
+    }
+  }
+
   private accumulateTokens(
     usage: TokenUsage,
     model: string,
@@ -327,15 +391,10 @@ export class CostTracker implements Resettable {
       this.totalCacheSavingsUsd += breakdown.savingsFromCacheUsd;
       if (ctx?.agentId !== undefined) {
         this.subagentCostUsd += breakdown.totalUsd;
-        if (ctx.agentType !== undefined) {
-          this.subagentCostByAgentType.set(
-            ctx.agentType,
-            (this.subagentCostByAgentType.get(ctx.agentType) ?? 0) + breakdown.totalUsd,
-          );
-        }
       } else {
         this.parentCostUsd += breakdown.totalUsd;
       }
+      this.recordAttributionSideEffects(usage, ctx, breakdown);
       return breakdown;
     }
 
@@ -353,15 +412,10 @@ export class CostTracker implements Resettable {
     // Subagent vs parent split
     if (ctx?.agentId !== undefined) {
       this.subagentCostUsd += breakdown.totalUsd;
-      if (ctx.agentType !== undefined) {
-        this.subagentCostByAgentType.set(
-          ctx.agentType,
-          (this.subagentCostByAgentType.get(ctx.agentType) ?? 0) + breakdown.totalUsd,
-        );
-      }
     } else {
       this.parentCostUsd += breakdown.totalUsd;
     }
+    this.recordAttributionSideEffects(usage, ctx, breakdown);
 
     // Day bucketing
     const dayKey = localDateKey(tsMs);
@@ -620,7 +674,9 @@ export class CostTracker implements Resettable {
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
       subagentCostByDayUsd: Object.fromEntries(this.subagentCostByDayUsd),
-      subagentCostByAgentType: Object.fromEntries(this.subagentCostByAgentType),
+      subagentByAgentType: Object.fromEntries(this.subagentByAgentType),
+      highContextCostUsd: this.highContextCostUsd,
+      apiDurationMs: this.apiDurationMs,
       costRateMultiplierApplied: this.rateMultiplier,
     };
   }
@@ -687,7 +743,9 @@ export class CostTracker implements Resettable {
     this.costByModel = new Map();
     this.costByDayUsd = new Map();
     this.subagentCostByDayUsd = new Map();
-    this.subagentCostByAgentType = new Map();
+    this.subagentByAgentType = new Map();
+    this.highContextCostUsd = 0;
+    this.apiDurationMs = null;
     this.firstActivityMsByDay = new Map();
     this.costByWorkflowRunId = new Map();
     this.lastMutationMsByDay = new Map();
