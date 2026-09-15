@@ -185,7 +185,7 @@ interface WeekAggregates {
    * CLAUDE.md change that makes the agent verify more thoroughly or
    * delegate to subagents legitimately raises it. Do not derive an
    * improved/degraded signal from `weeklyToolCallTrend` or
-   * `WeekComparison.toolCallDelta`/`toolCallPctChange` below (#609).
+   * `WeekComparison.toolCallDelta`/`toolCallPctChange` below.
    */
   toolCallsPerTask: number;
   antiPatterns: Record<string, number>;
@@ -281,7 +281,7 @@ function confidenceForSampleSize(n: number): ModelRecommendationConfidence {
  * are excluded from the per-model ranking below rather than collapsed onto
  * `s.model`. Falls back to the legacy single `s.model` label when
  * `modelBreakdown` is empty (sessions persisted before per-model breakdown
- * tracking existed) (#611).
+ * tracking existed).
  */
 function getSessionModelKey(s: FullSessionSummary): string | null {
   const breakdownModels = Object.keys(s.modelBreakdown);
@@ -295,7 +295,7 @@ function getSessionModelKey(s: FullSessionSummary): string | null {
 // model's apparent efficiency score independent of the model itself. There's
 // no task-difficulty signal available to stratify on today, so this isn't
 // corrected here; the caveat is surfaced in the recommendation text instead
-// (see RecommendationEngine.getModelRecommendations()) (#611).
+// (see RecommendationEngine.getModelRecommendations()).
 function rankModelsForSessions(sessions: FullSessionSummary[]): {
   ranked: ModelOutcomeStats[];
   recommendedModel: string | null;

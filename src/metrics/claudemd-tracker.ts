@@ -251,7 +251,7 @@ export class ClaudeMdTracker {
       // thoroughly or delegate to subagents legitimately increases this
       // number. `improved` is computed for shape-compatibility only; it is
       // deliberately excluded from generateVerdict() below and should not be
-      // read as a quality signal (#609).
+      // read as a quality signal.
       toolCallsPerTask: computeDelta(
         beforeMetrics.avgToolCallsPerTask,
         afterMetrics.avgToolCallsPerTask,
@@ -452,7 +452,7 @@ function generateVerdict(deltas: ClaudeMdImpactReport['deltas']): string {
   // no reliable "higher/lower is better" direction (see the comment on its
   // computeDelta() call above), so it can't contribute to a majority vote
   // over improved/degraded metrics without baking in an unreliable
-  // assumption (#609).
+  // assumption.
   const entries: Array<{ name: string; delta: MetricDelta }> = [
     ...(deltas.efficiencyScore !== null
       ? [{ name: 'efficiency', delta: deltas.efficiencyScore }]

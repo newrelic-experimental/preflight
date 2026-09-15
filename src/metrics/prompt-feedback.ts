@@ -39,7 +39,7 @@ export interface PromptCorrelation {
 // large — which is orthogonal to statistical SIGNIFICANCE. 'insufficient_data'
 // is distinct from 'negligible': the latter means "we compared and the
 // effect is tiny," the former means "there weren't enough samples to compare
-// at all" (see MIN_SAMPLES_PER_GROUP below) (#616).
+// at all" (see MIN_SAMPLES_PER_GROUP below).
 export interface EffectSize {
   readonly metric: string;
   readonly cohensD: number;
@@ -71,7 +71,7 @@ const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
 // which only exists to avoid a NaN in the pooled-variance division. Same
 // low-friction threshold-of-3 convention used elsewhere in this codebase
 // (e.g. trend-analyzer.ts's MIN_SESSIONS_LOW_CONFIDENCE) for "how many
-// samples before I trust this at all" (#616).
+// samples before I trust this at all".
 const MIN_SAMPLES_PER_GROUP = 3;
 
 // ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ export class PromptFeedbackEngine {
       // A real minimum-sample gate, distinct from cohensD()'s own nA+nB<3
       // guard (which only prevents division-by-zero/NaN in the pooled
       // variance, not an actual power/sample-size check). Below this, an
-      // effect size is not surfaced as any label at all (#616).
+      // effect size is not surfaced as any label at all.
       if (
         beforeValues.length < MIN_SAMPLES_PER_GROUP ||
         afterValues.length < MIN_SAMPLES_PER_GROUP
@@ -394,7 +394,7 @@ function cohensD(groupA: number[], groupB: number[]): number {
 // Cohen's own small/medium/large thresholds (0.2/0.5/0.8) — this previously
 // only used two of the three breakpoints (0.5 and 0.2), collapsing medium
 // and large into one "significant" bucket. Labels are effect-size buckets
-// only; they say nothing about statistical significance (#616).
+// only; they say nothing about statistical significance.
 function labelEffectSize(d: number): EffectSize['label'] {
   const absD = Math.abs(d);
   if (absD >= 0.8) return 'large';

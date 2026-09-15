@@ -5,7 +5,7 @@
  * Dimensions (each normalized to 0–1):
  *   1. Specificity — tool-calls-per-message fan-out (a delegation proxy, not
  *      actually a measure of prompt detail — see computeSpecificity()'s doc
- *      comment, #615)
+ *      comment)
  *   2. Autonomy — how independently does the AI work?
  *   3. Correction Rate — how rarely does the developer redirect the AI? (inverted)
  *   4. Task Complexity — how complex are the tasks given to the AI?
@@ -13,7 +13,7 @@
  * Classifications based on dimension thresholds:
  *   - "Power User": high specificity + high autonomy
  *   - "Delegator": high autonomy + real subagent delegation (agentSpawns),
- *      not the specificity/autonomy ratio alone — see classify()'s comment (#615)
+ *      not the specificity/autonomy ratio alone — see classify()'s comment
  *   - "Learning": low specificity + frequent corrections
  *   - "Collaborative": everything else
  */
@@ -220,7 +220,7 @@ function computeDimensions(sessions: FullSessionSummary[]): ProfileDimensions {
  * Specificity: ratio of tool calls to user messages, normalized so 10:1 = 1.0.
  * When userMessages is 0, falls back to 0.5 (unknown).
  *
- * KNOWN LIMITATION (#615): despite the name, this does not measure prompt
+ * KNOWN LIMITATION: despite the name, this does not measure prompt
  * detail/specificity — it measures how many tool calls a message fanned out
  * to, which is really a delegation/fan-out signal. A terse, ambiguous prompt
  * that happens to trigger a long autonomous run scores as "highly specific"
@@ -244,7 +244,7 @@ function computeSpecificity(toolCalls: number, userMessages: number): number {
  * Measures how much multi-step work the AI does independently per turn.
  * When assistantMessages is 0, falls back to 0.5 (neutral/unknown).
  *
- * KNOWN LIMITATION (#615): the "5 tool calls/turn = max" saturation point
+ * KNOWN LIMITATION: the "5 tool calls/turn = max" saturation point
  * predates routine parallel tool-call blocks, which commonly exceed it —
  * pinning this near 1.0 for most modern sessions and making `autonomy < 0.5`
  * gates elsewhere (prompt-feedback.ts, recommendation-engine.ts) nearly
@@ -300,7 +300,7 @@ function computeTaskComplexity(
 // high — that combination algebraically reduces to a chatty,
 // high-user-message-count session (the opposite of delegating), since both
 // dimensions share `toolCalls` as their numerator. Hand-picked judgment
-// call: averaging at least one real subagent spawn per task (#615).
+// call: averaging at least one real subagent spawn per task.
 const AVG_AGENT_SPAWNS_FOR_DELEGATION = 1;
 
 function hasRealDelegation(sessions: FullSessionSummary[]): boolean {

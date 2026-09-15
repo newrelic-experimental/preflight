@@ -202,7 +202,7 @@ describe('CollaborationProfiler', () => {
 
     // Delegator: high autonomy (≥0.6) + real subagent delegation
     // (avg agentSpawns/task >= 1) — specificity/autonomy ratios alone no
-    // longer drive this classification (#615).
+    // longer drive this classification.
     // autonomy: 15 toolCalls / 5 assistantMessages / 5 = 0.6
     store.saveSession(
       makeSummary({
@@ -289,7 +289,7 @@ describe('CollaborationProfiler', () => {
 
     // Low specificity (<0.6) + high autonomy (>=0.6), but zero agent spawns —
     // this combination is algebraically just a chatty, high-user-message
-    // session, not real delegation (#615), so it should NOT be 'Delegator'.
+    // session, not real delegation, so it should NOT be 'Delegator'.
     store.saveSession(
       makeSummary({
         sessionId: 'not-delegator',
