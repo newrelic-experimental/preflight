@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.52.4] - 2026-09-15
+
+### Fixed
+
+- The CLAUDE.md impact verdict and the weekly tool-call trend no longer treat "fewer tool calls per task" as automatically better — prompt-cache reads dominate real cost, not raw call count, and a CLAUDE.md change that makes the agent verify more thoroughly or delegate to subagents legitimately raises this number. It's now excluded from the verdict's majority vote entirely.
+- Model recommendation ranking no longer attributes a session that used more than one model (e.g. an orchestrator model plus subagent models) to a single label — such sessions are excluded from per-model ranking instead of being credited or blamed on whichever model happened to be recorded as the session's primary one. The recommendation text also now discloses that the ranking doesn't control for task difficulty.
+- The efficiency score's autonomy component no longer penalizes a single clarifying question up to 33x differently purely based on unrelated task size — one question is now free regardless of how many tool calls the task involved, with each additional question costing a fixed amount.
+- The efficiency score's first-attempt-quality component was a hard cliff that could only ever produce exactly 1.0 or 0.0, and only reacted to thrashing. It's now a gradient based on the worst severity across all five detected anti-pattern types, not just thrashing.
+- The collaboration profile's "Delegator" classification no longer fires for a chatty, low-detail-looking session with no actual subagent spawns — it now requires real delegation (average agent spawns per task) in addition to high autonomy.
+- CLAUDE.md A/B comparison no longer labels a small or statistically incomparable effect size as "significant" — effect-size labels (small/medium/large/negligible, per Cohen's own thresholds) are now reported separately from sample-size adequacy, and comparisons below a minimum sample count per group are labeled as having insufficient data rather than being scored at all.
+
 ## [1.52.2] - 2026-09-15
 
 ### Fixed

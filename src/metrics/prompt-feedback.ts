@@ -35,16 +35,21 @@ export interface PromptCorrelation {
   readonly sessionsWithout: number;
 }
 
+// Cohen's d conventions (0.2/0.5/0.8) describe effect SIZE — small/medium/
+// large — which is orthogonal to statistical SIGNIFICANCE. 'insufficient_data'
+// is distinct from 'negligible': the latter means "we compared and the
+// effect is tiny," the former means "there weren't enough samples to compare
+// at all" (see MIN_SAMPLES_PER_GROUP below) (#616).
 export interface EffectSize {
   readonly metric: string;
   readonly cohensD: number;
-  readonly label: 'significant' | 'moderate' | 'noise';
+  readonly label: 'large' | 'medium' | 'small' | 'negligible' | 'insufficient_data';
 }
 
 export interface ClaudeMdAbComparison {
   readonly changeTimestamp: number;
   readonly effectSizes: EffectSize[];
-  readonly overallLabel: 'significant' | 'moderate' | 'noise';
+  readonly overallLabel: EffectSize['label'];
 }
 
 export interface PromptRecommendation {
@@ -60,6 +65,14 @@ export interface PromptRecommendation {
 // ---------------------------------------------------------------------------
 
 const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+// Minimum samples per before/after group before an effect size is surfaced
+// as a real comparison at all — distinct from cohensD()'s own nA+nB<3 guard,
+// which only exists to avoid a NaN in the pooled-variance division. Same
+// low-friction threshold-of-3 convention used elsewhere in this codebase
+// (e.g. trend-analyzer.ts's MIN_SESSIONS_LOW_CONFIDENCE) for "how many
+// samples before I trust this at all" (#616).
+const MIN_SAMPLES_PER_GROUP = 3;
 
 // ---------------------------------------------------------------------------
 // PromptFeedbackEngine
@@ -181,8 +194,15 @@ export class PromptFeedbackEngine {
       const beforeValues = beforeSessions.map(m.extract).filter((v): v is number => v !== null);
       const afterValues = afterSessions.map(m.extract).filter((v): v is number => v !== null);
 
-      if (beforeValues.length < 1 || afterValues.length < 1) {
-        effectSizes.push({ metric: m.name, cohensD: 0, label: 'noise' });
+      // A real minimum-sample gate, distinct from cohensD()'s own nA+nB<3
+      // guard (which only prevents division-by-zero/NaN in the pooled
+      // variance, not an actual power/sample-size check). Below this, an
+      // effect size is not surfaced as any label at all (#616).
+      if (
+        beforeValues.length < MIN_SAMPLES_PER_GROUP ||
+        afterValues.length < MIN_SAMPLES_PER_GROUP
+      ) {
+        effectSizes.push({ metric: m.name, cohensD: 0, label: 'insufficient_data' });
         continue;
       }
 
@@ -194,20 +214,31 @@ export class PromptFeedbackEngine {
       });
     }
 
-    // Overall label from majority
-    const labelCounts = { significant: 0, moderate: 0, noise: 0 };
+    // Overall label from majority among metrics that had enough samples to
+    // compare at all — 'insufficient_data' entries carry no signal and are
+    // excluded from the vote.
+    const labelCounts = { large: 0, medium: 0, small: 0, negligible: 0, insufficient_data: 0 };
     for (const es of effectSizes) labelCounts[es.label]++;
+    const comparableCount = effectSizes.length - labelCounts.insufficient_data;
 
-    // Tiebreaker: significant > moderate > noise (highest "alarm level" wins on ties).
-    let overallLabel: EffectSize['label'] = 'noise';
-    if (effectSizes.length > 0) {
+    // Tiebreaker: large > medium > small > negligible (highest "alarm level" wins on ties).
+    let overallLabel: EffectSize['label'] = 'insufficient_data';
+    if (comparableCount > 0) {
       if (
-        labelCounts.significant >= labelCounts.moderate &&
-        labelCounts.significant >= labelCounts.noise
+        labelCounts.large >= labelCounts.medium &&
+        labelCounts.large >= labelCounts.small &&
+        labelCounts.large >= labelCounts.negligible
       ) {
-        overallLabel = 'significant';
-      } else if (labelCounts.moderate >= labelCounts.noise) {
-        overallLabel = 'moderate';
+        overallLabel = 'large';
+      } else if (
+        labelCounts.medium >= labelCounts.small &&
+        labelCounts.medium >= labelCounts.negligible
+      ) {
+        overallLabel = 'medium';
+      } else if (labelCounts.small >= labelCounts.negligible) {
+        overallLabel = 'small';
+      } else {
+        overallLabel = 'negligible';
       }
     }
 
@@ -360,11 +391,16 @@ function cohensD(groupA: number[], groupB: number[]): number {
   return Math.abs(meanB - meanA) / pooledSd;
 }
 
+// Cohen's own small/medium/large thresholds (0.2/0.5/0.8) — this previously
+// only used two of the three breakpoints (0.5 and 0.2), collapsing medium
+// and large into one "significant" bucket. Labels are effect-size buckets
+// only; they say nothing about statistical significance (#616).
 function labelEffectSize(d: number): EffectSize['label'] {
   const absD = Math.abs(d);
-  if (absD > 0.5) return 'significant';
-  if (absD >= 0.2) return 'moderate';
-  return 'noise';
+  if (absD >= 0.8) return 'large';
+  if (absD >= 0.5) return 'medium';
+  if (absD >= 0.2) return 'small';
+  return 'negligible';
 }
 
 function mean(values: number[]): number {
