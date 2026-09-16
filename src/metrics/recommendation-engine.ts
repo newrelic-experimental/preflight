@@ -392,7 +392,7 @@ export class RecommendationEngine {
         'model_selection',
         'high',
         'Historically better-performing model available',
-        `Across ${top.sessionCount} past sessions, ${report.recommendedModel} averaged a higher efficiency score than your current default (${currentModel}). Consider switching.`,
+        `Across ${top.sessionCount} past sessions, ${report.recommendedModel} averaged a higher efficiency score than your current default (${currentModel}). Consider switching. Note: this doesn't control for task difficulty — if harder work tends to get routed to one model, its score is pulled down independent of the model itself.`,
         `${report.recommendedModel}: avg efficiency ${top.avgEfficiencyScore ?? 'n/a'}, $${top.avgCostUsd}/session (n=${top.sessionCount})` +
           (current
             ? `; ${currentModel}: avg efficiency ${current.avgEfficiencyScore ?? 'n/a'}, $${current.avgCostUsd}/session (n=${current.sessionCount})`

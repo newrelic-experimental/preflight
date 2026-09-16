@@ -71,7 +71,7 @@ describe('Perfect task', () => {
 // ---------------------------------------------------------------------------
 
 describe('Poor task', () => {
-  it('scores near 0.0 for a slow, failing, non-autonomous task with thrashing', () => {
+  it('scores low for a slow, failing, non-autonomous task with thrashing', () => {
     const scorer = new EfficiencyScorer();
 
     const task = makeTask({
@@ -95,11 +95,14 @@ describe('Poor task', () => {
 
     const result = scorer.computeScore(task, antiPatterns);
 
-    expect(result.score).toBeLessThan(0.15);
+    // firstAttemptQuality = 1 - 5/10 = 0.5 is no longer a hard 0, so the
+    // composite can't be as low as before, but every other component is
+    // still at its floor.
+    expect(result.score).toBeLessThan(0.2);
     expect(result.components.speed).toBeLessThan(0.01);
     expect(result.components.correctness).toBe(0);
-    expect(result.components.autonomy).toBeLessThan(0.25);
-    expect(result.components.firstAttemptQuality).toBe(0);
+    expect(result.components.autonomy).toBe(0);
+    expect(result.components.firstAttemptQuality).toBe(0.5);
   });
 });
 
@@ -138,7 +141,7 @@ describe('No user questions', () => {
 // ---------------------------------------------------------------------------
 
 describe('Thrash iterations', () => {
-  it('3 thrash iterations → first-attempt quality = 0.0', () => {
+  it('3 thrash iterations → first-attempt quality = 0.7', () => {
     const scorer = new EfficiencyScorer();
 
     const antiPatterns: AntiPattern[] = [
@@ -153,10 +156,11 @@ describe('Thrash iterations', () => {
 
     const result = scorer.computeScore(makeTask(), antiPatterns);
 
-    expect(result.components.firstAttemptQuality).toBe(0);
+    // 1 - 3/10 = 0.7
+    expect(result.components.firstAttemptQuality).toBeCloseTo(0.7, 2);
   });
 
-  it('1 thrash iteration → first-attempt quality = 0.667', () => {
+  it('1 thrash iteration → first-attempt quality = 0.9', () => {
     const scorer = new EfficiencyScorer();
 
     const antiPatterns: AntiPattern[] = [
@@ -171,7 +175,8 @@ describe('Thrash iterations', () => {
 
     const result = scorer.computeScore(makeTask(), antiPatterns);
 
-    expect(result.components.firstAttemptQuality).toBeCloseTo(0.667, 2);
+    // 1 - 1/10 = 0.9
+    expect(result.components.firstAttemptQuality).toBeCloseTo(0.9, 2);
   });
 
   it('uses the worst thrashing pattern when multiple files thrash', () => {
@@ -185,11 +190,11 @@ describe('Thrash iterations', () => {
 
     const result = scorer.computeScore(makeTask(), antiPatterns);
 
-    // 1 - 4/3 = negative → clamped to 0
-    expect(result.components.firstAttemptQuality).toBe(0);
+    // 1 - 4/10 = 0.6
+    expect(result.components.firstAttemptQuality).toBeCloseTo(0.6, 2);
   });
 
-  it('non-thrashing anti-patterns do not affect first-attempt quality', () => {
+  it('non-thrashing anti-patterns also affect first-attempt quality', () => {
     const scorer = new EfficiencyScorer();
 
     const antiPatterns: AntiPattern[] = [
@@ -199,7 +204,9 @@ describe('Thrash iterations', () => {
 
     const result = scorer.computeScore(makeTask(), antiPatterns);
 
-    expect(result.components.firstAttemptQuality).toBe(1);
+    // Worst severity across ALL pattern types (not just thrashing) is 10
+    // (re_reading's readCount) → 1 - 10/10 = 0
+    expect(result.components.firstAttemptQuality).toBe(0);
   });
 });
 
@@ -294,18 +301,18 @@ describe('Zero linesChanged tasks', () => {
       linesChanged: 0,
       testsRun: 4,
       testsPassed: 4, // correctness = 1
-      askedUserQuestions: 5,
-      toolCallCount: 10, // autonomy = 0.5
+      askedUserQuestions: 5, // autonomy = 1 - (5-1)/4 = 0
+      toolCallCount: 10,
     });
     const antiPatterns: AntiPattern[] = [
       { type: 'thrashing', file: '/a.ts', iterations: 3, tokensWasted: 0, suggestion: '' },
     ];
-    // firstAttemptQuality = 1 - 3/3 = 0
+    // firstAttemptQuality = 1 - 3/10 = 0.7
 
     const result = scorer.computeScore(task, antiPatterns);
 
-    // (1*0.9 + 0.5*0.3 + 0*0.3) / 1.5 = (0.9 + 0.15 + 0) / 1.5 = 0.7
-    expect(result.score).toBeCloseTo(0.7, 3);
+    // (1*0.9 + 0*0.3 + 0.7*0.3) / 1.5 = (0.9 + 0 + 0.21) / 1.5 = 0.74
+    expect(result.score).toBeCloseTo(0.74, 3);
   });
 
   it('scores 0 rather than NaN when the non-speed weights are all 0', () => {
@@ -345,14 +352,14 @@ describe('Speed weight reduced', () => {
       durationMs: 1_000, // 400 lines/sec, far above baseline → speed clamps to 1.0
       testsRun: 0,
       testsPassed: 0, // correctness defaults to 0.5
-      askedUserQuestions: 5,
-      toolCallCount: 10, // autonomy = 0.5
+      askedUserQuestions: 5, // autonomy = 1 - (5-1)/4 = 0
+      toolCallCount: 10,
     });
     const result = scorer.computeScore(task);
 
     expect(result.components.speed).toBe(1);
-    // 1*0.10 + 0.5*0.30 + 0.5*0.30 + 1*0.30 = 0.70
-    expect(result.score).toBeCloseTo(0.7, 2);
+    // 1*0.10 + 0.5*0.30 + 0*0.30 + 1*0.30 = 0.55
+    expect(result.score).toBeCloseTo(0.55, 2);
   });
 });
 
@@ -611,14 +618,24 @@ describe('updateScore()', () => {
 // ---------------------------------------------------------------------------
 
 describe('Autonomy edge cases', () => {
-  it('many user questions reduces autonomy', () => {
+  it('a single clarifying question is not penalized', () => {
     const scorer = new EfficiencyScorer();
 
-    const task = makeTask({ askedUserQuestions: 5, toolCallCount: 10 });
+    const task = makeTask({ askedUserQuestions: 1, toolCallCount: 3 });
     const result = scorer.computeScore(task);
 
-    // 1 - 5/10 = 0.5
-    expect(result.components.autonomy).toBe(0.5);
+    expect(result.components.autonomy).toBe(1);
+  });
+
+  it('many user questions reduces autonomy, independent of tool call count', () => {
+    const scorer = new EfficiencyScorer();
+
+    const small = makeTask({ askedUserQuestions: 5, toolCallCount: 10 });
+    const large = makeTask({ askedUserQuestions: 5, toolCallCount: 200 });
+
+    // 1 - (5-1)/4 = 0, the same regardless of task size
+    expect(scorer.computeScore(small).components.autonomy).toBe(0);
+    expect(scorer.computeScore(large).components.autonomy).toBe(0);
   });
 
   it('0 tool calls → autonomy = 1.0 (no work to judge)', () => {

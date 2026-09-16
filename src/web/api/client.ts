@@ -620,8 +620,10 @@ export interface UsageInsightsReport {
   readonly attributionRatePct: number | null;
 }
 
-export const fetchUsageInsights = (days = 7): Promise<UsageInsightsReport> =>
-  getJson<UsageInsightsReport>(`/api/usage-insights?days=${days}`);
+export const fetchUsageInsights = (window: number | 'today' = 7): Promise<UsageInsightsReport> =>
+  getJson<UsageInsightsReport>(
+    window === 'today' ? '/api/usage-insights?window=today' : `/api/usage-insights?days=${window}`,
+  );
 
 // Mirrors the subset of PersonalWeekMetrics (src/metrics/personal-coach.ts,
 // not importable) actually rendered by CoachMetricsTable.
@@ -1479,7 +1481,7 @@ export const qk = {
   weekly: ['weekly'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
-  usageInsights: (days: number) => ['usage-insights', days] as const,
+  usageInsights: (window: number | 'today') => ['usage-insights', window] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
   apiFailures: ['api-failures'] as const,

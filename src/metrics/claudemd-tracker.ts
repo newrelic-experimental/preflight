@@ -267,10 +267,17 @@ export class ClaudeMdTracker {
         afterMetrics.avgCorrectionRate,
         false, // lower is better
       ),
+      // Tool calls per task is not a reliable cost or quality proxy in
+      // either direction — prompt-cache reads dominate real cost, not raw
+      // call count, and a CLAUDE.md change that makes the agent verify more
+      // thoroughly or delegate to subagents legitimately increases this
+      // number. `improved` is computed for shape-compatibility only; it is
+      // deliberately excluded from generateVerdict() below and should not be
+      // read as a quality signal.
       toolCallsPerTask: computeDelta(
         beforeMetrics.avgToolCallsPerTask,
         afterMetrics.avgToolCallsPerTask,
-        false, // lower is better
+        false,
       ),
       taskSuccessRate:
         beforeMetrics.avgTaskSuccessRate !== null && afterMetrics.avgTaskSuccessRate !== null
@@ -491,13 +498,17 @@ function computeDelta(
 // ---------------------------------------------------------------------------
 
 function generateVerdict(deltas: ClaudeMdImpactReport['deltas']): string {
+  // toolCallsPerTask is deliberately NOT one of the verdict inputs — it has
+  // no reliable "higher/lower is better" direction (see the comment on its
+  // computeDelta() call above), so it can't contribute to a majority vote
+  // over improved/degraded metrics without baking in an unreliable
+  // assumption.
   const entries: Array<{ name: string; delta: MetricDelta }> = [
     ...(deltas.efficiencyScore !== null
       ? [{ name: 'efficiency', delta: deltas.efficiencyScore }]
       : []),
     { name: 'cost', delta: deltas.cost },
     { name: 'corrections', delta: deltas.correctionRate },
-    { name: 'tool calls/task', delta: deltas.toolCallsPerTask },
     ...(deltas.taskSuccessRate !== null
       ? [{ name: 'task success', delta: deltas.taskSuccessRate }]
       : []),

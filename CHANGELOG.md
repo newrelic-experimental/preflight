@@ -5,11 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.53.3] - 2026-09-16
+## [1.54.3] - 2026-09-16
 
 ### Fixed
 
 - **Several coaching and recommendation thresholds were stale, mislabeled, or otherwise miscalibrated against how the tool is actually used today.** Cost-per-session coaching had no throughput denominator and could recommend breaking sessions into smaller ones — actively counterproductive under prompt caching — so it now compares cost per completed task instead, and the recommendation focuses on redundant work rather than session length. The "expensive investigation task" flag compared against a fixed $2 figure with no value side to the comparison; it now compares against the developer's own average task cost and drops the blanket "use Grep/Glob instead" framing. The compute-waste status now scales with session size instead of a fixed 2,000-token floor that fired on nearly every real session. Cost-per-outcome ROI estimates raised the hours-saved assumption for investigation tasks and gave failed attempts a small non-zero value instead of zero, both still disclosed as rough approximations. The large-CLAUDE.md-context recommendation now sources the current model's real input and cache-read rates instead of a hardcoded Sonnet 4 price, and gates on the cache-adjusted marginal cost so a large but well-cached instruction file isn't flagged as a cost problem. The "efficiency score dropped X%" recommendation reported a point-scale delta as a percentage and could fire off a single scored session; it now reports points and requires a minimum weekly sample, matching how the same comparison is already worded and gated elsewhere.
+
+## [1.54.0] - 2026-09-15
+
+### Added
+
+- `/api/usage-insights` accepts `window=today`, scoping the share-of-spend report to local midnight so Today's contribution panel can match History's. New shared dashboard components: a spend-over-time bar chart with a cumulative line and an optional dashed projection (`SpendBars`), an actionable attention list with per-row advice and session links (`AttentionList`), and an inline empty-state variant.
+
+## [1.53.2] - 2026-09-15
+
+### Fixed
+
+- The CLAUDE.md impact verdict and the weekly tool-call trend no longer treat "fewer tool calls per task" as automatically better — prompt-cache reads dominate real cost, not raw call count, and a CLAUDE.md change that makes the agent verify more thoroughly or delegate to subagents legitimately raises this number. It's now excluded from the verdict's majority vote entirely.
+- Model recommendation ranking no longer attributes a session that used more than one model (e.g. an orchestrator model plus subagent models) to a single label — such sessions are excluded from per-model ranking instead of being credited or blamed on whichever model happened to be recorded as the session's primary one. The recommendation text also now discloses that the ranking doesn't control for task difficulty.
+- The efficiency score's autonomy component no longer penalizes a single clarifying question up to 33x differently purely based on unrelated task size — one question is now free regardless of how many tool calls the task involved, with each additional question costing a fixed amount.
+- The efficiency score's first-attempt-quality component was a hard cliff that could only ever produce exactly 1.0 or 0.0, and only reacted to thrashing. It's now a gradient based on the worst severity across all five detected anti-pattern types, not just thrashing.
+- The collaboration profile's "Delegator" classification no longer fires for a chatty, low-detail-looking session with no actual subagent spawns — it now requires real delegation (average agent spawns per task) in addition to high autonomy.
+- CLAUDE.md A/B comparison no longer labels a small or statistically incomparable effect size as "significant" — effect-size labels (small/medium/large/negligible, per Cohen's own thresholds) are now reported separately from sample-size adequacy, and comparisons below a minimum sample count per group are labeled as having insufficient data rather than being scored at all.
 
 ## [1.53.1] - 2026-09-15
 
