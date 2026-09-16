@@ -1607,6 +1607,7 @@ async function main(): Promise<void> {
     const claudeMdTracker = new ClaudeMdTracker({
       sessionStore,
       instructionFilePaths: activeInstructionFilePaths,
+      costTracker,
     });
     const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
     const personalCoach = new PersonalCoach(weeklySummaryGenerator, config.developer);

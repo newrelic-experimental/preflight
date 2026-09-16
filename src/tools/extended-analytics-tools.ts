@@ -23,6 +23,7 @@ import type { ToolSelectionScorer } from '../metrics/tool-selection-scorer.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
+import type { CostTracker } from '../metrics/cost-tracker.js';
 import {
   requireTracker,
   requireAvailable,
@@ -215,6 +216,7 @@ export interface ExtendedAnalyticsToolsDeps {
   qualityProxyTracker?: QualityProxyTracker;
   apiFailureTracker?: ApiFailureTracker;
   antiPatternDetector?: AntiPatternDetector;
+  costTracker?: CostTracker;
 }
 
 export function registerExtendedAnalyticsTools(
@@ -327,15 +329,33 @@ export function registerExtendedAnalyticsTools(
           'RetryDetector or AntiPatternDetector not available',
         );
         if (missing) return missing;
-        return handleGetComputeWaste(deps.retryDetector!, deps.antiPatternDetector!);
+        return handleGetComputeWaste(
+          deps.retryDetector!,
+          deps.antiPatternDetector!,
+          deps.costTracker,
+        );
       },
     },
   ]);
 }
 
+// Ratio-based thresholds so "needs_attention" scales with session size
+// instead of a fixed token count — a modern session can legitimately
+// consume millions of tokens, so an absolute floor like 2,000 tokens fires
+// almost unconditionally and trains developers to ignore the signal. Hand-
+// picked judgment calls, not derived from data.
+const NEEDS_ATTENTION_WASTE_RATIO = 0.05;
+const MODERATE_WASTE_RATIO = 0.01;
+// Fallback absolute thresholds, used only when a session token total isn't
+// available (no CostTracker passed in) so the status doesn't silently
+// disappear — same values this function used before the ratio existed.
+const FALLBACK_NEEDS_ATTENTION_TOKENS = 2000;
+const FALLBACK_MODERATE_TOKENS = 500;
+
 export function handleGetComputeWaste(
   retryDetector: RetryDetector,
   antiPatternDetector: AntiPatternDetector,
+  costTracker?: CostTracker,
 ): { content: Array<{ type: 'text'; text: string }> } {
   const retryTokensWasted = retryDetector.getMetrics().totalTokensWasted;
   const antiPatternTokensWasted = antiPatternDetector.getTotalAntiPatternWaste();
@@ -358,8 +378,28 @@ export function handleGetComputeWaste(
     .map(([type, v]) => ({ type, ...v }))
     .sort((a, b) => b.tokens_wasted - a.tokens_wasted);
 
+  const costMetrics = costTracker?.getMetrics();
+  const totalSessionTokens = costMetrics
+    ? costMetrics.totalInputTokens +
+      costMetrics.totalOutputTokens +
+      costMetrics.totalThinkingTokens +
+      costMetrics.totalCacheReadTokens +
+      costMetrics.totalCacheCreationTokens
+    : 0;
+  const wasteRatio = totalSessionTokens > 0 ? totalTokensWasted / totalSessionTokens : null;
+
   const status =
-    totalTokensWasted >= 2000 ? 'needs_attention' : totalTokensWasted >= 500 ? 'moderate' : 'clean';
+    wasteRatio !== null
+      ? wasteRatio >= NEEDS_ATTENTION_WASTE_RATIO
+        ? 'needs_attention'
+        : wasteRatio >= MODERATE_WASTE_RATIO
+          ? 'moderate'
+          : 'clean'
+      : totalTokensWasted >= FALLBACK_NEEDS_ATTENTION_TOKENS
+        ? 'needs_attention'
+        : totalTokensWasted >= FALLBACK_MODERATE_TOKENS
+          ? 'moderate'
+          : 'clean';
 
   return {
     content: [
@@ -370,6 +410,7 @@ export function handleGetComputeWaste(
             total_tokens_wasted: totalTokensWasted,
             retry_tokens_wasted: retryTokensWasted,
             anti_pattern_tokens_wasted: antiPatternTokensWasted,
+            waste_ratio: wasteRatio,
             breakdown,
             status,
           },

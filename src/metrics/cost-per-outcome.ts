@@ -65,14 +65,24 @@ export interface RoiEstimate {
 // task of this outcome type would otherwise take by hand — there's no way to
 // measure this directly, so ROI figures derived from it are an approximation,
 // not a precise measurement. Callers can override via the constructor.
+//
+// `investigation` and `failed_attempt` were revisited (see #618): the original
+// 0.5h for investigation undervalued what's often now the highest-leverage use
+// of the tool — a single well-scoped exploration or subagent fan-out routinely
+// replaces well over 0.5h of manual reading. `failed_attempt` was 0, treating
+// every failed attempt as worth literally nothing even when it eliminated a
+// hypothesis and narrowed the problem space; a small non-zero value credits
+// that without conflating it with the value of a completed task. Both are
+// still hand-picked judgment calls, not derived from data — the same
+// disclosure applies as always.
 const DEFAULT_HOURS_SAVED: Record<OutcomeType, number> = {
   bug_fix: 2,
   feature: 4,
   refactor: 1.5,
-  investigation: 0.5,
+  investigation: 1,
   configuration: 0.5,
   documentation: 1,
-  failed_attempt: 0,
+  failed_attempt: 0.25,
 };
 
 const CONFIG_EXTENSIONS = /\.(json|yaml|yml|toml|env|ini)$/i;

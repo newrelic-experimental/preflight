@@ -49,6 +49,15 @@ export interface Recommendation {
 
 const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
 
+// Judgment calls, not derived from data — see the class-level comment above
+// getCostRecommendations()/getEfficiencyRecommendations() for the rationale.
+const MIN_INVESTIGATION_SAMPLE = 3;
+const INVESTIGATION_COST_MULTIPLIER = 2;
+const MIN_WEEKLY_SESSIONS_FOR_TREND_COMPARISON = 3;
+const MIN_EFFICIENCY_DROP_POINTS = 0.1;
+const CLAUDEMD_LARGE_TOKEN_THRESHOLD = 3000;
+const CLAUDEMD_MIN_PER_TURN_COST_USD = 0.005;
+
 // Human-readable titles for PromptFeedbackEngine's sub-categories — its
 // `category` field is a slug (e.g. 'plan_mode'), not display text. Falls
 // back to the raw slug for any future category this map hasn't caught up to.
@@ -228,15 +237,26 @@ export class RecommendationEngine {
       );
     }
 
-    // Expensive investigations
-    if (attribution.costPerInvestigation > 2) {
+    // Expensive investigations — compared against this developer's own
+    // average task cost rather than a fixed dollar figure, since what
+    // "expensive" means depends on the developer's task mix and a stale
+    // absolute threshold doesn't scale with it. Requires a few investigation
+    // tasks so one outlier doesn't trigger this alone.
+    const investigationCount = attribution.outcomeDistribution['investigation']?.count ?? 0;
+    const avgTaskCost =
+      attribution.totalTasks > 0 ? attribution.totalCost / attribution.totalTasks : 0;
+    if (
+      investigationCount >= MIN_INVESTIGATION_SAMPLE &&
+      avgTaskCost > 0 &&
+      attribution.costPerInvestigation > avgTaskCost * INVESTIGATION_COST_MULTIPLIER
+    ) {
       recs.push(
         makeRec(
           'cost_optimization',
           'medium',
           'Expensive investigation tasks',
-          'Investigation tasks cost more than expected. Consider using Grep/Glob before asking AI to explore.',
-          `Investigation tasks cost $${round(attribution.costPerInvestigation, 2)} avg`,
+          'Investigation tasks are costing notably more than your other task types this week. Check whether they need a more targeted read pattern — but a broad exploration or subagent fan-out can legitimately cost more than a manual grep while still saving more of your time.',
+          `Investigation tasks cost $${round(attribution.costPerInvestigation, 2)} avg vs $${round(avgTaskCost, 2)} avg across all task types`,
         ),
       );
     }
@@ -260,14 +280,23 @@ export class RecommendationEngine {
       const previous = effTrend[effTrend.length - 2]!;
       const drop = previous.value - latest.value;
 
-      if (drop > 0.1) {
-        const dropPct = round(drop * 100, 0);
+      // Require a minimum sample in the latest week — a single scored
+      // session can otherwise swing the score and trigger this alone (same
+      // gating personal-coach.ts uses for its own weekly comparisons).
+      const hasSufficientSample = latest.sessionCount >= MIN_WEEKLY_SESSIONS_FOR_TREND_COMPARISON;
+
+      if (hasSufficientSample && drop > MIN_EFFICIENCY_DROP_POINTS) {
+        // The score is on a [0,1] scale, so a drop of 0.1 is 10 *points*,
+        // not 10% — reporting it as "%" mislabels a point-scale delta as a
+        // percentage (personal-coach.ts already describes the equivalent
+        // case correctly, as points).
+        const dropPoints = round(drop * 100, 0);
         recs.push(
           makeRec(
             'efficiency',
             'high',
             'Efficiency score dropped',
-            `Your efficiency score dropped ${dropPct}% from ${previous.week} to ${latest.week}. Check for increased anti-patterns.`,
+            `Your efficiency score dropped ${dropPoints} points from ${previous.week} to ${latest.week}. Check for increased anti-patterns.`,
             `Efficiency: ${round(previous.value, 2)} → ${round(latest.value, 2)}`,
           ),
         );
@@ -316,13 +345,22 @@ export class RecommendationEngine {
         );
       }
 
-      if (impact.contextTokensForClaudeMd !== null && impact.contextTokensForClaudeMd > 3000) {
+      // Gated on the cache-adjusted per-turn cost, not just raw token count —
+      // a large but well-cached CLAUDE.md (served from prompt cache on
+      // repeat turns) has a real marginal cost far below what its token
+      // count alone would suggest, and shouldn't be flagged as a problem.
+      if (
+        impact.contextTokensForClaudeMd !== null &&
+        impact.contextTokensForClaudeMd > CLAUDEMD_LARGE_TOKEN_THRESHOLD &&
+        impact.estimatedPerTurnCostUsd !== null &&
+        impact.estimatedPerTurnCostUsd > CLAUDEMD_MIN_PER_TURN_COST_USD
+      ) {
         recs.push(
           makeRec(
             'claudemd',
             'medium',
             'Large CLAUDE.md context cost',
-            `CLAUDE.md consumes ~${impact.contextTokensForClaudeMd} tokens per turn. Consider condensing rarely-used sections.`,
+            `CLAUDE.md consumes ~${impact.contextTokensForClaudeMd} tokens per turn (~$${impact.estimatedPerTurnCostUsd.toFixed(4)}, cache-adjusted). Consider condensing rarely-used sections.`,
             `${impact.contextTokensForClaudeMd} tokens/turn`,
           ),
         );

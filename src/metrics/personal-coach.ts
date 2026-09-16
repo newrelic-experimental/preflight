@@ -18,6 +18,14 @@ export interface PersonalWeekMetrics {
   readonly antiPatternRate: number; // antiPatterns / totalToolCalls, 0 if no calls
   readonly sessionsCount: number;
   readonly avgToolCallsPerSession: number;
+  /**
+   * Cost normalized by completed tasks rather than sessions — a session can
+   * contain any number of tasks, so cost-per-session has no throughput
+   * denominator and is trivially minimized by not using the tool. Coaching
+   * logic below compares against this, not avgCostPerSession, for that
+   * reason; avgCostPerSession remains a valid raw display stat elsewhere.
+   */
+  readonly avgCostPerTask: number;
   readonly topAntiPattern: string | null; // most frequent patternType this week, or null
 }
 
@@ -180,6 +188,8 @@ export class PersonalCoach {
       sessionsCount: stats.sessionCount,
       avgToolCallsPerSession:
         stats.sessionCount > 0 ? stats.totalToolCalls / stats.sessionCount : 0,
+      avgCostPerTask:
+        stats.totalTasksCompleted > 0 ? stats.totalCostUsd / stats.totalTasksCompleted : 0,
       topAntiPattern,
     };
   }
@@ -220,6 +230,7 @@ export class PersonalCoach {
       antiPatternRate: mean(metrics.map((m) => m.antiPatternRate)),
       sessionsCount: mean(metrics.map((m) => m.sessionsCount)),
       avgToolCallsPerSession: mean(metrics.map((m) => m.avgToolCallsPerSession)),
+      avgCostPerTask: mean(metrics.map((m) => m.avgCostPerTask)),
       topAntiPattern: baselineTopAntiPattern,
     };
   }
@@ -245,13 +256,13 @@ export class PersonalCoach {
       }
     }
 
-    // Cost per session improvement vs baseline
-    if (baseline.avgCostPerSession > 0) {
-      const pct =
-        (thisWeek.avgCostPerSession - baseline.avgCostPerSession) / baseline.avgCostPerSession;
+    // Cost per completed task improvement vs baseline (not per-session — see
+    // avgCostPerTask doc comment on PersonalWeekMetrics)
+    if (baseline.avgCostPerTask > 0) {
+      const pct = (thisWeek.avgCostPerTask - baseline.avgCostPerTask) / baseline.avgCostPerTask;
       if (pct <= -0.15) {
         highlights.push(
-          `You spent ${Math.abs(pct * 100).toFixed(0)}% less per session this week ($${thisWeek.avgCostPerSession.toFixed(2)}) than your average ($${baseline.avgCostPerSession.toFixed(2)}).`,
+          `You spent ${Math.abs(pct * 100).toFixed(0)}% less per completed task this week ($${thisWeek.avgCostPerTask.toFixed(2)}) than your average ($${baseline.avgCostPerTask.toFixed(2)}).`,
         );
       }
     }
@@ -286,13 +297,13 @@ export class PersonalCoach {
       }
     }
 
-    // Cost spike vs baseline
-    if (baseline.avgCostPerSession > 0) {
-      const pct =
-        (thisWeek.avgCostPerSession - baseline.avgCostPerSession) / baseline.avgCostPerSession;
+    // Cost per completed task spike vs baseline (not per-session — see
+    // avgCostPerTask doc comment on PersonalWeekMetrics)
+    if (baseline.avgCostPerTask > 0) {
+      const pct = (thisWeek.avgCostPerTask - baseline.avgCostPerTask) / baseline.avgCostPerTask;
       if (pct >= 0.25) {
         regressions.push(
-          `Cost per session this week ($${thisWeek.avgCostPerSession.toFixed(2)}) is ${(pct * 100).toFixed(0)}% above your average ($${baseline.avgCostPerSession.toFixed(2)}).`,
+          `Cost per completed task this week ($${thisWeek.avgCostPerTask.toFixed(2)}) is ${(pct * 100).toFixed(0)}% above your average ($${baseline.avgCostPerTask.toFixed(2)}).`,
         );
       }
     }
@@ -336,17 +347,18 @@ export class PersonalCoach {
       );
     }
 
-    // Consecutive cost-per-session reduction streak
+    // Consecutive cost-per-task reduction streak (not per-session — see
+    // avgCostPerTask doc comment on PersonalWeekMetrics)
     let costStreakLen = 0;
     for (let i = 0; i < metrics.length - 1; i++) {
-      if (metrics[i]!.avgCostPerSession < metrics[i + 1]!.avgCostPerSession) {
+      if (metrics[i]!.avgCostPerTask < metrics[i + 1]!.avgCostPerTask) {
         costStreakLen++;
       } else {
         break;
       }
     }
     if (costStreakLen >= 2) {
-      streaks.push(`Cost per session has decreased for ${costStreakLen} consecutive weeks.`);
+      streaks.push(`Cost per completed task has decreased for ${costStreakLen} consecutive weeks.`);
     }
 
     return streaks;
@@ -364,8 +376,12 @@ export class PersonalCoach {
         const pattern = thisWeek.topAntiPattern.replace(/_/g, ' ');
         return `Focus on reducing "${pattern}" patterns this week — they're your top efficiency drain.`;
       }
-      if (thisWeek.avgCostPerSession > baseline.avgCostPerSession * 1.25) {
-        return 'Review your longest sessions this week and identify which tasks could be broken into smaller, more focused sessions.';
+      if (thisWeek.avgCostPerTask > baseline.avgCostPerTask * 1.25) {
+        // Not "break sessions into smaller ones" — restarting a session
+        // discards the prompt cache and makes the next one re-pay for
+        // context a continued session would have gotten at the cheaper
+        // cache-read rate, so that advice is actively counterproductive.
+        return 'Cost per completed task is running high this week. Look for redundant tool calls or unnecessarily broad context reads on individual tasks — restarting sessions to make them "smaller" adds cache-rewarm cost rather than saving it.';
       }
       if (
         thisWeek.avgEfficiencyScore !== null &&

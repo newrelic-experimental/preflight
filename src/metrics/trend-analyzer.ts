@@ -35,6 +35,8 @@ const logger = createLogger('trend-analyzer');
 export interface WeeklyDataPoint {
   readonly week: string;
   readonly value: number;
+  /** Number of sessions this week's value was aggregated from. */
+  readonly sessionCount: number;
 }
 
 export interface AntiPatternWeeklyPoint {
@@ -357,19 +359,21 @@ export class TrendAnalyzer {
     const weeklyCacheHitRateTrend: WeeklyDataPoint[] = [];
 
     for (const week of sortedWeeks) {
-      const agg = aggregateWeek(weekGroups.get(week)!);
+      const weekSessions = weekGroups.get(week)!;
+      const sessionCount = weekSessions.length;
+      const agg = aggregateWeek(weekSessions);
 
       if (agg.efficiency !== null) {
-        weeklyEfficiencyTrend.push({ week, value: agg.efficiency });
+        weeklyEfficiencyTrend.push({ week, value: agg.efficiency, sessionCount });
       }
-      weeklyCostTrend.push({ week, value: agg.cost });
-      weeklyTaskSuccessTrend.push({ week, value: agg.taskSuccess });
-      weeklyToolCallTrend.push({ week, value: agg.toolCallsPerTask });
+      weeklyCostTrend.push({ week, value: agg.cost, sessionCount });
+      weeklyTaskSuccessTrend.push({ week, value: agg.taskSuccess, sessionCount });
+      weeklyToolCallTrend.push({ week, value: agg.toolCallsPerTask, sessionCount });
       weeklyAntiPatternTrend.push({ week, counts: agg.antiPatterns });
 
-      const cacheHitRate = aggregateWeekCacheHitRate(weekGroups.get(week)!);
+      const cacheHitRate = aggregateWeekCacheHitRate(weekSessions);
       if (cacheHitRate !== null) {
-        weeklyCacheHitRateTrend.push({ week, value: round(cacheHitRate, 4) });
+        weeklyCacheHitRateTrend.push({ week, value: round(cacheHitRate, 4), sessionCount });
       }
     }
 
