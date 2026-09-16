@@ -87,6 +87,23 @@ export function formatDuration(ms: number): string {
 }
 
 /**
+ * Compact "time ago" label for a past epoch-ms timestamp: "just now", "5m
+ * ago", "3h ago", "2d ago". Floors to the current bucket so a value never
+ * reads as one tick newer than it is.
+ */
+export function formatRelativeTime(ts: number): string {
+  const now = Date.now();
+  const diff = Math.max(0, now - ts);
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+/**
  * Pretty-print a number for KPI/alert display.
  *
  * - Non-finite values render as the em-dash placeholder used elsewhere in
@@ -113,17 +130,25 @@ export function formatNumber(n: number): string {
  * `toFixed(4)` on the same field across views is what made costs look wrong.
  *
  * One precision rule, applied uniformly:
- * - `≥ $1`            → 2 decimals (`$6.05`, `$45.48`) — clean for the common case.
- * - `0 < value < $1`  → 4 decimals (`$0.0125`) — small costs keep meaningful digits.
- * - exactly `0`       → `$0.00` (a real, measured zero).
+ * - `≥ $1`                  → 2 decimals, with thousands separators (`$6.05`, `$1,234.56`).
+ * - `$0.10 ≤ value < $1`    → 2 decimals (`$0.42`).
+ * - `$0.001 ≤ value < $0.10` → 3 decimals (`$0.088`) — small costs keep a meaningful digit.
+ * - `0 < value < $0.001`    → `<$0.001` — never a fake `$0.000`.
+ * - exactly `0`             → `$0.00` (a real, measured zero).
  *
  * Non-finite input renders `$0.00`; use {@link formatUsdOrDash} when a missing
  * value (null/undefined) should read as the em-dash placeholder instead.
  */
 export function formatUsd(value: number): string {
   if (!Number.isFinite(value)) return '$0.00';
-  const decimals = Math.abs(value) > 0 && Math.abs(value) < 1 ? 4 : 2;
-  return `$${value.toFixed(decimals)}`;
+  const abs = Math.abs(value);
+  if (abs === 0) return '$0.00';
+  if (abs < 0.001) return '<$0.001';
+  const decimals = abs >= 0.1 ? 2 : 3;
+  return `$${value.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })}`;
 }
 
 /**
@@ -161,4 +186,87 @@ export function shortToolName(name: string): string {
     return parts.slice(2).join('__');
   }
   return name;
+}
+
+/**
+ * Sub-second/second duration label for latency figures: `16 ms`, `844 ms`,
+ * `1.4 s`, `12.8 s`. Hands off to {@link formatDuration} at the 60s boundary
+ * so a slow call reads `1m 5s` instead of an unbroken `65.0 s`.
+ */
+export function formatMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  return formatDuration(ms);
+}
+
+/**
+ * Whole-percent label for a share value already on a 0-100 scale: `34%`.
+ * A positive value that would round to `0` reads `<1%` instead, so a real
+ * but tiny share never looks identical to "no share at all" (`0%`).
+ */
+export function formatPct(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0%';
+  if (n < 0.5) return '<1%';
+  return `${Math.round(n)}%`;
+}
+
+const AXIS_MONTH_LABELS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+/**
+ * Chart axis tick for a day: accepts `YYYY-MM-DD` or `MM-DD` and renders
+ * `Aug 13`. Parses the digits directly rather than `new Date(string)` so the
+ * tick can't shift a day depending on the viewer's timezone.
+ */
+export function formatAxisDate(value: string): string {
+  const parts = value.split('-');
+  const [monthStr, dayStr] = parts.length >= 3 ? [parts[1], parts[2]] : [parts[0], parts[1]];
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12) return value;
+  return `${AXIS_MONTH_LABELS[month - 1]} ${day}`;
+}
+
+/**
+ * Chart axis tick for an ISO week (`2026-W34`): renders the Monday of that
+ * week as `Aug 17`, per the ISO 8601 rule that week 1 is the week containing
+ * January 4th. Computed in UTC so DST transitions can't shift the date.
+ */
+export function formatAxisWeek(value: string): string {
+  const match = /^(\d{4})-W(\d{2})$/.exec(value);
+  if (!match) return value;
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Weekday = jan4.getUTCDay() || 7; // Sunday is 0 in JS; ISO wants it as 7.
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Weekday - 1));
+  const target = new Date(week1Monday);
+  target.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+  return `${AXIS_MONTH_LABELS[target.getUTCMonth()]} ${target.getUTCDate()}`;
+}
+
+/**
+ * Chart axis tick for a dollar amount: `$85` below $1,000, `$1.2k` at or
+ * above it. Deliberately coarser than {@link formatUsd} — an axis tick needs
+ * to be short, not exact.
+ */
+export function formatAxisUsd(n: number): string {
+  if (!Number.isFinite(n)) return '$0';
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${Math.round(n)}`;
 }

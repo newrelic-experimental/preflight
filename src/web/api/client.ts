@@ -107,6 +107,8 @@ export interface ReplayTimelineEntry {
   readonly isLintCommand?: boolean;
   readonly errorType?: string;
   readonly agentId?: string;
+  readonly skillName?: string;
+  readonly agentType?: string;
 }
 
 export interface AntiPatternSegment {
@@ -306,6 +308,20 @@ export interface SessionDetail {
     readonly agentCount?: number;
   }>;
   readonly timeline?: ReadonlyArray<ReplayTimelineEntry>;
+  readonly linesAdded?: number;
+  readonly linesRemoved?: number;
+  readonly tokensInput?: number;
+  readonly tokensOutput?: number;
+  readonly tokensCacheRead?: number;
+  readonly tokensCacheCreation?: number;
+  // Mirrors SessionAttribution (src/storage/types.ts, not importable).
+  readonly attribution?: {
+    readonly buckets: Partial<
+      Record<'tool' | 'skill' | 'subagent', Record<string, AttributionBucket>>
+    >;
+    readonly highContextCostUsd: number;
+    readonly apiDurationMs: number | null;
+  };
   readonly qualityProxy?: {
     readonly diffApplyRate: number | null;
     readonly testPassRate: number | null;
@@ -400,6 +416,7 @@ export interface TurnCostsResponse {
       outputTokens: number;
       cacheReadTokens: number;
       totalDurationMs: number;
+      readonly tokens?: number;
     }
   >;
   readonly totalAttributedCost: number;
@@ -548,6 +565,63 @@ export interface CostPerOutcomeResponse {
 
 export const fetchCostPerOutcome = (days = 30): Promise<CostPerOutcomeResponse> =>
   getJson<CostPerOutcomeResponse>(`/api/cost-per-outcome?days=${days}`);
+
+export interface AttributionBucket {
+  readonly costUsd: number;
+  readonly tokens: number;
+  readonly count: number;
+  readonly durationMs: number;
+}
+
+// Mirrors src/metrics/usage-insights.ts (not importable from the web bundle).
+export type UsageInsightId =
+  'high_context' | 'subagent_heavy' | 'long_sessions' | 'loops' | 'plugins';
+
+export interface UsageShareRow {
+  readonly key: string;
+  readonly costUsd: number;
+  readonly tokens: number;
+  readonly count: number;
+  readonly sharePct: number;
+}
+
+export interface UsageInsight extends UsageShareRow {
+  readonly id: UsageInsightId;
+  readonly sessionCount: number;
+  readonly headline: string;
+  readonly advice: string;
+}
+
+export interface LoopRow {
+  readonly sessionId: string;
+  readonly sessionName: string | null;
+  readonly runs: number;
+  readonly tokens: number;
+  readonly tokensPerRun: number;
+  readonly costUsd: number;
+  readonly lastRunMs: number;
+}
+
+export interface UsageInsightsReport {
+  readonly windowDays: number;
+  readonly sessionCount: number;
+  readonly totalCostUsd: number;
+  readonly totalTokens: number;
+  readonly insights: readonly UsageInsight[];
+  readonly skills: readonly UsageShareRow[];
+  readonly subagents: readonly UsageShareRow[];
+  readonly plugins: readonly UsageShareRow[];
+  readonly loops: readonly LoopRow[];
+  /** Distinct keys seen in the window before each table was capped to its top rows. */
+  readonly skillsTotalCount: number;
+  readonly subagentsTotalCount: number;
+  readonly pluginsTotalCount: number;
+  readonly loopsTotalCount: number;
+  readonly attributionRatePct: number | null;
+}
+
+export const fetchUsageInsights = (days = 7): Promise<UsageInsightsReport> =>
+  getJson<UsageInsightsReport>(`/api/usage-insights?days=${days}`);
 
 // Mirrors the subset of PersonalWeekMetrics (src/metrics/personal-coach.ts,
 // not importable) actually rendered by CoachMetricsTable.
@@ -1405,6 +1479,7 @@ export const qk = {
   weekly: ['weekly'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
+  usageInsights: (days: number) => ['usage-insights', days] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
   apiFailures: ['api-failures'] as const,

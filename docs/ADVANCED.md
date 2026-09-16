@@ -47,7 +47,7 @@ export NEW_RELIC_AI_TRANSPORT=both
 
 ## Inbound OTLP Receiver (Proxy Mode)
 
-When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`) and forwarded to NR, linking application traces to the AI session that produced them. Both JSON and protobuf OTLP/HTTP payloads are enriched. Protobuf payloads are decoded and re-encoded through a vendored schema descriptor (`src/proxy/otlp-descriptor.ts`), which carries one caveat: a sender running a newer OTLP schema than the descriptor's vintage (opentelemetry-proto @ dfd0b0e) loses any fields the descriptor does not know about during re-encoding. The JSON path has no such limit. The descriptor file's header documents the exact regeneration command.
+When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`, and `ai.team_id` when `teamId` is configured) and forwarded to NR, linking application traces to the AI session that produced them. Both JSON and protobuf OTLP/HTTP payloads are enriched. Protobuf payloads are decoded and re-encoded through a vendored schema descriptor (`src/proxy/otlp-descriptor.ts`), which carries one caveat: a sender running a newer OTLP schema than the descriptor's vintage (opentelemetry-proto @ dfd0b0e) loses any fields the descriptor does not know about during re-encoding. The JSON path has no such limit. The descriptor file's header documents the exact regeneration command.
 
 Add to `~/.newrelic-preflight/config.json`:
 
@@ -141,16 +141,36 @@ With `companionMode: true`:
 
 - **Suppressed** — the whole `ai.cost.*` gauge family (`session_total_usd`, `tokens_input`/`tokens_output`/`tokens_thinking`/`tokens_cache_read`/`tokens_cache_creation`, `cache_savings_usd`, `cost_per_line_of_code`, `cost_per_file_modified`, `report_count`, `estimation_count`, `subagent_usd`, `parent_usd`) is not emitted from `emitSessionGauges()`. Gauges carry no per-datapoint platform attribute, so suppression is the only way to stop the blended-dashboard double-count — there's no field to tag instead.
 - **Tagged, not dropped** — cost-bearing events keep every field they'd normally carry and gain `cost_authority: 'external'`: `AiCodingTask` (when the task's `platform` is `claude-code` — a task from another platform has no OTel twin, so it's left untagged), `AiTurnCost` (when the turn's `platform` is `claude-code` for the same reason), `AiSubagentTurn`, and `AiWorkflowRun` (both are always derived from a Claude Code transcript, so they're tagged unconditionally whenever companion mode is on).
-- **Unchanged** — everything else: task detection, efficiency scoring, anti-pattern detection, the audit trail, context tracking, MCP proxy metrics, and per-repo git outcomes have no OTel equivalent and keep flowing normally. The local dashboard and budget tracking are unaffected too — both read `CostTracker`'s own totals directly, never the exported gauges.
+- **Unchanged** — everything else: task detection, efficiency scoring, anti-pattern detection, the audit trail, context tracking, MCP proxy metrics, and git outcome counts keep flowing normally and are never double-counted. Claude Code's OTel export carries repository and commit identity rather than counts; see [Repository identity across both streams](#repository-identity-across-both-streams). The local dashboard and budget tracking are unaffected too — both read `CostTracker`'s own totals directly, never the exported gauges.
 
 For a blended deployment, treat each signal's canonical source this way:
 
-| Signal                                                                             | Canonical source          |
-| ---------------------------------------------------------------------------------- | ------------------------- |
-| Cost / tokens                                                                      | Claude Code's OTel export |
-| Tasks, efficiency, anti-patterns, audit, context, MCP proxy, per-repo git outcomes | Preflight                 |
+| Signal                                                                                       | Canonical source                                                                                        |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Cost / tokens                                                                                | Claude Code's OTel export                                                                               |
+| Tasks, efficiency, anti-patterns, audit, context, MCP proxy, git outcome counts (`ai.git.*`) | Preflight                                                                                               |
+| Commit identity (SHA, branch)                                                                | Claude Code's OTel export, `vcs.ref.head.*` on `git commit` tool results with `OTEL_LOG_TOOL_DETAILS=1` |
 
 Because cost-bearing fields are tagged rather than removed, reconciliation is still possible — a query that needs Preflight's cost breakdown for some other purpose can filter to `cost_authority = 'external'` and cross-reference against the OTel-sourced total, joined on `session_id` / `session.id`.
+
+### Repository identity across both streams
+
+Claude Code v2.1.269 and later tags its metrics and events with `vcs.repository.url.full`, `vcs.owner.name`, `vcs.repository.name`, and `vcs.provider.name` when `OTEL_METRICS_INCLUDE_REPOSITORY=true` (default `false`). It derives them once per session from the `origin` remote, lowercases the values, and strips credentials.
+
+Preflight's `project_id` carries the same fact in a different shape. `inferProjectId()` in `src/config.ts` keeps the last two path segments of `git remote get-url origin` with case preserved, so a checkout of `https://github.com/NewRelic-Experimental/preflight` reports `project_id = 'NewRelic-Experimental/preflight'` to Preflight and `vcs.owner.name = 'newrelic-experimental'` plus `vcs.repository.name = 'preflight'` to Claude Code's export. The two fields do not string-match, and NRQL has no case-folding function to bridge them. Join on the session id instead and facet Preflight's events by the repository Claude Code reported:
+
+```sql
+FROM AiCodingTask
+  JOIN (FROM Log SELECT latest(`vcs.repository.url.full`) AS repo WHERE `vcs.repository.url.full` IS NOT NULL FACET `session.id` LIMIT MAX)
+  ON session_id = `session.id`
+SELECT count(*) FACET repo
+```
+
+The join also sidesteps GitLab subgroups, where `vcs.owner.name` holds the full group path while `project_id` keeps only the last two segments, so a repo at `group/subgroup/repo` is `group/subgroup` plus `repo` on the Claude Code side and `subgroup/repo` on the Preflight side.
+
+If Claude Code's OTLP export points at Preflight's inbound receiver, the `vcs.*` keys reach New Relic untouched alongside the `ai.session.id`, `ai.developer`, `ai.project_id`, and `ai.team_id` enrichment keys. The receiver appends only the keys it does not find and never renames, drops, or overwrites an attribute the sender set. It speaks HTTP/1.1 only, so gRPC never reaches it. Set `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` or `http/protobuf` on the Claude Code side.
+
+Commit identity lives only in Claude Code's stream. With `OTEL_LOG_TOOL_DETAILS=1`, a successful `git commit` run through the Bash or PowerShell tool adds `vcs.ref.head.revision` (the SHA), `vcs.ref.head.name` (the branch), and `vcs.ref.head.type` to that `claude_code.tool_result` event. Preflight's `ai.git.commit_count`, `ai.git.push_count`, `ai.git.force_push_count`, `ai.git.pr_created`, and `ai.git.pr_merged` gauges count commits, pushes, force-pushes, and PRs but never carry a SHA or branch. The two do not overlap, and companion mode changes neither.
 
 One consequence to plan for: two of the shipped alert conditions query the suppressed gauge family — `alerts/conditions/05-session-cost-budget.json` and `alerts/conditions-personal/02-personal-session-cost.json` both alert on `ai.cost.session_total_usd`. With companion mode on, those conditions receive no data and go quiet. Rebuild the equivalent alerts on Claude Code's OTel cost metrics (the canonical cost source in this deployment), or don't deploy those two conditions.
 

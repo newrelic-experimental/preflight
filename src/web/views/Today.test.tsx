@@ -2339,6 +2339,34 @@ describe('Today view — Cost by Tool panel', () => {
     expect(screen.getByText('Cost by Tool')).toBeInTheDocument();
   });
 
+  it('caps the chart to the top 12 tools by cost and notes how many were dropped', async () => {
+    const costByToolType = Object.fromEntries(
+      Array.from({ length: 14 }, (_, i) => [
+        `Tool${i}`,
+        { totalCost: 14 - i, callCount: 1, avgCost: 14 - i },
+      ]),
+    );
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
+        return new Response(
+          JSON.stringify({ costByToolType, totalAttributedCost: 105, attributionRate: 0.9 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    await waitFor(() => expect(screen.queryByText('No cost data yet')).toBeNull());
+    expect(screen.getByText('+2 more tools not shown')).toBeInTheDocument();
+    const panel = screen.getByText('Cost by Tool').closest('.glass-card') as HTMLElement;
+    await waitFor(() => expect(panel.querySelectorAll('path.recharts-rectangle').length).toBe(12), {
+      timeout: 3000,
+    });
+  });
+
   it('renders Cost attribution unavailable when /api/cost-per-tool returns 503', async () => {
     globalThis.fetch = vi.fn(async (url: string) => {
       if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
@@ -2431,8 +2459,8 @@ describe('Today view — Cost by Skill panel', () => {
     expect(screen.getByText('Cost by Skill')).toBeInTheDocument();
     expect(screen.getByText('skill-1')).toBeInTheDocument();
     expect(screen.getByText('skill-2')).toBeInTheDocument();
-    expect(screen.getByText('$0.1500')).toBeInTheDocument();
-    expect(screen.getByText('$0.0800')).toBeInTheDocument();
+    expect(screen.getByText('$0.15')).toBeInTheDocument();
+    expect(screen.getByText('$0.080')).toBeInTheDocument();
   });
 
   it('sorts by cost descending', async () => {
@@ -2515,7 +2543,7 @@ describe('Today view — Cost by Skill panel', () => {
       attributionRate: 0.8,
     });
     renderToday(qc);
-    const costCell = screen.getByText('$0.1000');
+    const costCell = screen.getByText('$0.10');
     expect(costCell).toHaveAttribute('title', 'Cost covers 2 of 5 calls');
   });
 });
@@ -2643,5 +2671,95 @@ describe('Today view — API Failures panel', () => {
 
     renderToday();
     expect(await screen.findByText(/Rate-limit throttling detected/)).toBeInTheDocument();
+  });
+});
+
+describe('Today view — Cost by Skill / Cost by Tool share labels', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('uses entry.tokens when present and the input+output+cacheRead sum when absent', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/cost-per-tool')) {
+        return new Response(
+          JSON.stringify({
+            turns: [],
+            costByToolType: {},
+            costBySkill: {
+              'skill-with-tokens': {
+                callCount: 3,
+                attributedCallCount: 3,
+                totalCost: 1.2,
+                avgCost: 0.4,
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheReadTokens: 20,
+                totalDurationMs: 500,
+                tokens: 9999,
+              },
+              'skill-without-tokens': {
+                callCount: 2,
+                attributedCallCount: 2,
+                totalCost: 0.6,
+                avgCost: 0.3,
+                inputTokens: 200,
+                outputTokens: 100,
+                cacheReadTokens: 30,
+                totalDurationMs: 300,
+              },
+            },
+            totalAttributedCost: 1.8,
+            attributionRate: 1,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    await waitFor(() => expect(screen.getByText('Cost by Skill')).toBeInTheDocument());
+    const withTokensRow = screen.getByText('skill-with-tokens').closest('tr') as HTMLElement;
+    // formatTokensCompact(9999) === '10.0k'
+    expect(within(withTokensRow).getByText('10.0k')).toBeInTheDocument();
+    const withoutTokensRow = screen.getByText('skill-without-tokens').closest('tr') as HTMLElement;
+    // 200 + 100 + 30 = 330, below the 1000 threshold so rendered unrounded
+    expect(within(withoutTokensRow).getByText('330')).toBeInTheDocument();
+  });
+
+  it('labels the top tool in the Cost by Tool panel with its share percent', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/cost-per-tool')) {
+        return new Response(
+          JSON.stringify({
+            turns: [],
+            costByToolType: {
+              Bash: { totalCost: 6, callCount: 2, avgCost: 3 },
+              Read: { totalCost: 4, callCount: 1, avgCost: 4 },
+            },
+            totalAttributedCost: 10,
+            attributionRate: 1,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+    // Bash: totalCost 6 of 10 total -> round(6/10*100) = 60%
+    expect(await screen.findByText('Bash (2 · 60%)')).toBeInTheDocument();
   });
 });

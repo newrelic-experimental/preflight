@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   History,
@@ -211,6 +211,56 @@ const SAMPLE_COLLAB_FEWER_CORRECTIONS = {
   developerCount: 5,
 };
 
+const SAMPLE_USAGE_INSIGHTS = {
+  windowDays: 7,
+  sessionCount: 12,
+  totalCostUsd: 40,
+  totalTokens: 200000,
+  insights: [
+    {
+      id: 'high_context',
+      key: 'high_context',
+      costUsd: 12,
+      tokens: 50000,
+      count: 4,
+      sharePct: 30,
+      sessionCount: 12,
+      headline: 'High-context sessions are driving spend',
+      advice: 'Trim context before starting new sessions.',
+    },
+    {
+      id: 'subagent_heavy',
+      key: 'subagent_heavy',
+      costUsd: 8,
+      tokens: 20000,
+      count: 3,
+      sharePct: 20,
+      sessionCount: 12,
+      headline: 'Subagent delegation is a large cost driver',
+      advice: 'Review which subagents are being spawned.',
+    },
+  ],
+  skills: [{ key: 'code-review', costUsd: 5, tokens: 10000, count: 6, sharePct: 12 }],
+  subagents: [{ key: 'general-purpose', costUsd: 4, tokens: 8000, count: 3, sharePct: 10 }],
+  plugins: [{ key: 'pstack', costUsd: 2, tokens: 3000, count: 1, sharePct: 5 }],
+  loops: [
+    {
+      sessionId: 'loop-session-1',
+      sessionName: 'Nightly loop',
+      runs: 5,
+      tokens: 6000,
+      tokensPerRun: 1200,
+      costUsd: 1.5,
+      lastRunMs: Date.now() - 5 * 60 * 1000,
+    },
+  ],
+  skillsTotalCount: 1,
+  subagentsTotalCount: 1,
+  pluginsTotalCount: 1,
+  loopsTotalCount: 1,
+  attributionRatePct: 40,
+};
+
 interface FetchOverrides {
   outcome?: unknown;
   coach?: unknown;
@@ -218,11 +268,22 @@ interface FetchOverrides {
   claudemdImpact?: unknown;
   collabProfile?: unknown;
   sessions?: unknown;
+  usageInsights?: unknown;
 }
 
 function renderHistory(overrides: FetchOverrides = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+  const fetchedUrls: string[] = [];
   globalThis.fetch = ((url: string) => {
+    fetchedUrls.push(url);
+    if (url.startsWith('/api/usage-insights')) {
+      return Promise.resolve(
+        new Response(JSON.stringify(overrides.usageInsights ?? SAMPLE_USAGE_INSIGHTS), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
     if (url.startsWith('/api/weekly')) {
       return Promise.resolve(
         new Response(JSON.stringify(SAMPLE_WEEKLY), {
@@ -297,18 +358,19 @@ function renderHistory(overrides: FetchOverrides = {}) {
     }
     return Promise.resolve(new Response('null', { status: 200 }));
   }) as typeof globalThis.fetch;
-  return render(
+  const result = render(
     <QueryClientProvider client={qc}>
       <History />
     </QueryClientProvider>,
   );
+  return Object.assign(result, { fetchedUrls });
 }
 
 describe('History view', () => {
   it('renders the section headings', async () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText(/efficiency/i)).toBeInTheDocument());
-    expect(screen.getByText(/spend/i)).toBeInTheDocument();
+    expect(screen.getByText(/daily spend/i)).toBeInTheDocument();
   });
 
   it('renders a chart for weekly efficiency', async () => {
@@ -1358,6 +1420,19 @@ describe('History helpers with real API data shapes', () => {
 });
 
 describe('aggregateModelPerformance', () => {
+  it('sums only the costs sessions actually reported, so a live stub row does not inflate the total', () => {
+    const sessions = [
+      { sessionId: 's1', model: 'claude-opus-4-6', estimatedCostUsd: 2.0 },
+      { sessionId: 's2', model: 'claude-opus-4-6', estimatedCostUsd: 1.5 },
+      { sessionId: 'live', model: 'claude-opus-4-6' },
+    ];
+    const opus = aggregateModelPerformance(sessions)[0];
+    expect(opus.sessions).toBe(3);
+    expect(opus.costedSessions).toBe(2);
+    expect(opus.totalCost).toBeCloseTo(3.5);
+    expect(opus.avgCost).toBeCloseTo(1.75);
+  });
+
   it('groups sessions by model with computed averages', () => {
     const sessions = [
       {
@@ -1625,5 +1700,146 @@ describe('CoachMetricsTable', () => {
     // The component should handle null efficiency and zero-valued baseline metrics gracefully
     expect(screen.getByText(/personal coach/i)).toBeInTheDocument();
     expect(screen.getByText(/Efficiency/i)).toBeInTheDocument();
+  });
+});
+
+describe('UsageContributionPanel', () => {
+  it('renders the contribution panel title', async () => {
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/daily spend/i)).toBeInTheDocument());
+    expect(screen.getByText("What's contributing to your spend")).toBeInTheDocument();
+  });
+
+  it('renders each insight headline, one row from each of the four tables, and the low-attribution footnote', async () => {
+    renderHistory({ usageInsights: SAMPLE_USAGE_INSIGHTS });
+    await waitFor(() =>
+      expect(screen.getByText('High-context sessions are driving spend')).toBeInTheDocument(),
+    );
+    expect(screen.getByText('Subagent delegation is a large cost driver')).toBeInTheDocument();
+    expect(screen.getByText('code-review')).toBeInTheDocument();
+    expect(screen.getByText('general-purpose')).toBeInTheDocument();
+    expect(screen.getByText('pstack')).toBeInTheDocument();
+    expect(screen.getByText('Nightly loop')).toBeInTheDocument();
+    expect(screen.getByText(/40% of spend with/)).toBeInTheDocument();
+  });
+
+  it('says how many rows a capped table dropped, and nothing when it dropped none', async () => {
+    renderHistory({
+      usageInsights: { ...SAMPLE_USAGE_INSIGHTS, skillsTotalCount: 14, loopsTotalCount: 1 },
+    });
+    await waitFor(() => expect(screen.getByText('code-review')).toBeInTheDocument());
+    expect(screen.getByText('top 1 of 14')).toBeInTheDocument();
+    expect(screen.queryByText('top 1 of 1')).not.toBeInTheDocument();
+  });
+
+  it('renders "<1%" instead of "0%" for a row with spend that rounds to a zero share', async () => {
+    renderHistory({
+      usageInsights: {
+        ...SAMPLE_USAGE_INSIGHTS,
+        plugins: [{ key: 'tiny-plugin', costUsd: 0.01, tokens: 50, count: 1, sharePct: 0 }],
+      },
+    });
+    await waitFor(() => expect(screen.getByText('tiny-plugin')).toBeInTheDocument());
+    expect(screen.getByText('<1%')).toBeInTheDocument();
+  });
+
+  it('shows "No sessions in this window." when sessionCount is 0', async () => {
+    renderHistory({
+      usageInsights: {
+        ...SAMPLE_USAGE_INSIGHTS,
+        sessionCount: 0,
+        insights: [],
+        skills: [],
+        subagents: [],
+        plugins: [],
+        loops: [],
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByText('No sessions in this window.')).toBeInTheDocument(),
+    );
+  });
+
+  it('shows "Nothing stands out in this window." with empty insights while still rendering a populated skills table', async () => {
+    renderHistory({
+      usageInsights: {
+        ...SAMPLE_USAGE_INSIGHTS,
+        insights: [],
+        subagents: [],
+        plugins: [],
+        loops: [],
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByText('Nothing stands out in this window.')).toBeInTheDocument(),
+    );
+    expect(screen.getByText('code-review')).toBeInTheDocument();
+  });
+
+  it('calls fetchUsageInsights with 30 when the "30 days" tab is clicked', async () => {
+    const { fetchedUrls } = renderHistory({ usageInsights: SAMPLE_USAGE_INSIGHTS });
+    await waitFor(() => expect(screen.getByText('30 days')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('30 days'));
+    await waitFor(() =>
+      expect(fetchedUrls.some((u) => u.startsWith('/api/usage-insights?days=30'))).toBe(true),
+    );
+  });
+});
+
+describe('History share labels', () => {
+  it('computes the Model Performance Share column from the mocked sessions costs', async () => {
+    // aggregateModelPerformance(SAMPLE_SESSIONS): opus totalCost = 3.7,
+    // sonnet totalCost = 2.4, total = 6.1 -> opus share = round(3.7/6.1*100) = 61%.
+    renderHistory();
+    await waitFor(() => expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument());
+    const row = screen.getByText('claude-opus-4-6').closest('tr') as HTMLElement;
+    const cells = within(row).getAllByRole('cell');
+    // Columns: Model, Sessions, Eff., Success, Avg $, Share, $/1M tok.
+    expect(cells[5].textContent).toBe('61%');
+  });
+
+  it('renders a share percent for the top tool in the Top Tools tooltip', async () => {
+    // aggregateToolUsage(SAMPLE_SESSIONS): Read=36, Edit=12, Bash=3, Write=2,
+    // total=53 -> Read's tooltip share = round(36/53*100) = 68%.
+    renderHistory();
+    await waitFor(() => expect(screen.getByText(/top tools/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Read (68%)')).toBeInTheDocument());
+    const panel = screen.getByText(/top tools/i).closest('.glass-card') as HTMLElement;
+    // Wait for the bars' entrance animation to finish mounting their shapes
+    // before hovering — Recharts renders the Bar's `<path>` asynchronously.
+    await waitFor(
+      () => expect(panel.querySelectorAll('path.recharts-rectangle').length).toBeGreaterThan(0),
+      { timeout: 3000 },
+    );
+    // Recharts binds its mouse tracking to the `.recharts-wrapper` div and
+    // resolves chart coordinates from `getBoundingClientRect`, which jsdom
+    // always reports as zero-sized — stub it to match the 500x200 size the
+    // shared ResizeObserver/clientWidth stubs (src/web/test-setup.ts) give
+    // the chart, so a real hover position maps to the right bar.
+    const wrapper = panel.querySelector('.recharts-wrapper') as Element;
+    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 500,
+      height: 200,
+      right: 500,
+      bottom: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    try {
+      // Read's bar spans roughly x:125-486, y:9-41 in the 500x200 viewBox
+      // (from the rendered path's x/y/width/height) — move inside it and
+      // let the tooltip's requestAnimationFrame-scheduled update flush.
+      await act(async () => {
+        fireEvent.mouseMove(wrapper, { clientX: 300, clientY: 25 });
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+    expect(await screen.findByText(/36 \(68%\)/)).toBeInTheDocument();
+    expect(screen.getByText('Read (68%)')).toBeInTheDocument();
   });
 });

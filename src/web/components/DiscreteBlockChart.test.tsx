@@ -85,4 +85,57 @@ describe('DiscreteBlockChart', () => {
     fireEvent.resize(window);
     expect(screen.queryByText('peak: 5')).toBeNull();
   });
+
+  describe('levels', () => {
+    it('quantizes the tallest column to exactly `levels` blocks and shorter columns proportionally', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[
+            { count: 10, tooltip: 'a' },
+            { count: 100, tooltip: 'b' },
+          ]}
+          levels={4}
+          ariaLabel="chart"
+        />,
+      );
+      const rects = container.querySelectorAll('rect.heatmap-cell');
+      // count 10 -> Math.ceil(10/100*4) = 1; count 100 (effectiveMax) -> 4.
+      expect(rects.length).toBe(5);
+    });
+
+    it('renders 0 blocks for a count of 0 even when levels is set', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[
+            { count: 0, tooltip: 'a' },
+            { count: 100, tooltip: 'b' },
+          ]}
+          levels={4}
+          ariaLabel="chart"
+        />,
+      );
+      const rects = container.querySelectorAll('rect.heatmap-cell');
+      expect(rects.length).toBe(4);
+    });
+
+    it('shows the raw tooltip text on hover, unaffected by quantization', () => {
+      const { container } = render(
+        <DiscreteBlockChart
+          data={[{ count: 10, tooltip: 'raw: 10 of 100' }]}
+          levels={4}
+          ariaLabel="chart"
+        />,
+      );
+      fireEvent.mouseEnter(container.querySelector('g')!);
+      expect(screen.getByText('raw: 10 of 100')).toBeInTheDocument();
+    });
+
+    it('renders one block per count when levels is omitted, preserving prior behavior', () => {
+      const { container } = render(
+        <DiscreteBlockChart data={[{ count: 3, tooltip: 'a' }]} ariaLabel="chart" />,
+      );
+      const rects = container.querySelectorAll('rect.heatmap-cell');
+      expect(rects.length).toBe(3);
+    });
+  });
 });

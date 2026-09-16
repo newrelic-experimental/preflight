@@ -71,6 +71,7 @@ import {
   fmtTimeOfDay,
   formatDuration,
   formatNumber,
+  formatRelativeTime,
   formatTokensCompact,
   formatUsd,
   formatUsdOrDash,
@@ -639,12 +640,18 @@ function CostByToolPanel(): JSX.Element {
     retry: false,
   });
 
-  const tools = data?.costByToolType
+  const allTools = data?.costByToolType
     ? Object.entries(data.costByToolType)
         .filter(([, e]) => e.totalCost > 0)
         .sort((a, b) => b[1].totalCost - a[1].totalCost)
         .map(([tool, e]) => ({ tool, totalCost: e.totalCost, callCount: e.callCount }))
     : [];
+  // The unscoped /api/cost-per-tool response merges every session's tools,
+  // which can exceed 20 rows and squash the chart — cap to the top 12 by
+  // cost, matching the pattern History's Top Tools panel uses.
+  const tools = allTools.slice(0, 12);
+  const hiddenToolCount = Math.max(0, allTools.length - tools.length);
+  const toolsTotalCost = tools.reduce((sum, t) => sum + t.totalCost, 0);
 
   const lowAttribution = data != null && (data.attributionRate ?? 1) < 0.5;
 
@@ -697,7 +704,10 @@ function CostByToolPanel(): JSX.Element {
                   tickFormatter={(value: string) => {
                     const match = tools.find((t) => t.tool === value);
                     const label = shortToolName(value);
-                    return match ? `${label} (${match.callCount})` : label;
+                    if (!match) return label;
+                    const pct =
+                      toolsTotalCost > 0 ? Math.round((match.totalCost / toolsTotalCost) * 100) : 0;
+                    return `${label} (${match.callCount} · ${pct}%)`;
                   }}
                   stroke={CHART_GRID_STROKE}
                   width={90}
@@ -720,6 +730,11 @@ function CostByToolPanel(): JSX.Element {
               </BarChart>
             </ResponsiveContainer>
           </div>
+          {hiddenToolCount > 0 && (
+            <div className="text-[10px] text-ink-muted italic mt-1">
+              +{hiddenToolCount} more tool{hiddenToolCount === 1 ? '' : 's'} not shown
+            </div>
+          )}
           {lowAttribution && (
             <div className="text-[10px] text-ink-muted italic mt-1">
               Based on {Math.round((data.attributionRate ?? 0) * 100)}% of session cost
@@ -783,7 +798,7 @@ function CostBySkillPanel(): JSX.Element | null {
               </td>
               <td className="text-right py-1.5 px-1 text-ink-subtle">
                 {formatTokensCompact(
-                  entry.inputTokens + entry.outputTokens + entry.cacheReadTokens,
+                  entry.tokens ?? entry.inputTokens + entry.outputTokens + entry.cacheReadTokens,
                 )}
               </td>
               <td className="text-right py-1.5 px-1 text-ink-subtle">
@@ -1822,18 +1837,6 @@ function RecentAlertsPanel(): JSX.Element | null {
       )}
     </Card>
   );
-}
-
-function formatRelativeTime(ts: number): string {
-  const now = Date.now();
-  const diff = Math.max(0, now - ts);
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 // `isToday` is now `isSameLocalDay` from `src/lib/date.ts` — shared with the

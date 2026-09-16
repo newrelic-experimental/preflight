@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { JSX } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -18,7 +19,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 import { GeoBanner } from '../components/GeoBanner';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
-import { Card, Eyebrow, InfoTooltip, Pill, type PillTone } from '../components/ui';
+import { Card, Eyebrow, InfoTooltip, Pill, Tabs, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
   fetchSessionsList,
@@ -30,6 +31,7 @@ import {
   fetchActivityHeatmap,
   fetchConcurrencyHistory,
   fetchInstructionDrift,
+  fetchUsageInsights,
   qk,
   type WeeklyRow,
   type CostPerOutcomeResponse,
@@ -43,8 +45,16 @@ import {
   type ClaudeMdImpactApiResponse,
   type CollaborationProfileApiResponse,
   type MetricDelta,
+  type UsageInsightsReport,
+  type UsageShareRow,
+  type LoopRow,
 } from '../api/client';
-import { formatUsdOrDash, shortToolName } from '../lib/format';
+import {
+  formatRelativeTime,
+  formatTokensCompact,
+  formatUsdOrDash,
+  shortToolName,
+} from '../lib/format';
 
 interface SessionRow {
   readonly sessionId: string;
@@ -229,6 +239,12 @@ export function History(): JSX.Element {
     queryFn: fetchInstructionDrift,
   });
 
+  const [usageInsightsDays, setUsageInsightsDays] = useState<7 | 30>(7);
+  const usageInsights = useQuery<UsageInsightsReport>({
+    queryKey: qk.usageInsights(usageInsightsDays),
+    queryFn: () => fetchUsageInsights(usageInsightsDays),
+  });
+
   const hasLoadError =
     weekly.isError || sessions.isError || costPerOutcome.isError || concurrencyHistory.isError;
 
@@ -254,6 +270,8 @@ export function History(): JSX.Element {
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(sessions.data ?? []);
   const topTools = aggregateToolUsage(sessions.data ?? []);
+  const topToolsTotal = topTools.reduce((sum, t) => sum + t.count, 0);
+  const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + m.totalCost, 0);
   // aggregateToolUsage caps at the top 8 tools; surface how many were
   // dropped so "Top Tools" doesn't read as an exhaustive list.
   const totalToolCount = new Set(
@@ -420,6 +438,15 @@ export function History(): JSX.Element {
           )}
         </Panel>
 
+        <div className="col-span-full">
+          <UsageContributionPanel
+            data={usageInsights.data}
+            isError={usageInsights.isError}
+            windowDays={usageInsightsDays}
+            onWindowChange={setUsageInsightsDays}
+          />
+        </div>
+
         <Panel title="Model Performance · Most Recent 200 Sessions">
           {modelPerf.length === 0 ? (
             <EmptyState
@@ -437,6 +464,7 @@ export function History(): JSX.Element {
                     <th className="text-right pb-1">Eff.</th>
                     <th className="text-right pb-1">Success</th>
                     <th className="text-right pb-1">Avg $</th>
+                    <th className="text-right pb-1">Share</th>
                     <th className="text-right pb-1">$/1M tok</th>
                   </tr>
                 </thead>
@@ -458,6 +486,11 @@ export function History(): JSX.Element {
                           : '—'}
                       </td>
                       <td className="py-1 text-right tabular-nums">{formatUsdOrDash(m.avgCost)}</td>
+                      <td className="py-1 text-right tabular-nums">
+                        {modelPerfTotalCost > 0 && m.costedSessions > 0
+                          ? `${Math.round((m.totalCost / modelPerfTotalCost) * 100)}%`
+                          : '—'}
+                      </td>
                       <td className="py-1 text-right tabular-nums text-ink-subtle">
                         {formatUsdOrDash(m.costPerMillionTokens)}
                       </td>
@@ -494,7 +527,14 @@ export function History(): JSX.Element {
                     type="category"
                     dataKey="tool"
                     tick={TICK_STYLE}
-                    tickFormatter={shortToolName}
+                    tickFormatter={(value: string) => {
+                      const match = topTools.find((t) => t.tool === value);
+                      const pct =
+                        topToolsTotal > 0 && match
+                          ? Math.round((match.count / topToolsTotal) * 100)
+                          : 0;
+                      return `${shortToolName(value)} (${pct}%)`;
+                    }}
                     stroke={GRID_STROKE}
                     width={120}
                   />
@@ -502,6 +542,11 @@ export function History(): JSX.Element {
                     contentStyle={TOOLTIP_STYLE}
                     itemStyle={TOOLTIP_ITEM_STYLE}
                     labelFormatter={(label) => shortToolName(String(label))}
+                    formatter={(value) => {
+                      const share =
+                        topToolsTotal > 0 ? Math.round((Number(value) / topToolsTotal) * 100) : 0;
+                      return `${value} (${share}%)`;
+                    }}
                   />
                   <Bar dataKey="count" radius={[0, 3, 3, 0]}>
                     {topTools.map((entry) => (
@@ -577,6 +622,262 @@ export function History(): JSX.Element {
         <RecommendationsPanel data={recommendations.data} isError={recommendations.isError} />
       </div>
     </section>
+  );
+}
+
+// A row with real spend can carry a sharePct that's already floored to 0 by
+// the backend — render that as "<1%" rather than "0%", which reads as no
+// spend at all.
+function formatSharePct(row: UsageShareRow): string {
+  if (row.costUsd > 0 && row.sharePct === 0) {
+    return '<1%';
+  }
+  return `${Math.round(row.sharePct)}%`;
+}
+
+function UsageContributionPanel({
+  data,
+  isError,
+  windowDays,
+  onWindowChange,
+}: {
+  data: UsageInsightsReport | undefined;
+  isError: boolean;
+  windowDays: 7 | 30;
+  onWindowChange: (days: 7 | 30) => void;
+}): JSX.Element {
+  if (isError) {
+    return (
+      <Panel title="What's contributing to your spend">
+        <EmptyState icon="radar" title="Usage insights unavailable" />
+      </Panel>
+    );
+  }
+  if (!data) {
+    return (
+      <Panel title="What's contributing to your spend">
+        <EmptyState variant="loading" title="Loading usage insights…" />
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title="What's contributing to your spend">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-ink-muted">
+          Approximate, based on sessions recorded on this machine. These are independent
+          characteristics of your spend, not a breakdown.
+        </p>
+        <Tabs<'7' | '30'>
+          value={String(windowDays) as '7' | '30'}
+          onChange={(value) => onWindowChange(Number(value) as 7 | 30)}
+          options={[
+            { value: '7', label: '7 days' },
+            { value: '30', label: '30 days' },
+          ]}
+          ariaLabel="Usage window"
+        />
+      </div>
+
+      {data.sessionCount === 0 ? (
+        <EmptyState icon="clock" title="No sessions in this window." />
+      ) : data.insights.length === 0 ? (
+        <p className="text-xs text-ink-muted">Nothing stands out in this window.</p>
+      ) : (
+        <div className="mb-4 space-y-2">
+          {data.insights.map((insight) => (
+            <div key={insight.id} className="text-xs">
+              <p className="text-ink-base font-medium">{insight.headline}</p>
+              <p className="text-ink-muted">{insight.advice}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {data.sessionCount > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4 text-xs mt-4">
+          {data.skills.length > 0 && (
+            <ShareTable<UsageShareRow>
+              title="Skills"
+              rows={data.skills}
+              totalCount={data.skillsTotalCount}
+              rowKey={(row) => row.key}
+              columns={[
+                { header: 'Skill', align: 'left', cell: (row) => row.key },
+                { header: 'Calls', align: 'right', cell: (row) => row.count },
+                {
+                  header: 'Tokens',
+                  align: 'right',
+                  cell: (row) => formatTokensCompact(row.tokens),
+                },
+                {
+                  header: '% of spend',
+                  align: 'right',
+                  cell: (row) => formatSharePct(row),
+                },
+              ]}
+            />
+          )}
+
+          {data.subagents.length > 0 && (
+            <ShareTable<UsageShareRow>
+              title="Subagents"
+              rows={data.subagents}
+              totalCount={data.subagentsTotalCount}
+              rowKey={(row) => row.key}
+              columns={[
+                { header: 'Type', align: 'left', cell: (row) => row.key },
+                { header: 'Requests', align: 'right', cell: (row) => row.count },
+                {
+                  header: 'Tokens',
+                  align: 'right',
+                  cell: (row) => formatTokensCompact(row.tokens),
+                },
+                {
+                  header: '% of spend',
+                  align: 'right',
+                  cell: (row) => formatSharePct(row),
+                },
+              ]}
+            />
+          )}
+
+          {data.plugins.length > 0 && (
+            <ShareTable<UsageShareRow>
+              title="Plugins"
+              rows={data.plugins}
+              totalCount={data.pluginsTotalCount}
+              rowKey={(row) => row.key}
+              columns={[
+                { header: 'Plugin', align: 'left', cell: (row) => row.key },
+                {
+                  header: '% of spend',
+                  align: 'right',
+                  cell: (row) => formatSharePct(row),
+                },
+              ]}
+            />
+          )}
+
+          {data.loops.length > 0 && (
+            <ShareTable<LoopRow>
+              title="Loops"
+              className="md:col-span-2"
+              rows={data.loops}
+              totalCount={data.loopsTotalCount}
+              rowKey={(row) => row.sessionId}
+              columns={[
+                {
+                  header: 'Session',
+                  align: 'left',
+                  className: 'truncate',
+                  title: (row) => row.sessionName || row.sessionId,
+                  cell: (row) => row.sessionName || row.sessionId.slice(0, 8),
+                },
+                { header: 'Runs', align: 'right', cell: (row) => row.runs },
+                {
+                  header: 'Tokens',
+                  align: 'right',
+                  cell: (row) => formatTokensCompact(row.tokens),
+                },
+                {
+                  header: 'Per run',
+                  align: 'right',
+                  cell: (row) => formatTokensCompact(row.tokensPerRun),
+                },
+                { header: 'Cost', align: 'right', cell: (row) => formatUsdOrDash(row.costUsd) },
+                {
+                  header: 'Last run',
+                  align: 'right',
+                  className: 'text-ink-muted',
+                  cell: (row) => formatRelativeTime(row.lastRunMs),
+                },
+              ]}
+            />
+          )}
+        </div>
+      )}
+
+      {data.attributionRatePct !== null && data.attributionRatePct < 50 && (
+        <p className="text-[10px] text-ink-muted italic mt-3">
+          Skill and tool shares are based on {Math.round(data.attributionRatePct)}% of spend with
+          attribution.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+interface ShareTableColumn<Row> {
+  readonly header: string;
+  readonly align: 'left' | 'right';
+  readonly cell: (row: Row) => React.ReactNode;
+  readonly className?: string;
+  readonly title?: (row: Row) => string;
+}
+
+function ShareTable<Row>({
+  title,
+  columns,
+  rows,
+  rowKey,
+  className,
+  totalCount,
+}: {
+  title: string;
+  columns: ReadonlyArray<ShareTableColumn<Row>>;
+  rows: readonly Row[];
+  rowKey: (row: Row) => string;
+  className?: string;
+  totalCount?: number;
+}): JSX.Element {
+  const dropped = totalCount !== undefined && totalCount > rows.length;
+  return (
+    <div className={className}>
+      <h4 className="text-ink-muted font-medium mb-2">
+        {title}
+        {dropped && (
+          <span className="text-ink-subtle font-normal ml-1">
+            top {rows.length} of {totalCount}
+          </span>
+        )}
+      </h4>
+      <div className="max-h-40 overflow-auto">
+        <table className="w-full">
+          <thead className="text-ink-muted sticky top-0 bg-bg-panel">
+            <tr>
+              {columns.map((col) => (
+                <th
+                  key={col.header}
+                  className={col.align === 'right' ? 'text-right pb-1' : 'text-left pb-1'}
+                >
+                  {col.header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={rowKey(row)} className="border-t border-bg-line">
+                {columns.map((col) => {
+                  const base =
+                    col.align === 'right' ? 'py-1 text-right tabular-nums' : 'py-1 text-ink-base';
+                  return (
+                    <td
+                      key={col.header}
+                      className={col.className ? `${base} ${col.className}` : base}
+                      title={col.title?.(row)}
+                    >
+                      {col.cell(row)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1213,6 +1514,11 @@ export interface ModelPerformanceRow {
   readonly avgEfficiency: number | null;
   readonly avgSuccessRate: number | null;
   readonly avgCost: number | null;
+  // Sum of the costs actually reported for this model, and how many of its
+  // sessions reported one. Live/stub rows carry no cost, so a share computed
+  // from avgCost * sessions would extrapolate onto them; use these instead.
+  readonly totalCost: number;
+  readonly costedSessions: number;
   // Blended rate across sessions for this model that report both cost and
   // token counts — (totalCost / totalTokens) * 1e6, input+output tokens only
   // (matching ModelUsageTracker's server-side per-model figure, which is a
@@ -1308,6 +1614,8 @@ export function aggregateModelPerformance(rows: SessionRow[]): ModelPerformanceR
       avgEfficiency: e.effCount > 0 ? e.effSum / e.effCount : null,
       avgSuccessRate: e.successCount > 0 ? e.successSum / e.successCount : null,
       avgCost: e.costCount > 0 ? e.costSum / e.costCount : null,
+      totalCost: e.costSum,
+      costedSessions: e.costCount,
       costPerMillionTokens:
         e.blendedTokensSum > 0 ? (e.blendedCostSum / e.blendedTokensSum) * 1_000_000 : null,
       flagged:
