@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.2] - 2026-09-15
+
+### Changed
+
+- **Today answered its questions in the wrong order: configuration notices sat above the numbers, the live session tail sat at the bottom, and the anti-pattern panel rendered one pill per file.** The page now opens with the KPI strip and the spend chart, then a "Needs attention" list aggregated by anti-pattern type with a link to the sessions involved, then where the spend went, the live tail, a health-card grid, and activity on one hourly scale. The watcher notice became a tooltip and one muted line, and the single-session forecast rows are gone from a page that aggregates every session of the day.
+
 ## [1.54.1] - 2026-09-15
 
 ### Changed
