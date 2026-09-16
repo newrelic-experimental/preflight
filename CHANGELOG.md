@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.1] - 2026-09-15
+
+### Changed
+
+- **History's window labels were phrased three ways and its rankings were drawn as three different chart types.** The page now reads one page-level window (7, 30, 90 days) that every window-aware panel shares, opens with a summary KPI strip and daily spend on the shared chart, then the contribution panel, a breakdown row, a clearly labelled "Last 12 weeks" row, coaching, one merged instruction-file panel, and profile. Empty panels collapse to one line. Model performance and cost per outcome are sortable tables.
+
 ## [1.54.0] - 2026-09-15
 
 ### Added
