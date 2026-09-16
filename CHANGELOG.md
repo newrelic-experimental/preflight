@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.55.0] - 2026-09-15
+
+### Added
+
+- Today's spend chart carries a cumulative line dashed to the end-of-day projection with an "on pace for" week caption, History's daily spend carries this-week and this-month projections, every ranking on both pages is a sortable table with a sort-direction arrow, History's Tools table shows cost and tokens with a coverage caveat (`/api/cost-per-tool?days=N`), and the Git view shows PR counts per repo and worktree. Fixed along the way: the end-of-week figure could fall below end of day, token totals excluded thinking tokens, Needs attention showed flags from days-old sessions, the session trace pane opened empty when history existed, block charts could render huge in wide panels, and the spend lines re-animated on every refetch.
+
 ## [1.54.2] - 2026-09-15
 
 ### Changed
