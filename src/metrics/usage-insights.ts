@@ -66,6 +66,8 @@ export interface UsageInsightsReport {
 export interface UsageInsightsOptions {
   readonly nowMs: number;
   readonly windowDays: number;
+  /** Overrides the `nowMs - windowDays * DAY_MS` session-filter cutoff, e.g. for a calendar-day window. `windowDays` still reports as given. */
+  readonly cutoffMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +217,7 @@ export function computeUsageInsights(
   sessions: readonly FullSessionSummary[],
   opts: UsageInsightsOptions,
 ): UsageInsightsReport {
-  const cutoffMs = opts.nowMs - opts.windowDays * DAY_MS;
+  const cutoffMs = opts.cutoffMs ?? opts.nowMs - opts.windowDays * DAY_MS;
   const windowSessions = sessions.filter((s) => s.startTime >= cutoffMs);
 
   let totalCostUsd = 0;

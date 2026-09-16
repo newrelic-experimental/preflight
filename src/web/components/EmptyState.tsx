@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 
 type EmptyIcon = 'radar' | 'code' | 'timeline' | 'checkmark' | 'clock';
 
-type EmptyStateVariant = 'empty' | 'loading';
+type EmptyStateVariant = 'empty' | 'loading' | 'inline';
 
 interface EmptyStateProps {
   readonly icon?: EmptyIcon;
@@ -204,6 +204,14 @@ export function EmptyState({
   subtitle,
   variant = 'empty',
 }: EmptyStateProps): JSX.Element {
+  if (variant === 'inline') {
+    return (
+      <div className="text-[11px] text-ink-muted">
+        {title}
+        {subtitle && ` · ${subtitle}`}
+      </div>
+    );
+  }
   const Icon = icon !== undefined ? ICON_MAP[icon] : undefined;
   return (
     <div className="py-8 flex flex-col items-center justify-center gap-3">
