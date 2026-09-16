@@ -2197,9 +2197,20 @@ export function createApiHandler(
     if (!deps.sessionStore?.loadAllSessions)
       return unavailable(res, 'sessionStore.loadAllSessions');
     const url = new URL(req.url ?? '/', 'http://localhost');
+    const nowMs = Date.now();
+    if (url.searchParams.get('window') === 'today') {
+      const cutoffMs = localStartOfDay(nowMs);
+      // loadAllSessions() filters by the session file's date prefix (coarse,
+      // day granularity), not the session's real startTime, so go back two
+      // days to guarantee a session that started just before local midnight
+      // isn't excluded before computeUsageInsights applies the exact cutoff.
+      const since = new Date(nowMs - 2 * 86_400_000);
+      const sessions = deps.sessionStore.loadAllSessions({ since });
+      jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays: 1, cutoffMs }));
+      return;
+    }
     const parsedDays = parseInt(url.searchParams.get('days') ?? '', 10);
     const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-    const nowMs = Date.now();
     // Widen the fetch by one extra day past the precise window — same
     // reasoning as GET /api/cost-per-outcome above: loadAllSessions() filters
     // by the session file's date prefix (coarse, day granularity), not the
