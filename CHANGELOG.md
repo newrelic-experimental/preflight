@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.53.3] - 2026-09-16
+
+### Fixed
+
+- **Several coaching and recommendation thresholds were stale, mislabeled, or otherwise miscalibrated against how the tool is actually used today.** Cost-per-session coaching had no throughput denominator and could recommend breaking sessions into smaller ones — actively counterproductive under prompt caching — so it now compares cost per completed task instead, and the recommendation focuses on redundant work rather than session length. The "expensive investigation task" flag compared against a fixed $2 figure with no value side to the comparison; it now compares against the developer's own average task cost and drops the blanket "use Grep/Glob instead" framing. The compute-waste status now scales with session size instead of a fixed 2,000-token floor that fired on nearly every real session. Cost-per-outcome ROI estimates raised the hours-saved assumption for investigation tasks and gave failed attempts a small non-zero value instead of zero, both still disclosed as rough approximations. The large-CLAUDE.md-context recommendation now sources the current model's real input and cache-read rates instead of a hardcoded Sonnet 4 price, and gates on the cache-adjusted marginal cost so a large but well-cached instruction file isn't flagged as a cost problem. The "efficiency score dropped X%" recommendation reported a point-scale delta as a percentage and could fire off a single scored session; it now reports points and requires a minimum weekly sample, matching how the same comparison is already worded and gated elsewhere.
+
 ## [1.53.1] - 2026-09-15
 
 ### Changed
