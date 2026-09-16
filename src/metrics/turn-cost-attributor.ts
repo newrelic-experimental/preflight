@@ -35,6 +35,8 @@ export interface ToolTypeCostEntry {
   readonly totalCost: number;
   readonly callCount: number;
   readonly avgCost: number;
+  /** input + output + cache-read tokens across `callCount`'s attributed calls; mirrors SkillCostEntry.tokens. */
+  readonly tokens: number;
 }
 
 /**
@@ -543,7 +545,10 @@ export class TurnCostAttributor {
   }
 
   private static buildMetrics(state: SessionState): CostAttributionMetrics {
-    const toolTypeAccum = new Map<string, { totalCost: number; callCount: number }>();
+    const toolTypeAccum = new Map<
+      string,
+      { totalCost: number; callCount: number; tokens: number }
+    >();
     const skillAccum = new Map<string, Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>>();
 
     for (const bucket of state.buckets.values()) {
@@ -556,11 +561,15 @@ export class TurnCostAttributor {
       if (bucket.toolName !== 'SlashCommand' && bucket.attributedCallCount > 0) {
         let entry = toolTypeAccum.get(bucket.toolName);
         if (entry === undefined) {
-          entry = { totalCost: 0, callCount: 0 };
+          entry = { totalCost: 0, callCount: 0, tokens: 0 };
           toolTypeAccum.set(bucket.toolName, entry);
         }
         entry.totalCost += bucket.totalCost;
         entry.callCount += bucket.attributedCallCount;
+        entry.tokens +=
+          Math.round(bucket.inputTokens) +
+          Math.round(bucket.outputTokens) +
+          Math.round(bucket.cacheReadTokens);
       }
 
       if (bucket.skillName !== null) {
@@ -598,6 +607,7 @@ export class TurnCostAttributor {
         totalCost: entry.totalCost,
         callCount: entry.callCount,
         avgCost: entry.callCount > 0 ? entry.totalCost / entry.callCount : 0,
+        tokens: entry.tokens,
       };
     }
 

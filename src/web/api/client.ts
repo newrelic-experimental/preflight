@@ -403,7 +403,7 @@ export interface TurnCostsResponse {
   readonly turns: readonly TurnCostEntry[];
   readonly costByToolType: Record<
     string,
-    { totalCost: number; callCount: number; avgCost: number }
+    { totalCost: number; callCount: number; avgCost: number; tokens?: number }
   >;
   readonly costBySkill?: Record<
     string,
@@ -421,6 +421,12 @@ export interface TurnCostsResponse {
   >;
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
+  // Set only by the windowed (?days=) GET /api/cost-per-tool path — how many
+  // of the window's sessions actually carry attribution.buckets data, since
+  // most historical sessions predate that field. Absent on the unwindowed
+  // (today) response, which never had this concept.
+  readonly attributedSessionCount?: number;
+  readonly totalSessionCount?: number;
 }
 
 // sessionId scopes the result to one session's own decision-
@@ -620,8 +626,10 @@ export interface UsageInsightsReport {
   readonly attributionRatePct: number | null;
 }
 
-export const fetchUsageInsights = (days = 7): Promise<UsageInsightsReport> =>
-  getJson<UsageInsightsReport>(`/api/usage-insights?days=${days}`);
+export const fetchUsageInsights = (window: number | 'today' = 7): Promise<UsageInsightsReport> =>
+  getJson<UsageInsightsReport>(
+    window === 'today' ? '/api/usage-insights?window=today' : `/api/usage-insights?days=${window}`,
+  );
 
 // Mirrors the subset of PersonalWeekMetrics (src/metrics/personal-coach.ts,
 // not importable) actually rendered by CoachMetricsTable.
@@ -1202,12 +1210,17 @@ export const fetchCacheHealth = (): Promise<CacheHealthResponse> =>
   getJson<CacheHealthResponse>('/api/cache-health');
 // Same underlying tracker/shape as fetchTurnCosts (both read
 // TurnCostAttributor.getMetrics()) — reuses TurnCostsResponse rather than
-// duplicating an identical interface. sessionId scopes the same way.
-export const fetchCostPerTool = (sessionId?: string): Promise<TurnCostsResponse> =>
+// duplicating an identical interface. sessionId scopes the same way; days
+// requests the windowed, persisted-sessions-only variant (History's Tools
+// table). The two are mutually exclusive server-side — sessionId wins if
+// both are passed.
+export const fetchCostPerTool = (sessionId?: string, days?: number): Promise<TurnCostsResponse> =>
   getJson<TurnCostsResponse>(
     sessionId
       ? `/api/cost-per-tool?sessionId=${encodeURIComponent(sessionId)}`
-      : '/api/cost-per-tool',
+      : days !== undefined
+        ? `/api/cost-per-tool?days=${days}`
+        : '/api/cost-per-tool',
   );
 
 // Mirrors the real GET /api/settings handler response in
@@ -1479,7 +1492,7 @@ export const qk = {
   weekly: ['weekly'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
-  usageInsights: (days: number) => ['usage-insights', days] as const,
+  usageInsights: (window: number | 'today') => ['usage-insights', window] as const,
   personalCoach: ['personal-coach'] as const,
   instructionDrift: ['instruction-drift'] as const,
   apiFailures: ['api-failures'] as const,
@@ -1500,7 +1513,7 @@ export const qk = {
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
   cacheHealth: ['cache-health'] as const,
-  costPerTool: ['cost-per-tool'] as const,
+  costPerTool: (days?: number) => ['cost-per-tool', days] as const,
   settings: ['settings'] as const,
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,

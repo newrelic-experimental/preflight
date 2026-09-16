@@ -116,6 +116,36 @@ describe('computeUsageInsights', () => {
     expect(report.totalTokens).toBe(165);
   });
 
+  it('includes tokensThinking in the session and window token totals', () => {
+    const session = makeSummary({
+      startTime: NOW - 2 * DAY_MS,
+      tokensInput: 100,
+      tokensOutput: 50,
+      tokensCacheRead: 10,
+      tokensCacheCreation: 5,
+      tokensThinking: 40,
+    });
+
+    const report = computeUsageInsights([session], { nowMs: NOW, windowDays: 7 });
+
+    expect(report.totalTokens).toBe(205);
+  });
+
+  it('uses cutoffMs instead of nowMs - windowDays * DAY_MS when given, while windowDays still reports as given', () => {
+    const afterCutoff = makeSummary({ startTime: NOW - 30 * 60_000, estimatedCostUsd: 3 });
+    const beforeCutoff = makeSummary({ startTime: NOW - 90 * 60_000, estimatedCostUsd: 100 });
+
+    const report = computeUsageInsights([afterCutoff, beforeCutoff], {
+      nowMs: NOW,
+      windowDays: 1,
+      cutoffMs: NOW - 60 * 60_000,
+    });
+
+    expect(report.sessionCount).toBe(1);
+    expect(report.totalCostUsd).toBe(3);
+    expect(report.windowDays).toBe(1);
+  });
+
   it('treats a null estimatedCostUsd as 0', () => {
     const s = makeSummary({ startTime: NOW - DAY_MS, estimatedCostUsd: null });
     const report = computeUsageInsights([s], { nowMs: NOW, windowDays: 7 });

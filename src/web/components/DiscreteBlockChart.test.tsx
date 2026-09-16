@@ -86,6 +86,27 @@ describe('DiscreteBlockChart', () => {
     expect(screen.queryByText('peak: 5')).toBeNull();
   });
 
+  it("caps the svg's auto height at the chart's own pixel height, for a low-column-count chart in a wide panel", () => {
+    // Mirrors History's peak-concurrency chart: as few as a handful of
+    // columns in a near-full-width panel. Without a max-height cap, `height:
+    // auto` stretches to the viewBox aspect ratio at the container's full
+    // width, blowing the chart up far past its natural size.
+    const BLOCK_SIZE = 10;
+    const BLOCK_GAP = 2;
+    const data = [
+      { count: 1, tooltip: 'a' },
+      { count: 2, tooltip: 'b' },
+      { count: 3, tooltip: 'c' },
+      { count: 4, tooltip: 'd' },
+    ];
+    const effectiveMax = Math.max(...data.map((d) => d.count), 1);
+    const expectedChartHeight = effectiveMax * (BLOCK_SIZE + BLOCK_GAP);
+
+    const { container } = render(<DiscreteBlockChart data={data} ariaLabel="chart" />);
+    const svg = container.querySelector('svg')!;
+    expect(svg.style.maxHeight).toBe(`${expectedChartHeight}px`);
+  });
+
   describe('levels', () => {
     it('quantizes the tallest column to exactly `levels` blocks and shorter columns proportionally', () => {
       const { container } = render(

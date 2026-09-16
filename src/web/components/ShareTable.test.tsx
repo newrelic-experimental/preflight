@@ -119,5 +119,26 @@ describe('ShareTable', () => {
     render(<ShareTable title="Rows" columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} />);
     expect(screen.queryByRole('button', { name: 'Name' })).toBeNull();
     expect(screen.getByRole('columnheader', { name: 'Name' })).not.toHaveAttribute('aria-sort');
+    expect(
+      screen.getByRole('columnheader', { name: 'Name' }).querySelector('svg'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows a sort direction arrow on the active column, dim ArrowUpDown when inactive', async () => {
+    const user = userEvent.setup();
+    render(<ShareTable title="Rows" columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} />);
+    const header = screen.getByRole('columnheader', { name: 'Value' });
+
+    expect(header.querySelector('.lucide-arrow-up-down')).toBeInTheDocument();
+    expect(header.querySelector('.lucide-arrow-down')).not.toBeInTheDocument();
+    expect(header.querySelector('.lucide-arrow-up')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Value' }));
+    expect(header.querySelector('.lucide-arrow-down')).toBeInTheDocument();
+    expect(header.querySelector('.lucide-arrow-up-down')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Value' }));
+    expect(header.querySelector('.lucide-arrow-up')).toBeInTheDocument();
+    expect(header.querySelector('.lucide-arrow-down')).not.toBeInTheDocument();
   });
 });

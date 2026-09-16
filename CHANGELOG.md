@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.55.0] - 2026-09-15
+
+### Added
+
+- Today's spend chart carries a cumulative line dashed to the end-of-day projection with an "on pace for" week caption, History's daily spend carries this-week and this-month projections, every ranking on both pages is a sortable table with a sort-direction arrow, History's Tools table shows cost and tokens with a coverage caveat (`/api/cost-per-tool?days=N`), and the Git view shows PR counts per repo and worktree. Fixed along the way: the end-of-week figure could fall below end of day, token totals excluded thinking tokens, Needs attention showed flags from days-old sessions, the session trace pane opened empty when history existed, block charts could render huge in wide panels, and the spend lines re-animated on every refetch.
+
+## [1.54.2] - 2026-09-15
+
+### Changed
+
+- **Today answered its questions in the wrong order: configuration notices sat above the numbers, the live session tail sat at the bottom, and the anti-pattern panel rendered one pill per file.** The page now opens with the KPI strip and the spend chart, then a "Needs attention" list aggregated by anti-pattern type with a link to the sessions involved, then where the spend went, the live tail, a health-card grid, and activity on one hourly scale. The watcher notice became a tooltip and one muted line, and the single-session forecast rows are gone from a page that aggregates every session of the day.
+
+## [1.54.1] - 2026-09-15
+
+### Changed
+
+- **History's window labels were phrased three ways and its rankings were drawn as three different chart types.** The page now reads one page-level window (7, 30, 90 days) that every window-aware panel shares, opens with a summary KPI strip and daily spend on the shared chart, then the contribution panel, a breakdown row, a clearly labelled "Last 12 weeks" row, coaching, one merged instruction-file panel, and profile. Empty panels collapse to one line. Model performance and cost per outcome are sortable tables.
+
+## [1.54.0] - 2026-09-15
+
+### Added
+
+- `/api/usage-insights` accepts `window=today`, scoping the share-of-spend report to local midnight so Today's contribution panel can match History's. New shared dashboard pieces for the page rebuilds that follow: a spend-over-time bar chart with a cumulative line and an optional dashed projection (`SpendBars`), an actionable attention list with per-row advice and session links (`AttentionList`), and an inline empty-state variant.
+
 ## [1.53.1] - 2026-09-15
 
 ### Changed
