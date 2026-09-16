@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.0] - 2026-09-15
+
+### Added
+
+- `/api/usage-insights` accepts `window=today`, scoping the share-of-spend report to local midnight so Today's contribution panel can match History's. New shared dashboard pieces for the page rebuilds that follow: a spend-over-time bar chart with a cumulative line and an optional dashed projection (`SpendBars`), an actionable attention list with per-row advice and session links (`AttentionList`), and an inline empty-state variant.
+
 ## [1.53.1] - 2026-09-15
 
 ### Changed
