@@ -776,6 +776,59 @@ describe('rankModelsByOutcome', () => {
     expect(report.ranked[0]?.model).toBe('sonnet');
   });
 
+  it('excludes multi-model sessions from per-model ranking rather than misattributing them to s.model', () => {
+    const analyzer = new TrendAnalyzer({ sessionStore: store });
+    const modelBreakdownEntry = (requestCount: number) => ({
+      requestCount,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostUsd: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalThinkingTokens: 0,
+    });
+
+    // 20 single-model sonnet sessions with high efficiency.
+    for (let i = 0; i < 20; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `sonnet-${i}`,
+          model: 'sonnet',
+          efficiencyScore: 0.9,
+          modelBreakdown: { sonnet: modelBreakdownEntry(5) },
+        }),
+      );
+    }
+
+    // 20 multi-model sessions (an orchestrator model plus a subagent model)
+    // labeled s.model='sonnet' but whose modelBreakdown shows two models —
+    // these can't be attributed to sonnet alone, and must not be counted in
+    // its ranking bucket.
+    for (let i = 0; i < 20; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `mixed-${i}`,
+          model: 'sonnet',
+          efficiencyScore: 0.1,
+          modelBreakdown: {
+            sonnet: modelBreakdownEntry(3),
+            haiku: modelBreakdownEntry(7),
+          },
+        }),
+      );
+    }
+
+    const report = analyzer.rankModelsByOutcome();
+
+    const sonnetStats = report.ranked.find((m) => m.model === 'sonnet');
+    expect(sonnetStats).toBeDefined();
+    // Only the 20 single-model sessions count — if the mixed sessions leaked
+    // in via s.model, sessionCount would be 40 and avgEfficiencyScore would
+    // be pulled down toward 0.5.
+    expect(sonnetStats!.sessionCount).toBe(20);
+    expect(sonnetStats!.avgEfficiencyScore).toBeCloseTo(0.9, 1);
+  });
+
   it('meaningful gap still recommends even at low confidence tier', () => {
     const analyzer = new TrendAnalyzer({ sessionStore: store });
 
