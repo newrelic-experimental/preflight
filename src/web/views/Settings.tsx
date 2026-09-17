@@ -90,7 +90,7 @@ const STATUS_COLOR: Record<string, string> = {
 function DiagnosticsPanel(): JSX.Element {
   const { data, isLoading, isError, refetch } = useQuery<DiagnosticCheck[]>({
     queryKey: qk.diagnostics,
-    queryFn: () => fetchDiagnostics(),
+    queryFn: ({ signal }) => fetchDiagnostics(signal),
     refetchInterval: 60_000,
     staleTime: 55_000,
   });
@@ -157,12 +157,12 @@ export function Settings(): JSX.Element {
   const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery<SettingsData>({
     queryKey: qk.settings,
-    queryFn: () => fetchSettings(),
+    queryFn: ({ signal }) => fetchSettings(signal),
   });
 
   const { data: healthApi } = useQuery<ObservabilityHealthResponse>({
     queryKey: ['observability-health'],
-    queryFn: fetchObservabilityHealth,
+    queryFn: ({ signal }) => fetchObservabilityHealth(signal),
     refetchInterval: 30_000,
   });
 

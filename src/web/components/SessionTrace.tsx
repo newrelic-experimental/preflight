@@ -771,7 +771,7 @@ function AgentCallsGantt({
 }): JSX.Element {
   const { data, isLoading, isError } = useQuery({
     queryKey: qk.agentCalls(sessionId, agentId),
-    queryFn: () => fetchAgentCalls(sessionId, agentId),
+    queryFn: ({ signal }) => fetchAgentCalls(sessionId, agentId, signal),
     retry: false,
   });
 
@@ -1048,7 +1048,7 @@ function AgentCallsList({
 }): JSX.Element {
   const { data, isLoading, isError } = useQuery({
     queryKey: qk.agentCalls(sessionId, agentId),
-    queryFn: () => fetchAgentCalls(sessionId, agentId),
+    queryFn: ({ signal }) => fetchAgentCalls(sessionId, agentId, signal),
     retry: false,
   });
 

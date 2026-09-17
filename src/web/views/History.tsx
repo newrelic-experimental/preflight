@@ -259,70 +259,70 @@ export function History(): JSX.Element {
 
   const weekly = useQuery<WeeklyRow[]>({
     queryKey: qk.weekly,
-    queryFn: fetchWeekly,
+    queryFn: ({ signal }) => fetchWeekly(signal),
   });
 
   const sessions = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(200),
-    queryFn: () => fetchSessionsList(200),
+    queryFn: ({ signal }) => fetchSessionsList(200, signal),
   });
 
   const costPerOutcome = useQuery<CostPerOutcomeResponse>({
     queryKey: qk.costPerOutcome(windowNum),
-    queryFn: () => fetchCostPerOutcome(windowNum),
+    queryFn: ({ signal }) => fetchCostPerOutcome(windowNum, signal),
   });
 
   const costPerTool = useQuery<TurnCostsResponse>({
     queryKey: qk.costPerTool(windowNum),
-    queryFn: () => fetchCostPerTool(undefined, windowNum),
+    queryFn: ({ signal }) => fetchCostPerTool(undefined, windowNum, signal),
   });
 
   const coach = useQuery<PersonalCoachResult>({
     queryKey: qk.personalCoach,
-    queryFn: fetchPersonalCoach,
+    queryFn: ({ signal }) => fetchPersonalCoach(signal),
   });
 
   const recommendations = useQuery<RecommendationsApiResponse>({
     queryKey: qk.recommendations,
-    queryFn: fetchRecommendations,
+    queryFn: ({ signal }) => fetchRecommendations(signal),
     retry: false,
   });
 
   const claudeMdImpact = useQuery<ClaudeMdImpactApiResponse>({
     queryKey: qk.claudeMdImpact,
-    queryFn: fetchClaudeMdImpact,
+    queryFn: ({ signal }) => fetchClaudeMdImpact(signal),
     retry: false,
   });
 
   const collabProfile = useQuery<CollaborationProfileApiResponse>({
     queryKey: qk.collaborationProfile,
-    queryFn: fetchCollaborationProfile,
+    queryFn: ({ signal }) => fetchCollaborationProfile(signal),
     retry: false,
   });
 
   const activityGrid = useQuery<ActivityHeatmapHistoryResponse>({
     queryKey: qk.activityHeatmap('history'),
-    queryFn: () => fetchActivityHeatmap('history', 12),
+    queryFn: ({ signal }) => fetchActivityHeatmap('history', 12, signal),
   });
 
   const concurrencyHistory = useQuery<ConcurrencyHistoryResponse>({
     queryKey: qk.concurrencyHistory(windowNum),
-    queryFn: () => fetchConcurrencyHistory(windowNum),
+    queryFn: ({ signal }) => fetchConcurrencyHistory(windowNum, signal),
   });
 
   const drift = useQuery<InstructionDriftResponse>({
     queryKey: qk.instructionDrift,
-    queryFn: fetchInstructionDrift,
+    queryFn: ({ signal }) => fetchInstructionDrift(signal),
   });
 
   const usageInsights = useQuery<UsageInsightsReport>({
     queryKey: qk.usageInsights(windowNum),
-    queryFn: () => fetchUsageInsights(windowNum),
+    queryFn: ({ signal }) => fetchUsageInsights(windowNum, signal),
   });
 
   const todayAggregate = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
-    queryFn: fetchTodayAggregate,
+    queryFn: ({ signal }) => fetchTodayAggregate(signal),
     refetchInterval: 10_000,
   });
 

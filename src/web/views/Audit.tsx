@@ -61,7 +61,7 @@ export function Audit(): JSX.Element {
   const [filter, setFilter] = useState<FilterKey>('all');
   const { data, isLoading, error, refetch } = useQuery<AuditEntry[]>({
     queryKey: qk.audit,
-    queryFn: () => fetchAuditLog(),
+    queryFn: ({ signal }) => fetchAuditLog(signal),
     refetchInterval: 10_000,
   });
 

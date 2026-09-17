@@ -227,45 +227,45 @@ export function Today(): JSX.Element {
   const subagentStats = useSubagentStats();
   const { data: healthApi } = useQuery<ObservabilityHealthResponse>({
     queryKey: ['observability-health'],
-    queryFn: fetchObservabilityHealth,
+    queryFn: ({ signal }) => fetchObservabilityHealth(signal),
     refetchInterval: 30_000,
   });
 
   const { data: costApi, isPending: costPending } = useQuery<CostApiResponse>({
     queryKey: qk.cost,
-    queryFn: fetchCost,
+    queryFn: ({ signal }) => fetchCost(signal),
     refetchInterval: 10_000,
   });
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
-    queryFn: fetchTodayAggregate,
+    queryFn: ({ signal }) => fetchTodayAggregate(signal),
     refetchInterval: 10_000,
   });
   const { data: todaySessions, isPending: sessionsPending } = useQuery<SessionSummary[]>({
     queryKey: qk.sessionsList(200),
-    queryFn: () => fetchSessionsList(200),
+    queryFn: ({ signal }) => fetchSessionsList(200, signal),
     refetchInterval: 10_000,
   });
   const { data: apiAntiPatterns, isPending: antiPatternsPending } = useQuery<SessionAntiPattern[]>({
     queryKey: qk.antiPatterns,
-    queryFn: fetchAntiPatterns,
+    queryFn: ({ signal }) => fetchAntiPatterns(signal),
   });
   const { data: concurrency, isPending: concurrencyPending } = useQuery<ConcurrencyData>({
     queryKey: qk.concurrency,
-    queryFn: fetchConcurrency,
+    queryFn: ({ signal }) => fetchConcurrency(signal),
     refetchInterval: 10_000,
   });
   const { data: todayHeatmap, isPending: todayHeatmapPending } =
     useQuery<ActivityHeatmapTodayResponse>({
       queryKey: qk.activityHeatmap('today'),
-      queryFn: () => fetchActivityHeatmap('today'),
+      queryFn: ({ signal }) => fetchActivityHeatmap('today', undefined, signal),
       refetchInterval: 30_000,
     });
   // Live-session list — drives the selector default and the
   // "Session ended" badge logic when the selected session goes stale.
   const { data: liveSessions, isPending: liveSessionsPending } = useQuery<LiveSessionEntry[]>({
     queryKey: qk.sessionsLive,
-    queryFn: fetchLiveSessions,
+    queryFn: ({ signal }) => fetchLiveSessions(signal),
     refetchInterval: 10_000,
   });
 
@@ -599,9 +599,9 @@ function NeedsAttentionPanel({
   // multiplier React Query would otherwise produce on every refetch.
   const { data, error } = useQuery<readonly AlertEvent[] | null>({
     queryKey: qk.alertsRecent,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await fetchRecentAlerts();
+        return await fetchRecentAlerts(signal);
       } catch (err) {
         if (err instanceof NotFoundError) return null;
         throw err;
@@ -719,7 +719,7 @@ function SpendBreakdownPanel({
 }): JSX.Element {
   const { data: costData } = useQuery<TurnCostsResponse>({
     queryKey: qk.costPerTool(),
-    queryFn: () => fetchCostPerTool(),
+    queryFn: ({ signal }) => fetchCostPerTool(undefined, undefined, signal),
     refetchInterval: QUALITY_REFETCH_MS,
     retry: false,
   });
@@ -727,12 +727,12 @@ function SpendBreakdownPanel({
   // can be missing or null when no token events have been recorded yet.
   const { data: modelData } = useQuery<ModelUsageMetrics>({
     queryKey: qk.modelUsage,
-    queryFn: fetchModelUsage,
+    queryFn: ({ signal }) => fetchModelUsage(signal),
     refetchInterval: QUALITY_REFETCH_MS,
   });
   const { data: usageData, isError: usageError } = useQuery<UsageInsightsReport>({
     queryKey: qk.usageInsights('today'),
-    queryFn: () => fetchUsageInsights('today'),
+    queryFn: ({ signal }) => fetchUsageInsights('today', signal),
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -799,7 +799,7 @@ function CacheHealthCard({
 }): JSX.Element {
   const { data: trendData } = useQuery<CacheHealthResponse>({
     queryKey: qk.cacheHealth,
-    queryFn: fetchCacheHealth,
+    queryFn: ({ signal }) => fetchCacheHealth(signal),
     refetchInterval: QUALITY_REFETCH_MS,
   });
 
@@ -847,7 +847,7 @@ function CacheHealthCard({
 function ToolSelectionCard(): JSX.Element {
   const { data } = useQuery<ToolSelectionMetrics>({
     queryKey: qk.toolSelectionScore,
-    queryFn: fetchToolSelectionScore,
+    queryFn: ({ signal }) => fetchToolSelectionScore(signal),
     refetchInterval: QUALITY_REFETCH_MS,
   });
   const tooltip =
@@ -886,7 +886,7 @@ function ToolSelectionCard(): JSX.Element {
 function QualityCard(): JSX.Element {
   const { data } = useQuery<QualityProxyMetrics>({
     queryKey: qk.qualityProxy,
-    queryFn: fetchQualityProxy,
+    queryFn: ({ signal }) => fetchQualityProxy(signal),
     refetchInterval: QUALITY_REFETCH_MS,
   });
   const tooltip =
@@ -927,7 +927,7 @@ function QualityCard(): JSX.Element {
 function ComputeWasteCard({ liveSessions }: { liveSessions: LiveSessionEntry[] }): JSX.Element {
   const { data, isPending } = useQuery<ComputeWasteApiResponse>({
     queryKey: qk.computeWaste,
-    queryFn: fetchComputeWaste as () => Promise<ComputeWasteApiResponse>,
+    queryFn: ({ signal }) => fetchComputeWaste(signal) as Promise<ComputeWasteApiResponse>,
     retry: false,
   });
   const tooltip =
@@ -1020,7 +1020,7 @@ function LatencyCard({
 function ApiFailuresCard(): JSX.Element {
   const { data } = useQuery<ApiFailureMetrics>({
     queryKey: qk.apiFailures,
-    queryFn: fetchApiFailures,
+    queryFn: ({ signal }) => fetchApiFailures(signal),
     refetchInterval: QUALITY_REFETCH_MS,
   });
   const tooltip =
@@ -1261,7 +1261,7 @@ function LiveSessionPane({
   // populates immediately on first paint instead of waiting an interval.
   const { data: current } = useQuery<{ sessionId: string; liveSessions?: string[] }>({
     queryKey: qk.sessionCurrent,
-    queryFn: fetchSessionCurrent,
+    queryFn: ({ signal }) => fetchSessionCurrent(signal),
   });
 
   const liveSessionIds = useMemo(() => {
@@ -1369,7 +1369,7 @@ function LiveSessionPane({
 
   const { data: replay } = useQuery<ReplayData>({
     queryKey: activeId ? qk.sessionReplay(activeId) : ['replay', 'none'],
-    queryFn: () => fetchSessionReplay(activeId!),
+    queryFn: ({ signal }) => fetchSessionReplay(activeId!, signal),
     enabled: activeId !== null,
     retry: false,
     refetchInterval: isLive ? LIVE_TAIL_REFETCH_MS : false,
@@ -1380,7 +1380,7 @@ function LiveSessionPane({
   // still renders the parent lane.
   const { data: subagentData } = useQuery<SessionSubagentsResponse>({
     queryKey: activeId ? qk.sessionSubagents(activeId) : ['subagents', 'none'],
-    queryFn: () => fetchSessionSubagents(activeId!),
+    queryFn: ({ signal }) => fetchSessionSubagents(activeId!, signal),
     enabled: activeId !== null,
     retry: false,
     refetchInterval: isLive ? LIVE_TAIL_REFETCH_MS : false,
@@ -1389,7 +1389,7 @@ function LiveSessionPane({
   // Workflow runs → status lookup for the trace's per-group status icons.
   const { data: workflowsData } = useQuery({
     queryKey: qk.workflows,
-    queryFn: fetchWorkflows,
+    queryFn: ({ signal }) => fetchWorkflows(signal),
     refetchInterval: isLive ? 10_000 : false,
   });
 
@@ -1401,12 +1401,12 @@ function LiveSessionPane({
   // it, not just whichever session this process last recorded.
   const { data: turnCosts } = useQuery<TurnCostsResponse>({
     queryKey: activeId ? ['turn-costs', activeId] : ['turn-costs'],
-    queryFn: () => fetchTurnCosts(activeId ?? undefined),
+    queryFn: ({ signal }) => fetchTurnCosts(activeId ?? undefined, signal),
     refetchInterval: 10_000,
   });
   const { data: decisionTree } = useQuery<DecisionTreeResponse>({
     queryKey: activeId ? ['decision-tree', activeId] : ['decision-tree'],
-    queryFn: () => fetchDecisionTree(activeId ?? undefined),
+    queryFn: ({ signal }) => fetchDecisionTree(activeId ?? undefined, signal),
     refetchInterval: 10_000,
   });
   // Mirrors ContextBar's own internal query for the same sessionId — using
@@ -1414,7 +1414,7 @@ function LiveSessionPane({
   // this to a single network request/shared cache entry, not a second fetch.
   const { data: contextData } = useQuery<ContextResponse>({
     queryKey: activeId ? ['context', activeId] : qk.context,
-    queryFn: () => fetchContext(activeId ?? undefined),
+    queryFn: ({ signal }) => fetchContext(activeId ?? undefined, signal),
     refetchInterval: 10_000,
     enabled: isLive && Boolean(activeId),
   });
@@ -1427,12 +1427,12 @@ function LiveSessionPane({
   // scoped to the selected session.
   const { data: contextComposition } = useQuery<ContextCompositionResponse>({
     queryKey: ['context-composition'],
-    queryFn: fetchContextComposition,
+    queryFn: ({ signal }) => fetchContextComposition(signal),
     refetchInterval: 10_000,
   });
   const { data: contextEfficiency } = useQuery<ContextEfficiencyResponse>({
     queryKey: ['context-efficiency'],
-    queryFn: fetchContextEfficiency,
+    queryFn: ({ signal }) => fetchContextEfficiency(signal),
     refetchInterval: 10_000,
   });
 

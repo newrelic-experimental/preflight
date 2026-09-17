@@ -292,7 +292,7 @@ export function Sessions(): JSX.Element {
 
   const list = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
-    queryFn: () => fetchSessionsList(SESSIONS_PAGE_SIZE),
+    queryFn: ({ signal }) => fetchSessionsList(SESSIONS_PAGE_SIZE, signal),
     refetchInterval: 10_000,
   });
 
@@ -300,13 +300,13 @@ export function Sessions(): JSX.Element {
   // run tree. One shared query for the whole view (was one per expanded row).
   const { data: rawWorkflows } = useQuery({
     queryKey: qk.workflows,
-    queryFn: fetchWorkflows,
+    queryFn: ({ signal }) => fetchWorkflows(signal),
     refetchInterval: 10_000,
   });
 
   const current = useQuery<CurrentSession>({
     queryKey: qk.sessionCurrent,
-    queryFn: fetchSessionCurrent,
+    queryFn: ({ signal }) => fetchSessionCurrent(signal),
     refetchInterval: 10_000,
   });
 
@@ -320,7 +320,7 @@ export function Sessions(): JSX.Element {
 
   const detail = useQuery<SessionDetail>({
     queryKey: selectedId ? qk.sessionDetail(selectedId) : ['session', 'none'],
-    queryFn: () => fetchSessionDetail(selectedId!),
+    queryFn: ({ signal }) => fetchSessionDetail(selectedId!, signal),
     enabled: selectedId !== null,
     // Poll while current session data is still loading (we don't know yet if
     // this session is live), then only continue polling if it turns out to be live.
@@ -891,7 +891,7 @@ function SessionRunSubRow({
 }: SessionRunSubRowProps): JSX.Element {
   const { data: detail } = useQuery<WorkflowRunDetailResponse>({
     queryKey: qk.workflowDetail(run.runId),
-    queryFn: () => fetchWorkflowDetail(run.runId),
+    queryFn: ({ signal }) => fetchWorkflowDetail(run.runId, signal),
     enabled: isExpanded,
   });
 
@@ -1340,7 +1340,7 @@ function SessionTraceSection({
 }): JSX.Element {
   const { data, isLoading, isError } = useQuery<SessionSubagentsResponse>({
     queryKey: qk.sessionSubagents(sessionId),
-    queryFn: () => fetchSessionSubagents(sessionId),
+    queryFn: ({ signal }) => fetchSessionSubagents(sessionId, signal),
     retry: false,
     refetchInterval: isLive ? 10_000 : false,
   });
@@ -1350,7 +1350,7 @@ function SessionTraceSection({
   // qk.workflows query/key as the KPI strip and master-list run tree above.
   const { data: rawWorkflows } = useQuery({
     queryKey: qk.workflows,
-    queryFn: fetchWorkflows,
+    queryFn: ({ signal }) => fetchWorkflows(signal),
     refetchInterval: isLive ? 10_000 : 30_000,
   });
 
@@ -1458,7 +1458,7 @@ function ToolsSection({
 
   const { data: contextData } = useQuery<ContextResponse>({
     queryKey: ['context', sessionId],
-    queryFn: () => fetchContext(sessionId),
+    queryFn: ({ signal }) => fetchContext(sessionId, signal),
     refetchInterval: 10_000,
     enabled: isLive && tab === 'context',
   });

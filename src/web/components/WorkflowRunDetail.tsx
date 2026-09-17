@@ -122,7 +122,7 @@ export function WorkflowRunDetail({ runId, onClose }: WorkflowRunDetailProps): J
 
   const { data, isLoading, isError } = useQuery<WorkflowRunDetailResponse>({
     queryKey: qk.workflowDetail(runId),
-    queryFn: () => fetchWorkflowDetail(runId),
+    queryFn: ({ signal }) => fetchWorkflowDetail(runId, signal),
     refetchInterval: 5_000,
   });
 
