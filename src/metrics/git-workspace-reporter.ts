@@ -481,3 +481,43 @@ export function replaySessionToActivityRecords(
 
   return { records, identities };
 }
+
+/**
+ * Memoizes `replaySessionToActivityRecords` per `sessionId`, for `'completed'`
+ * sessions only. A completed session's file is write-once (only the terminal
+ * shutdown save marks a session `'completed'` — a periodic mid-session
+ * checkpoint always persists `'in progress'`, per `SessionStore.saveSession`),
+ * so its replay result never changes and is safe to cache forever. This is
+ * what makes the cache worth having: a cache hit skips
+ * `identityResolver.resolve()` entirely, and that call spawns up to three
+ * `git` subprocesses per unique historical working directory with no caching
+ * of its own — paying that cost again for the same closed session on every
+ * dashboard poll is pure waste.
+ */
+export class ReplaySessionCache {
+  private readonly cache = new Map<string, ReplayedActivity>();
+
+  replay(
+    session: {
+      readonly sessionId: string;
+      readonly outcome?: string;
+      readonly timeline?: readonly ReplayTimelineEntry[];
+      readonly repoName?: string | null;
+    },
+    identityResolver: WorktreeIdentityResolver,
+  ): ReplayedActivity {
+    const cacheable = session.outcome === 'completed';
+    if (cacheable) {
+      const cached = this.cache.get(session.sessionId);
+      if (cached) return cached;
+    }
+
+    const replayed = replaySessionToActivityRecords(session, identityResolver);
+
+    if (cacheable) {
+      this.cache.set(session.sessionId, replayed);
+    }
+
+    return replayed;
+  }
+}

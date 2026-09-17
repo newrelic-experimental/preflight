@@ -8,7 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
-import { GitWorkspaceReporter, replaySessionToActivityRecords } from './git-workspace-reporter.js';
+import {
+  GitWorkspaceReporter,
+  ReplaySessionCache,
+  replaySessionToActivityRecords,
+} from './git-workspace-reporter.js';
 import { WorktreeIdentityResolver } from './git-workspace-identity.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses (e.g. a pre-push
@@ -637,5 +641,80 @@ describe('GitWorkspaceReporter', () => {
       expect(report.rows).toHaveLength(1);
       expect(report.rows[0].metrics.commitCount).toBe(1);
     });
+  });
+});
+
+describe('ReplaySessionCache', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'git-ws-reporter-cache-test-'));
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses the cached replay for a second call on the same completed session, without re-resolving identity', () => {
+    const repoDir = join(tmpDir, 'cached-repo');
+    execSync(`mkdir -p "${repoDir}"`);
+    initGitRepo(repoDir);
+
+    const timeline: ReplayTimelineEntry[] = [
+      {
+        timestamp: 1000,
+        toolName: 'Bash',
+        durationMs: 50,
+        success: true,
+        command: 'git commit -m "replayed"',
+        cwd: repoDir,
+      },
+    ];
+    const session = { sessionId: 'sess-completed', outcome: 'completed', timeline };
+
+    const identityResolver = new WorktreeIdentityResolver();
+    const resolveSpy = jest.spyOn(identityResolver, 'resolve');
+    const cache = new ReplaySessionCache();
+
+    const first = cache.replay(session, identityResolver);
+    const callsAfterFirstReplay = resolveSpy.mock.calls.length;
+    expect(callsAfterFirstReplay).toBeGreaterThan(0);
+
+    const second = cache.replay(session, identityResolver);
+
+    expect(resolveSpy).toHaveBeenCalledTimes(callsAfterFirstReplay);
+    expect(second).toBe(first);
+    expect(second.records.map((r) => r.recordId)).toEqual(first.records.map((r) => r.recordId));
+  });
+
+  it('always re-replays a session that is not yet completed, since its file can still be rewritten', () => {
+    const repoDir = join(tmpDir, 'in-progress-repo');
+    execSync(`mkdir -p "${repoDir}"`);
+    initGitRepo(repoDir);
+
+    const timeline: ReplayTimelineEntry[] = [
+      {
+        timestamp: 1000,
+        toolName: 'Bash',
+        durationMs: 50,
+        success: true,
+        command: 'git commit -m "replayed"',
+        cwd: repoDir,
+      },
+    ];
+    const session = { sessionId: 'sess-in-progress', outcome: 'in progress', timeline };
+
+    const identityResolver = new WorktreeIdentityResolver();
+    const resolveSpy = jest.spyOn(identityResolver, 'resolve');
+    const cache = new ReplaySessionCache();
+
+    cache.replay(session, identityResolver);
+    const callsAfterFirstReplay = resolveSpy.mock.calls.length;
+    expect(callsAfterFirstReplay).toBeGreaterThan(0);
+
+    cache.replay(session, identityResolver);
+    expect(resolveSpy.mock.calls.length).toBeGreaterThan(callsAfterFirstReplay);
   });
 });

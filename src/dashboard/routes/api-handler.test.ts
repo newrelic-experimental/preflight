@@ -6526,6 +6526,75 @@ describe('api-handler GET /api/git-efficiency', () => {
     expect(gitRecord).toBeDefined();
     expect(gitRecord!.recordId.startsWith('replay:hist-1:0')).toBe(true);
   });
+
+  it('reuses the cached replay of a completed session across requests instead of re-replaying its timeline', async () => {
+    // sessionStore.loadAllSessions() re-reads and re-parses from disk on every
+    // call in production, so the returned session object is a different
+    // reference each time — this stub mimics that by returning a fresh
+    // object literal per call, with a timeline that would change the replay
+    // result if it were ever actually re-replayed. Since a real completed
+    // session's file never changes underneath it, seeing the SECOND
+    // request's timeline reflected here would prove the cache isn't
+    // being consulted.
+    let calls = 0;
+    const reportArgs: Parameters<
+      NonNullable<Parameters<typeof createApiHandler>[0]['gitWorkspaceReporter']>['report']
+    >[0][] = [];
+    const handler = createApiHandler({
+      gitWorkspaceReporter: {
+        report: (input) => {
+          reportArgs.push(input);
+          return {
+            scope: { kind: 'all' },
+            metrics: {} as GitWorkspaceReport['metrics'],
+            rows: [],
+            worstBehind: null,
+            since: Date.now() - 7 * 86_400_000,
+            until: Date.now(),
+          };
+        },
+        knownWorkspaces: () => new Map(),
+      },
+      sessionStore: {
+        loadAllSessions: () => {
+          calls += 1;
+          return [
+            {
+              sessionId: 'hist-completed',
+              outcome: 'completed',
+              timeline: [
+                {
+                  timestamp: Date.now() - 3_600_000,
+                  toolName: 'Bash',
+                  durationMs: 50,
+                  success: true,
+                  command: calls === 1 ? 'git commit -m "first"' : 'git commit -m "second"',
+                  cwd: '/tmp/not-a-real-repo-xyz',
+                },
+              ],
+            },
+          ];
+        },
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency?window=week' } as IncomingMessage;
+
+    await handler(req, fakeRes().res);
+    await handler(req, fakeRes().res);
+
+    expect(calls).toBe(2);
+    expect(reportArgs).toHaveLength(2);
+    // Deep-equal, not just recordId — the second request's stub timeline
+    // says "second" instead of "first"; if that leaked through, this would
+    // catch it via the classified event's own `command` field even though
+    // recordId is derived only from sessionId+index and wouldn't move.
+    expect(reportArgs[1].historical).toEqual(reportArgs[0].historical);
+    const gitRecord = reportArgs[0].historical!.find((r) => r.kind === 'git');
+    expect(gitRecord?.kind === 'git' && gitRecord.gitEvent.command).toBe('git commit -m "first"');
+  });
 });
 
 describe('api-handler GET /api/context', () => {

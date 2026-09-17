@@ -31,7 +31,7 @@ import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-
 import type { WorktreeIdentity } from '../../metrics/git-workspace-identity.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import type { ScopeRef } from '../../metrics/git-workspace-report.js';
-import { replaySessionToActivityRecords } from '../../metrics/git-workspace-reporter.js';
+import { ReplaySessionCache } from '../../metrics/git-workspace-reporter.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
 import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
 import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
@@ -1270,6 +1270,11 @@ export function createApiHandler(
   deps: ApiHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const routes = new Map<string, RouteFn>();
+  // Persists for the life of this handler (i.e. the server process), so a
+  // completed historical session's replay — and the `git` subprocess calls
+  // its identity resolution makes — is only ever paid once across every
+  // future /api/git-efficiency request, not on every poll.
+  const gitReplayCache = new ReplaySessionCache();
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
@@ -2537,11 +2542,12 @@ export function createApiHandler(
         since: new Date(since),
       }) as unknown as readonly {
         sessionId: string;
+        outcome?: string;
         timeline?: readonly ReplayTimelineEntry[];
         repoName?: string | null;
       }[];
       for (const session of sessions) {
-        const replayed = replaySessionToActivityRecords(session, identityResolver);
+        const replayed = gitReplayCache.replay(session, identityResolver);
         historical = historical.concat(replayed.records);
         for (const [key, identity] of replayed.identities) {
           historicalIdentities.set(key, identity);
