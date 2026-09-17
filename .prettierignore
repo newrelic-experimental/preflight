@@ -8,3 +8,4 @@ package-lock.json
 *_IDEATION.md
 *_PLAN.md
 site/.astro/
+.playwright-mcp/
