@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from '../storage/local-store.js';
@@ -448,6 +448,115 @@ describe('HookEventProcessor', () => {
       expect(timeoutRecord!.success).toBe(false);
       expect(timeoutRecord!.errorType).toBe('timeout');
       expect(timeoutRecord!.durationMs).toBeNull();
+    });
+  });
+
+  describe('orphan sweep — hook-blocked classification', () => {
+    // Real shape captured from a live Claude Code transcript: a PreToolUse
+    // hook exiting 2 produces a synthetic tool_result on the original
+    // tool_use_id, is_error true, content prefixed "PreToolUse:<Tool> hook
+    // error:" — Claude Code fires no dedicated hook event for this case, so
+    // the transcript is the only place the block is visible.
+    function writeHookBlockTranscript(path: string, toolUseId: string): void {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: toolUseId,
+                is_error: true,
+                content:
+                  "PreToolUse:Bash hook error: [echo 'DENIED: test guard blocked this command' >&2; exit 2]: DENIED: test guard blocked this command\n",
+              },
+            ],
+          },
+        }) + '\n',
+      );
+    }
+
+    it('classifies an orphan as "hook_blocked" when the transcript shows a PreToolUse hook-error tool_result', () => {
+      const transcriptPath = resolve(tmpDir, 'transcript-blocked.jsonl');
+      writeHookBlockTranscript(transcriptPath, 'toolu_blocked');
+
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_blocked', tool: 'Bash', timestamp: 1000, transcriptPath }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('hook_blocked');
+      expect(records[0]!.success).toBe(false);
+      expect(records[0]!.durationMs).toBeNull();
+    });
+
+    it('still classifies as "timeout" when the transcript has no entry for this toolUseId', () => {
+      const transcriptPath = resolve(tmpDir, 'transcript-unrelated.jsonl');
+      writeHookBlockTranscript(transcriptPath, 'toolu_someone_else');
+
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({
+          toolUseId: 'toolu_real_orphan',
+          tool: 'Bash',
+          timestamp: 1000,
+          transcriptPath,
+        }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('timeout');
+    });
+
+    it('still classifies as "timeout" when the matching tool_result is not a hook-block error', () => {
+      const transcriptPath = resolve(tmpDir, 'transcript-other-error.jsonl');
+      writeFileSync(
+        transcriptPath,
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_genuine_error',
+                is_error: true,
+                content: 'ENOENT: no such file or directory',
+              },
+            ],
+          },
+        }) + '\n',
+      );
+
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({
+          toolUseId: 'toolu_genuine_error',
+          tool: 'Bash',
+          timestamp: 1000,
+          transcriptPath,
+        }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('timeout');
+    });
+
+    it('still classifies as "timeout" when transcriptPath is absent', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_no_transcript', tool: 'Bash', timestamp: 1000 }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('timeout');
     });
   });
 

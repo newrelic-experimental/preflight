@@ -5,11 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.55.2] - 2026-09-17
+## [1.55.3] - 2026-09-17
 
 ### Fixed
 
 - The Git Efficiency page could take a very long time to load, and switching to another page while it was loading appeared to hang — the dashboard server re-resolved every historical working directory's git identity from scratch on every request, blocking all other requests behind it. Historical (completed) sessions are now cached after their first resolution. Dashboard pages also now cancel their in-flight requests when you navigate away or change a query's window/scope, instead of letting them run to completion in the background.
+
+## [1.55.1] - 2026-09-16
+
+### Fixed
+
+- Session timelines no longer lose entries across a Claude Code process resume: the two sides' timelines are unioned instead of keeping whichever one happened to be longer at checkpoint time.
+- A tool call blocked by another PreToolUse hook (e.g. a worktree-isolation guard) is now recorded as blocked rather than folded into the timeout bucket, which had been inflating failure-rate and retry metrics with calls that never actually ran.
 
 ## [1.55.0] - 2026-09-16
 

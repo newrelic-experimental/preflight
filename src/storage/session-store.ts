@@ -342,6 +342,36 @@ function mergeAttribution(
   };
 }
 
+// Mirrors the cap SessionTracker/LocalSessionAggregator apply when building a
+// timeline pre-merge — a merged timeline should not grow past what either
+// side could have produced on its own.
+const MAX_TIMELINE_ENTRIES = 10_000;
+
+/**
+ * Union two timelines instead of picking whichever is longer. A Claude Code
+ * `--stdio` resume starts the new process with an empty in-memory timeline;
+ * under longest-wins, every checkpoint the new process writes loses the merge
+ * race to the old process's on-disk timeline until it outgrows it, silently
+ * dropping entries from whichever side was shorter. Entries are deduped by
+ * `(timestamp, toolName)` — no toolUseId is carried on `ReplayTimelineEntry`,
+ * but two distinct real tool calls sharing a millisecond timestamp and tool
+ * name is not a case that occurs in practice.
+ */
+function mergeTimeline(
+  existing: readonly ReplayTimelineEntry[] | undefined,
+  incoming: readonly ReplayTimelineEntry[] | undefined,
+): ReplayTimelineEntry[] | undefined {
+  if (existing === undefined && incoming === undefined) return undefined;
+  const byKey = new Map<string, ReplayTimelineEntry>();
+  for (const entry of [...(existing ?? []), ...(incoming ?? [])]) {
+    byKey.set(`${entry.timestamp}:${entry.toolName}`, entry);
+  }
+  const merged = [...byKey.values()].sort((a, b) => a.timestamp - b.timestamp);
+  return merged.length > MAX_TIMELINE_ENTRIES
+    ? merged.slice(merged.length - MAX_TIMELINE_ENTRIES)
+    : merged;
+}
+
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -460,10 +490,7 @@ export function mergeSummaries(
       ? (incoming.toolSelectionMetrics ?? existing.toolSelectionMetrics)
       : existing.toolSelectionMetrics;
 
-  const timeline =
-    (incoming.timeline?.length ?? 0) >= (existing.timeline?.length ?? 0)
-      ? incoming.timeline
-      : existing.timeline;
+  const timeline = mergeTimeline(existing.timeline, incoming.timeline);
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,

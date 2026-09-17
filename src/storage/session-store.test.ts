@@ -1539,6 +1539,58 @@ describe('buildSessionSummary', () => {
     expect(merged.subagentCostByDayUsd).toBeUndefined();
   });
 
+  it('mergeSummaries unions timeline entries from both sides instead of keeping only the longer array', () => {
+    // Simulates a Claude Code --stdio resume: the old process's on-disk
+    // timeline is longer than what the new process has accumulated so far,
+    // so a pure longest-wins merge would drop every entry the new process
+    // wrote after the resume.
+    const existing = makeSummary({
+      timeline: [
+        { timestamp: 100, toolName: 'Read', durationMs: 5, success: true },
+        { timestamp: 200, toolName: 'Edit', durationMs: 10, success: true },
+        { timestamp: 300, toolName: 'Bash', durationMs: 20, success: true },
+      ],
+    });
+    const incoming = makeSummary({
+      timeline: [{ timestamp: 400, toolName: 'Write', durationMs: 8, success: true }],
+    });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300, 400]);
+  });
+
+  it('mergeSummaries de-duplicates a timeline entry present on both sides instead of doubling it', () => {
+    const shared = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const existing = makeSummary({
+      timeline: [shared, { timestamp: 200, toolName: 'Edit', durationMs: 10, success: true }],
+    });
+    const incoming = makeSummary({
+      timeline: [shared, { timestamp: 300, toolName: 'Bash', durationMs: 20, success: true }],
+    });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
+  it('mergeSummaries caps a unioned timeline at MAX_TIMELINE_ENTRIES, keeping the newest entries', () => {
+    const existingEntries = Array.from({ length: 6000 }, (_, i) => ({
+      timestamp: i,
+      toolName: 'Read',
+      durationMs: 1,
+      success: true,
+    }));
+    const incomingEntries = Array.from({ length: 6000 }, (_, i) => ({
+      timestamp: 6000 + i,
+      toolName: 'Read',
+      durationMs: 1,
+      success: true,
+    }));
+    const existing = makeSummary({ timeline: existingEntries });
+    const incoming = makeSummary({ timeline: incomingEntries });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline).toHaveLength(10_000);
+    expect(merged.timeline?.[0]?.timestamp).toBe(2000);
+    expect(merged.timeline?.[merged.timeline!.length - 1]?.timestamp).toBe(11999);
+  });
+
   it('includes active task data in the summary', () => {
     const mockSessionTracker = {
       getMetrics: () => ({

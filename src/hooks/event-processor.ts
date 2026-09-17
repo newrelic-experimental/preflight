@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createLogger } from '../shared/index.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
@@ -241,6 +242,63 @@ function outcomeFields(post: PostHookEvent) {
     ...(post.error !== undefined && { error: post.error }),
     ...(post.outputSize !== undefined && { outputSizeBytes: post.outputSize }),
   };
+}
+
+// Matches the synthetic tool_result Claude Code writes into the transcript
+// when a PreToolUse hook exits 2 (e.g. "PreToolUse:Bash hook error: [...]:
+// <stderr>"), captured empirically — code.claude.com/docs/en/hooks does not
+// document this transcript shape, so this is a best-effort signal that may
+// need updating if Claude Code changes the message format.
+const HOOK_BLOCK_MESSAGE_RE = /^PreToolUse:\S+ hook error:/;
+
+/**
+ * A blocked PreToolUse hook (exit code 2, or a JSON deny decision) leaves no
+ * hook event of its own — every configured PreToolUse hook runs to
+ * completion regardless of another hook's decision, so Preflight's own hook
+ * still fires and records the pre event normally. The only place the block
+ * is visible is the transcript: Claude Code appends a synthetic tool_result
+ * for the original tool_use_id, `is_error: true`, whose content starts with
+ * "PreToolUse:<Tool> hook error:". Reads the transcript fresh on every call
+ * (only reached for already-orphaned entries, not the hot path) rather than
+ * maintaining cursor state — see ParentTranscriptWatcher for the tailing
+ * approach used on the hot path instead.
+ */
+function wasBlockedByPreToolUseHook(
+  transcriptPath: string | undefined,
+  toolUseId: string,
+): boolean {
+  if (!transcriptPath) return false;
+  let raw: string;
+  try {
+    raw = readFileSync(transcriptPath, 'utf-8');
+  } catch {
+    return false;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line.includes(toolUseId)) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const content = (parsed as { message?: { content?: unknown } }).message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as unknown[]) {
+      if (typeof block !== 'object' || block === null) continue;
+      const b = block as Record<string, unknown>;
+      if (
+        b.type === 'tool_result' &&
+        b.tool_use_id === toolUseId &&
+        b.is_error === true &&
+        typeof b.content === 'string' &&
+        HOOK_BLOCK_MESSAGE_RE.test(b.content)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -779,21 +837,31 @@ export class HookEventProcessor {
    * Emit the record for a pending pre that will never pair: a swept orphan,
    * a capacity eviction, or a shutdown flush. The phase decides the
    * classification — a permission-requested entry expired because the user
-   * never approved ('rejected'); a bare entry expired because the tool never
-   * reported back ('timeout').
+   * never approved ('rejected'); a bare entry expired either because a
+   * PreToolUse hook (e.g. a worktree-isolation guard) blocked it — visible
+   * only in the transcript, since Claude Code fires no hook event for this
+   * case ('hook_blocked') — or because the tool genuinely never reported
+   * back ('timeout').
    */
   private emitUnpairedPreRecord(key: string, entry: PendingEntry): void {
     const event = entry.event;
     const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
+    const toolUseId = event.toolUseId ?? key;
+    const errorType =
+      entry.phase === 'permission_requested'
+        ? 'rejected'
+        : wasBlockedByPreToolUseHook(event.transcriptPath, toolUseId)
+          ? 'hook_blocked'
+          : 'timeout';
     this.emitRecord({
       id: randomUUID(),
       sessionId: event.sessionId ?? null,
       toolName: event.tool,
-      toolUseId: event.toolUseId ?? key,
+      toolUseId,
       timestamp: event.timestamp,
       durationMs: null,
       success: false,
-      errorType: entry.phase === 'permission_requested' ? 'rejected' : 'timeout',
+      errorType,
       ...attributionFields(event),
       ...toolFields,
     });
