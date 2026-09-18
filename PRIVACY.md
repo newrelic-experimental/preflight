@@ -64,7 +64,7 @@ The settings below have direct privacy implications. Each one is documented full
 
 ### `recordContent` — off by default
 
-By default the tool collects metadata (lengths, hashes, counts) but not the actual text of files, bash output, or agent responses. Enabling `recordContent: true` causes literal file contents, command output, and agent text to be written to the local buffer and, in cloud mode, sent to New Relic. Credential-pattern redaction runs before egress, but it only catches known secret formats — not arbitrary sensitive content in source code or command output.
+By default the tool collects metadata (lengths, hashes, counts) but not the actual text of files, bash output, or agent responses. Enabling `recordContent: true` (or `NEW_RELIC_AI_MCP_RECORD_CONTENT=true`) causes literal file contents, command output, and agent text to be written to the local buffer and, in cloud mode, sent to New Relic. Credential-pattern redaction runs before egress, but it only catches known secret formats — not arbitrary sensitive content in source code or command output.
 
 **Privacy implication:** This is the highest-impact content flag. Do not enable it without understanding what files and commands the AI assistant accesses in your environment.
 
@@ -72,7 +72,7 @@ See [SECURITY.md → Secret Redaction](./SECURITY.md#secret-redaction) for the f
 
 ### `highSecurity` — forces content recording off
 
-Setting `highSecurity: true` in the config file overrides `recordContent` to `false` regardless of any other setting. It also clips free-form error message content before it reaches NR events.
+Setting `highSecurity: true` in the config file (the equivalent environment variable is `NEW_RELIC_AI_HIGH_SECURITY`) overrides `recordContent` to `false` regardless of any other setting. It also clips free-form error message content before it reaches NR events.
 
 **Privacy implication:** Use this in environments where content must never leave the machine, regardless of how other settings are configured.
 
@@ -129,7 +129,7 @@ Data sent to New Relic is subject to your account's retention settings. New Reli
 
 Relevant event types emitted by this tool: `AiToolCall`, `AiMcpToolCall`, `AiProxyRequest`, `AiAuditEvent`, `SecurityAlert`, `AiCodingTask`, `AiAntiPattern`, `AiBudgetWarning`, `AiContextSnapshot`, `AiSubagentTurn`, `AiWorkflowRun`, `AiObservabilityHealth`, `AiRetryAlert`, `AiTurnCost`. Full per-field detail for every event type: [METRICS_TABLE.md](./docs/METRICS_TABLE.md).
 
-Local data retention is controlled by `retainSessionsDays` in the config file. See [README.md → Key settings](./README.md#key-settings).
+Local data retention is controlled by `retainSessionsDays` in the config file (or the `NEW_RELIC_AI_RETAIN_SESSIONS_DAYS` environment variable). See [README.md → Key settings](./README.md#key-settings).
 
 ---
 

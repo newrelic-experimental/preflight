@@ -268,6 +268,25 @@ If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are s
 
 ---
 
+## Core Server Environment Variables
+
+These variables configure the MCP server itself. Each mirrors a key in `~/.newrelic-preflight/config.json`, and the environment variable wins over the file. Variables specific to one surface live with that surface: homelab forwarding in [homelab.md](./homelab.md), the Kiro Power in [KIRO_POWER.md](./KIRO_POWER.md), platform detection in [ADAPTERS.md](./ADAPTERS.md), and budgets/digests in [COMMANDS_TABLE.md](./COMMANDS_TABLE.md).
+
+| Variable                              | What it does                                                                                                                                       | Default                       |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `NEW_RELIC_AI_MCP_ENABLED`            | Set to `false` to keep the server from starting at all — the process logs `Server disabled via config` and exits.                                  | `true`                        |
+| `NEW_RELIC_AI_MCP_APP_NAME`           | Application name attached to every event, used to tell deployments apart in New Relic.                                                             | `preflight`                   |
+| `NEW_RELIC_AI_MODEL`                  | Model identifier used for pricing and cost attribution when a session does not report its own.                                                     | `claude-sonnet-4-6`           |
+| `NEW_RELIC_AI_MCP_STORAGE_PATH`       | Directory for session files, the hook buffer, and cached data.                                                                                     | `~/.newrelic-preflight`       |
+| `NEW_RELIC_AI_MCP_BUFFER_PATH`        | File the hook collector appends buffered events to before the server harvests them.                                                                | `<storage path>/buffer.jsonl` |
+| `NEW_RELIC_AI_MCP_HARVEST_METRICS_MS` | How often the server harvests aggregated metrics, in milliseconds (100–3,600,000).                                                                 | `60000`                       |
+| `NEW_RELIC_AI_MCP_LOG_LEVEL`          | Server log verbosity: `debug`, `info`, `warn`, or `error`.                                                                                         | `info`                        |
+| `NEW_RELIC_AI_MCP_PROXY_UPSTREAMS`    | JSON array of upstream MCP servers to front in proxy mode; each entry needs `name`, `transportType` (`http` or `stdio`), and a `url` or `command`. | (none)                        |
+
+Content recording has its own switches — `NEW_RELIC_AI_MCP_RECORD_CONTENT` and `NEW_RELIC_AI_HIGH_SECURITY` — described in [PRIVACY.md](../PRIVACY.md#recordcontent--off-by-default).
+
+---
+
 ## Running `--local` Standalone (No `--stdio` Session)
 
 The subagent transcript watcher runs in both `--stdio` and `--local` processes. A `--stdio` process watches only its own session; a `--local` process watches every session that does not already have a live `--stdio` owner, so a standalone deployment (container, systemd unit, Raspberry Pi, any platform with no MCP client to auto-launch `--stdio`) tracks subagent cost with no configuration. Set `NR_AI_ENABLE_SUBAGENT_WATCHER=0` to turn it off everywhere.
