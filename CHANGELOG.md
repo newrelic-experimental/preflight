@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.1] - 2026-09-18
+
+### Fixed
+
+- **A session's persisted cost could be inflated well above its real cost when a `--local` dashboard daemon ran alongside the `--stdio` MCP engine that actually owned that session.** The daemon's byte-size cost-estimate fallback — meant only to cover the handful of tool calls before a session's first real token report — kept firing for a session's entire duration whenever the daemon had no transcript connection to that session, even though the session's real owner was already reporting accurate cost the whole time. The fallback now checks whether another live process already owns the session before estimating.
+
 ## [1.57.0] - 2026-09-17
 
 ### Added

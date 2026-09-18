@@ -48,6 +48,7 @@ import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
+import { shouldApplyCostEstimate } from './metrics/cost-estimate-gate.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
@@ -2050,13 +2051,17 @@ async function main(): Promise<void> {
     // (see agent-partition.ts's backfillAgentId doc comment for why this join
     // exists instead of trusting the hook envelope's own agent_id field).
     const toolUseIdToAgentId = new Map<string, string>();
+    // --local mode and the provisional --stdio window own no specific Claude
+    // Code session; drain every per-session buffer so the dashboard sees all
+    // live sessions' events. After real session ID resolution the processor
+    // is hot-swapped to the scoped store via replaceStore(). Also gates the
+    // byte-size cost-estimate fallback below (see shouldApplyCostEstimate) —
+    // an unscoped process must not estimate cost for a session a live
+    // --stdio owner is already reporting real numbers for.
+    const isUnscopedProcess = !options.stdio || isProvisional;
     eventProcessor = new HookEventProcessor({
       store: localStore,
-      // --local mode and the provisional --stdio window own no specific Claude
-      // Code session; drain every per-session buffer so the dashboard sees all
-      // live sessions' events. After real session ID resolution the processor
-      // is hot-swapped to the scoped store via replaceStore().
-      drainAllSessions: !options.stdio || isProvisional,
+      drainAllSessions: isUnscopedProcess,
       onRecord: (incomingRecord) => {
         const rawRecord = backfillAgentId(incomingRecord, toolUseIdToAgentId);
         if (!config || !sessionTracker || !taskDetector) {
@@ -2222,9 +2227,19 @@ async function main(): Promise<void> {
 
         // Fallback cost estimation from tool payload byte sizes.
         // Only fires when no exact token report has been received yet for this session,
-        // to avoid double-counting with explicit nr_observe_report_tokens calls.
+        // to avoid double-counting with explicit nr_observe_report_tokens calls — and,
+        // in an unscoped process, never for a session a live --stdio owner is already
+        // reporting real numbers for (see shouldApplyCostEstimate, #723).
         const estimateBytes = (record.inputSizeBytes ?? 0) + (record.outputSizeBytes ?? 0);
-        if (estimateBytes > 0 && costTracker.getMetrics().reportCount === 0) {
+        if (
+          shouldApplyCostEstimate({
+            estimateBytes,
+            reportCount: costTracker.getMetrics().reportCount,
+            isUnscopedSession: isUnscopedProcess,
+            sessionId: record.sessionId,
+            liveOwnedSessionIds: localStore.getActiveSessionIdsFromHeartbeats(),
+          })
+        ) {
           // Prefer a model already learned from real token events over the config
           // default (which is just a guess). Falls back to config.model on cold start.
           const estimateModel = costTracker.getMetrics().model ?? config.model;
