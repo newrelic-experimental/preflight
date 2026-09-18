@@ -65,6 +65,7 @@
     "regenerate:otlp-descriptor": "npx tsx scripts/regenerate-otlp-descriptor.ts",
     "check:bundle-size": "npx tsx scripts/check-bundle-size.ts",
     "check:docs-inventory": "npx tsx scripts/check-docs-inventory.ts",
+    "check:web-types": "tsc -p tsconfig.web.json --noEmit",
     "replay:git-counts": "npx tsx scripts/replay-git-counts.ts",
     "check:claude-code-changelog": "npx tsx scripts/check-claude-code-changelog.ts",
     "whats-new:draft": "npx tsx scripts/draft-whats-new.ts",
