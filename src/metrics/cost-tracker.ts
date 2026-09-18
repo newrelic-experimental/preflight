@@ -91,7 +91,6 @@ function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreak
 
 export interface CostMetrics {
   readonly sessionTotalCostUsd: number | null;
-  readonly costByTask: null; // stub — task boundary detection is not yet implemented
   readonly costByModel: Record<string, number>;
   readonly costPerLineOfCode: number | null;
   readonly costPerFileModified: number | null;
@@ -656,7 +655,6 @@ export class CostTracker implements Resettable {
 
     return {
       sessionTotalCostUsd: hasData ? this.totalCostUsd : null,
-      costByTask: null,
       costByModel: Object.fromEntries(this.costByModel),
       costPerLineOfCode:
         hasData && this.totalLinesChanged > 0 ? this.totalCostUsd / this.totalLinesChanged : null,
