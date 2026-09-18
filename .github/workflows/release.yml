@@ -125,6 +125,37 @@ jobs:
           echo "@newrelic/preflight@$VERSION never became visible on npm" >&2
           exit 1
 
+      # homebrew/Formula/preflight.rb points at the npm tarball, so this must
+      # run after the npm availability wait above — update-homebrew.sh curls
+      # the tarball to hash it. This mutates the local checkout only (same
+      # reasoning as the server.json sync below: main's ruleset means this
+      # job can't push the bump back), then pushes the result straight to
+      # the tap repo, which lives outside this job's default GITHUB_TOKEN
+      # scope and needs the separately-scoped HOMEBREW_TAP_TOKEN instead.
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          scripts/update-homebrew.sh "$VERSION"
+
+          TAP_DIR="$(mktemp -d)"
+          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/newrelic-experimental/homebrew-preflight.git" "$TAP_DIR"
+          cp homebrew/Formula/preflight.rb "$TAP_DIR/Formula/preflight.rb"
+
+          cd "$TAP_DIR"
+          if git diff --quiet; then
+            echo "Tap formula already up to date for $VERSION, skipping"
+            exit 0
+          fi
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+          git add Formula/preflight.rb
+          git commit -m "preflight $VERSION"
+          git push origin main
+
       # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the

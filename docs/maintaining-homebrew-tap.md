@@ -59,46 +59,9 @@ Expected: Homebrew installs `preflight` and `preflight --version` prints `1.1.0`
 
 ## Per-release update (every new version)
 
-Run these steps each time a new version is published to npm.
+The "Update Homebrew tap" step in `.github/workflows/release.yml` does this automatically on every run of the manual Release workflow: it runs `scripts/update-homebrew.sh` against the just-published npm version, then pushes the regenerated formula straight to `homebrew-preflight`'s `main` branch using the `HOMEBREW_TAP_TOKEN` repo secret (a fine-grained PAT scoped to only that repo, `Contents: Read and write`). No manual steps are needed for a normal release.
 
-**1. In the `preflight` repo, update the formula:**
-
-```bash
-# Replace X.Y.Z with the new version
-scripts/update-homebrew.sh X.Y.Z
-```
-
-Review the change:
-
-```bash
-cat homebrew/Formula/preflight.rb
-```
-
-Confirm `url` and `sha256` match the new version.
-
-**2. Commit in the `preflight` repo:**
-
-```bash
-git add homebrew/Formula/preflight.rb
-git commit -m "Chore: update Homebrew formula for vX.Y.Z"
-```
-
-**3. Copy the updated formula to the tap repo:**
-
-```bash
-cp homebrew/Formula/preflight.rb /path/to/homebrew-preflight/Formula/preflight.rb
-```
-
-**4. Commit and push in the tap repo:**
-
-```bash
-cd /path/to/homebrew-preflight
-git add Formula/preflight.rb
-git commit -m "preflight X.Y.Z"
-git push origin main
-```
-
-**5. Verify:**
+**Verify after a release:**
 
 ```bash
 brew update
@@ -106,7 +69,24 @@ brew upgrade preflight
 preflight --version
 ```
 
-Expected: `preflight --version` prints `X.Y.Z`.
+Expected: `preflight --version` prints the new version.
+
+**To update manually** (e.g. the tap drifted, or you're doing the update outside the Release workflow):
+
+```bash
+# Replace X.Y.Z with the new version
+scripts/update-homebrew.sh X.Y.Z
+
+# Review
+cat homebrew/Formula/preflight.rb
+
+# Copy to the tap repo and push
+cp homebrew/Formula/preflight.rb /path/to/homebrew-preflight/Formula/preflight.rb
+cd /path/to/homebrew-preflight
+git add Formula/preflight.rb
+git commit -m "preflight X.Y.Z"
+git push origin main
+```
 
 ---
 
