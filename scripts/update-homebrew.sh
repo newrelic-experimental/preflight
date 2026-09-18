@@ -29,8 +29,10 @@ SHA256="$(shasum -a 256 "$TMPFILE" | awk '{print $1}')"
 echo "Version:  ${VERSION}"
 echo "SHA-256:  ${SHA256}"
 
-perl -i -pe "s|url \".*\"|url \"${TARBALL_URL}\"|" "$FORMULA_PATH"
-perl -i -pe "s|sha256 \".*\"|sha256 \"${SHA256}\"|" "$FORMULA_PATH"
+TARBALL_URL="$TARBALL_URL" SHA256="$SHA256" perl -i -pe '
+  s|url ".*"|url "$ENV{TARBALL_URL}"|;
+  s|sha256 ".*"|sha256 "$ENV{SHA256}"|;
+' "$FORMULA_PATH"
 
 echo ""
 echo "Updated: ${FORMULA_PATH}"
