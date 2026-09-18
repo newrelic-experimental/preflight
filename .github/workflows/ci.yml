@@ -18,14 +18,8 @@ permissions:
   contents: read
 
 env:
-  # The suite has an implicit, undocumented dependency on running under
-  # America/New_York (several date/bucket tests construct fixtures from
-  # local-midnight helpers without pinning TZ themselves) — it has only
-  # ever been run on developer machines defaulting to that zone. GitHub
-  # Actions runners default to UTC, which breaks those tests. Pin to the
-  # zone the suite actually assumes rather than debugging each test's
-  # local-time math; the individual tests remain non-portable and are a
-  # separate follow-up.
+  # Retain coverage for the America/New_York DST boundary. The portability
+  # job below runs the same build and test suite under UTC.
   TZ: America/New_York
 
 jobs:
@@ -56,3 +50,24 @@ jobs:
 
       - name: Check SPA bundle size
         run: npm run check:bundle-size
+
+  test-utc:
+    runs-on: ubuntu-latest
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
