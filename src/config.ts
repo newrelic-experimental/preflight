@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { z } from 'zod';
 import { createLogger } from './shared/index.js';
 import type { LogLevel } from './shared/index.js';
+import { repoNameFromRemote } from './lib/git-remote.js';
 import type { CliOptions } from './types.js';
 import type { UpstreamConfig } from './proxy/types.js';
 import type { PersonalAlertThresholds } from './alerts/types.js';
@@ -353,13 +354,7 @@ function getGitRemoteUrl(): string | null {
 }
 
 function inferProjectId(): string | null {
-  const remote = getGitRemoteUrl();
-  if (!remote) return null;
-  // Extract "org/repo" from HTTPS or SSH remotes:
-  // https://github.com/org/repo.git  → org/repo
-  // git@github.com:org/repo.git      → org/repo
-  const match = remote.match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
-  return match ? match[1] : null;
+  return repoNameFromRemote(getGitRemoteUrl());
 }
 
 function inferRepoUrl(): string | null {
