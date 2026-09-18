@@ -643,6 +643,34 @@ describe('api-handler GET /api/sessions/:id', () => {
     expect(JSON.parse(body())).toEqual(fakeSession);
   });
 
+  it('strips the persisted zero raw counts instead of returning them under qualityProxy', async () => {
+    const fakeSession = {
+      sessionId: 'sess-quality-zero',
+      qualityProxy: {
+        totalSignals: 0,
+        diffApplyCleanCount: 0,
+        diffFailCount: 0,
+        testPassCount: 0,
+        testFailCount: 0,
+        backtrackCount: 0,
+        selfCorrectionCount: 0,
+      },
+    };
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: (id: string) => (id === 'sess-quality-zero' ? fakeSession : null),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/sess-quality-zero' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as { qualityProxy?: { diffApplyRate?: number | null } };
+    expect(parsed.qualityProxy).toBeUndefined();
+  });
+
   it('attaches qualityProxy and session-filtered toolSelectionScore to the own-live-session branch', async () => {
     const handler = createApiHandler({
       sessionStore: {

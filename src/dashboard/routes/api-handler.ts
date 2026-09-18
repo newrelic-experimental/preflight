@@ -3379,7 +3379,11 @@ export function createApiHandler(
           // that must not reach the HTTP surface; the detail view augments the
           // remaining fields below.
           const responseBody: Record<string, unknown> = toDashboardSummary(session);
+          // toDashboardSummary already copied the persisted raw counts under this
+          // same key, and those carry no diffApplyRate/testPassRate — leaving them
+          // in place renders both as NaN% client-side.
           if (quality.totalSignals > 0) responseBody.qualityProxy = quality;
+          else delete responseBody.qualityProxy;
           // The persisted shape's key is `toolSelectionMetrics`, but
           // Sessions.tsx's SessionTimeline reads `toolSelectionScore` —
           // remap here so this branch's response uses the same field name
