@@ -33,16 +33,15 @@ Homebrew tap for [@newrelic/preflight](https://github.com/newrelic-experimental/
 ```bash
 brew tap newrelic-experimental/preflight
 brew install preflight
-````
+```
 
 EOF
 
-# 6. Commit and push
+# 6. Commit and push (replace X.Y.Z with the version in homebrew/Formula/preflight.rb)
 
 git add -A
-git commit -m "preflight 1.1.0"
+git commit -m "preflight X.Y.Z"
 git push origin main
-
 ````
 
 **Verify the tap works:**
@@ -51,13 +50,13 @@ git push origin main
 brew tap newrelic-experimental/preflight && brew install preflight && preflight --version
 ```
 
-Expected: Homebrew installs `preflight` and `preflight --version` prints `1.1.0`.
+Expected: Homebrew installs `preflight` and `preflight --version` prints the version you copied into the formula.
 
 ---
 
 ## Per-release update (every new version)
 
-The "Update Homebrew tap" step in `.github/workflows/release.yml` does most of this automatically on every run of the manual Release workflow: it runs `scripts/update-homebrew.sh` against the just-published npm version, then opens a PR against `homebrew-preflight` with the regenerated formula using the `HOMEBREW_TAP_TOKEN` repo secret (a fine-grained PAT scoped to only that repo, `Contents: Read and write`) and arms auto-merge. `homebrew-preflight`'s own org-wide ruleset requires one approving review before a PR can merge into `main`, so a maintainer still needs to approve that PR once per release — everything else is automatic.
+The "Update Homebrew tap" step in `.github/workflows/release.yml` does most of this automatically on every run of the manual Release workflow: it runs `scripts/update-homebrew.sh` against the just-published npm version, then opens a PR against `homebrew-preflight` with the regenerated formula using the `HOMEBREW_TAP_TOKEN` repo secret and arms auto-merge. That PAT needs to be scoped to only the `homebrew-preflight` repo with **both** `Contents: Read and write` (to push the branch) and `Pull requests: Read and write` (to open the PR and enable auto-merge) — `Contents` alone is not enough. `homebrew-preflight`'s own org-wide ruleset requires one approving review before a PR can merge into `main`, so a maintainer still needs to approve that PR once per release — everything else is automatic.
 
 **Verify after a release:**
 
@@ -98,4 +97,3 @@ The tap repo doesn't exist yet or is private. Check `GH_HOST=github.com gh repo 
 
 **`preflight --version` output doesn't match formula version**
 The formula version in the `url` field and the version field in `package.json` must match. They should always match when `update-homebrew.sh` is used.
-````

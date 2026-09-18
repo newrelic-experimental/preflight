@@ -145,28 +145,44 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           scripts/update-homebrew.sh "$VERSION"
 
+          # gh auth setup-git configures a credential helper backed by
+          # GH_TOKEN, so the PAT never lands in the clone URL or on-disk
+          # git config the way an embedded x-access-token URL would.
+          gh auth setup-git
           TAP_DIR="$(mktemp -d)"
-          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/newrelic-experimental/homebrew-preflight.git" "$TAP_DIR"
+          git clone --depth 1 "https://github.com/newrelic-experimental/homebrew-preflight.git" "$TAP_DIR"
           cp homebrew/Formula/preflight.rb "$TAP_DIR/Formula/preflight.rb"
 
           cd "$TAP_DIR"
-          if git diff --quiet; then
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+
+          # Stage before diffing: a plain `git diff` can't see a file that
+          # doesn't exist in the tap yet (e.g. right after one-time setup),
+          # so it would report "clean" and silently skip a real update.
+          git add Formula/preflight.rb
+          if git diff --cached --quiet; then
             echo "Tap formula already up to date for $VERSION, skipping"
             exit 0
           fi
-          git config user.name "$ACTOR"
-          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+
+          # BRANCH is deterministic per version so a re-run of this workflow
+          # (e.g. after the npm-propagation retries above) converges on the
+          # same tap PR instead of failing a non-fast-forward push or piling
+          # up duplicate PRs.
           BRANCH="bump-${VERSION}"
           git checkout -b "$BRANCH"
-          git add Formula/preflight.rb
           git commit -m "preflight $VERSION"
-          git push origin "$BRANCH"
+          git push --force origin "$BRANCH"
 
-          gh pr create --repo newrelic-experimental/homebrew-preflight \
-            --title "preflight $VERSION" \
-            --body "Automated formula bump for the $VERSION release. Needs one approval before auto-merge lands it." \
-            --base main --head "$BRANCH"
-          gh pr merge "$BRANCH" --repo newrelic-experimental/homebrew-preflight --auto --squash
+          EXISTING_PR="$(gh pr list --repo newrelic-experimental/homebrew-preflight --head "$BRANCH" --json number --jq '.[0].number // empty')"
+          if [ -z "$EXISTING_PR" ]; then
+            gh pr create --repo newrelic-experimental/homebrew-preflight \
+              --title "preflight $VERSION" \
+              --body "Automated formula bump for the $VERSION release. Needs one approval before auto-merge lands it." \
+              --base main --head "$BRANCH"
+          fi
+          gh pr merge "$BRANCH" --repo newrelic-experimental/homebrew-preflight --auto --squash || true
 
       # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
       # npm package carries a matching `mcpName`, so this must run after the
