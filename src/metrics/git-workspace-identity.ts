@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
-import { repoNameFromRemote } from './local-session-aggregator.js';
+import { repoNameFromRemote } from '../lib/git-remote.js';
 
 /** Workspace key for activity whose cwd was never recorded and whose session
  *  has no `repoName` to fall back on. */

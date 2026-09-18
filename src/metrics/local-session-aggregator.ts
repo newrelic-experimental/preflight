@@ -23,6 +23,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
+import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
@@ -120,12 +121,7 @@ export interface LocalSessionRollup {
   successCount: number;
 }
 
-/** Parse `owner/name` out of a git remote URL. Null when it isn't recognizable. */
-export function repoNameFromRemote(remote: string | null | undefined): string | null {
-  if (typeof remote !== 'string') return null;
-  const match = remote.trim().match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  return match?.[1] ?? null;
-}
+export { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 
 /**
  * Strips heredoc bodies from a shell command so its *text* is not mistaken for
@@ -585,24 +581,6 @@ export interface CollectedCommit {
    *  `collectCommitsAcrossRepos`'s two-pass ordering for how that's chosen
    *  among several roots that can all see the same commit. */
   root: string;
-}
-
-/**
- * Build a browsable GitHub commit URL from a git remote. Handles both SSH
- * (`git@github.com:owner/repo.git`) and HTTPS remotes, and returns null for
- * hosts we can't confidently map so the UI degrades to plain text rather than
- * rendering a broken link.
- */
-export function commitUrlFromRemote(remote: string | null, hash: string): string | null {
-  if (!remote || !hash) return null;
-  const trimmed = remote.trim().replace(/\.git$/, '');
-  const ssh = /^(?:ssh:\/\/)?[^@]+@([^:/]+)[:/](.+)$/.exec(trimmed);
-  const https = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(trimmed);
-  const match = ssh ?? https;
-  if (!match) return null;
-  const [, host, path] = match;
-  if (!host || !path) return null;
-  return `https://${host}/${path}/commit/${hash}`;
 }
 
 function gitOut(root: string, args: readonly string[]): string | null {

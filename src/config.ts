@@ -13,6 +13,7 @@ import { REDACTION_PATTERNS as DEFAULT_REDACTION_PATTERNS } from './redaction-pa
 import { resolveRecordContent } from './record-content-gate.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
+import { parseGitRemote } from './lib/git-remote.js';
 
 const logger = createLogger('mcp-config');
 
@@ -353,17 +354,11 @@ function getGitRemoteUrl(): string | null {
 }
 
 function inferProjectId(): string | null {
-  const remote = getGitRemoteUrl();
-  if (!remote) return null;
-  // Extract "org/repo" from HTTPS or SSH remotes:
-  // https://github.com/org/repo.git  → org/repo
-  // git@github.com:org/repo.git      → org/repo
-  const match = remote.match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
-  return match ? match[1] : null;
+  return parseGitRemote(getGitRemoteUrl())?.repoName ?? null;
 }
 
 function inferRepoUrl(): string | null {
-  return getGitRemoteUrl();
+  return parseGitRemote(getGitRemoteUrl())?.safeRemoteUrl ?? null;
 }
 
 function envBool(key: string, defaultValue: boolean): boolean {

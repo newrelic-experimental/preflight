@@ -41,6 +41,7 @@ import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
+import { repoNameFromRemote } from './lib/git-remote.js';
 import { backfillAgentId } from './metrics/agent-partition.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
@@ -1417,9 +1418,7 @@ async function main(): Promise<void> {
     if (remoteResult.status === 0 && branchResult.status === 0) {
       const remoteUrl = remoteResult.stdout.trim();
       const branch = branchResult.stdout.trim();
-      // Extract repo name from remote URL (handles both HTTPS and SSH)
-      const repoMatch = remoteUrl.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-      const repoName = repoMatch ? repoMatch[1] : null;
+      const repoName = repoNameFromRemote(remoteUrl);
       currentRepoName = repoName;
 
       const symbolicRefResult = spawnSync(
