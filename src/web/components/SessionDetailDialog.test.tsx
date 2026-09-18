@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { SessionDetailDialog } from './SessionDetailDialog';
 import type {
   DecisionTreeResponse,
@@ -264,5 +265,159 @@ describe('SessionDetailDialog — context composition/efficiency section', () =>
       />,
     );
     expect(screen.getByText('No composition/efficiency data yet.')).toBeInTheDocument();
+  });
+});
+
+describe('SessionDetailDialog — copy actions', () => {
+  const session = {
+    sessionId: 'abcdef1234567890',
+    sessionName: 'preflight',
+    toolCallCount: 3,
+    estimatedCostUsd: 0.42,
+  };
+
+  function mockClipboard(): ReturnType<typeof vi.fn> {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    return writeText;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('hides the copy actions when no session summary is passed', () => {
+    render(
+      <SessionDetailDialog decisionTree={undefined} turnCosts={undefined} onClose={() => {}} />,
+    );
+    expect(screen.queryByRole('button', { name: 'Copy Markdown' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy JSON' })).not.toBeInTheDocument();
+  });
+
+  it('copies a Markdown summary and briefly shows "Copied"', async () => {
+    vi.useFakeTimers();
+    const writeText = mockClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={makeDecisionTree()}
+        turnCosts={makeTurnCosts()}
+        session={session}
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy Markdown' }));
+    });
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const text = writeText.mock.calls[0]![0] as string;
+    expect(text.split('\n')[0]).toBe('### Session: preflight');
+    expect(text).toContain('- Estimated cost: $0.42');
+    // The button keeps its accessible name; the result is announced separately.
+    expect(
+      within(screen.getByRole('button', { name: 'Copy Markdown' })).getByText('Copied'),
+    ).not.toHaveClass('invisible');
+    expect(screen.getByRole('status')).toHaveTextContent('Copied to clipboard');
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('');
+  });
+
+  it('reports a failed copy instead of failing silently', async () => {
+    const writeText = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(
+      <SessionDetailDialog
+        decisionTree={undefined}
+        turnCosts={undefined}
+        session={session}
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy JSON' }));
+    });
+    expect(
+      within(screen.getByRole('button', { name: 'Copy JSON' })).getByText('Copy failed'),
+    ).not.toHaveClass('invisible');
+    expect(screen.getByRole('status')).toHaveTextContent('Copy failed');
+  });
+
+  it('copies the session summary as pretty-printed JSON', async () => {
+    const writeText = mockClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={undefined}
+        turnCosts={undefined}
+        session={session}
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy JSON' }));
+    });
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(session, null, 2));
+  });
+
+  it('copies a link that opens the session in the Sessions view', async () => {
+    const writeText = mockClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={undefined}
+        turnCosts={undefined}
+        session={session}
+        onClose={() => {}}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    });
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/sessions?id=abcdef1234567890`,
+    );
+  });
+
+  it('copies with the keyboard', async () => {
+    const user = userEvent.setup();
+    // user-event installs its own clipboard stub in setup(), so mock after it.
+    const writeText = mockClipboard();
+    render(
+      <SessionDetailDialog
+        decisionTree={undefined}
+        turnCosts={undefined}
+        session={session}
+        onClose={() => {}}
+      />,
+    );
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Copy Markdown' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Copy Markdown' })).toHaveFocus();
+    expect(screen.getByRole('status')).toHaveTextContent('Copied to clipboard');
+  });
+
+  it('keeps the copy buttons inside the focus trap', () => {
+    render(
+      <SessionDetailDialog
+        decisionTree={undefined}
+        turnCosts={undefined}
+        session={session}
+        onClose={() => {}}
+      />,
+    );
+    const first = screen.getByRole('button', { name: 'Copy Markdown' });
+    const close = screen.getByRole('button', { name: /close session detail/i });
+
+    // Tab from the last control (close) wraps to the first copy button.
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(first).toHaveFocus();
+
+    // Shift+Tab from the first copy button wraps back to close.
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(close).toHaveFocus();
   });
 });

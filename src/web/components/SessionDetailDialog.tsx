@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { AlertCircle, Check, Copy, X } from 'lucide-react';
 
 import type {
   DecisionTreeResponse,
@@ -13,6 +13,12 @@ import type {
 import { Card, Eyebrow, Pill, type PillTone } from './ui';
 import { formatTokensCompact } from '../lib/format.js';
 import { ContextTimeline } from './ContextBar';
+import {
+  type ExportableSession,
+  sessionLink,
+  sessionToJson,
+  sessionToMarkdown,
+} from '../lib/session-export';
 
 export interface SessionDetailDialogProps {
   readonly decisionTree: DecisionTreeResponse | undefined;
@@ -21,8 +27,25 @@ export interface SessionDetailDialogProps {
   readonly contextWindow?: number;
   readonly contextComposition?: ContextCompositionResponse;
   readonly contextEfficiency?: ContextEfficiencyResponse;
+  /** Summary of the selected session. The copy actions are hidden without it. */
+  readonly session?: ExportableSession;
   readonly onClose: () => void;
 }
+
+type CopyFormat = 'markdown' | 'json' | 'link';
+
+interface CopyStatus {
+  readonly format: CopyFormat;
+  readonly ok: boolean;
+}
+
+const COPY_LABEL: Record<CopyFormat, string> = {
+  markdown: 'Copy Markdown',
+  json: 'Copy JSON',
+  link: 'Copy link',
+};
+
+const COPY_STATUS_RESET_MS = 1500;
 
 const OUTCOME_TONE: Record<'unknown' | 'success' | 'failure', PillTone> = {
   success: 'success',
@@ -39,10 +62,37 @@ export function SessionDetailDialog({
   contextWindow,
   contextComposition,
   contextEfficiency,
+  session,
   onClose,
 }: SessionDetailDialogProps): JSX.Element {
   const drawerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [copyStatus, setCopyStatus] = useState<CopyStatus | null>(null);
+
+  useEffect(() => {
+    if (copyStatus === null) return;
+    const timer = setTimeout(() => setCopyStatus(null), COPY_STATUS_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [copyStatus]);
+
+  async function handleCopy(format: CopyFormat): Promise<void> {
+    if (!session) return;
+    const input = { session, decisionTree, turnCosts };
+    const text =
+      format === 'markdown'
+        ? sessionToMarkdown(input)
+        : format === 'json'
+          ? sessionToJson(input)
+          : sessionLink(window.location.origin, session.sessionId);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus({ format, ok: true });
+    } catch {
+      // Clipboard API missing or permission denied (e.g. plain HTTP) — say so
+      // instead of leaving the user to assume it worked.
+      setCopyStatus({ format, ok: false });
+    }
+  }
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent): void {
@@ -105,6 +155,25 @@ export function SessionDetailDialog({
               Composition &amp; Efficiency remain live, current-process-only — they reflect this
               dashboard process&rsquo;s own current session, not necessarily the one selected above.
             </p>
+            {session && (
+              <div className="mt-2 -ml-2 flex flex-wrap items-center gap-1">
+                {(['markdown', 'json', 'link'] as const).map((format) => (
+                  <CopyButton
+                    key={format}
+                    label={COPY_LABEL[format]}
+                    status={copyStatus?.format === format ? copyStatus.ok : undefined}
+                    onClick={() => void handleCopy(format)}
+                  />
+                ))}
+                <span role="status" className="sr-only">
+                  {copyStatus === null
+                    ? ''
+                    : copyStatus.ok
+                      ? 'Copied to clipboard'
+                      : 'Copy failed — clipboard unavailable'}
+                </span>
+              </div>
+            )}
           </div>
           <button
             ref={closeButtonRef}
@@ -285,6 +354,44 @@ export function SessionDetailDialog({
       </div>
     </>,
     document.body,
+  );
+}
+
+function CopyButton({
+  label,
+  status,
+  onClick,
+}: {
+  label: string;
+  /** true = just copied, false = copy failed, undefined = idle. */
+  status: boolean | undefined;
+  onClick: () => void;
+}): JSX.Element {
+  const Icon = status === true ? Check : status === false ? AlertCircle : Copy;
+  const iconTone =
+    status === true ? 'text-accent-green' : status === false ? 'text-accent-red' : '';
+  const shown = status === true ? 'Copied' : status === false ? 'Copy failed' : label;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="inline-flex min-h-6 items-center gap-1 px-2 py-1 rounded-md text-[10px] text-ink-muted hover:text-ink-base hover:bg-surface-5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/40"
+    >
+      <Icon className={`w-3.5 h-3.5 ${iconTone}`} aria-hidden="true" />
+      {/* Stack every label in one grid cell so the button keeps the width of the
+          longest one and its neighbours don't shift when the text changes. */}
+      <span className="grid" aria-hidden="true">
+        {[label, 'Copied', 'Copy failed'].map((text) => (
+          <span
+            key={text}
+            className={`col-start-1 row-start-1 ${text === shown ? '' : 'invisible'}`}
+          >
+            {text}
+          </span>
+        ))}
+      </span>
+    </button>
   );
 }
 
