@@ -36,6 +36,7 @@ import type { CostTracker } from '../metrics/cost-tracker.js';
 import type { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import type { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import type { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
+import { classifyProvider } from '../metrics/model-provider.js';
 import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
@@ -1719,12 +1720,18 @@ export class NrIngestManager {
       const developer = this.developer;
       const scheduler = this.primaryScheduler;
       const devAggregator = new DeveloperAttributedMetricAggregator((name, value, attrs) => {
+        const providerAttrs: Record<string, string> = {};
+        const model = attrs.model;
+        if (typeof model === 'string') {
+          const provider = classifyProvider(model);
+          if (provider) providerAttrs.provider = provider;
+        }
         scheduler.recordMetric(
           name,
           value,
           sessionId != null
-            ? { developer, session_id: sessionId, ...teamAttrs, ...attrs }
-            : { developer, ...teamAttrs, ...attrs },
+            ? { developer, session_id: sessionId, ...teamAttrs, ...providerAttrs, ...attrs }
+            : { developer, ...teamAttrs, ...providerAttrs, ...attrs },
         );
       });
       // Gauges carry no platform attribute, so suppression is the only way to

@@ -20,6 +20,7 @@ import type { MetricAggregator } from '../shared/index.js';
 import type { AiCodingTask } from './task-detector.js';
 import type { AntiPattern } from './anti-patterns.js';
 import type { Resettable } from './tracker-contracts.js';
+import type { CostTracker } from './cost-tracker.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +38,15 @@ export interface EfficiencyScore {
   readonly components: EfficiencyScoreComponents;
   readonly taskId: string;
   readonly timestamp: number;
+  /**
+   * The model current on `costTracker` at the moment this score was
+   * computed, not at emit time — a task's score must keep the model that
+   * produced it even if a later token report (e.g. a subagent on a
+   * different model) changes `costTracker`'s current model before the next
+   * `emitMetrics()` call. `null` when no `costTracker` was supplied or it
+   * had no current model yet.
+   */
+  readonly model: string | null;
 }
 
 export interface EfficiencyScoreOptions {
@@ -45,6 +55,20 @@ export interface EfficiencyScoreOptions {
   readonly autonomyWeight?: number;
   readonly firstAttemptQualityWeight?: number;
   readonly speedBaselineLinesPerSecond?: number;
+  /**
+   * When provided, `computeScore()`/`updateScore()` read this tracker's
+   * current model (`CostTracker.getMetrics().model`) at score-compute time
+   * and store it on the resulting `EfficiencyScore`, which `emitMetrics()`
+   * later attaches as a `model` attr on that score's `ai.efficiency.*`
+   * gauges — matching `CostTracker.emitMetrics()`'s own `ai.cost.*`
+   * attribution, but captured per task rather than re-read at emit time, so
+   * a subagent's token report on a different model between compute and
+   * emit can't relabel an already-scored task. No delta computation is
+   * involved (unlike `TaskDetectorOptions.costTracker`), so there's no
+   * reset-ordering hazard — a null model just means that score's gauges are
+   * emitted without the attr.
+   */
+  readonly costTracker?: CostTracker;
 }
 
 /**
@@ -103,6 +127,7 @@ export class EfficiencyScorer implements Resettable {
   private readonly autonomyWeight: number;
   private readonly firstAttemptQualityWeight: number;
   private readonly speedBaselineLps: number;
+  private readonly costTracker: CostTracker | null;
 
   private readonly scores: EfficiencyScore[] = [];
   private lastEmittedIndex = 0;
@@ -126,6 +151,7 @@ export class EfficiencyScorer implements Resettable {
     this.firstAttemptQualityWeight =
       options?.firstAttemptQualityWeight ?? DEFAULT_FIRST_ATTEMPT_QUALITY_WEIGHT;
     this.speedBaselineLps = options?.speedBaselineLinesPerSecond ?? DEFAULT_SPEED_BASELINE_LPS;
+    this.costTracker = options?.costTracker ?? null;
   }
 
   /**
@@ -141,6 +167,7 @@ export class EfficiencyScorer implements Resettable {
       components,
       taskId: task.taskId,
       timestamp: task.endTime,
+      model: this.costTracker?.getMetrics().model ?? null,
     };
 
     const idx = this.scores.findIndex((s) => s.taskId === task.taskId);
@@ -206,6 +233,8 @@ export class EfficiencyScorer implements Resettable {
       },
       taskId: 'session-average',
       timestamp: Date.now(),
+      // An average across tasks has no single model of its own.
+      model: null,
     };
   }
 
@@ -233,6 +262,7 @@ export class EfficiencyScorer implements Resettable {
       components,
       taskId: task.taskId,
       timestamp: task.endTime,
+      model: this.costTracker?.getMetrics().model ?? null,
     };
 
     if (idx >= 0) {
@@ -256,11 +286,19 @@ export class EfficiencyScorer implements Resettable {
   emitMetrics(aggregator: MetricAggregator): void {
     for (let i = this.lastEmittedIndex; i < this.scores.length; i++) {
       const s = this.scores[i]!;
-      aggregator.record('ai.efficiency.score', s.score);
-      aggregator.record('ai.efficiency.speed', s.components.speed);
-      aggregator.record('ai.efficiency.correctness', s.components.correctness);
-      aggregator.record('ai.efficiency.autonomy', s.components.autonomy);
-      aggregator.record('ai.efficiency.first_attempt_quality', s.components.firstAttemptQuality);
+      const attrs: Record<string, string | number> = {};
+      if (s.model) {
+        attrs.model = s.model;
+      }
+      aggregator.record('ai.efficiency.score', s.score, attrs);
+      aggregator.record('ai.efficiency.speed', s.components.speed, attrs);
+      aggregator.record('ai.efficiency.correctness', s.components.correctness, attrs);
+      aggregator.record('ai.efficiency.autonomy', s.components.autonomy, attrs);
+      aggregator.record(
+        'ai.efficiency.first_attempt_quality',
+        s.components.firstAttemptQuality,
+        attrs,
+      );
     }
     this.lastEmittedIndex = this.scores.length;
   }

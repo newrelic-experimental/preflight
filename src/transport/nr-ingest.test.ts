@@ -30,6 +30,7 @@ import type { ClosedTurn, TurnCostAttribution } from '../metrics/turn-cost-attri
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { EfficiencyScorer } from '../metrics/efficiency-score.js';
 import { GitEfficiencyTracker } from '../metrics/git-efficiency-tracker.js';
 import { FeedbackCollector } from '../tools/workflow-tools.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
@@ -982,6 +983,50 @@ describe('NrIngestManager', () => {
 
       expect(metricNames).toContain('ai.cost.session_total_usd');
       expect(metricNames).toContain('ai.cost.tokens_input');
+    });
+
+    it('derives a provider attr from the model attr on ai.cost.* gauges', async () => {
+      const sessionTracker = new SessionTracker('cost-provider-session');
+      const costTracker = new CostTracker(sessionTracker);
+      costTracker.recordTokenUsage(makeUsage(), 'claude-sonnet-5');
+
+      const manager = new NrIngestManager(makeIngestOptions({ sessionTracker, costTracker }));
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<{
+        name: string;
+        attributes?: Record<string, unknown>;
+      }>;
+      const costMetric = sentMetrics.find((m) => m.name === 'ai.cost.session_total_usd');
+
+      expect(costMetric?.attributes?.model).toBe('claude-sonnet-5');
+      expect(costMetric?.attributes?.provider).toBe('anthropic');
+    });
+
+    it('derives a provider attr from the model attr on ai.efficiency.* gauges too', async () => {
+      const sessionTracker = new SessionTracker('efficiency-provider-session');
+      const costTracker = new CostTracker(sessionTracker);
+      costTracker.recordTokenUsage(makeUsage(), 'claude-sonnet-5');
+      const efficiencyScorer = new EfficiencyScorer({ costTracker });
+      efficiencyScorer.computeScore(makeTask());
+
+      const manager = new NrIngestManager(
+        makeIngestOptions({ sessionTracker, costTracker, efficiencyScorer }),
+      );
+
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<{
+        name: string;
+        attributes?: Record<string, unknown>;
+      }>;
+      const scoreMetric = sentMetrics.find((m) => m.name === 'ai.efficiency.score');
+
+      expect(scoreMetric?.attributes?.model).toBe('claude-sonnet-5');
+      expect(scoreMetric?.attributes?.provider).toBe('anthropic');
     });
 
     it('suppresses ai.cost.* gauges when companionMode is true', async () => {

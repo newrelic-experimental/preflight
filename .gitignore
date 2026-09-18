@@ -10,6 +10,7 @@ docs/superpowers/
 .claude/
 test-results/
 playwright-report/
+.playwright-mcp/
 
 # Terraform
 terraform/.terraform/

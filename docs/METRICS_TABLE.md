@@ -573,7 +573,7 @@ Source: `src/transport/nr-ingest.ts` — `emitSessionGauges()`, `src/metrics/pro
 
 ### MCP Server — Cost Metrics
 
-Emitted every 60 seconds alongside session gauges (only when a `CostTracker` is wired in). All metrics include `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` attributes plus `{model?}` when a current model is known.
+Emitted every 60 seconds alongside session gauges (only when a `CostTracker` is wired in). All metrics include `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` attributes plus `{model?, provider?}` when a current model is known — `provider` (`anthropic`/`google`/`openai`/`mistral`/`cohere`/`bedrock`) is derived from `model` via `classifyProvider()`.
 
 | Metric Name                      | Value | How Computed                                             |
 | -------------------------------- | ----- | -------------------------------------------------------- |
@@ -591,7 +591,7 @@ Source: `src/metrics/cost-tracker.ts` — `emitMetrics()`
 
 ### MCP Server — Efficiency Metrics
 
-Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScorer` is wired in and has scored at least one task). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}`.
+Emitted every 60 seconds alongside session gauges (only when an `EfficiencyScorer` is wired in and has scored at least one task). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?, model?, provider?}` — `model` is the model current on `costTracker` when the task was scored, and `provider` is derived from it via `classifyProvider()`.
 
 | Metric Name                           | Value       | How Computed                        |
 | ------------------------------------- | ----------- | ----------------------------------- |
@@ -605,7 +605,7 @@ Source: `src/metrics/efficiency-score.ts` — `emitMetrics()`
 
 ### MCP Server — API Failure Metrics
 
-Emitted every 60 seconds alongside session gauges (only when an `ApiFailureTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` plus `{error_type}` or `{model}` where noted.
+Emitted every 60 seconds alongside session gauges (only when an `ApiFailureTracker` is wired in). Attributes: `{developer, session_id?, team_id?, project_id?, org_id?, repo_url?}` plus `{error_type}` or `{model, provider?}` where noted.
 
 | Metric Name                     | Value      | Attributes     | How Computed                                                                                                                  |
 | ------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -675,8 +675,8 @@ Every tracker below defines an `emitMetrics(aggregator)` method (or, for `TrendA
 | `ai.api.failures_total`                    | count       | `{}`                                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
 | `ai.api.tokens_lost`                       | count       | `{}`                                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
 | `ai.api.failure_by_type`                   | count       | `{error_type}`                                     | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
-| `ai.api.model_failure_rate`                | rate (0–1)  | `{model}`                                          | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
-| `ai.api.model_mean_recovery_ms`            | duration    | `{model}`                                          | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
+| `ai.api.model_failure_rate`                | rate (0–1)  | `{model, provider?}`                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
+| `ai.api.model_mean_recovery_ms`            | duration    | `{model, provider?}`                               | `src/metrics/api-failure-tracker.ts` — `ApiFailureTracker.emitMetrics()`                 |
 | `ai.trend.efficiency_score_weekly`         | score (0–1) | `{developer, week}`                                | `src/metrics/trend-analyzer.ts` — `TrendAnalyzer.emitWeeklySummaryEvent()`               |
 | `ai.trend.cost_weekly`                     | USD         | `{developer, week}`                                | `src/metrics/trend-analyzer.ts` — `TrendAnalyzer.emitWeeklySummaryEvent()`               |
 | `ai.trend.task_success_rate_weekly`        | rate (0–1)  | `{developer, week}`                                | `src/metrics/trend-analyzer.ts` — `TrendAnalyzer.emitWeeklySummaryEvent()`               |

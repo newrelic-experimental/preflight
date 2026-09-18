@@ -2,6 +2,9 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { EfficiencyScorer } from './efficiency-score.js';
 import type { AiCodingTask } from './task-detector.js';
 import type { AntiPattern } from './anti-patterns.js';
+import { CostTracker } from './cost-tracker.js';
+import { SessionTracker } from './session-tracker.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -473,6 +476,73 @@ describe('emitMetrics()', () => {
     expect(names).toContain('ai.efficiency.correctness');
     expect(names).toContain('ai.efficiency.autonomy');
     expect(names).toContain('ai.efficiency.first_attempt_quality');
+  });
+
+  it('attaches a model attr from costTracker, matching CostTracker.emitMetrics()', () => {
+    const costTracker = new CostTracker(new SessionTracker('s1'));
+    costTracker.recordTokenUsage(makeUsage(), 'claude-sonnet-5');
+    const scorer = new EfficiencyScorer({ costTracker });
+
+    scorer.computeScore(makeTask({ taskId: 't1' }));
+
+    const recorded: Array<{ name: string; attrs: Record<string, unknown> }> = [];
+    const aggregator = {
+      record(name: string, _value: number, attrs: Record<string, unknown> = {}) {
+        recorded.push({ name, attrs });
+      },
+    } as unknown as import('../shared/index.js').MetricAggregator;
+
+    scorer.emitMetrics(aggregator);
+
+    expect(recorded).toHaveLength(5);
+    for (const r of recorded) {
+      expect(r.attrs.model).toBe('claude-sonnet-5');
+    }
+  });
+
+  it('keeps a scored task on the model that produced it, even if costTracker moves on before emit', () => {
+    // Regression for a subagent on a different model (e.g. a Bedrock/Gemini
+    // call) reporting tokens after the parent task is scored but before the
+    // next emitMetrics() — the task's gauges must not pick up that later
+    // model.
+    const costTracker = new CostTracker(new SessionTracker('s1'));
+    costTracker.recordTokenUsage(makeUsage(), 'claude-sonnet-5');
+    const scorer = new EfficiencyScorer({ costTracker });
+
+    scorer.computeScore(makeTask({ taskId: 't1' }));
+    costTracker.recordTokenUsage(makeUsage(), 'claude-haiku-4-5');
+
+    const recorded: Array<{ name: string; attrs: Record<string, unknown> }> = [];
+    const aggregator = {
+      record(name: string, _value: number, attrs: Record<string, unknown> = {}) {
+        recorded.push({ name, attrs });
+      },
+    } as unknown as import('../shared/index.js').MetricAggregator;
+
+    scorer.emitMetrics(aggregator);
+
+    expect(recorded).toHaveLength(5);
+    for (const r of recorded) {
+      expect(r.attrs.model).toBe('claude-sonnet-5');
+    }
+  });
+
+  it('omits the model attr when no costTracker is provided', () => {
+    const scorer = new EfficiencyScorer();
+    scorer.computeScore(makeTask({ taskId: 't1' }));
+
+    const recorded: Array<Record<string, unknown>> = [];
+    const aggregator = {
+      record(_name: string, _value: number, attrs: Record<string, unknown> = {}) {
+        recorded.push(attrs);
+      },
+    } as unknown as import('../shared/index.js').MetricAggregator;
+
+    scorer.emitMetrics(aggregator);
+
+    for (const attrs of recorded) {
+      expect(attrs.model).toBeUndefined();
+    }
   });
 });
 

@@ -1149,7 +1149,7 @@ async function main(): Promise<void> {
     const costTracker = new CostTracker(sessionTracker, { rateMultiplier });
     taskDetector = new TaskDetector({ costTracker });
     const antiPatternDetector = new AntiPatternDetector();
-    const efficiencyScorer = new EfficiencyScorer();
+    const efficiencyScorer = new EfficiencyScorer({ costTracker });
     const feedbackCollector = new FeedbackCollector();
 
     const contextWindowTracker = new ContextWindowTracker();
