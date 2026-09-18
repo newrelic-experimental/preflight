@@ -127,9 +127,9 @@ brew install preflight
 
 ## Works With
 
-**Claude Code** • **Cursor** • **Windsurf** • **GitHub Copilot** • **Zed** • **Continue.dev** • **Amazon Q Developer** • **Amazon Kiro**
+**Claude Code** • **Amazon Kiro** • **Amazon Q Developer CLI** • **Factory Droid** • **OpenAI Codex** • **opencode** • **Kilo Code** • **Pi** • **GitHub Copilot** • **GitHub Copilot SDK** • **GitHub Copilot app** • **Google Gemini CLI** • **Cursor** • **Windsurf** • **Google Antigravity** • **Zed** • **Continue.dev** • **Cline**
 
-Coverage isn't uniform — some platforms capture every built-in tool call, others (Zed, Continue.dev) only see calls routed to Preflight's own MCP tools. See [ADAPTERS.md](docs/ADAPTERS.md) for what each platform can and can't observe, and per-platform setup steps.
+Coverage isn't uniform — some platforms capture every built-in tool call, others (Zed, Continue.dev, Cline) only see calls routed to Preflight's own MCP tools. See [ADAPTERS.md](docs/ADAPTERS.md) for what each platform can and can't observe, and per-platform setup steps.
 
 ---
 

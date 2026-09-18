@@ -68,13 +68,13 @@ export function Alerts(): JSX.Element {
 
   const budgetQ = useQuery<BudgetStatus>({
     queryKey: qk.budget,
-    queryFn: () => fetchBudget(),
+    queryFn: ({ signal }) => fetchBudget(signal),
     refetchInterval: 10_000,
   });
 
   const settingsQ = useQuery<SettingsData>({
     queryKey: qk.settings,
-    queryFn: () => fetchSettings(),
+    queryFn: ({ signal }) => fetchSettings(signal),
   });
 
   const budget = budgetQ.data;

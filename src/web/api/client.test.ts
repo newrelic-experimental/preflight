@@ -55,6 +55,22 @@ describe('api/client', () => {
     expect(calledWith).toBe('/api/audit');
   });
 
+  it('fetchAuditLog forwards an AbortSignal to fetch, so a caller can cancel it on unmount', async () => {
+    let receivedInit: RequestInit | undefined;
+    globalThis.fetch = ((_u: string, init?: RequestInit) => {
+      receivedInit = init;
+      return Promise.resolve(
+        new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const controller = new AbortController();
+    await fetchAuditLog(controller.signal);
+    expect(receivedInit?.signal).toBe(controller.signal);
+  });
+
   it('patchSettings throws HTTP status error when server returns non-JSON error body', async () => {
     globalThis.fetch = (() =>
       Promise.resolve(

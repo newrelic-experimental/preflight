@@ -25,9 +25,20 @@ import { createLogger } from '../shared/index.js';
 import { redactSensitive } from '../config.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
 import { GENERIC_MCP_PLATFORM_NAME } from '../platforms/generic-mcp-adapter.js';
-import type { SessionSummary, ReplayTimelineEntry } from './types.js';
+import type {
+  SessionSummary,
+  ReplayTimelineEntry,
+  SessionAttribution,
+  AttributionFacet,
+  AttributionBucket,
+  TokenBreakdown,
+} from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
-import type { CostTracker } from '../metrics/cost-tracker.js';
+import type { CostTracker, CostMetrics } from '../metrics/cost-tracker.js';
+import type {
+  TurnCostAttributor,
+  CostAttributionMetrics,
+} from '../metrics/turn-cost-attributor.js';
 import type { TaskDetector } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
 import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/efficiency-score.js';
@@ -99,6 +110,8 @@ export interface FullSessionSummary extends SessionSummary {
   readonly repoName: string | null;
   readonly model: string | null;
   readonly toolBreakdown: Record<string, number>;
+  /** Invocation count per skill name, both Skill tool calls and slash commands. */
+  readonly skillBreakdown: Record<string, number>;
   readonly filesRead: string[];
   readonly filesModified: string[];
   readonly linesAdded: number;
@@ -193,6 +206,8 @@ export interface FullSessionSummary extends SessionSummary {
    * and for sessions with no token events.
    */
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
+  /** Spend sliced by tool, skill, and subagent type, plus high-context spend and API wait time. Absent on legacy files. */
+  readonly attribution?: SessionAttribution;
   /**
    * Per-workflow-run cost, split by local-day, keyed by workflow_run_id then
    * day key — the exact shape `CostMetrics.costByWorkflowRunId` already
@@ -216,6 +231,46 @@ export interface FullSessionSummary extends SessionSummary {
   readonly qualityProxy: QualityProxyRawCounts;
 }
 
+/**
+ * The subset of a session summary that decides whether it represents real,
+ * attributable work. Deliberately structural and all-optional so the three
+ * callers can pass what they have: a full `FullSessionSummary`, a live
+ * `LocalSessionRollup`, or the narrowed row shape the today-aggregate route
+ * reads off disk.
+ */
+export interface AttributableActivity {
+  readonly toolCallCount?: number;
+  readonly subagentCostUsd?: number;
+  readonly timeline?: ReadonlyArray<unknown>;
+}
+
+/**
+ * Does this summary represent work we can attribute to a real session?
+ *
+ * THE single definition of "not empty" for session persistence. Three call
+ * sites derive from it and must never re-implement it:
+ *   1. `LocalSessionAggregator.toSummaries()` — which rollups get written.
+ *   2. `SessionStore.saveSession()` — which incoming writes may overwrite.
+ *   3. the `/api/sessions/today/aggregate` route — which persisted rows may
+ *      contribute a pro-rated cost when they carry no per-day buckets.
+ *
+ * Subagent spend counts as activity on purpose. A session whose parent process
+ * died while its subagent transcripts were still being tailed has an empty
+ * PARENT timeline and zero parent tool calls (subagent tool calls never appear
+ * there) yet real dollars. Keying only on `toolCallCount` discards exactly the
+ * sessions a `--local` watcher exists to rescue.
+ *
+ * A genuinely empty summary — no tool calls, no subagent dollars, no timeline
+ * — is still false, which is what keeps the empty-clobber guard intact.
+ */
+export function hasAttributableActivity(s: AttributableActivity): boolean {
+  return (
+    (s.toolCallCount ?? 0) > 0 ||
+    (s.subagentCostUsd ?? 0) > 0 ||
+    (Array.isArray(s.timeline) && s.timeline.length > 0)
+  );
+}
+
 export interface SessionFileInfo {
   readonly filename: string;
   readonly sessionId: string;
@@ -237,6 +292,103 @@ export interface ListSessionsOptions {
  * overlapping (not disjoint) slices of one session, so summing would inflate
  * and taking the incoming value alone would regress.
  */
+/**
+ * Merge two `SessionAttribution` snapshots facet-by-facet, key-by-key,
+ * taking a field-wise max on each bucket's four numbers — the same
+ * no-single-writer-loses-data rule as `modelBreakdown` above. `undefined`
+ * on either side is treated as an empty attribution rather than short-
+ * circuiting, so a session that only recently gained a `turnCostAttributor`
+ * still merges cleanly against an earlier write that had none.
+ */
+function mergeTokenBreakdown(
+  a: TokenBreakdown | undefined,
+  b: TokenBreakdown | undefined,
+): TokenBreakdown | undefined {
+  if (!a && !b) return undefined;
+  const maxNum = (x: number | undefined, y: number | undefined): number => Math.max(x ?? 0, y ?? 0);
+  return {
+    inputTokens: maxNum(a?.inputTokens, b?.inputTokens),
+    outputTokens: maxNum(a?.outputTokens, b?.outputTokens),
+    cacheReadTokens: maxNum(a?.cacheReadTokens, b?.cacheReadTokens),
+    cacheCreationTokens: maxNum(a?.cacheCreationTokens, b?.cacheCreationTokens),
+  };
+}
+
+function mergeAttribution(
+  existing: SessionAttribution | undefined,
+  incoming: SessionAttribution | undefined,
+): SessionAttribution | undefined {
+  if (!existing && !incoming) return undefined;
+  const maxNum = (a: number | undefined, b: number | undefined): number => Math.max(a ?? 0, b ?? 0);
+  const maxNullable = (
+    a: number | null | undefined,
+    b: number | null | undefined,
+  ): number | null => (a == null && b == null ? null : Math.max(a ?? 0, b ?? 0));
+
+  const a = existing ?? { buckets: {}, highContextCostUsd: 0, apiDurationMs: null };
+  const b = incoming ?? { buckets: {}, highContextCostUsd: 0, apiDurationMs: null };
+  const facets = new Set<AttributionFacet>([
+    ...(Object.keys(a.buckets) as AttributionFacet[]),
+    ...(Object.keys(b.buckets) as AttributionFacet[]),
+  ]);
+  const buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>> = {};
+  for (const facet of facets) {
+    const facetA = a.buckets[facet] ?? {};
+    const facetB = b.buckets[facet] ?? {};
+    const keys = new Set([...Object.keys(facetA), ...Object.keys(facetB)]);
+    const merged: Record<string, AttributionBucket> = {};
+    for (const key of keys) {
+      const ba = facetA[key];
+      const bb = facetB[key];
+      const breakdown = mergeTokenBreakdown(ba?.breakdown, bb?.breakdown);
+      merged[key] = {
+        costUsd: maxNum(ba?.costUsd, bb?.costUsd),
+        tokens: maxNum(ba?.tokens, bb?.tokens),
+        count: maxNum(ba?.count, bb?.count),
+        durationMs: maxNum(ba?.durationMs, bb?.durationMs),
+        ...(breakdown ? { breakdown } : {}),
+      };
+    }
+    if (Object.keys(merged).length > 0) buckets[facet] = merged;
+  }
+
+  return {
+    buckets,
+    highContextCostUsd: maxNum(a.highContextCostUsd, b.highContextCostUsd),
+    apiDurationMs: maxNullable(a.apiDurationMs, b.apiDurationMs),
+  };
+}
+
+// Mirrors the cap SessionTracker/LocalSessionAggregator apply when building a
+// timeline pre-merge — a merged timeline should not grow past what either
+// side could have produced on its own.
+const MAX_TIMELINE_ENTRIES = 10_000;
+
+/**
+ * Union two timelines instead of picking whichever is longer. A Claude Code
+ * `--stdio` resume starts the new process with an empty in-memory timeline;
+ * under longest-wins, every checkpoint the new process writes loses the merge
+ * race to the old process's on-disk timeline until it outgrows it, silently
+ * dropping entries from whichever side was shorter. Entries are deduped by
+ * `(timestamp, toolName)` — no toolUseId is carried on `ReplayTimelineEntry`,
+ * but two distinct real tool calls sharing a millisecond timestamp and tool
+ * name is not a case that occurs in practice.
+ */
+function mergeTimeline(
+  existing: readonly ReplayTimelineEntry[] | undefined,
+  incoming: readonly ReplayTimelineEntry[] | undefined,
+): ReplayTimelineEntry[] | undefined {
+  if (existing === undefined && incoming === undefined) return undefined;
+  const byKey = new Map<string, ReplayTimelineEntry>();
+  for (const entry of [...(existing ?? []), ...(incoming ?? [])]) {
+    byKey.set(`${entry.timestamp}:${entry.toolName}`, entry);
+  }
+  const merged = [...byKey.values()].sort((a, b) => a.timestamp - b.timestamp);
+  return merged.length > MAX_TIMELINE_ENTRIES
+    ? merged.slice(merged.length - MAX_TIMELINE_ENTRIES)
+    : merged;
+}
+
 export function mergeSummaries(
   existing: FullSessionSummary,
   incoming: FullSessionSummary,
@@ -287,6 +439,24 @@ export function mergeSummaries(
       efficiencyScoreComponents: winner.efficiencyScoreComponents ?? null,
     };
   };
+  /**
+   * Per-key max, preserving absence. `mergeCounts` already takes the per-key
+   * max; the wrapper exists because `{}` and `undefined` are DIFFERENT values
+   * to the today-aggregate route (an absent map falls back to the timeline
+   * pro-rate; a present-but-empty one reads as an authoritative $0), so two
+   * bucket-less legacy summaries must merge to `undefined`, not to `{}`.
+   */
+  const mergeDayMap = (
+    a: Record<string, number> | undefined,
+    b: Record<string, number> | undefined,
+  ): Record<string, number> | undefined =>
+    a === undefined && b === undefined ? undefined : mergeCounts(a, b);
+  const costByDayUsd = mergeDayMap(existing.costByDayUsd, incoming.costByDayUsd);
+  const subagentCostByDayUsd = mergeDayMap(
+    existing.subagentCostByDayUsd,
+    incoming.subagentCostByDayUsd,
+  );
+
   const mergeCostByWorkflowRunId = (
     a: Record<string, Record<string, number>> = {},
     b: Record<string, Record<string, number>> = {},
@@ -337,10 +507,7 @@ export function mergeSummaries(
       ? (incoming.toolSelectionMetrics ?? existing.toolSelectionMetrics)
       : existing.toolSelectionMetrics;
 
-  const timeline =
-    (incoming.timeline?.length ?? 0) >= (existing.timeline?.length ?? 0)
-      ? incoming.timeline
-      : existing.timeline;
+  const timeline = mergeTimeline(existing.timeline, incoming.timeline);
 
   const startTime = Math.min(
     existing.startTime || incoming.startTime,
@@ -377,6 +544,7 @@ export function mergeSummaries(
         : (existing.platform ?? incoming.platform),
     instructionPromptHash: incoming.instructionPromptHash ?? existing.instructionPromptHash,
     toolBreakdown: mergeCounts(existing.toolBreakdown, incoming.toolBreakdown),
+    skillBreakdown: mergeCounts(existing.skillBreakdown, incoming.skillBreakdown),
     filesRead: union(existing.filesRead, incoming.filesRead),
     filesModified: union(existing.filesModified, incoming.filesModified),
     linesAdded: maxNum(existing.linesAdded, incoming.linesAdded),
@@ -388,6 +556,8 @@ export function mergeSummaries(
     buildPassCount: maxNum(existing.buildPassCount, incoming.buildPassCount),
     estimatedCostUsd: maxNullable(existing.estimatedCostUsd, incoming.estimatedCostUsd),
     subagentCostUsd: maxNum(existing.subagentCostUsd, incoming.subagentCostUsd),
+    ...(costByDayUsd !== undefined ? { costByDayUsd } : {}),
+    ...(subagentCostByDayUsd !== undefined ? { subagentCostByDayUsd } : {}),
     tokensInput: maxNum(existing.tokensInput, incoming.tokensInput),
     tokensOutput: maxNum(existing.tokensOutput, incoming.tokensOutput),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
@@ -419,6 +589,7 @@ export function mergeSummaries(
     toolSelectionMetrics,
     modelBreakdown,
     qualityProxy,
+    attribution: mergeAttribution(existing.attribution, incoming.attribution),
   };
 }
 
@@ -470,8 +641,7 @@ export class SessionStore {
     let toWrite: FullSessionSummary = summary;
     if (existingWithPath) {
       const { summary: existing } = existingWithPath;
-      const existingCalls = existing.toolCallCount ?? 0;
-      if (existingCalls > 0 && (summary.toolCallCount ?? 0) === 0) {
+      if (hasAttributableActivity(existing) && !hasAttributableActivity(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
         });
@@ -672,6 +842,7 @@ export class SessionStore {
 export interface BuildSessionSummarySources {
   sessionTracker: SessionTracker;
   costTracker?: CostTracker;
+  turnCostAttributor?: TurnCostAttributor;
   taskDetector?: TaskDetector;
   antiPatternDetector?: AntiPatternDetector;
   efficiencyScorer?: EfficiencyScorer;
@@ -693,6 +864,85 @@ export interface BuildSessionSummarySources {
   instructionPromptHash?: string | null;
 }
 
+function skillInvocationCounts(
+  metrics: CostAttributionMetrics | undefined,
+): Record<string, number> {
+  if (!metrics) return {};
+  const result: Record<string, number> = {};
+  for (const [skillName, entry] of Object.entries(metrics.costBySkill)) {
+    result[skillName] = entry.callCount;
+  }
+  return result;
+}
+
+/**
+ * Assemble `SessionAttribution` from the turn attributor's tool/skill
+ * buckets and the cost tracker's subagent/high-context/API-duration fields.
+ * Facets with no entries are omitted entirely rather than persisted as `{}`.
+ */
+function buildAttribution(
+  turnMetrics: CostAttributionMetrics | null,
+  costMetrics: CostMetrics | null,
+): SessionAttribution {
+  const buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>> = {};
+
+  if (turnMetrics) {
+    const toolBuckets: Record<string, AttributionBucket> = {};
+    for (const [tool, entry] of Object.entries(turnMetrics.costByToolType)) {
+      const hasTokenSignal =
+        entry.inputTokens > 0 ||
+        entry.outputTokens > 0 ||
+        entry.cacheReadTokens > 0 ||
+        entry.cacheCreationTokens > 0;
+      toolBuckets[tool] = {
+        costUsd: entry.totalCost,
+        tokens: entry.tokens,
+        count: entry.callCount,
+        durationMs: 0,
+        ...(hasTokenSignal
+          ? {
+              breakdown: {
+                inputTokens: entry.inputTokens,
+                outputTokens: entry.outputTokens,
+                cacheReadTokens: entry.cacheReadTokens,
+                cacheCreationTokens: entry.cacheCreationTokens,
+              },
+            }
+          : {}),
+      };
+    }
+    if (Object.keys(toolBuckets).length > 0) buckets.tool = toolBuckets;
+
+    const skillBuckets: Record<string, AttributionBucket> = {};
+    for (const [skill, entry] of Object.entries(turnMetrics.costBySkill)) {
+      skillBuckets[skill] = {
+        costUsd: entry.totalCost,
+        tokens: entry.tokens,
+        count: entry.callCount,
+        durationMs: entry.totalDurationMs,
+        breakdown: {
+          inputTokens: entry.inputTokens,
+          outputTokens: entry.outputTokens,
+          cacheReadTokens: entry.cacheReadTokens,
+          cacheCreationTokens: entry.cacheCreationTokens,
+        },
+      };
+    }
+    if (Object.keys(skillBuckets).length > 0) buckets.skill = skillBuckets;
+  }
+
+  const subagentBuckets = costMetrics?.subagentByAgentType;
+  if (subagentBuckets && Object.keys(subagentBuckets).length > 0) {
+    buckets.subagent = { ...subagentBuckets };
+  }
+
+  return {
+    buckets,
+    highContextCostUsd: costMetrics?.highContextCostUsd ?? 0,
+    apiDurationMs: costMetrics?.apiDurationMs ?? null,
+  };
+}
+
 export function buildSessionSummary(sources: BuildSessionSummarySources): FullSessionSummary {
   const {
     sessionTracker,
@@ -705,6 +955,11 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
 
   const sessionMetrics = sessionTracker.getMetrics();
   const costMetrics = costTracker?.getMetrics() ?? null;
+  const turnAttributionMetrics = sources.turnCostAttributor?.getMetrics() ?? null;
+  const attribution =
+    sources.costTracker || sources.turnCostAttributor
+      ? buildAttribution(turnAttributionMetrics, costMetrics)
+      : undefined;
   const taskMetrics = taskDetector?.getMetrics() ?? null;
   const transcriptMessageMetrics = sources.transcriptMessageTracker?.getMetrics();
 
@@ -793,6 +1048,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     isBuildCommand: (tc.isBuildCommand as boolean | undefined) || undefined,
     isLintCommand: (tc.isLintCommand as boolean | undefined) || undefined,
     errorType: tc.errorType || undefined,
+    skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
+    agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
   }));
 
   const now = Date.now();
@@ -818,6 +1075,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     developer,
     model: costMetrics?.model ?? null,
     toolBreakdown: { ...sessionMetrics.toolCallCountByTool },
+    skillBreakdown: skillInvocationCounts(
+      sources.turnCostAttributor?.getMetrics(sessionMetrics.sessionId),
+    ),
     filesRead: [...allFilesRead].sort().map((f) => redactSensitive(f)),
     filesModified: [...allFilesModified].sort().map((f) => redactSensitive(f)),
     linesAdded: totalLinesAdded,
@@ -857,6 +1117,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     modelBreakdown: sources.modelUsageTracker?.getRawBreakdown() ?? {},
     costByWorkflowRunId: costMetrics?.costByWorkflowRunId ?? {},
     qualityProxy: sources.qualityProxyTracker?.getRawCounts() ?? ZERO_QUALITY_PROXY_COUNTS,
+    attribution,
   };
 }
 
@@ -916,6 +1177,7 @@ interface SerializedFullSessionSummary {
   readonly developer?: unknown;
   readonly model?: unknown;
   readonly toolBreakdown?: Record<string, unknown>;
+  readonly skillBreakdown?: Record<string, unknown>;
   readonly filesRead?: unknown[];
   readonly filesModified?: unknown[];
   readonly linesAdded?: unknown;
@@ -955,6 +1217,94 @@ interface SerializedFullSessionSummary {
   readonly modelBreakdown?: Record<string, unknown>;
   readonly costByWorkflowRunId?: Record<string, unknown>;
   readonly qualityProxy?: Record<string, unknown>;
+  readonly attribution?: Record<string, unknown>;
+}
+
+/**
+ * Accept a breakdown only when all four fields are finite numbers; any other
+ * shape is dropped (the bucket itself still parses, just without a
+ * breakdown) rather than partially hydrated.
+ */
+function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = r;
+  if (
+    typeof inputTokens === 'number' &&
+    Number.isFinite(inputTokens) &&
+    typeof outputTokens === 'number' &&
+    Number.isFinite(outputTokens) &&
+    typeof cacheReadTokens === 'number' &&
+    Number.isFinite(cacheReadTokens) &&
+    typeof cacheCreationTokens === 'number' &&
+    Number.isFinite(cacheCreationTokens)
+  ) {
+    return { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens };
+  }
+  return undefined;
+}
+
+/**
+ * Accept a bucket only when all four core fields are finite numbers; any
+ * other shape is dropped rather than partially hydrated. Used to parse each
+ * key of every facet in an on-disk `SessionAttribution.buckets`. `breakdown`
+ * is optional and validated separately — a malformed breakdown drops only
+ * itself, never the bucket (see `parseTokenBreakdown`).
+ */
+function parseAttributionBucket(raw: unknown): AttributionBucket | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const { costUsd, tokens, count, durationMs } = r;
+  if (
+    typeof costUsd === 'number' &&
+    Number.isFinite(costUsd) &&
+    typeof tokens === 'number' &&
+    Number.isFinite(tokens) &&
+    typeof count === 'number' &&
+    Number.isFinite(count) &&
+    typeof durationMs === 'number' &&
+    Number.isFinite(durationMs)
+  ) {
+    const breakdown = parseTokenBreakdown(r.breakdown);
+    return { costUsd, tokens, count, durationMs, ...(breakdown ? { breakdown } : {}) };
+  }
+  return undefined;
+}
+
+/**
+ * Parse an on-disk `attribution` field. Returns undefined when the field is
+ * absent or not an object (a legacy session summary written before this
+ * field existed), so it loads unchanged. Invalid facet keys/buckets are
+ * dropped individually rather than invalidating the whole field.
+ */
+function parseAttribution(raw: unknown): SessionAttribution | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const rawBuckets = r.buckets;
+  const buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>> = {};
+  if (typeof rawBuckets === 'object' && rawBuckets !== null) {
+    for (const facet of ['tool', 'skill', 'subagent'] as const) {
+      const facetRaw = (rawBuckets as Record<string, unknown>)[facet];
+      if (typeof facetRaw !== 'object' || facetRaw === null) continue;
+      const facetBuckets: Record<string, AttributionBucket> = {};
+      for (const [key, bucketRaw] of Object.entries(facetRaw as Record<string, unknown>)) {
+        const bucket = parseAttributionBucket(bucketRaw);
+        if (bucket) facetBuckets[key] = bucket;
+      }
+      if (Object.keys(facetBuckets).length > 0) buckets[facet] = facetBuckets;
+    }
+  }
+  return {
+    buckets,
+    highContextCostUsd:
+      typeof r.highContextCostUsd === 'number' && Number.isFinite(r.highContextCostUsd)
+        ? r.highContextCostUsd
+        : 0,
+    apiDurationMs:
+      typeof r.apiDurationMs === 'number' && Number.isFinite(r.apiDurationMs)
+        ? r.apiDurationMs
+        : null,
+  };
 }
 
 /**
@@ -989,6 +1339,13 @@ export function deserializeFullSessionSummary(
   if (typeof obj.toolBreakdown === 'object' && obj.toolBreakdown !== null) {
     for (const [k, v] of Object.entries(obj.toolBreakdown)) {
       if (typeof v === 'number') toolBreakdown[k] = v;
+    }
+  }
+
+  const skillBreakdown = Object.create(null) as Record<string, number>;
+  if (typeof obj.skillBreakdown === 'object' && obj.skillBreakdown !== null) {
+    for (const [k, v] of Object.entries(obj.skillBreakdown)) {
+      if (typeof v === 'number') skillBreakdown[k] = v;
     }
   }
 
@@ -1162,6 +1519,7 @@ export function deserializeFullSessionSummary(
     developer: typeof obj.developer === 'string' ? obj.developer : 'unknown',
     model: typeof obj.model === 'string' ? obj.model : null,
     toolBreakdown,
+    skillBreakdown,
     filesRead: Array.isArray(obj.filesRead)
       ? obj.filesRead.filter((f): f is string => typeof f === 'string')
       : [],
@@ -1223,12 +1581,15 @@ export function deserializeFullSessionSummary(
             isBuildCommand: typeof e.isBuildCommand === 'boolean' ? e.isBuildCommand : undefined,
             isLintCommand: typeof e.isLintCommand === 'boolean' ? e.isLintCommand : undefined,
             errorType: typeof e.errorType === 'string' ? e.errorType : undefined,
+            skillName: typeof e.skillName === 'string' ? e.skillName : undefined,
+            agentType: typeof e.agentType === 'string' ? e.agentType : undefined,
           }))
       : undefined,
     toolSelectionMetrics,
     modelBreakdown,
     costByWorkflowRunId,
     qualityProxy,
+    attribution: parseAttribution(obj.attribution),
   };
 }
 

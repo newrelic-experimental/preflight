@@ -1030,6 +1030,48 @@ describe('api-handler GET /api/sessions/:id/replay', () => {
     const parsed = JSON.parse(body()) as { timeline: Array<{ timestamp: number }> };
     expect(parsed.timeline.map((e) => e.timestamp)).toEqual([100, 200, 300]);
   });
+
+  it('threads agentId onto live-buffer timeline entries so replay can partition by agent', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      toolCallBuffer: {
+        getRecords: () => [
+          {
+            id: '1',
+            sessionId: 'sess-agent',
+            toolName: 'Bash',
+            toolUseId: 'u1',
+            timestamp: 1,
+            durationMs: 1,
+            success: true,
+            command: 'npm test',
+            agentId: 'agent-a',
+          },
+          {
+            id: '2',
+            sessionId: 'sess-agent',
+            toolName: 'Bash',
+            toolUseId: 'u2',
+            timestamp: 2,
+            durationMs: 1,
+            success: true,
+            command: 'npm test',
+          },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['toolCallBuffer'],
+    });
+    const req2 = { method: 'GET', url: '/api/sessions/sess-agent/replay' } as IncomingMessage;
+    const { res: res2, status: status2, body: body2 } = fakeRes();
+    await handler(req2, res2);
+    expect(status2()).toBe(200);
+    const parsed2 = JSON.parse(body2()) as { timeline: Array<{ agentId?: string }> };
+    expect(parsed2.timeline[0]?.agentId).toBe('agent-a');
+    expect(parsed2.timeline[1]).not.toHaveProperty('agentId');
+  });
 });
 
 describe('api-handler GET /api/sessions/:sessionId/subagents', () => {
@@ -2208,6 +2250,446 @@ describe('api-handler GET /api/cost-per-outcome', () => {
   });
 });
 
+describe('api-handler GET /api/cost-per-tool', () => {
+  it('returns 503 when turnCostAttributor is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/cost-per-tool' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('scopes to one session via ?sessionId= without merging persisted data', async () => {
+    const fakeMetrics = {
+      turns: [],
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+      costBySkill: {},
+      totalAttributedCost: 0.01,
+      attributionRate: 1,
+    };
+    let receivedSessionId: string | undefined;
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: (sessionId?: string) => {
+          receivedSessionId = sessionId;
+          return fakeMetrics;
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?sessionId=sess-x' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(receivedSessionId).toBe('sess-x');
+    expect(JSON.parse(body())).toEqual(fakeMetrics);
+  });
+
+  it("merges another today session's persisted buckets into the live totals, excluding the process's own session id", async () => {
+    const liveMetrics = {
+      turns: [],
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+      costBySkill: {
+        unslop: {
+          callCount: 1,
+          attributedCallCount: 1,
+          totalCost: 0.02,
+          avgCost: 0.02,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          totalDurationMs: 200,
+          tokens: 150,
+        },
+      },
+      totalAttributedCost: 0.03,
+      attributionRate: 1,
+    };
+    const ownSession = {
+      sessionId: 'own-session',
+      attribution: {
+        buckets: { tool: { Read: { costUsd: 999, tokens: 0, count: 999, durationMs: 0 } } },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const otherSession = {
+      sessionId: 'other-session',
+      estimatedCostUsd: 0.4,
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.05, tokens: 0, count: 2, durationMs: 0 } },
+          skill: { unslop: { costUsd: 0.01, tokens: 40, count: 1, durationMs: 100 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const handler = createApiHandler({
+      sessionTracker: { getMetrics: () => ({ sessionId: 'own-session' }) } as unknown as Parameters<
+        typeof createApiHandler
+      >[0]['sessionTracker'],
+      turnCostAttributor: {
+        getMetrics: () => liveMetrics,
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [ownSession, otherSession],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.5 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // own-session's bucket (cost 999) must never be folded in — only
+    // other-session's.
+    expect(result.costByToolType.Read.callCount).toBe(3);
+    expect(result.costByToolType.Read.totalCost).toBeCloseTo(0.06, 10);
+    expect(result.costByToolType.Read.avgCost).toBeCloseTo(0.02, 10);
+    expect(result.costBySkill.unslop).toEqual({
+      callCount: 2,
+      attributedCallCount: 2,
+      totalCost: 0.03,
+      avgCost: 0.015,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalDurationMs: 300,
+      tokens: 190,
+    });
+    // Recomputed cost-based rate, not the live tracker's tool-call-based one
+    // (liveMetrics.attributionRate: 1): attributed = live 0.03 + other
+    // session's tool bucket 0.05 = 0.08; total = costTracker's session total
+    // 0.5 + other session's estimatedCostUsd 0.4 = 0.9.
+    expect(result.totalAttributedCost).toBeCloseTo(0.08, 10);
+    expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
+  });
+
+  it('returns 503 for ?days= when sessionStore.loadAllSessions is missing', async () => {
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => ({
+          turns: [],
+          costByToolType: {},
+          costBySkill: {},
+          totalAttributedCost: 0,
+          attributionRate: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=7' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('?days= builds costByToolType/costBySkill from loadAllSessions alone, reporting attribution coverage', async () => {
+    const attributedSession = {
+      sessionId: 'attributed',
+      startTime: Date.now() - 2 * 86_400_000,
+      estimatedCostUsd: 1,
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.5, tokens: 200, count: 4, durationMs: 100 } },
+          skill: { unslop: { costUsd: 0.1, tokens: 50, count: 1, durationMs: 20 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    // No `attribution` field at all — a pre-attribution historical session.
+    const unattributedSession = {
+      sessionId: 'unattributed',
+      startTime: Date.now() - 3 * 86_400_000,
+      estimatedCostUsd: 2,
+    };
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => {
+          throw new Error('windowed path must not read the live tracker');
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => {
+          throw new Error('windowed path must not read loadTodaySessions');
+        },
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [attributedSession, unattributedSession];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=7' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(receivedSince).toBeInstanceOf(Date);
+    // Widened by one extra day past the 7-day window, same as usage-insights.
+    const ageMs = Date.now() - (receivedSince as Date).getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(8 * 86_400_000);
+    const result = JSON.parse(body());
+    expect(result.turns).toEqual([]);
+    expect(result.costByToolType.Read).toEqual({
+      totalCost: 0.5,
+      callCount: 4,
+      avgCost: 0.125,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      tokens: 200,
+    });
+    expect(result.costBySkill.unslop.totalCost).toBe(0.1);
+    expect(result.attributedSessionCount).toBe(1);
+    expect(result.totalSessionCount).toBe(2);
+    expect(result.totalAttributedCost).toBeCloseTo(0.5, 10);
+    // totalCost basis is the sum of every window session's estimatedCostUsd
+    // (1 + 2 = 3), not just the attributed session's — matches the
+    // unwindowed path's cost-based (not call-based) attributionRate.
+    expect(result.attributionRate).toBeCloseTo(0.5 / 3, 10);
+  });
+
+  it('clamps ?days= to [1,90], same as GET /api/usage-insights', async () => {
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => ({
+          turns: [],
+          costByToolType: {},
+          costBySkill: {},
+          totalAttributedCost: 0,
+          attributionRate: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=9999' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(receivedSince).toBeInstanceOf(Date);
+    const ageMs = Date.now() - (receivedSince as Date).getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
+    const result = JSON.parse(body());
+    expect(result.totalSessionCount).toBe(0);
+    expect(result.attributedSessionCount).toBe(0);
+  });
+
+  it('applies an exact startTime cutoff on top of the widened loadAllSessions() fetch', async () => {
+    const inWindow = {
+      sessionId: 'in',
+      startTime: Date.now() - 2 * 86_400_000,
+      estimatedCostUsd: 1,
+    };
+    // Simulates loadAllSessions()'s own coarse day-prefix pre-filter
+    // over-returning a session older than the requested window.
+    const outOfWindow = {
+      sessionId: 'out',
+      startTime: Date.now() - 10 * 86_400_000,
+      estimatedCostUsd: 5,
+    };
+    const handler = createApiHandler({
+      turnCostAttributor: {
+        getMetrics: () => ({
+          turns: [],
+          costByToolType: {},
+          costBySkill: {},
+          totalAttributedCost: 0,
+          attributionRate: 0,
+        }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [inWindow, outOfWindow],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool?days=7' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).totalSessionCount).toBe(1);
+  });
+});
+
+describe('api-handler GET /api/usage-insights', () => {
+  it('returns 503 when sessionStore.loadAllSessions is missing', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights' } as IncomingMessage;
+    const { res, status } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+  });
+
+  it('defaults to a 7-day window and returns computeUsageInsights output', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [
+          {
+            sessionId: 's1',
+            startTime: Date.now() - 86_400_000,
+            estimatedCostUsd: 2,
+            durationMs: 0,
+            subagentCostUsd: 0,
+            tokensInput: 0,
+            tokensOutput: 0,
+            tokensCacheRead: 0,
+            tokensCacheCreation: 0,
+            toolBreakdown: {},
+          },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    expect(result.windowDays).toBe(7);
+    expect(result.totalCostUsd).toBe(2);
+    expect(result.sessionCount).toBe(1);
+  });
+
+  it('clamps the days parameter to [1,90]', async () => {
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?days=9999' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const result = JSON.parse(body());
+    expect(result.windowDays).toBe(90);
+    expect(receivedSince).toBeInstanceOf(Date);
+    const ageMs = Date.now() - (receivedSince as Date).getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
+  });
+
+  it('clamps a sub-1 or non-numeric days parameter up to 1', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?days=0' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).windowDays).toBe(1);
+  });
+
+  it('window=today scopes to local midnight, not a rolling 24h window', async () => {
+    const todayStart = localStartOfDay();
+    const sinceLastMidnight = { sessionId: 'today', startTime: todayStart + 60_000 };
+    // 20h before now but before local midnight — must be excluded even though
+    // it falls inside a rolling 24h window.
+    const beforeMidnight = { sessionId: 'yesterday', startTime: todayStart - 4 * 3_600_000 };
+    let receivedSince: Date | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date }) => {
+          receivedSince = opts?.since;
+          return [
+            {
+              ...sinceLastMidnight,
+              estimatedCostUsd: 2,
+              durationMs: 0,
+              subagentCostUsd: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+              tokensCacheRead: 0,
+              tokensCacheCreation: 0,
+              toolBreakdown: {},
+            },
+            {
+              ...beforeMidnight,
+              estimatedCostUsd: 100,
+              durationMs: 0,
+              subagentCostUsd: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+              tokensCacheRead: 0,
+              tokensCacheCreation: 0,
+              toolBreakdown: {},
+            },
+          ];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?window=today' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(receivedSince).toBeInstanceOf(Date);
+    const sinceAgeMs = Date.now() - (receivedSince as Date).getTime();
+    expect(sinceAgeMs).toBeGreaterThanOrEqual(2 * 86_400_000 - 1000);
+    const result = JSON.parse(body());
+    expect(result.windowDays).toBe(1);
+    expect(result.sessionCount).toBe(1);
+    expect(result.totalCostUsd).toBe(2);
+  });
+
+  it('window=today takes precedence over days, which stays unaffected when omitted', async () => {
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: () => [],
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = {
+      method: 'GET',
+      url: '/api/usage-insights?window=today&days=30',
+    } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body()).windowDays).toBe(1);
+  });
+});
+
 describe('api-handler GET /api/alerts/recent', () => {
   it('returns alertLog.readRecent(50) entries as JSON', async () => {
     const fakeEntries = [
@@ -2864,11 +3346,11 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
 
   it('does not add its own live today-portion when the live session id is an unscoped aggregator (--local/proxy)', async () => {
     // A `--local` process's SubagentWatcher runs unscoped (parentSessionId:
-    // undefined) — if NR_AI_WATCHER_MODE=local is set, its own live
-    // CostTracker may hold cost that belongs to OTHER, already-separately-
-    // persisted sessions. Adding it on top of the (empty, here) persisted-
-    // sessions sum would double-count. Session id prefix 'local-' signals
-    // this process is such an unscoped aggregator, not a single real session.
+    // undefined) by default, so its own live CostTracker may hold cost that
+    // belongs to OTHER, already-separately-persisted sessions. Adding it on
+    // top of the (empty, here) persisted-sessions sum would double-count.
+    // Session id prefix 'local-' signals this process is such an unscoped
+    // aggregator, not a single real session.
     const handler = createApiHandler({
       localStore: { peekAllBuffers: () => [] },
       sessionStore: {
@@ -3533,6 +4015,175 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.totalCostUsd).toBeCloseTo(9, 3);
     expect(parsed.forecastEndOfDayUsd).not.toBeNull();
     expect(parsed.forecastEndOfDayUsd as number).toBeGreaterThanOrEqual(parsed.totalCostUsd);
+  });
+
+  type SessionStatusPayload = {
+    sessionStatus: {
+      counts: Record<string, number>;
+      sessionIds: Record<string, readonly string[]>;
+    };
+  };
+
+  it('marks a live session needing input when its last tool call is AskUserQuestion', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: {
+        peekAllBuffers: () => [
+          {
+            mode: 'post',
+            sessionId: 'needs-input-1',
+            timestamp: startMs + 10_000,
+            tool: 'AskUserQuestion',
+          },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => ['needs-input-1'],
+        getSessionName: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.counts.needs_input).toBe(1);
+    expect(parsed.sessionStatus.sessionIds.needs_input).toEqual(['needs-input-1']);
+    expect(parsed.sessionStatus.counts.working).toBe(0);
+  });
+
+  it('marks a completed session with an unmerged PR create as ready_for_review', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'pr-session-1',
+            timeline: [
+              {
+                timestamp: startMs + 10_000,
+                durationMs: 500,
+                toolName: 'Bash',
+                success: true,
+                command: 'gh pr create --fill',
+              },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.counts.ready_for_review).toBe(1);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['pr-session-1']);
+  });
+
+  it('marks a live session with ordinary tool calls as working', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'working-1', timestamp: startMs + 10_000, tool: 'Read' },
+        ],
+      },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => ['working-1'],
+        getSessionName: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.counts.working).toBe(1);
+    expect(parsed.sessionStatus.sessionIds.working).toEqual(['working-1']);
+  });
+
+  it('marks a completed session with no PR activity as completed', async () => {
+    const now = Date.now();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const startMs = startOfDay.getTime();
+
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [
+          {
+            sessionId: 'plain-1',
+            timeline: [
+              { timestamp: startMs + 10_000, durationMs: 50, toolName: 'Read', success: true },
+            ],
+          },
+        ],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.counts.completed).toBe(1);
+    expect(parsed.sessionStatus.sessionIds.completed).toEqual(['plain-1']);
+  });
+
+  it('reports every status key, zero and empty, when no sessions are seen today', async () => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body()) as SessionStatusPayload;
+    expect(parsed.sessionStatus.counts).toEqual({
+      needs_input: 0,
+      ready_for_review: 0,
+      working: 0,
+      completed: 0,
+    });
+    expect(parsed.sessionStatus.sessionIds).toEqual({
+      needs_input: [],
+      ready_for_review: [],
+      working: [],
+      completed: [],
+    });
   });
 });
 
@@ -5573,6 +6224,9 @@ describe('api-handler GET /api/tool-selection-score', () => {
     expect(parsed.totalCalls).toBe(3);
     expect(parsed.redundantReadCount).toBe(1);
     expect(parsed.penalizedCalls).toBe(1);
+    // 3 calls is below the 15-call reference session size, so normalization
+    // is a no-op here (it only dilutes penalties in sessions ABOVE the
+    // reference size — see tool-selection-scorer.ts's normalizePenalty()).
     expect(parsed.score).toBe(0.97); // 1 - (1 * DEFAULT_REDUNDANT_READ_PENALTY of 0.03)
   });
 
@@ -5684,7 +6338,8 @@ describe('api-handler GET /api/tool-selection-score', () => {
     const parsed = JSON.parse(body());
     // Combining {score:1, totalCalls:0, ...} (live, empty) with the persisted
     // summary above: repeatedFailureCount=3 * DEFAULT_REPEATED_FAILURE_PENALTY
-    // of 0.08 = 0.24 raw penalty -> score = 1 - 0.24 = 0.76.
+    // of 0.08 = 0.24 raw penalty. 5 calls is below the 15-call reference
+    // session size, so normalization is a no-op -> score = 1 - 0.24 = 0.76.
     expect(parsed.totalCalls).toBe(5);
     expect(parsed.penalizedCalls).toBe(3);
     expect(parsed.repeatedFailureCount).toBe(3);
@@ -6044,6 +6699,75 @@ describe('api-handler GET /api/git-efficiency', () => {
     const gitRecord = reportArgs[0].historical!.find((r) => r.kind === 'git');
     expect(gitRecord).toBeDefined();
     expect(gitRecord!.recordId.startsWith('replay:hist-1:0')).toBe(true);
+  });
+
+  it('reuses the cached replay of a completed session across requests instead of re-replaying its timeline', async () => {
+    // sessionStore.loadAllSessions() re-reads and re-parses from disk on every
+    // call in production, so the returned session object is a different
+    // reference each time — this stub mimics that by returning a fresh
+    // object literal per call, with a timeline that would change the replay
+    // result if it were ever actually re-replayed. Since a real completed
+    // session's file never changes underneath it, seeing the SECOND
+    // request's timeline reflected here would prove the cache isn't
+    // being consulted.
+    let calls = 0;
+    const reportArgs: Parameters<
+      NonNullable<Parameters<typeof createApiHandler>[0]['gitWorkspaceReporter']>['report']
+    >[0][] = [];
+    const handler = createApiHandler({
+      gitWorkspaceReporter: {
+        report: (input) => {
+          reportArgs.push(input);
+          return {
+            scope: { kind: 'all' },
+            metrics: {} as GitWorkspaceReport['metrics'],
+            rows: [],
+            worstBehind: null,
+            since: Date.now() - 7 * 86_400_000,
+            until: Date.now(),
+          };
+        },
+        knownWorkspaces: () => new Map(),
+      },
+      sessionStore: {
+        loadAllSessions: () => {
+          calls += 1;
+          return [
+            {
+              sessionId: 'hist-completed',
+              outcome: 'completed',
+              timeline: [
+                {
+                  timestamp: Date.now() - 3_600_000,
+                  toolName: 'Bash',
+                  durationMs: 50,
+                  success: true,
+                  command: calls === 1 ? 'git commit -m "first"' : 'git commit -m "second"',
+                  cwd: '/tmp/not-a-real-repo-xyz',
+                },
+              ],
+            },
+          ];
+        },
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/git-efficiency?window=week' } as IncomingMessage;
+
+    await handler(req, fakeRes().res);
+    await handler(req, fakeRes().res);
+
+    expect(calls).toBe(2);
+    expect(reportArgs).toHaveLength(2);
+    // Deep-equal, not just recordId — the second request's stub timeline
+    // says "second" instead of "first"; if that leaked through, this would
+    // catch it via the classified event's own `command` field even though
+    // recordId is derived only from sessionId+index and wouldn't move.
+    expect(reportArgs[1].historical).toEqual(reportArgs[0].historical);
+    const gitRecord = reportArgs[0].historical!.find((r) => r.kind === 'git');
+    expect(gitRecord?.kind === 'git' && gitRecord.gitEvent.command).toBe('git commit -m "first"');
   });
 });
 

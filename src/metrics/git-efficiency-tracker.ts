@@ -1,7 +1,12 @@
 import type { MetricAggregator } from '../shared/index.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { stripHeredocBodies } from './local-session-aggregator.js';
-import { classifyGitCommand, type GitEvent } from './git-event-classifier.js';
+import {
+  classifyGitSegments,
+  processGhCommand,
+  splitShellSegments,
+  type GitEvent,
+} from './git-event-classifier.js';
 import { RepoNameResolver } from './local-session-aggregator.js';
 
 /**
@@ -30,18 +35,6 @@ const GIT_PULL_RE = /\bgit\s+pull\b/;
 
 // Conflict file path extraction: "CONFLICT (content): Merge conflict in <path>"
 const CONFLICT_FILE_RE = /Merge conflict in (.+)/g;
-
-// GitHub CLI patterns (used by processGhCommand)
-const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
-const GH_PR_MERGE_RE = /\bgh\s+pr\s+merge\b/;
-const GH_PR_VIEW_RE = /\bgh\s+pr\s+view\b/;
-const GH_PR_EDIT_RE = /\bgh\s+pr\s+edit\b/;
-const GH_PR_READY_RE = /\bgh\s+pr\s+ready\b/;
-const GH_PR_CHECKS_RE = /\bgh\s+pr\s+checks\b/;
-const GH_COMMAND_RE = /\bgh\s+/;
-
-// Extract PR number from gh commands
-const GH_PR_NUMBER_RE = /\bgh\s+pr\s+\w+\s+(\d+)/;
 
 /**
  * GitHub MCP server tool names confirmed via live-account NRQL evidence
@@ -341,31 +334,27 @@ export class GitEfficiencyTracker {
 
     // Track GitHub CLI PR commands. Split on shell separators first so a
     // `gh` invocation chained after a `git` command (e.g. `git push && gh pr
-    // create --fill`) is still detected — checking the git-prefix guard
-    // against the whole compound string would skip it even though only the
-    // first segment is a `git` command. Each segment still skips the case
-    // where "gh" is just text inside a git argument, e.g. `git commit -m "gh
-    // pr create note"`.
-    for (const segment of command.split(/&&|;|\|/)) {
-      const trimmedSegment = segment.trim();
-      if (GH_COMMAND_RE.test(trimmedSegment) && !trimmedSegment.startsWith('git ')) {
-        this.processGhCommand(trimmedSegment, record.timestamp);
-      }
+    // create --fill`) is still detected. `processGhCommand`'s own anchoring
+    // is what skips "gh" text inside a git argument, e.g. `git commit -m "gh
+    // pr create note"` — that segment doesn't START with `gh pr ...`.
+    for (const segment of splitShellSegments(command)) {
+      const prEvent = processGhCommand(segment.trim(), record.timestamp);
+      if (!prEvent) continue;
+      // A failed `gh pr create` made no PR — see git-activity-recorder.ts's
+      // matching gate for the full rationale.
+      if (prEvent.action === 'create' && record.success === false) continue;
+      this.prEvents.push(prEvent);
     }
 
-    if (!/\bgit\s+/.test(command)) return;
-
-    const event = classifyGitCommand(command, record, (dir) => this.repoResolver.resolve(dir));
-    // A hook-observed commit whose timestamp `hydrateGitLog()` already saw
-    // (via `git log`) is the same commit, not a new one — hydrateGitLog()
-    // can't dedupe this itself since a live event's `command` is the raw
-    // shell string, not `git commit (<hash>)`, so it never matches its own
-    // hash-based check. Without this, a day-boundary hydration followed by
-    // this same commit's hook event arriving from the same drain batch
-    // would count it twice.
-    if (event.type === 'commit' && event.timestamp <= this.hydratedThroughMs) return;
-    this.events.push(event);
-    this.processEvent(event, command, record);
+    const resolveRepo = (dir: string | null): string | null => this.repoResolver.resolve(dir);
+    for (const { segment, event } of classifyGitSegments(command, record, resolveRepo)) {
+      // A hook-observed commit whose timestamp `hydrateGitLog()` already saw
+      // is the same commit; a live event's `command` is the raw shell string,
+      // not `git commit (<hash>)`, so the hash-based dedup can't catch it.
+      if (event.type === 'commit' && event.timestamp <= this.hydratedThroughMs) continue;
+      this.events.push(event);
+      this.processEvent(event, segment, record);
+    }
   }
 
   hydrateBranchDivergence(ahead: number, behind: number): void {
@@ -375,25 +364,6 @@ export class GitEfficiencyTracker {
 
   hydrateRepoContext(ctx: RepoContext): void {
     this.repoContext = ctx;
-  }
-
-  private processGhCommand(command: string, timestamp: number): void {
-    const numberMatch = GH_PR_NUMBER_RE.exec(command);
-    const prNumber = numberMatch ? numberMatch[1] : null;
-
-    if (GH_PR_CREATE_RE.test(command)) {
-      this.prEvents.push({ timestamp, action: 'create', prNumber });
-    } else if (GH_PR_MERGE_RE.test(command)) {
-      this.prEvents.push({ timestamp, action: 'merge', prNumber });
-    } else if (GH_PR_CHECKS_RE.test(command)) {
-      this.prEvents.push({ timestamp, action: 'checks', prNumber });
-    } else if (GH_PR_READY_RE.test(command)) {
-      this.prEvents.push({ timestamp, action: 'ready', prNumber });
-    } else if (GH_PR_EDIT_RE.test(command)) {
-      this.prEvents.push({ timestamp, action: 'edit', prNumber });
-    } else if (GH_PR_VIEW_RE.test(command)) {
-      this.prEvents.push({ timestamp, action: 'view', prNumber });
-    }
   }
 
   private computePrMetrics(): PullRequestMetrics {

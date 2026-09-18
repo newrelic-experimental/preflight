@@ -2,7 +2,7 @@ name: newrelic-preflight
 description: >-
   AI coding observability for Claude Code. Tracks tool calls, cost,
   anti-patterns, and efficiency metrics — and ships them to New Relic.
-  Works across Claude Code, Cursor, Windsurf, and 6 other platforms.
+  Works across Claude Code, Cursor, Windsurf, Codex, Copilot, and more.
 
 startCommand:
   type: stdio

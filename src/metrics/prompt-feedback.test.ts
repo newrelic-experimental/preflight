@@ -47,6 +47,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -123,6 +124,7 @@ describe('PromptFeedbackEngine', () => {
           sessionId: `with-fp-${i}`,
           toolCallCount: 20,
           toolBreakdown: { Read: 2, Edit: 10, Bash: 8 },
+          skillBreakdown: {},
           filesModified: ['/src/index.ts'],
           efficiencyScore: 0.85,
         }),
@@ -137,6 +139,7 @@ describe('PromptFeedbackEngine', () => {
           sessionId: `without-fp-${i}`,
           toolCallCount: 20,
           toolBreakdown: { Read: 15, Edit: 3, Bash: 2 },
+          skillBreakdown: {},
           filesModified: ['/src/index.ts'],
           efficiencyScore: 0.55,
         }),
@@ -157,7 +160,7 @@ describe('PromptFeedbackEngine', () => {
   // 2. Cohen's d — significant
   // -------------------------------------------------------------------------
 
-  it('compareClaudeMdVersions labels large effect size as significant', () => {
+  it('compareClaudeMdVersions labels large effect size as large', () => {
     const { engine } = createEngine();
     const changeTimestamp = Date.now();
 
@@ -188,14 +191,14 @@ describe('PromptFeedbackEngine', () => {
     const effSize = comparison.effectSizes.find((e) => e.metric === 'efficiency');
     expect(effSize).toBeDefined();
     expect(effSize!.cohensD).toBeGreaterThan(0.5);
-    expect(effSize!.label).toBe('significant');
+    expect(effSize!.label).toBe('large');
   });
 
   // -------------------------------------------------------------------------
-  // 3. Cohen's d — noise
+  // 3. Cohen's d — negligible
   // -------------------------------------------------------------------------
 
-  it('compareClaudeMdVersions labels small effect size as noise', () => {
+  it('compareClaudeMdVersions labels small effect size as negligible', () => {
     const { engine } = createEngine();
     const changeTimestamp = Date.now();
 
@@ -228,14 +231,14 @@ describe('PromptFeedbackEngine', () => {
     const effSize = comparison.effectSizes.find((e) => e.metric === 'efficiency');
     expect(effSize).toBeDefined();
     expect(Math.abs(effSize!.cohensD)).toBeLessThan(0.2);
-    expect(effSize!.label).toBe('noise');
+    expect(effSize!.label).toBe('negligible');
   });
 
   // -------------------------------------------------------------------------
   // 4. Zero-variance Cohen's d (pooled SD = 0)
   // -------------------------------------------------------------------------
 
-  it('compareClaudeMdVersions labels zero-variance groups as noise (not Infinity)', () => {
+  it('compareClaudeMdVersions labels zero-variance groups as negligible (not Infinity)', () => {
     const { engine } = createEngine();
     const changeTimestamp = Date.now();
 
@@ -265,14 +268,14 @@ describe('PromptFeedbackEngine', () => {
     expect(effSize).toBeDefined();
     expect(Number.isFinite(effSize!.cohensD)).toBe(true);
     expect(effSize!.cohensD).toBe(0);
-    expect(effSize!.label).toBe('noise');
+    expect(effSize!.label).toBe('negligible');
   });
 
   // -------------------------------------------------------------------------
   // 5. Empty effectSizes — no sessions before or after change
   // -------------------------------------------------------------------------
 
-  it('compareClaudeMdVersions returns overallLabel "noise" when no sessions exist around the change', () => {
+  it('compareClaudeMdVersions returns overallLabel "insufficient_data" when no sessions exist around the change', () => {
     const { engine } = createEngine();
 
     // Place the change in the distant past so no stored sessions fall in the window
@@ -280,9 +283,45 @@ describe('PromptFeedbackEngine', () => {
 
     const comparison = engine.compareClaudeMdVersions(changeTimestamp, 1);
 
-    // All metrics lack data — each gets pushed as 'noise' — majority vote must not
-    // fire the 0>=0 branch and incorrectly return 'significant'
-    expect(comparison.overallLabel).toBe('noise');
+    // All metrics lack data — each gets pushed as 'insufficient_data' —
+    // majority vote must not fire the 0>=0 branch and incorrectly return 'large'
+    expect(comparison.overallLabel).toBe('insufficient_data');
+    expect(comparison.effectSizes.every((e) => e.label === 'insufficient_data')).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // 5b. Real minimum-sample gate, distinct from the div-by-zero guard
+  // -------------------------------------------------------------------------
+
+  it('labels a comparison insufficient_data when a group has fewer than MIN_SAMPLES_PER_GROUP sessions, even with real variance', () => {
+    const { engine } = createEngine();
+    const changeTimestamp = Date.now();
+
+    // Only 2 sessions before the change — below the minimum-sample gate —
+    // even though the effect looks huge on paper.
+    for (let i = 0; i < 2; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `before-${i}`,
+          startTime: changeTimestamp - 86_400_000 * (i + 1),
+          efficiencyScore: 0.5,
+        }),
+      );
+    }
+    for (let i = 0; i < 5; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `after-${i}`,
+          startTime: changeTimestamp + 86_400_000 * (i + 1),
+          efficiencyScore: 0.9,
+        }),
+      );
+    }
+
+    const comparison = engine.compareClaudeMdVersions(changeTimestamp);
+
+    const effSize = comparison.effectSizes.find((e) => e.metric === 'efficiency');
+    expect(effSize?.label).toBe('insufficient_data');
   });
 
   // -------------------------------------------------------------------------

@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createLogger } from '../shared/index.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
@@ -130,6 +131,7 @@ export interface SubagentTurnEvent {
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 /** Wire-shape data extracted from a `mode: 'observability_health'` entry. */
@@ -203,10 +205,100 @@ export interface ModelSwitchFrame {
 export interface BoundaryFrame {
   readonly timestamp: number;
   readonly sessionId: string | null;
+  readonly slashCommand?: string;
 }
 
 function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+/**
+ * The attribution fields every record shape carries. Pre wins over post for
+ * `cwd`, `agentId`, `agentType`, and `platform`: the collector stamps both,
+ * and pre is the event that observed the call start.
+ */
+function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
+  const cwd = pre?.cwd ?? post?.cwd;
+  const agentId = pre?.agentId ?? post?.agentId;
+  const agentType = pre?.agentType ?? post?.agentType;
+  const platform = pre?.platform ?? post?.platform;
+  return {
+    ...(pre?.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
+    ...(pre?.inputHash !== undefined && { inputHash: pre.inputHash }),
+    ...(pre?.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
+    ...(pre?.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
+    ...(cwd !== undefined && { cwd }),
+    ...(agentId !== undefined && { agentId }),
+    ...(agentType !== undefined && { agentType }),
+    ...(platform !== undefined && { platform }),
+  };
+}
+
+/** What the post event says about how the call ended. */
+function outcomeFields(post: PostHookEvent) {
+  return {
+    success: post.success ?? true,
+    ...(post.isInterrupt === true && { errorType: 'interrupted' }),
+    ...(post.error !== undefined && { error: post.error }),
+    ...(post.outputSize !== undefined && { outputSizeBytes: post.outputSize }),
+  };
+}
+
+// Matches the synthetic tool_result Claude Code writes into the transcript
+// when a PreToolUse hook exits 2 (e.g. "PreToolUse:Bash hook error: [...]:
+// <stderr>"), captured empirically — code.claude.com/docs/en/hooks does not
+// document this transcript shape, so this is a best-effort signal that may
+// need updating if Claude Code changes the message format.
+const HOOK_BLOCK_MESSAGE_RE = /^PreToolUse:\S+ hook error:/;
+
+/**
+ * A blocked PreToolUse hook (exit code 2, or a JSON deny decision) leaves no
+ * hook event of its own — every configured PreToolUse hook runs to
+ * completion regardless of another hook's decision, so Preflight's own hook
+ * still fires and records the pre event normally. The only place the block
+ * is visible is the transcript: Claude Code appends a synthetic tool_result
+ * for the original tool_use_id, `is_error: true`, whose content starts with
+ * "PreToolUse:<Tool> hook error:". Reads the transcript fresh on every call
+ * (only reached for already-orphaned entries, not the hot path) rather than
+ * maintaining cursor state — see ParentTranscriptWatcher for the tailing
+ * approach used on the hot path instead.
+ */
+function wasBlockedByPreToolUseHook(
+  transcriptPath: string | undefined,
+  toolUseId: string,
+): boolean {
+  if (!transcriptPath) return false;
+  let raw: string;
+  try {
+    raw = readFileSync(transcriptPath, 'utf-8');
+  } catch {
+    return false;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line.includes(toolUseId)) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const content = (parsed as { message?: { content?: unknown } }).message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as unknown[]) {
+      if (typeof block !== 'object' || block === null) continue;
+      const b = block as Record<string, unknown>;
+      if (
+        b.type === 'tool_result' &&
+        b.tool_use_id === toolUseId &&
+        b.is_error === true &&
+        typeof b.content === 'string' &&
+        HOOK_BLOCK_MESSAGE_RE.test(b.content)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -625,12 +717,7 @@ export class HookEventProcessor {
       success: false,
       errorType: 'denied',
       ...(event.deniedReason !== undefined && { error: event.deniedReason }),
-      ...(pre.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
-      ...(pre.inputHash !== undefined && { inputHash: pre.inputHash }),
-      ...(pre.cwd !== undefined && { cwd: pre.cwd }),
-      ...(pre.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
-      ...(pre.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
-      ...(pre.platform !== undefined && { platform: pre.platform }),
+      ...attributionFields(pre),
       ...toolFields,
     });
   }
@@ -667,28 +754,8 @@ export class HookEventProcessor {
         permissionWaitMs: hasNativeDuration
           ? Math.max(0, wallClockMs - (event.nativeDurationMs as number))
           : null,
-        success: event.success ?? true,
-        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
-        ...(event.error !== undefined && { error: event.error }),
-        ...(preEvent.inputSize !== undefined && { inputSizeBytes: preEvent.inputSize }),
-        ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
-        ...(preEvent.inputHash !== undefined && { inputHash: preEvent.inputHash }),
-        ...(preEvent.cwd !== undefined && { cwd: preEvent.cwd }),
-        ...(preEvent.transcriptPath !== undefined && {
-          transcriptPath: preEvent.transcriptPath,
-        }),
-        ...(preEvent.permissionMode !== undefined && {
-          permissionMode: preEvent.permissionMode,
-        }),
-        ...((preEvent.agentId ?? event.agentId) !== undefined && {
-          agentId: preEvent.agentId ?? event.agentId,
-        }),
-        ...((preEvent.agentType ?? event.agentType) !== undefined && {
-          agentType: preEvent.agentType ?? event.agentType,
-        }),
-        ...((preEvent.platform ?? event.platform) !== undefined && {
-          platform: preEvent.platform ?? event.platform,
-        }),
+        ...outcomeFields(event),
+        ...attributionFields(preEvent, event),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -709,13 +776,8 @@ export class HookEventProcessor {
           typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
             ? event.nativeDurationMs
             : null,
-        success: event.success ?? true,
-        ...(event.isInterrupt === true && { errorType: 'interrupted' }),
-        ...(event.error !== undefined && { error: event.error }),
-        ...(event.outputSize !== undefined && { outputSizeBytes: event.outputSize }),
-        ...(event.agentId !== undefined && { agentId: event.agentId }),
-        ...(event.agentType !== undefined && { agentType: event.agentType }),
-        ...(event.platform !== undefined && { platform: event.platform }),
+        ...outcomeFields(event),
+        ...attributionFields(undefined, event),
         ...toolFields,
       };
       this.emitRecord(record);
@@ -749,6 +811,7 @@ export class HookEventProcessor {
           : 0,
       model: event.model ?? 'unknown',
       sessionId: event.sessionId,
+      ...(event.responseMs !== undefined && { responseMs: event.responseMs }),
     };
     try {
       this.onTokenEvent(tokenEvent);
@@ -774,24 +837,32 @@ export class HookEventProcessor {
    * Emit the record for a pending pre that will never pair: a swept orphan,
    * a capacity eviction, or a shutdown flush. The phase decides the
    * classification — a permission-requested entry expired because the user
-   * never approved ('rejected'); a bare entry expired because the tool never
-   * reported back ('timeout').
+   * never approved ('rejected'); a bare entry expired either because a
+   * PreToolUse hook (e.g. a worktree-isolation guard) blocked it — visible
+   * only in the transcript, since Claude Code fires no hook event for this
+   * case ('hook_blocked') — or because the tool genuinely never reported
+   * back ('timeout').
    */
   private emitUnpairedPreRecord(key: string, entry: PendingEntry): void {
     const event = entry.event;
     const toolFields = parseToolSpecificFields(event.tool, event.toolInput, undefined);
+    const toolUseId = event.toolUseId ?? key;
+    const errorType =
+      entry.phase === 'permission_requested'
+        ? 'rejected'
+        : wasBlockedByPreToolUseHook(event.transcriptPath, toolUseId)
+          ? 'hook_blocked'
+          : 'timeout';
     this.emitRecord({
       id: randomUUID(),
       sessionId: event.sessionId ?? null,
       toolName: event.tool,
-      toolUseId: event.toolUseId ?? key,
+      toolUseId,
       timestamp: event.timestamp,
       durationMs: null,
       success: false,
-      errorType: entry.phase === 'permission_requested' ? 'rejected' : 'timeout',
-      ...(event.inputSize !== undefined && { inputSizeBytes: event.inputSize }),
-      ...(event.inputHash !== undefined && { inputHash: event.inputHash }),
-      ...(event.platform !== undefined && { platform: event.platform }),
+      errorType,
+      ...attributionFields(event),
       ...toolFields,
     });
   }
@@ -874,6 +945,7 @@ export class HookEventProcessor {
       reasoningTokens: numAttr(event.reasoningTokens),
       stopReason: event.stopReason ?? null,
       schemaFingerprint: event.schemaFingerprint ?? '',
+      toolUseIds: event.toolUseIds ?? [],
     };
     if (this.onSubagentTurn) {
       try {
@@ -1063,12 +1135,14 @@ export class HookEventProcessor {
     callbackName: string,
   ): void {
     if (!callback) return;
+    const slashCommand = event.mode === 'user_prompt_submit' ? event.slashCommand : undefined;
     const frame: BoundaryFrame = {
       timestamp:
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
           ? event.timestamp
           : Date.now(),
       sessionId: event.sessionId ?? null,
+      ...(slashCommand !== undefined ? { slashCommand } : {}),
     };
     try {
       callback(frame);

@@ -404,6 +404,90 @@ describe('ParentTranscriptWatcher', () => {
     expect(readTokenEvents()).toHaveLength(1);
   });
 
+  describe('responseMs (API duration)', () => {
+    function makeUserLine(opts: { timestamp: string }): string {
+      return JSON.stringify({
+        type: 'user',
+        uuid: 'user-uuid-1',
+        timestamp: opts.timestamp,
+        message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      });
+    }
+
+    it('sets responseMs from the gap between the previous raw line and the assistant line', () => {
+      const lines =
+        makeUserLine({ timestamp: '2026-06-15T12:00:00.000Z' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_1', timestamp: '2026-06-15T12:00:04.000Z' }) +
+        '\n';
+      writeFileSync(transcriptPath, lines);
+      const watcher = new ParentTranscriptWatcher({
+        storagePath,
+        projectsDir,
+        parentSessionId: SESSION_ID,
+      });
+      watcher.poll();
+      const events = readTokenEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.responseMs).toBe(4_000);
+    });
+
+    it('omits responseMs on the second line of the same message', () => {
+      const lines =
+        makeUserLine({ timestamp: '2026-06-15T12:00:00.000Z' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_1', timestamp: '2026-06-15T12:00:04.000Z' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_1', timestamp: '2026-06-15T12:00:05.000Z' }) +
+        '\n';
+      writeFileSync(transcriptPath, lines);
+      const watcher = new ParentTranscriptWatcher({
+        storagePath,
+        projectsDir,
+        parentSessionId: SESSION_ID,
+      });
+      watcher.poll();
+      const events = readTokenEvents();
+      expect(events).toHaveLength(2);
+      expect(events[0]!.responseMs).toBe(4_000);
+      expect(events[1]!.responseMs).toBeUndefined();
+    });
+
+    it('omits responseMs when the gap exceeds 30 minutes', () => {
+      const lines =
+        makeUserLine({ timestamp: '2026-06-15T12:00:00.000Z' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_1', timestamp: '2026-06-15T12:31:00.000Z' }) +
+        '\n';
+      writeFileSync(transcriptPath, lines);
+      const watcher = new ParentTranscriptWatcher({
+        storagePath,
+        projectsDir,
+        parentSessionId: SESSION_ID,
+      });
+      watcher.poll();
+      const events = readTokenEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.responseMs).toBeUndefined();
+    });
+
+    it('omits responseMs when there is no previous line', () => {
+      writeFileSync(
+        transcriptPath,
+        makeAssistantLine({ messageId: 'msg_1', timestamp: '2026-06-15T12:00:00.000Z' }) + '\n',
+      );
+      const watcher = new ParentTranscriptWatcher({
+        storagePath,
+        projectsDir,
+        parentSessionId: SESSION_ID,
+      });
+      watcher.poll();
+      const events = readTokenEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.responseMs).toBeUndefined();
+    });
+  });
+
   describe('unfiltered discovery (--local mode, no parentSessionId)', () => {
     it('discovers every session transcript when no parentSessionId filter is set', () => {
       writeFileSync(transcriptPath, makeAssistantLine({ messageId: 'msg_1' }) + '\n');

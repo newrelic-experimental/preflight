@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import { createLogger } from './shared/index.js';
@@ -517,10 +517,12 @@ function validateRulesPath(rawPath: string, storagePath: string): string {
   }
   const resolved = resolve(rawPath);
   const storageResolved = resolve(storagePath);
-  // Match prefix only on full path segments to avoid `/foo/bar` matching
-  // `/foo/barbaz`.
-  const prefix = storageResolved.endsWith('/') ? storageResolved : storageResolved + '/';
-  if (resolved !== storageResolved && !resolved.startsWith(prefix)) {
+  // path.relative() + isAbsolute() is separator-agnostic (see static-handler.ts,
+  // fixed for the same bug class) — a hand-rolled prefix check hardcodes
+  // '/' and silently fails every containment check on Windows, where resolve()
+  // returns backslash-separated paths.
+  const rel = relative(storageResolved, resolved);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
     logger.warn('alerts.rulesPath resolves outside storagePath — falling back to default', {
       rawPath,
       resolved,

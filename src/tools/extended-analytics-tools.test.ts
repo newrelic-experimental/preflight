@@ -8,6 +8,7 @@ import { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
+import type { CostTracker } from '../metrics/cost-tracker.js';
 import {
   handleGetRetryAlerts,
   handleGetContextComposition,
@@ -230,5 +231,66 @@ describe('handleGetComputeWaste', () => {
     const data = JSON.parse(result.content[0].text) as Record<string, unknown>;
     expect(data.total_tokens_wasted).toBe(0);
     expect((data.breakdown as unknown[]).length).toBe(0);
+  });
+
+  function makeCostTracker(totalSessionTokens: number): CostTracker {
+    return {
+      getMetrics: () => ({
+        totalInputTokens: totalSessionTokens,
+        totalOutputTokens: 0,
+        totalThinkingTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+      }),
+    } as unknown as CostTracker;
+  }
+
+  it('is clean for 2,000 wasted tokens in a large session, unlike the old absolute threshold', () => {
+    const retryDetector = {
+      getMetrics: () => ({ totalTokensWasted: 2000, alerts: [], totalAlertsEmitted: 0 }),
+    } as unknown as RetryDetector;
+    const antiPatternDetector = {
+      getTotalAntiPatternWaste: () => 0,
+      getCurrentPatterns: () => [],
+    } as unknown as AntiPatternDetector;
+    const result = handleGetComputeWaste(
+      retryDetector,
+      antiPatternDetector,
+      makeCostTracker(1_000_000),
+    );
+    const data = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(data.status).toBe('clean');
+    expect(data.waste_ratio).toBeCloseTo(0.002, 5);
+  });
+
+  it('is needs_attention when waste is a large fraction of session tokens', () => {
+    const retryDetector = {
+      getMetrics: () => ({ totalTokensWasted: 6000, alerts: [], totalAlertsEmitted: 0 }),
+    } as unknown as RetryDetector;
+    const antiPatternDetector = {
+      getTotalAntiPatternWaste: () => 0,
+      getCurrentPatterns: () => [],
+    } as unknown as AntiPatternDetector;
+    const result = handleGetComputeWaste(
+      retryDetector,
+      antiPatternDetector,
+      makeCostTracker(100_000),
+    );
+    const data = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(data.status).toBe('needs_attention');
+  });
+
+  it('falls back to absolute thresholds when no CostTracker is available', () => {
+    const retryDetector = {
+      getMetrics: () => ({ totalTokensWasted: 2000, alerts: [], totalAlertsEmitted: 0 }),
+    } as unknown as RetryDetector;
+    const antiPatternDetector = {
+      getTotalAntiPatternWaste: () => 0,
+      getCurrentPatterns: () => [],
+    } as unknown as AntiPatternDetector;
+    const result = handleGetComputeWaste(retryDetector, antiPatternDetector);
+    const data = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(data.status).toBe('needs_attention');
+    expect(data.waste_ratio).toBeNull();
   });
 });

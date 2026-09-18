@@ -97,6 +97,23 @@ describe('SubagentTimelineStore', () => {
     expect(result.window.endMs).toBe(agent.endMs);
   });
 
+  it('includes a named-subagent transcript (Agent tool `name` param spawn shape)', () => {
+    // Claude Code writes `agent-a<name>-<16-hex>.jsonl` for a subagent spawned
+    // with an explicit `name` param — distinct from the plain `a<16-hex>` shape
+    // used by anonymous Task spawns (AGENT_A/AGENT_B/WF_AGENT above).
+    const namedAgentId = 'aconfluence-istio-investigator-ca0143b626a86424';
+    writeFileSync(
+      join(subDir, `agent-${namedAgentId}.jsonl`),
+      assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 10, output: 5 }) + '\n',
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const result = store.getSubagentsForSession(SESSION);
+
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]!.agentId).toBe(namedAgentId);
+  });
+
   it('dedups streaming-duplicate lines sharing one message.id (counts the turn once)', () => {
     // Claude Code logs one JSONL line per streaming snapshot of a single
     // assistant turn — same message.id, byte-identical per-prompt usage
@@ -253,6 +270,52 @@ describe('SubagentTimelineStore', () => {
     expect(result.agents).toHaveLength(1);
     expect(result.agents[0]!.turnCount).toBe(2);
     expect(result.agents[0]!.totalTokens).toBe(10 + 5 + 20 + 5);
+  });
+
+  it('rejects a line with no timestamp field (no Date.now() fallback, unlike SubagentWatcher)', () => {
+    const lineWithNoTimestamp = JSON.stringify({
+      type: 'assistant',
+      uuid: 'u-no-ts',
+      message: {
+        id: 'msg-no-ts',
+        model: KNOWN_MODEL,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    writeFileSync(
+      join(subDir, `agent-${AGENT_A}.jsonl`),
+      [
+        assistantLine({ timestamp: '2026-06-16T12:00:00.000Z', input: 20, output: 5 }),
+        lineWithNoTimestamp,
+      ].join('\n') + '\n',
+    );
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const result = store.getSubagentsForSession(SESSION);
+    expect(result.agents).toHaveLength(1);
+    // Only the line WITH a timestamp counts; the other is silently rejected.
+    expect(result.agents[0]!.turnCount).toBe(1);
+    expect(result.agents[0]!.totalTokens).toBe(20 + 5);
+  });
+
+  it('accepts a line with no model field, defaulting to "" (unlike SubagentWatcher, which rejects)', () => {
+    const lineWithNoModel = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-06-16T12:00:00.000Z',
+      uuid: 'u-no-model',
+      message: {
+        id: 'msg-no-model',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    writeFileSync(join(subDir, `agent-${AGENT_A}.jsonl`), lineWithNoModel + '\n');
+
+    const store = new SubagentTimelineStore({ projectsDir });
+    const result = store.getSubagentsForSession(SESSION);
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]!.turnCount).toBe(1);
+    expect(result.agents[0]!.model).toBe('');
+    expect(result.agents[0]!.totalTokens).toBe(10 + 5);
   });
 
   it('skips files larger than the 64 MiB cap', () => {

@@ -180,19 +180,19 @@ export function ContextBar({
 
   const { data: apiContext } = useQuery<ContextResponse>({
     queryKey: sessionId ? ['context', sessionId] : qk.context,
-    queryFn: () => fetchContext(sessionId ?? undefined),
+    queryFn: ({ signal }) => fetchContext(sessionId ?? undefined, signal),
     refetchInterval: 10_000,
     enabled: !data,
   });
 
   const { data: composition } = useQuery<ContextCompositionResponse>({
     queryKey: ['context-composition', sessionId],
-    queryFn: fetchContextComposition,
+    queryFn: ({ signal }) => fetchContextComposition(signal),
     enabled: showTimeline,
   });
   const { data: efficiency } = useQuery<ContextEfficiencyResponse>({
     queryKey: ['context-efficiency', sessionId],
-    queryFn: fetchContextEfficiency,
+    queryFn: ({ signal }) => fetchContextEfficiency(signal),
     enabled: showTimeline,
   });
 

@@ -2,10 +2,22 @@ import { spawnSync } from 'node:child_process';
 
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { ActivityStore } from './git-activity-store.js';
-import { GitActivityRecorder, type GitActivityRecord } from './git-activity-recorder.js';
-import { WorktreeIdentityResolver, type WorktreeIdentity } from './git-workspace-identity.js';
+import {
+  GIT_LOG_SESSION_ID,
+  GitActivityRecorder,
+  type GitActivityRecord,
+} from './git-activity-recorder.js';
+import {
+  UNATTRIBUTED_WORKSPACE_KEY,
+  UNRESOLVED_REPO_KEY_PREFIX,
+  WorktreeIdentityResolver,
+  isPlaceholderIdentity,
+  type WorktreeIdentity,
+} from './git-workspace-identity.js';
+import type { CollectedCommit } from './local-session-aggregator.js';
 import {
   buildGitWorkspaceReport,
+  reconcileHydratedCommits,
   type GitWorkspaceReport,
   type ScopeRef,
   type WorktreeLiveState,
@@ -124,6 +136,42 @@ export class GitWorkspaceReporter {
   }
 
   /**
+   * Ingest commits collected from `git log` (`collectCommitsAcrossRepos`) —
+   * the only way a commit made outside a hook-observed `git commit` (a
+   * terminal, a heredoc script, a session the watcher never saw) ever
+   * reaches the weekly report. `commit.root` resolves to a workspace
+   * identity exactly like a live tool call's `cwd` does; a root that isn't a
+   * known git worktree (resolves to null) is skipped. The store's own
+   * recordId dedup (keyed on `gitlog:<hash>`) makes calling this repeatedly
+   * with overlapping commit sets a no-op for anything already ingested.
+   */
+  hydrateGitLog(commits: readonly CollectedCommit[]): void {
+    for (const commit of commits) {
+      const identity = this.identityResolver.resolve(commit.root);
+      if (identity === null) continue;
+      this.knownWorkspacesRegistry.set(identity.worktreeKey, identity);
+      this.store.ingest({
+        kind: 'git',
+        sessionId: GIT_LOG_SESSION_ID,
+        timestamp: commit.timestamp,
+        recordId: `gitlog:${commit.hash}`,
+        workspaceKey: identity.worktreeKey,
+        gitEvent: {
+          timestamp: commit.timestamp,
+          type: 'commit',
+          command: `git commit (${commit.hash})`,
+          success: true,
+          durationMs: null,
+          repo: commit.repo,
+          subject: commit.subject,
+          url: commit.url,
+          hash: commit.hash,
+        },
+      });
+    }
+  }
+
+  /**
    * Samples live branch state for a workspace (branch, default branch,
    * ahead/behind), cached with a short TTL per worktreeKey so repeated calls
    * in a short window don't re-shell out. Never runs `git fetch` — this only
@@ -188,9 +236,14 @@ export class GitWorkspaceReporter {
     const dedupedHistorical = (historical ?? []).filter(
       (r) => inWindow(r) && !liveKeys.has(keyOf(r)),
     );
-    const records = [...liveRecords, ...dedupedHistorical];
-
     const identities = new Map([...(historicalIdentities ?? []), ...this.knownWorkspacesRegistry]);
+    adoptResolvedRepoKeys(identities);
+
+    // Merge a hook-observed commit with its `git log`-hydrated counterpart
+    // (same underlying commit, two sources) before anything downstream
+    // counts commits — otherwise a hydrated commit that also has a matching
+    // hook record would be counted twice.
+    const records = reconcileHydratedCommits([...liveRecords, ...dedupedHistorical], identities);
 
     const liveStates = new Map<string, WorktreeLiveState>();
     const workspaceKeys = new Set(records.map((r) => r.workspaceKey));
@@ -296,7 +349,36 @@ export interface ReplayedActivity {
 // Prefix for a synthetic identity representing "this repo, but we don't know
 // which worktree" — the fallback used when a session predates the `cwd`
 // field on ReplayTimelineEntry but still carries a resolved `repoName`.
-const UNKNOWN_WORKTREE_PREFIX = 'unresolved-repo:';
+/**
+ * Rewrites, in place, every "this repo, worktree unknown" placeholder's
+ * `repoKey` to that of a resolved worktree sharing its `repoName`, so the
+ * report groups and scopes it with that repo instead of as a look-alike
+ * second repo. Its `worktreeKey` stays the placeholder key — the activity
+ * still can't be pinned to one worktree. With two resolved clones of the
+ * same remote the lexically smallest `repoKey` wins, purely so the choice is
+ * stable across requests. A placeholder with no resolved sibling is left
+ * alone.
+ */
+function adoptResolvedRepoKeys(identities: Map<string, WorktreeIdentity>): void {
+  const resolvedRepoKeyByName = new Map<string, string>();
+  for (const identity of identities.values()) {
+    if (identity.repoName === null || isPlaceholderIdentity(identity)) continue;
+    const existing = resolvedRepoKeyByName.get(identity.repoName);
+    if (existing === undefined || identity.repoKey < existing) {
+      resolvedRepoKeyByName.set(identity.repoName, identity.repoKey);
+    }
+  }
+  for (const [key, identity] of identities) {
+    if (
+      identity.repoName === null ||
+      !identity.worktreeKey.startsWith(UNRESOLVED_REPO_KEY_PREFIX)
+    ) {
+      continue;
+    }
+    const repoKey = resolvedRepoKeyByName.get(identity.repoName);
+    if (repoKey !== undefined) identities.set(key, { ...identity, repoKey });
+  }
+}
 
 /**
  * Re-classifies a persisted session's timeline into `GitActivityRecord`s,
@@ -313,9 +395,10 @@ const UNKNOWN_WORKTREE_PREFIX = 'unresolved-repo:';
  * identity instead. `repoName` is coarser than a real worktree identity (one
  * remote can't distinguish which of its worktrees a session ran in), so this
  * can't merge into a real worktree's own rollup — it surfaces as its own
- * row, grouped with the real ones by display name rather than by identity
- * key. Still strictly more honest than folding every pre-`cwd` session into
- * one anonymous bucket regardless of which repo it touched.
+ * row, and `GitWorkspaceReporter.report()` later files it under the real
+ * repo (see `adoptResolvedRepoKeys`). Still strictly more honest than
+ * folding every pre-`cwd` session into one anonymous bucket regardless of
+ * which repo it touched.
  *
  * Implementation: build one synthetic `ToolCallRecord` per timeline entry
  * (mirroring `GitEfficiencyTracker.replayTimeline()`'s own pattern) with a
@@ -378,10 +461,10 @@ export function replaySessionToActivityRecords(
     return { records: drained, identities };
   }
 
-  const fallbackKey = UNKNOWN_WORKTREE_PREFIX + session.repoName;
+  const fallbackKey = UNRESOLVED_REPO_KEY_PREFIX + session.repoName;
   let usedFallback = false;
   const records = drained.map((record) => {
-    if (record.workspaceKey !== 'unattributed') return record;
+    if (record.workspaceKey !== UNATTRIBUTED_WORKSPACE_KEY) return record;
     usedFallback = true;
     return { ...record, workspaceKey: fallbackKey };
   });
@@ -397,4 +480,44 @@ export function replaySessionToActivityRecords(
   }
 
   return { records, identities };
+}
+
+/**
+ * Memoizes `replaySessionToActivityRecords` per `sessionId`, for `'completed'`
+ * sessions only. A completed session's file is write-once (only the terminal
+ * shutdown save marks a session `'completed'` — a periodic mid-session
+ * checkpoint always persists `'in progress'`, per `SessionStore.saveSession`),
+ * so its replay result never changes and is safe to cache forever. This is
+ * what makes the cache worth having: a cache hit skips
+ * `identityResolver.resolve()` entirely, and that call spawns up to three
+ * `git` subprocesses per unique historical working directory with no caching
+ * of its own — paying that cost again for the same closed session on every
+ * dashboard poll is pure waste.
+ */
+export class ReplaySessionCache {
+  private readonly cache = new Map<string, ReplayedActivity>();
+
+  replay(
+    session: {
+      readonly sessionId: string;
+      readonly outcome?: string;
+      readonly timeline?: readonly ReplayTimelineEntry[];
+      readonly repoName?: string | null;
+    },
+    identityResolver: WorktreeIdentityResolver,
+  ): ReplayedActivity {
+    const cacheable = session.outcome === 'completed';
+    if (cacheable) {
+      const cached = this.cache.get(session.sessionId);
+      if (cached) return cached;
+    }
+
+    const replayed = replaySessionToActivityRecords(session, identityResolver);
+
+    if (cacheable) {
+      this.cache.set(session.sessionId, replayed);
+    }
+
+    return replayed;
+  }
 }

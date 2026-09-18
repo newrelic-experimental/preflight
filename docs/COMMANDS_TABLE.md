@@ -511,7 +511,8 @@ Paginated list of past sessions with summary metrics.
       "estimated_cost_usd": 0.35,
       "task_count": 3,
       "outcome": "completed",
-      "model": "claude-sonnet-4-20250514"
+      "model": "claude-sonnet-4-20250514",
+      "skills": ["simplify", "pstack:how"]
     }
   ],
   "count": 1

@@ -1,6 +1,7 @@
 import { redactSensitive } from '../config.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { gitCommandTargetDir } from './local-session-aggregator.js';
+import type { PrEvent } from './git-efficiency-tracker.js';
 
 // ---------------------------------------------------------------------------
 // Git command classification patterns
@@ -84,6 +85,11 @@ export interface GitEvent {
   readonly subject?: string | null;
   /** Browsable URL for the commit, when the remote could be mapped. */
   readonly url?: string | null;
+  /** Commit hash — set only for a commit hydrated from `git log`. A
+   *  hook-observed commit never carries one; that distinction is exactly
+   *  what `reconcileHydratedCommits` (git-workspace-report.ts) uses to tell
+   *  the two sources apart before merging them into one commit count. */
+  readonly hash?: string;
   /**
    * Conflicted file paths, populated only for `merge_conflict`/
    * `rebase_conflict` events. `GitEfficiencyTracker` re-derives this itself
@@ -138,6 +144,7 @@ export function classifyGitCommand(
   command: string,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
+  targetDir: string | null = gitCommandTargetDir(command, record.cwd as string | undefined),
 ): GitEvent {
   const base = {
     timestamp: record.timestamp,
@@ -148,7 +155,7 @@ export function classifyGitCommand(
     durationMs: record.durationMs,
     // Live git events previously carried no repo at all, so the dashboard
     // showed "—" for everything except commits hydrated from git log.
-    repo: resolveRepo(gitCommandTargetDir(command, record.cwd as string | undefined)),
+    repo: resolveRepo(targetDir),
   };
 
   const output = (record.error as string) ?? '';
@@ -184,4 +191,74 @@ export function classifyGitCommand(
   if (GIT_LOG_RE.test(command)) return { ...base, type: 'log' };
 
   return { ...base, type: 'other_git' };
+}
+
+// ---------------------------------------------------------------------------
+// Shell segments and per-segment classification
+// ---------------------------------------------------------------------------
+
+const ENV_PREFIX = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)*`;
+
+// A segment is a git command only when it starts with one, past env
+// assignments or a path prefix. `printf 'git commit'` is text, and an
+// unanchored `\bgit\s+` counted it as a commit.
+const GIT_SEGMENT_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}(?:\S*\/)?git\s+`);
+
+// Anchored the same way so a segment that only mentions "gh pr create"
+// partway through (a piped JSON fixture, a `gh pr comment` body, a commit
+// message) never matches.
+const GH_PR_COMMAND_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}gh\s+pr\s+(\w+)\b(?:\s+(\d+))?`);
+
+/** `gh pr <verb>` actions this tracks; any other verb returns null. */
+const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
+  create: 'create',
+  merge: 'merge',
+  checks: 'checks',
+  ready: 'ready',
+  edit: 'edit',
+  view: 'view',
+};
+
+/** Splits a shell command into its top-level segments on `||`, `&&`, `;`,
+ *  `|`, and newline. Strip heredoc bodies first so a surviving newline really
+ *  does start a new command. */
+export function splitShellSegments(command: string): string[] {
+  return command.split(/\|\||&&|;|\||\n/);
+}
+
+/** The PrEvent a `gh pr <verb>` segment denotes, or null when it is not one. */
+export function processGhCommand(command: string, timestamp: number): PrEvent | null {
+  const match = GH_PR_COMMAND_RE.exec(command);
+  if (!match) return null;
+  const action = GH_PR_VERB_ACTION[match[1]];
+  if (!action) return null;
+  return { timestamp, action, prNumber: match[2] ?? null };
+}
+
+export interface ClassifiedGitSegment {
+  readonly segment: string;
+  readonly event: GitEvent;
+}
+
+/**
+ * Classifies every git segment of a heredoc-stripped shell command, so a
+ * chained `git commit -m x && git push` yields a commit AND a push instead
+ * of whichever verb `classifyGitCommand` ranks first.
+ *
+ * Conflict and rejection text in `record.error` belongs to the segment that
+ * ran last, since `&&` stops at the first failure, so only the last git
+ * segment sees it. The target directory comes from the whole command, so a
+ * `cd dir &&` in an earlier segment still attributes every git segment.
+ */
+export function classifyGitSegments(
+  command: string,
+  record: ToolCallRecord,
+  resolveRepo: (dir: string | null) => string | null,
+): ClassifiedGitSegment[] {
+  const segments = splitShellSegments(command).filter((s) => GIT_SEGMENT_RE.test(s));
+  const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
+  return segments.map((segment, i) => {
+    const forSegment = i === segments.length - 1 ? record : { ...record, error: undefined };
+    return { segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) };
+  });
 }

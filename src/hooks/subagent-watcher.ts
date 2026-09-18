@@ -20,8 +20,12 @@
  *
  * Startup-discovery budget: only files with mtime in the last 24h are eligible
  * for cold scan (configurable via `NR_AI_WATCHER_DISCOVERY_HOURS`); older
- * files emit `discovery_skipped` once each. Backfill of older files is
- * a separate, future concern.
+ * files emit `discovery_skipped` once each when the watcher is scoped to one
+ * session (`--stdio`). Unfiltered (`--local`, no `parentSessionId`), a stale
+ * file is the steady state across most of the tree rather than an anomaly, so
+ * whole stale session directories are pruned before their files are even
+ * statted, the poll interval is 5x slower, and `discovery_skipped` is
+ * suppressed. Backfill of older files is a separate, future concern.
  */
 
 import {
@@ -39,12 +43,12 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
+import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
-import type { RawTranscriptEntry, RawAssistantMessage, RawUsage } from './transcript-types.js';
 
 const logger = createLogger('subagent-watcher');
 
@@ -53,6 +57,14 @@ const logger = createLogger('subagent-watcher');
 // ---------------------------------------------------------------------------
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+/**
+ * Unfiltered discovery walks every session on disk, so it trades latency for
+ * fan-out. 5x the scoped interval, and still 3 polls inside the 30s
+ * DEFAULT_SESSION_PERSIST_INTERVAL_MS window that turns observed turns into a
+ * session file — the only deadline an unscoped process actually has, since
+ * nothing live-tails subagent turns in `--local`.
+ */
+const UNFILTERED_POLL_INTERVAL_MS = 10_000;
 const DEFAULT_DISCOVERY_HOURS = 24;
 const MAX_BYTES_PER_POLL = 64 * 1024;
 /**
@@ -76,7 +88,8 @@ const HEALTH_INTERVAL_MS = 60_000;
 const SCHEMA_FINGERPRINT_REEMIT_MS = 60 * 60 * 1000; // 1h
 const COST_SELF_CHECK_MS = 60 * 60 * 1000; // 1h
 const SESSION_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const AGENT_ID_RE = /^a[a-f0-9]{16}$/;
+// AGENT_ID_RE imported from ../lib/agent-id.js — see its doc comment for the
+// two valid agentId shapes.
 const PROJECTS_DIR_NAME = '.claude/projects';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +118,7 @@ export interface SubagentTokenEvent {
   readonly reasoningTokens: number;
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 /**
@@ -139,31 +153,50 @@ export interface ObservabilityHealthEvent {
   readonly costSelfCheckDeltaPct?: number;
 }
 
-export interface SubagentWatcherOptions {
+interface SubagentWatcherBaseOptions {
   /** Storage path for cursor + fingerprint state (defaults to ~/.newrelic-preflight). */
   readonly storagePath?: string;
   /** ~/.claude/projects directory; defaults to homedir-relative. */
   readonly projectsDir?: string;
-  /** Poll interval in ms. Default 2000. */
+  /** Poll interval in ms. Default 2000 scoped, UNFILTERED_POLL_INTERVAL_MS unfiltered. */
   readonly pollIntervalMs?: number;
   /** Cold-scan eligibility window. Default 24h. */
   readonly discoveryHours?: number;
   /** LocalStore (used to peek the parent buffer path naming convention). */
   readonly localStore?: LocalStore;
-  /**
-   * If provided, watcher only processes files belonging to this session id.
-   * Default: process every session id under projectsDir (matches `--local`
-   * drainAll semantics).
-   */
-  readonly parentSessionId?: string;
-  /**
-   * Optional ground-truth cost computation hook. Called once per
-   * COST_SELF_CHECK_MS to compute current `costTracker.totalUsd` for the
-   * runtime self-check. Returns delta in percent (0-100); when this
-   * hook is omitted, the self-check is skipped.
-   */
-  readonly costSelfCheck?: () => { trackedUsd: number; groundTruthUsd: number };
 }
+
+type CostSelfCheck = () => { trackedUsd: number; groundTruthUsd: number };
+
+/**
+ * Scoped and unfiltered are different modes, not one mode with an optional
+ * field. `costSelfCheck` compares this process's CostTracker subagent total
+ * against a re-parse of ONE session's transcripts; unfiltered, the tracker
+ * holds every session's subagents and the re-parse holds one session's (or
+ * none — a synthetic `local-<ts>` id fails SESSION_ID_RE and returns empty,
+ * and `denom = max(groundTruthUsd, 1e-9)` then reports a delta of order
+ * -1e12 %). The `never` below is what makes that unconstructable rather
+ * than merely documented.
+ */
+export type SubagentWatcherOptions = SubagentWatcherBaseOptions &
+  (
+    | {
+        /**
+         * If provided, watcher only processes files belonging to this session
+         * id. Default: process every session id under projectsDir (matches
+         * `--local` drainAll semantics).
+         */
+        readonly parentSessionId: string;
+        /**
+         * Optional ground-truth cost computation hook. Called once per
+         * COST_SELF_CHECK_MS to compute current `costTracker.totalUsd` for the
+         * runtime self-check. Returns delta in percent (0-100); when this
+         * hook is omitted, the self-check is skipped.
+         */
+        readonly costSelfCheck?: CostSelfCheck;
+      }
+    | { readonly parentSessionId?: undefined; readonly costSelfCheck?: never }
+  );
 
 /** Result row from the JSONL parse (private to the module). */
 interface ParsedAssistantTurn {
@@ -179,6 +212,7 @@ interface ParsedAssistantTurn {
   readonly stopReason: string | null;
   readonly usageKeysFingerprint: string;
   readonly contentBlockTypesFingerprint: string;
+  readonly toolUseIds: readonly string[];
 }
 
 interface DiscoveredFile {
@@ -267,20 +301,26 @@ export class SubagentWatcher {
   // Files that already emitted `discovery_skipped` so we don't re-emit on
   // every poll for the same too-old file.
   private readonly discoverySkippedAnnounced = new Set<string>();
-  // Files shaped like `agent-*.jsonl` whose id doesn't match AGENT_ID_RE that
-  // already emitted `discovery_skipped`, so we don't re-emit on every poll.
+  // Files shaped like `agent-*.jsonl` whose id doesn't match AGENT_ID_RE (see
+  // AGENT_ID_RE's doc comment for the two valid shapes) that already emitted
+  // `discovery_skipped`, so we don't re-emit on every poll. Scoped only —
+  // unfiltered uses agentIdMismatchAnnouncedUnfiltered instead (see
+  // announceAgentIdMismatch).
   private readonly agentIdMismatchAnnounced = new Set<string>();
+  private agentIdMismatchAnnouncedUnfiltered = false;
   private lastCostSelfCheckMs = 0;
 
   constructor(options: SubagentWatcherOptions = {}) {
     this.storagePath = options.storagePath ?? join(homedir(), '.newrelic-preflight');
     this.projectsDir = options.projectsDir ?? join(homedir(), PROJECTS_DIR_NAME);
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.parentSessionFilter = options.parentSessionId ?? null;
+    this.pollIntervalMs =
+      options.pollIntervalMs ??
+      (this.parentSessionFilter === null ? UNFILTERED_POLL_INTERVAL_MS : DEFAULT_POLL_INTERVAL_MS);
     const envHours = parseInt(process.env.NR_AI_WATCHER_DISCOVERY_HOURS ?? '', 10);
     this.discoveryHours =
       options.discoveryHours ??
       (Number.isFinite(envHours) && envHours > 0 ? envHours : DEFAULT_DISCOVERY_HOURS);
-    this.parentSessionFilter = options.parentSessionId ?? null;
     this.costSelfCheck = options.costSelfCheck;
     this.localStore = options.localStore;
     this.loadFingerprints();
@@ -416,7 +456,32 @@ export class SubagentWatcher {
         if (liveOwnedSessionIds?.has(sessionId)) continue;
         const sessionDir = join(projectPath, sessionId);
         const subDir = join(sessionDir, 'subagents');
-        if (!existsSync(subDir)) continue;
+        let subStat: Stats;
+        try {
+          subStat = statSync(subDir);
+        } catch {
+          continue; // absent or unreadable — same as the old existsSync guard
+        }
+        if (!subStat.isDirectory()) continue;
+        // Unfiltered only: prune the whole session before paying for
+        // readdir(subDir) plus one statSync per agent file. `cutoffMs` is the
+        // same discovery cutoff filterByMtime applies per file, so the prune
+        // can only remove sessions whose files that filter would have
+        // rejected anyway — with one exception: a new workflow run creates
+        // subagents/workflows/wf_<id>/, which bumps `workflows/` but not
+        // `subagents/` itself, so a stale `subagents/` mtime is checked
+        // against `subagents/workflows/`'s mtime too before pruning. Scoped
+        // mode never prunes: one session dir, nothing to save, and --stdio
+        // behaviour must stay byte-identical.
+        if (this.parentSessionFilter === null && subStat.mtimeMs < cutoffMs) {
+          let wfDirStat: Stats | null;
+          try {
+            wfDirStat = statSync(join(subDir, 'workflows'));
+          } catch {
+            wfDirStat = null;
+          }
+          if (wfDirStat === null || wfDirStat.mtimeMs < cutoffMs) continue;
+        }
 
         // Ad-hoc: subagents/agent-*.jsonl
         try {
@@ -452,6 +517,7 @@ export class SubagentWatcher {
               continue;
             }
             if (!stat2.isDirectory()) continue;
+            if (this.parentSessionFilter === null && stat2.mtimeMs < cutoffMs) continue;
             try {
               for (const name of readdirSync(wfRunDir)) {
                 if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
@@ -522,7 +588,12 @@ export class SubagentWatcher {
     try {
       const st = statSync(path);
       if (st.mtimeMs < cutoffMs) {
-        if (!this.discoverySkippedAnnounced.has(path)) {
+        // Scoped only. Unfiltered, a stale file is the normal case for most
+        // of the tree rather than "this session had data we chose not to
+        // backfill", and announcing per path would also grow
+        // discoverySkippedAnnounced without bound in a long-lived --local
+        // daemon.
+        if (this.parentSessionFilter !== null && !this.discoverySkippedAnnounced.has(path)) {
           this.discoverySkippedAnnounced.add(path);
           this.appendHealth({
             mode: 'observability_health',
@@ -546,12 +617,21 @@ export class SubagentWatcher {
     }
   }
 
-  /** Emits a discovery_skipped health event, once per path, when a file
-   * shaped like `agent-*.jsonl` doesn't match AGENT_ID_RE — makes an id-format
-   * drift observable instead of a silent stop in subagent token capture. */
+  /** Emits a discovery_skipped health event when a file shaped like
+   * `agent-*.jsonl` doesn't match AGENT_ID_RE — makes an id-format drift
+   * observable instead of a silent stop in subagent token capture. Scoped:
+   * once per path. Unfiltered: degraded to once per process, since a
+   * per-path Set would otherwise grow without bound across every session on
+   * disk in a long-lived --local daemon — the drift signal is preserved,
+   * just not per-file. */
   private announceAgentIdMismatch(path: string): void {
-    if (this.agentIdMismatchAnnounced.has(path)) return;
-    this.agentIdMismatchAnnounced.add(path);
+    if (this.parentSessionFilter === null) {
+      if (this.agentIdMismatchAnnouncedUnfiltered) return;
+      this.agentIdMismatchAnnouncedUnfiltered = true;
+    } else {
+      if (this.agentIdMismatchAnnounced.has(path)) return;
+      this.agentIdMismatchAnnounced.add(path);
+    }
     this.appendHealth({
       mode: 'observability_health',
       tool: 'observability_health',
@@ -692,6 +772,7 @@ export class SubagentWatcher {
         reasoningTokens: parsed.reasoningTokens,
         stopReason: parsed.stopReason,
         schemaFingerprint: parsed.usageKeysFingerprint,
+        toolUseIds: parsed.toolUseIds,
       };
       this.appendToParentBuffer(file.parentSessionId, event);
     }
@@ -748,59 +829,35 @@ export class SubagentWatcher {
    * with usage. Sets parseErrors counter on JSON parse failures.
    */
   private tryParseLine(line: string, _file: DiscoveredFile): ParsedAssistantTurn | null {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
+    const { fields, invalidJson } = parseAssistantTurnLine(line);
+    if (invalidJson) {
       this.parseErrors += 1;
       return null;
     }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const obj = parsed as RawTranscriptEntry;
-    if (obj.type !== 'assistant') return null;
-    const message = obj.message;
-    if (!message || typeof message !== 'object') return null;
-    const m = message as RawAssistantMessage;
-    const model = typeof m.model === 'string' ? m.model : null;
+    if (!fields) return null;
+
+    const model = fields.model;
     if (!model || model === '<synthetic>') return null;
-    const messageId = typeof m.id === 'string' ? m.id : null;
+    const messageId = fields.messageId;
     if (!messageId) return null;
-    const usage = m.usage;
-    if (!usage || typeof usage !== 'object') return null;
-    const u = usage as RawUsage;
 
-    const turnUuid = typeof obj.uuid === 'string' ? obj.uuid : '';
-    const tsRaw = typeof obj.timestamp === 'string' ? obj.timestamp : null;
-    const timestampMs = tsRaw ? Date.parse(tsRaw) : Date.now();
+    const timestampMs = fields.rawTimestamp ? Date.parse(fields.rawTimestamp) : Date.now();
     if (!Number.isFinite(timestampMs)) return null;
-
-    const inputTokens = num(u.input_tokens);
-    const outputTokens = num(u.output_tokens);
-    const cacheReadTokens = num(u.cache_read_input_tokens);
-    const cacheCreationTokens = num(u.cache_creation_input_tokens);
-    let reasoningTokens = 0;
-    const otd = u.output_tokens_details;
-    if (otd && typeof otd === 'object') {
-      reasoningTokens = num(otd.reasoning_tokens);
-    }
-    const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
-
-    const usageKeysFingerprint = computeUsageKeysFingerprint(u);
-    const contentBlockTypesFingerprint = computeContentBlockTypesFingerprint(m.content);
 
     return {
       timestampMs,
       messageId,
-      turnUuid,
+      turnUuid: fields.turnUuid,
       model,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-      reasoningTokens,
-      stopReason,
-      usageKeysFingerprint,
-      contentBlockTypesFingerprint,
+      inputTokens: fields.inputTokens,
+      outputTokens: fields.outputTokens,
+      cacheReadTokens: fields.cacheReadTokens,
+      cacheCreationTokens: fields.cacheCreationTokens,
+      reasoningTokens: fields.reasoningTokens,
+      stopReason: fields.stopReason,
+      usageKeysFingerprint: fields.usageKeysFingerprint,
+      contentBlockTypesFingerprint: fields.contentBlockTypesFingerprint,
+      toolUseIds: fields.toolUseIds,
     };
   }
 
@@ -1006,44 +1063,6 @@ export class SubagentWatcher {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function num(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
-}
-
-function computeUsageKeysFingerprint(usage: Record<string, unknown>): string {
-  const keys: string[] = [];
-  for (const k of Object.keys(usage).sort()) keys.push(k);
-  // Include child keys of `output_tokens_details` so reasoning-token drift
-  // produces a distinct fingerprint without inflating the dimension space.
-  const otd = usage.output_tokens_details;
-  if (otd && typeof otd === 'object') {
-    for (const k of Object.keys(otd as Record<string, unknown>).sort()) {
-      keys.push(`output_tokens_details.${k}`);
-    }
-  }
-  return shortHash(keys.join('|'));
-}
-
-function computeContentBlockTypesFingerprint(content: unknown): string {
-  if (!Array.isArray(content)) return shortHash('');
-  const set = new Set<string>();
-  for (const block of content) {
-    if (
-      block &&
-      typeof block === 'object' &&
-      typeof (block as { type?: unknown }).type === 'string'
-    ) {
-      set.add(String((block as { type: string }).type));
-    }
-  }
-  const sorted = Array.from(set).sort();
-  return shortHash(sorted.join('|'));
-}
-
-function shortHash(input: string): string {
-  return createHash('sha1').update(input).digest('hex').slice(0, 16);
-}
 
 /**
  * Stable cursor file path computation, exported for tests that want to

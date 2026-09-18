@@ -146,7 +146,7 @@ describe('PersonalCoach', () => {
     }
   });
 
-  it('flags regression when cost-per-session spikes above baseline', () => {
+  it('flags regression when cost-per-task spikes above baseline', () => {
     const summaries = [
       makeWeeklySummary('2026-W04', developer, { totalCostUsd: 20.0, sessionCount: 10 }),
       makeWeeklySummary('2026-W03', developer, { totalCostUsd: 5.0, sessionCount: 10 }),
@@ -156,7 +156,7 @@ describe('PersonalCoach', () => {
     const coach = new PersonalCoach(gen, developer);
     const result = coach.generate();
     if (result.status === 'ok') {
-      expect(result.regressions.some((r) => r.includes('Cost per session'))).toBe(true);
+      expect(result.regressions.some((r) => r.includes('Cost per completed task'))).toBe(true);
     }
   });
 

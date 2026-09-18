@@ -35,9 +35,23 @@ export interface ToolTypeCostEntry {
   readonly totalCost: number;
   readonly callCount: number;
   readonly avgCost: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  /** input + output + cache-read + cache-creation tokens across `callCount`'s attributed calls; mirrors SkillCostEntry.tokens. */
+  readonly tokens: number;
 }
 
-/** Per-skill row. `callCount` and `totalDurationMs` are measured on every call; cost and tokens cover `attributedCallCount` of them. */
+/**
+ * Per-skill row aggregating both `Skill` tool invocations and slash-command
+ * invocations. A `Skill` tool call (channel `Skill`) receives an even split
+ * of its turn's cost; a slash invocation (channel `SlashCommand`) receives the
+ * full cost from that prompt to the next. `callCount` counts both channels
+ * (one per `Skill` tool call, one per slash invocation); `totalDurationMs`
+ * measures only `Skill` calls (slash commands have none). Cost and tokens
+ * cover `attributedCallCount` of them.
+ */
 export interface SkillCostEntry {
   readonly callCount: number;
   readonly attributedCallCount: number;
@@ -46,7 +60,18 @@ export interface SkillCostEntry {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
   readonly totalDurationMs: number;
+  /**
+   * Authoritative token total: `inputTokens + outputTokens + cacheReadTokens
+   * + cacheCreationTokens` for a live (this-process) entry. `GET
+   * /api/cost-per-tool` folds in other today sessions' persisted attribution
+   * buckets, which carry only a token total and no per-category split —
+   * those merged sessions' tokens land here too, so this field (not the
+   * split fields, which stay live-only) is the one to read for a skill's
+   * total token usage.
+   */
+  readonly tokens: number;
 }
 
 export interface TurnToolCall {
@@ -71,6 +96,12 @@ export interface CostAttributionMetrics {
   readonly costBySkill: Record<string, SkillCostEntry>;
   readonly totalAttributedCost: number;
   readonly attributionRate: number;
+  /**
+   * Count of token events (or, on overflow/staleness, whole pending turns)
+   * that could not be attributed to any tool call. A rising count alongside
+   * a low `attributionRate` means turns are being lost — see `recordTokenEvent()`.
+   */
+  readonly droppedTokenEvents: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,11 +112,23 @@ export interface CostAttributionMetrics {
 // LLM response driving a burst of tool use). Chosen to bridge normal
 // back-to-back tool latency without merging genuinely separate turns.
 const TURN_GAP_MS = 2_000;
-// A token event is attributed to the pending turn only if it arrives within
-// this window after the turn's last tool call — token usage is reported
-// asynchronously, so some slack is needed, but too much risks attributing
-// a later turn's tokens to this one.
-const TOKEN_MATCH_WINDOW_MS = 5_000;
+// A token event closes the OLDEST still-open pending turn (see `pendingTurns`
+// below) as long as it arrives after that turn ended — no upper bound.
+// Token usage is reported asynchronously (transcript polling) and the model
+// may spend anywhere from milliseconds to minutes (extended thinking) between
+// a tool call ending and the response that consumes its result, so there is
+// no fixed delay that is both short enough to avoid false negatives and long
+// enough to avoid false positives.
+//
+// `STALE_PENDING_TURN_MS` exists only to self-heal the queue if a closing
+// token event is ever genuinely lost (not merely delayed) — a crashed
+// watcher, a rotated/truncated transcript. Without it, one truly-lost event
+// would permanently shift every later token event onto the wrong pending
+// turn. It is deliberately far longer than any plausible thinking time.
+const STALE_PENDING_TURN_MS = 10 * 60 * 1000;
+// Safety cap on the queue itself so a sustained failure to emit token events
+// (not just one lost event) can't grow this unboundedly.
+const MAX_PENDING_TURNS = 20;
 // Bounds memory for long sessions; only the most recent turns are needed for
 // the cost-by-tool-type breakdown this class serves.
 const MAX_TURNS = 200;
@@ -96,7 +139,10 @@ const MAX_TURNS = 200;
 
 interface BucketIdentity {
   readonly toolName: string;
-  /** Set only for `Skill` records that carried a skill name. */
+  /**
+   * Set only for `Skill` tool records that carried a skill name, or for
+   * `SlashCommand` records from slash-invoked skills.
+   */
   readonly skillName: string | null;
 }
 
@@ -113,6 +159,7 @@ interface AttributionBucket extends BucketIdentity {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   totalDurationMs: number;
 }
 
@@ -123,6 +170,7 @@ const BUCKET_COUNTERS = [
   'inputTokens',
   'outputTokens',
   'cacheReadTokens',
+  'cacheCreationTokens',
   'totalDurationMs',
 ] as const;
 
@@ -149,21 +197,31 @@ const DEFAULT_MAX_SESSIONS = 50;
 
 interface SessionState {
   turns: TurnCostAttribution[];
-  pendingTurn: PendingTurn | null;
+  /**
+   * FIFO queue of tool-call bursts awaiting a closing token event, oldest
+   * first. A queue (not a single slot) so a burst of tool calls started
+   * before the previous burst's token event has arrived is never silently
+   * discarded — see `recordToolCall()`.
+   */
+  pendingTurns: PendingTurn[];
   buckets: Map<string, AttributionBucket>;
   totalAttributedCost: number;
   totalToolCalls: number;
   attributedToolCalls: number;
+  activeSlashSkill: string | null;
+  droppedTokenEvents: number;
 }
 
 function createSessionState(): SessionState {
   return {
     turns: [],
-    pendingTurn: null,
+    pendingTurns: [],
     buckets: new Map(),
     totalAttributedCost: 0,
     totalToolCalls: 0,
     attributedToolCalls: 0,
+    activeSlashSkill: null,
+    droppedTokenEvents: 0,
   };
 }
 
@@ -194,6 +252,7 @@ function createBucket(id: BucketIdentity): AttributionBucket {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     totalDurationMs: 0,
   };
 }
@@ -267,42 +326,87 @@ export class TurnCostAttributor {
     bucket.callCount++;
     bucket.totalDurationMs += record.durationMs ?? 0;
 
-    if (state.pendingTurn && record.timestamp - state.pendingTurn.endTime <= TURN_GAP_MS) {
-      state.pendingTurn.endTime = endTime;
-      state.pendingTurn.toolCalls.push({
+    const last = state.pendingTurns[state.pendingTurns.length - 1];
+    if (last && record.timestamp - last.endTime <= TURN_GAP_MS) {
+      last.endTime = endTime;
+      last.toolCalls.push({
         toolUseId: record.toolUseId,
         toolName: record.toolName,
         skillName: id.skillName,
         bucketKey: key,
       });
+      return;
+    }
+
+    state.pendingTurns.push({
+      turnId: turnId ?? randomUUID(),
+      startTime: record.timestamp,
+      endTime,
+      toolCalls: [
+        {
+          toolUseId: record.toolUseId,
+          toolName: record.toolName,
+          skillName: id.skillName,
+          bucketKey: key,
+        },
+      ],
+      platform: typeof record.platform === 'string' ? record.platform : undefined,
+    });
+
+    // A new burst starting while MAX_PENDING_TURNS earlier bursts are still
+    // unclosed means token events have stopped arriving entirely (not just
+    // been delayed) — evict the oldest rather than grow unboundedly.
+    if (state.pendingTurns.length > MAX_PENDING_TURNS) {
+      state.pendingTurns.shift();
+      state.droppedTokenEvents++;
+    }
+  }
+
+  recordSlashCommand(sessionId: string | null | undefined, skillName: string | null): void {
+    const state = this.getOrCreateSession(sessionId);
+    if (skillName) {
+      state.activeSlashSkill = skillName;
+      const id: BucketIdentity = { toolName: 'SlashCommand', skillName };
+      const key = bucketKeyOf(id);
+      const bucket = getOrCreateBucket(state.buckets, key, id);
+      bucket.callCount++;
     } else {
-      state.pendingTurn = {
-        turnId: turnId ?? randomUUID(),
-        startTime: record.timestamp,
-        endTime,
-        toolCalls: [
-          {
-            toolUseId: record.toolUseId,
-            toolName: record.toolName,
-            skillName: id.skillName,
-            bucketKey: key,
-          },
-        ],
-        platform: typeof record.platform === 'string' ? record.platform : undefined,
-      };
+      state.activeSlashSkill = null;
     }
   }
 
   recordTokenEvent(event: TokenEvent): ClosedTurn | null {
     const state = this.getOrCreateSession(event.sessionId);
-    if (!state.pendingTurn) return null;
 
-    // A token event outside the match window can't be reliably tied to the
-    // pending turn — silently drop it rather than risk mis-attributing cost
-    // to the wrong turn. Dropped events show up as a lower `attributionRate`
-    // in getMetrics(), not as an error.
-    const timeSinceLastTool = event.timestamp - state.pendingTurn.endTime;
-    if (timeSinceLastTool < 0 || timeSinceLastTool > TOKEN_MATCH_WINDOW_MS) return null;
+    // Self-heal: a pending turn sitting unclosed for longer than any
+    // plausible thinking time means its real closing event was lost, not
+    // merely delayed. Evict it so this event can't be misattributed to it —
+    // and so every turn queued behind it doesn't inherit the same offset.
+    while (
+      state.pendingTurns.length > 0 &&
+      event.timestamp - state.pendingTurns[0].endTime > STALE_PENDING_TURN_MS
+    ) {
+      state.pendingTurns.shift();
+      state.droppedTokenEvents++;
+    }
+
+    const pendingTurn = state.pendingTurns[0];
+    if (!pendingTurn) {
+      state.droppedTokenEvents++;
+      return null;
+    }
+
+    // The event must postdate the turn it's closing — one that doesn't can't
+    // belong to it (this turn hadn't even finished yet). Silently drop it
+    // rather than risk mis-attributing cost to the wrong turn. Dropped
+    // events show up as a lower `attributionRate` and a rising
+    // `droppedTokenEvents`, not as an error.
+    const timeSinceLastTool = event.timestamp - pendingTurn.endTime;
+    if (timeSinceLastTool < 0) {
+      state.droppedTokenEvents++;
+      return null;
+    }
+    state.pendingTurns.shift();
 
     const usage: TokenUsage = {
       inputTokens: event.inputTokens,
@@ -315,15 +419,15 @@ export class TurnCostAttributor {
 
     const breakdown = calculateCost(event.model, usage);
     const costUsd = breakdown.totalUsd * this.rateMultiplier;
-    const toolCount = state.pendingTurn.toolCalls.length;
+    const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
 
     const attribution: TurnCostAttribution = {
-      turnId: state.pendingTurn.turnId,
-      startTime: state.pendingTurn.startTime,
-      endTime: state.pendingTurn.endTime,
-      toolCalls: state.pendingTurn.toolCalls.map((tc) => tc.toolUseId),
-      toolNames: state.pendingTurn.toolCalls.map((tc) => tc.toolName),
+      turnId: pendingTurn.turnId,
+      startTime: pendingTurn.startTime,
+      endTime: pendingTurn.endTime,
+      toolCalls: pendingTurn.toolCalls.map((tc) => tc.toolUseId),
+      toolNames: pendingTurn.toolCalls.map((tc) => tc.toolName),
       inputTokens: event.inputTokens,
       outputTokens: event.outputTokens,
       cacheReadTokens: event.cacheReadTokens,
@@ -342,7 +446,7 @@ export class TurnCostAttributor {
     state.totalAttributedCost += costUsd;
     state.attributedToolCalls += toolCount;
 
-    for (const tc of state.pendingTurn.toolCalls) {
+    for (const tc of pendingTurn.toolCalls) {
       const bucket = state.buckets.get(tc.bucketKey);
       if (bucket === undefined) continue;
       bucket.attributedCallCount++;
@@ -350,6 +454,19 @@ export class TurnCostAttributor {
       bucket.inputTokens += event.inputTokens / toolCount;
       bucket.outputTokens += event.outputTokens / toolCount;
       bucket.cacheReadTokens += event.cacheReadTokens / toolCount;
+      bucket.cacheCreationTokens += event.cacheCreationTokens / toolCount;
+    }
+
+    if (state.activeSlashSkill !== null) {
+      const id: BucketIdentity = { toolName: 'SlashCommand', skillName: state.activeSlashSkill };
+      const key = bucketKeyOf(id);
+      const slashBucket = getOrCreateBucket(state.buckets, key, id);
+      slashBucket.attributedCallCount++;
+      slashBucket.totalCost += costUsd;
+      slashBucket.inputTokens += event.inputTokens;
+      slashBucket.outputTokens += event.outputTokens;
+      slashBucket.cacheReadTokens += event.cacheReadTokens;
+      slashBucket.cacheCreationTokens += event.cacheCreationTokens;
     }
 
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
@@ -358,15 +475,14 @@ export class TurnCostAttributor {
     const closedTurn: ClosedTurn = {
       id: randomUUID(),
       attribution,
-      calls: state.pendingTurn.toolCalls.map((tc) => ({
+      calls: pendingTurn.toolCalls.map((tc) => ({
         toolUseId: tc.toolUseId,
         toolName: tc.toolName,
         skillName: tc.skillName,
       })),
-      platform: state.pendingTurn.platform,
+      platform: pendingTurn.platform,
     };
 
-    state.pendingTurn = null;
     return closedTurn;
   }
 
@@ -403,6 +519,7 @@ export class TurnCostAttributor {
       costBySkill: {},
       totalAttributedCost: 0,
       attributionRate: 0,
+      droppedTokenEvents: 0,
     };
 
     if (sessionId !== undefined) {
@@ -423,6 +540,7 @@ export class TurnCostAttributor {
       aggregate.totalAttributedCost += state.totalAttributedCost;
       aggregate.totalToolCalls += state.totalToolCalls;
       aggregate.attributedToolCalls += state.attributedToolCalls;
+      aggregate.droppedTokenEvents += state.droppedTokenEvents;
       for (const [key, bucket] of state.buckets) {
         const merged = getOrCreateBucket(aggregate.buckets, key, bucket);
         for (const counter of BUCKET_COUNTERS) merged[counter] += bucket[counter];
@@ -438,43 +556,93 @@ export class TurnCostAttributor {
   }
 
   private static buildMetrics(state: SessionState): CostAttributionMetrics {
-    const toolTypeAccum = new Map<string, { totalCost: number; callCount: number }>();
-    const costBySkill: Record<string, SkillCostEntry> = {};
+    const toolTypeAccum = new Map<
+      string,
+      {
+        totalCost: number;
+        callCount: number;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+      }
+    >();
+    const skillAccum = new Map<string, Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>>();
 
     for (const bucket of state.buckets.values()) {
       // costByToolType predates the buckets table and only ever listed tools
-      // that received a token event, so the fold keeps that contract.
-      if (bucket.attributedCallCount > 0) {
+      // that received a token event, so the fold keeps that contract. The
+      // SlashCommand channel isn't a real tool call — it charges a turn's
+      // full, unsplit cost to track skill usage (see recordSlashCommand()),
+      // and folding it in here would double-count against whichever real
+      // tool(s) that same turn already split its cost across.
+      if (bucket.toolName !== 'SlashCommand' && bucket.attributedCallCount > 0) {
         let entry = toolTypeAccum.get(bucket.toolName);
         if (entry === undefined) {
-          entry = { totalCost: 0, callCount: 0 };
+          entry = {
+            totalCost: 0,
+            callCount: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          };
           toolTypeAccum.set(bucket.toolName, entry);
         }
         entry.totalCost += bucket.totalCost;
         entry.callCount += bucket.attributedCallCount;
+        entry.inputTokens += bucket.inputTokens;
+        entry.outputTokens += bucket.outputTokens;
+        entry.cacheReadTokens += bucket.cacheReadTokens;
+        entry.cacheCreationTokens += bucket.cacheCreationTokens;
       }
 
       if (bucket.skillName !== null) {
-        costBySkill[bucket.skillName] = {
-          callCount: bucket.callCount,
-          attributedCallCount: bucket.attributedCallCount,
-          totalCost: bucket.totalCost,
-          avgCost:
-            bucket.attributedCallCount > 0 ? bucket.totalCost / bucket.attributedCallCount : 0,
-          inputTokens: Math.round(bucket.inputTokens),
-          outputTokens: Math.round(bucket.outputTokens),
-          cacheReadTokens: Math.round(bucket.cacheReadTokens),
-          totalDurationMs: bucket.totalDurationMs,
-        };
+        let entry = skillAccum.get(bucket.skillName);
+        if (entry === undefined) {
+          entry = {} as Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>;
+          for (const counter of BUCKET_COUNTERS) entry[counter] = 0;
+          skillAccum.set(bucket.skillName, entry);
+        }
+        for (const counter of BUCKET_COUNTERS) entry[counter] += bucket[counter];
       }
+    }
+
+    const costBySkill: Record<string, SkillCostEntry> = {};
+    for (const [skillName, entry] of skillAccum) {
+      costBySkill[skillName] = {
+        callCount: entry.callCount,
+        attributedCallCount: entry.attributedCallCount,
+        totalCost: entry.totalCost,
+        avgCost: entry.attributedCallCount > 0 ? entry.totalCost / entry.attributedCallCount : 0,
+        inputTokens: Math.round(entry.inputTokens),
+        outputTokens: Math.round(entry.outputTokens),
+        cacheReadTokens: Math.round(entry.cacheReadTokens),
+        cacheCreationTokens: Math.round(entry.cacheCreationTokens),
+        totalDurationMs: entry.totalDurationMs,
+        tokens:
+          Math.round(entry.inputTokens) +
+          Math.round(entry.outputTokens) +
+          Math.round(entry.cacheReadTokens) +
+          Math.round(entry.cacheCreationTokens),
+      };
     }
 
     const costByToolType: Record<string, ToolTypeCostEntry> = {};
     for (const [tool, entry] of toolTypeAccum) {
+      const inputTokens = Math.round(entry.inputTokens);
+      const outputTokens = Math.round(entry.outputTokens);
+      const cacheReadTokens = Math.round(entry.cacheReadTokens);
+      const cacheCreationTokens = Math.round(entry.cacheCreationTokens);
       costByToolType[tool] = {
         totalCost: entry.totalCost,
         callCount: entry.callCount,
         avgCost: entry.callCount > 0 ? entry.totalCost / entry.callCount : 0,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        tokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
       };
     }
 
@@ -485,6 +653,7 @@ export class TurnCostAttributor {
       totalAttributedCost: state.totalAttributedCost,
       attributionRate:
         state.totalToolCalls > 0 ? state.attributedToolCalls / state.totalToolCalls : 0,
+      droppedTokenEvents: state.droppedTokenEvents,
     };
   }
 

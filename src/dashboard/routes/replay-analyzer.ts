@@ -1,4 +1,17 @@
 import type { ReplayTimelineEntry } from '../../storage/types.js';
+import { partitionByAgent } from '../../metrics/agent-partition.js';
+
+// Pairs an entry with its position in the original flat `timeline` array.
+// `stuck_loop`/`blind_editing`/`re_reading` run per agent-group (see
+// `analyzeReplayTimeline`), but `AntiPatternSegment.startIndex`/`endIndex`
+// must still reference the original flat array — that's what
+// `GanttTimeline.tsx` uses to place the overlay — so each detector below
+// reads `index` from this wrapper instead of its own sub-array position.
+interface IndexedEntry {
+  readonly entry: ReplayTimelineEntry;
+  readonly index: number;
+  readonly agentId?: string;
+}
 
 export interface AntiPatternSegment {
   readonly type: string;
@@ -7,6 +20,15 @@ export interface AntiPatternSegment {
   readonly iterations: number;
   readonly target: string;
   readonly severity: 'warning' | 'critical';
+  // Owning agent, only meaningful when agentScoped is true — undefined then
+  // means "owned by the parent session", not "agent-agnostic".
+  readonly agentId?: string;
+  // True for segments from a per-agent detector (stuck-loop, blind-editing,
+  // re-reading). A segment's index range can span a gap occupied by a
+  // different agent's unrelated call — this tells the renderer
+  // (GanttTimeline.tsx) to only highlight rows that actually belong to it.
+  // False/absent for agent-agnostic segments (thrashing).
+  readonly agentScoped?: boolean;
 }
 
 export interface ReplayAnalysis {
@@ -23,10 +45,36 @@ const CRITICAL_THRESHOLD = 5;
 export function analyzeReplayTimeline(timeline: ReplayTimelineEntry[]): ReplayAnalysis {
   const segments: AntiPatternSegment[] = [];
 
+  // Thrashing runs over the whole flat sequence, unpartitioned — its
+  // `lastEditFile` trigger is a single scalar shared across agents, and a
+  // false positive still requires the same file to cycle through
+  // edit/test-fail more than once, a narrower risk than the detectors below.
+  // Mirrors the same left-unpartitioned decision `AntiPatternDetector` made
+  // for the same false-positive class (see src/metrics/anti-patterns.ts).
   segments.push(...detectThrashingSegments(timeline));
-  segments.push(...detectStuckLoopSegments(timeline));
-  segments.push(...detectBlindEditSegments(timeline));
-  segments.push(...detectReReadingSegments(timeline));
+
+  // Stuck-loop, blind-editing, and re-reading all detect one agent repeating
+  // itself over a timestamp-ordered sequence. Run each per agent (parent
+  // session + one group per distinct subagent `agentId`) so parallel
+  // subagents each independently doing something once don't look like a
+  // single agent repeating itself.
+  const indexed: IndexedEntry[] = timeline.map((entry, index) => ({
+    entry,
+    index,
+    agentId: entry.agentId,
+  }));
+  for (const group of partitionByAgent(indexed)) {
+    // Every entry in a partitioned group shares the same agentId by
+    // construction (see partitionByAgent) — stamp it onto each emitted
+    // segment so the renderer can tell which rows in the segment's index
+    // range actually belong to it (see AntiPatternSegment.agentId).
+    const groupAgentId = group[0]?.agentId;
+    const stampAgent = (segs: AntiPatternSegment[]): AntiPatternSegment[] =>
+      segs.map((seg) => ({ ...seg, agentId: groupAgentId, agentScoped: true }));
+    segments.push(...stampAgent(detectStuckLoopSegments(group)));
+    segments.push(...stampAgent(detectBlindEditSegments(group)));
+    segments.push(...stampAgent(detectReReadingSegments(group)));
+  }
 
   let worstSegment: AntiPatternSegment | null = null;
   let worstScore = 0;
@@ -109,15 +157,14 @@ function detectThrashingSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
   return segments;
 }
 
-function detectStuckLoopSegments(timeline: ReplayTimelineEntry[]): AntiPatternSegment[] {
+function detectStuckLoopSegments(group: readonly IndexedEntry[]): AntiPatternSegment[] {
   const segments: AntiPatternSegment[] = [];
   let lastCommand: string | null = null;
-  let runStart = -1;
+  let runStartIndex = -1;
+  let lastMatchIndex = -1;
   let consecutiveCount = 0;
 
-  for (let i = 0; i < timeline.length; i++) {
-    const entry = timeline[i];
-
+  for (const { entry, index } of group) {
     if (entry.toolName === 'Bash' && entry.command != null) {
       if (entry.command === lastCommand) {
         consecutiveCount++;
@@ -125,23 +172,24 @@ function detectStuckLoopSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
         if (lastCommand && consecutiveCount >= STUCK_LOOP_THRESHOLD) {
           segments.push({
             type: 'stuck_loop',
-            startIndex: runStart,
-            endIndex: i - 1,
+            startIndex: runStartIndex,
+            endIndex: lastMatchIndex,
             iterations: consecutiveCount,
             target: lastCommand,
             severity: severity(consecutiveCount),
           });
         }
         lastCommand = entry.command;
-        runStart = i;
+        runStartIndex = index;
         consecutiveCount = 1;
       }
+      lastMatchIndex = index;
     } else {
       if (lastCommand && consecutiveCount >= STUCK_LOOP_THRESHOLD) {
         segments.push({
           type: 'stuck_loop',
-          startIndex: runStart,
-          endIndex: i - 1,
+          startIndex: runStartIndex,
+          endIndex: lastMatchIndex,
           iterations: consecutiveCount,
           target: lastCommand,
           severity: severity(consecutiveCount),
@@ -155,8 +203,8 @@ function detectStuckLoopSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
   if (lastCommand && consecutiveCount >= STUCK_LOOP_THRESHOLD) {
     segments.push({
       type: 'stuck_loop',
-      startIndex: runStart,
-      endIndex: timeline.length - 1,
+      startIndex: runStartIndex,
+      endIndex: lastMatchIndex,
       iterations: consecutiveCount,
       target: lastCommand,
       severity: severity(consecutiveCount),
@@ -166,19 +214,18 @@ function detectStuckLoopSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
   return segments;
 }
 
-function detectBlindEditSegments(timeline: ReplayTimelineEntry[]): AntiPatternSegment[] {
+function detectBlindEditSegments(group: readonly IndexedEntry[]): AntiPatternSegment[] {
   const segments: AntiPatternSegment[] = [];
-  const streaks = new Map<string, { start: number; count: number }>();
+  const streaks = new Map<string, { start: number; count: number; lastIndex: number }>();
 
-  for (let i = 0; i < timeline.length; i++) {
-    const entry = timeline[i];
-
+  for (const { entry, index } of group) {
     if ((entry.toolName === 'Edit' || entry.toolName === 'Write') && entry.filePath) {
       const existing = streaks.get(entry.filePath);
       if (existing) {
         existing.count++;
+        existing.lastIndex = index;
       } else {
-        streaks.set(entry.filePath, { start: i, count: 1 });
+        streaks.set(entry.filePath, { start: index, count: 1, lastIndex: index });
       }
     } else if (entry.toolName === 'Read' && entry.filePath) {
       const streak = streaks.get(entry.filePath);
@@ -186,7 +233,7 @@ function detectBlindEditSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
         segments.push({
           type: 'blind_editing',
           startIndex: streak.start,
-          endIndex: i - 1,
+          endIndex: streak.lastIndex,
           iterations: streak.count,
           target: entry.filePath,
           severity: severity(streak.count),
@@ -203,7 +250,7 @@ function detectBlindEditSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
           segments.push({
             type: 'blind_editing',
             startIndex: streak.start,
-            endIndex: i - 1,
+            endIndex: streak.lastIndex,
             iterations: streak.count,
             target: file,
             severity: severity(streak.count),
@@ -219,7 +266,7 @@ function detectBlindEditSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
       segments.push({
         type: 'blind_editing',
         startIndex: streak.start,
-        endIndex: timeline.length - 1,
+        endIndex: streak.lastIndex,
         iterations: streak.count,
         target: file,
         severity: severity(streak.count),
@@ -230,16 +277,15 @@ function detectBlindEditSegments(timeline: ReplayTimelineEntry[]): AntiPatternSe
   return segments;
 }
 
-function detectReReadingSegments(timeline: ReplayTimelineEntry[]): AntiPatternSegment[] {
+function detectReReadingSegments(group: readonly IndexedEntry[]): AntiPatternSegment[] {
   const segments: AntiPatternSegment[] = [];
   const reads = new Map<string, number[]>();
 
-  for (let i = 0; i < timeline.length; i++) {
-    if (timeline[i].toolName === 'Read' && timeline[i].filePath) {
-      const file = timeline[i].filePath!;
-      const indices = reads.get(file) ?? [];
-      indices.push(i);
-      reads.set(file, indices);
+  for (const { entry, index } of group) {
+    if (entry.toolName === 'Read' && entry.filePath) {
+      const indices = reads.get(entry.filePath) ?? [];
+      indices.push(index);
+      reads.set(entry.filePath, indices);
     }
   }
 

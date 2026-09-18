@@ -47,7 +47,7 @@ export NEW_RELIC_AI_TRANSPORT=both
 
 ## Inbound OTLP Receiver (Proxy Mode)
 
-When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`) and forwarded to NR, linking application traces to the AI session that produced them. Both JSON and protobuf OTLP/HTTP payloads are enriched. Protobuf payloads are decoded and re-encoded through a vendored schema descriptor (`src/proxy/otlp-descriptor.ts`), which carries one caveat: a sender running a newer OTLP schema than the descriptor's vintage (opentelemetry-proto @ dfd0b0e) loses any fields the descriptor does not know about during re-encoding. The JSON path has no such limit. The descriptor file's header documents the exact regeneration command.
+When running in proxy mode, you can also enable an **inbound OTLP receiver** that acts as a local OpenTelemetry Collector. Any OTel-instrumented app pointing at `http://localhost:4318` will have its telemetry enriched with the current coding session context (`ai.session.id`, `ai.developer`, `ai.project_id`, and `ai.team_id` when `teamId` is configured) and forwarded to NR, linking application traces to the AI session that produced them. Both JSON and protobuf OTLP/HTTP payloads are enriched. Protobuf payloads are decoded and re-encoded through a vendored schema descriptor (`src/proxy/otlp-descriptor.ts`), which carries one caveat: a sender running a newer OTLP schema than the descriptor's vintage (opentelemetry-proto @ dfd0b0e) loses any fields the descriptor does not know about during re-encoding. The JSON path has no such limit. The descriptor file's header documents the exact regeneration command.
 
 Add to `~/.newrelic-preflight/config.json`:
 
@@ -141,16 +141,36 @@ With `companionMode: true`:
 
 - **Suppressed** — the whole `ai.cost.*` gauge family (`session_total_usd`, `tokens_input`/`tokens_output`/`tokens_thinking`/`tokens_cache_read`/`tokens_cache_creation`, `cache_savings_usd`, `cost_per_line_of_code`, `cost_per_file_modified`, `report_count`, `estimation_count`, `subagent_usd`, `parent_usd`) is not emitted from `emitSessionGauges()`. Gauges carry no per-datapoint platform attribute, so suppression is the only way to stop the blended-dashboard double-count — there's no field to tag instead.
 - **Tagged, not dropped** — cost-bearing events keep every field they'd normally carry and gain `cost_authority: 'external'`: `AiCodingTask` (when the task's `platform` is `claude-code` — a task from another platform has no OTel twin, so it's left untagged), `AiTurnCost` (when the turn's `platform` is `claude-code` for the same reason), `AiSubagentTurn`, and `AiWorkflowRun` (both are always derived from a Claude Code transcript, so they're tagged unconditionally whenever companion mode is on).
-- **Unchanged** — everything else: task detection, efficiency scoring, anti-pattern detection, the audit trail, context tracking, MCP proxy metrics, and per-repo git outcomes have no OTel equivalent and keep flowing normally. The local dashboard and budget tracking are unaffected too — both read `CostTracker`'s own totals directly, never the exported gauges.
+- **Unchanged** — everything else: task detection, efficiency scoring, anti-pattern detection, the audit trail, context tracking, MCP proxy metrics, and git outcome counts keep flowing normally and are never double-counted. Claude Code's OTel export carries repository and commit identity rather than counts; see [Repository identity across both streams](#repository-identity-across-both-streams). The local dashboard and budget tracking are unaffected too — both read `CostTracker`'s own totals directly, never the exported gauges.
 
 For a blended deployment, treat each signal's canonical source this way:
 
-| Signal                                                                             | Canonical source          |
-| ---------------------------------------------------------------------------------- | ------------------------- |
-| Cost / tokens                                                                      | Claude Code's OTel export |
-| Tasks, efficiency, anti-patterns, audit, context, MCP proxy, per-repo git outcomes | Preflight                 |
+| Signal                                                                                       | Canonical source                                                                                        |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Cost / tokens                                                                                | Claude Code's OTel export                                                                               |
+| Tasks, efficiency, anti-patterns, audit, context, MCP proxy, git outcome counts (`ai.git.*`) | Preflight                                                                                               |
+| Commit identity (SHA, branch)                                                                | Claude Code's OTel export, `vcs.ref.head.*` on `git commit` tool results with `OTEL_LOG_TOOL_DETAILS=1` |
 
 Because cost-bearing fields are tagged rather than removed, reconciliation is still possible — a query that needs Preflight's cost breakdown for some other purpose can filter to `cost_authority = 'external'` and cross-reference against the OTel-sourced total, joined on `session_id` / `session.id`.
+
+### Repository identity across both streams
+
+Claude Code v2.1.269 and later tags its metrics and events with `vcs.repository.url.full`, `vcs.owner.name`, `vcs.repository.name`, and `vcs.provider.name` when `OTEL_METRICS_INCLUDE_REPOSITORY=true` (default `false`). It derives them once per session from the `origin` remote, lowercases the values, and strips credentials.
+
+Preflight's `project_id` carries the same fact in a different shape. `inferProjectId()` in `src/config.ts` keeps the last two path segments of `git remote get-url origin` with case preserved, so a checkout of `https://github.com/NewRelic-Experimental/preflight` reports `project_id = 'NewRelic-Experimental/preflight'` to Preflight and `vcs.owner.name = 'newrelic-experimental'` plus `vcs.repository.name = 'preflight'` to Claude Code's export. The two fields do not string-match, and NRQL has no case-folding function to bridge them. Join on the session id instead and facet Preflight's events by the repository Claude Code reported:
+
+```sql
+FROM AiCodingTask
+  JOIN (FROM Log SELECT latest(`vcs.repository.url.full`) AS repo WHERE `vcs.repository.url.full` IS NOT NULL FACET `session.id` LIMIT MAX)
+  ON session_id = `session.id`
+SELECT count(*) FACET repo
+```
+
+The join also sidesteps GitLab subgroups, where `vcs.owner.name` holds the full group path while `project_id` keeps only the last two segments, so a repo at `group/subgroup/repo` is `group/subgroup` plus `repo` on the Claude Code side and `subgroup/repo` on the Preflight side.
+
+If Claude Code's OTLP export points at Preflight's inbound receiver, the `vcs.*` keys reach New Relic untouched alongside the `ai.session.id`, `ai.developer`, `ai.project_id`, and `ai.team_id` enrichment keys. The receiver appends only the keys it does not find and never renames, drops, or overwrites an attribute the sender set. It speaks HTTP/1.1 only, so gRPC never reaches it. Set `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` or `http/protobuf` on the Claude Code side.
+
+Commit identity lives only in Claude Code's stream. With `OTEL_LOG_TOOL_DETAILS=1`, a successful `git commit` run through the Bash or PowerShell tool adds `vcs.ref.head.revision` (the SHA), `vcs.ref.head.name` (the branch), and `vcs.ref.head.type` to that `claude_code.tool_result` event. Preflight's `ai.git.commit_count`, `ai.git.push_count`, `ai.git.force_push_count`, `ai.git.pr_created`, and `ai.git.pr_merged` gauges count commits, pushes, force-pushes, and PRs but never carry a SHA or branch. The two do not overlap, and companion mode changes neither.
 
 One consequence to plan for: two of the shipped alert conditions query the suppressed gauge family — `alerts/conditions/05-session-cost-budget.json` and `alerts/conditions-personal/02-personal-session-cost.json` both alert on `ai.cost.session_total_usd`. With companion mode on, those conditions receive no data and go quiet. Rebuild the equivalent alerts on Claude Code's OTel cost metrics (the canonical cost source in this deployment), or don't deploy those two conditions.
 
@@ -250,17 +270,13 @@ If `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, or `NEW_RELIC_API_KEY` are s
 
 ## Running `--local` Standalone (No `--stdio` Session)
 
-The subagent/workflow transcript watchers only auto-start under `--stdio` by default (`NR_AI_WATCHER_MODE=stdio`) — a `--local` dashboard process doesn't run its own copy, since a `--stdio` session normally already covers the same data, scoped to itself, and the Today view's spend figures already aggregate every session's _persisted_ totals regardless of which process is currently serving the dashboard. If `watcherActive` is `false` for this reason, the dashboard shows a banner explaining it (distinct from the `NR_AI_ENABLE_SUBAGENT_WATCHER=0` banner, which is an explicit opt-out rather than this mode default).
+The subagent transcript watcher runs in both `--stdio` and `--local` processes. A `--stdio` process watches only its own session; a `--local` process watches every session that does not already have a live `--stdio` owner, so a standalone deployment (container, systemd unit, Raspberry Pi, any platform with no MCP client to auto-launch `--stdio`) tracks subagent cost with no configuration. Set `NR_AI_ENABLE_SUBAGENT_WATCHER=0` to turn it off everywhere.
 
-| Setting                         | What it does                                                                                             | Default  |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------- | -------- |
-| `NR_AI_WATCHER_MODE`            | Which side runs the subagent/workflow transcript watchers — `"stdio"` or `"local"`.                      | `stdio`  |
-| `NR_AI_ENABLE_SUBAGENT_WATCHER` | Set to `0` to disable subagent cost tracking entirely (whichever side owns it per `NR_AI_WATCHER_MODE`). | enabled  |
-| `NR_AI_ENABLE_WORKFLOW_WATCHER` | Set to `1` to enable script-workflow tracking (whichever side owns it per `NR_AI_WATCHER_MODE`).         | disabled |
-
-**When to set `NR_AI_WATCHER_MODE=local` yourself:** if your `--local` process never has a `--stdio` sibling to defer to — a fully standalone deployment (container, systemd unit, or any platform with no MCP client to auto-launch `--stdio`) — nothing else will ever track subagent cost for it. Setting this makes the `--local` process discover and tail every session's subagent transcripts itself.
-
-This is safe to combine with concurrently-running `--stdio` sessions: a `--local` process running with `NR_AI_WATCHER_MODE=local` skips any session that already has a live `--stdio` heartbeat, so it only picks up sessions with no other owner rather than redundantly re-tailing (and racing over the same cursor files as) a session's own scoped watcher.
+| Setting                         | What it does                                           | Default  |
+| ------------------------------- | ------------------------------------------------------ | -------- |
+| `NR_AI_ENABLE_SUBAGENT_WATCHER` | Set to `0` to disable subagent cost tracking entirely. | enabled  |
+| `NR_AI_ENABLE_WORKFLOW_WATCHER` | Set to `1` to enable script-workflow tracking.         | disabled |
+| `NR_AI_WATCHER_DISCOVERY_HOURS` | Cold-scan eligibility window for transcript discovery. | `24`     |
 
 ---
 
@@ -444,6 +460,6 @@ A single failure followed by a success does not count. The streak resets only on
 
 **How to avoid:** Prefer targeted reads over reading whole files you only need to skim once. This penalty is rare in practice — a single Read has to exceed ~20,000 bytes (a genuinely large file) and never lead to an edit of that same file.
 
-### Score floor
+### Normalization and score floor
 
-Even with many penalties the score won't drop below 0.3, so the metric is intended to track trends over time, not penalize individual sessions heavily.
+Penalties are normalized against session size before being applied, one-sided: sessions of 15 calls or fewer apply the raw penalty as-is, while sessions above 15 calls have the raw penalty total scaled down by `15 / totalCalls`, so the same absolute number of violations counts for much less in a 1000-call session. This keeps busy sessions (e.g. many parallel subagent calls) from scoring worse than a short session with an identical defect rate, without the reverse effect of making short sessions score worse than before. After normalization, the score still won't drop below 0.3, so the metric is intended to track trends over time, not penalize individual sessions heavily.

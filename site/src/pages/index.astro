@@ -60,7 +60,15 @@ const logo = `${BASE}/demo/preflight-logo.svg`;
     <link rel="icon" href={logo} type="image/svg+xml" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content={`${SITE_URL}/demo/preflight-logo.svg`} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={`${SITE_URL}/`} />
+    <meta property="og:image" content={`${SITE_URL}/social-preview.png`} />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={`${SITE_URL}/social-preview.png`} />
     <script is:inline>
       // Same storage key and values as Starlight, so a choice made here carries into the docs.
       (() => {

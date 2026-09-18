@@ -1,0 +1,58 @@
+name: CI
+
+# Runs the checks a contributor is expected to run locally before opening a
+# PR (per CLAUDE.md: `npm run build && npm test`), plus lint and the two
+# drift-checker scripts that otherwise never run automatically:
+# check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
+# bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
+# release.yml).
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The suite has an implicit, undocumented dependency on running under
+  # America/New_York (several date/bucket tests construct fixtures from
+  # local-midnight helpers without pinning TZ themselves) — it has only
+  # ever been run on developer machines defaulting to that zone. GitHub
+  # Actions runners default to UTC, which breaks those tests. Pin to the
+  # zone the suite actually assumes rather than debugging each test's
+  # local-time math; the individual tests remain non-portable and are a
+  # separate follow-up.
+  TZ: America/New_York
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Check docs/code inventory drift
+        run: npm run check:docs-inventory
+
+      - name: Check SPA bundle size
+        run: npm run check:bundle-size

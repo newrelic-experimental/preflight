@@ -211,16 +211,84 @@ describe('ToolSelectionScorer', () => {
   it('score has a floor at 0.3 even for terrible sessions', () => {
     const scorer = new ToolSelectionScorer();
     const calls: ToolCallRecord[] = [];
-    // Many redundant reads + repeated failures. Total penalty is capped at 0.7.
-    for (let i = 0; i < 31; i++) {
-      calls.push(makeRecord({ toolName: 'Read', filePath: '/same.ts' }));
-    }
-    for (let i = 0; i < 10; i++) {
+    // 15 consecutive Bash failures (14 penalized) in a 15-call session — at
+    // exactly the reference size, normalization is a no-op, so this is the
+    // same absolute-penalty math as before the #605 fix: 14 * 0.08 = 1.12,
+    // capped at 0.7.
+    for (let i = 0; i < 15; i++) {
       calls.push(makeRecord({ toolName: 'Bash', success: false }));
     }
 
     const metrics = scorer.scoreSession(calls);
     expect(metrics.score).toBe(0.3);
+  });
+
+  it('normalizes penalty by session size: same defect count punishes a large session far less than a small one', () => {
+    const scorer = new ToolSelectionScorer();
+    const buildSession = (totalCalls: number): ToolCallRecord[] => {
+      const calls: ToolCallRecord[] = [];
+      // 12 reads of the same file -> first 2 free, 10 penalized redundant reads.
+      for (let i = 0; i < 12; i++) {
+        calls.push(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+      }
+      // Pad with unrelated successful Bash calls to reach the target session size.
+      while (calls.length < totalCalls) {
+        calls.push(makeRecord({ toolName: 'Bash', command: 'echo ok' }));
+      }
+      return calls;
+    };
+
+    const small = scorer.scoreSession(buildSession(15));
+    const large = scorer.scoreSession(buildSession(1000));
+
+    expect(small.redundantReadCount).toBe(10);
+    expect(large.redundantReadCount).toBe(10);
+    // 15 calls is the reference session size, so behavior there is unchanged
+    // from the pre-normalization absolute penalty (10 * 0.03 = 0.3 -> 0.7).
+    expect(small.score).toBe(0.7);
+    // The same 10 redundant reads in a 1000-call session should barely register.
+    expect(large.score).toBeGreaterThan(0.99);
+  });
+
+  it('does not amplify penalty for sessions below the reference size', () => {
+    const scorer = new ToolSelectionScorer();
+    // 4-call session, 2 penalized redundant reads (0.03 each = 0.06 raw).
+    // Below the 15-call reference size, so this must score exactly as the
+    // raw penalty implies (0.94) — NOT scaled up to (0.06/4)*15=0.225,
+    // which would punish small sessions harder than before, the same
+    // unfairness #605 was filed about, just in the opposite direction.
+    const calls = [
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+      makeRecord({ toolName: 'Read', filePath: '/a.ts' }),
+    ];
+
+    const metrics = scorer.scoreSession(calls);
+    expect(metrics.score).toBe(0.94);
+  });
+
+  it('supports a custom referenceSessionSize', () => {
+    const buildSession = (totalCalls: number): ToolCallRecord[] => {
+      const calls: ToolCallRecord[] = [];
+      for (let i = 0; i < 12; i++) {
+        calls.push(makeRecord({ toolName: 'Read', filePath: '/a.ts' }));
+      }
+      while (calls.length < totalCalls) {
+        calls.push(makeRecord({ toolName: 'Bash', command: 'echo ok' }));
+      }
+      return calls;
+    };
+    const calls = buildSession(200);
+
+    const defaultScore = new ToolSelectionScorer().scoreSession(calls).score;
+    const largerReferenceScore = new ToolSelectionScorer({
+      referenceSessionSize: 100,
+    }).scoreSession(calls).score;
+
+    // A larger referenceSessionSize dilutes less at the same totalCalls, so
+    // the resulting score should be lower (more penalty applied).
+    expect(largerReferenceScore).toBeLessThan(defaultScore);
   });
 
   it('penalizes large output not followed by any referencing call', () => {
@@ -440,5 +508,24 @@ describe('ToolSelectionScorer.combineSummaries', () => {
     expect(combined.unusedOutputCount).toBe(direct.unusedOutputCount);
     expect(combined.penalties).toEqual([]);
     expect(combined.worstOffenders).toEqual([]);
+  });
+
+  it('scores a busy day with many calls far better than a quiet day with the same defect count', () => {
+    const scorer = new ToolSelectionScorer();
+    const quietDay = {
+      score: 0,
+      totalCalls: 20,
+      penalizedCalls: 10,
+      redundantReadCount: 10,
+      repeatedFailureCount: 0,
+      unusedOutputCount: 0,
+    };
+    const busyDay = { ...quietDay, totalCalls: 2000 };
+
+    const quiet = scorer.combineSummaries([quietDay]);
+    const busy = scorer.combineSummaries([busyDay]);
+
+    expect(quiet.score).toBeLessThan(busy.score);
+    expect(busy.score).toBeGreaterThan(0.99);
   });
 });

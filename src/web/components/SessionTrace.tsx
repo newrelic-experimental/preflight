@@ -39,6 +39,7 @@ interface ParentEntry {
   readonly success: boolean;
   readonly filePath?: string;
   readonly command?: string;
+  readonly agentId?: string;
 }
 
 // Anti-pattern highlight spans for the PARENT lane only (thrashing, stuck loop,
@@ -50,6 +51,8 @@ interface ParentSegment {
   readonly startIndex: number;
   readonly endIndex: number;
   readonly severity: 'warning' | 'critical';
+  readonly agentId?: string;
+  readonly agentScoped?: boolean;
 }
 
 export interface SessionTraceProps {
@@ -768,7 +771,7 @@ function AgentCallsGantt({
 }): JSX.Element {
   const { data, isLoading, isError } = useQuery({
     queryKey: qk.agentCalls(sessionId, agentId),
-    queryFn: () => fetchAgentCalls(sessionId, agentId),
+    queryFn: ({ signal }) => fetchAgentCalls(sessionId, agentId, signal),
     retry: false,
   });
 
@@ -1045,7 +1048,7 @@ function AgentCallsList({
 }): JSX.Element {
   const { data, isLoading, isError } = useQuery({
     queryKey: qk.agentCalls(sessionId, agentId),
-    queryFn: () => fetchAgentCalls(sessionId, agentId),
+    queryFn: ({ signal }) => fetchAgentCalls(sessionId, agentId, signal),
     retry: false,
   });
 

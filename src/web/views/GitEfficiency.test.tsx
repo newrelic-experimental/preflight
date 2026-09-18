@@ -904,6 +904,79 @@ describe('GitEfficiency view — scope breadcrumb', () => {
     expect(screen.queryByRole('button', { name: '0' })).toBeNull();
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
+
+  it('shows PR counts per worktree with merged count qualifier', async () => {
+    const metricsWithPrs = {
+      ...BASE_METRICS,
+      prMetrics: { ...BASE_METRICS.prMetrics, created: 3, merged: 2 },
+    };
+    renderGitEfficiency(
+      makeReport({
+        rows: [{ identity: IDENTITY_A, metrics: metricsWithPrs }],
+      }),
+    );
+    await screen.findByText('Repos & Worktrees');
+    // Find all instances of "3 (2 merged)" — there should be at least 2
+    // (repo header and worktree row since they're identical)
+    const matches = screen.getAllByText('3 (2 merged)');
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows just the created count when no PRs are merged', async () => {
+    const metricsWithPrs = {
+      ...BASE_METRICS,
+      prMetrics: { ...BASE_METRICS.prMetrics, created: 3, merged: 0 },
+    };
+    renderGitEfficiency(
+      makeReport({
+        rows: [{ identity: IDENTITY_A, metrics: metricsWithPrs }],
+      }),
+    );
+    await screen.findByText('Repos & Worktrees');
+    // Look for standalone "3" in table cells (not "3 worktrees" or "3 (merged)")
+    const cells = screen.getAllByText('3');
+    expect(cells.length).toBeGreaterThan(0);
+  });
+
+  it('shows a dash when no PRs are created', async () => {
+    const metricsWithNoPrs = {
+      ...BASE_METRICS,
+      prMetrics: { ...BASE_METRICS.prMetrics, created: 0, merged: 0 },
+    };
+    renderGitEfficiency(
+      makeReport({
+        rows: [{ identity: IDENTITY_A, metrics: metricsWithNoPrs }],
+      }),
+    );
+    await screen.findByText('Repos & Worktrees');
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('aggregates PR counts across worktrees in a repo header', async () => {
+    const metricsA = {
+      ...BASE_METRICS,
+      prMetrics: { ...BASE_METRICS.prMetrics, created: 2, merged: 1 },
+    };
+    const metricsB = {
+      ...BASE_METRICS,
+      prMetrics: { ...BASE_METRICS.prMetrics, created: 1, merged: 0 },
+    };
+    renderGitEfficiency(
+      makeReport({
+        rows: [
+          { identity: IDENTITY_A, metrics: metricsA },
+          { identity: IDENTITY_B, metrics: metricsB },
+        ],
+      }),
+    );
+    await screen.findByText('Repos & Worktrees');
+    // Repo header should show 3 created, 1 merged: "3 (1 merged)"
+    const headerMatches = screen.getAllByText('3 (1 merged)');
+    expect(headerMatches.length).toBeGreaterThanOrEqual(1);
+    // Individual rows should show their own counts
+    const rowMatches = screen.getAllByText('2 (1 merged)');
+    expect(rowMatches.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe('GitEfficiency view — "behind" KPI scope-dependent behavior', () => {

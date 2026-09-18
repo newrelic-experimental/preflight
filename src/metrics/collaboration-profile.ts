@@ -3,14 +3,17 @@
  * historical session data to characterize how a developer works with AI.
  *
  * Dimensions (each normalized to 0–1):
- *   1. Specificity — how detailed are the developer's prompts?
+ *   1. Specificity — tool-calls-per-message fan-out (a delegation proxy, not
+ *      actually a measure of prompt detail — see computeSpecificity()'s doc
+ *      comment)
  *   2. Autonomy — how independently does the AI work?
  *   3. Correction Rate — how rarely does the developer redirect the AI? (inverted)
  *   4. Task Complexity — how complex are the tasks given to the AI?
  *
  * Classifications based on dimension thresholds:
  *   - "Power User": high specificity + high autonomy
- *   - "Delegator": low specificity + high autonomy
+ *   - "Delegator": high autonomy + real subagent delegation (agentSpawns),
+ *      not the specificity/autonomy ratio alone — see classify()'s comment
  *   - "Learning": low specificity + frequent corrections
  *   - "Collaborative": everything else
  */
@@ -76,7 +79,7 @@ export class CollaborationProfiler {
 
     const dimensions = computeDimensions(sessions);
     const weeklyProfiles = computeWeeklyProfiles(sessions);
-    const classification = classify(dimensions);
+    const classification = classify(dimensions, hasRealDelegation(sessions));
 
     return {
       developer,
@@ -216,6 +219,19 @@ function computeDimensions(sessions: FullSessionSummary[]): ProfileDimensions {
 /**
  * Specificity: ratio of tool calls to user messages, normalized so 10:1 = 1.0.
  * When userMessages is 0, falls back to 0.5 (unknown).
+ *
+ * KNOWN LIMITATION: despite the name, this does not measure prompt
+ * detail/specificity — it measures how many tool calls a message fanned out
+ * to, which is really a delegation/fan-out signal. A terse, ambiguous prompt
+ * that happens to trigger a long autonomous run scores as "highly specific"
+ * here, and a carefully detailed prompt for a small change scores low. A
+ * real fix needs actual prompt content/length, which isn't reliably
+ * available session-wide (only `sessionIntent`, the first prompt only, and
+ * only when recordContent was enabled). Not corrected here — treat this
+ * dimension as a fan-out proxy, not a measure of prompt quality. It also
+ * shares `toolCalls` as its numerator with `computeAutonomy` and one term of
+ * `computeTaskComplexity` below, making the three dimensions collinear
+ * rather than independent — also not corrected here.
  */
 function computeSpecificity(toolCalls: number, userMessages: number): number {
   if (userMessages === 0) return 0.5;
@@ -227,6 +243,13 @@ function computeSpecificity(toolCalls: number, userMessages: number): number {
  * Autonomy: tool calls per assistant message, normalized so 5 tool calls/turn = 1.0.
  * Measures how much multi-step work the AI does independently per turn.
  * When assistantMessages is 0, falls back to 0.5 (neutral/unknown).
+ *
+ * KNOWN LIMITATION: the "5 tool calls/turn = max" saturation point
+ * predates routine parallel tool-call blocks, which commonly exceed it —
+ * pinning this near 1.0 for most modern sessions and making `autonomy < 0.5`
+ * gates elsewhere (prompt-feedback.ts, recommendation-engine.ts) nearly
+ * unreachable. Re-deriving that constant needs to happen together with
+ * those downstream gates, not in isolation, so it isn't changed here.
  */
 function computeAutonomy(toolCalls: number, assistantMessages: number): number {
   if (assistantMessages === 0) return 0.5;
@@ -272,11 +295,30 @@ function computeTaskComplexity(
 // Classification
 // ---------------------------------------------------------------------------
 
-function classify(dimensions: ProfileDimensions): string {
+// A developer only counts as genuinely delegating when subagent spawns
+// actually happened, not merely when specificity is low and autonomy is
+// high — that combination algebraically reduces to a chatty,
+// high-user-message-count session (the opposite of delegating), since both
+// dimensions share `toolCalls` as their numerator. Hand-picked judgment
+// call: averaging at least one real subagent spawn per task.
+const AVG_AGENT_SPAWNS_FOR_DELEGATION = 1;
+
+function hasRealDelegation(sessions: FullSessionSummary[]): boolean {
+  let totalAgentSpawns = 0;
+  let totalTasks = 0;
+  for (const s of sessions) {
+    totalAgentSpawns += s.agentSpawns;
+    totalTasks += s.taskCount;
+  }
+  if (totalTasks === 0) return false;
+  return totalAgentSpawns / totalTasks >= AVG_AGENT_SPAWNS_FOR_DELEGATION;
+}
+
+function classify(dimensions: ProfileDimensions, delegates: boolean): string {
   const { specificity, autonomy, correctionRate } = dimensions;
 
   if (specificity >= 0.6 && autonomy >= 0.6) return 'Power User';
-  if (specificity < 0.6 && autonomy >= 0.6) return 'Delegator';
+  if (delegates && autonomy >= 0.6) return 'Delegator';
   if (specificity < 0.6 && autonomy < 0.6 && correctionRate < 0.6) return 'Learning';
   return 'Collaborative';
 }

@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 
 import { useAnimatedValue } from '../hooks/useAnimatedValue';
 
@@ -14,7 +14,7 @@ const TONE: Record<KpiTone, string> = {
 export interface KpiProps {
   readonly label: string;
   readonly value: string;
-  readonly sub?: string;
+  readonly sub?: ReactNode;
   readonly tone?: KpiTone;
   readonly hero?: boolean;
   readonly animate?: boolean;

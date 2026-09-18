@@ -35,6 +35,8 @@ const logger = createLogger('trend-analyzer');
 export interface WeeklyDataPoint {
   readonly week: string;
   readonly value: number;
+  /** Number of sessions this week's value was aggregated from. */
+  readonly sessionCount: number;
 }
 
 export interface AntiPatternWeeklyPoint {
@@ -178,6 +180,15 @@ interface WeekAggregates {
   efficiency: number | null;
   cost: number;
   taskSuccess: number;
+  /**
+   * Raw tool-calls-per-task rate — descriptive only. Unlike cost or task
+   * success, this has no reliable "higher/lower is better" direction:
+   * prompt-cache reads dominate real cost, not raw call count, and a
+   * CLAUDE.md change that makes the agent verify more thoroughly or
+   * delegate to subagents legitimately raises it. Do not derive an
+   * improved/degraded signal from `weeklyToolCallTrend` or
+   * `WeekComparison.toolCallDelta`/`toolCallPctChange` below.
+   */
   toolCallsPerTask: number;
   antiPatterns: Record<string, number>;
 }
@@ -263,6 +274,30 @@ function confidenceForSampleSize(n: number): ModelRecommendationConfidence {
   return 'insufficient_data';
 }
 
+/**
+ * The model a session's efficiency score can be attributed to, or `null`
+ * when it can't be attributed to exactly one. A session that ran more than
+ * one model (e.g. an orchestrator model plus one or more subagent models,
+ * per `modelBreakdown`) can't have its single session-level score credited
+ * or blamed on any one of them without misattributing it — so such sessions
+ * are excluded from the per-model ranking below rather than collapsed onto
+ * `s.model`. Falls back to the legacy single `s.model` label when
+ * `modelBreakdown` is empty (sessions persisted before per-model breakdown
+ * tracking existed).
+ */
+function getSessionModelKey(s: FullSessionSummary): string | null {
+  const breakdownModels = Object.keys(s.modelBreakdown);
+  if (breakdownModels.length > 1) return null;
+  if (breakdownModels.length === 1) return breakdownModels[0]!;
+  return s.model;
+}
+
+// NOTE: this ranking is also confounded by task-difficulty selection bias —
+// harder work tends to get routed to a stronger model, which lowers that
+// model's apparent efficiency score independent of the model itself. There's
+// no task-difficulty signal available to stratify on today, so this isn't
+// corrected here; the caveat is surfaced in the recommendation text instead
+// (see RecommendationEngine.getModelRecommendations()).
 function rankModelsForSessions(sessions: FullSessionSummary[]): {
   ranked: ModelOutcomeStats[];
   recommendedModel: string | null;
@@ -270,10 +305,11 @@ function rankModelsForSessions(sessions: FullSessionSummary[]): {
 } {
   const byModel = new Map<string, FullSessionSummary[]>();
   for (const s of sessions) {
-    if (!s.model) continue;
-    const group = byModel.get(s.model) ?? [];
+    const model = getSessionModelKey(s);
+    if (!model) continue;
+    const group = byModel.get(model) ?? [];
     group.push(s);
-    byModel.set(s.model, group);
+    byModel.set(model, group);
   }
 
   const ranked: ModelOutcomeStats[] = [];
@@ -357,19 +393,21 @@ export class TrendAnalyzer {
     const weeklyCacheHitRateTrend: WeeklyDataPoint[] = [];
 
     for (const week of sortedWeeks) {
-      const agg = aggregateWeek(weekGroups.get(week)!);
+      const weekSessions = weekGroups.get(week)!;
+      const sessionCount = weekSessions.length;
+      const agg = aggregateWeek(weekSessions);
 
       if (agg.efficiency !== null) {
-        weeklyEfficiencyTrend.push({ week, value: agg.efficiency });
+        weeklyEfficiencyTrend.push({ week, value: agg.efficiency, sessionCount });
       }
-      weeklyCostTrend.push({ week, value: agg.cost });
-      weeklyTaskSuccessTrend.push({ week, value: agg.taskSuccess });
-      weeklyToolCallTrend.push({ week, value: agg.toolCallsPerTask });
+      weeklyCostTrend.push({ week, value: agg.cost, sessionCount });
+      weeklyTaskSuccessTrend.push({ week, value: agg.taskSuccess, sessionCount });
+      weeklyToolCallTrend.push({ week, value: agg.toolCallsPerTask, sessionCount });
       weeklyAntiPatternTrend.push({ week, counts: agg.antiPatterns });
 
-      const cacheHitRate = aggregateWeekCacheHitRate(weekGroups.get(week)!);
+      const cacheHitRate = aggregateWeekCacheHitRate(weekSessions);
       if (cacheHitRate !== null) {
-        weeklyCacheHitRateTrend.push({ week, value: round(cacheHitRate, 4) });
+        weeklyCacheHitRateTrend.push({ week, value: round(cacheHitRate, 4), sessionCount });
       }
     }
 

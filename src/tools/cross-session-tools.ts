@@ -332,6 +332,7 @@ export function handleGetSessionHistory(
     task_count: s.taskCount,
     outcome: s.outcome,
     model: s.model,
+    skills: Object.keys(s.skillBreakdown ?? {}).sort(),
   }));
 
   return {

@@ -4,8 +4,8 @@
  * The score is a weighted average of four components, each in [0, 1]:
  *   1. Speed:                linesChanged / taskDuration, normalized to 1 line/s = 1.0
  *   2. Correctness:          test pass rate during the task (0.5 default if no tests)
- *   3. Autonomy:             1 - (userQuestions / toolCalls)
- *   4. First-attempt quality: 1 - (thrashIterations / 3), floored at 0
+ *   3. Autonomy:             1 free clarifying question, then 1 - (excessQuestions / 4)
+ *   4. First-attempt quality: 1 - (worstAntiPatternSeverity / 10), across all anti-pattern types
  *
  * Speed carries a deliberately small default weight (0.10 vs. 0.30 for the
  * other three) — a raw lines/duration ratio rewards bulk regeneration as much
@@ -71,6 +71,27 @@ const DEFAULT_FIRST_ATTEMPT_QUALITY_WEIGHT = 0.3;
 const DEFAULT_SPEED_BASELINE_LPS = 1; // 1 line per second = perfect speed
 
 const MAX_SCORES = 1_000;
+
+// A single clarifying question on a genuinely ambiguous task is correct
+// behavior, not an efficiency failure, so it isn't penalized at all.
+// Hand-picked judgment call (not derived from data, like the other
+// threshold/scale constants in this codebase) — tune here if it fires too
+// often or too rarely in practice.
+const AUTONOMY_FREE_QUESTIONS = 1;
+// Each question beyond the free one costs 1/4 of the autonomy component,
+// independent of the task's tool-call count — unlike the ratio this
+// replaces, this doesn't swing 33x for the identical behavior depending on
+// unrelated task size.
+const AUTONOMY_QUESTION_PENALTY_SCALE = 4;
+
+// Every anti-pattern detector only reports an occurrence once its own
+// severity count meets its detection threshold (anti-patterns.ts's
+// *_THRESHOLD constants, all 3) — so a detected pattern's severity is always
+// >= 3. A ceiling well above that shared floor turns "any detected pattern"
+// into a gradient instead of arithmetic that can only ever yield 0 or 1.
+// Hand-picked judgment call, consistent with the threshold-of-3 convention
+// used across anti-patterns.ts.
+const FIRST_ATTEMPT_QUALITY_SEVERITY_CEILING = 10;
 
 // ---------------------------------------------------------------------------
 // EfficiencyScorer
@@ -320,30 +341,44 @@ export class EfficiencyScorer implements Resettable {
   }
 
   /**
-   * Autonomy: 1 - (userQuestions / toolCalls). 1.0 if no questions asked.
+   * Autonomy: a single clarifying question is free (not penalized — asking
+   * when a task is genuinely ambiguous is correct behavior); each question
+   * beyond that costs 1/AUTONOMY_QUESTION_PENALTY_SCALE. Deliberately
+   * independent of toolCallCount — normalizing by tool-call count made the
+   * same single question swing the score up to 33x differently purely based
+   * on unrelated task size.
    */
   private computeAutonomy(task: AiCodingTask): number {
-    if (task.toolCallCount === 0) return 1;
     if (task.askedUserQuestions === 0) return 1;
-    return clamp(1 - task.askedUserQuestions / task.toolCallCount, 0, 1);
+    const excessQuestions = Math.max(0, task.askedUserQuestions - AUTONOMY_FREE_QUESTIONS);
+    return clamp(1 - excessQuestions / AUTONOMY_QUESTION_PENALTY_SCALE, 0, 1);
   }
 
   /**
-   * First-attempt quality: 1 - (maxThrashIterations / 3), floored at 0.
-   * If no anti-patterns provided or no thrashing, score is 1.0.
+   * First-attempt quality: 1 - (worstSeverity / FIRST_ATTEMPT_QUALITY_SEVERITY_CEILING),
+   * where worstSeverity is the highest severity count across ALL detected
+   * anti-pattern types for the task (thrashing iterations, re-read count,
+   * stuck-loop repeat count, blind-edit count, over-delegation agent
+   * count) — not just thrashing. If no anti-patterns are provided or none
+   * were detected, score is 1.0.
    */
   private computeFirstAttemptQuality(antiPatterns?: AntiPattern[]): number {
     if (!antiPatterns || antiPatterns.length === 0) return 1;
 
-    let maxIterations = 0;
+    let worstSeverity = 0;
     for (const pattern of antiPatterns) {
-      if (pattern.type === 'thrashing' && pattern.iterations != null) {
-        maxIterations = Math.max(maxIterations, pattern.iterations);
-      }
+      const severity =
+        pattern.iterations ??
+        pattern.readCount ??
+        pattern.repeatCount ??
+        pattern.editCount ??
+        pattern.agentCount ??
+        0;
+      worstSeverity = Math.max(worstSeverity, severity);
     }
 
-    if (maxIterations === 0) return 1;
-    return clamp(1 - maxIterations / 3, 0, 1);
+    if (worstSeverity === 0) return 1;
+    return clamp(1 - worstSeverity / FIRST_ATTEMPT_QUALITY_SEVERITY_CEILING, 0, 1);
   }
 
   private appendScore(score: EfficiencyScore): void {

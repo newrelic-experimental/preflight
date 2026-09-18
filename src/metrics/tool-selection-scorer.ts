@@ -58,6 +58,7 @@ export interface ToolSelectionScorerOptions {
   readonly unusedOutputPenalty?: number;
   readonly unusedOutputSizeThreshold?: number;
   readonly worstOffenderCount?: number;
+  readonly referenceSessionSize?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,12 @@ const DEFAULT_REPEATED_FAILURE_PENALTY = 0.08;
 const DEFAULT_UNUSED_OUTPUT_PENALTY = 0.04;
 const DEFAULT_UNUSED_OUTPUT_SIZE_THRESHOLD = 20000;
 const DEFAULT_WORST_OFFENDER_COUNT = 10;
+// Session size (in tool calls) at or below which normalization is a no-op;
+// above it, penalties are diluted in proportion to size — see
+// normalizePenalty(). Chosen to match the illustrative example this
+// normalization is designed to fix (a 15-call session with 10 redundant
+// reads applies the raw, pre-normalization penalty unchanged).
+const DEFAULT_REFERENCE_SESSION_SIZE = 15;
 
 // Tools whose output is terminal — they perform an action and their output is
 // a confirmation or result, not raw data to be consumed by later tool calls.
@@ -118,6 +125,7 @@ export class ToolSelectionScorer {
   private readonly unusedOutputPenalty: number;
   private readonly unusedOutputSizeThreshold: number;
   private readonly worstOffenderCount: number;
+  private readonly referenceSessionSize: number;
 
   constructor(options?: ToolSelectionScorerOptions) {
     this.redundantReadPenalty = options?.redundantReadPenalty ?? DEFAULT_REDUNDANT_READ_PENALTY;
@@ -127,6 +135,29 @@ export class ToolSelectionScorer {
     this.unusedOutputSizeThreshold =
       options?.unusedOutputSizeThreshold ?? DEFAULT_UNUSED_OUTPUT_SIZE_THRESHOLD;
     this.worstOffenderCount = options?.worstOffenderCount ?? DEFAULT_WORST_OFFENDER_COUNT;
+    this.referenceSessionSize = options?.referenceSessionSize ?? DEFAULT_REFERENCE_SESSION_SIZE;
+  }
+
+  /**
+   * Normalizes a raw summed penalty by session size, one-sided: sessions AT
+   * OR BELOW `referenceSessionSize` calls apply the raw penalty as-is
+   * (identical to the pre-normalization absolute penalty), while sessions
+   * ABOVE it get the penalty diluted in proportion to size — a 1000-call
+   * session with 10 redundant reads is punished far less than a 15-call
+   * session with the same 10 redundant reads. This is deliberately one-sided
+   * (`Math.min(1, referenceSessionSize / totalCalls)`, never > 1): the
+   * problem being fixed is large/busy sessions scoring worse than small ones
+   * for an identical defect count, not small sessions scoring better — a
+   * two-sided scale would fix the former by introducing the same unfairness
+   * in the other direction (amplifying penalties for small sessions instead
+   * of leaving them untouched). The result is still capped at 0.7 (floor of
+   * 0.3) so even a session dense with violations relative to its own size
+   * isn't scored as a total failure.
+   */
+  private normalizePenalty(rawPenalty: number, totalCalls: number): number {
+    if (totalCalls <= 0) return 0;
+    const scale = Math.min(1, this.referenceSessionSize / totalCalls);
+    return Math.min(rawPenalty * scale, 0.7);
   }
 
   scoreSession(toolCalls: readonly ToolCallRecord[]): ToolSelectionMetrics {
@@ -157,11 +188,7 @@ export class ToolSelectionScorer {
     penalties.push(...this.findUnusedOutputs(toolCalls));
 
     const rawPenalty = penalties.reduce((sum, p) => sum + p.penaltyScore, 0);
-    // Normalize: cap penalty contribution relative to session size so that a
-    // 1000-call session with 10 redundant reads isn't unfairly punished the
-    // same as a 15-call session with 10 redundant reads. Effective penalty is
-    // at most 70% (floor of 0.3 ensures even bad sessions aren't demoralizingly low).
-    const totalPenalty = Math.min(rawPenalty, 0.7);
+    const totalPenalty = this.normalizePenalty(rawPenalty, toolCalls.length);
     const score = Math.max(0, Math.round((1 - totalPenalty) * 1000) / 1000);
 
     const worstOffenders = [...penalties]
@@ -219,7 +246,7 @@ export class ToolSelectionScorer {
       redundantReadCount * this.redundantReadPenalty +
       repeatedFailureCount * this.repeatedFailurePenalty +
       unusedOutputCount * this.unusedOutputPenalty;
-    const totalPenalty = Math.min(rawPenalty, 0.7);
+    const totalPenalty = this.normalizePenalty(rawPenalty, totalCalls);
     const score = Math.max(0, Math.round((1 - totalPenalty) * 1000) / 1000);
 
     return {

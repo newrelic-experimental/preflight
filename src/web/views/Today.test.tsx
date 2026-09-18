@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Today } from './Today';
+import { Today, aggregateAttentionFlags, bucketByHour, buildSpendTodaySeries } from './Today';
 import { useLiveStore } from '../store/liveStore';
 import { qk } from '../api/client';
 import { localStartOfDay } from '../../lib/date.js';
@@ -53,7 +53,7 @@ describe('Today view', () => {
   it('renders the four KPI labels', () => {
     renderToday();
     expect(screen.getByText('spend today')).toBeInTheDocument();
-    expect(screen.getByText('tool calls')).toBeInTheDocument();
+    expect(screen.getByText('sessions today')).toBeInTheDocument();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
     expect(screen.getByText('flags')).toBeInTheDocument();
   });
@@ -68,72 +68,17 @@ describe('Today view', () => {
     expect(screen.getByText('efficiency')).toBeInTheDocument();
   });
 
-  it('renders an anti-pattern banner when patterns exist', () => {
+  it('renders the spend chart before Needs attention in page order', async () => {
     renderToday();
-    expect(screen.getByText(/thrashing/i)).toBeInTheDocument();
-    expect(screen.getByText(/auth\.ts/)).toBeInTheDocument();
+    const spendHeading = await screen.findByText('Spend by hour');
+    const attentionHeading = await screen.findByText('Needs attention');
+    expect(
+      spendHeading.compareDocumentPosition(attentionHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
-  it('hides the banner when no anti-patterns', () => {
-    useLiveStore.setState({ antiPatterns: [] });
-    renderToday();
-    expect(screen.queryByText(/thrashing/i)).toBeNull();
-  });
-
-  it('renders a generic fallback banner when the flags KPI is nonzero but every anti-pattern source is empty', async () => {
-    useLiveStore.setState({ antiPatterns: [] });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify({ antiPatternCount: 3 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-    expect(await screen.findByText(/3 flag\(s\) detected today/i)).toBeInTheDocument();
-  });
-
-  it('does not show a retry-detector tokens-wasted annotation on the thrashing banner', async () => {
-    // Even when a retry-alerts entry happens to share a name with the
-    // anti-pattern's file-path target, the banner must not cross-reference
-    // it — RetryDetector groups by literal tool name, an unrelated key.
-    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }] });
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url === '/api/retry-alerts') {
-        return new Response(
-          JSON.stringify({
-            alerts: [
-              {
-                toolName: 'auth.ts',
-                occurrences: 4,
-                windowSize: 5,
-                similarity: 0.9,
-                tokensWastedEstimate: 750,
-                timestamp: Date.now(),
-              },
-            ],
-            totalTokensWasted: 750,
-            totalAlertsEmitted: 1,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    renderToday();
-    expect(await screen.findByText(/thrashing/i)).toBeInTheDocument();
-    expect(screen.queryByText(/tokens wasted/i)).toBeNull();
-  });
+  // Anti-pattern/flag rendering moved to the "Needs attention" panel — see
+  // the dedicated "Today view — Needs attention panel" describe block below.
 
   function stubTurnCostsAndDecisionTree(turnCount = 1): void {
     globalThis.fetch = vi.fn(async (input) => {
@@ -465,7 +410,7 @@ describe('Today view', () => {
     expect(trigger.textContent).toBe('session detail →');
   });
 
-  it('renders a real count for stuck_loop via the API-fallback path, not "?"', async () => {
+  it('renders a real count for stuck_loop via the API-fallback path, humanized as a pill', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/anti-patterns') {
@@ -480,11 +425,11 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    await waitFor(() => expect(screen.getByText(/5× on/)).toBeInTheDocument());
-    expect(screen.queryByText(/\?× on/)).toBeNull();
+    expect(await screen.findByText('Stuck loop ×5')).toBeInTheDocument();
+    expect(screen.getByText('npm test')).toBeInTheDocument();
   });
 
-  it('renders a real count for blind_editing via the API-fallback path, not "?"', async () => {
+  it('renders a real count for blind_editing via the API-fallback path, humanized as a pill', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/anti-patterns') {
@@ -499,11 +444,11 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    await waitFor(() => expect(screen.getByText(/3× on/)).toBeInTheDocument());
-    expect(screen.queryByText(/\?× on/)).toBeNull();
+    expect(await screen.findByText('Blind editing ×3')).toBeInTheDocument();
+    expect(screen.getByText('app.ts')).toBeInTheDocument();
   });
 
-  it('renders a real count for over_delegation via the API-fallback path, not "?"', async () => {
+  it('renders a real count for over_delegation with no target suffix when the source has none', async () => {
     useLiveStore.setState({ antiPatterns: [] });
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/anti-patterns') {
@@ -518,8 +463,10 @@ describe('Today view', () => {
       });
     }) as typeof fetch;
     renderToday();
-    await waitFor(() => expect(screen.getByText(/7× on/)).toBeInTheDocument());
-    expect(screen.queryByText(/\?× on/)).toBeNull();
+    // No file/command on this source → target resolves to 'unknown', which
+    // AttentionStrip suppresses rather than rendering "on unknown".
+    expect(await screen.findByText('Over-delegation ×7')).toBeInTheDocument();
+    expect(screen.queryByText(/on unknown/)).toBeNull();
   });
 
   it('renders anti-pattern detail from a persisted session when no live/API detail exists', async () => {
@@ -556,8 +503,8 @@ describe('Today view', () => {
 
     renderToday();
 
-    await waitFor(() => expect(screen.getByText(/6× on/)).toBeInTheDocument());
-    expect(screen.getByText(/npm run build/)).toBeInTheDocument();
+    expect(await screen.findByText('Stuck loop ×6')).toBeInTheDocument();
+    expect(screen.getByText('npm run build')).toBeInTheDocument();
   });
 
   it('does not show the empty state while concurrency/heatmap/liveSessions are still pending', async () => {
@@ -611,58 +558,12 @@ describe('Today view', () => {
     expect(screen.queryByText(/No activity yet today/)).toBeNull();
   });
 
-  it('renders the forecast-EOD card with the projected end-of-day spend', () => {
-    renderToday();
-    expect(screen.getByText(/forecast/i)).toBeInTheDocument();
-    expect(screen.getByText('$18.40')).toBeInTheDocument();
-  });
-
-  it('shows the delta from current spend to forecast', () => {
-    // todayTotal=12.17, forecastEodUsd=18.4 → delta=6.23
-    renderToday();
-    expect(screen.getByText(/\+\$6\.23/)).toBeInTheDocument();
-  });
-
-  // After 45b17db the forecast is clamped to at least todayTotal (you can't
-  // un-spend money), so a raw forecast below current spend renders the
-  // clamped value with an "on pace" annotation (delta ≤ 0 branch in
-  // ForecastEodCard) — never a negative delta.
-  it('clamps forecast to todayTotal when raw forecast is lower', () => {
+  it('shows no end-of-day projection on the spend KPI when the forecast is not above current spend', () => {
     useLiveStore.setState({
       cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 8 },
     });
     renderToday();
-    // Clamped forecast = todayTotal = 10, delta is zero → "on pace"
-    expect(screen.getByText(/on pace/)).toBeInTheDocument();
-    // Legacy bug substrings must never appear
-    expect(screen.queryByText(/\+\$-2\.00/)).toBeNull();
-    expect(screen.queryByText(/\+\$0\.00/)).toBeNull();
-    // Raw (uncramped) forecast value must not surface either
-    expect(screen.queryByText(/\$8\.00/)).toBeNull();
-  });
-
-  it('still renders a positive delta with "+$"', () => {
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 10, forecastEodUsd: 12 },
-    });
-    renderToday();
-    expect(screen.getByText(/\+\$2\.00/)).toBeInTheDocument();
-  });
-
-  it('shows an "insufficient data" message when forecast is null', () => {
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3.42, todayTotalUsd: 12.17, forecastEodUsd: null },
-    });
-    renderToday();
-    expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
-    // Should not display a dollar value for the forecast.
-    expect(screen.queryByText(/\$18\.40/)).toBeNull();
-  });
-
-  it('shows insufficient-data when cost has not loaded', () => {
-    useLiveStore.setState({ cost: null });
-    renderToday();
-    expect(screen.getByText(/insufficient data/i)).toBeInTheDocument();
+    expect(screen.queryByText(/by end of day/)).toBeNull();
   });
 
   it('falls back to the cross-process aggregate forecast when the SSE cost push is unavailable', async () => {
@@ -682,9 +583,7 @@ describe('Today view', () => {
     }) as typeof fetch;
 
     renderToday();
-    await waitFor(() => expect(screen.getByText('$8.00')).toBeInTheDocument());
-    // delta = 8 - 5 = 3
-    expect(screen.getByText(/\+\$3\.00/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/^→ \$8\.00 by end of day/)).toBeInTheDocument());
   });
 
   function stubObservabilityHealth(body: Record<string, unknown>): void {
@@ -703,64 +602,32 @@ describe('Today view', () => {
     }) as typeof fetch;
   }
 
-  it('shows the env-var-disabled banner when watcherDisabledReason is env_var', async () => {
-    stubObservabilityHealth({
-      watcherActive: false,
-      watcherDisabledByLock: false,
-      watcherDisabledReason: 'env_var',
-    });
-
-    renderToday();
-    expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
-    expect(screen.getByText(/NR_AI_ENABLE_SUBAGENT_WATCHER=0/)).toBeInTheDocument();
-  });
-
-  it('falls back to the env-var-disabled banner when watcherDisabledReason is absent (older server)', async () => {
-    // No watcherDisabledReason field at all — simulates a dashboard daemon
-    // running an older build that predates this field. Must not silently
-    // hide the (still broadly correct) message in that case.
+  it('shows the muted watcher-off line when watcherActive is false and no subagent turns have been recorded', async () => {
+    // Both watcherDisabledReason variants (env_var, mode_mismatch) collapse
+    // into the same single condition and the same muted line — the reason
+    // no longer changes what's displayed.
     stubObservabilityHealth({ watcherActive: false, watcherDisabledByLock: false });
 
     renderToday();
-    expect(await screen.findByText(/subagent cost tracking is disabled/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Subagent cost tracking is disabled/)).toBeInTheDocument();
   });
 
-  it('shows a mode-mismatch banner (not the env-var message) when watcherDisabledReason is mode_mismatch', async () => {
-    // This is the --local dashboard daemon's default state: the watcher only
-    // auto-starts in --stdio mode, so watcherActive is false here by design,
-    // NOT because NR_AI_ENABLE_SUBAGENT_WATCHER is set to 0. Telling the user
-    // to unset a variable that was never set would be actively misleading.
-    stubObservabilityHealth({
-      watcherActive: false,
-      watcherDisabledByLock: false,
-      watcherDisabledReason: 'mode_mismatch',
-    });
-
-    renderToday();
-    expect(await screen.findByText(/subagent activity from other sessions/i)).toBeInTheDocument();
-    expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
-    expect(screen.queryByText(/NR_AI_ENABLE_SUBAGENT_WATCHER=0/)).toBeNull();
-  });
-
-  it('does not show the watcher-disabled banner when the cross-session aggregate reports nonzero subagent turns, even though the live SSE turn count is 0', async () => {
-    // The live-only subagentStats.turns stays 0 in this test (no SSE frames
-    // are ever pushed for it) while the polled aggregate endpoint — the same
-    // one the "subagent spend" KPI above these banners already falls back
-    // to — reports turns for today. The gate must agree with that KPI.
+  it('does not show the watcher-disabled banner when the cross-session aggregate reports nonzero subagent spend, even though its turn count is 0', async () => {
+    // aggregate.subagentTurnCount only counts Workflow-tool script runs, so it
+    // reads 0 on any day where the subagents were ordinary Task/Agent-tool
+    // spawns, while aggregate.subagentUsd is summed from every persisted
+    // session's subagentCostUsd and is correct for both kinds. The banner
+    // must gate on the figure the KPI beside it trusts.
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/observability-health')) {
         return new Response(
-          JSON.stringify({
-            watcherActive: false,
-            watcherDisabledByLock: false,
-            watcherDisabledReason: 'env_var',
-          }),
+          JSON.stringify({ watcherActive: false, watcherDisabledByLock: false }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
       if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify({ subagentTurnCount: 5 }), {
+        return new Response(JSON.stringify({ subagentUsd: 5.5, subagentTurnCount: 0 }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -772,122 +639,9 @@ describe('Today view', () => {
     }) as typeof fetch;
 
     renderToday();
-    await screen.findByText('5 turns');
+    await waitFor(() => expect(screen.getByText('efficiency')).toBeInTheDocument());
     expect(screen.queryByText(/subagent cost tracking is disabled/i)).toBeNull();
     expect(screen.queryByText(/subagent activity from other sessions/i)).toBeNull();
-  });
-
-  it('keeps the ForecastEodCard parent+subagent breakdown summing to the displayed total even when the page-wide todayTotal/subagentUsd would disagree', async () => {
-    // A fresh live SSE subagent tick (todaySubagentUsd) has landed while the
-    // SSE total-spend push is stale-low and the polled aggregate hasn't
-    // caught up to that subagent tick either. Maxing todayTotal and
-    // subagentUsd independently across their own, different endpoint pairs
-    // would let subagentUsd (15) exceed todayTotal (10), clamping "parent"
-    // to $0 even though aggregate.totalCostUsd (10) and aggregate.subagentUsd
-    // (8) — sourced together in one request — agree that parent is $2.
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 3, todayTotalUsd: 5, forecastEodUsd: 20 },
-      todaySubagentUsd: 15,
-      todaySubagentTurnCount: 3,
-    });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(
-          JSON.stringify({ totalCostUsd: 10, subagentUsd: 8, forecastEndOfDayUsd: 20 }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      if (url.includes('/api/sessions?limit=')) {
-        return new Response(
-          JSON.stringify([
-            {
-              sessionId: 's1',
-              startTime: Date.now() - 60_000,
-              estimatedCostUsd: 5,
-              toolCallCount: 3,
-            },
-          ]),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-
-    // All four assertions must hold together in the same settled render —
-    // splitting them across separate waitFor/synchronous checks risks
-    // observing a transitional DOM state where only some values have
-    // committed.
-    await waitFor(() => {
-      expect(screen.getByText(/parent \$2\.00/)).toBeInTheDocument();
-      expect(screen.getByText(/subagent \$8\.00/)).toBeInTheDocument();
-      // Must never clamp "parent" to $0 just because the page-wide
-      // todayTotal/subagentUsd picked different underlying sources.
-      expect(screen.queryByText(/parent \$0\.00/)).toBeNull();
-      // parent ($2.00) + subagent ($8.00) sums to the $10.00 the "spend today"
-      // KPI shows for the same aggregate-sourced total.
-      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
-      expect(within(spendTile).getByText('$10.00')).toBeInTheDocument();
-    });
-  });
-
-  it('does not let a legitimate zero from the aggregate override the forecast breakdown total when other sources already know about real spend', async () => {
-    // The aggregate endpoint can legitimately resolve to 0 while its
-    // disk-only sources haven't yet seen any events from today, even though
-    // the SSE push and a persisted session both already know about real
-    // spend. The Forecast card's breakdown must still be computed against
-    // that already-higher total, not the aggregate's zero, or it would
-    // contradict the "spend today" KPI shown directly above it.
-    useLiveStore.setState({
-      cost: { sessionTotalUsd: 8, todayTotalUsd: 8, forecastEodUsd: 12 },
-      todaySubagentUsd: 2,
-      todaySubagentTurnCount: 1,
-    });
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions/today/aggregate')) {
-        return new Response(JSON.stringify({ totalCostUsd: 0, subagentUsd: 0 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/sessions?limit=')) {
-        return new Response(
-          JSON.stringify([
-            {
-              sessionId: 's1',
-              startTime: Date.now() - 60_000,
-              estimatedCostUsd: 6,
-              toolCallCount: 3,
-            },
-          ]),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
-    renderToday();
-
-    // All assertions must hold together in the same settled render — see
-    // the sibling test above for why these aren't split across separate
-    // waitFor/synchronous checks.
-    await waitFor(() => {
-      const spendTile = screen.getByText('spend today').closest('.px-1') as HTMLElement;
-      expect(within(spendTile).getByText('$8.00')).toBeInTheDocument();
-      expect(screen.getByText(/parent \$6\.00/)).toBeInTheDocument();
-      expect(screen.getByText(/subagent \$2\.00/)).toBeInTheDocument();
-      expect(screen.queryByText(/parent \$0\.00/)).toBeNull();
-      expect(screen.queryByText(/parent \$8\.00/)).toBeNull();
-    });
   });
 
   it('folds the /api/cost REST fallback into todayTotal so the KPI does not flash $0.00 before the first SSE frame arrives', async () => {
@@ -953,9 +707,7 @@ describe('Today view', () => {
 
     renderToday();
 
-    await waitFor(() => expect(screen.getByText('$12.00')).toBeInTheDocument());
-    // delta = 12 - 5 = 7
-    expect(screen.getByText(/\+\$7\.00/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/^→ \$12\.00 by end of day/)).toBeInTheDocument());
   });
 });
 
@@ -985,7 +737,7 @@ describe('Today view — empty state', () => {
     renderToday();
     expect(await screen.findByText('No activity yet today')).toBeInTheDocument();
     expect(screen.queryByText('spend today')).toBeNull();
-    expect(screen.queryByText('tool calls')).toBeNull();
+    expect(screen.queryByText('sessions today')).toBeNull();
   });
 
   it('still renders the header with "Today" title in empty state', async () => {
@@ -1083,7 +835,7 @@ describe('Today view — aggregate endpoint', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders KPIs from /api/sessions/today/aggregate (calls + flags + spend)', async () => {
+  it('renders KPIs from /api/sessions/today/aggregate (sessions + flags + spend)', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/sessions/today/aggregate')) {
@@ -1106,7 +858,7 @@ describe('Today view — aggregate endpoint', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText('42')).toBeInTheDocument();
+    expect(await screen.findByText('2')).toBeInTheDocument();
     expect(screen.getByText('$7.75')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
   });
@@ -1182,11 +934,117 @@ describe('Today view — aggregate endpoint', () => {
 
     renderToday();
 
-    expect(await screen.findByText('111')).toBeInTheDocument();
-    expect(screen.getByText('222')).toBeInTheDocument();
-    expect(screen.getByText('333')).toBeInTheDocument();
-    expect(screen.getByText('444ms p95')).toBeInTheDocument();
-    expect(screen.getByText('555ms p95')).toBeInTheDocument();
+    // Hero value is p95 via formatMs; p50/p99 are HealthCard rows, and the
+    // two slowest tools (by p95, descending) are additional rows keyed by
+    // their own label/value cells rather than a combined "Nms p95" string.
+    expect(await screen.findByText('222 ms')).toBeInTheDocument();
+    expect(screen.getByText('111 ms')).toBeInTheDocument();
+    expect(screen.getByText('333 ms')).toBeInTheDocument();
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(screen.getByText('555 ms')).toBeInTheDocument();
+    expect(screen.getByText('Read')).toBeInTheDocument();
+    expect(screen.getByText('444 ms')).toBeInTheDocument();
+  });
+});
+
+describe('Today view — sessions today status sub-label', () => {
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: null,
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+      activeSessionId: null,
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockAggregate(sessionStatus?: {
+    counts: Record<string, number>;
+    sessionIds: Record<string, readonly string[]>;
+  }) {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/today/aggregate')) {
+        return new Response(
+          JSON.stringify({
+            toolCallCount: 1,
+            totalCostUsd: 0.01,
+            antiPatternCount: 0,
+            avgDurationMs: 100,
+            sessionCount: 3,
+            sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [1] },
+            ...(sessionStatus ? { sessionStatus } : {}),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+  }
+
+  it('renders a link per non-zero, non-completed status in display order', async () => {
+    mockAggregate({
+      counts: { needs_input: 2, ready_for_review: 1, working: 3, completed: 5 },
+      sessionIds: {
+        needs_input: ['n1', 'n2'],
+        ready_for_review: ['r1'],
+        working: ['w1', 'w2', 'w3'],
+        completed: ['c1'],
+      },
+    });
+
+    renderToday();
+
+    const needsInputLink = await screen.findByRole('link', { name: '2 need input' });
+    expect(needsInputLink).toHaveAttribute('href', '/sessions?sessionIds=n1,n2');
+
+    const reviewLink = screen.getByRole('link', { name: '1 ready for review' });
+    expect(reviewLink).toHaveAttribute('href', '/sessions?sessionIds=r1');
+
+    const workingLink = screen.getByRole('link', { name: '3 working' });
+    expect(workingLink).toHaveAttribute('href', '/sessions?sessionIds=w1,w2,w3');
+
+    expect(screen.queryByRole('link', { name: /completed/ })).toBeNull();
+  });
+
+  it('uses singular "needs input" when exactly one session needs input', async () => {
+    mockAggregate({
+      counts: { needs_input: 1, ready_for_review: 0, working: 0, completed: 0 },
+      sessionIds: { needs_input: ['n1'], ready_for_review: [], working: [], completed: [] },
+    });
+
+    renderToday();
+
+    expect(await screen.findByRole('link', { name: '1 needs input' })).toBeInTheDocument();
+  });
+
+  it('renders no sub-label link when only completed sessions exist', async () => {
+    mockAggregate({
+      counts: { needs_input: 0, ready_for_review: 0, working: 0, completed: 4 },
+      sessionIds: { needs_input: [], ready_for_review: [], working: [], completed: ['c1'] },
+    });
+
+    renderToday();
+
+    await screen.findByText('3');
+    expect(screen.queryByRole('link', { name: /working|review|input/ })).toBeNull();
+  });
+
+  it('renders the sessions today tile unchanged when sessionStatus is absent', async () => {
+    mockAggregate(undefined);
+
+    renderToday();
+
+    await screen.findByText('3');
+    expect(screen.queryByRole('link', { name: /working|review|input/ })).toBeNull();
   });
 });
 
@@ -1350,6 +1208,64 @@ describe('Today view — selector default + Session ended badge', () => {
       expect(screen.getByTestId('session-ended-badge')).toBeInTheDocument();
     });
   });
+
+  // Regression test: when nothing is currently live, the pane must still
+  // default to the most recently active historical session instead of
+  // leaving activeId null and showing the trace pane's empty state.
+  it('defaults to the most recently active historical session when nothing is live', async () => {
+    const historicalSession = {
+      sessionId: 'yesterday-id',
+      sessionName: 'legacy-work',
+      startTime: localStartOfDay() + 60 * 60 * 1000,
+      durationMs: 5 * 60 * 1000,
+      toolCallCount: 3,
+      estimatedCostUsd: 0.1,
+    };
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions/live')) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/session/current')) {
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(JSON.stringify([historicalSession]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/sessions/yesterday-id/replay')) {
+        return new Response(
+          JSON.stringify({
+            sessionId: 'yesterday-id',
+            timeline: [{ timestamp: 1, toolName: 'Read', durationMs: 10, success: true }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText('legacy-work')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(useLiveStore.getState().activeSessionId).toBe('yesterday-id');
+    });
+    expect(screen.queryByText('Select a session to view its timeline.')).toBeNull();
+    expect(screen.queryByText('Waiting for tool calls')).toBeNull();
+    expect(screen.queryByText('No tool calls')).toBeNull();
+  });
 });
 
 describe('Today view — Cache Health panel', () => {
@@ -1435,7 +1351,10 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/↑5pts vs last week/i)).toBeInTheDocument();
+    // HealthCard renders a row as separate label/value cells, not one
+    // combined string.
+    expect(await screen.findByText('vs last week')).toBeInTheDocument();
+    expect(screen.getByText('+5pts')).toBeInTheDocument();
   });
 
   it('shows week-over-week decline chip when delta is negative', async () => {
@@ -1486,25 +1405,13 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/↓3pts vs last week/i)).toBeInTheDocument();
+    expect(await screen.findByText('vs last week')).toBeInTheDocument();
+    expect(screen.getByText('-3pts')).toBeInTheDocument();
   });
 
-  it('includes actual hit rate pct in recommendation text', async () => {
+  it('shows total savings in the detail line', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.includes('/api/cache-health')) {
-        return new Response(
-          JSON.stringify({
-            status: 'needs_attention',
-            cache_hit_rate_pct: 12,
-            total_cache_read_tokens: 3000,
-            total_cache_creation_tokens: 500,
-            total_savings_usd: 0,
-            week_over_week_delta_pts: null,
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
       if (url.includes('/api/sessions/today/aggregate')) {
         return new Response(
           JSON.stringify({
@@ -1519,7 +1426,7 @@ describe('Today view — Cache Health panel', () => {
               cacheHitRatePct: 12,
               totalCacheReadTokens: 3000,
               totalCacheCreationTokens: 500,
-              totalSavingsUsd: 0,
+              totalSavingsUsd: 1.5,
             },
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
@@ -1537,8 +1444,7 @@ describe('Today view — Cache Health panel', () => {
         <Today />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText(/Cache hit rate is 12%/)).toBeInTheDocument();
-    expect(await screen.findByText(/above 60%/)).toBeInTheDocument();
+    expect(await screen.findByText(/\$1\.50 saved today/)).toBeInTheDocument();
   });
 
   it('renders the cache hit rate from the aggregate endpoint, not the per-process cache-health snapshot', async () => {
@@ -1595,33 +1501,68 @@ describe('Today view — Cache Health panel', () => {
   });
 });
 
-describe('Today view — Recent alerts panel', () => {
+describe('Today view — Needs attention panel', () => {
   beforeEach(() => {
-    resetStore();
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
   });
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('calls /api/alerts/recent and renders an empty state when the log is empty', async () => {
-    const fetchSpy = vi.fn(
-      async (_url: RequestInfo | URL) =>
-        new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-    );
-    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  it('shows "Nothing needs attention" when there are no flags and no alerts', async () => {
+    renderToday();
+    expect(await screen.findByText(/Nothing needs attention/)).toBeInTheDocument();
+  });
+
+  it('shows a humanized flag pill and a firing count linking to /alerts, together with an alert row', async () => {
+    useLiveStore.setState({ antiPatterns: [{ type: 'thrashing', target: 'auth.ts', count: 4 }] });
+    const now = Date.now();
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: 'rule-cost',
+              state: 'firing',
+              severity: 'warning',
+              title: 'Cost spike',
+              description: 'desc',
+              value: 12.5,
+              threshold: 10,
+              firedAt: now - 5 * 60_000,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    ) as typeof fetch;
 
     renderToday();
 
-    await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
-    });
-    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
-    expect(calls.some((u) => u.includes('/api/alerts/recent'))).toBe(true);
-
-    expect(await screen.findByText(/No alerts in recent history/i)).toBeInTheDocument();
+    // Humanized flag pill (not the raw `thrashing` enum).
+    expect(await screen.findByText('Edit/test thrashing ×4')).toBeInTheDocument();
+    expect(screen.getByText('auth.ts')).toBeInTheDocument();
+    // Firing count, linked to /alerts.
+    const firingLink = await screen.findByText('1 firing');
+    expect(firingLink).toHaveAttribute('href', '/alerts');
+    // Alert row: when / severity / rule / value-threshold / state.
+    expect(screen.getByText('Cost spike')).toBeInTheDocument();
+    expect(screen.getByText('warning')).toBeInTheDocument();
+    expect(screen.getByText(/12\.5 \/ 10\.0/)).toBeInTheDocument();
+    expect(screen.getByText('firing')).toBeInTheDocument();
   });
 
   it('renders rows from a non-empty response', async () => {
@@ -1648,13 +1589,19 @@ describe('Today view — Recent alerts panel', () => {
         firedAt: now - 60 * 60_000,
       },
     ];
-    globalThis.fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify(fakeAlerts), {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/alerts/recent')) {
+        return new Response(JSON.stringify(fakeAlerts), {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
-    ) as typeof fetch;
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
 
     renderToday();
 
@@ -1755,19 +1702,278 @@ describe('Today view — Recent alerts panel', () => {
       firedAt: 3000,
     };
     // Server returns in append order (oldest first); UI must reverse.
-    globalThis.fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify([oldAlert, middleAlert, newAlert]), {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/alerts/recent')) {
+        return new Response(JSON.stringify([oldAlert, middleAlert, newAlert]), {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
-    ) as typeof fetch;
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
 
     renderToday();
 
     await screen.findByText('New alert');
     const titles = screen.getAllByText(/(?:Old|Middle|New) alert/);
     expect(titles.map((el) => el.textContent)).toEqual(['New alert', 'Middle alert', 'Old alert']);
+  });
+
+  // Regression test: persistedAntiPatterns (the panel's third-priority
+  // fallback, used when both the live SSE list and /api/anti-patterns are
+  // empty) must scope to today the same way every sibling KPI does via
+  // todayOverlapRatio. Without the filter, a days-old session with
+  // antiPatterns still surfaces here even though it has zero overlap with
+  // today.
+  it("excludes a days-old session's anti-patterns while still showing today's", async () => {
+    const todayStart = localStartOfDay();
+    const oldSession = {
+      sessionId: 'old-session',
+      startTime: todayStart - 5 * 24 * 60 * 60 * 1000,
+      durationMs: 30 * 60 * 1000,
+      toolCallCount: 20,
+      estimatedCostUsd: 1,
+      antiPatterns: [{ type: 'blind_editing', target: 'auth.ts', count: 7 }],
+    };
+    const todaySession = {
+      sessionId: 'today-session',
+      startTime: todayStart + 60 * 60 * 1000,
+      durationMs: 10 * 60 * 1000,
+      toolCallCount: 5,
+      estimatedCostUsd: 0.5,
+      antiPatterns: [{ type: 'stuck_loop', target: 'npm test', count: 3 }],
+    };
+
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(JSON.stringify([oldSession, todaySession]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    renderToday();
+
+    expect(await screen.findByText('Stuck loop ×3')).toBeInTheDocument();
+    expect(screen.queryByText(/Blind editing/)).toBeNull();
+  });
+});
+
+describe("Today view — Where today's spend went panel", () => {
+  const SAMPLE_USAGE_INSIGHTS = {
+    windowDays: 1,
+    sessionCount: 3,
+    totalCostUsd: 10,
+    totalTokens: 50000,
+    insights: [
+      {
+        id: 'high_context',
+        key: 'high_context',
+        costUsd: 6,
+        tokens: 30000,
+        count: 2,
+        sharePct: 60,
+        sessionCount: 3,
+        headline: 'High-context sessions are driving spend',
+        advice: 'Trim context before starting new sessions.',
+      },
+    ],
+    skills: [{ key: 'code-review', costUsd: 3, tokens: 6000, count: 4, sharePct: 30 }],
+    subagents: [{ key: 'general-purpose', costUsd: 2, tokens: 4000, count: 3, sharePct: 20 }],
+    plugins: [{ key: 'pstack', costUsd: 1, tokens: 2000, count: 2, sharePct: 10 }],
+    loops: [],
+    skillsTotalCount: 1,
+    subagentsTotalCount: 1,
+    pluginsTotalCount: 1,
+    loopsTotalCount: 0,
+    attributionRatePct: 80,
+  };
+
+  beforeEach(() => {
+    useLiveStore.setState({
+      connected: true,
+      recentToolCalls: [],
+      cost: { sessionTotalUsd: 1, todayTotalUsd: 1, forecastEodUsd: null },
+      antiPatterns: [],
+      firingAlerts: new Map(),
+      dismissedAlerts: new Set(),
+    });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(null), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the consolidated title exactly once, with the old contributing title gone', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    expect(await screen.findAllByText("Where today's spend went")).toHaveLength(1);
+    expect(screen.queryByText("What's contributing to today's spend")).toBeNull();
+    expect(screen.getAllByText('Since midnight').length).toBeGreaterThan(0);
+  });
+
+  it('proves the Skills-shown-twice bug is gone: exactly one Skills table renders', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    await screen.findByText('code-review');
+    expect(screen.getAllByRole('columnheader', { name: 'Skill' })).toHaveLength(1);
+    expect(screen.getAllByText('code-review')).toHaveLength(1);
+  });
+
+  it('renders a Models table row with requests, cost per million tokens, cost, and share', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.modelUsage, {
+      byModel: {
+        'claude-sonnet-5': { requestCount: 8, totalCostUsd: 4.2, costPerMillionTokens: 0.75 },
+      },
+      mostUsedModel: 'claude-sonnet-5',
+    });
+    renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    const row = screen.getByText('claude-sonnet-5').closest('tr') as HTMLElement;
+    expect(within(row).getByText('8')).toBeInTheDocument();
+    expect(within(row).getByText('$0.75')).toBeInTheDocument();
+    expect(within(row).getByText('$4.20')).toBeInTheDocument();
+    expect(within(row).getByText('100%')).toBeInTheDocument();
+  });
+
+  it("renders a Tools row with a Cost column, built from today's session list plus windowed cost data", async () => {
+    const now = Date.now();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.costPerTool(), {
+      costByToolType: { Read: { totalCost: 3, callCount: 8, avgCost: 0.375, tokens: 1000 } },
+      totalAttributedCost: 3,
+      attributionRate: 1,
+    });
+    qc.setQueryData(qk.sessionsList(200), [
+      {
+        sessionId: 's1',
+        startTime: now - 1_800_000,
+        durationMs: 1_800_000,
+        toolBreakdown: { Read: 6, Edit: 2 },
+      },
+      {
+        sessionId: 's2',
+        startTime: now - 600_000,
+        durationMs: 600_000,
+        toolBreakdown: { Read: 2 },
+      },
+    ]);
+    renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    const row = screen.getByRole('cell', { name: 'Read' }).closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '8' })).toBeInTheDocument();
+    expect(within(row).getByRole('cell', { name: '$3.00' })).toBeInTheDocument();
+  });
+
+  it('shows attribution caveat when cost attribution is low', async () => {
+    const now = Date.now();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.costPerTool(), {
+      costByToolType: { Read: { totalCost: 3, callCount: 8, avgCost: 0.375, tokens: 1000 } },
+      totalAttributedCost: 3,
+      attributionRate: 0.4,
+    });
+    qc.setQueryData(qk.sessionsList(200), [
+      {
+        sessionId: 's1',
+        startTime: now - 1_800_000,
+        durationMs: 1_800_000,
+        toolBreakdown: { Read: 6, Edit: 2 },
+      },
+    ]);
+    renderToday(qc);
+    await screen.findByText("Where today's spend went");
+    expect(
+      screen.getByText(/Tool and skill shares are based on 40% of session cost/),
+    ).toBeInTheDocument();
+  });
+
+  it("excludes sessions outside today's window from the Tools table", async () => {
+    const dayStart = localStartOfDay();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    qc.setQueryData(qk.sessionsList(200), [
+      {
+        sessionId: 's1',
+        startTime: dayStart - 3 * 24 * 60 * 60 * 1000,
+        durationMs: 1_800_000,
+        toolBreakdown: { Read: 100, Edit: 50 },
+      },
+      {
+        sessionId: 's2',
+        startTime: Date.now() - 600_000,
+        durationMs: 600_000,
+        toolBreakdown: { Read: 2 },
+      },
+    ]);
+    renderToday(qc);
+    await screen.findByText('code-review');
+    const row = screen.getByRole('cell', { name: 'Read' }).closest('tr') as HTMLElement;
+    expect(within(row).getByRole('cell', { name: '2' })).toBeInTheDocument();
+  });
+
+  it('shows a Cost column on the Skills and Subagents tables', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    const skillRow = (await screen.findByText('code-review')).closest('tr') as HTMLElement;
+    expect(within(skillRow).getByText('$3.00')).toBeInTheDocument();
+    const subagentRow = screen.getByText('general-purpose').closest('tr') as HTMLElement;
+    expect(within(subagentRow).getByText('$2.00')).toBeInTheDocument();
+  });
+
+  it('shows Calls and Tokens columns on the Plugins table', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), SAMPLE_USAGE_INSIGHTS);
+    renderToday(qc);
+    const pluginRow = (await screen.findByText('pstack')).closest('tr') as HTMLElement;
+    expect(within(pluginRow).getByText('2')).toBeInTheDocument();
+    expect(within(pluginRow).getByText('2.0k')).toBeInTheDocument();
+  });
+
+  it('shows "No sessions in this window." when sessionCount is 0', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    qc.setQueryData(qk.usageInsights('today'), { ...SAMPLE_USAGE_INSIGHTS, sessionCount: 0 });
+    renderToday(qc);
+    expect(await screen.findByText('No sessions in this window.')).toBeInTheDocument();
+  });
+
+  it('shows the unavailable empty state when the usage-insights query errors', async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/api/usage-insights')) {
+        return new Response('Service Unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    renderToday();
+    expect(await screen.findByText('Usage insights unavailable')).toBeInTheDocument();
   });
 });
 
@@ -1809,12 +2015,12 @@ describe('Today view — Compute Waste panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/~0 wasted tokens/)).toBeInTheDocument();
-    expect(screen.getByText('clean')).toBeInTheDocument();
+    expect(await screen.findByText('~0 tokens')).toBeInTheDocument();
+    expect(screen.getAllByText('Healthy').length).toBeGreaterThan(0);
     expect(screen.getByText('No compute waste detected this session.')).toBeInTheDocument();
   });
 
-  it('shows needs_attention status with top offender chip', async () => {
+  it('shows needs_attention status with a hero token count and top-offender advice', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/compute-waste')) {
@@ -1836,13 +2042,18 @@ describe('Today view — Compute Waste panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/~2,400 wasted tokens/)).toBeInTheDocument();
-    expect(screen.getByText('needs attention')).toBeInTheDocument();
-    expect(screen.getByText(/stuck loop/i)).toBeInTheDocument();
-    expect(screen.getByText(/~1,600 tokens/)).toBeInTheDocument();
+    // Hero value via formatTokensCompact (2400 → "2.4k").
+    expect(await screen.findByText('~2.4k tokens')).toBeInTheDocument();
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
+    // Detail is the top offender's advice text, not the raw pattern name.
+    expect(
+      screen.getByText('Address the command output before re-running the same command.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Anti-pattern')).toBeInTheDocument();
+    expect(screen.getByText('~1.6k')).toBeInTheDocument();
   });
 
-  it('shows per-source breakdown sub-line', async () => {
+  it('shows per-source breakdown rows', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/compute-waste')) {
@@ -1864,8 +2075,10 @@ describe('Today view — Compute Waste panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/retry: ~200/)).toBeInTheDocument();
-    expect(screen.getByText(/anti-pattern: ~400/)).toBeInTheDocument();
+    expect(await screen.findByText('Retry')).toBeInTheDocument();
+    expect(screen.getByText('~200')).toBeInTheDocument();
+    expect(screen.getByText('Anti-pattern')).toBeInTheDocument();
+    expect(screen.getByText('~400')).toBeInTheDocument();
   });
 
   it('shows the top contributing session when by_session is present', async () => {
@@ -1893,40 +2106,8 @@ describe('Today view — Compute Waste panel', () => {
     renderToday();
     // liveSessions resolves to [] under the generic mock above, so
     // sessionPillLabel falls back to the truncated session id.
-    expect(await screen.findByText(/top session: abcdef12/)).toBeInTheDocument();
-  });
-
-  it('shows the most recent retry alert live, ahead of the next REST poll', async () => {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/compute-waste')) {
-        return new Response(
-          JSON.stringify({
-            total_tokens_wasted: 300,
-            retry_tokens_wasted: 300,
-            anti_pattern_tokens_wasted: 0,
-            breakdown: [],
-            status: 'moderate',
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    useLiveStore.setState({
-      retryAlerts: [{ sessionId: 'sess-a', toolName: 'Bash', occurrences: 4, tokensWasted: 300 }],
-    });
-
-    renderToday();
-    await screen.findByText(/~300 wasted tokens/);
-    expect(screen.getByText('Bash')).toBeInTheDocument();
-    expect(screen.getByText(/retried 4×/)).toBeInTheDocument();
-    // liveSessions resolves to [] under the generic mock above, so
-    // sessionPillLabel falls back to the raw session id (already ≤8 chars).
-    expect(screen.getByText(/Session: sess-a/)).toBeInTheDocument();
+    expect(await screen.findByText('Top session')).toBeInTheDocument();
+    expect(screen.getByText('abcdef12 (~900)')).toBeInTheDocument();
   });
 });
 
@@ -1946,7 +2127,7 @@ describe('Today view — cross-midnight session proration', () => {
     vi.restoreAllMocks();
   });
 
-  it("prorates a cross-midnight session's tool-call/flag counts and hourly spend by its today-portion, instead of its full lifetime count or excluding it entirely", async () => {
+  it("prorates a cross-midnight session's flag counts and hourly spend by its today-portion, instead of its full lifetime count or excluding it entirely", async () => {
     const dayStart = localStartOfDay();
     // Started 2h before local midnight and ran 4h total (ends 2h into
     // today) — half the session's lifetime overlaps today, ratio 0.5.
@@ -1971,7 +2152,7 @@ describe('Today view — cross-midnight session proration', () => {
             totalCostUsd: 0,
             antiPatternCount: 0,
             avgDurationMs: 0,
-            sessionCount: 0,
+            sessionCount: 1,
             sparkline: { startTimestamp: 0, bucketSizeMs: 60_000, points: [] },
             forecastEndOfDayUsd: 5,
           }),
@@ -1992,111 +2173,16 @@ describe('Today view — cross-midnight session proration', () => {
 
     renderToday();
 
-    // 100 tool calls * 0.5 ratio = 50 — not the full lifetime count of 100.
-    // Using ratio only as an inclusion gate and adding the entire
-    // toolCallCount once the session qualifies would show 100 instead.
-    expect(await screen.findByText('50')).toBeInTheDocument();
-    // 10 flags * 0.5 ratio = 5 — not the full lifetime count of 10, for the
-    // same reason.
-    expect(screen.getByText('5')).toBeInTheDocument();
+    // 10 flags * 0.5 ratio = 5 — not the full lifetime count of 10, for
+    // the same reason. This verifies the pro-rating logic works for
+    // cross-midnight sessions in the persisted data path.
+    expect(await screen.findByText('5')).toBeInTheDocument();
     // buildHourlySpend must not skip a session that didn't *start* today
     // entirely (a naive `!isToday(s.startTime)` → continue would drop it),
-    // or the hourly chart would be absent here even though todayTotal > 0.
-    expect(screen.getByRole('img', { name: /Hourly spend today/ })).toBeInTheDocument();
-  });
-});
-
-describe('Today view — Forecast card hourly-spend chart', () => {
-  beforeEach(() => {
-    resetStore();
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  function mockSessions(sessions: unknown[]): void {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes('/api/sessions?limit=')) {
-        return new Response(JSON.stringify(sessions), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-  }
-
-  it('does not render the chart when no session has spent anything today', async () => {
-    mockSessions([]);
-    renderToday();
-    await waitFor(() => {
-      expect(screen.queryByRole('img', { name: /Hourly spend today/ })).toBeNull();
-    });
-  });
-
-  it("describes today's total and peak hour in the chart's aria-label", async () => {
-    const dayStart = localStartOfDay();
-    const hourSession = (hour: number, cost: number) => ({
-      sessionId: `s-${hour}`,
-      startTime: dayStart + hour * 60 * 60 * 1000 + 5 * 60 * 1000,
-      durationMs: 10 * 60 * 1000,
-      toolCallCount: 1,
-      estimatedCostUsd: cost,
-    });
-    mockSessions([hourSession(9, 1.5), hourSession(14, 0.5)]);
-    renderToday();
-    expect(
-      await screen.findByRole('img', {
-        name: 'Hourly spend today: $2.00 total, peak $1.50 at 9am',
-      }),
-    ).toBeInTheDocument();
-  });
-
-  it('flags only the true max-spend hour as peak when two hours round to the same block count', async () => {
-    // $5.00 and $4.60 both round to 5 blocks at blockUnit=1, but only
-    // the $5.00 hour is the real peak — the chart must not highlight both.
-    const dayStart = localStartOfDay();
-    const hourSession = (hour: number, cost: number) => ({
-      sessionId: `s-${hour}`,
-      startTime: dayStart + hour * 60 * 60 * 1000 + 5 * 60 * 1000,
-      durationMs: 10 * 60 * 1000,
-      toolCallCount: 1,
-      estimatedCostUsd: cost,
-    });
-    mockSessions([hourSession(9, 5.0), hourSession(14, 4.6)]);
-    renderToday();
-    const chart = await screen.findByRole('img', { name: /Hourly spend today/ });
-    const rects = chart.querySelectorAll('rect.heatmap-cell');
-    const peakColorRects = Array.from(rects).filter(
-      (r) => r.getAttribute('fill') === 'var(--color-chart-block-peak)',
-    );
-    // Both hour-9 and hour-14 columns render 5 blocks each (10 total); only
-    // hour-9's 5 blocks (the true peak) should carry the peak color.
-    expect(peakColorRects.length).toBe(5);
-  });
-
-  it('does not render the chart when every hour rounds to 0 blocks at the smallest unit step', async () => {
-    // maxCost=$0.001 picks the smallest NICE_UNIT (0.01) as the block unit,
-    // and round(0.001 / 0.01) = 0 — every column renders 0 blocks even
-    // though hasSpend is true, so DiscreteBlockChart returns null.
-    const dayStart = localStartOfDay();
-    mockSessions([
-      {
-        sessionId: 'tiny-cost',
-        startTime: dayStart + 3 * 60 * 60 * 1000 + 5 * 60 * 1000,
-        durationMs: 10 * 60 * 1000,
-        toolCallCount: 1,
-        estimatedCostUsd: 0.001,
-      },
-    ]);
-    renderToday();
-    await waitFor(() => {
-      expect(screen.queryByRole('img', { name: /Hourly spend today/ })).toBeNull();
-    });
+    // or the spend chart would render its empty state here even though
+    // todayTotal > 0.
+    const spendPanel = screen.getByText('Spend by hour').closest('.glass-card') as HTMLElement;
+    expect(within(spendPanel).queryByText('No spend data yet')).toBeNull();
   });
 });
 
@@ -2292,45 +2378,16 @@ describe('Today view — forecast end-of-week and session chips', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
-      return new Response(JSON.stringify(null), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('renders end-of-week and end-of-session forecast chips when API returns them', async () => {
-    renderToday();
-    await waitFor(() => expect(screen.getByText('End of week')).toBeInTheDocument());
-    expect(screen.getByText('End of session')).toBeInTheDocument();
-  });
-});
-
-describe('Today view — Cost by Tool panel', () => {
-  beforeEach(() => {
-    useLiveStore.setState({
-      connected: true,
-      recentToolCalls: [],
-      cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
-      antiPatterns: [],
-      firingAlerts: new Map(),
-      dismissedAlerts: new Set(),
-    });
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
+      if (typeof url === 'string' && url.includes('/api/sessions?limit=')) {
         return new Response(
-          JSON.stringify({
-            costByToolType: {
-              Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
-              Read: { totalCost: 0.52, callCount: 61, avgCost: 0.0085 },
+          JSON.stringify([
+            {
+              sessionId: 's1',
+              startTime: Date.now() - 60_000,
+              estimatedCostUsd: 4.8,
+              toolCallCount: 3,
             },
-            totalAttributedCost: 4.72,
-            attributionRate: 0.88,
-          }),
+          ]),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
@@ -2345,194 +2402,11 @@ describe('Today view — Cost by Tool panel', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders Cost by Tool panel with a chart instead of the empty state', async () => {
-    // Recharts' ResponsiveContainer measures 0x0 under jsdom, so bar/axis
-    // content doesn't render meaningfully in tests — assert the panel
-    // rendered its chart branch (no empty state), matching the same
-    // convention History.test.tsx uses for its own Recharts panels.
-    renderToday();
-    await waitFor(() => expect(screen.queryByText('No cost data yet')).toBeNull());
-    expect(screen.getByText('Cost by Tool')).toBeInTheDocument();
-  });
-
-  it('renders Cost attribution unavailable when /api/cost-per-tool returns 503', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (typeof url === 'string' && url.includes('/api/cost-per-tool')) {
-        return new Response('Service Unavailable', { status: 503 });
-      }
-      return new Response(JSON.stringify(null), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
+  it('shows the on-pace-this-week caption under the spend chart when the API returns an end-of-day forecast', async () => {
     renderToday();
     await waitFor(() =>
-      expect(screen.getByText('Cost attribution unavailable')).toBeInTheDocument(),
+      expect(screen.getByText(/On pace for ~\$[\d.]+ this week/)).toBeInTheDocument(),
     );
-  });
-
-  it('renders the empty state instead of crashing when the query settles with a null value', async () => {
-    // A 200 response whose body is the JSON literal `null` (distinct from a
-    // request that errors) resolves the query successfully with `data` set
-    // to `null`, not `undefined` — asserting against the pending state's
-    // identical "No cost data yet" text wouldn't distinguish the two, so
-    // seed the cache directly with the already-settled value instead of
-    // waiting on the mocked fetch to resolve.
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, null);
-    renderToday(qc);
-    expect(screen.getByText('No cost data yet')).toBeInTheDocument();
-  });
-
-  it('shows the low-attribution footnote when attributionRate is below 50%', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {
-        Agent: { totalCost: 4.2, callCount: 8, avgCost: 0.525 },
-      },
-      totalAttributedCost: 4.2,
-      attributionRate: 0.3,
-    });
-    renderToday(qc);
-    expect(screen.getByText('Based on 30% of session cost')).toBeInTheDocument();
-  });
-});
-
-describe('Today view — Cost by Skill panel', () => {
-  beforeEach(() => {
-    useLiveStore.setState({
-      connected: true,
-      recentToolCalls: [],
-      cost: { sessionTotalUsd: 0, todayTotalUsd: 0, forecastEodUsd: null },
-      antiPatterns: [],
-      firingAlerts: new Map(),
-      dismissedAlerts: new Set(),
-    });
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('renders the Cost by Skill eyebrow and one row per skill with the formatted calls, cost, and time values visible', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {
-        'skill-1': {
-          callCount: 5,
-          attributedCallCount: 5,
-          totalCost: 0.15,
-          avgCost: 0.03,
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 100,
-          totalDurationMs: 5000,
-        },
-        'skill-2': {
-          callCount: 3,
-          attributedCallCount: 3,
-          totalCost: 0.08,
-          avgCost: 0.0267,
-          inputTokens: 800,
-          outputTokens: 400,
-          cacheReadTokens: 0,
-          totalDurationMs: 3000,
-        },
-      },
-      totalAttributedCost: 0.23,
-      attributionRate: 0.95,
-    });
-    renderToday(qc);
-    expect(screen.getByText('Cost by Skill')).toBeInTheDocument();
-    expect(screen.getByText('skill-1')).toBeInTheDocument();
-    expect(screen.getByText('skill-2')).toBeInTheDocument();
-    expect(screen.getByText('$0.1500')).toBeInTheDocument();
-    expect(screen.getByText('$0.0800')).toBeInTheDocument();
-  });
-
-  it('sorts by cost descending', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {
-        'expensive-skill': {
-          callCount: 10,
-          attributedCallCount: 10,
-          totalCost: 1.5,
-          avgCost: 0.15,
-          inputTokens: 5000,
-          outputTokens: 3000,
-          cacheReadTokens: 200,
-          totalDurationMs: 10000,
-        },
-        'cheap-skill': {
-          callCount: 2,
-          attributedCallCount: 2,
-          totalCost: 0.05,
-          avgCost: 0.025,
-          inputTokens: 500,
-          outputTokens: 200,
-          cacheReadTokens: 0,
-          totalDurationMs: 1000,
-        },
-      },
-      totalAttributedCost: 1.55,
-      attributionRate: 0.9,
-    });
-    renderToday(qc);
-    const rows = screen.getAllByRole('row');
-    const firstDataRow = rows[1];
-    expect(firstDataRow.textContent).toContain('expensive-skill');
-  });
-
-  it('renders nothing when costBySkill is an empty object', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {},
-      totalAttributedCost: 0,
-      attributionRate: 1.0,
-    });
-    renderToday(qc);
-    expect(screen.queryByText('Cost by Skill')).not.toBeInTheDocument();
-  });
-
-  it('renders nothing when the response has no costBySkill field at all', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {
-        Read: { totalCost: 0.1, callCount: 10, avgCost: 0.01 },
-      },
-      totalAttributedCost: 0.1,
-      attributionRate: 1.0,
-    });
-    renderToday(qc);
-    expect(screen.queryByText('Cost by Skill')).not.toBeInTheDocument();
-  });
-
-  it('sets the title attribute on the cost cell when attributedCallCount is less than callCount', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-    qc.setQueryData(qk.costPerTool, {
-      costByToolType: {},
-      costBySkill: {
-        'partial-skill': {
-          callCount: 5,
-          attributedCallCount: 2,
-          totalCost: 0.1,
-          avgCost: 0.05,
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 0,
-          totalDurationMs: 2000,
-        },
-      },
-      totalAttributedCost: 0.1,
-      attributionRate: 0.8,
-    });
-    renderToday(qc);
-    const costCell = screen.getByText('$0.1000');
-    expect(costCell).toHaveAttribute('title', 'Cost covers 2 of 5 calls');
   });
 });
 
@@ -2565,7 +2439,7 @@ describe('Today view — API Failures panel', () => {
     unknown: 0,
   };
 
-  it('shows the empty state when there are no failures', async () => {
+  it('shows the zero/good state when there are no failures', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/api-failures')) {
@@ -2593,10 +2467,12 @@ describe('Today view — API Failures panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText('No API failures')).toBeInTheDocument();
+    const card = (await screen.findByText('API Failures')).closest('.glass-card') as HTMLElement;
+    expect(within(card).getByText('0')).toBeInTheDocument();
+    expect(within(card).getByText('Healthy')).toBeInTheDocument();
   });
 
-  it('shows failure count and error-type breakdown when failures exist', async () => {
+  it('shows failure count, failing status, and an error-type breakdown row when failures exist', async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes('/api/api-failures')) {
@@ -2624,29 +2500,61 @@ describe('Today view — API Failures panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText('rate_limit: 2, server_error: 1')).toBeInTheDocument();
-    expect(screen.getByText('API Failures')).toBeInTheDocument();
+    const card = (await screen.findByText('API Failures')).closest('.glass-card') as HTMLElement;
+    await waitFor(() => expect(within(card).getByText('Needs attention')).toBeInTheDocument());
+    expect(within(card).getByText('3')).toBeInTheDocument();
+    expect(within(card).getByText('rate_limit')).toBeInTheDocument();
+    expect(within(card).getByText('server_error')).toBeInTheDocument();
+  });
+});
+
+describe('Today view — Activity today panel', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it('shows a throttle-alert warning line when throttleAlerts is non-empty', async () => {
+  it('renders two stacked charts — tool calls above concurrent sessions', async () => {
+    const now = Date.now();
+    const dayStart = localStartOfDay();
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.includes('/api/api-failures')) {
+      if (url.includes('/api/sessions?limit=')) {
+        return new Response(
+          JSON.stringify([
+            {
+              sessionId: 's1',
+              startTime: dayStart + 9 * 60 * 60 * 1000 + 5 * 60 * 1000,
+              durationMs: 10 * 60 * 1000,
+              toolCallCount: 3,
+              estimatedCostUsd: 2,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/activity-heatmap')) {
         return new Response(
           JSON.stringify({
-            totalFailures: 4,
-            byErrorType: { ...zeroByErrorType, rate_limit: 4 },
-            byModel: {},
-            bySessionPhase: { early: 0, middle: 0, late: 4 },
-            totalTokensLost: 0,
-            totalEstimatedCostLostUsd: 0,
-            meanTimeToRecoveryMs: null,
-            throttleAlerts: [
-              { model: 'claude-sonnet-5', count: 3, windowMinutes: 10, timestamp: Date.now() },
-            ],
-            recentFailures: [],
-            dataAvailable: true,
-            note: '',
+            buckets: [1, 2, 0, 3],
+            maxCount: 3,
+            bucketSizeMs: 900_000,
+            startTimestamp: dayStart,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url === '/api/concurrency') {
+        return new Response(
+          JSON.stringify({
+            current: 2,
+            peak: 3,
+            allTimePeak: 3,
+            bucketSizeMs: 900_000,
+            startTimestamp: now,
+            buckets: [{ timestamp: now, count: 2 }],
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
@@ -2658,6 +2566,155 @@ describe('Today view — API Failures panel', () => {
     }) as typeof fetch;
 
     renderToday();
-    expect(await screen.findByText(/Rate-limit throttling detected/)).toBeInTheDocument();
+
+    const panel = (await screen.findByText('Activity today')).closest('.glass-card') as HTMLElement;
+    expect(within(panel).getByText('Tool calls')).toBeInTheDocument();
+    expect(within(panel).getByText('Concurrent sessions')).toBeInTheDocument();
+    expect(within(panel).queryByText('Spend by hour')).toBeNull();
+
+    const heatmapChart = await within(panel).findByRole('img', {
+      name: "Today's activity density by hour",
+    });
+    const concurrencyChart = await within(panel).findByRole('img', {
+      name: 'Concurrency over time, peak 3',
+    });
+    expect(within(panel).getAllByRole('img').length).toBe(2);
+    // Both charts share the same 24-hourly-bucket granularity.
+    for (const chart of [heatmapChart, concurrencyChart]) {
+      expect(chart.querySelectorAll('g').length).toBe(24);
+    }
+
+    // DOM order: Tool calls before Concurrent sessions
+    const toolCallsHeading = within(panel).getByText('Tool calls');
+    const concurrencyHeading = within(panel).getByText('Concurrent sessions');
+    expect(
+      toolCallsHeading.compareDocumentPosition(concurrencyHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // All 4 heatmap buckets ([1, 2, 0, 3], 15 minutes each) fall inside
+    // hour 0 once re-bucketed hourly: 1+2+0+3 = 6.
+    expect(within(panel).getByText('Peak 00:00 — 6 calls')).toBeInTheDocument();
+    expect(within(panel).getByText('now 2 · peak 3')).toBeInTheDocument();
+
+    // The concurrency sample (count 2) lands in whichever hour `now` falls
+    // in; the chart tooltip for that column still reads the raw count.
+    const nowHour = new Date(now).getHours();
+    const concurrencyGroups = concurrencyChart.querySelectorAll('g');
+    fireEvent.mouseEnter(concurrencyGroups[nowHour]!);
+    expect(
+      await screen.findByText(`${String(nowHour).padStart(2, '0')}:00 — 2 concurrent`),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('bucketByHour()', () => {
+  it('sums multiple points landing in the same hour by default', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const hour9Start = dayStart + 9 * 60 * 60 * 1000;
+    const buckets = bucketByHour(
+      [
+        { ts: hour9Start + 60_000, value: 2 },
+        { ts: hour9Start + 30 * 60_000, value: 3 },
+      ],
+      nowMs,
+    );
+    expect(buckets[9]).toBe(5);
+    expect(buckets.filter((_, i) => i !== 9).every((v) => v === 0)).toBe(true);
+  });
+
+  it('takes the max instead of summing when mode is "max"', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const hour9Start = dayStart + 9 * 60 * 60 * 1000;
+    const buckets = bucketByHour(
+      [
+        { ts: hour9Start + 60_000, value: 2 },
+        { ts: hour9Start + 30 * 60_000, value: 5 },
+        { ts: hour9Start + 45 * 60_000, value: 1 },
+      ],
+      nowMs,
+      'max',
+    );
+    expect(buckets[9]).toBe(5);
+  });
+
+  it('drops a point before local midnight', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const buckets = bucketByHour([{ ts: dayStart - 1, value: 9 }], nowMs);
+    expect(buckets.every((v) => v === 0)).toBe(true);
+  });
+
+  it('drops a point at or after local midnight + 24h', () => {
+    const dayStart = localStartOfDay();
+    const nowMs = dayStart + 12 * 60 * 60 * 1000;
+    const buckets = bucketByHour([{ ts: dayStart + 86_400_000, value: 9 }], nowMs);
+    expect(buckets.every((v) => v === 0)).toBe(true);
+  });
+
+  it('returns a 24-length array of zeros for an empty points array', () => {
+    const buckets = bucketByHour([], Date.now());
+    expect(buckets.length).toBe(24);
+    expect(buckets.every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe('aggregateAttentionFlags()', () => {
+  it('collapses per-file flags into one pill per type with a file count', () => {
+    const out = aggregateAttentionFlags([
+      { type: 're_reading', count: 3, target: '/a/one.ts' },
+      { type: 're_reading', count: 4, target: '/a/two.ts' },
+      { type: 'over_delegation', count: 2, target: 'unknown' },
+    ]);
+    expect(out).toEqual([
+      { type: 're_reading', count: 7, targets: ['/a/one.ts', '/a/two.ts'], sessionIds: [] },
+      { type: 'over_delegation', count: 2, targets: [], sessionIds: [] },
+    ]);
+  });
+
+  it('collects distinct session ids per type', () => {
+    expect(
+      aggregateAttentionFlags([
+        { type: 'blind_editing', count: 1, target: '/x/y/z.ts', sessionId: 's1' },
+        { type: 'blind_editing', count: 2, target: '/x/y/z.ts', sessionId: 's2' },
+        { type: 'blind_editing', count: 1, sessionId: 's1' },
+      ]),
+    ).toEqual([
+      { type: 'blind_editing', count: 4, targets: ['/x/y/z.ts'], sessionIds: ['s1', 's2'] },
+    ]);
+  });
+});
+
+describe('buildSpendTodaySeries()', () => {
+  function hourlySpendFixture(costs: Record<number, number>): { hour: number; cost: number }[] {
+    return Array.from({ length: 24 }, (_, hour) => ({ hour, cost: costs[hour] ?? 0 }));
+  }
+
+  it('keeps the cumulative and projected lines continuous at the current hour', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 20, nowMs);
+    const atHour10 = series[10]!;
+    expect(atHour10.cumulativeUsd).toBe(6);
+    expect(atHour10.projectedUsd).toBe(6);
+  });
+
+  it('projects the last hour to exactly the forecasted end-of-day total', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 20, nowMs);
+    expect(series[23]!.projectedUsd).toBe(20);
+  });
+
+  it('has no projected series when the forecast is null', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 10: 3 }), null, nowMs);
+    expect(series.every((d) => d.projectedUsd === null)).toBe(true);
+  });
+
+  it('has no projected series when the forecast does not exceed spend so far', () => {
+    const nowMs = new Date(2026, 5, 14, 10, 30).getTime();
+    const series = buildSpendTodaySeries(hourlySpendFixture({ 8: 2, 9: 1, 10: 3 }), 6, nowMs);
+    expect(series.every((d) => d.projectedUsd === null)).toBe(true);
   });
 });

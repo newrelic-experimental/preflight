@@ -1,10 +1,22 @@
 import type { ToolCallRecord } from '../storage/types.js';
 import type { KeyedRecord } from './git-activity-store.js';
 import { ActivityStore } from './git-activity-store.js';
-import { classifyGitCommand, type GitEvent } from './git-event-classifier.js';
-import { WorktreeIdentityResolver } from './git-workspace-identity.js';
+import {
+  classifyGitSegments,
+  processGhCommand,
+  splitShellSegments,
+  type GitEvent,
+} from './git-event-classifier.js';
+import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
 import { stripHeredocBodies } from './local-session-aggregator.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
+
+/** `sessionId` used for commit records hydrated from `git log` rather than
+ *  observed live via a hook. Exported so `reconcileHydratedCommits`
+ *  (git-workspace-report.ts) can exclude it from a workspace's
+ *  Claude-Code-session count — a hydrated commit didn't come from any
+ *  session at all. */
+export const GIT_LOG_SESSION_ID = 'git-log';
 
 /** One observed activity, tagged with which workspace (repo+worktree) it
  *  happened in. `kind` discriminates what's meaningful beyond the base
@@ -25,46 +37,11 @@ export type GitActivityRecord = KeyedRecord & {
     | { readonly kind: 'pr'; readonly prEvent: PrEvent }
   );
 
-// GitHub CLI patterns for PR detection
-const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
-const GH_PR_MERGE_RE = /\bgh\s+pr\s+merge\b/;
-const GH_PR_VIEW_RE = /\bgh\s+pr\s+view\b/;
-const GH_PR_EDIT_RE = /\bgh\s+pr\s+edit\b/;
-const GH_PR_READY_RE = /\bgh\s+pr\s+ready\b/;
-const GH_PR_CHECKS_RE = /\bgh\s+pr\s+checks\b/;
-const GH_COMMAND_RE = /\bgh\s+/;
-const GH_PR_NUMBER_RE = /\bgh\s+pr\s+\w+\s+(\d+)/;
-
 /** Detected PR action from gh CLI or MCP tools. */
 const MCP_PR_TOOL_ACTION: Record<string, PrEvent['action']> = {
   create_pull_request: 'create',
   update_pull_request: 'edit',
 };
-
-/**
- * Extract and return a PrEvent from a gh CLI command, or null if the command
- * doesn't match a recognized PR action.
- */
-export function processGhCommand(command: string, timestamp: number): PrEvent | null {
-  const numberMatch = GH_PR_NUMBER_RE.exec(command);
-  const prNumber = numberMatch ? numberMatch[1] : null;
-
-  if (GH_PR_CREATE_RE.test(command)) {
-    return { timestamp, action: 'create', prNumber };
-  } else if (GH_PR_MERGE_RE.test(command)) {
-    return { timestamp, action: 'merge', prNumber };
-  } else if (GH_PR_CHECKS_RE.test(command)) {
-    return { timestamp, action: 'checks', prNumber };
-  } else if (GH_PR_READY_RE.test(command)) {
-    return { timestamp, action: 'ready', prNumber };
-  } else if (GH_PR_EDIT_RE.test(command)) {
-    return { timestamp, action: 'edit', prNumber };
-  } else if (GH_PR_VIEW_RE.test(command)) {
-    return { timestamp, action: 'view', prNumber };
-  }
-
-  return null;
-}
 
 export class GitActivityRecorder {
   constructor(
@@ -136,49 +113,42 @@ export class GitActivityRecorder {
     // Classify on the command *minus* any inline script bodies: a heredoc
     // that merely mentions git/gh words is not a git or PR operation.
     const command = stripHeredocBodies(rawCommand);
+    const segments = splitShellSegments(command);
 
-    // Track GitHub CLI PR commands. Split on shell separators first so a
-    // `gh` invocation chained after a `git` command is still detected.
-    const segments = command.split(/&&|;|\|/);
+    // Track GitHub CLI PR commands. Each segment is checked on its own — a
+    // `gh` invocation can be chained before or after a `git` command, or
+    // follow a heredoc script on its own newline-separated segment.
     for (let i = 0; i < segments.length; i++) {
-      const trimmedSegment = segments[i].trim();
-      if (GH_COMMAND_RE.test(trimmedSegment) && !trimmedSegment.startsWith('git ')) {
-        const prEvent = processGhCommand(trimmedSegment, record.timestamp);
-        if (prEvent) {
-          this.ingestActivity({
-            sessionId: record.sessionId ?? 'unknown',
-            kind: 'pr',
-            prEvent,
-            timestamp: record.timestamp,
-            // Indexed so a compound command chaining two `gh pr` calls (rare,
-            // but possible) doesn't collide on the same recordId.
-            recordId: this.makeRecordId(record, `pr-gh-${i}`),
-            workspaceKey: this.resolveWorkspaceKey(cwd),
-          });
-        }
-      }
+      const prEvent = processGhCommand(segments[i].trim(), record.timestamp);
+      if (!prEvent) continue;
+      // A failed `gh pr create` made no PR — nothing to count. Every other
+      // verb stays real even on failure: `gh pr checks` exits non-zero when
+      // checks are failing, and that's still a genuine checks view.
+      if (prEvent.action === 'create' && record.success === false) continue;
+      this.ingestActivity({
+        sessionId: record.sessionId ?? 'unknown',
+        kind: 'pr',
+        prEvent,
+        timestamp: record.timestamp,
+        // Indexed so a compound command chaining two `gh pr` calls (rare,
+        // but possible) doesn't collide on the same recordId.
+        recordId: this.makeRecordId(record, `pr-gh-${i}`),
+        workspaceKey: this.resolveWorkspaceKey(cwd),
+      });
     }
 
-    // Test for git command
-    if (!/\bgit\s+/.test(command)) {
-      // Not a git command, return early
-      return;
-    }
+    const resolveRepo = (dir: string | null): string | null =>
+      this.identityResolver.resolve(dir)?.repoName ?? null;
 
-    // Classify and ingest git command
-    const gitEvent = classifyGitCommand(
-      command,
-      record,
-      (dir) => this.identityResolver.resolve(dir)?.repoName ?? null,
-    );
-
-    this.ingestActivity({
-      sessionId: record.sessionId ?? 'unknown',
-      kind: 'git',
-      gitEvent,
-      timestamp: record.timestamp,
-      recordId: this.makeRecordId(record, 'git'),
-      workspaceKey: this.resolveWorkspaceKey(cwd),
+    classifyGitSegments(command, record, resolveRepo).forEach(({ event }, i) => {
+      this.ingestActivity({
+        sessionId: record.sessionId ?? 'unknown',
+        kind: 'git',
+        gitEvent: event,
+        timestamp: record.timestamp,
+        recordId: this.makeRecordId(record, `git-${i}`),
+        workspaceKey: this.resolveWorkspaceKey(cwd),
+      });
     });
   }
 
@@ -189,7 +159,7 @@ export class GitActivityRecorder {
   private resolveWorkspaceKey(cwd: string | undefined): string {
     const identity = this.identityResolver.resolve(cwd);
     if (identity === null) {
-      return 'unattributed';
+      return UNATTRIBUTED_WORKSPACE_KEY;
     }
     // Use repoKey for repo-level identity and worktreeKey for worktree-level
     // tracking. For now, use worktreeKey so each worktree is tracked separately.

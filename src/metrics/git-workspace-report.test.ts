@@ -1,11 +1,13 @@
 import {
   buildGitWorkspaceReport,
   computeWorkspaceMetrics,
+  reconcileHydratedCommits,
   rollupWorkspaceMetrics,
+  COMMIT_RECONCILE_WINDOW_MS,
   type WorktreeLiveState,
 } from './git-workspace-report.js';
 import { classifyGitCommand } from './git-event-classifier.js';
-import type { GitActivityRecord } from './git-activity-recorder.js';
+import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
 import type { WorktreeIdentity } from './git-workspace-identity.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
@@ -52,6 +54,33 @@ function gitActivity(
     recordId: `r-${recordCounter}`,
     workspaceKey,
     sessionId: record.sessionId ?? 'unknown',
+  };
+}
+
+/** Builds a hydrated-from-`git log` commit record, the shape
+ *  `GitWorkspaceReporter.hydrateGitLog` ingests. */
+function hydratedCommitActivity(
+  workspaceKey: string,
+  timestamp: number,
+  hash: string,
+): GitActivityRecord {
+  return {
+    kind: 'git',
+    gitEvent: {
+      timestamp,
+      type: 'commit',
+      command: `git commit (${hash})`,
+      success: true,
+      durationMs: null,
+      repo: null,
+      subject: `subject ${hash}`,
+      url: null,
+      hash,
+    },
+    timestamp,
+    recordId: `gitlog:${hash}`,
+    workspaceKey,
+    sessionId: GIT_LOG_SESSION_ID,
   };
 }
 
@@ -653,6 +682,28 @@ describe('buildGitWorkspaceReport — parallel_isolation (repo scope)', () => {
     const check = report.metrics.bestPractices.find((p) => p.id === 'parallel_isolation');
     expect(check?.status).toBe('pass');
   });
+
+  it('does not count a placeholder row as an active worktree', () => {
+    const identityA = makeIdentity({ repoKey, worktreeKey: '/repo/a', worktreeLabel: 'a' });
+    const unknown = makeIdentity({ repoKey, worktreeKey: 'unresolved-repo:acme/widgets' });
+    const records = [
+      editActivity('src/a.ts', '/repo/a', 100),
+      editActivity('src/a.ts', 'unresolved-repo:acme/widgets', 150),
+    ];
+    const identities = new Map([
+      ['/repo/a', identityA],
+      ['unresolved-repo:acme/widgets', unknown],
+    ]);
+    const report = buildGitWorkspaceReport({
+      scope: { kind: 'repo', id: repoKey },
+      records,
+      identities,
+      liveStates: new Map(),
+    });
+    expect(report.rows).toHaveLength(2);
+    const check = report.metrics.bestPractices.find((p) => p.id === 'parallel_isolation');
+    expect(check?.status).toBe('n/a');
+  });
 });
 
 describe('buildGitWorkspaceReport — hasForcePushedToDefaultBranch uses per-workspace liveState', () => {
@@ -735,5 +786,166 @@ describe('buildGitWorkspaceReport — empty input', () => {
     expect(report.metrics.efficiencyScore).toBeNull();
     expect(report.metrics.preventionScore).toBeNull();
     expect(report.worstBehind).toBeNull();
+  });
+});
+
+describe('reconcileHydratedCommits', () => {
+  const identityA = makeIdentity({ repoKey: '/repo/a', worktreeKey: 'ws-a' });
+  const identityB = makeIdentity({ repoKey: '/repo/b', worktreeKey: 'ws-b' });
+  const identities = new Map([
+    ['ws-a', identityA],
+    ['ws-b', identityB],
+  ]);
+
+  it('merges a hydrated commit into a hook commit that ran shortly after it', () => {
+    const hook = gitActivity('git commit -m x', 'ws-a', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 8_000, 'abc123');
+
+    const result = reconcileHydratedCommits([hook, hydrated], identities);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].kind === 'git' && result[0].gitEvent.hash).toBe('abc123');
+    // The kept record is the hook's own — it knows the real worktree/session,
+    // the hydrated one only ever carries the synthetic git-log session.
+    expect(result[0].sessionId).toBe(hook.sessionId);
+  });
+
+  it('merges a hydrated commit whose git timestamp is after the hook record (pre-hook start time)', () => {
+    const hook = gitActivity('git commit -m x', 'ws-a', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 11_000, 'abc123');
+
+    const result = reconcileHydratedCommits([hook, hydrated], identities);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].kind === 'git' && result[0].gitEvent.hash).toBe('abc123');
+  });
+
+  it('pairs each hook with the nearest hydrated commit when several are in range', () => {
+    const hook = gitActivity('git commit -m x', 'ws-a', { timestamp: 10_000 });
+    const far = hydratedCommitActivity('ws-a', 40_000, 'far');
+    const near = hydratedCommitActivity('ws-a', 12_000, 'near');
+
+    const result = reconcileHydratedCommits([hook, far, near], identities);
+
+    expect(result).toHaveLength(2);
+    const merged = result.find((r) => r.sessionId === hook.sessionId);
+    expect(merged?.kind === 'git' && merged.gitEvent.hash).toBe('near');
+  });
+
+  it('drops a hook commit git log cannot vouch for when git log covers that repo', () => {
+    const hook = gitActivity('git commit -m x', 'ws-a', { timestamp: 100_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 10_000, 'abc123');
+    expect(hook.timestamp - hydrated.timestamp).toBeGreaterThan(COMMIT_RECONCILE_WINDOW_MS);
+
+    const result = reconcileHydratedCommits([hook, hydrated], identities);
+
+    expect(result).toEqual([hydrated]);
+  });
+
+  it('keeps an unpaired hook commit in a repo git log does not cover', () => {
+    const hook = gitActivity('git commit -m x', 'ws-a', { timestamp: 100_000 });
+    const hydratedElsewhere = hydratedCommitActivity('ws-b', 10_000, 'abc123');
+
+    const result = reconcileHydratedCommits([hook, hydratedElsewhere], identities);
+
+    expect(result).toHaveLength(2);
+    expect(result).toContain(hook);
+  });
+
+  it('passes a failed commit through without letting it consume a hydrated match', () => {
+    const failed = gitActivity('git commit -m x', 'ws-a', { timestamp: 9_000, success: false });
+    const hook = gitActivity('git commit -m y', 'ws-a', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 9_500, 'abc123');
+
+    const result = reconcileHydratedCommits([failed, hook, hydrated], identities);
+
+    expect(result).toHaveLength(2);
+    expect(result).toContain(failed);
+    const merged = result.find((r) => r !== failed);
+    expect(merged?.kind === 'git' && merged.gitEvent.hash).toBe('abc123');
+    expect(merged?.sessionId).toBe(hook.sessionId);
+  });
+
+  it('pairs a hook commit from a deleted worktree with the hydrated copy from any repo', () => {
+    const orphan = gitActivity('git commit -m x', 'gone-worktree', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 12_000, 'abc123');
+
+    const result = reconcileHydratedCommits([orphan, hydrated], identities);
+
+    expect(result).toEqual([hydrated]);
+  });
+
+  it('keeps a hook commit from a deleted worktree when no hydrated commit is near', () => {
+    const orphan = gitActivity('git commit -m x', 'gone-worktree', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 500_000, 'abc123');
+
+    const result = reconcileHydratedCommits([orphan, hydrated], identities);
+
+    expect(result).toHaveLength(2);
+    expect(result).toContain(orphan);
+  });
+
+  it('treats an amend as a rewrite, not a new commit', () => {
+    const amend = gitActivity('git commit --amend --no-edit', 'ws-a', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-a', 10_500, 'abc123');
+
+    const result = reconcileHydratedCommits([amend, hydrated], identities);
+
+    expect(result).toHaveLength(2);
+    expect(result).toContain(amend);
+    expect(result).toContain(hydrated);
+  });
+
+  it('matches two hooks against two hydrated commits one-to-one', () => {
+    const hook1 = gitActivity('git commit -m x', 'ws-a', { timestamp: 10_000 });
+    const hook2 = gitActivity('git commit -m y', 'ws-a', { timestamp: 20_000 });
+    const hydrated1 = hydratedCommitActivity('ws-a', 9_000, 'hash1');
+    const hydrated2 = hydratedCommitActivity('ws-a', 19_000, 'hash2');
+
+    const result = reconcileHydratedCommits([hook1, hook2, hydrated1, hydrated2], identities);
+    const commits = result.filter((r) => r.kind === 'git' && r.gitEvent.type === 'commit');
+
+    expect(commits).toHaveLength(2);
+    expect(commits.every((r) => r.kind === 'git' && r.gitEvent.hash)).toBe(true);
+  });
+
+  it('does not match a hook and a hydrated commit from different repos, even at the same timestamp', () => {
+    const hook = gitActivity('git commit -m x', 'ws-a', { timestamp: 10_000 });
+    const hydrated = hydratedCommitActivity('ws-b', 10_000, 'abc123');
+
+    const result = reconcileHydratedCommits([hook, hydrated], identities);
+
+    expect(result).toHaveLength(2);
+  });
+
+  it('passes an unmatched hydrated commit through unchanged', () => {
+    const hydrated = hydratedCommitActivity('ws-a', 10_000, 'abc123');
+
+    const result = reconcileHydratedCommits([hydrated], identities);
+
+    expect(result).toEqual([hydrated]);
+  });
+
+  it('passes non-commit records through untouched', () => {
+    const edit = editActivity('/a.ts', 'ws-a', 10_000);
+    const push = gitActivity('git push', 'ws-a', { timestamp: 10_000 });
+
+    const result = reconcileHydratedCommits([edit, push], identities);
+
+    expect(result).toEqual(expect.arrayContaining([edit, push]));
+    expect(result).toHaveLength(2);
+  });
+});
+
+describe('computeWorkspaceMetrics — git-log hydrated commits', () => {
+  it('counts a hydrated-only commit but excludes GIT_LOG_SESSION_ID from sessionIds', () => {
+    const identity = makeIdentity();
+    const hydrated = hydratedCommitActivity('ws-a', 10_000, 'abc123');
+    const edit = editActivity('/a.ts', 'ws-a', 5_000, 'real-session');
+
+    const metrics = computeWorkspaceMetrics([edit, hydrated], identity, null);
+
+    expect(metrics.commitCount).toBe(1);
+    expect(metrics.sessionIds).toEqual(['real-session']);
   });
 });

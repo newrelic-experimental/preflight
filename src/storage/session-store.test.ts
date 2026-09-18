@@ -6,6 +6,7 @@ import {
   SessionStore,
   buildSessionSummary,
   deserializeFullSessionSummary,
+  hasAttributableActivity,
   mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
@@ -22,6 +23,7 @@ import { ToolSelectionScorer, toToolSelectionSummary } from '../metrics/tool-sel
 import type { ModelUsageTracker } from '../metrics/model-usage-tracker.js';
 import type { QualityProxyTracker } from '../metrics/quality-proxy-tracker.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
+import type { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -57,6 +59,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -92,6 +95,32 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     ...overrides,
   };
 }
+
+describe('hasAttributableActivity', () => {
+  it('is false for a genuinely empty summary (no tool calls, no subagent cost, no timeline)', () => {
+    expect(hasAttributableActivity({ toolCallCount: 0, subagentCostUsd: 0, timeline: [] })).toBe(
+      false,
+    );
+  });
+
+  it('is true when toolCallCount is positive', () => {
+    expect(hasAttributableActivity({ toolCallCount: 1 })).toBe(true);
+  });
+
+  it('is true when subagentCostUsd is positive even with zero tool calls', () => {
+    expect(hasAttributableActivity({ toolCallCount: 0, subagentCostUsd: 0.01 })).toBe(true);
+  });
+
+  it('is true when the timeline has entries even with zero tool calls and zero subagent cost', () => {
+    expect(hasAttributableActivity({ toolCallCount: 0, subagentCostUsd: 0, timeline: [{}] })).toBe(
+      true,
+    );
+  });
+
+  it('treats every field as optional, defaulting each to its empty value', () => {
+    expect(hasAttributableActivity({})).toBe(false);
+  });
+});
 
 describe('instructionPromptHash field', () => {
   it('buildSessionSummary sets instructionPromptHash from sources', () => {
@@ -173,6 +202,79 @@ describe('instructionPromptHash field', () => {
       JSON.parse(JSON.stringify(summary)) as Record<string, unknown>,
     );
     expect(roundTripped.timeline?.[0]?.cwd).toBe('/Users/alice/repo/.claude/worktrees/feature-a');
+  });
+});
+
+describe('skillBreakdown field', () => {
+  it('buildSessionSummary reads skillBreakdown from turnCostAttributor.getMetrics().costBySkill', () => {
+    const sessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'sess-skill',
+        sessionName: null,
+        sessionStartTime: Date.now(),
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        bashCommandsRun: 0,
+        toolSuccessRate: null,
+      }),
+    } as unknown as SessionTracker;
+    const turnCostAttributor = {
+      getMetrics: () => ({
+        turns: [],
+        costByToolType: {},
+        costBySkill: {
+          'pstack:poteto-mode': { callCount: 3 },
+          simplify: { callCount: 1 },
+        },
+        totalAttributedCost: 0,
+        attributionRate: 0,
+      }),
+    } as unknown as TurnCostAttributor;
+
+    const summary = buildSessionSummary({ sessionTracker, turnCostAttributor, developer: 'dev1' });
+
+    expect(summary.skillBreakdown).toEqual({ 'pstack:poteto-mode': 3, simplify: 1 });
+  });
+
+  it('buildSessionSummary defaults skillBreakdown to {} when no turnCostAttributor is passed', () => {
+    const sessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'sess-skill-none',
+        sessionName: null,
+        sessionStartTime: Date.now(),
+        toolCallCount: 0,
+        toolCallCountByTool: {},
+        bashCommandsRun: 0,
+        toolSuccessRate: null,
+      }),
+    } as unknown as SessionTracker;
+
+    const summary = buildSessionSummary({ sessionTracker, developer: 'dev1' });
+
+    expect(summary.skillBreakdown).toEqual({});
+  });
+
+  it('mergeSummaries merges skillBreakdown with the same max-per-key, union-of-keys semantics mergeCounts gives toolBreakdown', () => {
+    const existing = makeSummary({ skillBreakdown: { simplify: 5, 'code-review': 2 } });
+    const incoming = makeSummary({ skillBreakdown: { simplify: 3, 'pstack:how': 4 } });
+
+    const merged = mergeSummaries(existing, incoming);
+
+    expect(merged.skillBreakdown).toEqual({ simplify: 5, 'code-review': 2, 'pstack:how': 4 });
+  });
+
+  it('deserializeFullSessionSummary defaults skillBreakdown to {} when the field is missing', () => {
+    const raw = JSON.parse(JSON.stringify(makeSummary())) as Record<string, unknown>;
+    delete raw.skillBreakdown;
+
+    expect(deserializeFullSessionSummary(raw).skillBreakdown).toEqual({});
+  });
+
+  it('deserializeFullSessionSummary drops non-number values from skillBreakdown', () => {
+    const raw = JSON.parse(JSON.stringify(makeSummary())) as Record<string, unknown>;
+    raw.skillBreakdown = { simplify: 3, 'code-review': 'not-a-number' };
+
+    expect(deserializeFullSessionSummary(raw).skillBreakdown).toEqual({ simplify: 3 });
   });
 });
 
@@ -479,6 +581,54 @@ describe('SessionStore', () => {
     store.saveSession(makeSummary({ sessionId: 'grow', startTime, toolCallCount: 9 }));
 
     expect(store.loadSession('grow')!.toolCallCount).toBe(9);
+  });
+
+  it('accepts a subagent-only incoming summary (zero tool calls, real subagent cost) over a recorded existing session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'orphan', startTime, toolCallCount: 12 }));
+
+    // A dead-parent session whose only new activity is its subagent tail —
+    // zero tool calls, but real dollars — is exactly the write hasAttributableActivity
+    // is meant to admit.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'orphan',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        subagentCostUsd: 3.5,
+      }),
+    );
+
+    const loaded = store.loadSession('orphan');
+    expect(loaded?.toolCallCount).toBe(12);
+    expect(loaded?.subagentCostUsd).toBe(3.5);
+  });
+
+  it('still refuses a genuinely empty incoming summary against a subagent-only existing session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(
+      makeSummary({
+        sessionId: 'subagent-only',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        subagentCostUsd: 3.5,
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: 'subagent-only',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        subagentCostUsd: 0,
+      }),
+    );
+
+    expect(store.loadSession('subagent-only')?.subagentCostUsd).toBe(3.5);
   });
 
   it('loadSession reads and parses a saved session', () => {
@@ -1363,6 +1513,84 @@ describe('buildSessionSummary', () => {
     expect(merged.platform).toBe('claude-code');
   });
 
+  it('mergeSummaries merges costByDayUsd / subagentCostByDayUsd per day key, taking the max on overlap', () => {
+    const existing = makeSummary({
+      costByDayUsd: { '2026-09-10': 3.1, '2026-09-11': 1.5 },
+      subagentCostByDayUsd: { '2026-09-10': 0.2 },
+    });
+    const incoming = makeSummary({
+      costByDayUsd: { '2026-09-11': 0.2 },
+      subagentCostByDayUsd: { '2026-09-11': 0.9 },
+    });
+    const merged = mergeSummaries(existing, incoming);
+    // The existing day (2026-09-10) survives an incoming write that only
+    // carries 2026-09-11 — a whole-object spread would have erased it.
+    expect(merged.costByDayUsd).toEqual({ '2026-09-10': 3.1, '2026-09-11': 1.5 });
+    expect(merged.subagentCostByDayUsd).toEqual({ '2026-09-10': 0.2, '2026-09-11': 0.9 });
+  });
+
+  it('mergeSummaries leaves costByDayUsd / subagentCostByDayUsd undefined when neither side has buckets', () => {
+    const existing = makeSummary({ costByDayUsd: undefined, subagentCostByDayUsd: undefined });
+    const incoming = makeSummary({ costByDayUsd: undefined, subagentCostByDayUsd: undefined });
+    const merged = mergeSummaries(existing, incoming);
+    // Present-but-empty ({}) would read as "authoritatively $0 today" to the
+    // aggregate route instead of falling back to the timeline pro-rate.
+    expect(merged.costByDayUsd).toBeUndefined();
+    expect(merged.subagentCostByDayUsd).toBeUndefined();
+  });
+
+  it('mergeSummaries unions timeline entries from both sides instead of keeping only the longer array', () => {
+    // Simulates a Claude Code --stdio resume: the old process's on-disk
+    // timeline is longer than what the new process has accumulated so far,
+    // so a pure longest-wins merge would drop every entry the new process
+    // wrote after the resume.
+    const existing = makeSummary({
+      timeline: [
+        { timestamp: 100, toolName: 'Read', durationMs: 5, success: true },
+        { timestamp: 200, toolName: 'Edit', durationMs: 10, success: true },
+        { timestamp: 300, toolName: 'Bash', durationMs: 20, success: true },
+      ],
+    });
+    const incoming = makeSummary({
+      timeline: [{ timestamp: 400, toolName: 'Write', durationMs: 8, success: true }],
+    });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300, 400]);
+  });
+
+  it('mergeSummaries de-duplicates a timeline entry present on both sides instead of doubling it', () => {
+    const shared = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const existing = makeSummary({
+      timeline: [shared, { timestamp: 200, toolName: 'Edit', durationMs: 10, success: true }],
+    });
+    const incoming = makeSummary({
+      timeline: [shared, { timestamp: 300, toolName: 'Bash', durationMs: 20, success: true }],
+    });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
+  it('mergeSummaries caps a unioned timeline at MAX_TIMELINE_ENTRIES, keeping the newest entries', () => {
+    const existingEntries = Array.from({ length: 6000 }, (_, i) => ({
+      timestamp: i,
+      toolName: 'Read',
+      durationMs: 1,
+      success: true,
+    }));
+    const incomingEntries = Array.from({ length: 6000 }, (_, i) => ({
+      timestamp: 6000 + i,
+      toolName: 'Read',
+      durationMs: 1,
+      success: true,
+    }));
+    const existing = makeSummary({ timeline: existingEntries });
+    const incoming = makeSummary({ timeline: incomingEntries });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline).toHaveLength(10_000);
+    expect(merged.timeline?.[0]?.timestamp).toBe(2000);
+    expect(merged.timeline?.[merged.timeline!.length - 1]?.timestamp).toBe(11999);
+  });
+
   it('includes active task data in the summary', () => {
     const mockSessionTracker = {
       getMetrics: () => ({
@@ -1466,7 +1694,9 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: {},
       costByDayUsd: {},
       subagentCostByDayUsd: {},
-      subagentCostByAgentType: {},
+      subagentByAgentType: {},
+      highContextCostUsd: 0,
+      apiDurationMs: null,
       costRateMultiplierApplied: 1,
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
@@ -1506,7 +1736,9 @@ describe('buildSessionSummary', () => {
       costByWorkflowRunId: { wf_test_run: { '2026-08-14': 0.05 } },
       costByDayUsd: { '2026-08-14': 0.05 },
       subagentCostByDayUsd: {},
-      subagentCostByAgentType: {},
+      subagentByAgentType: {},
+      highContextCostUsd: 0,
+      apiDurationMs: null,
       costRateMultiplierApplied: 1,
     } satisfies CostMetrics);
     const summary = buildSessionSummary({
@@ -2352,6 +2584,100 @@ describe('buildSessionSummary timeline', () => {
     expect(loaded2).not.toBeNull();
     expect(loaded2!['timeline']).toBeUndefined();
   });
+
+  it('carries skillName through for Skill entries and agentType through for Agent entries', () => {
+    const mockSessionTracker = {
+      getMetrics: () => ({
+        sessionId: 'skill-agent-session',
+        sessionStartTime: 1700000000000,
+        sessionDurationMs: 30_000,
+        toolCallCount: 2,
+        toolCallCountByTool: { Skill: 1, Agent: 1 },
+        toolDurationMsByTool: {},
+        toolSuccessRate: 1,
+        toolSuccessRateByTool: {},
+        toolErrorCount: 0,
+        toolErrorsByType: {},
+        uniqueFilesRead: 0,
+        uniqueFilesWritten: 0,
+        bashCommandsRun: 0,
+        bashExitCodes: {},
+        searchQueries: 0,
+        toolCallTimeline: [],
+      }),
+    };
+
+    const mockTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        totalTasksCompleted: 1,
+        currentTaskActive: false,
+        currentTaskToolCalls: 0,
+        averageTaskDurationMs: 30_000,
+        averageToolCallsPerTask: 2,
+        completedTasks: [
+          {
+            taskId: 't1',
+            startTime: 1700000000000,
+            endTime: 1700000030000,
+            durationMs: 30_000,
+            toolCallCount: 2,
+            toolCallsByType: { Skill: 1, Agent: 1 },
+            filesRead: [],
+            filesModified: [],
+            linesChanged: 0,
+            linesAdded: 0,
+            linesRemoved: 0,
+            bashCommandsRun: 0,
+            testsRun: 0,
+            testsPassed: 0,
+            buildRun: 0,
+            buildPassed: 0,
+            estimatedCostUsd: 0.02,
+            tokensUsed: 1000,
+            askedUserQuestions: 0,
+            subAgentsSpawned: 1,
+            toolCalls: [
+              {
+                id: 'tc1',
+                sessionId: 'skill-agent-session',
+                toolName: 'Skill',
+                toolUseId: 'tu1',
+                timestamp: 1700000001000,
+                durationMs: 30,
+                success: true,
+                skillName: 'unslop',
+              },
+              {
+                id: 'tc2',
+                sessionId: 'skill-agent-session',
+                toolName: 'Agent',
+                toolUseId: 'tu2',
+                timestamp: 1700000010000,
+                durationMs: 5000,
+                success: true,
+                agentType: 'general-purpose',
+              },
+            ],
+          },
+        ],
+      }),
+    };
+
+    const summary = buildSessionSummary({
+      sessionTracker: mockSessionTracker as unknown as SessionTracker,
+      taskDetector: mockTaskDetector as unknown as TaskDetector,
+      developer: 'alice',
+    });
+
+    expect(summary.timeline).toHaveLength(2);
+    expect(summary.timeline![0]!.toolName).toBe('Skill');
+    expect(summary.timeline![0]!.skillName).toBe('unslop');
+    expect(summary.timeline![0]!.agentType).toBeUndefined();
+    expect(summary.timeline![1]!.toolName).toBe('Agent');
+    expect(summary.timeline![1]!.agentType).toBe('general-purpose');
+    expect(summary.timeline![1]!.skillName).toBeUndefined();
+  });
 });
 
 // deserializeSession — explicit field extraction
@@ -2917,6 +3243,436 @@ describe('saveSession cross-process merge', () => {
       correctness: 0.8,
       autonomy: 0.8,
       firstAttemptQuality: 0.8,
+    });
+  });
+});
+
+describe('attribution field', () => {
+  function makeTurnCostAttributor(metrics: {
+    costByToolType?: Record<
+      string,
+      {
+        totalCost: number;
+        callCount: number;
+        avgCost: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheCreationTokens?: number;
+        tokens?: number;
+      }
+    >;
+    costBySkill?: Record<
+      string,
+      {
+        callCount: number;
+        attributedCallCount: number;
+        totalCost: number;
+        avgCost: number;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+        totalDurationMs: number;
+        tokens: number;
+      }
+    >;
+  }) {
+    return {
+      getMetrics: () => ({
+        turns: [],
+        costByToolType: metrics.costByToolType ?? {},
+        costBySkill: metrics.costBySkill ?? {},
+        totalAttributedCost: 0,
+        attributionRate: 0,
+      }),
+    } as unknown as import('../metrics/turn-cost-attributor.js').TurnCostAttributor;
+  }
+
+  it('composes buckets.tool and buckets.skill from the turn cost attributor', () => {
+    const turnCostAttributor = makeTurnCostAttributor({
+      costByToolType: {
+        Read: {
+          totalCost: 0.02,
+          callCount: 4,
+          avgCost: 0.005,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          tokens: 0,
+        },
+      },
+      costBySkill: {
+        unslop: {
+          callCount: 2,
+          attributedCallCount: 2,
+          totalCost: 0.03,
+          avgCost: 0.015,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 10,
+          cacheCreationTokens: 5,
+          totalDurationMs: 4000,
+          tokens: 165,
+        },
+      },
+    });
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      turnCostAttributor,
+      developer: 'alice',
+    });
+
+    // Tool bucket carries no token signal from this fixture, so tokens stay
+    // 0 and breakdown is omitted; skill tokens are now the four-category
+    // sum (100 + 50 + 10 + 5 = 165, up from the pre-cache-creation 160).
+    expect(summary.attribution).toEqual({
+      buckets: {
+        tool: { Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 } },
+        skill: {
+          unslop: {
+            costUsd: 0.03,
+            tokens: 165,
+            count: 2,
+            durationMs: 4000,
+            breakdown: {
+              inputTokens: 100,
+              outputTokens: 50,
+              cacheReadTokens: 10,
+              cacheCreationTokens: 5,
+            },
+          },
+        },
+      },
+      highContextCostUsd: 0,
+      apiDurationMs: null,
+    });
+  });
+
+  it('reads subagentByAgentType/highContextCostUsd/apiDurationMs from CostMetrics when present, carrying the subagent breakdown', () => {
+    const costTracker = {
+      getMetrics: () => ({
+        subagentByAgentType: {
+          'general-purpose': {
+            costUsd: 0.5,
+            tokens: 2000,
+            count: 3,
+            durationMs: 0,
+            breakdown: {
+              inputTokens: 1500,
+              outputTokens: 400,
+              cacheReadTokens: 80,
+              cacheCreationTokens: 20,
+            },
+          },
+        },
+        highContextCostUsd: 0.75,
+        apiDurationMs: 12_000,
+      }),
+    } as unknown as CostTracker;
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      costTracker,
+      developer: 'alice',
+    });
+
+    expect(summary.attribution).toEqual({
+      buckets: {
+        subagent: {
+          'general-purpose': {
+            costUsd: 0.5,
+            tokens: 2000,
+            count: 3,
+            durationMs: 0,
+            breakdown: {
+              inputTokens: 1500,
+              outputTokens: 400,
+              cacheReadTokens: 80,
+              cacheCreationTokens: 20,
+            },
+          },
+        },
+      },
+      highContextCostUsd: 0.75,
+      apiDurationMs: 12_000,
+    });
+  });
+
+  it('drops facets with no entries instead of persisting an empty object', () => {
+    const turnCostAttributor = makeTurnCostAttributor({
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+    });
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      turnCostAttributor,
+      developer: 'alice',
+    });
+
+    expect(summary.attribution?.buckets.skill).toBeUndefined();
+    expect(summary.attribution?.buckets.subagent).toBeUndefined();
+    expect(summary.attribution?.buckets.tool).toBeDefined();
+  });
+
+  it('leaves attribution undefined when neither costTracker nor turnCostAttributor is supplied', () => {
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      developer: 'alice',
+    });
+
+    expect(summary.attribution).toBeUndefined();
+  });
+
+  it('round-trips attribution through JSON serialization', () => {
+    const original = makeSummary({
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 } },
+          skill: { unslop: { costUsd: 0.03, tokens: 160, count: 2, durationMs: 4000 } },
+        },
+        highContextCostUsd: 0.75,
+        apiDurationMs: 12_000,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(original)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution).toEqual(original.attribution);
+  });
+
+  it('parses to undefined for a legacy summary without the field', () => {
+    const legacy = makeSummary();
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(JSON.stringify(legacy)) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution).toBeUndefined();
+  });
+
+  it('parses a legacy bucket with no breakdown field (pre-#692 file) without dropping the bucket', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      attribution: {
+        buckets: {
+          skill: { unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution?.buckets.skill).toEqual({
+      unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000 },
+    });
+  });
+
+  it('drops a malformed breakdown but keeps the bucket', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      attribution: {
+        buckets: {
+          skill: {
+            unslop: {
+              costUsd: 0.03,
+              tokens: 165,
+              count: 2,
+              durationMs: 4000,
+              breakdown: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 'nope' },
+            },
+          },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution?.buckets.skill).toEqual({
+      unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000 },
+    });
+  });
+
+  it('drops a malformed bucket (missing numeric field) rather than throwing', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      attribution: {
+        buckets: {
+          tool: {
+            Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 },
+            Bash: { costUsd: 0.01 }, // missing tokens/count/durationMs
+          },
+        },
+        highContextCostUsd: 0.1,
+        apiDurationMs: null,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution?.buckets.tool).toEqual({
+      Read: { costUsd: 0.02, tokens: 0, count: 4, durationMs: 0 },
+    });
+  });
+
+  it('merge takes a field-wise max across matching bucket keys', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-attr-${Date.now()}`;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            tool: { Read: { costUsd: 0.02, tokens: 100, count: 4, durationMs: 500 } },
+          },
+          highContextCostUsd: 0.1,
+          apiDurationMs: 1000,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        toolCallCount: 20,
+        attribution: {
+          buckets: {
+            tool: { Read: { costUsd: 0.05, tokens: 40, count: 6, durationMs: 300 } },
+            skill: { unslop: { costUsd: 0.01, tokens: 20, count: 1, durationMs: 200 } },
+          },
+          highContextCostUsd: 0.05,
+          apiDurationMs: 3000,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.attribution).toEqual({
+      buckets: {
+        tool: { Read: { costUsd: 0.05, tokens: 100, count: 6, durationMs: 500 } },
+        skill: { unslop: { costUsd: 0.01, tokens: 20, count: 1, durationMs: 200 } },
+      },
+      highContextCostUsd: 0.1,
+      apiDurationMs: 3000,
+    });
+  });
+
+  it('merge takes a field-wise max on breakdown when both sides have one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-both-${Date.now()}`;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.02,
+                tokens: 100,
+                count: 4,
+                durationMs: 500,
+                breakdown: {
+                  inputTokens: 80,
+                  outputTokens: 10,
+                  cacheReadTokens: 5,
+                  cacheCreationTokens: 40,
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.05,
+                tokens: 40,
+                count: 6,
+                durationMs: 300,
+                breakdown: {
+                  inputTokens: 30,
+                  outputTokens: 60,
+                  cacheReadTokens: 2,
+                  cacheCreationTokens: 10,
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.attribution?.buckets.skill?.unslop.breakdown).toEqual({
+      inputTokens: 80,
+      outputTokens: 60,
+      cacheReadTokens: 5,
+      cacheCreationTokens: 40,
+    });
+  });
+
+  it("merge keeps the one side's breakdown when the other side has none", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-one-side-${Date.now()}`;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: { unslop: { costUsd: 0.02, tokens: 100, count: 4, durationMs: 500 } },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.05,
+                tokens: 165,
+                count: 6,
+                durationMs: 300,
+                breakdown: {
+                  inputTokens: 100,
+                  outputTokens: 50,
+                  cacheReadTokens: 10,
+                  cacheCreationTokens: 5,
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.attribution?.buckets.skill?.unslop.breakdown).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 5,
     });
   });
 });

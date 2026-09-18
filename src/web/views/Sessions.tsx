@@ -34,6 +34,7 @@ import {
   formatDuration,
   formatUsd,
   formatUsdOrDash,
+  formatTokensCompact,
   rateColor,
   scoreColor,
   shortToolName,
@@ -291,7 +292,7 @@ export function Sessions(): JSX.Element {
 
   const list = useQuery<SessionRow[]>({
     queryKey: qk.sessionsList(SESSIONS_PAGE_SIZE),
-    queryFn: () => fetchSessionsList(SESSIONS_PAGE_SIZE),
+    queryFn: ({ signal }) => fetchSessionsList(SESSIONS_PAGE_SIZE, signal),
     refetchInterval: 10_000,
   });
 
@@ -299,13 +300,13 @@ export function Sessions(): JSX.Element {
   // run tree. One shared query for the whole view (was one per expanded row).
   const { data: rawWorkflows } = useQuery({
     queryKey: qk.workflows,
-    queryFn: fetchWorkflows,
+    queryFn: ({ signal }) => fetchWorkflows(signal),
     refetchInterval: 10_000,
   });
 
   const current = useQuery<CurrentSession>({
     queryKey: qk.sessionCurrent,
-    queryFn: fetchSessionCurrent,
+    queryFn: ({ signal }) => fetchSessionCurrent(signal),
     refetchInterval: 10_000,
   });
 
@@ -319,7 +320,7 @@ export function Sessions(): JSX.Element {
 
   const detail = useQuery<SessionDetail>({
     queryKey: selectedId ? qk.sessionDetail(selectedId) : ['session', 'none'],
-    queryFn: () => fetchSessionDetail(selectedId!),
+    queryFn: ({ signal }) => fetchSessionDetail(selectedId!, signal),
     enabled: selectedId !== null,
     // Poll while current session data is still loading (we don't know yet if
     // this session is live), then only continue polling if it turns out to be live.
@@ -890,7 +891,7 @@ function SessionRunSubRow({
 }: SessionRunSubRowProps): JSX.Element {
   const { data: detail } = useQuery<WorkflowRunDetailResponse>({
     queryKey: qk.workflowDetail(run.runId),
-    queryFn: () => fetchWorkflowDetail(run.runId),
+    queryFn: ({ signal }) => fetchWorkflowDetail(run.runId, signal),
     enabled: isExpanded,
   });
 
@@ -1007,14 +1008,25 @@ function SessionTimeline({
   // here even though `model` only reflects whichever was current at read
   // time.
   const modelBreakdownEntries = Object.entries(data.modelBreakdown ?? {});
-  const modelsUsed =
-    modelBreakdownEntries.length > 0
-      ? modelBreakdownEntries
-          .sort((a, b) => b[1].requestCount - a[1].requestCount)
-          .map(([model]) => model)
-      : data.model
-        ? [data.model]
-        : [];
+  const modelTableRows = modelBreakdownEntries
+    .map(([model, entry]) => ({
+      model,
+      ...entry,
+    }))
+    .sort((a, b) => b.totalCostUsd - a.totalCostUsd);
+
+  const cacheHitPct =
+    data.tokensInput != null &&
+    data.tokensCacheRead != null &&
+    data.tokensCacheCreation != null &&
+    data.tokensInput + data.tokensCacheRead + data.tokensCacheCreation > 0 &&
+    data.tokensCacheRead + data.tokensCacheCreation > 0
+      ? Math.round(
+          (data.tokensCacheRead /
+            (data.tokensInput + data.tokensCacheRead + data.tokensCacheCreation)) *
+            100,
+        )
+      : null;
 
   if (entries.length === 0 && breakdownEntries.length === 0) {
     return (
@@ -1062,26 +1074,78 @@ function SessionTimeline({
               })}
             </div>
           )}
+          {(data.linesAdded != null ||
+            data.linesRemoved != null ||
+            data.attribution?.apiDurationMs != null ||
+            cacheHitPct != null) && (
+            <div className="text-[11px] text-ink-muted mt-2 flex flex-wrap gap-2">
+              {(data.linesAdded != null || data.linesRemoved != null) && (
+                <span>
+                  {data.linesAdded != null && `+${data.linesAdded}`}
+                  {data.linesAdded != null && data.linesRemoved != null && ' / '}
+                  {data.linesRemoved != null && `−${data.linesRemoved}`} lines
+                </span>
+              )}
+              {data.attribution?.apiDurationMs != null && (
+                <span>
+                  API {formatDuration(data.attribution.apiDurationMs)} · wall{' '}
+                  {formatDuration(data.durationMs ?? 0)}
+                </span>
+              )}
+              {cacheHitPct != null && <span>cache {cacheHitPct}%</span>}
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mb-4 text-xs">
-        {modelsUsed.length > 0 && (
-          <div className="bg-surface-3 rounded-lg p-2.5">
-            <Eyebrow>{modelsUsed.length > 1 ? `Models (${modelsUsed.length})` : 'Model'}</Eyebrow>
-            {modelsUsed.length > 1 ? (
-              <div className="flex flex-col gap-0.5 mt-0.5">
-                {modelsUsed.map((m) => (
-                  <div key={m} className="font-mono text-[11px] truncate" title={m}>
-                    {m}
-                  </div>
+      {modelTableRows.length > 0 ? (
+        <div className="mb-4">
+          <Eyebrow className="mb-2">Usage by model</Eyebrow>
+          <div className="max-h-48 overflow-y-auto text-xs">
+            <table className="w-full">
+              <thead className="text-ink-muted sticky top-0 bg-bg-panel">
+                <tr>
+                  <th className="text-left pb-1">Model</th>
+                  <th className="text-right pb-1">Input</th>
+                  <th className="text-right pb-1">Output</th>
+                  <th className="text-right pb-1">Cache read</th>
+                  <th className="text-right pb-1">Cache write</th>
+                  <th className="text-right pb-1">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modelTableRows.map((row) => (
+                  <tr key={row.model} className="border-t border-bg-line">
+                    <td className="py-1 font-mono text-[11px] truncate" title={row.model}>
+                      {row.model}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">
+                      {formatTokensCompact(row.totalInputTokens)}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">
+                      {formatTokensCompact(row.totalOutputTokens)}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">
+                      {formatTokensCompact(row.totalCacheReadTokens)}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">
+                      {formatTokensCompact(row.totalCacheCreationTokens)}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">{formatUsd(row.totalCostUsd)}</td>
+                  </tr>
                 ))}
-              </div>
-            ) : (
-              <div className="font-mono">{modelsUsed[0]}</div>
-            )}
+              </tbody>
+            </table>
           </div>
-        )}
+        </div>
+      ) : data.model ? (
+        <div className="mb-4 bg-surface-3 rounded-lg p-2.5 text-xs">
+          <Eyebrow>Model</Eyebrow>
+          <div className="font-mono">{data.model}</div>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
         {data.estimatedCostUsd != null && (
           <div className="bg-surface-3 rounded-lg p-2.5">
             <Eyebrow>Cost</Eyebrow>
@@ -1276,7 +1340,7 @@ function SessionTraceSection({
 }): JSX.Element {
   const { data, isLoading, isError } = useQuery<SessionSubagentsResponse>({
     queryKey: qk.sessionSubagents(sessionId),
-    queryFn: () => fetchSessionSubagents(sessionId),
+    queryFn: ({ signal }) => fetchSessionSubagents(sessionId, signal),
     retry: false,
     refetchInterval: isLive ? 10_000 : false,
   });
@@ -1286,7 +1350,7 @@ function SessionTraceSection({
   // qk.workflows query/key as the KPI strip and master-list run tree above.
   const { data: rawWorkflows } = useQuery({
     queryKey: qk.workflows,
-    queryFn: fetchWorkflows,
+    queryFn: ({ signal }) => fetchWorkflows(signal),
     refetchInterval: isLive ? 10_000 : 30_000,
   });
 
@@ -1394,7 +1458,7 @@ function ToolsSection({
 
   const { data: contextData } = useQuery<ContextResponse>({
     queryKey: ['context', sessionId],
-    queryFn: () => fetchContext(sessionId),
+    queryFn: ({ signal }) => fetchContext(sessionId, signal),
     refetchInterval: 10_000,
     enabled: isLive && tab === 'context',
   });

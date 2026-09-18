@@ -11,6 +11,206 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Preflight is now installable via Homebrew on macOS** (`brew tap newrelic-experimental/preflight && brew install preflight`), alongside the existing npm install path. The formula tracks the npm package; a `scripts/update-homebrew.sh` helper regenerates it for each new release, documented in `docs/maintaining-homebrew-tap.md`.
 
+## [1.57.0] - 2026-09-17
+
+### Added
+
+- Today's "Sessions today" tile now says how many of the day's sessions need input, are ready for review, or are still working, each linking to those sessions. A session needs input when its last tool call asked you a question; it is ready for review when it opened a pull request that has not merged; it is working when it is live; otherwise it is completed.
+
+## [1.56.0] - 2026-09-17
+
+### Added
+
+- Share tables in "What's contributing to your spend" now break each row's tokens down by category on hover: input, output, cache read, and cache write, on both the Tokens and Cost cells of the Skills, Subagents, and Plugins tables. Session records persist the same breakdown per skill, subagent type, and tool, and cache-write tokens now count toward every table's token total, so skills and subagents are measured the same way.
+
+## [1.55.3] - 2026-09-17
+
+### Fixed
+
+- **The Plugins table in "What's contributing to your spend" had no Cost column while the Skills and Subagents tables beside it did, so a reader could not compare spend across the three.** Plugins now shows Cost in the same position as its siblings.
+
+## [1.55.2] - 2026-09-17
+
+### Fixed
+
+- The Git Efficiency page could take a very long time to load, and switching to another page while it was loading appeared to hang — the dashboard server re-resolved every historical working directory's git identity from scratch on every request, blocking all other requests behind it. Historical (completed) sessions are now cached after their first resolution. Dashboard pages also now cancel their in-flight requests when you navigate away or change a query's window/scope, instead of letting them run to completion in the background.
+
+## [1.55.1] - 2026-09-16
+
+### Fixed
+
+- Session timelines no longer lose entries across a Claude Code process resume: the two sides' timelines are unioned instead of keeping whichever one happened to be longer at checkpoint time.
+- A tool call blocked by another PreToolUse hook (e.g. a worktree-isolation guard) is now recorded as blocked rather than folded into the timeout bucket, which had been inflating failure-rate and retry metrics with calls that never actually ran.
+
+## [1.55.0] - 2026-09-16
+
+### Added
+
+- Today's spend chart carries a cumulative line dashed to the end-of-day projection with an "on pace for" week caption, History's daily spend carries this-week and this-month projections, every ranking on both pages is a sortable table with a sort-direction arrow, History's Tools table shows cost and tokens with a coverage caveat (`/api/cost-per-tool?days=N`), and the Git view shows PR counts per repo and worktree. Fixed along the way: the end-of-week figure could fall below end of day, token totals excluded thinking tokens, Needs attention showed flags from days-old sessions, the session trace pane opened empty when history existed, block charts could render huge in wide panels, and the spend lines re-animated on every refetch.
+
+## [1.54.3] - 2026-09-16
+
+### Changed
+
+- **Today answered its questions in the wrong order: configuration notices sat above the numbers, the live session tail sat at the bottom, and the anti-pattern panel rendered one pill per file.** The page now opens with the KPI strip and the spend chart, then a "Needs attention" list aggregated by anti-pattern type with a link to the sessions involved, then where the spend went, the live tail, a health-card grid, and activity on one hourly scale. The watcher notice became a tooltip and one muted line, and the single-session forecast rows are gone from a page that aggregates every session of the day.
+
+## [1.54.2] - 2026-09-16
+
+### Changed
+
+- **History's window labels were phrased three ways and its rankings were drawn as three different chart types.** The page now reads one page-level window (7, 30, 90 days) that every window-aware panel shares, opens with a summary KPI strip and daily spend on the shared chart, then the contribution panel, a breakdown row, a clearly labelled "Last 12 weeks" row, coaching, one merged instruction-file panel, and profile. Empty panels collapse to one line. Model performance and cost per outcome are sortable tables.
+
+## [1.54.1] - 2026-09-16
+
+### Fixed
+
+- **Several coaching and recommendation thresholds were stale, mislabeled, or otherwise miscalibrated against how the tool is actually used today.** Cost-per-session coaching had no throughput denominator and could recommend breaking sessions into smaller ones — actively counterproductive under prompt caching — so it now compares cost per completed task instead, and the recommendation focuses on redundant work rather than session length. The "expensive investigation task" flag compared against a fixed $2 figure with no value side to the comparison; it now compares against the developer's own average task cost and drops the blanket "use Grep/Glob instead" framing. The compute-waste status now scales with session size instead of a fixed 2,000-token floor that fired on nearly every real session. Cost-per-outcome ROI estimates raised the hours-saved assumption for investigation tasks and gave failed attempts a small non-zero value instead of zero, both still disclosed as rough approximations. The large-CLAUDE.md-context recommendation now sources the current model's real input and cache-read rates instead of a hardcoded Sonnet 4 price, and gates on the cache-adjusted marginal cost so a large but well-cached instruction file isn't flagged as a cost problem. The "efficiency score dropped X%" recommendation reported a point-scale delta as a percentage and could fire off a single scored session; it now reports points and requires a minimum weekly sample, matching how the same comparison is already worded and gated elsewhere.
+
+## [1.54.0] - 2026-09-15
+
+### Added
+
+- `/api/usage-insights` accepts `window=today`, scoping the share-of-spend report to local midnight so Today's contribution panel can match History's. New shared dashboard components: a spend-over-time bar chart with a cumulative line and an optional dashed projection (`SpendBars`), an actionable attention list with per-row advice and session links (`AttentionList`), and an inline empty-state variant.
+
+## [1.53.2] - 2026-09-15
+
+### Fixed
+
+- The CLAUDE.md impact verdict and the weekly tool-call trend no longer treat "fewer tool calls per task" as automatically better — prompt-cache reads dominate real cost, not raw call count, and a CLAUDE.md change that makes the agent verify more thoroughly or delegate to subagents legitimately raises this number. It's now excluded from the verdict's majority vote entirely.
+- Model recommendation ranking no longer attributes a session that used more than one model (e.g. an orchestrator model plus subagent models) to a single label — such sessions are excluded from per-model ranking instead of being credited or blamed on whichever model happened to be recorded as the session's primary one. The recommendation text also now discloses that the ranking doesn't control for task difficulty.
+- The efficiency score's autonomy component no longer penalizes a single clarifying question up to 33x differently purely based on unrelated task size — one question is now free regardless of how many tool calls the task involved, with each additional question costing a fixed amount.
+- The efficiency score's first-attempt-quality component was a hard cliff that could only ever produce exactly 1.0 or 0.0, and only reacted to thrashing. It's now a gradient based on the worst severity across all five detected anti-pattern types, not just thrashing.
+- The collaboration profile's "Delegator" classification no longer fires for a chatty, low-detail-looking session with no actual subagent spawns — it now requires real delegation (average agent spawns per task) in addition to high autonomy.
+- CLAUDE.md A/B comparison no longer labels a small or statistically incomparable effect size as "significant" — effect-size labels (small/medium/large/negligible, per Cohen's own thresholds) are now reported separately from sample-size adequacy, and comparisons below a minimum sample count per group are labeled as having insufficient data rather than being scored at all.
+
+## [1.53.1] - 2026-09-15
+
+### Changed
+
+- **Money, durations, percentages, and status labels were formatted differently from panel to panel on the dashboard.** One set of formatters and shared components (`Panel`, `HealthCard`, `RankedBars`, `ShareTable`, `UsageInsightsList`) now back every panel: costs under a dollar show two or three decimals instead of four, a sub-cent cost reads `<$0.001` instead of `$0.0000`, and health-card status is one vocabulary (Healthy, Watch, Needs attention, No data).
+
+## [1.53.0] - 2026-09-15
+
+### Added
+
+- Sessions detail now shows per-model input, output, cache read, cache write, and cost, lines added and removed, API versus wall duration, and cache hit rate. History gains a "What's contributing to your spend" panel with share tables by skill, subagent type, plugin, and loop, each saying how many rows its top-10 cap dropped, and the existing tool and model tables carry share-of-spend labels.
+
+## [1.52.3] - 2026-09-15
+
+### Fixed
+
+- `TurnCostAttributor` dropped almost every turn's cost on models with long thinking times: a token event closing a burst of tool calls had to arrive within a fixed 5-second window, but the model's own response can take anywhere from milliseconds to minutes. Replaced the fixed window with an unbounded, order-based match — a token event now closes the oldest still-open tool-call burst regardless of how long it takes — backed by a small queue (instead of a single slot) so a new burst starting before the previous one's token event arrives no longer silently discards it. `nr_observe_get_cost_per_tool` now also reports `droppedTokenEvents` so a low `attributionRate` is explainable from the tool output.
+
+## [1.52.2] - 2026-09-15
+
+### Fixed
+
+- Native Windows: a cwd-breadcrumb race could permanently bind the MCP to a short-lived, unrelated session id with no recovery path, since the PPID correction watch relies on a breadcrumb that's never written for the MCP's own `process.ppid` on that platform. The correction watch now also re-polls the cwd breadcrumb on Windows, adopting a differing session id only once its own buffer file shows real activity.
+
+## [1.52.1] - 2026-09-15
+
+### Fixed
+
+- **A fourth, independent copy of the same subagent-turn/synthetic-turn rejection rule used by the shared transcript parser had drifted apart from it.** The message tracker that counts user/assistant turns and the parent-session transcript watcher now both call one shared predicate for deciding whether an assistant turn is a real, in-session turn.
+
+## [1.52.0] - 2026-09-15
+
+### Added
+
+- Session records now persist spend attribution by tool, skill, and subagent type, plus high-context spend and estimated API wait time, and a new `/api/usage-insights` endpoint surfaces share-of-spend insights (high-context sessions, subagent-heavy sessions, long-running sessions, loops, and plugins) across a configurable day window.
+
+## [1.51.4] - 2026-09-14
+
+### Fixed
+
+- `ToolCallRecord.agentId`/`agentType` from the hook payload never populate in practice, despite Claude Code's docs saying they should — this silently defeated per-agent anti-pattern grouping and the subagent cost-by-type breakdown. Replaced with a `toolUseId` join against subagent transcripts and a correlation on the parent's own Agent-tool-call record.
+
+## [1.51.3] - 2026-09-14
+
+### Fixed
+
+- **A third copy of the transcript-line parsing logic already unified across two other files had drifted out of that shared module.** The parent-session transcript watcher now calls the same shared parser, which has been extended to also carry the sidechain flag it needs to skip subagent turns inlined into the main transcript.
+
+## [1.51.2] - 2026-09-14
+
+### Fixed
+
+- **Correction detection could still false-positive on a few phrasings the original regex redesign didn't cover:** a standing instruction referencing a noun with "that" nearby (e.g. "don't push directly to that branch") no longer counts as undoing the assistant's last action, and a polite decline ("no, thanks" / "no, that's fine") no longer counts as a rejection.
+
+## [1.51.1] - 2026-09-13
+
+### Fixed
+
+- **The Replay UI's anti-pattern overlay could flag parallel subagents as a single agent stuck in a loop.** Its stuck-loop, blind-editing, and re-reading detectors ran over the flat tool-call timeline with no notion of which subagent made each call, so three subagents each running the same command once (or reading the same file once) rendered as one false anti-pattern segment. These detectors now partition by agent before running, the same fix already applied to the session-wide anti-pattern tracker.
+
+## [1.51.0] - 2026-09-13
+
+### Added
+
+- **A skill run as a slash command (`/simplify`, `/code-review`, …) never showed up in per-skill cost tracking — only skills invoked through the `Skill` tool were counted, and most skill usage in Claude Code is typed as a slash command.** Slash-command invocations are now attributed the same way, and session records persist how many times each skill ran so it can be queried across sessions.
+
+## [1.50.11] - 2026-09-12
+
+### Fixed
+
+- **A subagent's tool call that timed out or was denied was attributed to the main agent.** The timeout and denied record shapes never carried the subagent id, and the timeout shape also dropped the transcript path and permission mode. Every record shape now copies the same attribution fields from the hook events through one helper, so a field added to the pre event reaches all of them at once.
+
+## [1.50.10] - 2026-09-12
+
+### Fixed
+
+- **The Git tab's 7-day "commits" and "PRs created" counters could not be trusted: a chained `git commit -m … && git push` was recorded as a push only, so the commit vanished, while every shell segment that merely contained the text `gh pr create` counted as a new PR, including failed retries, a `gh pr comment` body, and test fixtures that quoted the phrase.** A week that GitHub and `git log` put at 24 PRs and 43 commits showed 35 PRs and 23 commits. Git commands are now classified per shell segment, so every verb in a chain is recorded; a `gh pr <verb>` counts only when the segment starts with it, and a create counts only when it succeeded. Commits from `git log` (30 days, every branch, primary checkouts first) now feed the weekly report too, paired one-to-one with the hook-observed commit that made them so worktree and session attribution survive. Where git log covers a repo it is authoritative, so failed commits, amends, and commits later rewritten away no longer inflate the count.
+
+## [1.50.9] - 2026-09-12
+
+### Fixed
+
+- **Standalone and daemon `--local` dashboards now track subagent cost with no configuration.** The subagent transcript watcher previously only ran under `--stdio`, so a `--local` deployment with no `--stdio` sibling — a container, systemd unit, launchd daemon, or any platform with no MCP client to auto-launch `--stdio` — never observed any subagent spend. `NR_AI_WATCHER_MODE` is removed entirely; a `--local` watcher now runs unfiltered by default, skipping any session a live `--stdio` process already owns, and an orphan session's subagent spend persists to its own `sessions/*.json` file and survives a daemon restart.
+
+## [1.50.8] - 2026-09-12
+
+### Fixed
+
+- **The Git Efficiency tree listed the same repo twice when any of its sessions had been recorded without a working directory.** The "worktree unknown" row those sessions produce carried a synthetic repo key, so the tree filed it as a second, look-alike repo next to the real one. It is now filed under the real repo whenever a resolved worktree of the same repo is known, counts toward that repo's rollup, and is left out of the parallel-isolation check, which only makes sense for rows with a real working directory.
+- **Tool calls that timed out waiting for their post-hook, or whose post-hook arrived with no matching pre-hook, lost their working directory.** Those records could never be attributed to a git worktree and surfaced as "worktree unknown" or "unattributed" even on current versions. Both record shapes now carry the directory the hook reported.
+
+## [1.50.7] - 2026-09-12
+
+### Fixed
+
+- **The Today view no longer shows the "this dashboard process isn't running its own subagent watcher" banner on `--local` dashboards.** Every default install runs the dashboard as a `--local` daemon that by design never runs that watcher, so the banner appeared on every visit, and the `NR_AI_WATCHER_MODE=local` instruction it gave cannot reach a launchd daemon (the plist carries only `PATH`). Watcher state remains visible on the Settings page.
+- **The remaining `NR_AI_ENABLE_SUBAGENT_WATCHER=0` banner now hides when today's aggregate shows any subagent spend, instead of when it shows any subagent turns.** The turn count only counts Workflow-tool script runs, so it read 0 on any day whose subagents were ordinary Task/Agent-tool spawns, and the banner could claim subagents were excluded directly above a KPI showing their spend.
+
+## [1.50.6] - 2026-09-11
+
+### Changed
+
+- **The subagent-transcript token-usage watcher and the dashboard's subagent timeline no longer each re-implement their own JSONL line parser.** Both now share one parsing module for extracting an assistant turn's model, token usage, and schema-drift fingerprints from a transcript line. Each pipeline keeps its own existing acceptance policy (which fields are required) and output shape unchanged. No behavior change.
+
+## [1.50.5] - 2026-09-11
+
+### Fixed
+
+- **Cost and model-usage tracking for subagents spawned with an explicit name (the `Agent` tool's `name` parameter) was silently dropped — their tokens never counted toward session spend or appeared in the model breakdown.** Subagent transcript discovery, the dashboard's subagent timeline, and stale-cursor cleanup now recognize both the anonymous and named transcript filename shapes.
+
+## [1.50.4] - 2026-09-10
+
+### Fixed
+
+- **On Windows, `alerts.rulesPath` validation rejected every path — including the default one — because the containment check hardcoded `/` as the path separator, and `path.resolve()` returns backslash-separated paths on Windows.** This logged a spurious warning on every server start (`preflight doctor` included) and silently discarded any custom `alerts.rulesPath` set via config file or `NR_AI_ALERTS_RULES_PATH`, reverting it to the default. The check now uses `path.relative()` + `path.isAbsolute()`, which is separator-agnostic — the same fix already applied to `static-handler.ts` for the identical bug class.
+
+## [1.50.3] - 2026-09-10
+
+### Fixed
+
+- **The README's "Works With" list and the npm package description only named the original eight supported platforms** — Codex, Droid, Gemini CLI, Cline, opencode, Kilo Code, Pi, Antigravity, and the additional Copilot variants were shipped but invisible to anyone reading the docs or the npm listing. Both now reflect the full, current set of supported platforms, and a test now guards against the list drifting out of sync again.
+
+## [1.50.2] - 2026-09-10
+
+### Fixed
+
+- **The tool selection score's penalty for redundant reads/failures/unused outputs is now actually normalized by session size**, matching what its own code comment already claimed: a session with more than 15 tool calls is no longer punished as harshly as a shorter one for the same absolute number of violations. Previously the penalty was purely absolute, so a busy day (or a session with lots of parallel/forked subagent activity) could score noticeably worse than a quiet one with an identical defect rate. Sessions of 15 calls or fewer score exactly as they did before this change.
+
 ## [1.50.1] - 2026-09-10
 
 ### Fixed

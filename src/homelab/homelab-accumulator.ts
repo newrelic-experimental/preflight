@@ -128,6 +128,7 @@ function buildMinimalSummary(session: ActiveSession): FullSessionSummary {
     repoName: null,
     model: null,
     toolBreakdown,
+    skillBreakdown: {},
     filesRead: [],
     filesModified: [],
     linesAdded: 0,

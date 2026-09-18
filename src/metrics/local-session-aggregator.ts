@@ -22,7 +22,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { localDateKey } from '../lib/date.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
@@ -52,6 +54,28 @@ export interface ModelBreakdownTally {
   thinking: number;
 }
 
+/**
+ * What an existing `sessions/*.json` already says about a session's cost.
+ * `FullSessionSummary` structurally satisfies this, so `SessionStore.loadSession`
+ * can be passed as `persistedCostBaseline` unchanged.
+ */
+export type PersistedCostBaseline = Pick<
+  FullSessionSummary,
+  'estimatedCostUsd' | 'subagentCostUsd' | 'costByDayUsd' | 'subagentCostByDayUsd'
+>;
+
+export interface LocalSessionAggregatorOptions {
+  /**
+   * Called at most once per session, on that session's first subagent
+   * (`agentId`-tagged) usage — not at rollup creation, because an unscoped
+   * process creates a rollup from a session's first drained hook event,
+   * before that session's engine has written anything to disk (see
+   * `recordTokenUsage`'s doc comment). Returning null means "nothing on
+   * disk yet"; the rollup then starts at 0 as before.
+   */
+  readonly persistedCostBaseline?: (sessionId: string) => PersistedCostBaseline | null;
+}
+
 export interface LocalSessionRollup {
   sessionId: string;
   startTime: number;
@@ -78,6 +102,16 @@ export interface LocalSessionRollup {
   quality: QualityProxyTracker;
   modelBreakdown: Map<string, ModelBreakdownTally>;
   costUsd: number;
+  /** All-in cost by local-day key (`localDateKey(usage.timestamp)`); same key
+   *  space as `CostTracker.recordTokenUsage`, so a `--stdio`-written bucket
+   *  and a `--local`-written bucket for the same turn agree on the day. */
+  costByDayUsd: Map<string, number>;
+  /** Portion of costUsd from agentId-tagged (subagent) usage. */
+  subagentCostUsd: number;
+  /** Subagent-attributed portion of costByDayUsd, same key space. */
+  subagentCostByDayUsd: Map<string, number>;
+  /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
+  costBaselineApplied: boolean;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -206,6 +240,11 @@ export class LocalSessionAggregator {
   private readonly sessions = new Map<string, LocalSessionRollup>();
   /** Repo dirs targeted by git commands but never entered as a cwd. */
   private readonly gitTargetDirs = new Set<string>();
+  private readonly persistedCostBaseline: LocalSessionAggregatorOptions['persistedCostBaseline'];
+
+  constructor(options: LocalSessionAggregatorOptions = {}) {
+    this.persistedCostBaseline = options.persistedCostBaseline;
+  }
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
@@ -234,6 +273,10 @@ export class LocalSessionAggregator {
         quality: new QualityProxyTracker(),
         modelBreakdown: new Map(),
         costUsd: 0,
+        costByDayUsd: new Map(),
+        subagentCostUsd: 0,
+        subagentCostByDayUsd: new Map(),
+        costBaselineApplied: false,
         tokensInput: 0,
         tokensOutput: 0,
         tokensCacheRead: 0,
@@ -262,6 +305,7 @@ export class LocalSessionAggregator {
     isLintCommand?: boolean;
     errorType?: unknown;
     platform?: string | null;
+    agentId?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -316,6 +360,7 @@ export class LocalSessionAggregator {
         ...(record.isBuildCommand === true && { isBuildCommand: true }),
         ...(record.isLintCommand === true && { isLintCommand: true }),
         ...(typeof record.errorType === 'string' && { errorType: record.errorType }),
+        ...(typeof record.agentId === 'string' && { agentId: record.agentId }),
       });
     }
 
@@ -337,11 +382,35 @@ export class LocalSessionAggregator {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       thinkingTokens?: number;
+      /**
+       * Present iff this usage came from a subagent transcript turn — the SAME
+       * discriminator `CostTracker.recordTokenUsage`'s `ctx.agentId` uses, so
+       * "what counts as subagent cost" has one definition across both
+       * trackers. Absent for parent-transcript token events.
+       */
+      agentId?: string;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
-    const rollup = this.ensure(sessionId, usage.timestamp ?? Date.now());
-    rollup.costUsd += usage.costUsd ?? 0;
+    const timestamp = usage.timestamp ?? Date.now();
+    const rollup = this.ensure(sessionId, timestamp);
+    // Seed from disk on this session's first subagent-attributed usage, not at
+    // rollup creation: an unscoped process creates a rollup from a session's
+    // first drained hook event, which happens before that session's own
+    // engine has written anything to sessions/*.json — seeding at creation
+    // would read nothing and lose the engine's eventual total on restart
+    // under the max-based merge in mergeSummaries.
+    if (usage.agentId !== undefined && !rollup.costBaselineApplied) {
+      this.applyPersistedBaseline(sessionId, rollup);
+    }
+    const dayKey = localDateKey(timestamp);
+    const usd = usage.costUsd ?? 0;
+    rollup.costUsd += usd;
+    rollup.costByDayUsd.set(dayKey, (rollup.costByDayUsd.get(dayKey) ?? 0) + usd);
+    if (usage.agentId !== undefined) {
+      rollup.subagentCostUsd += usd;
+      rollup.subagentCostByDayUsd.set(dayKey, (rollup.subagentCostByDayUsd.get(dayKey) ?? 0) + usd);
+    }
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
@@ -368,6 +437,30 @@ export class LocalSessionAggregator {
     }
   }
 
+  /**
+   * Folds a session's on-disk cost quadruple into the rollup, additively,
+   * once. Additive (not assigned) because the rollup may already hold parent
+   * cost this process drained during the engine's pending-session window,
+   * which no other process saw — assigning would discard it. The whole
+   * quadruple (not just the subagent pair) is seeded so the persisted
+   * invariant `estimatedCostUsd >= subagentCostUsd` survives the fold; seeding
+   * only the subagent pair could leave a merged file whose subagent figure
+   * exceeds its all-in figure.
+   */
+  private applyPersistedBaseline(sessionId: string, rollup: LocalSessionRollup): void {
+    rollup.costBaselineApplied = true;
+    const baseline = this.persistedCostBaseline?.(sessionId) ?? null;
+    if (baseline === null) return;
+    rollup.costUsd += baseline.estimatedCostUsd ?? 0;
+    rollup.subagentCostUsd += baseline.subagentCostUsd;
+    for (const [day, usd] of Object.entries(baseline.costByDayUsd ?? {})) {
+      rollup.costByDayUsd.set(day, (rollup.costByDayUsd.get(day) ?? 0) + usd);
+    }
+    for (const [day, usd] of Object.entries(baseline.subagentCostByDayUsd ?? {})) {
+      rollup.subagentCostByDayUsd.set(day, (rollup.subagentCostByDayUsd.get(day) ?? 0) + usd);
+    }
+  }
+
   /** Distinct working directories seen across all sessions. */
   cwds(): string[] {
     const out = new Set<string>(this.gitTargetDirs);
@@ -382,10 +475,13 @@ export class LocalSessionAggregator {
   }
 
   /**
-   * Session summaries ready for `SessionStore.saveSession()`. Only sessions with
-   * observed tool calls are returned — a token-only rollup would be filtered out
-   * of `/api/sessions` anyway (it requires `toolCallCount > 0`), and writing it
-   * would burn a file that the empty-summary guard then has to defend.
+   * Session summaries ready for `SessionStore.saveSession()`. Only sessions
+   * with attributable activity are returned (see `hasAttributableActivity`) —
+   * a rollup with neither tool calls nor subagent spend would be filtered out
+   * of `/api/sessions` anyway, and writing it would burn a file that the
+   * empty-summary guard then has to defend. A subagent-only rollup (dead
+   * parent, tail still being read) DOES qualify: it has real dollars even
+   * though its parent timeline and toolCallCount are both zero.
    */
   toSummaries(context: {
     developer: string;
@@ -396,7 +492,7 @@ export class LocalSessionAggregator {
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
-      if (rollup.toolCallCount === 0) continue;
+      if (!hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
       out.push({
         sessionId: rollup.sessionId,
@@ -430,7 +526,18 @@ export class LocalSessionAggregator {
         buildRunCount: 0,
         buildPassCount: 0,
         estimatedCostUsd: rollup.costUsd > 0 ? rollup.costUsd : null,
-        subagentCostUsd: 0,
+        subagentCostUsd: rollup.subagentCostUsd,
+        // Emitted ONLY when non-empty. `undefined` is the documented "this
+        // rollup has no per-day buckets, fall back to the timeline pro-rate"
+        // signal the aggregate route keys on; writing `{}` would assert
+        // "authoritatively $0 today" and silently zero a row that should have
+        // pro-rated. Absent and empty are NOT the same value here.
+        ...(rollup.costByDayUsd.size > 0
+          ? { costByDayUsd: Object.fromEntries(rollup.costByDayUsd) }
+          : {}),
+        ...(rollup.subagentCostByDayUsd.size > 0
+          ? { subagentCostByDayUsd: Object.fromEntries(rollup.subagentCostByDayUsd) }
+          : {}),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
         tokensThinking: 0,
@@ -474,6 +581,10 @@ export interface CollectedCommit {
   repo: string | null;
   subject: string | null;
   url: string | null;
+  /** The worktree root this commit is attributed to — see
+   *  `collectCommitsAcrossRepos`'s two-pass ordering for how that's chosen
+   *  among several roots that can all see the same commit. */
+  root: string;
 }
 
 /**
@@ -505,6 +616,30 @@ function gitOut(root: string, args: readonly string[]): string | null {
   }
 }
 
+/**
+ * A root is its own primary checkout when its `--git-dir` and
+ * `--git-common-dir` are the same path — true for a normal clone, false for
+ * a linked worktree (whose `--git-dir` is `<repoKey>/worktrees/<name>`).
+ * Both are read from one `rev-parse` call to keep this to a single extra
+ * `gitOut` per root.
+ */
+const primaryCheckoutCache = new Map<string, boolean>();
+
+function isPrimaryCheckout(root: string): boolean {
+  const cached = primaryCheckoutCache.get(root);
+  if (cached !== undefined) return cached;
+  const out = gitOut(root, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-dir',
+    '--git-common-dir',
+  ]);
+  const [gitDir, commonDir] = (out ?? '').split('\n');
+  const primary = out === null || gitDir === commonDir;
+  primaryCheckoutCache.set(root, primary);
+  return primary;
+}
+
 export function collectCommitsAcrossRepos(
   repoRoots: readonly string[],
   since: string,
@@ -513,16 +648,28 @@ export function collectCommitsAcrossRepos(
   const seen = new Set<string>();
   const commits: CollectedCommit[] = [];
 
-  for (const root of repoRoots) {
+  // Primary checkouts first: a commit on `main` is reachable from both the
+  // primary and a feature worktree, and the first root to see it wins.
+  const primary = new Map(repoRoots.map((root) => [root, isPrimaryCheckout(root)]));
+  const orderedRoots = [...repoRoots].sort(
+    (a, b) => Number(!primary.get(a)) - Number(!primary.get(b)),
+  );
+
+  const remotes = new Map<string, string | null>();
+  const collect = (root: string, extraArgs: readonly string[]): void => {
     // %x1f (unit separator) can't appear in a hash, epoch, or subject, so it is
     // a safe delimiter where a space would break on multi-word subjects.
-    const args = ['log', `--since=${since}T00:00:00`, '--format=%H%x1f%ct%x1f%s'];
+    // Author date (%at), not committer date: a rebase restamps every commit
+    // with one committer time, which would move commits across days and
+    // defeat pairing with the hook records that saw them being made.
+    const args = ['log', `--since=${since}T00:00:00`, '--format=%H%x1f%at%x1f%s', ...extraArgs];
     if (authorEmail) args.push(`--author=${authorEmail}`);
 
     const stdout = gitOut(root, args);
-    if (stdout === null) continue;
+    if (stdout === null) return;
 
-    const remote = gitOut(root, ['remote', 'get-url', 'origin']);
+    if (!remotes.has(root)) remotes.set(root, gitOut(root, ['remote', 'get-url', 'origin']));
+    const remote = remotes.get(root) ?? null;
     const repo = repoNameFromRemote(remote);
 
     for (const line of stdout.split('\n')) {
@@ -536,9 +683,18 @@ export function collectCommitsAcrossRepos(
         repo,
         subject: subject ?? null,
         url: commitUrlFromRemote(remote, hash),
+        root,
       });
     }
-  }
+  };
+
+  // Pass 1: HEAD-only, same as before — covers the overwhelmingly common
+  // case (commits on the branch actually checked out) cheaply.
+  for (const root of orderedRoots) collect(root, []);
+  // Pass 2: every branch, so a commit whose worktree was since removed (the
+  // branch itself still exists) still gets counted, attributed to whichever
+  // remaining root can still see it.
+  for (const root of orderedRoots) collect(root, ['--branches']);
 
   return commits;
 }

@@ -60,7 +60,7 @@ Restart your AI tool after editing the config.
 
 **Cause:** This is expected — **Claude Desktop is not a supported platform for automatic observability.** Preflight's automatic capture relies on a hook/callback mechanism (`PreToolUse`/`PostToolUse`) that fires on every built-in tool call. Claude Desktop can load Preflight as an MCP server, but it has no such hook mechanism — see [ADAPTERS.md](https://newrelic-experimental.github.io/preflight/adapters/) for how visibility tiers work across platforms. Without hooks, none of Desktop's built-in tool calls are ever reported to Preflight, so there's nothing for the dashboard to show.
 
-**Fix:** none — this is a platform limitation, not a bug. Use one of the platforms listed under [Works With](../README.md#works-with) (Claude Code, Cursor, Windsurf, GitHub Copilot, Zed, Continue.dev, Amazon Q Developer, Amazon Kiro) for automatic capture.
+**Fix:** none — this is a platform limitation, not a bug. Use one of the platforms listed under [Works With](../README.md#works-with) for automatic capture.
 
 ---
 

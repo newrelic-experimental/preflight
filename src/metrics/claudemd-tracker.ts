@@ -17,12 +17,13 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { MetricAggregator, ModelPricing } from '../shared/index.js';
+import { createLogger, resolveModelPricing } from '../shared/index.js';
 import type { SessionStore } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { percentChange } from './trend-analyzer.js';
+import type { CostTracker } from './cost-tracker.js';
 
 const logger = createLogger('claudemd-tracker');
 
@@ -67,6 +68,15 @@ export interface ClaudeMdImpactReport {
     readonly taskSuccessRate: MetricDelta | null;
   };
   readonly contextTokensForClaudeMd: number | null;
+  /**
+   * Cache-adjusted estimate of CLAUDE.md's marginal per-turn cost — blends
+   * the current model's uncached input rate with its (much cheaper)
+   * cache-read rate by the developer's observed cache hit rate, since a
+   * stable CLAUDE.md is served from prompt cache on all but the first turn
+   * of a session. `null` under the same conditions contextTokensForClaudeMd
+   * is (file unreadable, no tracked change yet).
+   */
+  readonly estimatedPerTurnCostUsd: number | null;
   readonly verdict: string;
 }
 
@@ -85,11 +95,17 @@ export interface ContextCostEstimate {
 /** Rough heuristic: 1 char ≈ 0.25 tokens for English text. */
 const TOKENS_PER_CHAR = 0.25;
 
-/** Baseline input cost: Sonnet 4's $3 per million input tokens. */
+/**
+ * Fallback input cost when no live model pricing is available (e.g. no
+ * CostTracker wired in, or the current model doesn't resolve): Sonnet 4's $3
+ * per million input tokens. Real estimates source the current model's actual
+ * rate — including its cache-read rate — from the pricing table instead; see
+ * estimateContextCost()'s `pricing`/`cacheHitRate` options.
+ */
 const DEFAULT_INPUT_COST_PER_MTOK = 3;
 
-/** Average turns per session — used for per-session cost estimation. */
-const AVG_TURNS_PER_SESSION = 10;
+/** Average turns per session — used for per-session cost estimation. Hand-picked judgment call, not derived from data. */
+const AVG_TURNS_PER_SESSION = 20;
 
 /** Always watched regardless of platform — the common-denominator convention. */
 const DEFAULT_INSTRUCTION_FILE_PATHS: readonly string[] = ['CLAUDE.md', '.claude/'];
@@ -122,12 +138,18 @@ export class ClaudeMdTracker {
   private readonly changes: ClaudeMdChange[] = [];
   private lastEmittedIndex = 0;
   private cachedImpact: { timestamp: number; report: ClaudeMdImpactReport } | null = null;
+  private readonly costTracker?: CostTracker;
 
-  constructor(options: { sessionStore: SessionStore; instructionFilePaths?: readonly string[] }) {
+  constructor(options: {
+    sessionStore: SessionStore;
+    instructionFilePaths?: readonly string[];
+    costTracker?: CostTracker;
+  }) {
     this.sessionStore = options.sessionStore;
     this.instructionFilePaths = [
       ...new Set([...DEFAULT_INSTRUCTION_FILE_PATHS, ...(options.instructionFilePaths ?? [])]),
     ];
+    this.costTracker = options.costTracker;
   }
 
   /** The file path(s)/patterns this instance watches for instruction-file changes. */
@@ -245,10 +267,17 @@ export class ClaudeMdTracker {
         afterMetrics.avgCorrectionRate,
         false, // lower is better
       ),
+      // Tool calls per task is not a reliable cost or quality proxy in
+      // either direction — prompt-cache reads dominate real cost, not raw
+      // call count, and a CLAUDE.md change that makes the agent verify more
+      // thoroughly or delegate to subagents legitimately increases this
+      // number. `improved` is computed for shape-compatibility only; it is
+      // deliberately excluded from generateVerdict() below and should not be
+      // read as a quality signal.
       toolCallsPerTask: computeDelta(
         beforeMetrics.avgToolCallsPerTask,
         afterMetrics.avgToolCallsPerTask,
-        false, // lower is better
+        false,
       ),
       taskSuccessRate:
         beforeMetrics.avgTaskSuccessRate !== null && afterMetrics.avgTaskSuccessRate !== null
@@ -256,19 +285,30 @@ export class ClaudeMdTracker {
           : null,
     };
 
-    // Estimate context tokens from the actual file size
+    // Estimate context tokens (and cache-adjusted cost) from the actual file size
     let contextTokensForClaudeMd: number | null = 0;
+    let estimatedPerTurnCostUsd: number | null = 0;
     const latestChange = [...this.changes].reverse().find((c) => c.changeType !== 'deleted');
     if (latestChange) {
       try {
-        const cost = ClaudeMdTracker.estimateContextCost(latestChange.filePath);
+        const costMetrics = this.costTracker?.getMetrics();
+        const pricing = costMetrics?.model
+          ? (resolveModelPricing(costMetrics.model) ?? undefined)
+          : undefined;
+        const cost = ClaudeMdTracker.estimateContextCost(latestChange.filePath, {
+          pricing,
+          cacheHitRate: costMetrics?.cacheHitRate ?? undefined,
+        });
         contextTokensForClaudeMd = cost.estimatedTokens;
+        estimatedPerTurnCostUsd = cost.perTurnCostUsd;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
           contextTokensForClaudeMd = null;
+          estimatedPerTurnCostUsd = null;
         } else {
           logger.warn('Failed to estimate CLAUDE.md context cost', { error: String(err) });
           contextTokensForClaudeMd = 0;
+          estimatedPerTurnCostUsd = 0;
         }
       }
     }
@@ -286,6 +326,7 @@ export class ClaudeMdTracker {
       afterMetrics,
       deltas,
       contextTokensForClaudeMd,
+      estimatedPerTurnCostUsd,
       verdict,
     };
   }
@@ -309,12 +350,28 @@ export class ClaudeMdTracker {
   /**
    * Estimate the per-session and per-turn cost of loading a CLAUDE.md file
    * into context. Reads the file and computes token estimate.
+   *
+   * `options.pricing` sources the current model's real input/cache-read
+   * rates from the pricing table instead of the hardcoded Sonnet-4 fallback.
+   * `options.cacheHitRate` blends the uncached and cache-read rates to
+   * approximate the *marginal* per-turn cost: a stable CLAUDE.md is served
+   * from prompt cache on all but the first turn of a session, so pricing
+   * every turn at the full uncached rate overstates the real cost.
    */
-  static estimateContextCost(claudeMdPath: string): ContextCostEstimate {
+  static estimateContextCost(
+    claudeMdPath: string,
+    options?: { pricing?: ModelPricing; cacheHitRate?: number },
+  ): ContextCostEstimate {
     const content = readFileSync(claudeMdPath, 'utf-8');
     const charCount = content.length;
     const estimatedTokens = Math.round(charCount * TOKENS_PER_CHAR);
-    const perTurnCostUsd = round((estimatedTokens / 1_000_000) * DEFAULT_INPUT_COST_PER_MTOK, 6);
+
+    const inputPerMTok = options?.pricing?.inputPerMTok ?? DEFAULT_INPUT_COST_PER_MTOK;
+    const cacheReadPerMTok = options?.pricing?.cacheReadPerMTok ?? inputPerMTok;
+    const cacheHitRate = options?.cacheHitRate ?? 0;
+    const blendedPerMTok = inputPerMTok * (1 - cacheHitRate) + cacheReadPerMTok * cacheHitRate;
+
+    const perTurnCostUsd = round((estimatedTokens / 1_000_000) * blendedPerMTok, 6);
     const perSessionCostUsd = round(perTurnCostUsd * AVG_TURNS_PER_SESSION, 6);
 
     return {
@@ -441,13 +498,17 @@ function computeDelta(
 // ---------------------------------------------------------------------------
 
 function generateVerdict(deltas: ClaudeMdImpactReport['deltas']): string {
+  // toolCallsPerTask is deliberately NOT one of the verdict inputs — it has
+  // no reliable "higher/lower is better" direction (see the comment on its
+  // computeDelta() call above), so it can't contribute to a majority vote
+  // over improved/degraded metrics without baking in an unreliable
+  // assumption.
   const entries: Array<{ name: string; delta: MetricDelta }> = [
     ...(deltas.efficiencyScore !== null
       ? [{ name: 'efficiency', delta: deltas.efficiencyScore }]
       : []),
     { name: 'cost', delta: deltas.cost },
     { name: 'corrections', delta: deltas.correctionRate },
-    { name: 'tool calls/task', delta: deltas.toolCallsPerTask },
     ...(deltas.taskSuccessRate !== null
       ? [{ name: 'task success', delta: deltas.taskSuccessRate }]
       : []),

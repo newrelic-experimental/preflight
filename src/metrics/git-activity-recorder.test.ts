@@ -6,7 +6,8 @@ import {
   type SpawnSyncReturns,
 } from 'node:child_process';
 import { jest } from '@jest/globals';
-import { GitActivityRecorder, processGhCommand } from './git-activity-recorder.js';
+import { GitActivityRecorder } from './git-activity-recorder.js';
+import { processGhCommand, splitShellSegments } from './git-event-classifier.js';
 import { ActivityStore } from './git-activity-store.js';
 import type { GitActivityRecord } from './git-activity-recorder.js';
 import { WorktreeIdentityResolver } from './git-workspace-identity.js';
@@ -379,8 +380,9 @@ describe('GitActivityRecorder', () => {
       // Generated recordId format: ${sessionId}:${timestamp}:${toolName}:${discriminator}
       // — the discriminator suffix is what lets one record produce more than
       // one activity (e.g. a build command that's also a git command)
-      // without the two colliding in the store's dedup.
-      expect(results[0].recordId).toBe('session-1:5000:Bash:git');
+      // without the two colliding in the store's dedup. The `-0` is the
+      // segment's index in the (single-segment, here) split command.
+      expect(results[0].recordId).toBe('session-1:5000:Bash:git-0');
     });
   });
 
@@ -430,6 +432,183 @@ describe('GitActivityRecorder', () => {
       const kinds = results.map((r) => r.kind).sort();
       expect(kinds).toContain('verify');
       expect(kinds).toContain('git');
+    });
+  });
+
+  describe('per-segment git classification (chained commands)', () => {
+    it('keeps every git verb in a chained commit+push instead of only the first match', () => {
+      const record = makeRecord({
+        command: 'git add -A && git commit -m x && git push',
+        cwd: repoDir,
+        timestamp: 5000,
+      });
+
+      recorder.recordToolCall(record);
+
+      const results = store.query({ since: 0, until: 10000 });
+      const gitResults = results.filter((r) => r.kind === 'git');
+
+      const commitRecord = gitResults.find((r) => r.recordId.endsWith(':git-1'));
+      const pushRecord = gitResults.find((r) => r.recordId.endsWith(':git-2'));
+      expect(commitRecord).toBeDefined();
+      expect(pushRecord).toBeDefined();
+      expect(commitRecord?.kind === 'git' && commitRecord.gitEvent.type).toBe('commit');
+      expect(pushRecord?.kind === 'git' && pushRecord.gitEvent.type).toBe('push');
+    });
+
+    it('ignores a segment that only mentions git inside quoted text', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: `printf 'not json but has git commit inside' > /tmp/in.json`,
+          cwd: repoDir,
+          timestamp: 5000,
+        }),
+      );
+
+      expect(store.query({ since: 0, until: 10000 }).filter((r) => r.kind === 'git')).toHaveLength(
+        0,
+      );
+    });
+
+    it('still classifies git behind env assignments or a path prefix', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'GIT_EDITOR=true /usr/bin/git commit -m x',
+          cwd: repoDir,
+          timestamp: 5000,
+        }),
+      );
+
+      const gitResults = store.query({ since: 0, until: 10000 }).filter((r) => r.kind === 'git');
+      expect(gitResults).toHaveLength(1);
+      expect(gitResults[0].kind === 'git' && gitResults[0].gitEvent.type).toBe('commit');
+    });
+
+    it('attributes a conflict error to the git segment that actually ran last', () => {
+      const record = makeRecord({
+        command: 'git fetch && git rebase origin/main',
+        cwd: repoDir,
+        timestamp: 5000,
+        error: 'fatal: rebase conflict: could not apply 1234567... commit message',
+      });
+
+      recorder.recordToolCall(record);
+
+      const results = store.query({ since: 0, until: 10000 });
+      const gitResults = results.filter((r) => r.kind === 'git');
+
+      const fetchRecord = gitResults.find((r) => r.recordId.endsWith(':git-0'));
+      const rebaseRecord = gitResults.find((r) => r.recordId.endsWith(':git-1'));
+      expect(fetchRecord?.kind === 'git' && fetchRecord.gitEvent.type).toBe('fetch');
+      expect(rebaseRecord?.kind === 'git' && rebaseRecord.gitEvent.type).toBe('rebase_conflict');
+    });
+  });
+
+  describe('gh PR create/success gating and shell-segment parsing', () => {
+    const prRecords = () => store.query({ since: 0, until: 10000 }).filter((r) => r.kind === 'pr');
+
+    it('does not count a failed gh pr create as a PR', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr create --title x', cwd: repoDir, success: false }),
+      );
+      expect(prRecords()).toHaveLength(0);
+    });
+
+    it('still counts a failed gh pr merge — a non-create verb stays real even on failure', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr merge 5', cwd: repoDir, success: false }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('merge');
+      expect(results[0].kind === 'pr' && results[0].prEvent.prNumber).toBe('5');
+    });
+
+    it('does not mistake a piped-in fixture string for a real gh pr create', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: `printf '{"tool_input":{"command":"gh pr create"}}' | node script.js`,
+          cwd: repoDir,
+        }),
+      );
+      expect(prRecords()).toHaveLength(0);
+    });
+
+    it('does not mistake "gh pr create" inside a comment body for a real create', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'gh pr comment 5 --body "see gh pr create"', cwd: repoDir }),
+      );
+      expect(prRecords()).toHaveLength(0);
+    });
+
+    it('finds a real gh pr create after a heredoc body, on its own newline-separated segment', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command:
+            "cat > body.md <<'EOF'\nsome text\nEOF\ngh pr create --title x --body-file body.md",
+          cwd: repoDir,
+        }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+    });
+
+    it('recognizes gh pr create prefixed with an env-var assignment', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'GH_TOKEN=abc gh pr create --title x', cwd: repoDir }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+    });
+
+    it('recognizes gh pr create chained after a cd', () => {
+      recorder.recordToolCall(
+        makeRecord({ command: 'cd /somewhere && gh pr create --title x', cwd: repoDir }),
+      );
+      const results = prRecords();
+      expect(results).toHaveLength(1);
+      expect(results[0].kind === 'pr' && results[0].prEvent.action).toBe('create');
+    });
+  });
+
+  describe('processGhCommand standalone function — verb table and anchoring', () => {
+    it('returns null for a verb outside the PR-action table (comment)', () => {
+      expect(processGhCommand('gh pr comment 5 --body "see gh pr create"', 1000)).toBeNull();
+    });
+
+    it('returns null when "gh pr create" is not at the start of the segment', () => {
+      expect(
+        processGhCommand(`printf '{"tool_input":{"command":"gh pr create"}}'`, 1000),
+      ).toBeNull();
+    });
+
+    it('matches through a leading env-var assignment', () => {
+      expect(processGhCommand('GH_TOKEN=abc gh pr create --title x', 1000)).toMatchObject({
+        action: 'create',
+        prNumber: null,
+      });
+    });
+
+    it('extracts the merge verb and PR number', () => {
+      expect(processGhCommand('gh pr merge 5', 1000)).toMatchObject({
+        action: 'merge',
+        prNumber: '5',
+      });
+    });
+  });
+
+  describe('splitShellSegments', () => {
+    it('splits on &&, ;, |, and newline', () => {
+      expect(splitShellSegments('a && b; c | d\ne')).toEqual(['a ', ' b', ' c ', ' d', 'e']);
+    });
+
+    it('treats a newline as a separator, not just &&/;/|', () => {
+      expect(splitShellSegments('git commit -m x\ngh pr create')).toEqual([
+        'git commit -m x',
+        'gh pr create',
+      ]);
     });
   });
 });

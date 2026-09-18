@@ -23,18 +23,19 @@ import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.j
 import type { ContextWindowMetrics } from '../../metrics/context-window-tracker.js';
 import type { CostForecast } from '../../metrics/cost-forecast.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
-import {
-  attributeSessionCosts,
-  type SessionLikeForCostOutcome,
-} from '../../metrics/cost-per-outcome.js';
+import { attributeSessionCosts } from '../../metrics/cost-per-outcome.js';
 import type { DecisionTreeMetrics } from '../../metrics/decision-tracker.js';
-import type { GitActivityRecord } from '../../metrics/git-activity-recorder.js';
+import {
+  GitActivityRecorder,
+  type GitActivityRecord,
+} from '../../metrics/git-activity-recorder.js';
+import { ActivityStore } from '../../metrics/git-activity-store.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-params.js';
 import type { WorktreeIdentity } from '../../metrics/git-workspace-identity.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import type { ScopeRef } from '../../metrics/git-workspace-report.js';
-import { replaySessionToActivityRecords } from '../../metrics/git-workspace-reporter.js';
+import { ReplaySessionCache } from '../../metrics/git-workspace-reporter.js';
 import type { GitWorkspaceReportWithWindow } from '../../metrics/git-workspace-reporter.js';
 import type { InstructionDriftMetrics } from '../../metrics/instruction-drift-tracker.js';
 import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
@@ -53,20 +54,35 @@ import {
 } from '../../metrics/quality-proxy-tracker.js';
 import type { Recommendation } from '../../metrics/recommendation-engine.js';
 import type { RetryDetectorMetrics, RetrySessionBreakdown } from '../../metrics/retry-detector.js';
+import {
+  deriveSessionStatus,
+  SESSION_STATUSES,
+  type SessionStatus,
+} from '../../metrics/session-status.js';
 import type {
   ToolSelectionMetrics,
   ToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { toToolSelectionSummary } from '../../metrics/tool-selection-scorer.js';
-import type { CostAttributionMetrics } from '../../metrics/turn-cost-attributor.js';
+import type {
+  CostAttributionMetrics,
+  SkillCostEntry,
+  ToolTypeCostEntry,
+} from '../../metrics/turn-cost-attributor.js';
+import { computeUsageInsights } from '../../metrics/usage-insights.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 import type {
   FullSessionSummary,
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { toPersistedAntiPatterns } from '../../storage/session-store.js';
-import type { HookEvent, ReplayTimelineEntry, ToolCallRecord } from '../../storage/types.js';
+import { hasAttributableActivity, toPersistedAntiPatterns } from '../../storage/session-store.js';
+import type {
+  AttributionBucket,
+  HookEvent,
+  ReplayTimelineEntry,
+  ToolCallRecord,
+} from '../../storage/types.js';
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
@@ -340,16 +356,12 @@ export interface ObservabilityHealthSnapshot {
   readonly costSelfCheckDeltaPct: number | null;
   /**
    * Why `watcherActive` is false; null when it's true. `activeSubagentWatcher`
-   * (src/index.ts) is only non-null when BOTH `subagentWatcherEnabled` (the
-   * `NR_AI_ENABLE_SUBAGENT_WATCHER` flag) AND `watcherShouldRun` (this
-   * process's mode matches `NR_AI_WATCHER_MODE`, default 'stdio') hold — two
-   * unrelated conditions collapsed into one boolean. `'mode_mismatch'` is the
-   * common, by-design case for a `--local` dashboard daemon; `'env_var'` is
-   * the explicit opt-out. Distinguishing them matters because the UI's
-   * `'env_var'` messaging tells the user to unset a variable — which is
-   * actively wrong advice when the real cause is `'mode_mismatch'`.
+   * (src/index.ts) is only non-null when `subagentWatcherEnabled` (the
+   * `NR_AI_ENABLE_SUBAGENT_WATCHER` flag) holds — the only way to disable it,
+   * in either `--stdio` or `--local` mode, since the watcher runs in both by
+   * default (see subagent-watcher.ts's unfiltered discovery).
    */
-  readonly watcherDisabledReason: 'env_var' | 'mode_mismatch' | null;
+  readonly watcherDisabledReason: 'env_var' | null;
   /**
    * True when the Copilot usage watcher is running but found a VS Code
    * workspaceStorage root with no `debug-logs` directory — i.e. the
@@ -391,7 +403,7 @@ export interface ApiHandlerDeps {
     loadAllSessions?: (opts?: {
       since?: Date;
       developer?: string;
-    }) => readonly SessionLikeForCostOutcome[];
+    }) => readonly FullSessionSummary[];
   };
   readonly costTracker?: {
     getMetrics: () => {
@@ -634,6 +646,129 @@ function unavailable(res: ServerResponse, what: string): void {
   res.end(payload);
 }
 
+/** Folds one persisted attribution bucket into an existing (or absent) ToolTypeCostEntry — see GET /api/cost-per-tool. */
+function mergeToolTypeCostEntry(
+  existing: ToolTypeCostEntry | undefined,
+  bucket: AttributionBucket,
+): ToolTypeCostEntry {
+  const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
+  const callCount = (existing?.callCount ?? 0) + bucket.count;
+  const tokens = (existing?.tokens ?? 0) + bucket.tokens;
+  const inputTokens = (existing?.inputTokens ?? 0) + (bucket.breakdown?.inputTokens ?? 0);
+  const outputTokens = (existing?.outputTokens ?? 0) + (bucket.breakdown?.outputTokens ?? 0);
+  const cacheReadTokens =
+    (existing?.cacheReadTokens ?? 0) + (bucket.breakdown?.cacheReadTokens ?? 0);
+  const cacheCreationTokens =
+    (existing?.cacheCreationTokens ?? 0) + (bucket.breakdown?.cacheCreationTokens ?? 0);
+  return {
+    totalCost,
+    callCount,
+    avgCost: callCount > 0 ? totalCost / callCount : 0,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    tokens,
+  };
+}
+
+/**
+ * Folds one persisted attribution bucket into an existing (or absent)
+ * SkillCostEntry — see GET /api/cost-per-tool. A persisted bucket's
+ * `breakdown` (when present) folds into the per-category split;
+ * `tokens` (the authoritative total) gets the merged sum either way.
+ */
+function mergeSkillCostEntry(
+  existing: SkillCostEntry | undefined,
+  bucket: AttributionBucket,
+): SkillCostEntry {
+  const totalCost = (existing?.totalCost ?? 0) + bucket.costUsd;
+  const callCount = (existing?.callCount ?? 0) + bucket.count;
+  // A persisted bucket only ever holds attributed cost, so every call it counts is attributed.
+  const attributedCallCount = (existing?.attributedCallCount ?? 0) + bucket.count;
+  return {
+    callCount,
+    attributedCallCount,
+    totalCost,
+    avgCost: attributedCallCount > 0 ? totalCost / attributedCallCount : 0,
+    inputTokens: (existing?.inputTokens ?? 0) + (bucket.breakdown?.inputTokens ?? 0),
+    outputTokens: (existing?.outputTokens ?? 0) + (bucket.breakdown?.outputTokens ?? 0),
+    cacheReadTokens: (existing?.cacheReadTokens ?? 0) + (bucket.breakdown?.cacheReadTokens ?? 0),
+    cacheCreationTokens:
+      (existing?.cacheCreationTokens ?? 0) + (bucket.breakdown?.cacheCreationTokens ?? 0),
+    totalDurationMs: (existing?.totalDurationMs ?? 0) + bucket.durationMs,
+    tokens: (existing?.tokens ?? 0) + bucket.tokens,
+  };
+}
+
+/**
+ * Folds one session's persisted tool/skill attribution buckets into the
+ * given accumulators (mutated in place) — shared by both GET
+ * /api/cost-per-tool paths that merge persisted sessions: the unwindowed
+ * (today, live-tracker-merged) path and the windowed (persisted-only,
+ * multi-day) path. Returns the cost attributed to this session's tool
+ * buckets, for callers tracking a running total.
+ */
+function foldSessionAttributionBuckets(
+  costByToolType: Record<string, ToolTypeCostEntry>,
+  costBySkill: Record<string, SkillCostEntry>,
+  session: FullSessionSummary,
+): number {
+  let attributedCost = 0;
+  for (const [tool, bucket] of Object.entries(session.attribution?.buckets.tool ?? {})) {
+    costByToolType[tool] = mergeToolTypeCostEntry(costByToolType[tool], bucket);
+    attributedCost += bucket.costUsd;
+  }
+  for (const [skill, bucket] of Object.entries(session.attribution?.buckets.skill ?? {})) {
+    costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], bucket);
+  }
+  return attributedCost;
+}
+
+interface WindowedCostPerToolResponse {
+  readonly turns: never[];
+  readonly costByToolType: Record<string, ToolTypeCostEntry>;
+  readonly costBySkill: Record<string, SkillCostEntry>;
+  readonly totalAttributedCost: number;
+  readonly attributionRate: number;
+  /** How many of the window's sessions actually carry attribution.buckets data — most historical sessions predate it. */
+  readonly attributedSessionCount: number;
+  readonly totalSessionCount: number;
+}
+
+/**
+ * Builds a windowed GET /api/cost-per-tool response purely from persisted
+ * sessions — no live TurnCostAttributor merge, unlike the unwindowed path
+ * below: "this dashboard process's own live session" isn't a meaningful
+ * concept over a multi-day historical window. attributedSessionCount /
+ * totalSessionCount let the frontend caveat the Tools table honestly when
+ * the window reaches back further than the attribution data does.
+ */
+function buildWindowedCostPerTool(
+  sessions: readonly FullSessionSummary[],
+): WindowedCostPerToolResponse {
+  const costByToolType: Record<string, ToolTypeCostEntry> = {};
+  const costBySkill: Record<string, SkillCostEntry> = {};
+  let totalAttributedCost = 0;
+  let totalCost = 0;
+  let attributedSessionCount = 0;
+  for (const session of sessions) {
+    totalCost += session.estimatedCostUsd ?? 0;
+    if (!session.attribution) continue;
+    attributedSessionCount++;
+    totalAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
+  }
+  return {
+    turns: [],
+    costByToolType,
+    costBySkill,
+    totalAttributedCost,
+    attributionRate: totalCost > 0 ? totalAttributedCost / totalCost : 0,
+    attributedSessionCount,
+    totalSessionCount: sessions.length,
+  };
+}
+
 // Formats RetryDetector's pre-aggregated by-session breakdown (a --local
 // dashboard process's single RetryDetector drains every session's buffer,
 // see ThrashingAlert's sessionId doc in retry-detector.ts) for the JSON API
@@ -740,6 +875,10 @@ interface TodayAggregatePayload {
   readonly latency: AggregateLatencyMetrics;
   readonly cacheHealth: AggregateCacheHealth;
   readonly forecastEndOfDayUsd: number | null;
+  readonly sessionStatus: {
+    readonly counts: Record<SessionStatus, number>;
+    readonly sessionIds: Record<SessionStatus, readonly string[]>;
+  };
 }
 
 // Build activity windows for every session with activity today, using the SAME
@@ -987,6 +1126,7 @@ function toolCallToTimelineEntry(tc: ToolCallRecord): ReplayTimelineEntry {
     isBuildCommand: (tc.isBuildCommand as boolean | undefined) || undefined,
     isLintCommand: (tc.isLintCommand as boolean | undefined) || undefined,
     errorType: tc.errorType || undefined,
+    agentId: tc.agentId || undefined,
   };
 }
 
@@ -1155,10 +1295,124 @@ export function buildContextReplayEvents(
   return events;
 }
 
+function isPrRecord(
+  record: GitActivityRecord,
+): record is Extract<GitActivityRecord, { kind: 'pr' }> {
+  return record.kind === 'pr';
+}
+
+// A 'create' with a null prNumber can never be matched by a later 'merge'
+// (gh/MCP always resolve a real number once one exists), so it always counts
+// as open. `records` must be sorted ascending by timestamp.
+function countOpenPrs(records: readonly Extract<GitActivityRecord, { kind: 'pr' }>[]): number {
+  let open = 0;
+  for (let i = 0; i < records.length; i++) {
+    const event = records[i].prEvent;
+    if (event.action !== 'create') continue;
+    if (event.prNumber === null) {
+      open++;
+      continue;
+    }
+    const merged = records
+      .slice(i + 1)
+      .some(
+        (later) => later.prEvent.action === 'merge' && later.prEvent.prNumber === event.prNumber,
+      );
+    if (!merged) open++;
+  }
+  return open;
+}
+
+interface SessionStatusAggregateInput {
+  readonly replayCache: ReplaySessionCache;
+  readonly sessionIds: ReadonlySet<string>;
+  readonly liveSet: ReadonlySet<string>;
+  readonly startMs: number;
+  readonly now: number;
+  readonly peeked: readonly { readonly [key: string]: unknown }[];
+  readonly todaySessions: readonly FullSessionSummary[];
+}
+
+// Per-session lifecycle status for today's Sessions today KPI.
+// `lastToolName` is "latest timestamp wins" across the live buffer and each
+// persisted timeline, which is exactly the brief's rule (persisted last
+// entry, or the buffer's if it's newer). `openPrCount` reuses
+// GitActivityRecorder's own PR/gh-command classification against both
+// sources rather than re-implementing it.
+function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
+  counts: Record<SessionStatus, number>;
+  sessionIds: Record<SessionStatus, readonly string[]>;
+} {
+  const { sessionIds, liveSet, startMs, now, peeked, todaySessions } = input;
+
+  const lastToolBySession = new Map<string, { toolName: string; ts: number }>();
+  const trackLatestTool = (sessionId: string, toolName: string, ts: number): void => {
+    const existing = lastToolBySession.get(sessionId);
+    if (!existing || ts > existing.ts) lastToolBySession.set(sessionId, { toolName, ts });
+  };
+  for (const ev of peeked) {
+    if (ev.mode !== 'post') continue;
+    const ts = typeof ev.timestamp === 'number' ? ev.timestamp : 0;
+    if (ts < startMs) continue;
+    const sid = ev.sessionId;
+    if (typeof sid !== 'string' || sid.length === 0) continue;
+    trackLatestTool(sid, typeof ev.tool === 'string' ? ev.tool : 'Unknown', ts);
+  }
+  for (const session of todaySessions) {
+    if (!session.timeline) continue;
+    for (const entry of session.timeline) {
+      if (entry.timestamp < startMs) continue;
+      trackLatestTool(session.sessionId, entry.toolName, entry.timestamp);
+    }
+  }
+
+  const identityResolver = new WorktreeIdentityResolver();
+  const activityStore = new ActivityStore<GitActivityRecord>();
+  const activityRecorder = new GitActivityRecorder(activityStore, identityResolver);
+  const bufferToolCalls = pairToolCallsFromBufferEvents(
+    peeked as unknown as readonly HookEvent[],
+  ).filter((record) => record.timestamp >= startMs);
+  for (const record of bufferToolCalls) activityRecorder.recordToolCall(record);
+  for (const session of todaySessions) {
+    const replayed = input.replayCache.replay(session, identityResolver);
+    for (const record of replayed.records) activityStore.ingest(record);
+  }
+  const prRecordsBySession = new Map<string, Array<Extract<GitActivityRecord, { kind: 'pr' }>>>();
+  for (const record of activityStore.query({ since: startMs, until: now })) {
+    if (!isPrRecord(record)) continue;
+    const list = prRecordsBySession.get(record.sessionId);
+    if (list) list.push(record);
+    else prRecordsBySession.set(record.sessionId, [record]);
+  }
+
+  const counts = Object.fromEntries(SESSION_STATUSES.map((s) => [s, 0])) as Record<
+    SessionStatus,
+    number
+  >;
+  const idsByStatus = Object.fromEntries(
+    SESSION_STATUSES.map((s) => [s, [] as string[]]),
+  ) as Record<SessionStatus, string[]>;
+  for (const sessionId of sessionIds) {
+    const status = deriveSessionStatus({
+      live: liveSet.has(sessionId),
+      lastToolName: lastToolBySession.get(sessionId)?.toolName ?? null,
+      openPrCount: countOpenPrs(prRecordsBySession.get(sessionId) ?? []),
+    });
+    counts[status]++;
+    idsByStatus[status].push(sessionId);
+  }
+  return { counts, sessionIds: idsByStatus };
+}
+
 export function createApiHandler(
   deps: ApiHandlerDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const routes = new Map<string, RouteFn>();
+  // Persists for the life of this handler (i.e. the server process), so a
+  // completed historical session's replay — and the `git` subprocess calls
+  // its identity resolution makes — is only ever paid once across every
+  // future /api/git-efficiency request, not on every poll.
+  const gitReplayCache = new ReplaySessionCache();
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');
@@ -1582,24 +1836,17 @@ export function createApiHandler(
       }
       // Cost attributed to TODAY. Prefer the session's persisted per-day
       // bucket — authoritative, since each token event was bucketed by its real
-      // transcript timestamp. For older session files without buckets, fall back to
-      // pro-rating the lifetime estimatedCostUsd by the timeline — EXCEPT a
-      // session with cost but ZERO attributable activity (no tool calls AND no
-      // subagent spend) is an unverifiable re-read artifact: its
-      // estimatedCostUsd is a cumulative lifetime total that may include a
-      // resumed transcript's month of cache-read tokens re-read in one pass, and
-      // todayPortionRatio returns 1.0 for its entirely-today window, dumping the
-      // whole total onto today (the observed $248/$863 phantoms, which had
-      // toolCallCount 0 and subagentCostUsd 0). Bias toward trust and contribute
-      // 0; the real per-day figure is recovered once the session re-persists
-      // WITH day buckets. Note: an EMPTY timeline alone is NOT the signal — a
-      // legitimate subagent-only session has an empty PARENT timeline (subagent
-      // tool calls are not in it) yet real subagentCostUsd, so the guard keys on
-      // subagent spend too, never zeroing genuine cross-session subagent work.
-      const hasNoAttributableActivity =
-        (s.toolCallCount ?? 0) === 0 &&
-        (s.subagentCostUsd ?? 0) === 0 &&
-        !(Array.isArray(s.timeline) && s.timeline.length > 0);
+      // transcript timestamp. For older session files without buckets, fall back
+      // to pro-rating the lifetime estimatedCostUsd by the timeline — EXCEPT a
+      // session with no attributable activity (see hasAttributableActivity's doc
+      // comment) is an unverifiable re-read artifact: its estimatedCostUsd is a
+      // cumulative lifetime total that may include a resumed transcript's month
+      // of cache-read tokens re-read in one pass, and todayPortionRatio returns
+      // 1.0 for its entirely-today window, dumping the whole total onto today
+      // (the observed $248/$863 phantoms). Bias toward trust and contribute 0;
+      // the real per-day figure is recovered once the session re-persists WITH
+      // day buckets.
+      const hasNoAttributableActivity = !hasAttributableActivity(s);
       const ratio = todayPortionRatio(s, now);
       totalCostUsd +=
         s.costByDayUsd !== undefined
@@ -1647,6 +1894,16 @@ export function createApiHandler(
         antiPatternCount += s.antiPatterns?.length ?? 0;
       }
     }
+
+    const sessionStatus = computeSessionStatusAggregate({
+      replayCache: gitReplayCache,
+      sessionIds: sessionsSeen,
+      liveSet,
+      startMs,
+      now,
+      peeked,
+      todaySessions,
+    });
 
     // (3) include this MCP's live session today-portion. Per-day attribution
     // comes from CostTracker, which buckets each token event by local-day at
@@ -1810,6 +2067,7 @@ export function createApiHandler(
         forecast?.forecastEndOfDayUsd != null
           ? Math.round(forecast.forecastEndOfDayUsd * 1000) / 1000
           : null,
+      sessionStatus,
     };
     return payload;
   }
@@ -2104,10 +2362,104 @@ export function createApiHandler(
   routes.set('GET /api/cost-per-tool', (req, res) => {
     if (!deps.turnCostAttributor) return unavailable(res, 'turnCostAttributor');
     // Same reasoning as /api/turn-costs above — optional ?sessionId= scopes
-    // this process-global tracker's data to one session.
+    // this process-global tracker's data to one session; the merge below
+    // only applies to the unscoped (Today panel) call.
     const url = new URL(req.url ?? '/', 'http://localhost');
     const sessionId = url.searchParams.get('sessionId') ?? undefined;
-    jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
+    if (sessionId !== undefined) {
+      jsonOk(res, deps.turnCostAttributor.getMetrics(sessionId));
+      return;
+    }
+
+    // ?days= scopes to a multi-day historical window instead of today —
+    // same widen-the-fetch-by-one-day pattern as GET /api/usage-insights
+    // below (loadAllSessions() filters by the session file's date prefix,
+    // coarse day granularity, not the session's real startTime, so a
+    // boundary-day session could otherwise be excluded before the exact
+    // cutoff filter below applies). Takes precedence over the unwindowed
+    // merge path below, which stays exactly as it was for callers that omit
+    // `days` (Today.tsx's unscoped call).
+    const daysParam = url.searchParams.get('days');
+    if (daysParam !== null) {
+      if (!deps.sessionStore?.loadAllSessions)
+        return unavailable(res, 'sessionStore.loadAllSessions');
+      const nowMs = Date.now();
+      const parsedDays = parseInt(daysParam, 10);
+      const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
+      const cutoffMs = nowMs - windowDays * 86_400_000;
+      const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
+      const sessions = deps.sessionStore
+        .loadAllSessions({ since })
+        .filter((s) => s.startTime >= cutoffMs);
+      jsonOk(res, buildWindowedCostPerTool(sessions));
+      return;
+    }
+
+    // Same own-live + persisted-today, excluding-own-already-persisted-
+    // session pattern as GET /api/model-usage above: this process's live
+    // breakdown is always included, and every OTHER today session's
+    // persisted tool/skill buckets are summed on top — different sessions,
+    // so sum, not the max-merge session-store.ts uses to reconcile two
+    // writers of the SAME session.
+    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const live = deps.turnCostAttributor.getMetrics();
+    const costByToolType: Record<string, ToolTypeCostEntry> = { ...live.costByToolType };
+    const costBySkill: Record<string, SkillCostEntry> = { ...live.costBySkill };
+
+    // live.attributionRate is tool-call-based (attributedToolCalls /
+    // totalToolCalls — see turn-cost-attributor.ts), which reads as "0% of
+    // session cost" once persisted sessions dominate this merged response.
+    // Recompute a cost-based rate instead: attributed cost (live +
+    // every merged session's tool buckets) over total cost (live session
+    // total + every merged session's estimated cost).
+    let mergedAttributedCost = 0;
+    let mergedEstimatedCost = 0;
+    for (const session of deps.sessionStore?.loadTodaySessions() ?? []) {
+      if (session.sessionId === ownSessionId || !session.attribution) continue;
+      mergedEstimatedCost += session.estimatedCostUsd ?? 0;
+      mergedAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
+    }
+
+    const totalAttributedCost = live.totalAttributedCost + mergedAttributedCost;
+    const totalCost =
+      (deps.costTracker?.getMetrics().sessionTotalCostUsd ?? 0) + mergedEstimatedCost;
+    const attributionRate = totalCost > 0 ? totalAttributedCost / totalCost : 0;
+
+    jsonOk(res, {
+      ...live,
+      costByToolType,
+      costBySkill,
+      totalAttributedCost,
+      attributionRate,
+    });
+  });
+
+  routes.set('GET /api/usage-insights', (req, res) => {
+    if (!deps.sessionStore?.loadAllSessions)
+      return unavailable(res, 'sessionStore.loadAllSessions');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const nowMs = Date.now();
+    if (url.searchParams.get('window') === 'today') {
+      const cutoffMs = localStartOfDay(nowMs);
+      // loadAllSessions() filters by the session file's date prefix (coarse,
+      // day granularity), not the session's real startTime, so go back two
+      // days to guarantee a session that started just before local midnight
+      // isn't excluded before computeUsageInsights applies the exact cutoff.
+      const since = new Date(nowMs - 2 * 86_400_000);
+      const sessions = deps.sessionStore.loadAllSessions({ since });
+      jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays: 1, cutoffMs }));
+      return;
+    }
+    const parsedDays = parseInt(url.searchParams.get('days') ?? '', 10);
+    const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
+    // Widen the fetch by one extra day past the precise window — same
+    // reasoning as GET /api/cost-per-outcome above: loadAllSessions() filters
+    // by the session file's date prefix (coarse, day granularity), not the
+    // session's real startTime, so a boundary-day session could otherwise be
+    // excluded before computeUsageInsights applies the exact cutoff itself.
+    const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
+    const sessions = deps.sessionStore.loadAllSessions({ since });
+    jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays }));
   });
 
   routes.set('GET /api/cost-per-outcome', (req, res) => {
@@ -2339,11 +2691,12 @@ export function createApiHandler(
         since: new Date(since),
       }) as unknown as readonly {
         sessionId: string;
+        outcome?: string;
         timeline?: readonly ReplayTimelineEntry[];
         repoName?: string | null;
       }[];
       for (const session of sessions) {
-        const replayed = replaySessionToActivityRecords(session, identityResolver);
+        const replayed = gitReplayCache.replay(session, identityResolver);
         historical = historical.concat(replayed.records);
         for (const [key, identity] of replayed.identities) {
           historicalIdentities.set(key, identity);
@@ -3077,6 +3430,7 @@ export function createApiHandler(
               modelBreakdown,
               outcome: 'in progress',
               toolBreakdown: live.toolCallCountByTool,
+              skillBreakdown: {},
               antiPatterns,
               qualityProxy: quality && quality.totalSignals > 0 ? quality : undefined,
               toolSelectionScore:
@@ -3155,6 +3509,7 @@ export function createApiHandler(
             model: null,
             outcome: 'in progress',
             toolBreakdown: breakdown,
+            skillBreakdown: {},
             antiPatterns,
             qualityProxy: quality.totalSignals > 0 ? quality : undefined,
             toolSelectionScore:

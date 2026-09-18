@@ -49,6 +49,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -330,6 +331,61 @@ describe('RecommendationEngine', () => {
           r.title === 'Low team autonomy',
       ),
     ).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // 7b. getClaudeMdRecommendations — cache-adjusted large-file gate
+  // -------------------------------------------------------------------------
+
+  function createEngineWithClaudeMdTracker(claudeMdTracker: ClaudeMdTracker) {
+    const trendAnalyzer = new TrendAnalyzer({ sessionStore: store });
+    const collaborationProfiler = new CollaborationProfiler({ sessionStore: store });
+    const promptFeedbackEngine = new PromptFeedbackEngine({
+      sessionStore: store,
+      collaborationProfiler,
+      claudeMdTracker,
+    });
+    const costPerOutcomeAnalyzer = new CostPerOutcomeAnalyzer();
+
+    return new RecommendationEngine({
+      trendAnalyzer,
+      collaborationProfiler,
+      claudeMdTracker,
+      promptFeedbackEngine,
+      costPerOutcomeAnalyzer,
+    });
+  }
+
+  it('does not flag a large CLAUDE.md when its cache-adjusted cost is negligible', () => {
+    const claudeMdTracker = {
+      getChanges: () => [{ timestamp: 1 }],
+      computeImpact: () => ({
+        verdict: 'No significant impact',
+        deltas: {},
+        contextTokensForClaudeMd: 8000,
+        estimatedPerTurnCostUsd: 0.0001, // well below the cents-scale gate
+      }),
+    } as unknown as ClaudeMdTracker;
+    const engine = createEngineWithClaudeMdTracker(claudeMdTracker);
+
+    const recs = engine.generateAllRecommendations('alice');
+    expect(recs.some((r) => r.title === 'Large CLAUDE.md context cost')).toBe(false);
+  });
+
+  it('flags a large CLAUDE.md whose cache-adjusted cost is still meaningful', () => {
+    const claudeMdTracker = {
+      getChanges: () => [{ timestamp: 1 }],
+      computeImpact: () => ({
+        verdict: 'No significant impact',
+        deltas: {},
+        contextTokensForClaudeMd: 8000,
+        estimatedPerTurnCostUsd: 0.02,
+      }),
+    } as unknown as ClaudeMdTracker;
+    const engine = createEngineWithClaudeMdTracker(claudeMdTracker);
+
+    const recs = engine.generateAllRecommendations('alice');
+    expect(recs.some((r) => r.title === 'Large CLAUDE.md context cost')).toBe(true);
   });
 
   // -------------------------------------------------------------------------

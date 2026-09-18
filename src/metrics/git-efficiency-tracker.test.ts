@@ -1297,6 +1297,15 @@ describe('GitEfficiencyTracker', () => {
       const metrics = tracker.getMetrics();
       expect(metrics.prMetrics.created).toBe(1);
     });
+
+    it('does not count a failed gh pr create', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'gh pr create --title "Add feature"', success: false }),
+      );
+
+      const metrics = tracker.getMetrics();
+      expect(metrics.prMetrics.created).toBe(0);
+    });
   });
 
   describe('hydration entry points', () => {

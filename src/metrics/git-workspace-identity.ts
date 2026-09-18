@@ -3,15 +3,37 @@ import { readFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { repoNameFromRemote } from './local-session-aggregator.js';
 
+/** Workspace key for activity whose cwd was never recorded and whose session
+ *  has no `repoName` to fall back on. */
+export const UNATTRIBUTED_WORKSPACE_KEY = 'unattributed';
+
+/** Prefix of the workspace key for activity whose cwd was never recorded but
+ *  whose session knows its `repoName`: `unresolved-repo:<owner/name>`. */
+export const UNRESOLVED_REPO_KEY_PREFIX = 'unresolved-repo:';
+
+/** True for the two placeholder identities above — rows that stand in for
+ *  activity with no resolvable working directory, as opposed to a worktree
+ *  `WorktreeIdentityResolver` actually resolved on disk. */
+export function isPlaceholderIdentity(identity: Pick<WorktreeIdentity, 'worktreeKey'>): boolean {
+  return (
+    identity.worktreeKey === UNATTRIBUTED_WORKSPACE_KEY ||
+    identity.worktreeKey.startsWith(UNRESOLVED_REPO_KEY_PREFIX)
+  );
+}
+
 export interface WorktreeIdentity {
   /** `git rev-parse --path-format=absolute --git-common-dir`. Identical for
    *  every worktree of one clone (linked or primary); distinct for two
    *  different clones, even of the same remote URL. This is the repo grouping
-   *  key. */
+   *  key. A placeholder identity (see `isPlaceholderIdentity`) carries the
+   *  repoKey of a resolved worktree sharing its `repoName` once
+   *  `GitWorkspaceReporter.report()` has seen one, and its own worktreeKey
+   *  otherwise. */
   readonly repoKey: string;
   /** `git rev-parse --path-format=absolute --git-dir`. Distinct for every
    *  worktree, including the primary checkout. For the primary checkout this
-   *  equals repoKey; for a linked worktree it is `<repoKey>/worktrees/<name>`. */
+   *  equals repoKey; for a linked worktree it is `<repoKey>/worktrees/<name>`;
+   *  for a placeholder identity it is the placeholder workspace key. */
   readonly worktreeKey: string;
   /** `owner/name` parsed from `git remote get-url origin`, or null if there is
    *  no origin remote or it doesn't parse. Display only. */

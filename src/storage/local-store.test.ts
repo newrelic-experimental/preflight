@@ -1238,6 +1238,39 @@ describe('LocalStore', () => {
       expect(existsSync(path)).toBe(false);
     });
 
+    it('deletes a dead-session subagent cursor for a named-subagent transcript (Agent tool `name` spawn) older than the discovery window', () => {
+      // Named subagents (spawned via Agent({name: ...})) produce cursor files
+      // shaped `.subagent-pos-<parentSessionId>-a<name>-<16-hex>` — the agentId
+      // segment itself contains hyphens, unlike the plain `a<16-hex>` shape.
+      mkdirSync(tmpDir, { recursive: true });
+      const namedAgentId = 'aconfluence-istio-investigator-ca0143b626a86424';
+      const path = makeCursorFile(
+        `.subagent-pos-${PARENT_SESSION}-${namedAgentId}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set(), 24);
+
+      expect(result.subagentCursors).toBe(1);
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it('preserves a live-session subagent cursor for a named-subagent transcript, regardless of mtime', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const namedAgentId = 'aconfluence-istio-investigator-ca0143b626a86424';
+      const path = makeCursorFile(
+        `.subagent-pos-${PARENT_SESSION}-${namedAgentId}`,
+        Date.now() - 48 * 60 * 60 * 1000,
+      );
+
+      const store = new LocalStore(tmpDir);
+      const result = store.gcWatcherCursors(new Set([PARENT_SESSION]), 24);
+
+      expect(result.subagentCursors).toBe(0);
+      expect(existsSync(path)).toBe(true);
+    });
+
     it('preserves a parent-transcript cursor whose session is live, regardless of mtime', () => {
       mkdirSync(tmpDir, { recursive: true });
       const path = makeCursorFile(

@@ -7,6 +7,9 @@ interface HookEventBase {
    * written by older collectors and by watchers.
    */
   readonly platform?: string;
+  /** Working directory the hook reported; the collector stamps it on every
+   *  mode it emits. Absent on lines written by watchers. */
+  readonly cwd?: string;
 }
 
 /**
@@ -20,7 +23,6 @@ export interface PreHookEvent extends HookEventBase {
   readonly toolInput?: unknown;
   readonly inputSize?: number;
   readonly inputHash?: string;
-  readonly cwd?: string;
   readonly transcriptPath?: string;
   readonly permissionMode?: string;
   /** Set when this tool call was made by a subagent (code.claude.com/docs/en/hooks.md). */
@@ -92,6 +94,14 @@ export interface TokenHookEvent extends HookEventBase {
   readonly sessionId?: string;
   /** Anthropic message id (msg_...) — used to dedupe replayed turns after a cursor-based re-read. */
   readonly messageId?: string;
+  /**
+   * Time (ms) spent waiting on the model API for this turn, from
+   * `ParentTranscriptWatcher`'s gap between this transcript line and the
+   * line before it. Absent when no previous line was observed, the gap was
+   * non-positive or exceeded 30 minutes, or this is not the first line seen
+   * for `messageId`.
+   */
+  readonly responseMs?: number;
 }
 
 /** Emitted by the SubagentWatcher for each subagent assistant turn. */
@@ -110,6 +120,7 @@ export interface SubagentTokenHookEvent extends HookEventBase {
   readonly reasoningTokens?: number;
   readonly stopReason?: string | null;
   readonly schemaFingerprint?: string;
+  readonly toolUseIds?: readonly string[];
 }
 
 /** Emitted by the WorkflowWatcher / SubagentWatcher with pipeline health counters. */
@@ -205,13 +216,15 @@ export interface ModelSwitchHookEvent extends HookEventBase {
 /**
  * Emitted by Claude Code's UserPromptSubmit hook, which fires when the user
  * submits a prompt, before Claude processes it (code.claude.com/docs/en/hooks.md).
- * Deliberately carries no content — the `prompt` field itself is free text
- * this file has no reason to capture; only its timestamp matters, as a
- * precise "a new task started here" boundary for `TaskDetector`.
+ * The prompt body is never captured; only a leading `/name` token is, as a
+ * skill identifier, so slash-invoked skills can be attributed the way
+ * `Skill` tool calls are. The timestamp also serves as a precise "a new task
+ * started here" boundary for `TaskDetector`.
  */
 export interface UserPromptSubmitHookEvent extends HookEventBase {
   readonly mode: 'user_prompt_submit';
   readonly sessionId?: string;
+  readonly slashCommand?: string;
 }
 
 /**
@@ -263,6 +276,8 @@ export interface TokenEvent {
   readonly cacheCreationTokens: number;
   readonly model: string;
   readonly sessionId?: string;
+  /** See `TokenHookEvent.responseMs`'s doc comment. */
+  readonly responseMs?: number;
 }
 
 export interface SessionSummary {
@@ -306,14 +321,18 @@ export interface ToolCallRecord {
   readonly outputSizeBytes?: number;
   readonly inputHash?: string;
   /**
-   * Which subagent made this tool call, straight from the hook payload's
-   * `agent_id` (see `PreHookEvent.agentId`/`PostHookEvent.agentId`). Absent
-   * for tool calls made by the parent/orchestrator session. Distinct from —
-   * and a different signal than — the `agentId` `SubagentWatcher` derives
-   * from transcript filenames for subagent *token usage* attribution; that
-   * pipeline is untouched by this field.
+   * Which subagent made this tool call. The hook payload's own `agent_id`
+   * field (`PreHookEvent.agentId`/`PostHookEvent.agentId`) is documented by
+   * Claude Code as present on every hook event fired inside a subagent call,
+   * but in practice never populates — this field is backfilled
+   * instead via `backfillAgentId()` (agent-partition.ts), joining on
+   * `toolUseId` against tool_use blocks `SubagentWatcher` finds while
+   * tailing that subagent's own transcript. Absent for tool calls made by
+   * the parent/orchestrator session, or for a subagent call this join
+   * hasn't caught up with yet (best-effort, not persisted retroactively).
    */
   readonly agentId?: string;
+  /** Never populates in practice, same as agentId above — see its doc comment. */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;
@@ -335,7 +354,61 @@ export interface ReplayTimelineEntry {
   readonly isBuildCommand?: boolean;
   readonly isLintCommand?: boolean;
   readonly errorType?: string;
+  /**
+   * Which subagent made this tool call — same signal as `ToolCallRecord.agentId`,
+   * threaded through so Replay UI sequence detectors can partition by agent
+   * (see `analyzeReplayTimeline` in `dashboard/routes/replay-analyzer.ts`).
+   * Absent for tool calls made by the parent/orchestrator session.
+   */
+  readonly agentId?: string;
+  /** Only on `toolName === 'Skill'` entries; lets History count loops and per-skill calls without the live attributor. */
+  readonly skillName?: string;
+  /** Only on `toolName === 'Agent'` entries, from the hook payload's `subagent_type`. */
+  readonly agentType?: string;
 }
+
+/**
+ * Where a session's spend went, sliced by one of these facets. Every facet
+ * value is a {@link AttributionBucket}; History aggregates buckets across
+ * sessions and expresses each as a share of total spend. `plugin` is not a
+ * persisted facet: it is derived at read time from the `<plugin>:` prefix
+ * Claude Code puts on plugin skills and agents.
+ */
+export type AttributionFacet = 'tool' | 'skill' | 'subagent';
+
+export interface TokenBreakdown {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+}
+
+export interface AttributionBucket {
+  readonly costUsd: number;
+  /** input + output + cache-read + cache-creation tokens; 0 when the facet has no token signal. */
+  readonly tokens: number;
+  /** Tool calls for `tool`/`skill`, API requests for `subagent`. */
+  readonly count: number;
+  /** Summed tool-call wall time; 0 when not measured. */
+  readonly durationMs: number;
+  /** Per-category split of `tokens`; absent on legacy files and when the facet has no per-category signal. */
+  readonly breakdown?: TokenBreakdown;
+}
+
+export interface SessionAttribution {
+  readonly buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>>;
+  /** USD spent on API requests whose prompt (input + cache read + cache creation) exceeded {@link HIGH_CONTEXT_TOKENS}. */
+  readonly highContextCostUsd: number;
+  /**
+   * Sum over assistant turns of the gap between the assistant transcript line
+   * and the line before it: an estimate of time spent waiting on the model
+   * API. null when no transcript was observed.
+   */
+  readonly apiDurationMs: number | null;
+}
+
+/** Prompt size above which a request counts toward `highContextCostUsd`. */
+export const HIGH_CONTEXT_TOKENS = 150_000;
 
 export interface AuditEntry {
   readonly timestamp: number;

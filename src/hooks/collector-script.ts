@@ -358,13 +358,15 @@ interface HookInput {
   transcript_path?: string;
   error?: string;
   is_interrupt?: boolean;
-  // Present on every hook event (code.claude.com/docs/en/hooks.md): agent_id
-  // identifies the subagent that fired this hook (absent for the parent
-  // session), agent_type names its kind (subagents, and sessions started
-  // with `--agent`). Attached to every ToolCallRecord below — previously
-  // there was no per-tool-call subagent attribution at all; the only
-  // existing agentId (SubagentWatcher, from transcript filenames) tracks
-  // subagent token usage, a separate signal this doesn't replace.
+  // Claude Code's docs (code.claude.com/docs/en/hooks.md) document agent_id
+  // as present on every hook event fired inside a subagent call (agent_type
+  // similarly), but empirically this never populates in production —
+  // confirmed via a live dogfooding check on Claude Code v2.1.236 with a real
+  // subagent spawn. Still parsed here (harmless if Claude Code ever starts
+  // sending it), but ToolCallRecord.agentId's real source is now the
+  // toolUseId join in agent-partition.ts's backfillAgentId — see its doc
+  // comment. Left in place rather than removed: a future Claude Code release
+  // fixing this on their end would need zero changes here to start working.
   agent_id?: string;
   agent_type?: string;
   // PostToolUse/PostToolUseFailure (code.claude.com/docs/en/hooks.md): tool
@@ -422,6 +424,11 @@ interface HookInput {
   context_tokens?: number;
   prompt_cache_likely_expired?: boolean;
   estimated_cache_write_usd?: number;
+  // UserPromptSubmit (code.claude.com/docs/en/hooks.md): the prompt text
+  // submitted by the user. Only the leading slash token is captured as a
+  // skill identifier (the same class as tool_input.skill on Skill calls);
+  // no other prompt content is read.
+  prompt?: string;
   // Cursor (https://cursor.com/docs/agent/hooks) sends a different field
   // vocabulary per hook type instead of the uniform tool_name/tool_input
   // Claude Code and Kiro use. conversation_id is Cursor's closest analog to
@@ -667,6 +674,7 @@ function extractOutputMeta(toolName: string, output: unknown): Record<string, un
       }
       if (totalLen > 0) meta.agentResultLength = totalLen;
     }
+    if (typeof obj.agentId === 'string') meta.spawnedAgentId = obj.agentId;
     return Object.keys(meta).length > 0 ? meta : undefined;
   }
 
@@ -1220,13 +1228,17 @@ function processHook(raw: string): void {
     // Fires when the user submits a prompt, before Claude processes it
     // (code.claude.com/docs/en/hooks.md). Pure notification — no decision
     // control used here (this hook CAN block/modify the prompt via a JSON
-    // decision, but this collector never emits one). Deliberately no
-    // content captured — `data.prompt` is free text this collector has no
-    // reason to read; only the timestamp matters, as a precise task-start
-    // boundary for TaskDetector.
+    // decision, but this collector never emits one). Only the leading slash
+    // token is captured because it is a skill identifier, the same class as
+    // tool_input.skill already captured by parseSkill() — no other prompt
+    // content is read. Not gated behind recordContent, matching skillName on
+    // Skill tool calls.
+    const slashCommand =
+      typeof data.prompt === 'string' ? /^\/([A-Za-z0-9_:.\-]+)/.exec(data.prompt)?.[1] : undefined;
     event = {
       mode: 'user_prompt_submit' as const,
       timestamp,
+      ...(slashCommand !== undefined && { slashCommand }),
     };
   } else if (eventName === 'stop') {
     // Fires when the main agent has finished responding

@@ -1,5 +1,5 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStore } from '../storage/local-store.js';
@@ -13,6 +13,7 @@ import type {
   PreHookEvent,
   PostHookEvent,
   ToolCallRecord,
+  UserPromptSubmitHookEvent,
 } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -262,6 +263,15 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('Explore');
     });
 
+    it('falls back to the post event cwd when the pre event has none', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([makePreEvent(), makePostEvent({ cwd: '/projects/post-only' })]);
+
+      const record = records[0]!;
+      expect(record.cwd).toBe('/projects/post-only');
+    });
+
     it('prefers the pre event agentId/agentType over a conflicting post event value', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
@@ -330,11 +340,16 @@ describe('HookEventProcessor', () => {
   });
 
   describe('processEvents() — orphaned post (no matching pre)', () => {
-    it('creates a record with durationMs: null', () => {
+    it('creates a record with durationMs: null that keeps the post event cwd', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
       processor.processEvents([
-        makePostEvent({ toolUseId: 'toolu_orphan', timestamp: 2000, outputSize: 512 }),
+        makePostEvent({
+          toolUseId: 'toolu_orphan',
+          timestamp: 2000,
+          outputSize: 512,
+          cwd: '/projects/test',
+        }),
       ]);
 
       expect(records).toHaveLength(1);
@@ -343,6 +358,7 @@ describe('HookEventProcessor', () => {
       expect(record.durationMs).toBeNull();
       expect(record.success).toBe(true);
       expect(record.outputSizeBytes).toBe(512);
+      expect(record.cwd).toBe('/projects/test');
     });
 
     it('still reports agentId/agentType from the post event with no matching pre-event', () => {
@@ -432,6 +448,115 @@ describe('HookEventProcessor', () => {
       expect(timeoutRecord!.success).toBe(false);
       expect(timeoutRecord!.errorType).toBe('timeout');
       expect(timeoutRecord!.durationMs).toBeNull();
+    });
+  });
+
+  describe('orphan sweep — hook-blocked classification', () => {
+    // Real shape captured from a live Claude Code transcript: a PreToolUse
+    // hook exiting 2 produces a synthetic tool_result on the original
+    // tool_use_id, is_error true, content prefixed "PreToolUse:<Tool> hook
+    // error:" — Claude Code fires no dedicated hook event for this case, so
+    // the transcript is the only place the block is visible.
+    function writeHookBlockTranscript(path: string, toolUseId: string): void {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: toolUseId,
+                is_error: true,
+                content:
+                  "PreToolUse:Bash hook error: [echo 'DENIED: test guard blocked this command' >&2; exit 2]: DENIED: test guard blocked this command\n",
+              },
+            ],
+          },
+        }) + '\n',
+      );
+    }
+
+    it('classifies an orphan as "hook_blocked" when the transcript shows a PreToolUse hook-error tool_result', () => {
+      const transcriptPath = resolve(tmpDir, 'transcript-blocked.jsonl');
+      writeHookBlockTranscript(transcriptPath, 'toolu_blocked');
+
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_blocked', tool: 'Bash', timestamp: 1000, transcriptPath }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('hook_blocked');
+      expect(records[0]!.success).toBe(false);
+      expect(records[0]!.durationMs).toBeNull();
+    });
+
+    it('still classifies as "timeout" when the transcript has no entry for this toolUseId', () => {
+      const transcriptPath = resolve(tmpDir, 'transcript-unrelated.jsonl');
+      writeHookBlockTranscript(transcriptPath, 'toolu_someone_else');
+
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({
+          toolUseId: 'toolu_real_orphan',
+          tool: 'Bash',
+          timestamp: 1000,
+          transcriptPath,
+        }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('timeout');
+    });
+
+    it('still classifies as "timeout" when the matching tool_result is not a hook-block error', () => {
+      const transcriptPath = resolve(tmpDir, 'transcript-other-error.jsonl');
+      writeFileSync(
+        transcriptPath,
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_genuine_error',
+                is_error: true,
+                content: 'ENOENT: no such file or directory',
+              },
+            ],
+          },
+        }) + '\n',
+      );
+
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({
+          toolUseId: 'toolu_genuine_error',
+          tool: 'Bash',
+          timestamp: 1000,
+          transcriptPath,
+        }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('timeout');
+    });
+
+    it('still classifies as "timeout" when transcriptPath is absent', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_no_transcript', tool: 'Bash', timestamp: 1000 }),
+      ]);
+      processor.stop();
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.errorType).toBe('timeout');
     });
   });
 
@@ -535,13 +660,21 @@ describe('HookEventProcessor', () => {
   });
 
   describe('stop() flushes pending pre events as timeouts', () => {
-    it('emits timeout records for all pending pre events', () => {
+    it('emits timeout records for all pending pre events, keeping every pre event attribution field', () => {
       const processor = new HookEventProcessor({ store, onRecord });
+      const attribution = {
+        cwd: '/projects/a',
+        transcriptPath: '/tmp/a.jsonl',
+        permissionMode: 'default',
+        agentId: 'agent-timeout',
+        agentType: 'Explore',
+        platform: 'claude-code',
+      };
 
       // Add pre events without any corresponding post
       processor.processEvents([
-        makePreEvent({ toolUseId: 'toolu_a', tool: 'Read', timestamp: 1000 }),
-        makePreEvent({ toolUseId: 'toolu_b', tool: 'Write', timestamp: 1010 }),
+        makePreEvent({ toolUseId: 'toolu_a', tool: 'Read', timestamp: 1000, ...attribution }),
+        makePreEvent({ toolUseId: 'toolu_b', tool: 'Write', timestamp: 1010, ...attribution }),
       ]);
 
       expect(records).toHaveLength(0);
@@ -554,6 +687,7 @@ describe('HookEventProcessor', () => {
         expect(record.success).toBe(false);
         expect(record.errorType).toBe('timeout');
         expect(record.durationMs).toBeNull();
+        expect(record).toMatchObject(attribution);
       }
 
       const tools = records.map((r) => r.toolName).sort();
@@ -604,27 +738,24 @@ describe('HookEventProcessor', () => {
       expect(processor.pendingCount).toBe(0);
     });
 
-    it('carries cwd, transcriptPath, permissionMode, and platform from the pre-event onto the denied record', () => {
+    it('carries every pre-event attribution field onto the denied record', () => {
       const processor = new HookEventProcessor({ store, onRecord });
+      const attribution = {
+        cwd: '/projects/test',
+        transcriptPath: '/tmp/fake-transcript.jsonl',
+        permissionMode: 'default',
+        platform: 'claude-code',
+        agentId: 'agent-denied',
+        agentType: 'general-purpose',
+      };
 
       processor.processEvents([
-        makePreEvent({
-          toolUseId: 'toolu_d3',
-          timestamp: 1000,
-          cwd: '/projects/test',
-          transcriptPath: '/tmp/fake-transcript.jsonl',
-          permissionMode: 'default',
-          platform: 'claude-code',
-        }),
+        makePreEvent({ toolUseId: 'toolu_d3', timestamp: 1000, ...attribution }),
         makePermissionDeniedEvent({ toolUseId: 'toolu_d3', timestamp: 1005 }),
       ]);
 
       expect(records).toHaveLength(1);
-      const record = records[0]!;
-      expect(record.cwd).toBe('/projects/test');
-      expect(record.transcriptPath).toBe('/tmp/fake-transcript.jsonl');
-      expect(record.permissionMode).toBe('default');
-      expect(record.platform).toBe('claude-code');
+      expect(records[0]!).toMatchObject(attribution);
     });
   });
 
@@ -1462,6 +1593,40 @@ describe('HookEventProcessor', () => {
       expect(turns[0].inputTokens).toBe(100);
     });
 
+    it('passes toolUseIds through from the buffer event to onSubagentTurn', () => {
+      const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onSubagentTurn: (t) => turns.push(t),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'subagent_token' as const,
+          tool: 'subagent',
+          timestamp: 1700000000000,
+          sessionId: 'sess-1',
+          agentId: 'a1234567890abcdef',
+          workflowRunId: null,
+          messageId: 'msg_1',
+          turnUuid: 'u1',
+          model: 'claude-opus-4-7',
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 1000,
+          cacheCreationTokens: 200,
+          reasoningTokens: 0,
+          stopReason: 'end_turn',
+          schemaFingerprint: 'fp',
+          toolUseIds: ['toolu_abc'],
+        } as HookEvent,
+      ]);
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0].toolUseIds).toEqual(['toolu_abc']);
+    });
+
     it('dedups subagent_token entries by (agentId, messageId)', () => {
       const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
       const processor = new HookEventProcessor({
@@ -2026,6 +2191,49 @@ describe('HookEventProcessor', () => {
       expect(frames).toHaveLength(1);
       expect(frames[0].timestamp).toBe(1700000000000);
       expect(frames[0].sessionId).toBe('s1');
+    });
+
+    it('includes slashCommand in onUserPromptSubmit frame when present', () => {
+      const frames: import('./event-processor.js').BoundaryFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onUserPromptSubmit: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+          slashCommand: 'simplify',
+        } as UserPromptSubmitHookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].slashCommand).toBe('simplify');
+    });
+
+    it('omits slashCommand from onUserPromptSubmit frame when absent', () => {
+      const frames: import('./event-processor.js').BoundaryFrame[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onUserPromptSubmit: (f) => frames.push(f),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 1700000000000,
+          sessionId: 's1',
+        } as HookEvent,
+      ]);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0].slashCommand).toBeUndefined();
     });
 
     it('defaults sessionId to null when absent, for both user_prompt_submit and stop', () => {

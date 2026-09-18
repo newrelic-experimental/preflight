@@ -42,6 +42,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: 'claude-sonnet-4-20250514',
     toolBreakdown: { Read: 5, Edit: 3, Bash: 2 },
+    skillBreakdown: {},
     filesRead: ['/src/index.ts'],
     filesModified: ['/src/index.ts'],
     linesAdded: 20,
@@ -199,8 +200,9 @@ describe('CollaborationProfiler', () => {
     );
     expect(profiler.computeProfile('power-user').classification).toBe('Power User');
 
-    // Delegator: low specificity (<0.6) + high autonomy (≥0.6)
-    // specificity: 15/10/10 = 0.15
+    // Delegator: high autonomy (≥0.6) + real subagent delegation
+    // (avg agentSpawns/task >= 1) — specificity/autonomy ratios alone no
+    // longer drive this classification.
     // autonomy: 15 toolCalls / 5 assistantMessages / 5 = 0.6
     store.saveSession(
       makeSummary({
@@ -210,6 +212,8 @@ describe('CollaborationProfiler', () => {
         userMessages: 10,
         assistantMessages: 5,
         userCorrections: 1,
+        agentSpawns: 2,
+        taskCount: 1,
       }),
     );
     expect(profiler.computeProfile('delegator-user').classification).toBe('Delegator');
@@ -278,6 +282,26 @@ describe('CollaborationProfiler', () => {
       }),
     );
     expect(profiler.computeProfile('learning2-user').classification).toBe('Learning');
+  });
+
+  it('classify() no longer mislabels a low-specificity, high-autonomy, non-delegating session as Delegator', () => {
+    const profiler = new CollaborationProfiler({ sessionStore: store });
+
+    // Low specificity (<0.6) + high autonomy (>=0.6), but zero agent spawns —
+    // this combination is algebraically just a chatty, high-user-message
+    // session, not real delegation, so it should NOT be 'Delegator'.
+    store.saveSession(
+      makeSummary({
+        sessionId: 'not-delegator',
+        developer: 'not-delegator-user',
+        toolCallCount: 15,
+        userMessages: 10,
+        assistantMessages: 5,
+        userCorrections: 1,
+        agentSpawns: 0,
+      }),
+    );
+    expect(profiler.computeProfile('not-delegator-user').classification).not.toBe('Delegator');
   });
 
   // -------------------------------------------------------------------------

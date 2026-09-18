@@ -19,6 +19,7 @@ import {
   writePpidBreadcrumb,
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { parseToolSpecificFields } from './tool-parsers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -450,12 +451,33 @@ describe('collector-script', () => {
       });
     });
 
+    it('extracts Agent spawnedAgentId from tool_response', () => {
+      const response = { agentId: 'a4d2c8f1e0b3a297', completed: true };
+      processHook(makePostToolUse({ tool_name: 'Agent', tool_response: response }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.toolOutput).toEqual({
+        agentCompleted: true,
+        spawnedAgentId: 'a4d2c8f1e0b3a297',
+      });
+    });
+
     it('extracts Agent interrupted flag', () => {
       const response = { interrupted: true };
       processHook(makePostToolUse({ tool_name: 'Agent', tool_response: response }));
 
       const event = readBufferEvents()[0]!;
       expect(event.toolOutput).toEqual({ agentInterrupted: true });
+    });
+
+    it('chains extractOutputMeta output into parseToolSpecificFields (production boundary)', () => {
+      const response = { agentId: 'a4d2c8f1e0b3a297', completed: true };
+      processHook(makePostToolUse({ tool_name: 'Agent', tool_response: response }));
+
+      const event = readBufferEvents()[0]!;
+      const fields = parseToolSpecificFields('Agent', undefined, event.toolOutput);
+
+      expect(fields.spawnedAgentId).toBe('a4d2c8f1e0b3a297');
     });
 
     it('extracts Agent resultLength from content blocks', () => {
@@ -1103,6 +1125,28 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(JSON.stringify(event)).not.toContain('sk-1234567890abcdef');
       expect(event.prompt).toBeUndefined();
+    });
+
+    it('captures leading slash token as slashCommand', () => {
+      processHook(makeUserPromptSubmit({ prompt: '/pstack:poteto-mode what model am I' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.slashCommand).toBe('pstack:poteto-mode');
+      expect(JSON.stringify(event)).not.toContain('what model');
+    });
+
+    it('captures simple slash command without colon', () => {
+      processHook(makeUserPromptSubmit({ prompt: '/simplify this code' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.slashCommand).toBe('simplify');
+    });
+
+    it('omits slashCommand when prompt does not start with slash', () => {
+      processHook(makeUserPromptSubmit({ prompt: 'hello /not-a-command' }));
+
+      const event = readBufferEvents()[0]!;
+      expect(event.slashCommand).toBeUndefined();
     });
   });
 

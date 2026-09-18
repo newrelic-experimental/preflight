@@ -101,7 +101,7 @@ preflight/
     security/      # Audit trail + SSRF helpers
     tracing/       # OTel span lifecycle
     transport/     # NR ingest manager + log ingest
-    platforms/     # 9 platform adapters — 8 named (Claude Code, Cursor, Windsurf, Copilot, Zed, Continue.dev, Amazon Q, Amazon Kiro) + 1 generic MCP fallback
+    platforms/     # one adapter per supported platform (see docs/ADAPTERS.md) + generic MCP fallback
     digest/        # Slack digest formatter and sender
     install/       # preflight install / setup CLI
     alerts/        # Alert TS types (JSON files live in alerts/ at repo root)

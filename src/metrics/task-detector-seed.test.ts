@@ -18,6 +18,7 @@ function makeSummary(overrides?: Partial<FullSessionSummary>): FullSessionSummar
     developer: 'alice',
     model: null,
     toolBreakdown: {},
+    skillBreakdown: {},
     filesRead: ['/src/a.ts', '/src/b.ts'],
     filesModified: ['/src/a.ts'],
     linesAdded: 20,
