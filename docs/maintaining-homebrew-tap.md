@@ -6,8 +6,6 @@ The Homebrew tap for `@newrelic/preflight` lives at `newrelic-experimental/homeb
 
 These steps create the tap repo. Run them once when setting up the tap for the first time.
 
-**Prerequisites:** `gh` CLI authenticated to `github.com` (not GHE). If `gh auth status` shows only GHE, run `GH_HOST=github.com gh auth login` first.
-
 ````bash
 # 1. Create the tap repo on github.com
 GH_HOST=github.com gh repo create newrelic-experimental/homebrew-preflight \
