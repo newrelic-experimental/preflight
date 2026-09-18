@@ -57,7 +57,7 @@ Expected: Homebrew installs `preflight` and `preflight --version` prints `1.1.0`
 
 ## Per-release update (every new version)
 
-The "Update Homebrew tap" step in `.github/workflows/release.yml` does this automatically on every run of the manual Release workflow: it runs `scripts/update-homebrew.sh` against the just-published npm version, then pushes the regenerated formula straight to `homebrew-preflight`'s `main` branch using the `HOMEBREW_TAP_TOKEN` repo secret (a fine-grained PAT scoped to only that repo, `Contents: Read and write`). No manual steps are needed for a normal release.
+The "Update Homebrew tap" step in `.github/workflows/release.yml` does most of this automatically on every run of the manual Release workflow: it runs `scripts/update-homebrew.sh` against the just-published npm version, then opens a PR against `homebrew-preflight` with the regenerated formula using the `HOMEBREW_TAP_TOKEN` repo secret (a fine-grained PAT scoped to only that repo, `Contents: Read and write`) and arms auto-merge. `homebrew-preflight`'s own org-wide ruleset requires one approving review before a PR can merge into `main`, so a maintainer still needs to approve that PR once per release — everything else is automatic.
 
 **Verify after a release:**
 
