@@ -24,6 +24,8 @@ interface SettingsData {
   readonly storagePath: string;
   readonly highSecurity: boolean;
   readonly licenseKey: string | null;
+  readonly tiers?: readonly string[];
+  readonly primaryTier?: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
@@ -279,6 +281,11 @@ export function Settings(): JSX.Element {
         <ReadOnlyField label="Storage path" value={data.storagePath} />
         <ReadOnlyField label="High security" value={data.highSecurity ? 'enabled' : 'disabled'} />
         <ReadOnlyField label="License key" value={data.licenseKey} />
+        <ReadOnlyField
+          label="Telemetry tiers"
+          value={data.tiers && data.tiers.length > 0 ? data.tiers.join(', ') : null}
+        />
+        <ReadOnlyField label="Primary tier" value={data.primaryTier} />
 
         <div className="mt-3 flex items-center gap-3">
           <Button

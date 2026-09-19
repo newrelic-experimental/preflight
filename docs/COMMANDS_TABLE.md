@@ -90,13 +90,15 @@ Show the current server configuration with sensitive fields masked.
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
   "dashboardUrl": "https://one.newrelic.com/dashboards/...",
-  "configFilePath": "/Users/alice/.newrelic-preflight/config.json"
+  "configFilePath": "/Users/alice/.newrelic-preflight/config.json",
+  "tiers": ["personal", "team", "org"],
+  "primaryTier": "personal"
 }
 ```
 
-**Data source:** Server config at startup
+**Data source:** Server config at startup, overlaid with the live `NrIngestManager` routing snapshot (`getTierNames()` / `getPrimaryTierName()`) when ingest is running.
 
-**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode) without exposing credentials.
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` / `primaryTier` are the resolved routing names (not the flat `licenseKey` / `accountId`), so a multi-tier operator can confirm where events actually go. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, mistyped tier) without exposing credentials.
 
 **Requires:** Always available
 

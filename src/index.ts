@@ -119,6 +119,7 @@ import { SessionSpan } from './tracing/session-span.js';
 import { TaskSpanTracker } from './tracing/task-span-tracker.js';
 import { emitToolCallSpan } from './tracing/tool-call-span.js';
 import { NrIngestManager } from './transport/nr-ingest.js';
+import { summarizeResolvedTiers } from './transport/tier-types.js';
 import type { CliOptions } from './types.js';
 import { HomelabAccumulator, HomelabForwarder } from './homelab/index.js';
 import { VERSION } from './version.js';
@@ -166,6 +167,27 @@ const logger = createLogger('mcp-cli');
 export function maskCredential(key: string): string {
   if (key.length <= 8) return '***';
   return key.slice(0, 4) + '...' + key.slice(-4);
+}
+
+function buildConfigSummary(
+  cfg: McpServerConfig,
+  configFilePath: string,
+  ingest?: Pick<NrIngestManager, 'getTierNames' | 'getPrimaryTierName'>,
+): ConfigSummary {
+  const fromConfig = summarizeResolvedTiers(cfg.tiers);
+  return {
+    mode: cfg.mode,
+    developer: cfg.developer,
+    accountId: cfg.accountId ?? null,
+    licenseKeyMasked: cfg.licenseKey ? maskCredential(cfg.licenseKey) : null,
+    nrApiKeyMasked: cfg.nrApiKey ? maskCredential(cfg.nrApiKey) : null,
+    region: cfg.collectorHost ?? 'us',
+    storagePath: cfg.storagePath,
+    dashboardUrl: `http://${cfg.dashboard.host}:${cfg.dashboard.port}`,
+    configFilePath,
+    tiers: ingest !== undefined ? [...ingest.getTierNames()] : [...fromConfig.tiers],
+    primaryTier: ingest !== undefined ? ingest.getPrimaryTierName() : fromConfig.primaryTier,
+  };
 }
 
 /**
@@ -3012,17 +3034,7 @@ async function main(): Promise<void> {
       // handler observes the corrected sessionTraceId/nrIngestManager going
       // forward.
       const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-      const configSummary: ConfigSummary = {
-        mode: config!.mode,
-        developer: config!.developer,
-        accountId: config!.accountId ?? null,
-        licenseKeyMasked: config!.licenseKey ? maskCredential(config!.licenseKey) : null,
-        nrApiKeyMasked: config!.nrApiKey ? maskCredential(config!.nrApiKey) : null,
-        region: config!.collectorHost ?? 'us',
-        storagePath: config!.storagePath,
-        dashboardUrl: `http://${config!.dashboard.host}:${config!.dashboard.port}`,
-        configFilePath,
-      };
+      const configSummary: ConfigSummary = buildConfigSummary(config!, configFilePath, nrIngest);
       registerTools(mcpServer!.server, {
         sessionTracker: sessionTracker!,
         costTracker,
@@ -3165,17 +3177,7 @@ async function main(): Promise<void> {
         registerPendingTools(mcpServer!.server, {
           sessionStartMs: Date.now(),
           developer: config.developer,
-          configSummary: {
-            mode: config.mode,
-            developer: config.developer,
-            accountId: config.accountId ?? null,
-            licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
-            nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
-            region: config.collectorHost ?? 'us',
-            storagePath: config.storagePath,
-            dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
-            configFilePath: pendingConfigFilePath,
-          },
+          configSummary: buildConfigSummary(config, pendingConfigFilePath, nrIngest),
         });
         logger.info('Dashboard started early; awaiting session_id resolution (breadcrumb poll)');
 
@@ -3231,17 +3233,7 @@ async function main(): Promise<void> {
       } else {
         // Session ID resolved synchronously — proceed as normal.
         const configFilePath = options.config ?? resolve(DEFAULT_STORAGE_PATH, 'config.json');
-        const configSummary: ConfigSummary = {
-          mode: config.mode,
-          developer: config.developer,
-          accountId: config.accountId ?? null,
-          licenseKeyMasked: config.licenseKey ? maskCredential(config.licenseKey) : null,
-          nrApiKeyMasked: config.nrApiKey ? maskCredential(config.nrApiKey) : null,
-          region: config.collectorHost ?? 'us',
-          storagePath: config.storagePath,
-          dashboardUrl: `http://${config.dashboard.host}:${config.dashboard.port}`,
-          configFilePath,
-        };
+        const configSummary: ConfigSummary = buildConfigSummary(config, configFilePath, nrIngest);
         registerTools(mcpServer!.server, {
           sessionTracker,
           costTracker,

@@ -5633,6 +5633,47 @@ describe('api-handler GET /api/settings', () => {
     expect(result.highSecurity).toBe(false);
   });
 
+  it('reports resolved tiers and primaryTier from startup config, not flat credentials', async () => {
+    const configFilePath = makeConfigFile({});
+    const config = {
+      ...fakeStartupConfig(),
+      accountId: '11111',
+      licenseKey: 'NRAK-FLAT-KEY-THAT-IS-NOT-A-TIER-XXXX',
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'lk-personal', accountId: '99999' },
+          eventTypes: ['*'],
+        },
+        {
+          name: 'org',
+          destination: { type: 'local', path: '/tmp/org-tier' },
+          eventTypes: ['AiCodingTask'],
+        },
+      ],
+    } as unknown as Parameters<typeof createApiHandler>[0]['config'];
+    const handler = createApiHandler({ config, configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as { tiers: string[]; primaryTier: string };
+    expect(result.tiers).toEqual(['personal', 'org']);
+    expect(result.primaryTier).toBe('personal');
+  });
+
+  it('reports empty tiers and null primaryTier when none are configured', async () => {
+    const configFilePath = makeConfigFile({});
+    const handler = createApiHandler({ config: fakeStartupConfig(), configFilePath });
+    const req = { method: 'GET', url: '/api/settings' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body()) as { tiers: string[]; primaryTier: string | null };
+    expect(result.tiers).toEqual([]);
+    expect(result.primaryTier).toBeNull();
+  });
+
   it('returns licenseKey: null when no license key is configured', async () => {
     const configFilePath = makeConfigFile({});
     const config = { ...fakeStartupConfig(), licenseKey: undefined } as unknown as Parameters<

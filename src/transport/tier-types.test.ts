@@ -6,6 +6,7 @@ import {
   PERSONAL_ONLY_EVENT_TYPES,
   DEFAULT_TIER_NAME,
   WILDCARD_EVENT_TYPE,
+  summarizeResolvedTiers,
   validateTiers,
 } from './tier-types.js';
 import { resolve } from 'node:path';
@@ -331,5 +332,34 @@ describe('validateTiers()', () => {
     expect(() =>
       validateTiers([makeNrTier({ eventTypes: ['AiToolCall'] })], ['AiCodingTask']),
     ).toThrow(/lists unknown event type "AiToolCall"/);
+  });
+});
+
+describe('summarizeResolvedTiers()', () => {
+  it('lists nr-type names first then local, and names the first nr tier as primary', () => {
+    const summary = summarizeResolvedTiers([
+      {
+        name: 'org',
+        destination: { type: 'local', path: '/tmp/org' },
+        eventTypes: ['AiCodingTask'],
+      },
+      {
+        name: 'personal',
+        destination: { type: 'nr', licenseKey: 'lk-p', accountId: '12345' },
+        eventTypes: ['*'],
+      },
+      {
+        name: 'team',
+        destination: { type: 'nr', licenseKey: 'lk-t', accountId: '67890' },
+        eventTypes: ['AiCodingTask'],
+      },
+    ]);
+
+    expect(summary.tiers).toEqual(['personal', 'team', 'org']);
+    expect(summary.primaryTier).toBe('personal');
+  });
+
+  it('returns an empty snapshot when no tiers are configured (local mode)', () => {
+    expect(summarizeResolvedTiers([])).toEqual({ tiers: [], primaryTier: null });
   });
 });

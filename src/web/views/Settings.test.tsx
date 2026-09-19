@@ -13,6 +13,8 @@ vi.mock('../api/client', () => ({
     storagePath: '~/.newrelic-preflight',
     highSecurity: false,
     licenseKey: null,
+    tiers: ['personal', 'org'],
+    primaryTier: 'personal',
     sessionBudgetUsd: null,
     dailyBudgetUsd: null,
     weeklyBudgetUsd: null,
@@ -118,6 +120,20 @@ describe('Subagent watcher status', () => {
     wrap(<Settings />);
     expect(await screen.findByText('enabled')).toBeInTheDocument();
     expect(await screen.findByText(/5 files watched, 1 parse errors/i)).toBeInTheDocument();
+  });
+});
+
+describe('Telemetry tier diagnostics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders resolved tier names and the primary tier from settings', async () => {
+    wrap(<Settings />);
+    expect(await screen.findByText('Telemetry tiers')).toBeTruthy();
+    expect(screen.getByText('personal, org')).toBeTruthy();
+    expect(screen.getByText('Primary tier')).toBeTruthy();
+    expect(screen.getByText('personal')).toBeTruthy();
   });
 });
 

@@ -21,6 +21,7 @@ import {
   handleHealth,
   handleGetConfig,
   handleInstallHooks,
+  overlayResolvedTiers,
   registerTools,
 } from './session-stats.js';
 import type { ConfigSummary, ToolRegistrationOptions } from './session-stats.js';
@@ -332,6 +333,8 @@ function makeConfigSummary(overrides?: Partial<ConfigSummary>): ConfigSummary {
     storagePath: '/home/alice/.newrelic-preflight',
     dashboardUrl: 'http://127.0.0.1:9847',
     configFilePath: '/home/alice/.newrelic-preflight/config.json',
+    tiers: ['default'],
+    primaryTier: 'default',
     ...overrides,
   };
 }
@@ -351,6 +354,46 @@ describe('handleGetConfig()', () => {
     expect(data.storagePath).toBe('/home/alice/.newrelic-preflight');
     expect(data.dashboardUrl).toBe('http://127.0.0.1:9847');
     expect(data.configFilePath).toBe('/home/alice/.newrelic-preflight/config.json');
+    expect(data.tiers).toEqual(['default']);
+    expect(data.primaryTier).toBe('default');
+  });
+
+  it('reflects configured multi-tier names and primary', () => {
+    const summary = makeConfigSummary({
+      tiers: ['personal', 'team', 'org'],
+      primaryTier: 'personal',
+    });
+    const result = handleGetConfig(summary);
+    const data = JSON.parse(result.content[0].text) as ConfigSummary;
+
+    expect(data.tiers).toEqual(['personal', 'team', 'org']);
+    expect(data.primaryTier).toBe('personal');
+  });
+
+  it('overlays live NrIngestManager getTierNames / getPrimaryTierName onto the snapshot', () => {
+    const summary = makeConfigSummary({
+      tiers: ['stale-from-config'],
+      primaryTier: 'stale-from-config',
+    });
+    const ingest = {
+      getTierNames: () => ['personal', 'org'] as const,
+      getPrimaryTierName: () => 'personal',
+    };
+    const result = handleGetConfig(summary, ingest);
+    const data = JSON.parse(result.content[0].text) as ConfigSummary;
+
+    expect(data.tiers).toEqual(['personal', 'org']);
+    expect(data.primaryTier).toBe('personal');
+  });
+
+  it('keeps the snapshot when ingest has no tier accessors', () => {
+    const summary = makeConfigSummary({
+      tiers: ['personal'],
+      primaryTier: 'personal',
+    });
+    const overlaid = overlayResolvedTiers(summary, {});
+    expect(overlaid.tiers).toEqual(['personal']);
+    expect(overlaid.primaryTier).toBe('personal');
   });
 
   it('handles null sensitive fields (local mode)', () => {
@@ -917,6 +960,8 @@ describe('registerPendingTools()', () => {
       storagePath: '/tmp/x',
       dashboardUrl: 'http://127.0.0.1:7777',
       configFilePath: '/tmp/x/config.json',
+      tiers: [],
+      primaryTier: null,
     };
     registerPendingTools(server.server, {
       sessionStartMs: Date.now(),
@@ -976,6 +1021,25 @@ describe('MCP protocol integration — direct registerTools() dispatch', () => {
     client = new Client({ name: 'test-client', version: '1.0.0' });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   }
+
+  it('nr_observe_get_config overlays live getTierNames / getPrimaryTierName from nrIngestManager', async () => {
+    await connectDirect({
+      configSummary: makeConfigSummary({
+        tiers: ['stale-from-config'],
+        primaryTier: 'stale-from-config',
+      }),
+      nrIngestManager: {
+        ingestToolCall: () => undefined,
+        getTierNames: () => ['personal', 'team', 'org'],
+        getPrimaryTierName: () => 'personal',
+      },
+    });
+
+    const result = await client.callTool({ name: 'nr_observe_get_config', arguments: {} });
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text) as ConfigSummary;
+    expect(body.tiers).toEqual(['personal', 'team', 'org']);
+    expect(body.primaryTier).toBe('personal');
+  });
 
   it('nr_observe_get_budget_status returns an explanatory error when BudgetTracker is absent', async () => {
     await connectDirect({});

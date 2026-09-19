@@ -99,7 +99,7 @@ const HEALTH_TOOL = {
 const CONFIG_TOOL = {
   name: 'nr_observe_get_config',
   description:
-    'Show the current server configuration (sensitive fields masked): mode, developer, account, region, storage path, dashboard URL, and config file location. Use to diagnose misconfiguration without exposing credentials.',
+    'Show the current server configuration (sensitive fields masked): mode, developer, account, region, storage path, dashboard URL, config file location, and resolved telemetry tiers. Use to diagnose misconfiguration without exposing credentials.',
   inputSchema: {
     type: 'object' as const,
     properties: {},
@@ -329,16 +329,48 @@ export interface ConfigSummary {
   readonly storagePath: string;
   readonly dashboardUrl: string;
   readonly configFilePath: string;
+  /** Resolved tier names (nr-type first, then local), matching `NrIngestManager.getTierNames()`. */
+  readonly tiers: readonly string[];
+  /** First nr-type tier, or null when none are configured (`mode: 'local'`). */
+  readonly primaryTier: string | null;
 }
 
-export function handleGetConfig(configSummary: ConfigSummary): {
+/**
+ * Overlay live `NrIngestManager` routing onto a static `ConfigSummary`.
+ * When ingest is present, `getTierNames()` / `getPrimaryTierName()` win —
+ * those are the names the process is actually routing with.
+ */
+export function overlayResolvedTiers(
+  summary: ConfigSummary,
+  ingest?: {
+    readonly getTierNames?: () => readonly string[];
+    readonly getPrimaryTierName?: () => string;
+  },
+): ConfigSummary {
+  if (ingest?.getTierNames === undefined || ingest.getPrimaryTierName === undefined) {
+    return summary;
+  }
+  return {
+    ...summary,
+    tiers: ingest.getTierNames(),
+    primaryTier: ingest.getPrimaryTierName(),
+  };
+}
+
+export function handleGetConfig(
+  configSummary: ConfigSummary,
+  ingest?: {
+    readonly getTierNames?: () => readonly string[];
+    readonly getPrimaryTierName?: () => string;
+  },
+): {
   content: [{ type: 'text'; text: string }];
 } {
   return {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify(configSummary, null, 2),
+        text: JSON.stringify(overlayResolvedTiers(configSummary, ingest), null, 2),
       },
     ],
   };
@@ -461,6 +493,8 @@ export interface ToolRegistrationOptions {
       lastFailureAt: number | null;
       lastSuccessAt: number | null;
     };
+    getTierNames?(): readonly string[];
+    getPrimaryTierName?(): string;
   };
   sessionTraceId?: string;
   sessionStartMs?: number;
@@ -506,7 +540,7 @@ function registerCoreTools(deps: ToolRegistrationOptions): RegisteredToolSet {
       handle: () => {
         const missing = requireAvailable(!!deps.configSummary, 'Config summary not available');
         if (missing) return missing;
-        return handleGetConfig(deps.configSummary!);
+        return handleGetConfig(deps.configSummary!, deps.nrIngestManager);
       },
     },
     {

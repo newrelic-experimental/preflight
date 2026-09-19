@@ -86,6 +86,7 @@ import type {
 import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import { handleSendDigest } from '../../tools/cross-session-tools.js';
+import { summarizeResolvedTiers } from '../../transport/tier-types.js';
 import type { AlertEvent } from '../live-event-bus.js';
 import type {
   AgentCall,
@@ -3081,6 +3082,9 @@ export function createApiHandler(
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+      // Resolved routing — not the flat licenseKey/accountId, which no
+      // longer describe where events go when `tiers` is configured.
+      ...summarizeResolvedTiers(c.tiers ?? []),
     });
   });
 

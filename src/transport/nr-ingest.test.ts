@@ -35,7 +35,7 @@ import { FeedbackCollector } from '../tools/workflow-tools.js';
 import { ApiFailureTracker } from '../metrics/api-failure-tracker.js';
 import type { TokenUsage } from '../shared/index.js';
 import type { ResolvedTier } from './tier-types.js';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -3428,11 +3428,65 @@ describe('NrIngestManager companion mode event tagging', () => {
 // ---------------------------------------------------------------------------
 
 describe('NrIngestManager — tier construction', () => {
+  function parseLogEntries(): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const call of stderrSpy.mock.calls) {
+      const raw = call[0];
+      if (typeof raw !== 'string') continue;
+      try {
+        out.push(JSON.parse(raw) as Record<string, unknown>);
+      } catch {
+        /* non-JSON console.error from a dependency */
+      }
+    }
+    return out;
+  }
+
   it('synthesizes a single default tier when no tiers option is supplied', () => {
     const manager = new NrIngestManager(makeIngestOptions());
 
     expect(manager.getTierNames()).toEqual(['default']);
     expect(manager.getPrimaryTierName()).toBe('default');
+  });
+
+  it('logs resolved tier names and primary at construction', () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-tier-log-'));
+    try {
+      new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier(),
+            makeTier({
+              name: 'team',
+              destination: { type: 'nr', licenseKey: 'lk-team', accountId: '67890' },
+              eventTypes: ['AiCodingTask'],
+            }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      const resolved = parseLogEntries().find((e) => e.message === 'Telemetry tiers resolved');
+      expect(resolved).toBeDefined();
+      expect(resolved!.tiers).toEqual(['personal', 'team', 'org']);
+      expect(resolved!.primaryTier).toBe('personal');
+      expect(resolved!.component).toBe('nr-ingest');
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs the implicit default tier when no tiers option is supplied', () => {
+    new NrIngestManager(makeIngestOptions());
+
+    const resolved = parseLogEntries().find((e) => e.message === 'Telemetry tiers resolved');
+    expect(resolved).toBeDefined();
+    expect(resolved!.tiers).toEqual(['default']);
+    expect(resolved!.primaryTier).toBe('default');
   });
 
   it('treats an empty tiers array the same as no tiers option', () => {
@@ -3596,6 +3650,76 @@ describe('NrIngestManager — tier construction', () => {
 
     manager.start();
     await expect(manager.stop()).resolves.toBeUndefined();
+  });
+
+  it('emits ai.tier.local_write_failures from TierLocalWriter.getStats()', async () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), 'nr-ingest-local-fail-'));
+    const blockedPath = resolve(tmp, 'not-a-dir');
+    writeFileSync(blockedPath, 'not-a-directory', { mode: 0o600 });
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal' }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: blockedPath },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      manager.ingestCodingTask(makeTask());
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<{
+        name: string;
+        attributes?: Record<string, unknown>;
+        value: { sum: number };
+      }>;
+      const failureMetric = sentMetrics.find((m) => m.name === 'ai.tier.local_write_failures');
+      expect(failureMetric).toBeDefined();
+      expect(failureMetric!.value.sum).toBeGreaterThanOrEqual(1);
+      expect(failureMetric!.attributes?.tier).toBe('org');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('emits ai.tier.local_write_failures as zero when local writes succeed', async () => {
+    const localDir = mkdtempSync(resolve(tmpdir(), 'nr-ingest-local-ok-'));
+    try {
+      const manager = new NrIngestManager(
+        makeIngestOptions({
+          tiers: [
+            makeTier({ name: 'personal' }),
+            makeTier({
+              name: 'org',
+              destination: { type: 'local', path: localDir },
+              eventTypes: ['AiCodingTask'],
+            }),
+          ],
+        }),
+      );
+
+      manager.ingestCodingTask(makeTask());
+      manager.start();
+      await manager.stop();
+
+      const sentMetrics = (mockSendMetrics.mock.calls[0] as unknown[])[0] as Array<{
+        name: string;
+        attributes?: Record<string, unknown>;
+        value: { sum: number };
+      }>;
+      const failureMetric = sentMetrics.find((m) => m.name === 'ai.tier.local_write_failures');
+      expect(failureMetric).toBeDefined();
+      expect(failureMetric!.value.sum).toBe(0);
+      expect(failureMetric!.attributes?.tier).toBe('org');
+    } finally {
+      rmSync(localDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps getEventSendHealth() driven by the primary tier only', async () => {

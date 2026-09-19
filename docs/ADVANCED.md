@@ -248,6 +248,14 @@ Each `local` tier appends to `<path>/events-YYYY-MM-DD.jsonl` (one file per UTC 
 
 Every `nr` tier gets its own `HarvestScheduler`, so each keeps an independent retry buffer and backoff. One unreachable NR account retries on its own schedule while every other tier continues delivering normally.
 
+### Confirming routing
+
+Misconfigured tiers (wrong account, typo'd event type, unwritable local path) previously failed silently. After startup, confirm the resolved layout:
+
+- stderr: `Telemetry tiers resolved` with `{ tiers, primaryTier }` (emitted from `NrIngestManager` construction)
+- `nr_observe_get_config` and dashboard `GET /api/settings` include the same `tiers` / `primaryTier` names
+- local-tier write failures are emitted as the `ai.tier.local_write_failures` gauge (tagged `tier=<name>`) on the primary tier's Metric API stream
+
 ### Backward compatibility
 
 Omit `tiers` entirely and nothing changes: the flat `licenseKey`/`accountId` become one implicit tier (`name: "default"`, `eventTypes: ["*"]`), resolved in memory and never written back to the config file.

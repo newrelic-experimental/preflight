@@ -1235,6 +1235,11 @@ export class NrIngestManager {
     this.primaryScheduler = primaryScheduler;
     this.primaryTierName = primaryTierName;
 
+    logger.info('Telemetry tiers resolved', {
+      tiers: this.getTierNames(),
+      primaryTier: this.primaryTierName,
+    });
+
     this.logIngest = new LogIngestManager({
       licenseKey: primaryLicenseKey,
       transportOptions: primaryTransportOptions,
@@ -1758,6 +1763,13 @@ export class NrIngestManager {
         });
       }
     }
+    for (const [tierName, writer] of this.localWriters) {
+      record('ai.tier.local_write_failures', writer.getStats().failures, {
+        tier: tierName,
+        ...teamAttrs,
+      });
+    }
+
     if (proxyMetrics.avgProxyOverheadMs > 0) {
       this.primaryScheduler.recordMetric(
         'ai.mcp.proxy_overhead_ms',

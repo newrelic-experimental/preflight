@@ -100,6 +100,33 @@ export interface ResolvedTier {
   readonly eventTypes: readonly string[];
 }
 
+/**
+ * Operator-facing snapshot of resolved routing.
+ *
+ * Names are listed nr-type first (declaration order among themselves), then
+ * local-type — the same order as `NrIngestManager.getTierNames()`.
+ * `primaryTier` is the first nr-type name, or `null` when none exist
+ * (`mode: 'local'` leaves `config.tiers` empty).
+ */
+export function summarizeResolvedTiers(tiers: readonly ResolvedTier[]): {
+  readonly tiers: readonly string[];
+  readonly primaryTier: string | null;
+} {
+  const nrNames: string[] = [];
+  const localNames: string[] = [];
+  for (const tier of tiers) {
+    if (tier.destination.type === 'nr') {
+      nrNames.push(tier.name);
+    } else {
+      localNames.push(tier.name);
+    }
+  }
+  return {
+    tiers: [...nrNames, ...localNames],
+    primaryTier: nrNames[0] ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // validateTiers
 // ---------------------------------------------------------------------------

@@ -1307,6 +1307,10 @@ export interface SettingsResponse {
   readonly storagePath: string;
   readonly highSecurity: boolean;
   readonly licenseKey: string | null;
+  /** Resolved tier names (nr-type first, then local). */
+  readonly tiers: readonly string[];
+  /** First nr-type tier, or null when none are configured. */
+  readonly primaryTier: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
