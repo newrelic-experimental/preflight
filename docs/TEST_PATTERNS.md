@@ -67,6 +67,33 @@ Web tests follow the same factory-function and spy patterns as Jest tests — ju
 
 ---
 
+## Dashboard E2E Smoke Tests (Playwright)
+
+The `e2e/` suite starts the built local dashboard against an isolated storage
+directory. Run it with:
+
+```bash
+npm run test:e2e
+```
+
+Add a smoke test for each dashboard view beyond Today in `e2e/views.spec.ts`.
+Each test should:
+
+- attach a `page.on('console')` listener before navigation and assert that no
+  `console.error` messages occurred;
+- navigate through the Sidebar (or its matching `g` keyboard shortcut) so the
+  route is exercised as a user would use it;
+- assert the view heading with an accessible role-based locator;
+- avoid visual snapshots so the suite remains a cheap route and runtime check.
+
+When a view depends on persisted sessions, start with the empty-state assertion,
+write a minimal session JSON fixture into the isolated `sessions/` directory,
+then reload and assert one data row. The E2E suite runs serially because the
+server and tests intentionally share that fixture store; always remove fixtures
+in setup and cleanup so they cannot affect another test.
+
+---
+
 ## Global Test Setup
 
 Nearly every test file follows this setup pattern:
