@@ -2650,6 +2650,11 @@ export function createApiHandler(
     // Score all of today's live, not-yet-persisted activity together so
     // redundant-read/repeated-failure detection sees real cross-call
     // sequencing (not just independently-summed per-session counts).
+    //
+    // #683: intake-only attribution. ownRecords were backfilled (or not) at
+    // hook-buffer intake; crossProcessRecords are paired from another
+    // process's peeked buffer, where this process's toolUseIdToAgentId map
+    // does not exist. No late join here — see LocalSessionAggregator.
     const liveMetrics = deps.toolSelectionScorer.scoreSession([
       ...ownRecords,
       ...crossProcessRecords,
@@ -3433,6 +3438,9 @@ export function createApiHandler(
               skillBreakdown: {},
               antiPatterns,
               qualityProxy: quality && quality.totalSignals > 0 ? quality : undefined,
+              // #683: intake-only. These buffer records are not re-joined
+              // against the live toolUseIdToAgentId map (dashboard API may
+              // also serve reconstructed / cross-process sessions).
               toolSelectionScore:
                 ownSessionRecords.length > 0
                   ? deps.toolSelectionScorer?.scoreSession(ownSessionRecords)
@@ -3512,6 +3520,9 @@ export function createApiHandler(
             skillBreakdown: {},
             antiPatterns,
             qualityProxy: quality.totalSignals > 0 ? quality : undefined,
+            // #683: intake-only. Cross-process live session synthesized
+            // from the buffer — this process has no toolUseIdToAgentId
+            // entries for another engine's tool-use ids.
             toolSelectionScore:
               sortedRecords.length > 0
                 ? deps.toolSelectionScorer?.scoreSession(sortedRecords)

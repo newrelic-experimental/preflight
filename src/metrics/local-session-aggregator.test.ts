@@ -48,13 +48,18 @@ class StubRepoResolver extends RepoNameResolver {
   }
 }
 
-function summariesOf(agg: LocalSessionAggregator, outcome = 'in progress') {
+function summariesOf(
+  agg: LocalSessionAggregator,
+  outcome = 'in progress',
+  toolUseIdToAgentId?: ReadonlyMap<string, string>,
+) {
   return agg.toSummaries({
     developer: 'tester',
     platform: 'copilot',
     outcome,
     repoResolver: new StubRepoResolver(),
     toolSelectionScorer: new ToolSelectionScorer(),
+    ...(toolUseIdToAgentId !== undefined ? { toolUseIdToAgentId } : {}),
   });
 }
 
@@ -432,6 +437,122 @@ describe('LocalSessionAggregator timeline persistence', () => {
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'edit', timestamp: 1 });
     const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
     expect(timeline[0]).not.toHaveProperty('agentId');
+  });
+});
+
+describe('LocalSessionAggregator late toolUseId backfill before scoreSession', () => {
+  function recordUnattributedReads(agg: LocalSessionAggregator): void {
+    // Three parallel subagents each Read the same file once. At intake the
+    // hook envelope has no agentId — the toolUseId join has not caught up.
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      filePath: '/a.ts',
+      timestamp: 1000,
+      success: true,
+      toolUseId: 'tu-agent-1',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      filePath: '/a.ts',
+      timestamp: 1100,
+      success: true,
+      toolUseId: 'tu-agent-2',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      filePath: '/a.ts',
+      timestamp: 1200,
+      success: true,
+      toolUseId: 'tu-agent-3',
+    });
+  }
+
+  it('intake-only scoring treats unattributed parallel reads as one agent repeating', () => {
+    const agg = new LocalSessionAggregator();
+    recordUnattributedReads(agg);
+
+    const [summary] = summariesOf(agg);
+    const metrics = summary?.toolSelectionMetrics as {
+      score: number;
+      redundantReadCount: number;
+    };
+
+    // First two reads of /a.ts are free; the third is a redundant_read.
+    expect(metrics.redundantReadCount).toBe(1);
+    expect(metrics.score).toBeLessThan(1);
+  });
+
+  it('late-arriving toolUseId map partitions agents and drops the false redundant-read', () => {
+    const agg = new LocalSessionAggregator();
+    recordUnattributedReads(agg);
+
+    const [intakeOnly] = summariesOf(agg);
+    const intakeMetrics = intakeOnly?.toolSelectionMetrics as {
+      score: number;
+      redundantReadCount: number;
+    };
+
+    // SubagentWatcher caught up after intake (same map the anti-pattern
+    // path uses at task-close). Each toolUseId belongs to a different agent.
+    const lateMap = new Map<string, string>([
+      ['tu-agent-1', 'agent-1'],
+      ['tu-agent-2', 'agent-2'],
+      ['tu-agent-3', 'agent-3'],
+    ]);
+    const [late] = summariesOf(agg, 'in progress', lateMap);
+    const lateMetrics = late?.toolSelectionMetrics as {
+      score: number;
+      redundantReadCount: number;
+    };
+
+    expect(intakeMetrics.redundantReadCount).toBe(1);
+    expect(intakeMetrics.score).toBeLessThan(1);
+    expect(lateMetrics.redundantReadCount).toBe(0);
+    expect(lateMetrics.score).toBe(1);
+    expect(lateMetrics.score).toBeGreaterThan(intakeMetrics.score);
+  });
+
+  it('does not overwrite an agentId already present on the stored record', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      filePath: '/a.ts',
+      timestamp: 1000,
+      success: true,
+      toolUseId: 'tu-keep',
+      agentId: 'already-set',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      filePath: '/a.ts',
+      timestamp: 1100,
+      success: true,
+      toolUseId: 'tu-keep',
+      agentId: 'already-set',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      filePath: '/a.ts',
+      timestamp: 1200,
+      success: true,
+      toolUseId: 'tu-keep',
+      agentId: 'already-set',
+    });
+
+    const lateMap = new Map<string, string>([['tu-keep', 'should-not-win']]);
+    const [summary] = summariesOf(agg, 'in progress', lateMap);
+    const metrics = summary?.toolSelectionMetrics as { redundantReadCount: number };
+
+    // Same agentId on all three reads → still one redundant_read. If the
+    // map overwrote agentId with a new id, partitionByAgent would split
+    // them and the count would drop to 0.
+    expect(metrics.redundantReadCount).toBe(1);
   });
 });
 

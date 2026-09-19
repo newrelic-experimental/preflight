@@ -2629,6 +2629,9 @@ async function main(): Promise<void> {
             outcome: opts?.periodic ? 'in progress' : 'completed',
             toolSelectionScorer,
             repoResolver: repoNameResolver,
+            // Same late join as the anti-pattern path above — session-close
+            // scoring sees mappings SubagentWatcher added after intake (#683).
+            toolUseIdToAgentId,
           });
           for (const rollup of rollups) {
             sessionStore.saveSession(

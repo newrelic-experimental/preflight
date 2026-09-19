@@ -1023,6 +1023,14 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   // above, still holding real outputSizeBytes at this point — see the
   // ToolSelectionSummary doc comment on FullSessionSummary for why this is
   // the only place that's true.
+  //
+  // #683: scoreSession stays best-effort-at-intake-only. task.toolCalls were
+  // joined (or not) at hook-buffer intake; this helper does not receive the
+  // live toolUseIdToAgentId map. A later process reading sessions/*.json
+  // has no map at all, and ReplayTimelineEntry does not persist toolUseId,
+  // so the join cannot be reconstructed. ToolCallRecord already stores
+  // toolUseId + agentId when intake backfill succeeded — no new on-disk
+  // schema. The live late-join lives in LocalSessionAggregator.toSummaries().
   const toolSelectionResult =
     sources.toolSelectionScorer && allToolCalls.length > 0
       ? toToolSelectionSummary(sources.toolSelectionScorer.scoreSession(allToolCalls))

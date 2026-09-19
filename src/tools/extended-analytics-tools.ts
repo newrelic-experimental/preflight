@@ -181,6 +181,11 @@ export function handleGetToolSelectionScore(
   scorer: ToolSelectionScorer,
   toolCalls: readonly ToolCallRecord[],
 ): { content: Array<{ type: 'text'; text: string }> } {
+  // #683: intake-only attribution. `toolCalls` come from toolCallBuffer
+  // snapshots frozen at hook-buffer intake (or from a caller that already
+  // holds persisted records). This MCP tool does not receive the live
+  // toolUseIdToAgentId map; a late SubagentWatcher join is not re-applied
+  // here. See LocalSessionAggregator.toSummaries() for the live late-join.
   const metrics = scorer.scoreSession(toolCalls);
   return { content: [{ type: 'text' as const, text: JSON.stringify(metrics, null, 2) }] };
 }

@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { localDateKey } from '../lib/date.js';
 import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { hasAttributableActivity, type FullSessionSummary } from '../storage/session-store.js';
+import { backfillAgentId } from './agent-partition.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
@@ -305,6 +306,8 @@ export class LocalSessionAggregator {
     isLintCommand?: boolean;
     errorType?: unknown;
     platform?: string | null;
+    /** Join key for a late `backfillAgentId()` pass in `toSummaries()`. */
+    toolUseId?: unknown;
     agentId?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
@@ -489,11 +492,26 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    /**
+     * Live `toolUseId → agentId` map from this process's SubagentWatcher.
+     * Applied immediately before `scoreSession()`, matching the late
+     * `backfillAgentId()` pass in `src/index.ts` before anti-pattern
+     * analysis — session-close has had more time than hook-buffer intake
+     * for transcript-tailing to catch up (#683).
+     */
+    toolUseIdToAgentId?: ReadonlyMap<string, string>;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     for (const rollup of this.sessions.values()) {
       if (!hasAttributableActivity(rollup)) continue;
       const models = [...rollup.models];
+      // Intake may have missed the join (~100ms hook poll vs ~2s transcript
+      // poll). Re-apply here when the live map is available. Records are
+      // not mutated — backfillAgentId returns a new object only on a hit.
+      const toolUseIdToAgentId = context.toolUseIdToAgentId;
+      const scoredRecords = toolUseIdToAgentId
+        ? rollup.records.map((r) => backfillAgentId(r, toolUseIdToAgentId))
+        : rollup.records;
       out.push({
         sessionId: rollup.sessionId,
         sessionName: null,
@@ -515,8 +533,8 @@ export class LocalSessionAggregator {
         modelBreakdown: modelBreakdownOf(rollup),
         qualityProxy: rollup.quality.getRawCounts(),
         toolSelectionMetrics:
-          rollup.records.length > 0
-            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+          scoredRecords.length > 0
+            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(scoredRecords))
             : null,
         linesAdded: 0,
         linesRemoved: 0,
