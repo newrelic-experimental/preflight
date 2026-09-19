@@ -10,6 +10,20 @@ interface HookEventBase {
   /** Working directory the hook reported; the collector stamps it on every
    *  mode it emits. Absent on lines written by watchers. */
   readonly cwd?: string;
+  /**
+   * Session transcript path the hook reported; the collector stamps it on
+   * every mode it emits. Absent on lines written by watchers.
+   */
+  readonly transcriptPath?: string;
+  /**
+   * Permission mode the hook reported; the collector stamps it on every
+   * mode it emits. Absent on lines written by watchers.
+   */
+  readonly permissionMode?: string;
+  /** Set when this tool call was made by a subagent (code.claude.com/docs/en/hooks.md). */
+  readonly agentId?: string;
+  /** The subagent's type, or the session's `--agent` type. */
+  readonly agentType?: string;
 }
 
 /**
@@ -23,12 +37,6 @@ export interface PreHookEvent extends HookEventBase {
   readonly toolInput?: unknown;
   readonly inputSize?: number;
   readonly inputHash?: string;
-  readonly transcriptPath?: string;
-  readonly permissionMode?: string;
-  /** Set when this tool call was made by a subagent (code.claude.com/docs/en/hooks.md). */
-  readonly agentId?: string;
-  /** The subagent's type, or the session's `--agent` type. */
-  readonly agentType?: string;
 }
 
 /**
@@ -45,10 +53,6 @@ export interface PostHookEvent extends HookEventBase {
   readonly success?: boolean;
   readonly error?: string;
   readonly isInterrupt?: boolean;
-  /** Set when this tool call was made by a subagent (code.claude.com/docs/en/hooks.md). */
-  readonly agentId?: string;
-  /** The subagent's type, or the session's `--agent` type. */
-  readonly agentType?: string;
   /**
    * Claude Code's own reported tool-execution time (ms), excluding
    * permission-prompt wait time and PreToolUse hook execution. When present,

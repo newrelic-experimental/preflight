@@ -296,6 +296,51 @@ describe('HookEventProcessor', () => {
     });
   });
 
+  describe('attributionFields() — uniform pre-wins / post-fallback', () => {
+    const preAttribution = {
+      cwd: '/projects/pre',
+      transcriptPath: '/tmp/pre.jsonl',
+      permissionMode: 'default',
+      agentId: 'agent-pre',
+      agentType: 'general-purpose',
+      platform: 'claude-code',
+    };
+    const postAttribution = {
+      cwd: '/projects/post',
+      transcriptPath: '/tmp/post.jsonl',
+      permissionMode: 'acceptEdits',
+      agentId: 'agent-post',
+      agentType: 'Explore',
+      platform: 'cursor',
+    };
+
+    it('prefers every pre-event attribution field over a conflicting post event', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([makePreEvent(preAttribution), makePostEvent(postAttribution)]);
+
+      expect(records[0]!).toMatchObject(preAttribution);
+    });
+
+    it('falls back to every post-event attribution field when the pre event has none', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([makePreEvent(), makePostEvent(postAttribution)]);
+
+      expect(records[0]!).toMatchObject(postAttribution);
+    });
+
+    it('uses post-event attribution fields on an orphaned post', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePostEvent({ toolUseId: 'toolu_orphan_attr', ...postAttribution }),
+      ]);
+
+      expect(records[0]!).toMatchObject(postAttribution);
+    });
+  });
+
   describe('processEvents() — interleaved ordering', () => {
     it('correctly pairs Read-with-Read and Grep-with-Grep by toolUseId', () => {
       const processor = new HookEventProcessor({ store, onRecord });

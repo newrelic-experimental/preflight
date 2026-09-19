@@ -214,19 +214,22 @@ function numAttr(v: unknown): number {
 
 /**
  * The attribution fields every record shape carries. Pre wins over post for
- * `cwd`, `agentId`, `agentType`, and `platform`: the collector stamps both,
- * and pre is the event that observed the call start.
+ * all six collector-stamped fields (`cwd`, `transcriptPath`, `permissionMode`,
+ * `agentId`, `agentType`, and `platform`): the collector stamps both, and pre
+ * is the event that observed the call start.
  */
 function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
   const cwd = pre?.cwd ?? post?.cwd;
+  const transcriptPath = pre?.transcriptPath ?? post?.transcriptPath;
+  const permissionMode = pre?.permissionMode ?? post?.permissionMode;
   const agentId = pre?.agentId ?? post?.agentId;
   const agentType = pre?.agentType ?? post?.agentType;
   const platform = pre?.platform ?? post?.platform;
   return {
     ...(pre?.inputSize !== undefined && { inputSizeBytes: pre.inputSize }),
     ...(pre?.inputHash !== undefined && { inputHash: pre.inputHash }),
-    ...(pre?.transcriptPath !== undefined && { transcriptPath: pre.transcriptPath }),
-    ...(pre?.permissionMode !== undefined && { permissionMode: pre.permissionMode }),
+    ...(transcriptPath !== undefined && { transcriptPath }),
+    ...(permissionMode !== undefined && { permissionMode }),
     ...(cwd !== undefined && { cwd }),
     ...(agentId !== undefined && { agentId }),
     ...(agentType !== undefined && { agentType }),
