@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
-import { platform } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { createLogger } from '../shared/index.js';
@@ -21,6 +21,12 @@ import type { HookEventType } from './install-helper.js';
 import { isWsl, resolveWindowsHome } from './platform.js';
 import { LocalStore } from '../storage/index.js';
 import { createDefaultRegistry } from '../platforms/index.js';
+import {
+  assistantStatusToCheck,
+  detectPresentAssistants,
+  inspectAssistant,
+  isAssistantId,
+} from './assistant-install.js';
 
 const logger = createLogger('diagnostics');
 
@@ -254,6 +260,16 @@ function checkHooksWired(settingsPaths: string[], platform: string | undefined):
         check: 'Hooks wired',
         status: 'fail',
         detail: `Unknown platform "${platform}". Supported: ${known.join(', ')}`,
+      };
+    }
+    if (isAssistantId(platform)) {
+      const status = inspectAssistant(platform, { home: homedir(), scope: 'user' });
+      const check = assistantStatusToCheck(status);
+      return {
+        check: 'Hooks wired',
+        status: check.status,
+        detail: check.detail,
+        ...(check.fix !== undefined && { fix: check.fix }),
       };
     }
     return {
@@ -633,12 +649,22 @@ export async function runDiagnostics(opts?: {
     if (winHome) settingsPaths.push(detectSettingsPath('user', winHome));
   }
 
+  const assistantChecks =
+    opts?.platform === undefined
+      ? detectPresentAssistants(homedir())
+          .filter((id) => id !== 'claude-code')
+          .map((id) =>
+            assistantStatusToCheck(inspectAssistant(id, { home: homedir(), scope: 'user' })),
+          )
+      : [];
+
   return [
     configCheck,
     modeCheck,
     checkNodeVersionDiagnostic(),
     ...checkDaemon(),
     checkHooksWired(settingsPaths, opts?.platform),
+    ...assistantChecks,
     checkHookNodePath(settingsPaths, opts?.platform),
     checkStorageWritable(context.storagePath),
     checkLocalInstances(context.storagePath),

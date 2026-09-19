@@ -547,13 +547,32 @@ describe('runDiagnostics', () => {
       expect(c.detail).not.toContain('warn');
     });
 
-    it('skips the Claude Code check and gives manual-verification guidance for a non-Claude platform', async () => {
+    it('reports Kiro status from the install table instead of asking to verify manually', async () => {
       mockedExistSync.mockReturnValue(false);
       const checks = await runDiagnostics({ ...makeOpts(), platform: 'kiro' });
       const hooksCheck = checks.find((c: DiagnosticCheck) => c.check === 'Hooks wired');
+      expect(hooksCheck?.status).toBe('fail');
+      expect(hooksCheck?.detail).toMatch(/Kiro|kiro|hooks file not found|MCP/i);
+      expect(hooksCheck?.fix).toBe('preflight install --assistants kiro');
+      expect(hooksCheck?.fix).not.toContain('buffer-*.jsonl');
+    });
+
+    it('still gives manual-verification guidance for platforms the install table does not write', async () => {
+      mockedExistSync.mockReturnValue(false);
+      const checks = await runDiagnostics({ ...makeOpts(), platform: 'zed' });
+      const hooksCheck = checks.find((c: DiagnosticCheck) => c.check === 'Hooks wired');
       expect(hooksCheck?.status).toBe('warn');
-      expect(hooksCheck?.detail).toContain('kiro');
+      expect(hooksCheck?.detail).toContain('zed');
       expect(hooksCheck?.fix).toContain('buffer-*.jsonl');
+    });
+
+    it('reports Cursor hooks from the same table when that assistant is detected', async () => {
+      mockedExistSync.mockImplementation((p) => String(p) === '/test-home/.cursor');
+      const checks = await runDiagnostics(makeOpts());
+      const cursorCheck = checks.find((c: DiagnosticCheck) => c.check === 'Cursor hooks');
+      expect(cursorCheck).toBeDefined();
+      expect(cursorCheck?.status).toBe('fail');
+      expect(cursorCheck?.fix).toBe('preflight install --assistants cursor');
     });
 
     it('fails with the list of known platforms when given an unrecognized platform name', async () => {

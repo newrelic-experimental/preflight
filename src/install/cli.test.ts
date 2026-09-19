@@ -17,6 +17,7 @@ jest.mock('node:fs', () => ({
   unlinkSync: jest.fn(),
   copyFileSync: jest.fn(),
   realpathSync: jest.fn((p: unknown) => p),
+  readdirSync: jest.fn(() => []),
 }));
 jest.mock('node:child_process', () => ({
   execSync: jest.fn(),
@@ -129,6 +130,7 @@ const mockedPlatform = platformMod as unknown as {
 const mockedHelper = installHelperMod as unknown as {
   mergeSettings: jest.Mock;
   mergeMcpConfig: jest.Mock;
+  removeSettings: jest.Mock;
   detectSettingsPath: jest.Mock;
   detectMcpConfigPath: jest.Mock;
 };
@@ -2622,5 +2624,69 @@ describe('copilot install/uninstall', () => {
     await expect(runInstallCli(['uninstall', '--copilot', '--daemon'])).rejects.toThrow(
       'process.exit(1)',
     );
+  });
+});
+
+describe('--assistants override', () => {
+  let stdoutSpy: ReturnType<typeof jest.spyOn>;
+  let exitSpy: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: string | number | null | undefined) => {
+        throw new Error(`process.exit(${String(code)})`);
+      });
+    mockedSchedule.resolveBinaryPath.mockReturnValue('/usr/local/bin/preflight');
+    mockedHelper.detectSettingsPath.mockReturnValue(`${homedir()}/.claude/settings.json`);
+    mockedHelper.detectMcpConfigPath.mockReturnValue(`${homedir()}/.mcp.json`);
+    const mFs = fsMod as unknown as { realpathSync: jest.Mock; existsSync: jest.Mock };
+    mFs.realpathSync.mockImplementation((p: unknown) => p);
+    mFs.existsSync.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    exitSpy.mockRestore();
+    process.exitCode = undefined;
+  });
+
+  it('rejects an unknown assistant name', async () => {
+    await expect(runInstallCli(['install', '--assistants', 'not-a-tool'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Unknown assistant');
+    expect(output).toContain('cursor');
+  });
+
+  it('rejects --assistants combined with --copilot', async () => {
+    await expect(runInstallCli(['install', '--assistants', 'cursor', '--copilot'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('--copilot cannot be combined with --assistants');
+  });
+
+  it('--assistants cursor skips Claude Code merge', async () => {
+    await runInstallCli(['install', '--assistants', 'cursor']);
+    expect(mockedHelper.mergeSettings).not.toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('cursor updated');
+    expect(output).not.toContain('Claude Code hooks updated');
+  });
+
+  it('--assistants all still configures Claude Code', async () => {
+    await runInstallCli(['install', '--assistants', 'all']);
+    expect(mockedHelper.mergeSettings).toHaveBeenCalled();
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(output).toContain('Claude Code hooks updated');
+  });
+
+  it('uninstall --assistants cursor does not touch Claude Code settings', async () => {
+    await runInstallCli(['uninstall', '--assistants', 'cursor', '--yes']);
+    expect(mockedHelper.removeSettings).not.toHaveBeenCalled();
   });
 });

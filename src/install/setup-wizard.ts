@@ -531,7 +531,9 @@ export async function runSetupWizard(opts: { staging?: boolean } = {}): Promise<
     // Config is already written above; pass no credentials to install so it only
     // wires hooks and MCP without overwriting the config we just wrote.
     const wslEnv = isWsl();
-    const installHooks = (await rl.question('\nInstall Claude Code hooks now? [Y/n]: '))
+    const installHooks = (
+      await rl.question('\nInstall hooks for detected AI assistants now? [Y/n]: ')
+    )
       .trim()
       .toLowerCase();
     if (installHooks !== 'n' && installHooks !== 'no') {

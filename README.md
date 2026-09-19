@@ -143,6 +143,16 @@ preflight install \
   --account-id YOUR_ACCOUNT_ID
 ```
 
+That command detects every AI coding assistant present on the machine (`~/.cursor`, `~/.windsurf`, `~/.kiro`, `~/.aws/amazonq`, …) and merges Preflight hooks + MCP entries for each one. Re-running is idempotent. To pre-configure assistants that are not installed yet:
+
+```bash
+preflight install --assistants all
+# or a subset:
+preflight install --assistants cursor,kiro,windsurf
+```
+
+`preflight doctor` reports per-assistant hook/MCP status from the same table. `preflight uninstall --assistants cursor` removes only Preflight's entries from that assistant.
+
 EU accounts add `--eu`. FedRAMP accounts add `--fedramp`. Japan accounts add `--jp`.
 
 Then deploy the prebuilt dashboards:

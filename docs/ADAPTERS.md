@@ -9,7 +9,7 @@ Preflight supports 18 named AI coding platforms plus a generic MCP fallback, eac
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
-> **Maintenance note:** every adapter implements `getHookInstallInstructions()`, which returns the setup text reproduced below. That method is not currently called from any CLI command (`preflight doctor --platform <x>` explicitly skips it and tells the user to verify manually) — this document is presently the only place that text is surfaced to a user. If a CLI surface is added later, keep this doc and the adapter methods in sync, or replace the relevant section here with a pointer to the command output.
+> **Maintenance note:** every adapter still implements `getHookInstallInstructions()` (the exact JSON each installer writes). `preflight install` is the command that applies that JSON: it detects which assistants are present (config directory exists) and merges hook + MCP entries with the same idempotent filter as Claude Code's `mergeSettings()` / `mergeMcpConfig()`. `preflight install --assistants <list>` or `--assistants all` overrides detection. `preflight uninstall` removes only Preflight's own entries. `preflight doctor` (and `preflight doctor --platform <id>`) reports per-assistant status from that same table. Do not duplicate installer payloads here — when a setup step is automated, point at those commands and keep the adapter method as the payload source of truth. Plugin-based (opencode, Kilo Code, Pi) and mcp-tools-only (Zed, Continue, Cline) platforms are still documented below for manual setup; they are not part of the install table.
 
 ## Integration mechanisms
 
@@ -41,12 +41,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Detection (`isSupported()`):** any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `CLAUDE_CODE_SESSION_ID` set (the vars current Claude Code actually sets in child process envs), or the legacy `CLAUDE_CODE`/`CLAUDE_CODE_VERSION`, or `MCP_CLIENT === 'claude-code'`. The list is the exported `CLAUDE_CODE_ENV_SIGNALS` const, shared with `collector-script.ts`'s hook-time platform stamping.
 
-**Setup:**
-
-1. Run `npx preflight install`
-2. This adds `PreToolUse`/`PostToolUse` hooks to `~/.claude/settings.json`
-3. Restart Claude Code to activate the hooks
-4. Add the MCP server to your `.mcp.json` configuration
+**Setup:** `preflight install` (default target). Re-run is idempotent. Status: `preflight doctor`.
 
 **Notes:** The default, first-class platform. Tool names pass through unmapped (`mapToolName()` is identity).
 
@@ -65,25 +60,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
 
-**Setup:**
-
-1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`
-2. Configure Cursor hooks so tool-call activity is captured — create `.cursor/hooks.json` (project) or `~/.cursor/hooks.json` (global):
-   ```json
-   {
-     "version": 1,
-     "hooks": {
-       "beforeShellExecution": [{ "command": "preflight-collector" }],
-       "afterShellExecution": [{ "command": "preflight-collector" }],
-       "beforeMCPExecution": [{ "command": "preflight-collector" }],
-       "afterMCPExecution": [{ "command": "preflight-collector" }],
-       "beforeReadFile": [{ "command": "preflight-collector" }],
-       "afterFileEdit": [{ "command": "preflight-collector" }]
-     }
-   }
-   ```
-3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-4. Restart Cursor
+**Setup:** `preflight install` detects `~/.cursor` and writes `~/.cursor/hooks.json` plus `~/.cursor/mcp.json` (idempotent merge). Pre-configure before Cursor is installed with `preflight install --assistants cursor` (or `--assistants all`). Project scope: `preflight install --project --assistants cursor`. Status: `preflight doctor --platform cursor`. The JSON the installer writes is `CursorAdapter.getHookInstallInstructions()`.
 
 ---
 
@@ -97,12 +74,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write).
 
-**Setup:**
-
-1. Windsurf Settings → MCP Servers → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`
-2. MCP tool calls via Cascade are captured automatically through the MCP connection
-3. Built-in tool calls (file reads/writes, terminal commands) require Cascade Hooks — create `.windsurf/hooks.json` and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, each running `preflight-collector`
-4. See [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks) for the full schema
+**Setup:** `preflight install` detects `~/.windsurf` or `~/.codeium/windsurf` and writes the official user-level files (`~/.codeium/windsurf/hooks.json` + `mcp_config.json`; project: `.windsurf/hooks.json` + `.windsurf/mcp_config.json`). Override with `preflight install --assistants windsurf`. Status: `preflight doctor --platform windsurf`. Payload source: `WindsurfAdapter.getHookInstallInstructions()` and [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks).
 
 ---
 
@@ -210,32 +182,7 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Known gap:** Amazon Q hook events carry no session identifier at all (unlike Claude Code, Kiro, Cursor, or Windsurf) — concurrent Amazon Q sessions on the same machine share a single unscoped buffer.
 
-**Setup:**
-
-1. Open your Amazon Q MCP config (`~/.aws/amazonq/mcp.json` or project-level `.amazonq/mcp.json`), add to `mcpServers`:
-   ```json
-   {
-     "preflight": {
-       "command": "npx",
-       "args": ["preflight", "--stdio"],
-       "env": {
-         "NEW_RELIC_LICENSE_KEY": "<your-key>",
-         "NEW_RELIC_ACCOUNT_ID": "<your-account-id>"
-       }
-     }
-   }
-   ```
-2. Configure hooks in your agent config (`~/.aws/amazonq/cli-agents/<agent-name>.json` global, or `.amazonq/cli-agents/<agent-name>.json` workspace):
-   ```json
-   {
-     "hooks": {
-       "preToolUse": [{ "command": "preflight-collector" }],
-       "postToolUse": [{ "command": "preflight-collector" }]
-     }
-   }
-   ```
-   See [aws.github.io/amazon-q-developer-cli/agent-format.html#hooks-field](https://aws.github.io/amazon-q-developer-cli/agent-format.html#hooks-field).
-3. Restart Amazon Q Developer CLI (or start a new `q chat` session).
+**Setup:** `preflight install` detects `~/.aws/amazonq` and writes `~/.aws/amazonq/mcp.json`, then merges `preToolUse`/`postToolUse` hooks into each existing `~/.aws/amazonq/cli-agents/*.json` (it does not invent a default agent). Override with `preflight install --assistants amazon-q`. Status: `preflight doctor --platform amazon-q`. Payload source: `AmazonQAdapter.getHookInstallInstructions()` and [aws.github.io/amazon-q-developer-cli/agent-format.html#hooks-field](https://aws.github.io/amazon-q-developer-cli/agent-format.html#hooks-field).
 
 ---
 
@@ -263,33 +210,10 @@ Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-regi
 
 **Remaining gap:** `bash_calls_by_category` is still empty on Kiro. It needs the command string, which lives in `execute_bash`'s `tool_input` — a shape not yet captured first-hand, so no case is guessed for it. `bash_commands_run` is unaffected (it keys on the mapped name alone). The same applies to `read_files`, `list_directory`, `grep_search` and any write/delete tool: they map correctly for counting, but contribute no structured metadata until their input shapes are observed.
 
-**Setup:**
-
-1. Open your Kiro MCP config (`~/.kiro/settings/mcp.json` user-level, or `.kiro/settings/mcp.json` workspace-level), add to `mcpServers`:
-   ```json
-   {
-     "preflight": {
-       "command": "npx",
-       "args": ["preflight", "--stdio"],
-       "env": {
-         "NEW_RELIC_LICENSE_KEY": "<your-key>",
-         "NEW_RELIC_ACCOUNT_ID": "<your-account-id>",
-         "NEW_RELIC_AI_PLATFORM": "kiro"
-       }
-     }
-   }
-   ```
-   `NEW_RELIC_AI_PLATFORM: "kiro"` is required here, not optional — see the
-   "Known gap" note above: none of the 16 env vars Kiro passes this
-   subprocess are Kiro-specific, so without this forced stamp, detection
-   falls through to `generic-mcp` and every normalized-name metric reports
-   zero while the raw tool-call count still looks fine.
-2. Restart Kiro (or reconnect MCP servers from the Kiro MCP panel).
+**Setup:** `preflight install` detects `~/.kiro` and writes `~/.kiro/settings/mcp.json` (with required `NEW_RELIC_AI_PLATFORM=kiro`) plus `~/.kiro/hooks/preflight-observability.json` (global hooks; [kiro.dev/docs/configuration](https://kiro.dev/docs/configuration/) and #117). Project scope uses `.kiro/settings/mcp.json` and `.kiro/hooks/`. Override with `preflight install --assistants kiro`. Status: `preflight doctor --platform kiro`. Payload source: `KiroAdapter.getHookInstallInstructions()`.
 
 Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md) — it
-provisions the same MCP server without manually editing `mcp.json`, plus a
-documented step for wiring Kiro's native `.kiro/hooks/` system
-([kiro.dev/docs/hooks/](https://kiro.dev/docs/hooks/)) for automatic capture.
+provisions the same MCP server without manually editing `mcp.json`.
 
 ---
 
@@ -303,30 +227,14 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
 
 **Known gap:** `collector-script.ts`'s per-tool metadata extractors (`extractInputMeta`/`extractOutputMeta`) switch on the raw, unmapped tool name written into the buffer — so Droid's `Create`/`Execute`/`Task` calls don't get the extra structured fields (content length, command classification, etc.) that `Write`/`Bash`/`Agent` get for Claude Code. `Read`/`Glob`/`Grep`/`Edit` (matching exactly) are unaffected. Kiro shared this gap until explicit cases were added for its tool names — see the Kiro section.
 
-**Setup:**
+**Setup:** `preflight install` detects `~/.factory` and writes `~/.factory/hooks.json` (MCP registration remains `droid mcp add`, which is a CLI — not a mergeable file). Override with `preflight install --assistants droid`. Status: `preflight doctor --platform droid`. Payload source: `DroidAdapter.getHookInstallInstructions()`. To register MCP by hand:
 
-1. Add a `PreToolUse`/`PostToolUse` hook pair matching all tools to `hooks.json` (`~/.factory/hooks.json` or `.factory/hooks.json`):
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
-       ],
-       "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
-       ]
-     }
-   }
-   ```
-2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Register the Preflight MCP server:
-   ```
-   droid mcp add preflight "npx preflight --stdio" \
-     --env MCP_CLIENT=droid \
-     --env NEW_RELIC_LICENSE_KEY=<your-key> \
-     --env NEW_RELIC_ACCOUNT_ID=<your-account-id>
-   ```
-4. Restart Droid
+```
+droid mcp add preflight "npx preflight --stdio" \
+  --env MCP_CLIENT=droid \
+  --env NEW_RELIC_LICENSE_KEY=<your-key> \
+  --env NEW_RELIC_ACCOUNT_ID=<your-account-id>
+```
 
 ---
 
@@ -344,30 +252,14 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
 
 **Known gaps:** `collector-script.ts`'s per-tool metadata extractors (`extractInputMeta`/`extractOutputMeta`) switch on the raw, unmapped tool name — so Gemini CLI's `replace`/`run_shell_command`/`read_file` calls don't get the extra structured fields (old/new string lengths, exit codes, etc.) that Edit/Bash/Read get for Claude Code, the same situation Droid and Kiro are already in. In particular, `run_shell_command`'s exit code and output live inside `tool_response.llmContent`, whose internal structure isn't part of Gemini CLI's documented public contract, so no attempt is made to parse it.
 
-**Setup:**
+**Setup:** `preflight install` detects `~/.gemini` and merges `BeforeTool`/`AfterTool` into `~/.gemini/settings.json`. Override with `preflight install --assistants gemini-cli`. Status: `preflight doctor --platform gemini-cli`. Payload source: `GeminiCliAdapter.getHookInstallInstructions()`. MCP remains `gemini mcp add` (CLI, not a mergeable file):
 
-1. Add a `BeforeTool`/`AfterTool` hook pair matching all tools to `settings.json` (`~/.gemini/settings.json` user scope or `.gemini/settings.json` project scope):
-   ```json
-   {
-     "hooks": {
-       "BeforeTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
-       ],
-       "AfterTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
-       ]
-     }
-   }
-   ```
-2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Register the Preflight MCP server:
-   ```
-   gemini mcp add preflight "npx preflight --stdio" \
-     -e MCP_CLIENT=gemini-cli \
-     -e NEW_RELIC_LICENSE_KEY=<your-key> \
-     -e NEW_RELIC_ACCOUNT_ID=<your-account-id>
-   ```
-4. Restart Gemini CLI
+```
+gemini mcp add preflight "npx preflight --stdio" \
+  -e MCP_CLIENT=gemini-cli \
+  -e NEW_RELIC_LICENSE_KEY=<your-key> \
+  -e NEW_RELIC_ACCOUNT_ID=<your-account-id>
+```
 
 ---
 
@@ -385,31 +277,14 @@ documented step for wiring Kiro's native `.kiro/hooks/` system
 - **`apply_patch` calls don't get Edit's structured metadata.** `collector-script.ts`'s `extractInputMeta`/`extractOutputMeta` switch on the _raw_ tool name (`"apply_patch"`, not `"Edit"`) before `mapToolName()` ever runs, so Codex's `apply_patch` calls don't get the `oldStringLength`/`newStringLength`/etc. fields Claude Code's `Edit` calls get — the same pre-existing situation Gemini CLI's `replace` and Droid's `Create`/`Execute`/`Task` are already in.
 - **A `write_stdin` poll against an already-open unified-exec session doesn't re-trigger `PreToolUse`.** This is narrower than it may sound: `exec_command` itself is fully covered (Yes/Yes) — only a _follow-up_ poll of a session that already passed `PreToolUse` is exempt from running it again.
 
-**Setup:**
+**Setup:** `preflight install` detects `~/.codex` and writes `~/.codex/hooks.json`. Override with `preflight install --assistants codex`. Status: `preflight doctor --platform codex`. Then run `/hooks` in the Codex CLI to trust the definition (non-managed hooks are skipped until reviewed). Payload source: `CodexAdapter.getHookInstallInstructions()`. MCP remains `codex mcp add`:
 
-1. Add a `PreToolUse`/`PostToolUse` hook pair matching all tools to `hooks.json` (`~/.codex/hooks.json` user scope or `<repo>/.codex/hooks.json` project scope):
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
-       ],
-       "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
-       ]
-     }
-   }
-   ```
-2. Run `/hooks` in the Codex CLI to review and trust this hook definition — non-managed hooks are skipped until reviewed.
-3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-4. Register the Preflight MCP server:
-   ```
-   codex mcp add preflight --env MCP_CLIENT=codex \
-     --env NEW_RELIC_LICENSE_KEY=<your-key> \
-     --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
-     -- npx preflight --stdio
-   ```
-5. Restart Codex
+```
+codex mcp add preflight --env MCP_CLIENT=codex \
+  --env NEW_RELIC_LICENSE_KEY=<your-key> \
+  --env NEW_RELIC_ACCOUNT_ID=<your-account-id> \
+  -- npx preflight --stdio
+```
 
 ---
 

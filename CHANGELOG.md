@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`preflight install` configures every detected AI coding assistant, not only Claude Code.** Detection is "config directory exists" (`~/.cursor`, `~/.windsurf` / `~/.codeium/windsurf`, `~/.kiro`, `~/.aws/amazonq`, `~/.copilot`, `~/.factory`, `~/.gemini`, `~/.codex`). Each writer uses the same merge-and-filter semantics as Claude Code's `mergeSettings()` / `mergeMcpConfig()`, so re-running is idempotent and never clobbers unrelated user hooks. `--assistants <list>` and `--assistants all` override detection for unattended / fleet installs. `preflight uninstall` removes only Preflight's own entries. `preflight doctor` reports per-assistant status from the same table (Fixes #721, includes Kiro hook files from #117).
+
 ## [1.57.0] - 2026-09-17
 
 ### Added

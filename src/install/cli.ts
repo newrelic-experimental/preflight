@@ -54,6 +54,17 @@ import {
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { LocalStore } from '../storage/index.js';
 import { getDashboardAddress, waitForHealthyDashboard } from './dashboard-health.js';
+import {
+  AssistantsOptionError,
+  applyFileAssistantInstall,
+  applyFileAssistantUninstall,
+  existingAssistantFiles,
+  formatAssistantIdList,
+  isFileAssistantId,
+  resolveInstallTargets,
+  resolveUninstallTargets,
+  type AssistantId,
+} from './assistant-install.js';
 
 const logger = createLogger('cli');
 
@@ -638,6 +649,22 @@ function handleSchedule(options: { time?: string; disable?: boolean }): void {
 // Install handler
 // ---------------------------------------------------------------------------
 
+function resolveAssistantTargets(
+  raw: string | undefined,
+  home: string,
+  forUninstall = false,
+): AssistantId[] {
+  try {
+    return forUninstall ? resolveUninstallTargets(raw) : resolveInstallTargets(raw, home);
+  } catch (err) {
+    if (err instanceof AssistantsOptionError) {
+      print(`\n  ⚠ ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
 function handleInstall(options: {
   licenseKey?: string;
   accountId?: string;
@@ -645,12 +672,29 @@ function handleInstall(options: {
   project?: boolean;
   windowsCc?: boolean;
   linuxCc?: boolean;
+  assistants?: string;
 }): void {
   migrateStoragePath(true);
   const scope = options.project ? 'project' : 'user';
   const binPath = resolveBinaryPath();
   const credentialsProvided = !!(options.licenseKey && options.accountId);
   const inWsl = isWsl();
+  const home = homedir();
+  const targets = resolveAssistantTargets(options.assistants, home);
+  const includeClaude = targets.includes('claude-code');
+  const includeCopilot = targets.includes('copilot');
+  const fileTargets = targets.filter(isFileAssistantId);
+
+  if (!includeClaude && (options.windowsCc || options.linuxCc)) {
+    print('\n  ⚠ --windows-cc / --linux-cc only apply to Claude Code.');
+    print('  Include claude-code in --assistants, or omit --assistants.');
+    process.exit(1);
+  }
+
+  if (targets.length === 1 && targets[0] === 'copilot') {
+    handleCopilotInstall(options);
+    return;
+  }
 
   // Read config.json once. Serves two purposes:
   // (a) extract savedPlatform for resolvePlatform (needed on WSL auto-detect)
@@ -682,37 +726,53 @@ function handleInstall(options: {
   }
 
   const savedPlatform = parsePlatformTarget(existingNrConfig.platformTarget);
-  const { platform, windowsHome } = resolvePlatform(options, savedPlatform);
-  const { settingsPath, mcpPath, allowedBase } = resolveInstallPaths(platform, scope, windowsHome);
+  let platform: PlatformTarget | undefined;
+  let windowsHome: string | null = null;
+  let settingsPath: string | undefined;
+  let mcpPath: string | undefined;
+  let allowedBase: string | undefined;
 
-  let mergedSettings: ReturnType<typeof mergeSettings>;
-  let mergedMcp: ReturnType<typeof mergeMcpConfig>;
-  try {
-    mergedSettings = mergeSettings(readJsonFileStrict(settingsPath), binPath, { platform });
-    mergedMcp = mergeMcpConfig(readJsonFileStrict(mcpPath), binPath, { platform });
-  } catch (err) {
-    eprint(`\n✗ Failed to prepare config: ${errMsg(err)}`);
-    throw err;
+  if (includeClaude) {
+    const resolved = resolvePlatform(options, savedPlatform);
+    platform = resolved.platform;
+    windowsHome = resolved.windowsHome;
+    const paths = resolveInstallPaths(platform, scope, windowsHome);
+    settingsPath = paths.settingsPath;
+    mcpPath = paths.mcpPath;
+    allowedBase = paths.allowedBase;
+
+    let mergedSettings: ReturnType<typeof mergeSettings>;
+    let mergedMcp: ReturnType<typeof mergeMcpConfig>;
+    try {
+      mergedSettings = mergeSettings(readJsonFileStrict(settingsPath), binPath, { platform });
+      mergedMcp = mergeMcpConfig(readJsonFileStrict(mcpPath), binPath, { platform });
+    } catch (err) {
+      eprint(`\n✗ Failed to prepare config: ${errMsg(err)}`);
+      throw err;
+    }
+
+    try {
+      writeJsonFile(settingsPath, mergedSettings, allowedBase);
+    } catch (err) {
+      eprint(`\n✗ Failed to write hooks config (${settingsPath}): ${errMsg(err)}`);
+      throw err;
+    }
+    try {
+      writeJsonFile(mcpPath, mergedMcp, allowedBase);
+    } catch (err) {
+      eprint(`\n✗ Failed to write MCP config (${mcpPath}): ${errMsg(err)}`);
+      throw err;
+    }
   }
 
-  try {
-    writeJsonFile(settingsPath, mergedSettings, allowedBase);
-  } catch (err) {
-    eprint(`\n✗ Failed to write hooks config (${settingsPath}): ${errMsg(err)}`);
-    throw err;
-  }
-  try {
-    writeJsonFile(mcpPath, mergedMcp, allowedBase);
-  } catch (err) {
-    eprint(`\n✗ Failed to write MCP config (${mcpPath}): ${errMsg(err)}`);
-    throw err;
-  }
-
-  // Persist platformTarget (and credentials if provided) — only after both hook files written.
+  // Persist platformTarget (when Claude was configured) and credentials/mode.
   let nrConfigWritten = false;
   if (!skipNrConfigWrite) {
     try {
-      const nrConfig: Record<string, unknown> = { ...existingNrConfig, platformTarget: platform };
+      const nrConfig: Record<string, unknown> = { ...existingNrConfig };
+      if (includeClaude && platform !== undefined) {
+        nrConfig.platformTarget = platform;
+      }
       if (credentialsProvided) {
         Object.assign(
           nrConfig,
@@ -736,24 +796,61 @@ function handleInstall(options: {
     }
   }
 
-  if (platform === 'wsl-windows-cc') {
+  if (includeClaude && platform === 'wsl-windows-cc') {
     print('\n  ℹ Configured for Windows Claude Code (desktop app).');
     print(`  Hooks written to: ${settingsPath}`);
     print(`  MCP config written to: ${mcpPath}`);
     print('  Hook commands use wsl.exe -e so Windows Claude Code can invoke them.');
     print('  To switch to Linux Claude Code mode, re-run with --linux-cc:');
     print('    preflight install --linux-cc');
-  } else if (platform === 'wsl-linux-cc') {
+  } else if (includeClaude && platform === 'wsl-linux-cc') {
     print('\n  ℹ Configured for Linux Claude Code (npm in WSL).');
     print(`  Hooks written to: ${settingsPath}`);
     print('  To switch to Windows Claude Code mode, re-run with --windows-cc:');
     print('    preflight install --windows-cc');
   }
 
-  print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
-  print('  - Added PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied hooks');
-  print(`✓ MCP server registered: ${mcpPath}`);
-  print('  - Added preflight MCP server');
+  if (includeClaude && settingsPath && mcpPath) {
+    print(`\n✓ Claude Code hooks updated: ${settingsPath}`);
+    print('  - Added PreToolUse, PostToolUse, PermissionRequest, and PermissionDenied hooks');
+    print(`✓ MCP server registered: ${mcpPath}`);
+    print('  - Added preflight MCP server');
+  }
+
+  const assistantHome = home;
+  const creds = {
+    licenseKey: options.licenseKey,
+    accountId: options.accountId,
+  };
+  let assistantFailures = 0;
+  for (const id of fileTargets) {
+    try {
+      const result = applyFileAssistantInstall(id, {
+        home: assistantHome,
+        cwd: process.cwd(),
+        scope,
+        binPath,
+        creds,
+        allowedBase: assistantHome,
+      });
+      for (const path of result.written) {
+        print(`✓ ${id} updated: ${path}`);
+      }
+      for (const note of result.skipped) {
+        print(`  ℹ ${note}`);
+      }
+    } catch (err) {
+      assistantFailures += 1;
+      eprint(`\n⚠ Failed to configure ${id}: ${errMsg(err)}`);
+      if (options.assistants !== undefined) {
+        throw err;
+      }
+    }
+  }
+
+  if (includeCopilot) {
+    handleCopilotInstall(options);
+  }
 
   if (nrConfigWritten) {
     print(`\n✓ New Relic config written: ${NR_CONFIG_PATH}`);
@@ -775,20 +872,27 @@ function handleInstall(options: {
   // of which Claude Code platform target this install resolved to. Applied
   // here too — not just from the Copilot flow — so the fix takes effect
   // regardless of which install (Claude or Copilot) ran most recently.
-  const collisionFix = applyHookCollisionFix({
-    claudeSettingsPath: detectSettingsPath(scope, null),
-    copilotHooksPath: detectCopilotHooksPath(scope),
-    vsCodeSettingsPath: detectVsCodeSettingsPath(),
-    claudeHooksJustInstalled: true,
-  });
-  if (collisionFix.applied) {
-    print('✓ Disabled duplicate Claude-format hook reading in VS Code (double-count fix)');
-    print('  Reload the VS Code window for this to take effect.');
+  if (includeClaude) {
+    const collisionFix = applyHookCollisionFix({
+      claudeSettingsPath: detectSettingsPath(scope, null),
+      copilotHooksPath: detectCopilotHooksPath(scope),
+      vsCodeSettingsPath: detectVsCodeSettingsPath(),
+      claudeHooksJustInstalled: true,
+    });
+    if (collisionFix.applied) {
+      print('✓ Disabled duplicate Claude-format hook reading in VS Code (double-count fix)');
+      print('  Reload the VS Code window for this to take effect.');
+    }
+  }
+
+  if (assistantFailures > 0) {
+    process.exitCode = 1;
   }
 
   print('\nNext steps:');
-  print('  1. Restart Claude Code');
-  print('  2. Verify: ask Claude Code to call nr_observe_get_session_stats');
+  print('  1. Restart the AI assistant(s) you just configured');
+  print('  2. Verify: ask the assistant to call nr_observe_get_session_stats');
+  print('  3. Check per-assistant status: preflight doctor');
   print('');
   print('  Tip: if the MCP server fails to connect, run:');
   print('    preflight validate');
@@ -1367,6 +1471,7 @@ async function handleUninstall(options: {
   linuxCc?: boolean;
   daemon?: boolean;
   yes?: boolean;
+  assistants?: string;
 }): Promise<void> {
   // --daemon: targeted removal of just the background dashboard daemon plist.
   // Does not touch hooks, MCP config, schedules, or session history.
@@ -1400,7 +1505,29 @@ async function handleUninstall(options: {
     return;
   }
 
-  const { settingsPathsToClean, mcpPathsToClean } = resolveUninstallPaths(options);
+  const uninstallTargets = resolveAssistantTargets(options.assistants, homedir(), true);
+  const includeClaude = uninstallTargets.includes('claude-code');
+  const includeCopilot = uninstallTargets.includes('copilot');
+  const fileTargets = uninstallTargets.filter(isFileAssistantId);
+
+  if (!includeClaude && (options.windowsCc || options.linuxCc)) {
+    print('\n  ⚠ --windows-cc / --linux-cc only apply to Claude Code.');
+    print('  Include claude-code in --assistants, or omit --assistants.');
+    process.exit(1);
+  }
+
+  if (uninstallTargets.length === 1 && uninstallTargets[0] === 'copilot') {
+    await handleCopilotUninstall(options);
+    return;
+  }
+
+  const claudePaths = includeClaude
+    ? resolveUninstallPaths(options)
+    : {
+        settingsPathsToClean: new Map<string, string | undefined>(),
+        mcpPathsToClean: new Map<string, string | undefined>(),
+      };
+  const { settingsPathsToClean, mcpPathsToClean } = claudePaths;
 
   // Build a human-readable summary of what will change, then ask for
   // confirmation before touching anything.
@@ -1418,15 +1545,38 @@ async function handleUninstall(options: {
       hadConfigFiles = true;
     }
   }
+  const assistantIo = {
+    home: homedir(),
+    cwd: process.cwd(),
+    scope: (options.project ? 'project' : 'user') as 'user' | 'project',
+    allowedBase: homedir(),
+  };
+  for (const id of fileTargets) {
+    for (const path of existingAssistantFiles(id, assistantIo)) {
+      changeSummary.push(`  • Remove Preflight entries for ${id} from ${path}`);
+      hadConfigFiles = true;
+    }
+  }
+  const copilotHooksPath = detectCopilotHooksPath(options.project ? 'project' : 'user');
+  const copilotHooksPresent = existsSync(copilotHooksPath);
+  if (includeCopilot && copilotHooksPresent) {
+    changeSummary.push(`  • Remove Copilot hooks from ${copilotHooksPath}`);
+    hadConfigFiles = true;
+    const vsCodeMcpPath = detectVsCodeMcpPath();
+    if (vsCodeMcpPath && existsSync(vsCodeMcpPath)) {
+      changeSummary.push(`  • Remove MCP server from ${vsCodeMcpPath}`);
+    }
+  }
   const scheduleStatus = getScheduleStatus();
   const daemonStatus = getDashboardDaemonStatus();
-  if (scheduleStatus.installed) {
+  const cleanLaunchdExtras = options.assistants === undefined && includeClaude;
+  if (cleanLaunchdExtras && scheduleStatus.installed) {
     const action = scheduleStatus.readable
       ? 'Unload and delete'
       : 'Remove (plist unreadable — label removal)';
     changeSummary.push(`  • ${action} auto-update schedule`);
   }
-  if (daemonStatus.installed) {
+  if (cleanLaunchdExtras && daemonStatus.installed) {
     const action = daemonStatus.readable
       ? 'Unload and delete'
       : 'Remove (plist unreadable — label removal)';
@@ -1448,39 +1598,99 @@ async function handleUninstall(options: {
 
   print('');
 
-  const configStep = removeClaudeCodeConfig(settingsPathsToClean, mcpPathsToClean);
-  if (options.windowsCc) {
+  const configStep = includeClaude
+    ? removeClaudeCodeConfig(settingsPathsToClean, mcpPathsToClean)
+    : { label: 'Claude Code config', removed: false, error: null, requiresRestart: false };
+  if (includeClaude && options.windowsCc) {
     print('  To reinstall Windows Claude Code mode, re-run: preflight install --windows-cc');
   }
 
-  const scheduleStep = runStep('auto-update schedule', false, () => {
-    const removed = removeSchedule();
-    if (removed) print('✓ Auto-update schedule removed');
-    else if (scheduleStatus.installed) {
-      // Plist vanished between status-check and removal (TOCTOU). Throw so
-      // runStep captures this as an error and anyFailed reflects it.
-      throw new Error(
-        'Auto-update schedule already absent — may have been removed by another process',
-      );
-    }
-    return removed;
-  });
+  const assistantSteps: RemovalResult[] = [];
+  for (const id of fileTargets) {
+    assistantSteps.push(
+      runStep(`${id} config`, true, () => {
+        const result = applyFileAssistantUninstall(id, assistantIo);
+        for (const path of result.written) {
+          print(`✓ ${id} entries removed: ${path}`);
+        }
+        return result.written.length > 0;
+      }),
+    );
+  }
 
-  const daemonStep = runStep('background dashboard daemon', false, () => {
-    const removed = removeDashboardDaemon();
-    if (removed) print('✓ Background dashboard daemon removed');
-    else if (daemonStatus.installed) {
-      // Plist vanished between status-check and removal (TOCTOU). Throw so
-      // runStep captures this as an error and anyFailed reflects it — without
-      // this, process.exitCode=1 and the success message are contradictory.
-      throw new Error(
-        'Background dashboard daemon already absent — may have been removed by another process',
-      );
-    }
-    return removed;
-  });
+  if (includeCopilot && copilotHooksPresent) {
+    assistantSteps.push(
+      runStep('Copilot config', true, () => {
+        const scope = options.project ? 'project' : 'user';
+        const hooksPath = detectCopilotHooksPath(scope);
+        let removed = false;
+        if (existsSync(hooksPath)) {
+          const { written } = backupAndWrite(
+            hooksPath,
+            undefined,
+            removeCopilotHooksFile,
+            'Copilot hooks',
+          );
+          if (written) {
+            print(`✓ Copilot hooks removed: ${hooksPath}`);
+            removed = true;
+          }
+        }
+        const vsCodeMcpPath = detectVsCodeMcpPath();
+        if (vsCodeMcpPath && existsSync(vsCodeMcpPath)) {
+          const { written } = backupAndWrite(
+            vsCodeMcpPath,
+            undefined,
+            removeVsCodeMcpConfig,
+            'VS Code MCP config',
+          );
+          if (written) {
+            print(`✓ VS Code MCP server removed: ${vsCodeMcpPath}`);
+            removed = true;
+          }
+        }
+        return removed;
+      }),
+    );
+  }
 
-  const steps = [configStep, scheduleStep, daemonStep];
+  const scheduleStep = cleanLaunchdExtras
+    ? runStep('auto-update schedule', false, () => {
+        const removed = removeSchedule();
+        if (removed) print('✓ Auto-update schedule removed');
+        else if (scheduleStatus.installed) {
+          // Plist vanished between status-check and removal (TOCTOU). Throw so
+          // runStep captures this as an error and anyFailed reflects it.
+          throw new Error(
+            'Auto-update schedule already absent — may have been removed by another process',
+          );
+        }
+        return removed;
+      })
+    : { label: 'auto-update schedule', removed: false, error: null, requiresRestart: false };
+
+  const daemonStep = cleanLaunchdExtras
+    ? runStep('background dashboard daemon', false, () => {
+        const removed = removeDashboardDaemon();
+        if (removed) print('✓ Background dashboard daemon removed');
+        else if (daemonStatus.installed) {
+          // Plist vanished between status-check and removal (TOCTOU). Throw so
+          // runStep captures this as an error and anyFailed reflects it — without
+          // this, process.exitCode=1 and the success message are contradictory.
+          throw new Error(
+            'Background dashboard daemon already absent — may have been removed by another process',
+          );
+        }
+        return removed;
+      })
+    : {
+        label: 'background dashboard daemon',
+        removed: false,
+        error: null,
+        requiresRestart: false,
+      };
+
+  const steps = [configStep, ...assistantSteps, scheduleStep, daemonStep];
   const anyRemoved = steps.some((s) => s.removed);
   const anyFailed = steps.some((s) => s.error !== null);
   const requiresRestart = steps.some((s) => s.removed && s.requiresRestart);
@@ -1499,10 +1709,10 @@ async function handleUninstall(options: {
   if (requiresRestart) {
     if (anyFailed) {
       print(
-        '\nRestart Claude Code to apply hook changes. Uninstall incomplete — see errors above.\n',
+        '\nRestart the AI assistant(s) to apply hook changes. Uninstall incomplete — see errors above.\n',
       );
     } else {
-      print('\nRestart Claude Code for changes to take effect.\n');
+      print('\nRestart the AI assistant(s) for changes to take effect.\n');
     }
   } else if (anyRemoved) {
     // Schedule/daemon only — launchd unloaded immediately; no restart needed.
@@ -1608,7 +1818,7 @@ export function createInstallProgram(): Command {
 
   program
     .command('install')
-    .description('Configure Claude Code hooks and MCP server for AI observability')
+    .description('Configure hooks and MCP for every detected AI coding assistant')
     .option('--license-key <key>', 'New Relic license key')
     .option('--account-id <id>', 'New Relic account ID')
     .addOption(
@@ -1616,12 +1826,16 @@ export function createInstallProgram(): Command {
         [...VALID_MODES],
       ),
     )
-    .option('--project', 'Write to project-level .claude/settings.json instead of user-level')
+    .option('--project', 'Write to project-level config instead of user-level')
     .option('--windows-cc', 'Target Windows Claude Code (desktop app) when running inside WSL')
     .option('--linux-cc', 'Target Linux Claude Code (npm in WSL) when running inside WSL')
     .option(
       '--copilot',
       'Configure GitHub Copilot instead — Copilot CLI hooks/MCP and VS Code Copilot Chat hooks/MCP',
+    )
+    .option(
+      '--assistants <list>',
+      `Comma-separated assistant ids, or "all" to pre-configure every supported assistant (overrides detection). Supported: ${formatAssistantIdList()}`,
     )
     .action(
       (options: {
@@ -1632,7 +1846,12 @@ export function createInstallProgram(): Command {
         windowsCc?: boolean;
         linuxCc?: boolean;
         copilot?: boolean;
+        assistants?: string;
       }) => {
+        if (options.copilot && options.assistants !== undefined) {
+          print('\n  ⚠ --copilot cannot be combined with --assistants. Use --assistants copilot.');
+          process.exit(1);
+        }
         if (options.copilot) {
           if (options.windowsCc || options.linuxCc) {
             print('\n  ⚠ --copilot cannot be combined with --windows-cc or --linux-cc.');
@@ -1647,8 +1866,8 @@ export function createInstallProgram(): Command {
 
   program
     .command('uninstall')
-    .description('Remove preflight hooks and MCP server from Claude Code settings')
-    .option('--project', 'Remove from project-level .claude/settings.json instead of user-level')
+    .description('Remove Preflight hooks and MCP entries from each configured assistant')
+    .option('--project', 'Remove from project-level config instead of user-level')
     .option('--windows-cc', 'Remove Windows Claude Code hooks only (WSL only)')
     .option('--linux-cc', 'Remove Linux Claude Code hooks only (WSL only)')
     .option(
@@ -1657,6 +1876,10 @@ export function createInstallProgram(): Command {
     )
     .option('--yes', 'Skip the confirmation prompt (useful for scripts and CI)')
     .option('--copilot', 'Remove GitHub Copilot CLI + VS Code Copilot Chat hooks/MCP instead')
+    .option(
+      '--assistants <list>',
+      `Remove only these assistants (comma-separated or "all"). Supported: ${formatAssistantIdList()}`,
+    )
     .action(
       async (options: {
         project?: boolean;
@@ -1665,7 +1888,16 @@ export function createInstallProgram(): Command {
         daemon?: boolean;
         yes?: boolean;
         copilot?: boolean;
+        assistants?: string;
       }) => {
+        if (options.assistants !== undefined && options.daemon) {
+          print('\n  ⚠ --assistants cannot be combined with --daemon.');
+          process.exit(1);
+        }
+        if (options.copilot && options.assistants !== undefined) {
+          print('\n  ⚠ --copilot cannot be combined with --assistants. Use --assistants copilot.');
+          process.exit(1);
+        }
         if (options.copilot) {
           if (options.windowsCc || options.linuxCc || options.daemon) {
             print('\n  ⚠ --copilot cannot be combined with --windows-cc, --linux-cc, or --daemon.');
@@ -1702,11 +1934,13 @@ export function createInstallProgram(): Command {
 
   program
     .command('doctor')
-    .description('Check configuration, hooks, daemon, and connectivity for common setup problems')
+    .description(
+      'Check configuration, per-assistant hooks, daemon, and connectivity for common setup problems',
+    )
     .option('--config <path>', 'Path to config file (default: ~/.newrelic-preflight/config.json)')
     .option(
       '--platform <name>',
-      'Platform to check hooks for (e.g. kiro, cursor) — Claude Code checked by default',
+      'Platform to check hooks for (e.g. kiro, cursor) — detected assistants plus Claude Code by default',
     )
     .action(handleDoctor);
 
