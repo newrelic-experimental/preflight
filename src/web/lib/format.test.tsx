@@ -289,28 +289,37 @@ describe('formatTokensCompact()', () => {
 });
 
 describe('formatTokenBreakdown()', () => {
-  it('joins the four categories as compact counts with middle dots', () => {
-    expect(
-      formatTokenBreakdown({
-        inputTokens: 1_200,
-        outputTokens: 800,
-        cacheReadTokens: 30_000,
-        cacheCreationTokens: 2_000,
-      }),
-    ).toBe('Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k');
-  });
-});
+  const tokens = {
+    inputTokens: 1_200,
+    outputTokens: 800,
+    cacheReadTokens: 30_000,
+    cacheCreationTokens: 2_000,
+  };
 
-describe('formatTokenBreakdown()', () => {
-  it('joins all four categories with the compact formatter', () => {
+  it('joins the four categories as compact counts with middle dots', () => {
+    expect(formatTokenBreakdown(tokens)).toBe(
+      'Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k',
+    );
+  });
+
+  it('appends each category dollar when cost is present', () => {
     expect(
       formatTokenBreakdown({
-        inputTokens: 1_200,
-        outputTokens: 800,
-        cacheReadTokens: 30_000,
-        cacheCreationTokens: 2_000,
+        ...tokens,
+        cost: {
+          inputUsd: 0.36,
+          outputUsd: 1.2,
+          cacheReadUsd: 0.009,
+          cacheCreationUsd: 0.015,
+        },
       }),
-    ).toBe('Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k');
+    ).toBe(
+      'Input 1.2k ($0.36) · Output 800 ($1.20) · Cache read 30.0k ($0.009) · Cache write 2.0k ($0.015)',
+    );
+  });
+
+  it('omits dollars when cost is absent so pre-#730 rows stay token-only', () => {
+    expect(formatTokenBreakdown(tokens)).not.toMatch(/\$/);
   });
 });
 

@@ -180,13 +180,22 @@ export function formatTokensCompact(n: number): string {
 /**
  * Per-category token breakdown for a hover title, e.g.
  * "Input 1.2k · Output 800 · Cache read 30.0k · Cache write 2.0k".
+ * When `b.cost` is present (priced at attribution time with each event's
+ * model rates), each category also shows its dollar contribution:
+ * "Input 1.2k ($0.36) · Output 800 ($1.20) · …". Pre-#730 rows omit dollars.
+ * Thinking is omitted — parent-session token events typically lack it.
  */
 export function formatTokenBreakdown(b: TokenBreakdown): string {
+  const cost = b.cost;
+  const category = (label: string, tokens: number, usd: number | undefined): string => {
+    const count = `${label} ${formatTokensCompact(tokens)}`;
+    return usd === undefined ? count : `${count} (${formatUsd(usd)})`;
+  };
   return [
-    `Input ${formatTokensCompact(b.inputTokens)}`,
-    `Output ${formatTokensCompact(b.outputTokens)}`,
-    `Cache read ${formatTokensCompact(b.cacheReadTokens)}`,
-    `Cache write ${formatTokensCompact(b.cacheCreationTokens)}`,
+    category('Input', b.inputTokens, cost?.inputUsd),
+    category('Output', b.outputTokens, cost?.outputUsd),
+    category('Cache read', b.cacheReadTokens, cost?.cacheReadUsd),
+    category('Cache write', b.cacheCreationTokens, cost?.cacheCreationUsd),
   ].join(' · ');
 }
 

@@ -588,4 +588,52 @@ describe('UsageContributionPanel — Skills/Subagents/Plugins column consistency
     expect(within(subagentRow).getByRole('cell', { name: '8.0k' })).not.toHaveAttribute('title');
     expect(within(subagentRow).getByRole('cell', { name: '$4.00' })).not.toHaveAttribute('title');
   });
+
+  it('includes per-category dollars in the hover when the breakdown carries cost', () => {
+    const withCost: UsageInsightsReport = {
+      ...SAMPLE_USAGE_INSIGHTS,
+      skills: [
+        {
+          key: 'code-review',
+          costUsd: 5,
+          tokens: 10000,
+          count: 6,
+          sharePct: 12,
+          breakdown: {
+            inputTokens: 1200,
+            outputTokens: 800,
+            cacheReadTokens: 30000,
+            cacheCreationTokens: 2000,
+            cost: {
+              inputUsd: 0.36,
+              outputUsd: 1.2,
+              cacheReadUsd: 0.009,
+              cacheCreationUsd: 0.015,
+            },
+          },
+        },
+      ],
+    };
+    render(
+      <UsageContributionPanel
+        data={withCost}
+        isError={false}
+        title="What's contributing to your spend"
+        subtitle="Last 30 days"
+        toolRows={[]}
+      />,
+    );
+
+    const skillRow = screen.getByRole('cell', { name: 'code-review' }).closest('tr') as HTMLElement;
+    const expectedTitle =
+      'Input 1.2k ($0.36) · Output 800 ($1.20) · Cache read 30.0k ($0.009) · Cache write 2.0k ($0.015)';
+    expect(within(skillRow).getByRole('cell', { name: '10.0k' })).toHaveAttribute(
+      'title',
+      expectedTitle,
+    );
+    expect(within(skillRow).getByRole('cell', { name: '$5.00' })).toHaveAttribute(
+      'title',
+      expectedTitle,
+    );
+  });
 });

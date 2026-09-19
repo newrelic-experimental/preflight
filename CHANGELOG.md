@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Share-table hover on Skills, Subagents, and Plugins now includes each token category's dollar contribution when the session record persisted per-model-priced category costs. Dollars are priced at attribution time with each event's own model rates and then summed — not reconstructed from token totals with a blended rate. Older session files without those fields still show the token split alone. Thinking dollars are omitted: parent-session token events typically lack thinking tokens.
+
 ## [1.57.0] - 2026-09-17
 
 ### Added

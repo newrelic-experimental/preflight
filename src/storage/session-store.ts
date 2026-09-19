@@ -32,8 +32,10 @@ import type {
   AttributionFacet,
   AttributionBucket,
   TokenBreakdown,
+  TokenCategoryCost,
 } from './types.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
+import { maxCategoryCost } from '../metrics/category-cost.js';
 import type { CostTracker, CostMetrics } from '../metrics/cost-tracker.js';
 import type {
   TurnCostAttributor,
@@ -306,11 +308,13 @@ function mergeTokenBreakdown(
 ): TokenBreakdown | undefined {
   if (!a && !b) return undefined;
   const maxNum = (x: number | undefined, y: number | undefined): number => Math.max(x ?? 0, y ?? 0);
+  const cost = maxCategoryCost(a?.cost, b?.cost);
   return {
     inputTokens: maxNum(a?.inputTokens, b?.inputTokens),
     outputTokens: maxNum(a?.outputTokens, b?.outputTokens),
     cacheReadTokens: maxNum(a?.cacheReadTokens, b?.cacheReadTokens),
     cacheCreationTokens: maxNum(a?.cacheCreationTokens, b?.cacheCreationTokens),
+    ...(cost ? { cost } : {}),
   };
 }
 
@@ -906,6 +910,7 @@ function buildAttribution(
                 outputTokens: entry.outputTokens,
                 cacheReadTokens: entry.cacheReadTokens,
                 cacheCreationTokens: entry.cacheCreationTokens,
+                ...(entry.cost ? { cost: entry.cost } : {}),
               },
             }
           : {}),
@@ -925,6 +930,7 @@ function buildAttribution(
           outputTokens: entry.outputTokens,
           cacheReadTokens: entry.cacheReadTokens,
           cacheCreationTokens: entry.cacheCreationTokens,
+          ...(entry.cost ? { cost: entry.cost } : {}),
         },
       };
     }
@@ -1221,10 +1227,31 @@ interface SerializedFullSessionSummary {
 }
 
 /**
- * Accept a breakdown only when all four fields are finite numbers; any other
- * shape is dropped (the bucket itself still parses, just without a
- * breakdown) rather than partially hydrated.
+ * Accept a breakdown only when all four token fields are finite numbers; any
+ * other shape is dropped (the bucket itself still parses, just without a
+ * breakdown) rather than partially hydrated. `cost` is optional — a
+ * malformed or missing cost drops only the dollars, never the tokens
+ * (pre-#730 files stay token-only).
  */
+function parseTokenCategoryCost(raw: unknown): TokenCategoryCost | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd } = r;
+  if (
+    typeof inputUsd === 'number' &&
+    Number.isFinite(inputUsd) &&
+    typeof outputUsd === 'number' &&
+    Number.isFinite(outputUsd) &&
+    typeof cacheReadUsd === 'number' &&
+    Number.isFinite(cacheReadUsd) &&
+    typeof cacheCreationUsd === 'number' &&
+    Number.isFinite(cacheCreationUsd)
+  ) {
+    return { inputUsd, outputUsd, cacheReadUsd, cacheCreationUsd };
+  }
+  return undefined;
+}
+
 function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const r = raw as Record<string, unknown>;
@@ -1239,7 +1266,14 @@ function parseTokenBreakdown(raw: unknown): TokenBreakdown | undefined {
     typeof cacheCreationTokens === 'number' &&
     Number.isFinite(cacheCreationTokens)
   ) {
-    return { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens };
+    const cost = parseTokenCategoryCost(r.cost);
+    return {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      ...(cost ? { cost } : {}),
+    };
   }
   return undefined;
 }

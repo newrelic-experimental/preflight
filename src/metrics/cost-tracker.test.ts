@@ -1,5 +1,6 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { CostTracker } from './cost-tracker.js';
+import { priceTokenCategories } from './category-cost.js';
 import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey } from '../lib/date.js';
@@ -1220,18 +1221,62 @@ describe('subagent token support', () => {
 
     const entry = tracker.getMetrics().subagentByAgentType['general-purpose']!;
     const breakdown = entry.breakdown;
-    expect(breakdown).toEqual({
+    expect(breakdown).toMatchObject({
       inputTokens: 15_000,
       outputTokens: 3_000,
       cacheReadTokens: 600,
       cacheCreationTokens: 350,
     });
+    expect(breakdown?.cost).toBeDefined();
     expect(
       breakdown!.inputTokens +
         breakdown!.outputTokens +
         breakdown!.cacheReadTokens +
         breakdown!.cacheCreationTokens,
     ).toBe(entry.tokens);
+  });
+
+  it('subagentByAgentType breakdown.cost sums per-model priced dollars, not a blended rate', () => {
+    const tracker = new CostTracker();
+    const sonnetUsage = makeUsage({
+      inputTokens: 10_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 8_000,
+      cacheCreationTokens: 400,
+      totalTokens: 12_000,
+    });
+    const haikuUsage = makeUsage({
+      inputTokens: 10_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 8_000,
+      cacheCreationTokens: 400,
+      totalTokens: 12_000,
+    });
+    tracker.recordTokenUsage(sonnetUsage, 'claude-sonnet-4', {
+      agentId: 'agent-sonnet',
+      agentType: 'general-purpose',
+    });
+    tracker.recordTokenUsage(haikuUsage, 'claude-haiku-4', {
+      agentId: 'agent-haiku',
+      agentType: 'general-purpose',
+    });
+
+    const cost = tracker.getMetrics().subagentByAgentType['general-purpose']!.breakdown?.cost;
+    const sonnet = priceTokenCategories('claude-sonnet-4', sonnetUsage);
+    const haiku = priceTokenCategories('claude-haiku-4', haikuUsage);
+    expect(cost?.inputUsd).toBeCloseTo(sonnet.inputUsd + haiku.inputUsd, 12);
+    expect(cost?.cacheReadUsd).toBeCloseTo(sonnet.cacheReadUsd + haiku.cacheReadUsd, 12);
+    const fakeBlend = priceTokenCategories(
+      'claude-sonnet-4',
+      makeUsage({
+        inputTokens: 20_000,
+        outputTokens: 4_000,
+        cacheReadTokens: 16_000,
+        cacheCreationTokens: 800,
+        totalTokens: 24_000,
+      }),
+    );
+    expect(cost?.inputUsd).not.toBeCloseTo(fakeBlend.inputUsd, 8);
   });
 
   it('ctx.agentId set but ctx.agentType absent → no entry added to subagentByAgentType', () => {

@@ -1,5 +1,6 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
-import type { AttributionBucket, TokenBreakdown } from '../storage/types.js';
+import type { AttributionBucket, TokenBreakdown, TokenCategoryCost } from '../storage/types.js';
+import { addCategoryCost } from './category-cost.js';
 
 /**
  * "What's contributing to your spend": independent characteristics of the
@@ -152,6 +153,7 @@ interface RowAccum {
     outputTokens: number;
     cacheReadTokens: number;
     cacheCreationTokens: number;
+    cost?: TokenCategoryCost;
   };
 }
 
@@ -167,6 +169,8 @@ function addBreakdown(existing: RowAccum, bucket: AttributionBucket): void {
   b.outputTokens += bucket.breakdown.outputTokens;
   b.cacheReadTokens += bucket.breakdown.cacheReadTokens;
   b.cacheCreationTokens += bucket.breakdown.cacheCreationTokens;
+  const cost = addCategoryCost(b.cost, bucket.breakdown.cost);
+  if (cost) b.cost = cost;
   existing.breakdown = b;
 }
 

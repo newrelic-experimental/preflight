@@ -15,6 +15,7 @@ import type { SessionTracker } from './session-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
 import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
 import type { AttributionBucket } from '../storage/types.js';
+import { addCategoryCost, categoryCostFromBreakdown } from './category-cost.js';
 
 const logger = createLogger('cost-tracker');
 
@@ -333,6 +334,7 @@ export class CostTracker implements Resettable {
         usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
       const existing = this.subagentByAgentType.get(ctx.agentType);
       const existingBreakdown = existing?.breakdown;
+      const cost = addCategoryCost(existingBreakdown?.cost, categoryCostFromBreakdown(breakdown));
       this.subagentByAgentType.set(ctx.agentType, {
         costUsd: (existing?.costUsd ?? 0) + breakdown.totalUsd,
         tokens: (existing?.tokens ?? 0) + tokens,
@@ -344,6 +346,7 @@ export class CostTracker implements Resettable {
           cacheReadTokens: (existingBreakdown?.cacheReadTokens ?? 0) + usage.cacheReadTokens,
           cacheCreationTokens:
             (existingBreakdown?.cacheCreationTokens ?? 0) + usage.cacheCreationTokens,
+          ...(cost ? { cost } : {}),
         },
       });
     }

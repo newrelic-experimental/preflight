@@ -376,11 +376,32 @@ export interface ReplayTimelineEntry {
  */
 export type AttributionFacet = 'tool' | 'skill' | 'subagent';
 
+/**
+ * Per-category USD priced at attribution time with each contributing
+ * event's own model rates, then summed. A bucket can span models; summing
+ * already-priced dollars is correct, reconstructing dollars from token
+ * totals with a blended rate is not.
+ *
+ * Thinking USD is omitted: parent-session token events typically lack
+ * thinking tokens (same omission as the token-side breakdown from #728).
+ */
+export interface TokenCategoryCost {
+  readonly inputUsd: number;
+  readonly outputUsd: number;
+  readonly cacheReadUsd: number;
+  readonly cacheCreationUsd: number;
+}
+
 export interface TokenBreakdown {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /**
+   * Per-category dollars for the token counts above. Absent on pre-#730
+   * files and when no event in the bucket was priced.
+   */
+  readonly cost?: TokenCategoryCost;
 }
 
 export interface AttributionBucket {
@@ -391,7 +412,11 @@ export interface AttributionBucket {
   readonly count: number;
   /** Summed tool-call wall time; 0 when not measured. */
   readonly durationMs: number;
-  /** Per-category split of `tokens`; absent on legacy files and when the facet has no per-category signal. */
+  /**
+   * Per-category split of `tokens`, with optional `cost` dollars priced at
+   * attribution time. Absent on legacy files and when the facet has no
+   * per-category signal. Pre-#730 files may have tokens without `cost`.
+   */
   readonly breakdown?: TokenBreakdown;
 }
 

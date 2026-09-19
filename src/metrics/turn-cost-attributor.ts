@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { calculateCost } from '../shared/index.js';
 import type { TokenUsage } from '../shared/index.js';
-import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
+import type { TokenCategoryCost, ToolCallRecord, TokenEvent } from '../storage/types.js';
+import { categoryCostFromBreakdown, scalePricedBreakdown } from './category-cost.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +42,8 @@ export interface ToolTypeCostEntry {
   readonly cacheCreationTokens: number;
   /** input + output + cache-read + cache-creation tokens across `callCount`'s attributed calls; mirrors SkillCostEntry.tokens. */
   readonly tokens: number;
+  /** Per-category USD priced per token event's model; absent when this tool type has no attributed events. */
+  readonly cost?: TokenCategoryCost;
 }
 
 /**
@@ -72,6 +75,13 @@ export interface SkillCostEntry {
    * total token usage.
    */
   readonly tokens: number;
+  /**
+   * Per-category USD priced per token event's model, then even-split across
+   * the turn's tools (same split as the token fields). Absent when
+   * `attributedCallCount` is 0. Thinking USD is omitted — see
+   * {@link TokenCategoryCost}.
+   */
+  readonly cost?: TokenCategoryCost;
 }
 
 export interface TurnToolCall {
@@ -160,6 +170,10 @@ interface AttributionBucket extends BucketIdentity {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  inputUsd: number;
+  outputUsd: number;
+  cacheReadUsd: number;
+  cacheCreationUsd: number;
   totalDurationMs: number;
 }
 
@@ -171,6 +185,10 @@ const BUCKET_COUNTERS = [
   'outputTokens',
   'cacheReadTokens',
   'cacheCreationTokens',
+  'inputUsd',
+  'outputUsd',
+  'cacheReadUsd',
+  'cacheCreationUsd',
   'totalDurationMs',
 ] as const;
 
@@ -253,6 +271,10 @@ function createBucket(id: BucketIdentity): AttributionBucket {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheCreationUsd: 0,
     totalDurationMs: 0,
   };
 }
@@ -417,10 +439,11 @@ export class TurnCostAttributor {
       totalTokens: event.inputTokens + event.outputTokens,
     };
 
-    const breakdown = calculateCost(event.model, usage);
-    const costUsd = breakdown.totalUsd * this.rateMultiplier;
+    const priced = scalePricedBreakdown(calculateCost(event.model, usage), this.rateMultiplier);
+    const costUsd = priced.totalUsd;
     const toolCount = pendingTurn.toolCalls.length;
     const costPerTool = toolCount > 0 ? costUsd / toolCount : 0;
+    const perToolCategory = categoryCostFromBreakdown(priced, toolCount > 0 ? toolCount : 1);
 
     const attribution: TurnCostAttribution = {
       turnId: pendingTurn.turnId,
@@ -455,6 +478,10 @@ export class TurnCostAttributor {
       bucket.outputTokens += event.outputTokens / toolCount;
       bucket.cacheReadTokens += event.cacheReadTokens / toolCount;
       bucket.cacheCreationTokens += event.cacheCreationTokens / toolCount;
+      bucket.inputUsd += perToolCategory.inputUsd;
+      bucket.outputUsd += perToolCategory.outputUsd;
+      bucket.cacheReadUsd += perToolCategory.cacheReadUsd;
+      bucket.cacheCreationUsd += perToolCategory.cacheCreationUsd;
     }
 
     if (state.activeSlashSkill !== null) {
@@ -467,6 +494,11 @@ export class TurnCostAttributor {
       slashBucket.outputTokens += event.outputTokens;
       slashBucket.cacheReadTokens += event.cacheReadTokens;
       slashBucket.cacheCreationTokens += event.cacheCreationTokens;
+      const slashCategory = categoryCostFromBreakdown(priced, 1);
+      slashBucket.inputUsd += slashCategory.inputUsd;
+      slashBucket.outputUsd += slashCategory.outputUsd;
+      slashBucket.cacheReadUsd += slashCategory.cacheReadUsd;
+      slashBucket.cacheCreationUsd += slashCategory.cacheCreationUsd;
     }
 
     // Minted here rather than reusing `attribution.turnId`: the caller's turn
@@ -565,6 +597,10 @@ export class TurnCostAttributor {
         outputTokens: number;
         cacheReadTokens: number;
         cacheCreationTokens: number;
+        inputUsd: number;
+        outputUsd: number;
+        cacheReadUsd: number;
+        cacheCreationUsd: number;
       }
     >();
     const skillAccum = new Map<string, Pick<AttributionBucket, (typeof BUCKET_COUNTERS)[number]>>();
@@ -586,6 +622,10 @@ export class TurnCostAttributor {
             outputTokens: 0,
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
+            inputUsd: 0,
+            outputUsd: 0,
+            cacheReadUsd: 0,
+            cacheCreationUsd: 0,
           };
           toolTypeAccum.set(bucket.toolName, entry);
         }
@@ -595,6 +635,10 @@ export class TurnCostAttributor {
         entry.outputTokens += bucket.outputTokens;
         entry.cacheReadTokens += bucket.cacheReadTokens;
         entry.cacheCreationTokens += bucket.cacheCreationTokens;
+        entry.inputUsd += bucket.inputUsd;
+        entry.outputUsd += bucket.outputUsd;
+        entry.cacheReadUsd += bucket.cacheReadUsd;
+        entry.cacheCreationUsd += bucket.cacheCreationUsd;
       }
 
       if (bucket.skillName !== null) {
@@ -625,6 +669,16 @@ export class TurnCostAttributor {
           Math.round(entry.outputTokens) +
           Math.round(entry.cacheReadTokens) +
           Math.round(entry.cacheCreationTokens),
+        ...(entry.attributedCallCount > 0
+          ? {
+              cost: {
+                inputUsd: entry.inputUsd,
+                outputUsd: entry.outputUsd,
+                cacheReadUsd: entry.cacheReadUsd,
+                cacheCreationUsd: entry.cacheCreationUsd,
+              },
+            }
+          : {}),
       };
     }
 
@@ -643,6 +697,12 @@ export class TurnCostAttributor {
         cacheReadTokens,
         cacheCreationTokens,
         tokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
+        cost: {
+          inputUsd: entry.inputUsd,
+          outputUsd: entry.outputUsd,
+          cacheReadUsd: entry.cacheReadUsd,
+          cacheCreationUsd: entry.cacheCreationUsd,
+        },
       };
     }
 

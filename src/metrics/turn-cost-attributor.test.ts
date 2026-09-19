@@ -1,5 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { TurnCostAttributor } from './turn-cost-attributor.js';
+import { priceTokenCategories } from './category-cost.js';
+import { makeUsage } from '../__test-utils__/token-usage.js';
 import type { ToolCallRecord, TokenEvent } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -622,6 +624,113 @@ describe('TurnCostAttributor', () => {
       expect(toolEntry.cacheReadTokens).toBe(50);
       expect(toolEntry.cacheCreationTokens).toBe(200);
       expect(toolEntry.tokens).toBe(900 + 100 + 50 + 200);
+    });
+
+    it('prices skill category dollars with the event model and splits them across tools', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'design',
+          timestamp: 1000,
+          toolUseId: 'skill-1',
+        }),
+      );
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Read',
+          timestamp: 1100,
+          toolUseId: 'read-1',
+        }),
+      );
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1500,
+          inputTokens: 1_000,
+          outputTokens: 400,
+          cacheReadTokens: 20_000,
+          cacheCreationTokens: 2_000,
+          model: 'claude-sonnet-4',
+        }),
+      );
+
+      const usage = makeUsage({
+        inputTokens: 1_000,
+        outputTokens: 400,
+        cacheReadTokens: 20_000,
+        cacheCreationTokens: 2_000,
+        totalTokens: 1_400,
+      });
+      const expected = priceTokenCategories('claude-sonnet-4', usage, { splitAcross: 2 });
+      const skillCost = attributor.getMetrics().costBySkill.design!.cost;
+      expect(skillCost?.inputUsd).toBeCloseTo(expected.inputUsd, 12);
+      expect(skillCost?.outputUsd).toBeCloseTo(expected.outputUsd, 12);
+      expect(skillCost?.cacheReadUsd).toBeCloseTo(expected.cacheReadUsd, 12);
+      expect(skillCost?.cacheCreationUsd).toBeCloseTo(expected.cacheCreationUsd, 12);
+    });
+
+    it('sums per-model category dollars when one skill bucket spans two models', () => {
+      const attributor = new TurnCostAttributor();
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'design',
+          timestamp: 1000,
+          toolUseId: 'skill-1',
+        }),
+      );
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 1100,
+          inputTokens: 1_000,
+          outputTokens: 400,
+          cacheReadTokens: 20_000,
+          cacheCreationTokens: 2_000,
+          model: 'claude-sonnet-4',
+        }),
+      );
+      attributor.recordToolCall(
+        makeRecord({
+          toolName: 'Skill',
+          skillName: 'design',
+          timestamp: 5000,
+          toolUseId: 'skill-2',
+        }),
+      );
+      attributor.recordTokenEvent(
+        makeTokenEvent({
+          timestamp: 5100,
+          inputTokens: 1_000,
+          outputTokens: 400,
+          cacheReadTokens: 20_000,
+          cacheCreationTokens: 2_000,
+          model: 'claude-haiku-4',
+        }),
+      );
+
+      const usage = makeUsage({
+        inputTokens: 1_000,
+        outputTokens: 400,
+        cacheReadTokens: 20_000,
+        cacheCreationTokens: 2_000,
+        totalTokens: 1_400,
+      });
+      const sonnet = priceTokenCategories('claude-sonnet-4', usage);
+      const haiku = priceTokenCategories('claude-haiku-4', usage);
+      const cost = attributor.getMetrics().costBySkill.design!.cost;
+      expect(cost?.inputUsd).toBeCloseTo(sonnet.inputUsd + haiku.inputUsd, 12);
+      expect(cost?.cacheReadUsd).toBeCloseTo(sonnet.cacheReadUsd + haiku.cacheReadUsd, 12);
+      const fakeBlend = priceTokenCategories(
+        'claude-sonnet-4',
+        makeUsage({
+          inputTokens: 2_000,
+          outputTokens: 800,
+          cacheReadTokens: 40_000,
+          cacheCreationTokens: 4_000,
+          totalTokens: 2_800,
+        }),
+      );
+      expect(cost?.inputUsd).not.toBeCloseTo(fakeBlend.inputUsd, 8);
     });
 
     it('costByToolType.Skill equals the sum of costBySkill rows', () => {

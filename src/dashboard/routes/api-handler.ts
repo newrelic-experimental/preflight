@@ -17,6 +17,7 @@ import type { AntiPattern } from '../../metrics/anti-patterns.js';
 import { AntiPatternDetector } from '../../metrics/anti-patterns.js';
 import type { ApiFailureMetrics } from '../../metrics/api-failure-tracker.js';
 import type { BudgetStatus } from '../../metrics/budget-tracker.js';
+import { addCategoryCost } from '../../metrics/category-cost.js';
 import type { ContextCompositionMetrics } from '../../metrics/context-composition-tracker.js';
 import type { ContextReplayEvent, ContextTrackerMetrics } from '../../metrics/context-tracker.js';
 import { computeContextMetricsFromEvents } from '../../metrics/context-tracker.js';
@@ -660,6 +661,7 @@ function mergeToolTypeCostEntry(
     (existing?.cacheReadTokens ?? 0) + (bucket.breakdown?.cacheReadTokens ?? 0);
   const cacheCreationTokens =
     (existing?.cacheCreationTokens ?? 0) + (bucket.breakdown?.cacheCreationTokens ?? 0);
+  const cost = addCategoryCost(existing?.cost, bucket.breakdown?.cost);
   return {
     totalCost,
     callCount,
@@ -669,6 +671,7 @@ function mergeToolTypeCostEntry(
     cacheReadTokens,
     cacheCreationTokens,
     tokens,
+    ...(cost ? { cost } : {}),
   };
 }
 
@@ -686,6 +689,7 @@ function mergeSkillCostEntry(
   const callCount = (existing?.callCount ?? 0) + bucket.count;
   // A persisted bucket only ever holds attributed cost, so every call it counts is attributed.
   const attributedCallCount = (existing?.attributedCallCount ?? 0) + bucket.count;
+  const cost = addCategoryCost(existing?.cost, bucket.breakdown?.cost);
   return {
     callCount,
     attributedCallCount,
@@ -698,6 +702,7 @@ function mergeSkillCostEntry(
       (existing?.cacheCreationTokens ?? 0) + (bucket.breakdown?.cacheCreationTokens ?? 0),
     totalDurationMs: (existing?.totalDurationMs ?? 0) + bucket.durationMs,
     tokens: (existing?.tokens ?? 0) + bucket.tokens,
+    ...(cost ? { cost } : {}),
   };
 }
 

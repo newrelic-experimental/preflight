@@ -3275,6 +3275,12 @@ describe('attribution field', () => {
         cacheCreationTokens: number;
         totalDurationMs: number;
         tokens: number;
+        cost?: {
+          inputUsd: number;
+          outputUsd: number;
+          cacheReadUsd: number;
+          cacheCreationUsd: number;
+        };
       }
     >;
   }) {
@@ -3349,6 +3355,40 @@ describe('attribution field', () => {
       highContextCostUsd: 0,
       apiDurationMs: null,
     });
+  });
+
+  it('copies SkillCostEntry.cost onto the persisted skill breakdown', () => {
+    const cost = {
+      inputUsd: 0.03,
+      outputUsd: 0.075,
+      cacheReadUsd: 0.003,
+      cacheCreationUsd: 0.01875,
+    };
+    const turnCostAttributor = makeTurnCostAttributor({
+      costBySkill: {
+        unslop: {
+          callCount: 2,
+          attributedCallCount: 2,
+          totalCost: 0.03,
+          avgCost: 0.015,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 10,
+          cacheCreationTokens: 5,
+          totalDurationMs: 4000,
+          tokens: 165,
+          cost,
+        },
+      },
+    });
+
+    const summary = buildSessionSummary({
+      sessionTracker: makeSessionTracker(),
+      turnCostAttributor,
+      developer: 'alice',
+    });
+
+    expect(summary.attribution?.buckets.skill?.unslop.breakdown?.cost).toEqual(cost);
   });
 
   it('reads subagentByAgentType/highContextCostUsd/apiDurationMs from CostMetrics when present, carrying the subagent breakdown', () => {
@@ -3674,5 +3714,219 @@ describe('attribution field', () => {
       cacheReadTokens: 10,
       cacheCreationTokens: 5,
     });
+  });
+
+  it('parses a legacy breakdown with no cost (pre-#730 file) without dropping tokens', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      attribution: {
+        buckets: {
+          skill: {
+            unslop: {
+              costUsd: 0.03,
+              tokens: 165,
+              count: 2,
+              durationMs: 4000,
+              breakdown: {
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheReadTokens: 10,
+                cacheCreationTokens: 5,
+              },
+            },
+          },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution?.buckets.skill?.unslop.breakdown).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 5,
+    });
+    expect(roundTripped.attribution?.buckets.skill?.unslop.breakdown?.cost).toBeUndefined();
+  });
+
+  it('drops a malformed cost object but keeps the token breakdown', () => {
+    const raw = JSON.stringify({
+      ...makeSummary(),
+      attribution: {
+        buckets: {
+          skill: {
+            unslop: {
+              costUsd: 0.03,
+              tokens: 165,
+              count: 2,
+              durationMs: 4000,
+              breakdown: {
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheReadTokens: 10,
+                cacheCreationTokens: 5,
+                cost: { inputUsd: 0.03, outputUsd: 'nope' },
+              },
+            },
+          },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    });
+    const roundTripped = deserializeFullSessionSummary(
+      JSON.parse(raw) as Parameters<typeof deserializeFullSessionSummary>[0],
+    );
+    expect(roundTripped.attribution?.buckets.skill?.unslop.breakdown).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 5,
+    });
+  });
+
+  it('merge takes a field-wise max on breakdown.cost when both sides have one', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-cost-both-${Date.now()}`;
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.02,
+                tokens: 100,
+                count: 4,
+                durationMs: 500,
+                breakdown: {
+                  inputTokens: 80,
+                  outputTokens: 10,
+                  cacheReadTokens: 5,
+                  cacheCreationTokens: 40,
+                  cost: {
+                    inputUsd: 0.24,
+                    outputUsd: 0.15,
+                    cacheReadUsd: 0.001,
+                    cacheCreationUsd: 0.15,
+                  },
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.05,
+                tokens: 40,
+                count: 6,
+                durationMs: 300,
+                breakdown: {
+                  inputTokens: 30,
+                  outputTokens: 60,
+                  cacheReadTokens: 2,
+                  cacheCreationTokens: 10,
+                  cost: {
+                    inputUsd: 0.09,
+                    outputUsd: 0.9,
+                    cacheReadUsd: 0.0006,
+                    cacheCreationUsd: 0.0375,
+                  },
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.attribution?.buckets.skill?.unslop.breakdown?.cost).toEqual({
+      inputUsd: 0.24,
+      outputUsd: 0.9,
+      cacheReadUsd: 0.001,
+      cacheCreationUsd: 0.15,
+    });
+  });
+
+  it("merge keeps the one side's cost when the other side has none", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-cost-one-side-${Date.now()}`;
+    const cost = {
+      inputUsd: 0.03,
+      outputUsd: 0.075,
+      cacheReadUsd: 0.003,
+      cacheCreationUsd: 0.01875,
+    };
+
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.02,
+                tokens: 100,
+                count: 4,
+                durationMs: 500,
+                breakdown: {
+                  inputTokens: 80,
+                  outputTokens: 10,
+                  cacheReadTokens: 5,
+                  cacheCreationTokens: 40,
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        attribution: {
+          buckets: {
+            skill: {
+              unslop: {
+                costUsd: 0.05,
+                tokens: 165,
+                count: 6,
+                durationMs: 300,
+                breakdown: {
+                  inputTokens: 100,
+                  outputTokens: 50,
+                  cacheReadTokens: 10,
+                  cacheCreationTokens: 5,
+                  cost,
+                },
+              },
+            },
+          },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      }),
+    );
+
+    const loaded = store.loadSession(id);
+    expect(loaded?.attribution?.buckets.skill?.unslop.breakdown?.cost).toEqual(cost);
   });
 });
