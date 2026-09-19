@@ -64,9 +64,51 @@ const TARGETED_UNDO_RE = new RegExp(
   'i',
 );
 
-/** Correction phrasing that doesn't require a trigger word at the start of the message. */
+/** Correction phrasing that doesn't require a trigger word at the start of the message. `won't work` is handled by `isWontWorkCorrection` so forward-looking design talk is not counted. */
 const EMBEDDED_CORRECTION_RE =
-  /\b(won'?t work|you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+  /\b(you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+
+/** The phrase itself — intended to mean "your prior output doesn't work". */
+const WONT_WORK_RE = /\bwon'?t work\b/i;
+
+/** Causal / completed-action cues: the user is explaining why prior output failed. Always win. */
+const WONT_WORK_COMPLETED_CUE_RE = /\b(because|since)\b/i;
+
+/**
+ * Planning / alternative-proposal cues. Alone they do not veto a match ("That
+ * won't work, let's try again" is still a correction). They only veto when
+ * they dominate a constraint-framed `won't work for …` clause.
+ */
+const WONT_WORK_FORWARD_CUE_RE = /\b(let'?s|we should|instead)\b/i;
+
+/** `won't work for X` frames a future constraint, not "your last output failed". */
+const WONT_WORK_CONSTRAINT_RE = /\bwon'?t work\b\s+for\b/i;
+
+/**
+ * `won't work` is a correction when it rejects prior output, but the same
+ * phrase is also used in forward-looking design talk.
+ *
+ * Chosen rule (#677): count it as a correction unless it is constraint-framed
+ * (`won't work for …`) *and* a forward-looking planning cue (`let's` /
+ * `we should` / `instead`) is present, with no causal cue (`because` /
+ * `since`). Causal cues always win so "That approach won't work because
+ * there's a race condition." still matches. Bare "That won't work." still
+ * matches to keep recall.
+ *
+ * Residual FP accepted: constraint-framed `won't work for …` without a
+ * planning cue still counts. Residual FN accepted: a genuine correction that
+ * uses both `won't work for` and a planning cue without `because`/`since` is
+ * dropped (same shape as the issue's negative example). The regex is not
+ * widened to chase those leftovers.
+ */
+function isWontWorkCorrection(text: string): boolean {
+  if (!WONT_WORK_RE.test(text)) return false;
+  if (WONT_WORK_COMPLETED_CUE_RE.test(text)) return true;
+  if (WONT_WORK_CONSTRAINT_RE.test(text) && WONT_WORK_FORWARD_CUE_RE.test(text)) {
+    return false;
+  }
+  return true;
+}
 
 function isCorrectionMessage(text: string): boolean {
   return (
@@ -75,6 +117,7 @@ function isCorrectionMessage(text: string): boolean {
     EXPLICIT_REJECTION_RE.test(text) ||
     LEADING_INTERJECTION_RE.test(text) ||
     TARGETED_UNDO_RE.test(text) ||
+    isWontWorkCorrection(text) ||
     EMBEDDED_CORRECTION_RE.test(text)
   );
 }

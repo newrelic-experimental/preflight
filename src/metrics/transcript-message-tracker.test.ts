@@ -153,6 +153,9 @@ describe('TranscriptMessageTracker', () => {
     ['Undo it now.'],
     ['Revert that already.'],
     ["That approach won't work because there's a race condition."],
+    ["That won't work."],
+    ["This won't work since the types don't line up."],
+    ["That approach won't work for X because there's a race, let's use Y instead"],
     ['You missed the null case.'],
     ['This is the third time — read the file first.'],
   ])('detects a correction for %j', (text) => {
@@ -174,6 +177,8 @@ describe('TranscriptMessageTracker', () => {
     ['Revert that first commit'],
     ['No, thanks'],
     ["No, that's fine"],
+    ["That approach won't work for X, let's use Y instead"],
+    ["That approach won't work for pagination, we should cursor instead"],
   ])('does not count %j as a correction', (text) => {
     writeLines([userLine(text)]);
     const tracker = new TranscriptMessageTracker();
