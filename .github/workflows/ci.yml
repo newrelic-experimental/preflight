@@ -1,8 +1,9 @@
 name: CI
 
 # Runs the checks a contributor is expected to run locally before opening a
-# PR (per CLAUDE.md: `npm run build && npm test`), plus lint and the two
-# drift-checker scripts that otherwise never run automatically:
+# PR (per CLAUDE.md: `npm run build && npm test`), plus lint, the web
+# vitest suite, the web typecheck, format:check, and the two drift-checker
+# scripts that otherwise never run automatically:
 # check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
 # bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
 # release.yml).
@@ -50,6 +51,15 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Test web
+        run: npm run test:web
+
+      - name: Check web types
+        run: npm run check:web-types
+
+      - name: Check formatting
+        run: npm run format:check
 
       - name: Check docs/code inventory drift
         run: npm run check:docs-inventory
