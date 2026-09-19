@@ -125,6 +125,14 @@ export type GitEventType =
   | 'worktree'
   | 'other_git';
 
+const AMEND_RE = /\s--amend\b/;
+
+/** A commit that added history: it succeeded and was not an amend, which
+ *  rewrites a commit instead of adding one. Hydrated commits always qualify. */
+export function isCountedCommit(event: GitEvent): boolean {
+  return event.type === 'commit' && event.success && !AMEND_RE.test(event.command ?? '');
+}
+
 // ---------------------------------------------------------------------------
 // Classifier
 // ---------------------------------------------------------------------------

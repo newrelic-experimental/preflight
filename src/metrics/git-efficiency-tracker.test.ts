@@ -7,6 +7,7 @@ import {
   GitEfficiencyTracker,
   parseDefaultBranchFromSymbolicRef,
 } from './git-efficiency-tracker.js';
+import { classifyGitCommand, isCountedCommit } from './git-event-classifier.js';
 import { gitCommandTargetDir, stripHeredocBodies } from './local-session-aggregator.js';
 import type { ToolCallRecord, ReplayTimelineEntry } from '../storage/types.js';
 import { MetricAggregator } from '../shared/index.js';
@@ -75,6 +76,56 @@ describe('GitEfficiencyTracker', () => {
     expect(metrics.pullCount).toBe(1);
     expect(metrics.pushCount).toBe(1);
     expect(metrics.commitCount).toBe(1);
+  });
+
+  // Per-session commitCount used to count every `commit`-type event
+  // (#663/#670 left GitEfficiencyTracker on its own rule). Weekly/30-day
+  // already uses isCountedCommit (success + not-amend). These cases keep
+  // the two views on the same filter — see #671.
+  describe('commit counting (isCountedCommit, #671)', () => {
+    it('does not count a failed commit', () => {
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "hook rejected"', success: false }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.totalGitCommands).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(0);
+    });
+
+    it('does not count git commit --amend', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit --amend -m "rewrite"' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(0);
+      expect(metrics.totalGitCommands).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(0);
+    });
+
+    it('counts a successful non-amend commit', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "real change"' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+    });
+
+    it('matches the weekly isCountedCommit filter for the same events', () => {
+      const t = Date.now();
+      const records = [
+        makeRecord({ command: 'git commit -m "ok"', timestamp: t, success: true }),
+        makeRecord({ command: 'git commit -m "fail"', timestamp: t + 1, success: false }),
+        makeRecord({ command: 'git commit --amend --no-edit', timestamp: t + 2, success: true }),
+        makeRecord({ command: 'git commit -m "ok2"', timestamp: t + 3, success: true }),
+      ];
+      for (const record of records) {
+        tracker.recordToolCall(record);
+      }
+
+      const weeklyEvents = records.map((record) =>
+        classifyGitCommand(record.command as string, record, () => null),
+      );
+      expect(tracker.getMetrics().commitCount).toBe(weeklyEvents.filter(isCountedCommit).length);
+      expect(tracker.getMetrics().commitCount).toBe(2);
+    });
   });
 
   it('detects merge conflicts from error output', () => {

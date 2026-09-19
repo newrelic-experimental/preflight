@@ -3,6 +3,7 @@ import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
 import { stripHeredocBodies } from './local-session-aggregator.js';
 import {
   classifyGitSegments,
+  isCountedCommit,
   processGhCommand,
   splitShellSegments,
   type GitEvent,
@@ -517,7 +518,7 @@ export class GitEfficiencyTracker {
     const pushCount = this.events.filter(
       (e) => e.type === 'push' || e.type === 'force_push' || e.type === 'force_push_lease',
     ).length;
-    const commitCount = this.events.filter((e) => e.type === 'commit').length;
+    const commitCount = this.events.filter(isCountedCommit).length;
     const branchOperations = this.events.filter((e) => e.type === 'branch').length;
 
     // A conflict that's currently open (mid-merge, not yet aborted or
@@ -778,8 +779,10 @@ export class GitEfficiencyTracker {
             }
           }
         }
-        this.commitTimestamps.push(event.timestamp);
-        this.commitsSinceLastSync++;
+        if (isCountedCommit(event)) {
+          this.commitTimestamps.push(event.timestamp);
+          this.commitsSinceLastSync++;
+        }
         this.statusChecksSinceLastAction = 0;
         break;
       }

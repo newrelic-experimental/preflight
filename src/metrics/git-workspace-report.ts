@@ -1,6 +1,6 @@
 import { createLogger } from '../shared/index.js';
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
-import type { GitEvent } from './git-event-classifier.js';
+import { isCountedCommit, type GitEvent } from './git-event-classifier.js';
 import type {
   BestPractice,
   ConflictResolutionStrategy,
@@ -17,6 +17,8 @@ import {
   isPlaceholderIdentity,
   type WorktreeIdentity,
 } from './git-workspace-identity.js';
+
+export { isCountedCommit };
 
 const logger = createLogger('git-workspace-report');
 
@@ -787,14 +789,6 @@ function countStaleBranchPulls(events: readonly GitEvent[]): number {
 export const COMMIT_RECONCILE_WINDOW_MS = 60_000;
 
 type GitCommitRecord = Extract<GitActivityRecord, { kind: 'git' }>;
-
-const AMEND_RE = /\s--amend\b/;
-
-/** A commit that added history: it succeeded and was not an amend, which
- *  rewrites a commit instead of adding one. Hydrated commits always qualify. */
-export function isCountedCommit(event: GitEvent): boolean {
-  return event.type === 'commit' && event.success && !AMEND_RE.test(event.command ?? '');
-}
 
 function isHookCommit(r: GitCommitRecord): boolean {
   return isCountedCommit(r.gitEvent) && !r.gitEvent.hash;

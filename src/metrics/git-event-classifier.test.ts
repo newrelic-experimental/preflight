@@ -1,4 +1,4 @@
-import { classifyGitCommand } from './git-event-classifier.js';
+import { classifyGitCommand, isCountedCommit, type GitEvent } from './git-event-classifier.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const makeRecord = (overrides?: Partial<ToolCallRecord>): ToolCallRecord => ({
@@ -280,5 +280,38 @@ describe('classifyGitCommand', () => {
 
       expect(event.type).toBe('push_rejected');
     });
+  });
+});
+
+describe('isCountedCommit', () => {
+  function makeCommitEvent(overrides: Partial<GitEvent> = {}): GitEvent {
+    return {
+      timestamp: 1_000,
+      type: 'commit',
+      command: 'git commit -m "ok"',
+      success: true,
+      durationMs: 10,
+      ...overrides,
+    };
+  }
+
+  it('counts a successful non-amend commit', () => {
+    expect(isCountedCommit(makeCommitEvent())).toBe(true);
+  });
+
+  it('does not count a failed commit', () => {
+    expect(isCountedCommit(makeCommitEvent({ success: false }))).toBe(false);
+  });
+
+  it('does not count an --amend commit', () => {
+    expect(isCountedCommit(makeCommitEvent({ command: 'git commit --amend --no-edit' }))).toBe(
+      false,
+    );
+  });
+
+  it('counts a hydrated git-log commit (success, no --amend)', () => {
+    expect(
+      isCountedCommit(makeCommitEvent({ command: 'git commit (abc123)', hash: 'abc123' })),
+    ).toBe(true);
   });
 });
