@@ -332,7 +332,17 @@ export interface ToolCallRecord {
    * hasn't caught up with yet (best-effort, not persisted retroactively).
    */
   readonly agentId?: string;
-  /** Never populates in practice, same as agentId above — see its doc comment. */
+  /**
+   * Subagent type (e.g. `"Explore"`). The hook envelope's `agent_type` never
+   * populates in practice, same as `agent_id`. After `agentId` is resolved
+   * (hook or `backfillAgentId()`), `backfillAgentType()` fills this from the
+   * `agentTypeByAgentId` map built off the parent's Agent-tool record
+   * (`spawnedAgentId` + `subagentType`) — the same per-`agentId` correlation
+   * CostTracker already uses for cost-by-type. Not per tool-use: every call
+   * attributed to that agent shares one type. Absent for the parent session,
+   * when the id join has not caught up, or when the spawning Agent call never
+   * paired (no invented labels).
+   */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;

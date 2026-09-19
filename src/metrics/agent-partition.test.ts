@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { partitionByAgent, backfillAgentId } from './agent-partition.js';
+import { partitionByAgent, backfillAgentId, backfillAgentType } from './agent-partition.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
@@ -76,5 +76,69 @@ describe('backfillAgentId', () => {
     const result = backfillAgentId(record, map);
 
     expect(result).toBe(record);
+  });
+});
+
+describe('backfillAgentType', () => {
+  it('backfills agentType from the agentId map when the record has an id but no type', () => {
+    const record = makeRecord({ agentId: 'a1234567890abcdef', agentType: undefined });
+    const map = new Map([['a1234567890abcdef', 'Explore']]);
+
+    const result = backfillAgentType(record, map);
+
+    expect(result.agentType).toBe('Explore');
+    expect(result.agentId).toBe('a1234567890abcdef');
+  });
+
+  it('carries type from the same agentId after a toolUseId join', () => {
+    const record = makeRecord({ toolUseId: 'toolu_abc', agentId: undefined, agentType: undefined });
+    const idMap = new Map([['toolu_abc', 'a1234567890abcdef']]);
+    const typeMap = new Map([['a1234567890abcdef', 'Explore']]);
+
+    const result = backfillAgentType(backfillAgentId(record, idMap), typeMap);
+
+    expect(result.agentId).toBe('a1234567890abcdef');
+    expect(result.agentType).toBe('Explore');
+  });
+
+  it('leaves agentType undefined when agentId backfills but the type map has no entry', () => {
+    const record = makeRecord({ toolUseId: 'toolu_abc', agentId: undefined, agentType: undefined });
+    const withId = backfillAgentId(record, new Map([['toolu_abc', 'a1234567890abcdef']]));
+
+    const result = backfillAgentType(withId, new Map());
+
+    expect(result).toBe(withId);
+    expect(result.agentId).toBe('a1234567890abcdef');
+    expect(result.agentType).toBeUndefined();
+  });
+
+  it('leaves an already-typed record unchanged even when the map disagrees', () => {
+    const record = makeRecord({ agentId: 'a1234567890abcdef', agentType: 'Plan' });
+    const map = new Map([['a1234567890abcdef', 'Explore']]);
+
+    const result = backfillAgentType(record, map);
+
+    expect(result).toBe(record);
+    expect(result.agentType).toBe('Plan');
+  });
+
+  it('leaves the record unchanged when it has no agentId', () => {
+    const record = makeRecord({ agentId: undefined, agentType: undefined });
+    const map = new Map([['a1234567890abcdef', 'Explore']]);
+
+    const result = backfillAgentType(record, map);
+
+    expect(result).toBe(record);
+    expect(result.agentType).toBeUndefined();
+  });
+
+  it('leaves the record unchanged when agentId has no map entry', () => {
+    const record = makeRecord({ agentId: 'unknown-agent', agentType: undefined });
+    const map = new Map([['a1234567890abcdef', 'Explore']]);
+
+    const result = backfillAgentType(record, map);
+
+    expect(result).toBe(record);
+    expect(result.agentType).toBeUndefined();
   });
 });

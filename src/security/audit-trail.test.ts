@@ -6,6 +6,7 @@ import {
   securityAlertToNrEvent,
   DEFAULT_SENSITIVE_FILE_PATTERNS,
 } from './audit-trail.js';
+import { backfillAgentId, backfillAgentType } from '../metrics/agent-partition.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { ProxyToolCallRecord } from '../proxy/types.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -945,6 +946,31 @@ describe('AuditTrailManager subagent attribution', () => {
 
     expect(audit.agentId).toBe('a9f8');
     expect(audit.agentType).toBe('workflow');
+  });
+
+  it('persists agentType that was backfilled from agentTypeByAgentId, including on SecurityAlert', () => {
+    const mgr = makeManager();
+    const incoming = makeRecord({
+      toolName: 'Bash',
+      command: 'rm -rf /tmp/x',
+      toolUseId: 'toolu_abc',
+      agentId: undefined,
+      agentType: undefined,
+    });
+    const backfilled = backfillAgentType(
+      backfillAgentId(incoming, new Map([['toolu_abc', 'a9f8']])),
+      new Map([['a9f8', 'Explore']]),
+    );
+
+    const audit = mgr.recordToolCall(backfilled);
+    const event = securityAlertToNrEvent(audit);
+
+    expect(backfilled.agentId).toBe('a9f8');
+    expect(backfilled.agentType).toBe('Explore');
+    expect(audit.agentId).toBe('a9f8');
+    expect(audit.agentType).toBe('Explore');
+    expect(event.agent_id).toBe('a9f8');
+    expect(event.agent_type).toBe('Explore');
   });
 
   it('leaves agentId and agentType undefined when the record has neither', () => {

@@ -41,7 +41,7 @@ import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
-import { backfillAgentId } from './metrics/agent-partition.js';
+import { backfillAgentId, backfillAgentType } from './metrics/agent-partition.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
 import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
@@ -2041,15 +2041,21 @@ async function main(): Promise<void> {
     // Cross-references a subagent's type against its `agentId` — the ONLY link
     // between the native hook pipeline and the transcript-derived
     // subagent-token pipeline (onSubagentTurn below), which has no type of its
-    // own. Populated from the parent's own Agent tool call (see onRecord), the
-    // one record that carries both signals. Best effort: a subagent whose
-    // spawning Agent call was never paired by the hook processor has no entry
-    // here, so its cost is still counted but not broken out by type.
+    // own. Also the source for ToolCallRecord.agentType after agentId backfill
+    // (audit-trail / AiAuditEvent / SecurityAlert). Populated from the parent's
+    // own Agent tool call (see onRecord), the one record that carries both
+    // signals. Best effort: a subagent whose spawning Agent call was never
+    // paired by the hook processor has no entry here, so its cost is still
+    // counted but not broken out by type, and its tool-call records keep
+    // agentType undefined. Per-agentId, not per tool-use — same limitation
+    // the cost breakdown already has.
     const agentTypeByAgentId = new Map<string, string>();
     // toolUseId -> agentId, built from SubagentWatcher's tool_use extraction
     // (see agent-partition.ts's backfillAgentId doc comment for why this join
     // exists instead of trusting the hook envelope's own agent_id field).
     const toolUseIdToAgentId = new Map<string, string>();
+    const backfillAgentAttribution = (record: ToolCallRecord): ToolCallRecord =>
+      backfillAgentType(backfillAgentId(record, toolUseIdToAgentId), agentTypeByAgentId);
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2058,7 +2064,7 @@ async function main(): Promise<void> {
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
       onRecord: (incomingRecord) => {
-        const rawRecord = backfillAgentId(incomingRecord, toolUseIdToAgentId);
+        const rawRecord = backfillAgentAttribution(incomingRecord);
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2284,9 +2290,7 @@ async function main(): Promise<void> {
             platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
             taskId: task.taskId,
           };
-          const enrichedToolCalls = task.toolCalls.map((r) =>
-            backfillAgentId(r, toolUseIdToAgentId),
-          );
+          const enrichedToolCalls = task.toolCalls.map(backfillAgentAttribution);
           const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
           efficiencyScorer.computeScore(task, patterns);
           for (const pattern of patterns) {

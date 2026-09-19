@@ -45,6 +45,9 @@ export function partitionByAgent<T extends { readonly agentId?: string }>(
  * `tool_use` block in that subagent's own transcript, which `SubagentWatcher`
  * already tails for token accounting. Returns the same object reference when
  * no backfill applies, so callers can cheaply check whether anything changed.
+ *
+ * This join carries identity only. Type is a separate, per-`agentId` lookup
+ * — see {@link backfillAgentType}.
  */
 export function backfillAgentId(
   record: ToolCallRecord,
@@ -55,4 +58,29 @@ export function backfillAgentId(
   const agentId = toolUseIdToAgentId.get(record.toolUseId);
   if (agentId === undefined) return record;
   return { ...record, agentId };
+}
+
+/**
+ * Fills in `ToolCallRecord.agentType` from the `agentId → agentType` map
+ * built from the parent's own Agent-tool record (`spawnedAgentId` +
+ * `subagentType`). Same per-`agentId` granularity as CostTracker's
+ * subagent-cost-by-type breakdown — not per tool-use. Call after
+ * {@link backfillAgentId} so a just-resolved id can carry a type.
+ *
+ * Returns the same object reference when no backfill applies. Type stays
+ * undefined (no invented labels) when:
+ * - the record has no `agentId` (parent/orchestrator call, or the id join
+ *   has not caught up yet)
+ * - `agentTypeByAgentId` has no entry (the spawning Agent call never paired)
+ * - a type is already present on the record (hook envelope wins)
+ */
+export function backfillAgentType(
+  record: ToolCallRecord,
+  agentTypeByAgentId: ReadonlyMap<string, string>,
+): ToolCallRecord {
+  if (record.agentType !== undefined) return record;
+  if (record.agentId === undefined) return record;
+  const agentType = agentTypeByAgentId.get(record.agentId);
+  if (agentType === undefined) return record;
+  return { ...record, agentType };
 }
