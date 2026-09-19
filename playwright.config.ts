@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { defineConfig } from '@playwright/test';
 
 const PORT = 7790;
-const ISOLATED_STORAGE = join(tmpdir(), `nr-ai-e2e-${process.pid}`);
+// Playwright starts the server and test workers in separate processes. Pass one
+// per-run directory through the inherited environment so fixtures reach the server.
+const STORAGE_ENV = 'PREFLIGHT_E2E_STORAGE_PATH';
+const ISOLATED_STORAGE = process.env[STORAGE_ENV] ?? join(tmpdir(), `nr-ai-e2e-${process.pid}`);
+process.env[STORAGE_ENV] = ISOLATED_STORAGE;
 // Both point at files that will not exist. loadConfigFile() returns {} for a path it
 // cannot read and dotenv ignores a missing file, so the run gets defaults on every
 // layer instead of the developer's real credentials.
@@ -19,6 +23,9 @@ export default defineConfig({
   snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}-{projectName}-{platform}{ext}',
   timeout: 30_000,
   retries: 0,
+  // The local server and tests share one isolated fixture store. Keep this
+  // serial so a seeded dashboard-view test cannot leak into an empty-state test.
+  workers: 1,
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     screenshot: 'only-on-failure',
@@ -44,6 +51,7 @@ export default defineConfig({
       NEW_RELIC_LICENSE_KEY: '',
       NEW_RELIC_ACCOUNT_ID: '',
     },
-    reuseExistingServer: !process.env.CI,
+    // The fixture tests must use the server configured with this run's storage.
+    reuseExistingServer: false,
   },
 });
