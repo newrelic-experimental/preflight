@@ -1,4 +1,4 @@
-import { classifyGitCommand } from './git-event-classifier.js';
+import { classifyGitCommand, classifyGitSegments } from './git-event-classifier.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const makeRecord = (overrides?: Partial<ToolCallRecord>): ToolCallRecord => ({
@@ -280,5 +280,121 @@ describe('classifyGitCommand', () => {
 
       expect(event.type).toBe('push_rejected');
     });
+  });
+});
+
+describe('classifyGitSegments', () => {
+  let resolveRepoSpy: jest.Mock;
+
+  beforeEach(() => {
+    resolveRepoSpy = jest.fn().mockReturnValue(null);
+  });
+
+  it('does not attribute a trailing gh-create failure to the last git segment', () => {
+    const command = 'git push && gh pr create --fill';
+    const record = makeRecord({
+      command,
+      success: false,
+      // Rejection-shaped text from the failed `gh` step — the old last-git
+      // rule would have mis-flagged the successful push as push_rejected.
+      error: 'GraphQL: pull request already exists\nUpdates were rejected',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified).toHaveLength(1);
+    expect(classified[0].event.type).toBe('push');
+    expect(classified[0].event.type).not.toBe('push_rejected');
+  });
+
+  it('still attributes a pure-git chain failure to the last git segment', () => {
+    const command = 'git fetch && git push origin main';
+    const record = makeRecord({
+      command,
+      success: false,
+      error: 'Updates were rejected because the remote contains work',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['fetch', 'push_rejected']);
+  });
+
+  it('still attributes a rebase conflict to the last git segment of a pure-git chain', () => {
+    const command = 'git fetch && git rebase origin/main';
+    const record = makeRecord({
+      command,
+      success: false,
+      error: 'error: rebase could not apply commit 123456',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['fetch', 'rebase_conflict']);
+  });
+
+  it('does not attribute a trailing gh failure to an earlier commit+push chain', () => {
+    const command = 'git commit -m x && git push && gh pr create';
+    const record = makeRecord({
+      command,
+      success: false,
+      error: 'GraphQL: pull request already exists\n[rejected] non-fast-forward',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['commit', 'push']);
+  });
+
+  it('still attributes error to last git when a later non-gh segment fails', () => {
+    const command = 'git push && npm test';
+    const record = makeRecord({
+      command,
+      success: false,
+      error: 'Updates were rejected',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['push_rejected']);
+  });
+
+  it('still attributes error to last git when gh precedes it', () => {
+    const command = 'gh pr create --fill && git push';
+    const record = makeRecord({
+      command,
+      success: false,
+      error: '[rejected] non-fast-forward',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['push_rejected']);
+  });
+
+  it('treats an env- or path-prefixed later gh as owning the command failure', () => {
+    const command = 'git push && GH_TOKEN=x /usr/bin/gh pr create --fill';
+    const record = makeRecord({
+      command,
+      success: false,
+      error: 'Updates were rejected',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['push']);
+  });
+
+  it('keeps last-git error attribution when the chained command succeeded', () => {
+    const command = 'git push && gh pr create --fill';
+    const record = makeRecord({
+      command,
+      success: true,
+      error: 'Updates were rejected',
+    });
+
+    const classified = classifyGitSegments(command, record, resolveRepoSpy);
+
+    expect(classified.map((entry) => entry.event.type)).toEqual(['push_rejected']);
   });
 });

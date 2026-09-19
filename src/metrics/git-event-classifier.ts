@@ -204,6 +204,10 @@ const ENV_PREFIX = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\
 // unanchored `\bgit\s+` counted it as a commit.
 const GIT_SEGMENT_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}(?:\S*\/)?git\s+`);
 
+// Same anchoring as `GIT_SEGMENT_RE`. Used only to decide whether a later
+// `gh` invocation owns a command-level failure — not to classify `gh` itself.
+const GH_SEGMENT_RE = new RegExp(String.raw`^\s*${ENV_PREFIX}(?:\S*\/)?gh\s+`);
+
 // Anchored the same way so a segment that only mentions "gh pr create"
 // partway through (a piped JSON fixture, a `gh pr comment` body, a commit
 // message) never matches.
@@ -241,24 +245,53 @@ export interface ClassifiedGitSegment {
 }
 
 /**
+ * `ToolCallRecord` has one success/error pair for the whole command. A
+ * command-level failure with a `gh` segment after the last git segment
+ * (e.g. `git push && gh pr create` failing on create) belongs to `gh`, not
+ * the last git segment — attributing it there mis-flags a successful push
+ * as `push_rejected`.
+ */
+function laterGhOwnsCommandFailure(
+  segments: readonly string[],
+  lastGitIndex: number,
+  record: ToolCallRecord,
+): boolean {
+  if (record.success !== false || lastGitIndex < 0) return false;
+  return segments.slice(lastGitIndex + 1).some((segment) => GH_SEGMENT_RE.test(segment));
+}
+
+/**
  * Classifies every git segment of a heredoc-stripped shell command, so a
  * chained `git commit -m x && git push` yields a commit AND a push instead
  * of whichever verb `classifyGitCommand` ranks first.
  *
- * Conflict and rejection text in `record.error` belongs to the segment that
- * ran last, since `&&` stops at the first failure, so only the last git
- * segment sees it. The target directory comes from the whole command, so a
- * `cd dir &&` in an earlier segment still attributes every git segment.
+ * Conflict and rejection text in `record.error` belongs to the last git
+ * segment of a pure-git chain (`&&` stops at the first failure). When a
+ * later `gh` segment exists and the command failed, that error is withheld
+ * from every git segment — see `laterGhOwnsCommandFailure`. The target
+ * directory comes from the whole command, so a `cd dir &&` in an earlier
+ * segment still attributes every git segment.
  */
 export function classifyGitSegments(
   command: string,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
 ): ClassifiedGitSegment[] {
-  const segments = splitShellSegments(command).filter((s) => GIT_SEGMENT_RE.test(s));
+  const segments = splitShellSegments(command);
+  const gitSegments: string[] = [];
+  let lastGitIndex = -1;
+  for (let i = 0; i < segments.length; i++) {
+    if (GIT_SEGMENT_RE.test(segments[i])) {
+      gitSegments.push(segments[i]);
+      lastGitIndex = i;
+    }
+  }
+  const withholdErrorFromLastGit = laterGhOwnsCommandFailure(segments, lastGitIndex, record);
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
-  return segments.map((segment, i) => {
-    const forSegment = i === segments.length - 1 ? record : { ...record, error: undefined };
+  return gitSegments.map((segment, i) => {
+    const isLastGit = i === gitSegments.length - 1;
+    const forSegment =
+      isLastGit && !withholdErrorFromLastGit ? record : { ...record, error: undefined };
     return { segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) };
   });
 }

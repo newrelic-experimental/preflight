@@ -502,6 +502,27 @@ describe('GitActivityRecorder', () => {
       expect(fetchRecord?.kind === 'git' && fetchRecord.gitEvent.type).toBe('fetch');
       expect(rebaseRecord?.kind === 'git' && rebaseRecord.gitEvent.type).toBe('rebase_conflict');
     });
+
+    it('does not attribute a trailing gh pr create failure to the last git segment', () => {
+      recorder.recordToolCall(
+        makeRecord({
+          command: 'git push && gh pr create --fill',
+          cwd: repoDir,
+          timestamp: 5000,
+          success: false,
+          error: 'GraphQL: pull request already exists\nUpdates were rejected',
+        }),
+      );
+
+      const results = store.query({ since: 0, until: 10000 });
+      const gitResults = results.filter((r) => r.kind === 'git');
+      const prResults = results.filter((r) => r.kind === 'pr');
+
+      expect(gitResults).toHaveLength(1);
+      expect(gitResults[0].kind === 'git' && gitResults[0].gitEvent.type).toBe('push');
+      expect(gitResults[0].kind === 'git' && gitResults[0].gitEvent.type).not.toBe('push_rejected');
+      expect(prResults).toHaveLength(0);
+    });
   });
 
   describe('gh PR create/success gating and shell-segment parsing', () => {
