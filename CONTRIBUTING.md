@@ -56,7 +56,7 @@ preflight update
 | `npm run test:e2e`                  | Run the Playwright suite in `e2e/` (rebuilds first via `pretest:e2e`)                        |
 | `npm run test:e2e:update`           | Rewrite the Playwright screenshot snapshots                                                  |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
-| `npx tsc -p tsconfig.web.json`      | Typecheck `src/web` without building (`npm run build` already runs this)                     |
+| `npx tsc -p tsconfig.web.json`      | Typecheck `src/web` source without building (`npm run build` already runs this)              |
 | `npm run lint`                      | ESLint over `src/`                                                                           |
 | `npm run format`                    | Prettier write                                                                               |
 | `npm run format:check`              | Prettier check (no writes)                                                                   |
@@ -243,11 +243,11 @@ Tests live next to the code they test (`foo.test.ts` alongside `foo.ts`).
 
 `npm test` is not the whole story — there are three runners, split by what they can execute:
 
-| Suite   | Command            | Covers                               | Runner                    |
-| ------- | ------------------ | ------------------------------------ | ------------------------- |
-| Server  | `npm test`         | `src/**/*.test.ts` outside `src/web` | Jest, `node` env          |
-| Web     | `npm run test:web` | `src/web/**/*.test.{ts,tsx}`         | Vitest, `jsdom` env       |
-| Browser | `npm run test:e2e` | `e2e/*.spec.ts`                      | Playwright, real Chromium |
+| Suite   | Command            | Covers                                                         | Runner                    |
+| ------- | ------------------ | -------------------------------------------------------------- | ------------------------- |
+| Server  | `npm test`         | `src/**/*.test.ts` outside `src/web`, plus `test/**/*.test.ts` | Jest, `node` env          |
+| Web     | `npm run test:web` | `src/web/**/*.test.{ts,tsx}`                                   | Vitest, `jsdom` env       |
+| Browser | `npm run test:e2e` | `e2e/*.spec.ts`                                                | Playwright, real Chromium |
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts the dashboard itself
 against a temp storage directory — so it needs no running server and leaves your real
