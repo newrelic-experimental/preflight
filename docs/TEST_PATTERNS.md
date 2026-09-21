@@ -22,6 +22,7 @@ Key settings:
 | `preset`                 | `ts-jest/presets/default-esm`                                   | ESM modules with TypeScript                                            |
 | `testEnvironment`        | `node`                                                          | No browser DOM needed                                                  |
 | `testMatch`              | `['<rootDir>/src/**/*.test.ts', '<rootDir>/test/**/*.test.ts']` | Co-located unit tests + dedicated `test/` folder                       |
+| `testPathIgnorePatterns` | includes `<rootDir>/src/web/`                                   | `src/web` belongs to Vitest                                            |
 | `moduleNameMapper`       | `'^(\\.{1,2}/.*)\\.js$': '$1'`                                  | Strips `.js` extensions in TS imports for ts-jest                      |
 | `extensionsToTreatAsEsm` | `['.ts']`                                                       | Tells Jest to treat `.ts` as ESM                                       |
 | `testTimeout`            | `15_000`                                                        | 15s default per test                                                   |
@@ -50,18 +51,16 @@ The web dashboard in `src/web/` uses a **separate test runner**: [Vitest](https:
 npm run test:web    # Run the Vitest suite
 ```
 
-Vitest is configured via the `root: resolve(__dirname, 'src/web')` setting in `vite.config.ts`, so it discovers tests only within `src/web/`.
+Vitest has its own config file, `vitest.config.ts` (separate from `vite.config.ts`, which configures the dashboard build). Its `include: ['src/web/**/*.test.{ts,tsx}']` is what confines discovery to `src/web/`.
 
 ### Key differences from Jest tests
 
-| Concern        | Jest (`src/**/*.test.ts`) | Vitest (`src/web/**/*.test.tsx`)  |
-| -------------- | ------------------------- | --------------------------------- |
-| File extension | `.test.ts`                | `.test.tsx`                       |
-| Import globals | `from '@jest/globals'`    | vitest globals (no import needed) |
-| Spy/mock       | `jest.spyOn`, `jest.fn`   | `vi.spyOn`, `vi.fn`               |
-| Run command    | `npm test`                | `npm run test:web`                |
-
-**Important:** Web test files must use `.test.tsx`, not `.test.ts`. Jest picks up `.test.ts` files under `src/web/` and fails on Vitest imports; the `.tsx` extension is what routes them to Vitest instead.
+| Concern        | Jest (outside `src/web`) | Vitest (`src/web`)                |
+| -------------- | ------------------------ | --------------------------------- |
+| File extension | `.test.ts`               | `.test.ts(x)`                     |
+| Import globals | `from '@jest/globals'`   | vitest globals (no import needed) |
+| Spy/mock       | `jest.spyOn`, `jest.fn`  | `vi.spyOn`, `vi.fn`               |
+| Run command    | `npm test`               | `npm run test:web`                |
 
 Web tests follow the same factory-function and spy patterns as Jest tests — just with `vi.*` instead of `jest.*`.
 
