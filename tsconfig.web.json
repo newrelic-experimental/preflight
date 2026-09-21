@@ -18,9 +18,9 @@
     "noEmit": true,
     "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src/web/**/*.ts", "src/web/**/*.tsx"],
-  // Excludes test files from the typecheck `npm run build` runs, so an unused import in a
-  // test cannot fail a build or block a release. The root tsconfig.json excludes
-  // `src/**/*.test.ts` for the same reason.
-  "exclude": ["src/web/**/*.test.ts", "src/web/**/*.test.tsx"]
+  // Covers src/web source and tests. Tests need the `types` above to resolve Vitest
+  // globals and jest-dom matchers, and this is the only project that claims them, so
+  // narrowing it would leave them with no typechecker at all — including in the editor.
+  // `npm run build` uses tsconfig.web.build.json, which excludes them from that gate.
+  "include": ["src/web/**/*.ts", "src/web/**/*.tsx"]
 }

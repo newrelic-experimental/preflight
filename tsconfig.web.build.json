@@ -1,0 +1,8 @@
+{
+  // The typecheck `npm run build` runs, and therefore what CI's Build step and
+  // release.yml gate on. Shipped source only: a type error in a test file should fail
+  // `npm run test:web`, not block a release. tsconfig.web.json keeps the test files so
+  // the editor and a manual `npx tsc -p tsconfig.web.json` still check them.
+  "extends": "./tsconfig.web.json",
+  "exclude": ["src/web/**/*.test.ts", "src/web/**/*.test.tsx"]
+}
