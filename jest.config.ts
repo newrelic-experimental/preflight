@@ -40,6 +40,9 @@ const config: Config = {
   // (built via beforeAll). They run via `npm run test:integration` only.
   testPathIgnorePatterns: [
     '/node_modules/',
+    // src/web is Vitest's (jsdom + React). Jest's testMatch would otherwise claim
+    // any .test.ts there, running it under both runners.
+    '<rootDir>/src/web/',
     'src/shared/index\\.test\\.ts',
     '<rootDir>/src/multi-instance\\.integration\\.test\\.ts',
   ],
