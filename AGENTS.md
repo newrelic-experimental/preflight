@@ -21,7 +21,7 @@ npm run format:check       # Prettier
 - **Never write to stdout** in server-path code - stdout is reserved for MCP stdio transport. Use the scoped `createLogger()` pattern (writes JSON to stderr).
 - **Lint is zero-tolerance**: no `eslint-disable` comments, no `as any` / `: any` (use `as unknown as T`, concrete types, or generics), unused required params prefixed `_`.
 - All internal imports use `.js` extensions (ESM + NodeNext).
-- Co-located tests (`foo.ts` -> `foo.test.ts`); factory helpers named `make*` with `Partial<T>` overrides. Tests under `src/web` run on Vitest (`npm run test:web`), everything else on Jest. See [docs/TEST_PATTERNS.md](./docs/TEST_PATTERNS.md).
+- Co-located tests (`foo.ts` -> `foo.test.ts`); factory helpers named `make*` with `Partial<T>` overrides. Vitest claims `src/web/**/*.test.{ts,tsx}` (`npm run test:web`); Jest claims `*.test.ts` elsewhere under `src/` and `test/` (`npm test`). A `.test.tsx` outside `src/web` is claimed by neither, so put JSX tests under `src/web`. See [docs/TEST_PATTERNS.md](./docs/TEST_PATTERNS.md).
 - Platform adapters: never invent a tool-name map or setup instructions - every entry must trace to the platform's own documentation or source, cited in a comment. See [docs/ADAPTERS.md](./docs/ADAPTERS.md).
 - `highSecurity=true` forces `recordContent=false` and must never be bypassed. See [SECURITY.md](./SECURITY.md).
 

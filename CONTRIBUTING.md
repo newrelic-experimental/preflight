@@ -56,7 +56,7 @@ preflight update
 | `npm run test:e2e`                  | Run the Playwright suite in `e2e/` (rebuilds first via `pretest:e2e`)                        |
 | `npm run test:e2e:update`           | Rewrite the Playwright screenshot snapshots                                                  |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
-| `npx tsc -p tsconfig.web.json`      | Typecheck `src/web` source without building (`npm run build` already runs this)              |
+| `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
 | `npm run lint`                      | ESLint over `src/`                                                                           |
 | `npm run format`                    | Prettier write                                                                               |
 | `npm run format:check`              | Prettier check (no writes)                                                                   |
@@ -248,6 +248,11 @@ Tests live next to the code they test (`foo.test.ts` alongside `foo.ts`).
 | Server  | `npm test`         | `src/**/*.test.ts` outside `src/web`, plus `test/**/*.test.ts` | Jest, `node` env          |
 | Web     | `npm run test:web` | `src/web/**/*.test.{ts,tsx}`                                   | Vitest, `jsdom` env       |
 | Browser | `npm run test:e2e` | `e2e/*.spec.ts`                                                | Playwright, real Chromium |
+
+Two files sit outside all three: `jest.config.ts` also ignores `src/shared/index.test.ts`, which
+asserts an invariant that does not hold for vendored source, and
+`src/multi-instance.integration.test.ts`, which spawns real processes and runs on demand via
+`npm run test:integration`. Both carry a comment saying why.
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts the dashboard itself
 against a temp storage directory — so it needs no running server and leaves your real

@@ -244,9 +244,10 @@ Run `npm run lint` before committing to verify the lint target is still met.
 ## Testing Conventions
 
 - Co-located test files: `foo.ts` → `foo.test.ts` (same directory)
-- Tests under `src/web` run on Vitest (`npm run test:web`), everything else on Jest
-  (`npm test`). `jest.config.ts` ignores `src/web`, so a test written there runs on
-  Vitest whichever extension it uses; use `.tsx` when the file contains JSX
+- Vitest claims `src/web/**/*.test.{ts,tsx}` (`npm run test:web`); Jest claims
+  `*.test.ts` elsewhere under `src/` and `test/` (`npm test`). Inside `src/web` either
+  extension runs, so use `.tsx` when the file contains JSX. A `.test.tsx` outside
+  `src/web` is claimed by neither runner, so put JSX tests under `src/web`
 - Jest with `ts-jest/presets/default-esm` preset, `node` environment
 - `maxWorkers: 1` to avoid stdio deadlocks
 - Tests mock `process.stderr.write` to suppress logger output

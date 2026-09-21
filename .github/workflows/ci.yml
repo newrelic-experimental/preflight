@@ -1,11 +1,11 @@
 name: CI
 
-# Runs the checks a contributor is expected to run locally before opening a
-# PR (see CONTRIBUTING.md's "Before opening a PR"), plus lint and the two
-# drift-checker scripts that otherwise never run automatically:
-# check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
-# bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
-# release.yml).
+# Runs CONTRIBUTING.md's "Before opening a PR" checklist except test:e2e, which
+# needs a browser download and compares screenshots against macOS-recorded
+# baselines, plus the two drift-checker scripts that otherwise never run
+# automatically: check-docs-inventory.ts (docs/code drift) and
+# check-bundle-size.ts (SPA bundle budget, mirrors verify:plugin-hook's
+# already-enforced pattern in release.yml).
 on:
   pull_request:
   workflow_dispatch:

@@ -29,7 +29,7 @@ git clone https://github.com/newrelic-experimental/preflight
 cd preflight
 
 # 2. Build
-npm install && npm run build
+npm ci && npm run build
 
 # 3. Set a secret token
 cp .env.example .env
