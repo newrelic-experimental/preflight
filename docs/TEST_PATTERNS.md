@@ -13,7 +13,7 @@ This document covers the testing conventions, infrastructure, and patterns used 
 
 ### Jest configuration
 
-A single flat `jest.config.ts` at the repo root governs every test. There are no per-package configs and no base config to extend.
+A single flat `jest.config.ts` at the repo root governs every Jest test. There are no per-package configs and no base config to extend.
 
 Key settings:
 

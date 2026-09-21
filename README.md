@@ -223,8 +223,8 @@ Develop, test, or run the latest unreleased version:
 git clone https://github.com/newrelic-experimental/preflight
 cd preflight
 nvm use              # Switch to Node v24
-npm install          # Install dependencies
-npm run build        # Compile TypeScript
+npm ci               # Install dependencies from the lockfile
+npm run build        # Build the server and the dashboard bundle
 npm link             # Register preflight on PATH
 ```
 
