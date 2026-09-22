@@ -46,7 +46,7 @@
     "verify:plugin-hook": "npm run build:plugin-hook && git diff --exit-code plugin/.claude-plugin/scripts/collector-script.js",
     "dev:web": "vite",
     "test": "jest",
-    "test:integration": "jest --testPathPattern='src/multi-instance\\.integration\\.test\\.ts' --testTimeout=120000",
+    "test:integration": "jest --testPathPatterns='src/multi-instance\\.integration\\.test\\.ts' --testPathIgnorePatterns=/node_modules/ --testTimeout=120000",
     "test:web": "vitest run",
     "setup:e2e": "npx playwright install chromium && npm run build",
     "pretest:e2e": "npm run setup:e2e",
