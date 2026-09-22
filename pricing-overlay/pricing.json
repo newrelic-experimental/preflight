@@ -1,1 +1,10 @@
-{}
+{
+  "claude-opus-5-5": {
+    "inputPerMTok": 4,
+    "outputPerMTok": 20,
+    "thinkingPerMTok": 20,
+    "cacheReadPerMTok": 0.2,
+    "cacheCreationPerMTok": 5,
+    "contextWindow": 1000000
+  }
+}

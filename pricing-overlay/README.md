@@ -10,7 +10,8 @@ a user has configured their own custom pricing file, and is gap-fill-only:
 vendored table instead of overriding it, so it can never silently mask a
 correction made upstream.
 
-It's currently empty (`{}`). This isn't tied to any one platform — add an
+It currently carries `claude-opus-5-5` (Anthropic first-party rates, checked
+2026-09-22) until the vendored table picks it up. This isn't tied to any one platform — add an
 entry here whenever you hit a real model ID that Preflight resolves to `$0`
 cost because the vendored table doesn't have it yet, regardless of which
 platform surfaced it.

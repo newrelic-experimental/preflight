@@ -23,6 +23,26 @@ describe('pricing overlay integration', () => {
     });
   });
 
+  it('prices Claude Opus 5.5 from the bundled overlay, including the [1m] id Claude Code reports', () => {
+    expect(resolveModelPricing('claude-opus-5-5')).toBeNull();
+
+    applyGapFilledOverlay(resolvePricingOverlayPath() as string);
+
+    const expected = {
+      inputPerMTok: 4,
+      outputPerMTok: 20,
+      cacheReadPerMTok: 0.2,
+      cacheCreationPerMTok: 5,
+      contextWindow: 1_000_000,
+    };
+    expect(resolveModelPricing('claude-opus-5-5')).toMatchObject(expected);
+    expect(resolveModelPricing('claude-opus-5-5[1m]')).toMatchObject(expected);
+    expect(resolveModelPricing('claude-opus-5')).toMatchObject({
+      inputPerMTok: 5,
+      outputPerMTok: 25,
+    });
+  });
+
   describe('applyGapFilledOverlay collision guard', () => {
     let tmpDir: string;
 
