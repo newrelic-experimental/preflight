@@ -255,11 +255,14 @@ asserts an invariant that does not hold for vendored source, and
 `npm run test:integration`. Both carry a comment saying why.
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts the dashboard itself
-against a temp storage directory and a temp config path — so it needs no running server, and it
-neither reads your credentials nor writes to your real `~/.newrelic-preflight`. It asserts
-against committed screenshots in `e2e/today.spec.ts-snapshots/`, which are per-platform, so
-re-recording only replaces the baseline for the OS you are on. When a deliberate UI change makes
-yours stale, re-record with `npm run test:e2e:update` and commit the result.
+against a temp storage directory, config path and `.env` — so it needs no running server, and it
+neither reads your credentials nor writes to your real `~/.newrelic-preflight`.
+
+It asserts against committed screenshots in `e2e/today.spec.ts-snapshots/`, which are
+per-platform. Only a macOS baseline is committed today, so a first run on Linux or Windows fails
+on a missing snapshot and writes one; commit that file to give your OS a baseline. On macOS, when
+a deliberate UI change makes yours stale, re-record with `npm run test:e2e:update` and commit the
+result. Either way you only ever replace the baseline for the OS you are on.
 
 ### Writing tests
 
@@ -291,7 +294,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run build` succeeds
 - [ ] `npm test` passes
 - [ ] `npm run test:web` passes (if you touched `src/web`)
-- [ ] `npm run test:e2e` passes (if you changed the dashboard UI; re-record snapshots if the change was deliberate)
+- [ ] `npm run test:e2e` passes (if you changed the dashboard UI; on a non-macOS first run, see [The three suites](#the-three-suites) about recording your platform's baseline)
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this, but nothing in CI does)
 - [ ] You've reviewed your own diff
