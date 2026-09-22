@@ -255,10 +255,11 @@ asserts an invariant that does not hold for vendored source, and
 `npm run test:integration`. Both carry a comment saying why.
 
 `npm run test:e2e` installs its browser if needed, rebuilds, then starts the dashboard itself
-against a temp storage directory — so it needs no running server and leaves your real
-`~/.newrelic-preflight` alone. It asserts against committed screenshots in
-`e2e/today.spec.ts-snapshots/`. When a deliberate UI change makes those stale, re-record with
-`npm run test:e2e:update` and commit the result.
+against a temp storage directory and a temp config path — so it needs no running server, and it
+neither reads your credentials nor writes to your real `~/.newrelic-preflight`. It asserts
+against committed screenshots in `e2e/today.spec.ts-snapshots/`, which are per-platform, so
+re-recording only replaces the baseline for the OS you are on. When a deliberate UI change makes
+yours stale, re-record with `npm run test:e2e:update` and commit the result.
 
 ### Writing tests
 
@@ -292,6 +293,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run test:web` passes (if you touched `src/web`)
 - [ ] `npm run test:e2e` passes (if you changed the dashboard UI; re-record snapshots if the change was deliberate)
 - [ ] `npm run lint` passes
+- [ ] `npm run format:check` passes (the `pre-commit` hook runs this, but nothing in CI does)
 - [ ] You've reviewed your own diff
 
 ---

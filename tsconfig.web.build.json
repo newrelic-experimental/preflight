@@ -1,8 +1,15 @@
 {
-  // The typecheck `npm run build` runs, and therefore what CI's Build step and
-  // release.yml gate on. Shipped source only: a type error in a test file should fail
-  // `npm run test:web`, not block a release. tsconfig.web.json keeps the test files so
-  // the editor and a manual `npx tsc -p tsconfig.web.json` still check them.
+  // The typecheck `npm run build` runs, and therefore what CI's Build step and release.yml
+  // gate on. Excludes test files so a release cannot be blocked by code that ships nothing.
+  // They are not checked elsewhere in automation: Vitest transforms with esbuild and
+  // declares no `test.typecheck`, and eslint sets no `parserOptions.project`. Until #731's
+  // check:web-types lands, the editor and a manual `npx tsc -p tsconfig.web.json` are the
+  // only things that typecheck them.
   "extends": "./tsconfig.web.json",
-  "exclude": ["src/web/**/*.test.ts", "src/web/**/*.test.tsx"]
+  "exclude": [
+    "src/web/**/*.test.ts",
+    "src/web/**/*.test.tsx",
+    // Vitest setupFiles only; no source imports it.
+    "src/web/test-setup.ts"
+  ]
 }
