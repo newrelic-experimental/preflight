@@ -2,10 +2,10 @@ name: CI
 
 # Runs CONTRIBUTING.md's "Before opening a PR" checklist except one item:
 # test:e2e, which needs a browser download and has a baseline only for macOS.
-# Plus the web typecheck the checklist does not name, and the two drift-checker
-# scripts that otherwise never run automatically: check-docs-inventory.ts
-# (docs/code drift) and check-bundle-size.ts (SPA bundle budget, mirrors
-# verify:plugin-hook's already-enforced pattern in release.yml).
+# Plus the two drift-checker scripts that otherwise never run automatically:
+# check-docs-inventory.ts (docs/code drift) and check-bundle-size.ts (SPA
+# bundle budget, mirrors verify:plugin-hook's already-enforced pattern in
+# release.yml).
 on:
   pull_request:
   workflow_dispatch:
