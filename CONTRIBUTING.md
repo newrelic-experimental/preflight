@@ -295,8 +295,9 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm test` passes
 - [ ] `npm run test:web` passes (if you touched `src/web`)
 - [ ] `npm run test:e2e` passes (if you changed the dashboard UI; on a non-macOS first run, see [The three suites](#the-three-suites) about recording your platform's baseline)
+- [ ] `npx tsc -p tsconfig.web.json` passes (if you touched `src/web`; `npm run build` checks source only)
 - [ ] `npm run lint` passes
-- [ ] `npm run format:check` passes (the `pre-commit` hook runs this, but nothing in CI does)
+- [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
 - [ ] You've reviewed your own diff
 
 ---

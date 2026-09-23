@@ -1,12 +1,11 @@
 name: CI
 
-# Runs CONTRIBUTING.md's "Before opening a PR" checklist except two items:
-# test:e2e, which needs a browser download and has a baseline only for macOS,
-# and format:check, which is enforced by the pre-commit hook alone and is #731's
-# to add here. Plus the two drift-checker scripts that otherwise never run
-# automatically: check-docs-inventory.ts (docs/code drift) and
-# check-bundle-size.ts (SPA bundle budget, mirrors verify:plugin-hook's
-# already-enforced pattern in release.yml).
+# Runs CONTRIBUTING.md's "Before opening a PR" checklist except one item:
+# test:e2e, which needs a browser download and has a baseline only for macOS.
+# Plus the web typecheck the checklist does not name, and the two drift-checker
+# scripts that otherwise never run automatically: check-docs-inventory.ts
+# (docs/code drift) and check-bundle-size.ts (SPA bundle budget, mirrors
+# verify:plugin-hook's already-enforced pattern in release.yml).
 on:
   pull_request:
   workflow_dispatch:
@@ -45,6 +44,21 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # Paired with Lint, which is how the pre-commit hook runs it
+      # (`npm run lint && npm run format:check`), and cheap enough to fail
+      # ahead of Build rather than after it.
+      - name: Check formatting
+        run: npm run format:check
+
+      # The complete web project: tsconfig.web.json covers source and tests,
+      # while `build:web` gates the release on tsconfig.web.build.json, which
+      # excludes the tests. So this is the only check that reaches src/web's
+      # test files — Vitest strips their types without checking them. Ahead of
+      # Build so that the source errors the two configs share report under this
+      # name instead of as "Build failed".
+      - name: Typecheck (web)
+        run: npx tsc -p tsconfig.web.json
 
       - name: Build
         run: npm run build
