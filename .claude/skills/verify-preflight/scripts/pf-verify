@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# Drive an isolated Preflight instance built from this checkout. See ../SKILL.md.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)"
+PORT="${PF_PORT:-7791}"
+ROOT="${PF_ROOT:-${CLAUDE_JOB_DIR:+$CLAUDE_JOB_DIR/tmp}}"
+ROOT="${ROOT:-${TMPDIR:-/tmp}}/preflight-verify"
+RUN="$ROOT/run-$PORT"
+EVIDENCE="$ROOT/evidence"
+URL="http://127.0.0.1:$PORT"
+
+die() { echo "pf-verify: $*" >&2; exit 1; }
+
+# Every process this script starts gets ENV_ARGS, so the server, the collector,
+# and one-shot MCP calls share one isolated HOME and storage and never read the
+# developer's ~/.claude/projects, ~/.newrelic-preflight, .env, or NR keys.
+# Inherited CLAUDE* vars are dropped because stdio mode resolves its session from
+# CLAUDE_JOB_DIR, which would bind it to the calling agent's real session.
+ENV_ARGS=()
+for v in $(compgen -e); do [[ $v == CLAUDE* ]] && ENV_ARGS+=(-u "$v"); done
+ENV_ARGS+=(
+  HOME="$RUN/home"
+  NEW_RELIC_AI_MCP_STORAGE_PATH="$RUN/store"
+  NR_AI_DASHBOARD_PORT="$PORT"
+  DOTENV_CONFIG_PATH="$RUN/.env"
+  NR_AI_MODE=local
+  NR_AI_SESSION_PERSIST_INTERVAL_MS="${PF_PERSIST_MS:-3000}"
+  NEW_RELIC_LICENSE_KEY=
+  NEW_RELIC_ACCOUNT_ID=
+  CLAUDECODE=1
+  CLAUDE_CODE_ENTRYPOINT=cli
+)
+run_env() { env "${ENV_ARGS[@]}" "$@"; }
+
+pkg_version() { node -p "require('$REPO/package.json').version"; }
+server_pid() { cat "$RUN/server.pid" 2>/dev/null || true; }
+alive() { local p; p="$(server_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
+port_listener() { { lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true; } | head -1; }
+
+ensure_run_dirs() {
+  mkdir -p "$RUN/home/.claude/projects" "$RUN/store" "$EVIDENCE"
+  chmod 700 "$RUN" "$RUN/store"
+}
+
+cmd_up() {
+  [[ -f "$REPO/dist/index.js" && -f "$REPO/dist/web/index.html" ]] ||
+    die "no build in $REPO/dist; run: npm ci && npm run build"
+  alive && die "already up (pid $(server_pid)) at $URL; run doctor or down"
+  local holder; holder="$(port_listener)"
+  [[ -z "$holder" ]] || die "port $PORT is held by pid $holder, not this run; pick PF_PORT=<free port>"
+  rm -rf "$RUN"
+  ensure_run_dirs
+  (cd "$REPO" && exec env "${ENV_ARGS[@]}" node dist/index.js --local --config "$RUN/store/config.json" \
+    >"$RUN/server.log" 2>&1 </dev/null) &
+  echo $! >"$RUN/server.pid"
+  for _ in $(seq 1 60); do
+    curl -sf "$URL/api/health" >/dev/null && { echo "up pid=$(server_pid) url=$URL run=$RUN"; return; }
+    alive || die "server exited during startup; see $RUN/server.log"
+    sleep 0.5
+  done
+  die "no /api/health after 30s; see $RUN/server.log"
+}
+
+cmd_doctor() {
+  local ok=1 pid holder health want
+  pid="$(server_pid)"
+  if alive; then echo "ok   process $pid alive"; else echo "FAIL process not running (run up)"; ok=0; fi
+  holder="$(port_listener)"
+  if [[ -n "$pid" && "$holder" == "$pid" ]]; then echo "ok   port $PORT owned by this run"
+  else echo "FAIL port $PORT listener is '${holder:-none}', expected '$pid'"; ok=0; fi
+  health="$(curl -sf "$URL/api/health" || true)"
+  want="$(pkg_version)"
+  if [[ "$health" == *"\"version\":\"$want\""* ]]; then echo "ok   /api/health reports $want"
+  else echo "FAIL /api/health '${health:-no answer}' does not report checkout version $want (rebuild?)"; ok=0; fi
+  if grep -q "\"projectsDir\":\"$RUN/home/.claude/projects\"" "$RUN/server.log" 2>/dev/null; then
+    echo "ok   transcript watchers read the run's HOME, not the real one"
+  else echo "FAIL transcript watchers are not pinned to $RUN/home"; ok=0; fi
+  local errs; errs="$(grep -c '"level":"error"' "$RUN/server.log" 2>/dev/null || true)"
+  echo "info ${errs:-0} error-level log lines in $RUN/server.log"
+  [[ $ok == 1 ]] || exit 1
+}
+
+hook_json() {
+  node -e '
+    const [ev, sid, tool, input, cwd] = process.argv.slice(1);
+    const p = { hook_event_name: ev, session_id: sid, tool_name: tool,
+      tool_input: JSON.parse(input), tool_use_id: "toolu_" + sid + "_" + process.env.PF_SEQ,
+      cwd, permission_mode: "default" };
+    if (ev === "PostToolUse") p.tool_response = { success: true, stdout: "", exit_code: 0 };
+    if (ev === "PostToolUseFailure") p.error = "verification failure";
+    process.stdout.write(JSON.stringify(p));
+  ' "$@"
+}
+
+cmd_hook() {
+  [[ $# -ge 2 ]] || die "usage: hook <session-id> <tool> [tool-input-json] [--fail] [--cwd DIR]"
+  local sid="$1" tool="$2"; shift 2
+  local input='{}' post=PostToolUse cwd="/tmp/pf-verify-project"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --fail) post=PostToolUseFailure ;;
+      --cwd) cwd="$2"; shift ;;
+      *) input="$1" ;;
+    esac
+    shift
+  done
+  ensure_run_dirs
+  export PF_SEQ="$(date +%s)$RANDOM"
+  for ev in PreToolUse "$post"; do
+    hook_json "$ev" "$sid" "$tool" "$input" "$cwd" | run_env node "$REPO/dist/hooks/collector-script.js"
+  done
+  echo "hook $sid $tool $post"
+}
+
+cmd_turn() {
+  [[ $# -ge 4 ]] || die "usage: turn <session-id> <model> <input-tokens> <output-tokens> [cache-read-tokens]"
+  [[ "$1" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] ||
+    die "turn needs a lowercase UUID session id (the transcript watchers skip anything else); mint one with: pf-verify sid"
+  ensure_run_dirs
+  local dir="$RUN/home/.claude/projects/-tmp-pf-verify-project"
+  mkdir -p "$dir"
+  node -e '
+    const [sid, model, i, o, cr] = process.argv.slice(1);
+    const line = { type: "assistant", sessionId: sid, isSidechain: false,
+      uuid: "u-" + Date.now(), timestamp: new Date().toISOString(),
+      message: { id: "msg_" + Date.now() + Math.random().toString(36).slice(2, 8), model,
+        role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "ok" }],
+        usage: { input_tokens: +i, output_tokens: +o, cache_read_input_tokens: +(cr || 0),
+          cache_creation_input_tokens: 0 } } };
+    process.stdout.write(JSON.stringify(line) + "\n");
+  ' "$@" >>"$dir/$1.jsonl"
+  echo "turn $1 $2 in=$3 out=$4 -> $dir/$1.jsonl"
+}
+
+cmd_api() {
+  [[ $# -ge 1 ]] || die "usage: api <path> [curl args...]"
+  local path="$1"; shift
+  curl -sS "$URL$path" "$@"
+  echo
+}
+
+cmd_mcp() {
+  local sid=""
+  if [[ "${1:-}" == --session ]]; then sid="$2"; shift 2; fi
+  [[ $# -ge 1 ]] || die "usage: mcp [--session <session-id>] <tool-name> [arguments-json]"
+  local tool="$1" args="${2:-}" job=()
+  [[ -n "$args" ]] || args="{}"
+  ensure_run_dirs
+  if [[ -n "$sid" ]]; then
+    mkdir -p "$RUN/job"
+    printf '{"linkScanPath":"%s/home/.claude/projects/-tmp-pf-verify-project/%s.jsonl"}' "$RUN" "$sid" >"$RUN/job/state.json"
+    job=(CLAUDE_JOB_DIR="$RUN/job")
+  fi
+  (cd "$REPO" && run_env ${job[@]+"${job[@]}"} node -e '
+    const { spawn } = require("node:child_process");
+    const [tool, args] = process.argv.slice(1);
+    const child = spawn(process.execPath, ["dist/index.js", "--stdio"], { stdio: ["pipe", "pipe", "ignore"] });
+    const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");
+    let buf = "";
+    const timer = setTimeout(() => { console.error("pf-verify: mcp timed out"); child.kill("SIGKILL"); process.exit(1); }, 30000);
+    child.stdout.on("data", (d) => {
+      buf += d;
+      for (let nl; (nl = buf.indexOf("\n")) >= 0; ) {
+        const msg = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
+        if (msg.id === 1) {
+          send({ jsonrpc: "2.0", method: "notifications/initialized" });
+          setTimeout(() => send({ jsonrpc: "2.0", id: 2, method: "tools/call",
+            params: { name: tool, arguments: JSON.parse(args) } }), Number(process.env.PF_MCP_SETTLE_MS ?? 5000));
+        } else if (msg.id === 2) {
+          clearTimeout(timer);
+          const text = msg.result?.content?.[0]?.text;
+          console.log(text ?? JSON.stringify(msg.error ?? msg.result));
+          const code = msg.error || msg.result?.isError ? 1 : 0;
+          child.on("exit", () => process.exit(code));
+          setTimeout(() => child.kill("SIGKILL"), 5000);
+          child.kill();
+        }
+      }
+    });
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18",
+      capabilities: {}, clientInfo: { name: "pf-verify", version: "1" } } });
+  ' "$tool" "$args")
+}
+
+cmd_down() {
+  local pid; pid="$(server_pid)"
+  if alive; then
+    ps -o command= -p "$pid" | grep -q -- "--config $RUN/store/config.json" ||
+      die "pid $pid is not this run's server; refusing to kill it"
+    kill "$pid"
+    for _ in $(seq 1 20); do alive || break; sleep 0.25; done
+    alive && kill -9 "$pid"
+  fi
+  if [[ -d "$RUN" ]]; then
+    mkdir -p "$EVIDENCE"
+    [[ -f "$RUN/server.log" ]] && cp "$RUN/server.log" "$EVIDENCE/server-$PORT-$(date +%Y%m%d-%H%M%S).log"
+    rm -rf "$RUN"
+  fi
+  echo "down port=$PORT evidence=$EVIDENCE"
+}
+
+cmd_shot() {
+  [[ $# -ge 2 ]] || die "usage: shot <route> <name> [--expect TEXT]... [--click TEXT]..."
+  local route="$1" name="$2"; shift 2
+  mkdir -p "$EVIDENCE"
+  (cd "$REPO" && node --input-type=module -e '
+    import { chromium } from "@playwright/test";
+    const [url, out, ...steps] = process.argv.slice(1);
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    let failed = false;
+    try {
+      await page.goto(url, { waitUntil: "load" });
+      await page.getByRole("heading", { level: 1 }).first().waitFor({ timeout: 10000 });
+      for (let i = 0; i < steps.length; i += 2) {
+        const [kind, text] = [steps[i], steps[i + 1]];
+        const target = page.getByText(text, { exact: false }).first();
+        if (kind === "--click") { await target.click(); await page.waitForTimeout(500); continue; }
+        try { await target.waitFor({ state: "visible", timeout: 5000 }); console.log("ok   visible: " + text); }
+        catch { console.log("FAIL not visible: " + text); failed = true; }
+      }
+      await page.waitForTimeout(500);
+      await page.screenshot({ path: out + ".png", fullPage: true });
+      (await import("node:fs")).writeFileSync(out + ".txt", await page.locator("body").innerText());
+      console.log("shot " + out + ".png");
+    } finally { await browser.close(); }
+    process.exit(failed ? 1 : 0);
+  ' "$URL$route" "$EVIDENCE/$name" "$@")
+}
+
+cmd_sid() { node -p 'crypto.randomUUID()'; }
+
+cmd_where() {
+  echo "repo=$REPO"; echo "url=$URL"; echo "run=$RUN"; echo "evidence=$EVIDENCE"
+}
+
+case "${1:-}" in
+  up | doctor | sid | hook | turn | api | mcp | shot | down | where) c="$1"; shift; "cmd_$c" "$@" ;;
+  *) die "usage: pf-verify {up|doctor|sid|hook|turn|api|mcp|shot|down|where}" ;;
+esac
