@@ -1,11 +1,11 @@
 {
   // The typecheck `npm run build` runs, so what CI's Build step and release.yml gate on.
-  // Excludes test files so a release cannot be blocked by code that ships nothing — at the
-  // cost of leaving them unchecked in automation, which for the four .test.ts files under
-  // src/web is a net loss: ts-jest typechecked them until a0aefe5 stopped Jest claiming
-  // them. Vitest strips types via esbuild and declares no `test.typecheck`, and eslint sets
-  // no `parserOptions.project`. Until #731's check:web-types lands, the editor and a manual
-  // `npx tsc -p tsconfig.web.json` are the only things that see them.
+  // Excludes test files so a release cannot be blocked by code that ships nothing. Nothing
+  // reaches them by way of this config's program: Vitest strips types via esbuild and
+  // declares no `test.typecheck`, eslint sets no `parserOptions.project`, and ts-jest
+  // typechecked the four .test.ts files under src/web only until a0aefe5 stopped Jest
+  // claiming them. CI covers them in its own Typecheck (web) step, which runs the whole
+  // project through tsconfig.web.json.
   "extends": "./tsconfig.web.json",
   "exclude": [
     "src/web/**/*.test.ts",
