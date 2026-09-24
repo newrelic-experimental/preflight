@@ -57,6 +57,13 @@ jobs:
       # test files — Vitest strips their types without checking them. Ahead of
       # Build so that the source errors the two configs share report under this
       # name instead of as "Build failed".
+      #
+      # The program is wider than the step name: five files under src/web import
+      # ../../lib/date.js, so src/lib/date.ts is in it and an edit confined to
+      # that file can redden a step called "Typecheck (web)" on a src/lib path.
+      # Build catches the same error — src/web/lib/forecast.ts is source, so the
+      # build config pulls date.ts in as well — so what this affects is the
+      # label on such a failure, not whether it is caught.
       - name: Typecheck (web)
         run: npx tsc -p tsconfig.web.json
 
