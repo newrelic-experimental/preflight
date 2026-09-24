@@ -1257,6 +1257,18 @@ export function computeCrossProcessTodaySessionIds(deps: ApiHandlerDeps): string
   return Array.from(ids);
 }
 
+// Sessions whose activity this process's in-memory trackers already hold: its
+// own id plus every session it drained today. --local drains every session, so
+// a persisted copy of any of them must not be merged on top of the live totals.
+function sessionIdsHeldByLiveTrackers(deps: ApiHandlerDeps): ReadonlySet<string> {
+  const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+  const held = new Set<string>(
+    deps.liveSessionRegistry?.getTodaySessionIds?.({ includeSynthetic: true }) ?? [],
+  );
+  if (ownSessionId !== undefined) held.add(ownSessionId);
+  return held;
+}
+
 // Narrows this MCP's own peekAllBuffers() rows (raw buffer-file lines from
 // EVERY --stdio process, read-only) into the two event kinds
 // computeContextMetricsFromEvents() understands, scoped to one session.
@@ -2294,15 +2306,13 @@ export function createApiHandler(
 
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
-    // Same own-live + persisted-today, excluding-own-already-persisted-session
+    // Same own-live + persisted-today, excluding-sessions-already-held-live
     // pattern as GET /api/tool-selection-score below: this process's live
-    // breakdown is always included, and every OTHER today session's persisted
-    // breakdown is added on top — never this process's own persisted entry,
-    // which would double-count activity already reflected in the live
-    // tracker.
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // breakdown is always included, and every today session NOT already held
+    // by this process's live trackers is added on top.
+    const held = sessionIdsHeldByLiveTrackers(deps);
     const persistedBreakdowns = (deps.sessionStore?.loadTodaySessions() ?? [])
-      .filter((s) => s.sessionId !== ownSessionId)
+      .filter((s) => !held.has(s.sessionId))
       .map((s) => s.modelBreakdown ?? {});
     const combined = deps.modelUsageTracker.combineBreakdowns([
       deps.modelUsageTracker.getRawBreakdown(),
@@ -2395,13 +2405,13 @@ export function createApiHandler(
       return;
     }
 
-    // Same own-live + persisted-today, excluding-own-already-persisted-
-    // session pattern as GET /api/model-usage above: this process's live
-    // breakdown is always included, and every OTHER today session's
-    // persisted tool/skill buckets are summed on top — different sessions,
-    // so sum, not the max-merge session-store.ts uses to reconcile two
-    // writers of the SAME session.
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // Same own-live + persisted-today, excluding-sessions-already-held-live
+    // pattern as GET /api/model-usage above: this process's live breakdown is
+    // always included, and every today session's persisted tool/skill
+    // buckets NOT already held by this process's live trackers are summed on
+    // top — different sessions, so sum, not the max-merge session-store.ts
+    // uses to reconcile two writers of the SAME session.
+    const held = sessionIdsHeldByLiveTrackers(deps);
     const live = deps.turnCostAttributor.getMetrics();
     const costByToolType: Record<string, ToolTypeCostEntry> = { ...live.costByToolType };
     const costBySkill: Record<string, SkillCostEntry> = { ...live.costBySkill };
@@ -2415,7 +2425,7 @@ export function createApiHandler(
     let mergedAttributedCost = 0;
     let mergedEstimatedCost = 0;
     for (const session of deps.sessionStore?.loadTodaySessions() ?? []) {
-      if (session.sessionId === ownSessionId || !session.attribution) continue;
+      if (held.has(session.sessionId) || !session.attribution) continue;
       mergedEstimatedCost += session.estimatedCostUsd ?? 0;
       mergedAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
     }
@@ -2593,16 +2603,16 @@ export function createApiHandler(
 
   routes.set('GET /api/quality-proxy', (_req, res) => {
     if (!deps.qualityProxyTracker) return unavailable(res, 'qualityProxyTracker');
-    // Same own-live + persisted-today, excluding-own-already-persisted-session
+    // Same own-live + persisted-today, excluding-sessions-already-held-live
     // pattern as GET /api/model-usage: this process's live raw counts are
-    // always included, and every OTHER today session's persisted raw counts
-    // are summed on top — rates are derived exactly once from the summed
-    // totals, never averaged per-session. qualityByTurnBucket/
-    // degradationDetected/events are inherently within-session signals with
-    // no persisted cross-session equivalent, so they're sourced from the
-    // live tracker only.
+    // always included, and every today session's persisted raw counts NOT
+    // already held by this process's live trackers are summed on top — rates
+    // are derived exactly once from the summed totals, never averaged
+    // per-session. qualityByTurnBucket/degradationDetected/events are
+    // inherently within-session signals with no persisted cross-session
+    // equivalent, so they're sourced from the live tracker only.
     const live = deps.qualityProxyTracker.getMetrics();
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    const held = sessionIdsHeldByLiveTrackers(deps);
     // Day-filter this process's own live contribution the same way GET
     // /api/tool-selection-score does just below — QualityProxyTracker has no
     // concept of "day" internally (events accumulate for the tracker's whole
@@ -2615,7 +2625,7 @@ export function createApiHandler(
       live.events.filter((e) => e.timestamp >= startMs),
     );
     const persistedCounts = (deps.sessionStore?.loadTodaySessions() ?? [])
-      .filter((s) => s.sessionId !== ownSessionId)
+      .filter((s) => !held.has(s.sessionId))
       .map((s) => s.qualityProxy ?? ZERO_QUALITY_PROXY_COUNTS);
     const combined = combineQualityProxyRawCounts([liveRawCounts, ...persistedCounts]);
     jsonOk(res, {
@@ -2637,15 +2647,16 @@ export function createApiHandler(
     );
 
     // (2) every OTHER process's still-undrained buffer, paired into full
-    // ToolCallRecords (see tool-selection-aggregate.ts). This process's own
-    // buffer file is typically already drained into (1) by the time it's
-    // peeked, but exclude its sessionId defensively so a change in drain
-    // timing can never double-count.
-    const ownSessionId = deps.sessionTracker?.getMetrics().sessionId;
+    // ToolCallRecords (see tool-selection-aggregate.ts). Sessions this
+    // process's own live trackers already hold (its own id, plus — in
+    // --local mode — every session it drained today) are typically already
+    // in (1) by the time they're peeked, but exclude them defensively so a
+    // change in drain timing can never double-count.
+    const held = sessionIdsHeldByLiveTrackers(deps);
     const peeked = deps.localStore?.peekAllBuffers() ?? [];
     const crossProcessRecords = pairToolCallsFromBufferEvents(
       peeked as unknown as readonly HookEvent[],
-    ).filter((r) => r.timestamp >= startMs && r.sessionId !== ownSessionId);
+    ).filter((r) => r.timestamp >= startMs && (r.sessionId === null || !held.has(r.sessionId)));
 
     // Score all of today's live, not-yet-persisted activity together so
     // redundant-read/repeated-failure detection sees real cross-call
@@ -2660,7 +2671,7 @@ export function createApiHandler(
     // buildSessionSummary in session-store.ts), before outputSizeBytes was
     // gone for good.
     const persistedSummaries = (deps.sessionStore?.loadTodaySessions() ?? [])
-      .filter((s) => s.sessionId !== ownSessionId)
+      .filter((s) => !held.has(s.sessionId))
       .map((s) => s.toolSelectionMetrics)
       .filter((m): m is ToolSelectionSummary => m != null);
 

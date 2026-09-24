@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.3] - 2026-09-22
+
+### Fixed
+
+- **The local dashboard counted a session twice once it was saved to disk.** Today's "Where today's spend went" Models table showed double the requests and cost of the "Spend today" tile beside it, and the Tool Selection and Quality panels counted the same calls and signals twice. Each session now counts once, before and after it is saved.
+
 ## [1.57.0] - 2026-09-17
 
 ### Added

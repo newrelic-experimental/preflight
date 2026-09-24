@@ -2370,6 +2370,84 @@ describe('api-handler GET /api/cost-per-tool', () => {
     expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
   });
 
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const liveMetrics = {
+      turns: [],
+      costByToolType: { Read: { totalCost: 0.01, callCount: 1, avgCost: 0.01 } },
+      costBySkill: {
+        unslop: {
+          callCount: 1,
+          attributedCallCount: 1,
+          totalCost: 0.02,
+          avgCost: 0.02,
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          totalDurationMs: 200,
+          tokens: 150,
+        },
+      },
+      totalAttributedCost: 0.03,
+      attributionRate: 1,
+    };
+    // Already reflected in liveMetrics above (this --local process drained
+    // sess-live) — its persisted copy must not be folded in again.
+    const liveSession = {
+      sessionId: 'sess-live',
+      attribution: {
+        buckets: { tool: { Read: { costUsd: 999, tokens: 0, count: 999, durationMs: 0 } } },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const otherSession = {
+      sessionId: 'sess-other',
+      estimatedCostUsd: 0.4,
+      attribution: {
+        buckets: {
+          tool: { Read: { costUsd: 0.05, tokens: 0, count: 2, durationMs: 0 } },
+          skill: { unslop: { costUsd: 0.01, tokens: 40, count: 1, durationMs: 100 } },
+        },
+        highContextCostUsd: 0,
+        apiDurationMs: null,
+      },
+    };
+    const handler = createApiHandler({
+      sessionTracker: {
+        getMetrics: () => ({ sessionId: 'local-1790000000000' }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      turnCostAttributor: {
+        getMetrics: () => liveMetrics,
+      } as unknown as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+      sessionStore: {
+        loadTodaySessions: () => [liveSession, otherSession],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      costTracker: {
+        getMetrics: () => ({ sessionTotalCostUsd: 0.5 }),
+      } as unknown as Parameters<typeof createApiHandler>[0]['costTracker'],
+    });
+    const req = { method: 'GET', url: '/api/cost-per-tool' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const result = JSON.parse(body());
+    // sess-live's bucket (cost 999) must never be folded in — only
+    // other-session's, exactly as in the own-session-id test above, but here
+    // the excluded session's id differs from the server's synthetic own id.
+    expect(result.costByToolType.Read.callCount).toBe(3);
+    expect(result.costByToolType.Read.totalCost).toBeCloseTo(0.06, 10);
+    expect(result.costByToolType.Read.avgCost).toBeCloseTo(0.02, 10);
+    expect(result.totalAttributedCost).toBeCloseTo(0.08, 10);
+    expect(result.attributionRate).toBeCloseTo(0.08 / 0.9, 10);
+  });
+
   it('returns 503 for ?days= when sessionStore.loadAllSessions is missing', async () => {
     const handler = createApiHandler({
       turnCostAttributor: {
@@ -5993,6 +6071,77 @@ describe('api-handler GET /api/quality-proxy', () => {
     expect(parsed.diffApplyRate).toBeCloseTo(0.9);
   });
 
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const tracker = new QualityProxyTracker();
+    const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
+      id: `id-${Math.random()}`,
+      sessionId: 'sess-live',
+      toolName: 'Edit',
+      toolUseId: `tu-${Math.random()}`,
+      timestamp: Date.now(),
+      durationMs: 1,
+      success: true,
+      ...overrides,
+    });
+    // Live, already reflected via the --local process's drain of sess-live:
+    // 1 applied / 1 failed = 50% apply rate.
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/a.ts', success: true }));
+    tracker.recordToolCall(record({ toolName: 'Edit', filePath: '/c.ts', success: false }));
+    const liveRawCounts = tracker.getRawCounts();
+    const persistedToday = [
+      {
+        // sess-live's activity is already in the live tracker above (this
+        // --local process drained it) — must NOT be added again, even
+        // though its sessionId differs from the server's synthetic own id.
+        sessionId: 'sess-live',
+        qualityProxy: liveRawCounts,
+      },
+      {
+        sessionId: 'sess-other',
+        qualityProxy: {
+          totalSignals: 8,
+          diffApplyCleanCount: 8,
+          diffFailCount: 0,
+          testPassCount: 0,
+          testFailCount: 0,
+          backtrackCount: 0,
+          selfCorrectionCount: 0,
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      qualityProxyTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'local-1790000000000' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/quality-proxy' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // sess-live's persisted counts (identical to the live counts above) must
+    // not be added again — only sess-other's 8 applies are: 1 (live applied)
+    // + 8 (other) = 9 applied, 1 failed => 10 total, diffApplyRate = 9/10 = 0.9.
+    expect(parsed.totalSignals).toBe(10);
+    expect(parsed.diffApplyRate).toBeCloseTo(0.9);
+  });
+
   it('ignores persisted-today sessions with no qualityProxy field (legacy files)', async () => {
     const tracker = new QualityProxyTracker();
     const record = (overrides: Partial<ToolCallRecord>): ToolCallRecord => ({
@@ -6450,6 +6599,97 @@ describe('api-handler GET /api/tool-selection-score', () => {
     // the deflated score a doubled penalty would produce.
     expect(parsed.score).toBe(expectedOwnSummary.score);
   });
+
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const now = Date.now();
+    // Cross-process peeked buffer path: sess-live is a session this --local
+    // process already drained into its own trackers, so its raw peeked
+    // events must not be reconstructed a second time here.
+    const peekedEvents = [
+      {
+        mode: 'pre',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'p1',
+        sessionId: 'sess-live',
+        toolInput: { file_path: '/g.ts' },
+      },
+      {
+        mode: 'post',
+        tool: 'Read',
+        timestamp: now,
+        toolUseId: 'p1',
+        sessionId: 'sess-live',
+        toolOutput: {},
+        outputSize: 100,
+        success: true,
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['localStore']>['peekAllBuffers']
+    >;
+
+    // Persisted path: a checkpoint for sess-live (already reflected live via
+    // the peeked buffer above) plus a genuinely different session,
+    // sess-other.
+    const persistedToday = [
+      {
+        sessionId: 'sess-live',
+        toolSelectionMetrics: {
+          score: 0.5,
+          totalCalls: 5,
+          penalizedCalls: 5,
+          redundantReadCount: 5,
+          repeatedFailureCount: 0,
+          unusedOutputCount: 0,
+        },
+      },
+      {
+        sessionId: 'sess-other',
+        toolSelectionMetrics: {
+          score: 0.5,
+          totalCalls: 5,
+          penalizedCalls: 3,
+          redundantReadCount: 0,
+          repeatedFailureCount: 3,
+          unusedOutputCount: 0,
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+
+    const handler = createApiHandler({
+      toolSelectionScorer: new ToolSelectionScorer(),
+      localStore: { peekAllBuffers: () => peekedEvents },
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'local-1790000000000' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/tool-selection-score' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // sess-live contributes nothing here — neither its raw peeked-buffer
+    // event nor its persisted checkpoint may be folded in, since this
+    // --local process already holds its activity live. Only sess-other's
+    // persisted checkpoint combines with the empty live score.
+    expect(parsed.totalCalls).toBe(5);
+    expect(parsed.repeatedFailureCount).toBe(3);
+  });
 });
 
 describe('api-handler GET /api/model-usage', () => {
@@ -6542,6 +6782,78 @@ describe('api-handler GET /api/model-usage', () => {
     expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
     expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
     expect(parsed.byModel['model-a'].costPerMillionTokens).toBeCloseTo(2000);
+    expect(parsed.byModel['model-a'].requestCount).toBe(10);
+  });
+
+  it('does not double-count a session this --local process already holds live (persisted copy of a drained session)', async () => {
+    const tracker = new ModelUsageTracker();
+    // Live, already reflected via the --local process's drain of sess-live:
+    // $1 / 100 output tokens.
+    tracker.recordUsage('model-a', makeUsage({ inputTokens: 0, outputTokens: 100 }), 1);
+    const persistedToday = [
+      {
+        // sess-live's activity is already in the live tracker above (this
+        // --local process drained it) — must NOT be added again, even
+        // though its sessionId differs from the server's synthetic own id.
+        sessionId: 'sess-live',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 1,
+            totalInputTokens: 0,
+            totalOutputTokens: 100,
+            totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      },
+      {
+        sessionId: 'sess-other',
+        modelBreakdown: {
+          'model-a': {
+            requestCount: 9,
+            totalInputTokens: 0,
+            totalOutputTokens: 900,
+            totalCostUsd: 1,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            totalThinkingTokens: 0,
+          },
+        },
+      },
+    ] as unknown as ReturnType<
+      NonNullable<Parameters<typeof createApiHandler>[0]['sessionStore']>['loadTodaySessions']
+    >;
+    const handler = createApiHandler({
+      modelUsageTracker: tracker,
+      sessionTracker: {
+        getMetrics: () =>
+          ({ sessionId: 'local-1790000000000' }) as unknown as ReturnType<
+            NonNullable<Parameters<typeof createApiHandler>[0]['sessionTracker']>['getMetrics']
+          >,
+      },
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getSessionName: () => null,
+        getTodaySessionIds: () => ['sess-live'],
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      sessionStore: {
+        loadTodaySessions: () => persistedToday,
+        listSessions: () => [],
+        loadSession: () => null,
+      },
+    });
+    const req = { method: 'GET', url: '/api/model-usage' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const parsed = JSON.parse(body());
+    // sess-live's persisted entry (also $1/100tok) must not be added on top
+    // of the identical live data — only sess-other's persisted entry is:
+    // 100 (live) + 900 (other) = 1000 output tokens, $1 + $1 = $2 total.
+    expect(parsed.byModel['model-a'].totalOutputTokens).toBe(1000);
+    expect(parsed.byModel['model-a'].totalCostUsd).toBeCloseTo(2);
     expect(parsed.byModel['model-a'].requestCount).toBe(10);
   });
 
