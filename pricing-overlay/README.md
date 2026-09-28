@@ -10,7 +10,11 @@ a user has configured their own custom pricing file, and is gap-fill-only:
 vendored table instead of overriding it, so it can never silently mask a
 correction made upstream.
 
-It's currently empty (`{}`). This isn't tied to any one platform — add an
+It currently carries `claude-opus-5-5` (Anthropic first-party rates) and
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` (OpenAI standard-processing rates),
+all checked 2026-09-22, until the vendored table picks them up. The GPT-6
+entries share the cache-read limitation described below: OpenAI doubles the
+cached-input rate above 272K input tokens, which this shape can't express. This isn't tied to any one platform — add an
 entry here whenever you hit a real model ID that Preflight resolves to `$0`
 cost because the vendored table doesn't have it yet, regardless of which
 platform surfaced it.
