@@ -1,1 +1,45 @@
-{}
+{
+  "claude-opus-5-5": {
+    "inputPerMTok": 4,
+    "outputPerMTok": 20,
+    "thinkingPerMTok": 20,
+    "cacheReadPerMTok": 0.2,
+    "cacheCreationPerMTok": 5,
+    "contextWindow": 1000000
+  },
+  "claude-sonnet-5-5": {
+    "inputPerMTok": 2,
+    "outputPerMTok": 10,
+    "thinkingPerMTok": 10,
+    "cacheReadPerMTok": 0.2,
+    "cacheCreationPerMTok": 2.5,
+    "contextWindow": 1000000
+  },
+  "gpt-6-astra": {
+    "inputPerMTok": 10,
+    "outputPerMTok": 50,
+    "cacheReadPerMTok": 1,
+    "contextWindow": 1050000,
+    "tierThreshold": 272000,
+    "tierInputPerMTok": 20,
+    "tierOutputPerMTok": 75
+  },
+  "gpt-6-sol": {
+    "inputPerMTok": 2,
+    "outputPerMTok": 10,
+    "cacheReadPerMTok": 0.2,
+    "contextWindow": 1050000,
+    "tierThreshold": 272000,
+    "tierInputPerMTok": 4,
+    "tierOutputPerMTok": 15
+  },
+  "gpt-6-luna": {
+    "inputPerMTok": 0.1,
+    "outputPerMTok": 0.5,
+    "cacheReadPerMTok": 0.01,
+    "contextWindow": 1050000,
+    "tierThreshold": 272000,
+    "tierInputPerMTok": 0.2,
+    "tierOutputPerMTok": 0.75
+  }
+}

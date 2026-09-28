@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.3] - 2026-09-28
+
+### Fixed
+
+- **Sessions on Claude Sonnet 5.5 showed $0 cost and measured context against 200K instead of 1M.** Preflight had no price for `claude-sonnet-5-5`. It now prices Sonnet 5.5 at Anthropic's rates ($2 input, $10 output, $0.20 cache read, $2.50 cache write per million tokens) with a 1M context window. Bedrock and Vertex Sonnet 5.5 IDs stay unpriced until their rates are published.
+
+## [1.57.2] - 2026-09-22
+
+### Fixed
+
+- **Sessions on OpenAI's GPT-6 models showed $0 cost and measured context against 200K instead of 1.05M.** Preflight had no price for `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`. It now prices them at OpenAI's standard rates per million tokens: Astra $10 input and $50 output, Sol $2 and $10, Luna $0.10 and $0.50, with cached input at a tenth of the input rate. Requests over 272K input tokens are billed at 2x input and 1.5x output, as OpenAI charges.
+
+## [1.57.1] - 2026-09-22
+
+### Fixed
+
+- **Sessions on Claude Opus 5.5 showed $0 cost and measured context against 200K instead of 1M.** Preflight had no price for `claude-opus-5-5`. It now prices Opus 5.5 at Anthropic's rates ($4 input, $20 output, $0.20 cache read, $5 cache write per million tokens) with a 1M context window. Bedrock and Vertex Opus 5.5 IDs stay unpriced until their rates are published.
+
 ## [1.57.0] - 2026-09-17
 
 ### Added
