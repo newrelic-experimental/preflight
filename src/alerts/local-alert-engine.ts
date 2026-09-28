@@ -312,9 +312,8 @@ export class LocalAlertEngine {
   // ---------------------------------------------------------------------------
 
   /**
-   * Cost windows are session/today/week cumulative — not a true rolling
-   * window. The engine reads whichever bucket the rule names; a real
-   * rolling-N-second cost calculation is not yet implemented.
+   * Cost windows are session/today/week cumulative — not a rolling
+   * N-second window. The engine reads whichever bucket the rule names.
    */
   private computeCostWindowValue(rule: CostWindowRule, snapshot: AlertSnapshot): number | null {
     switch (rule.costPeriod) {
