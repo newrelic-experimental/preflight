@@ -12,17 +12,25 @@ interface ViewCase {
   readonly nav: string;
   readonly path: string;
   readonly heading: string;
+  /**
+   * A request only this view makes on mount. settle() waits until it has been answered, so
+   * a view whose queries never fire fails instead of passing on the App shell's own fetches.
+   */
+  readonly query: RegExp;
 }
 
 const VIEWS: readonly ViewCase[] = [
-  { nav: 'Today', path: '/', heading: 'Today' },
-  { nav: 'Sessions', path: '/sessions', heading: 'Sessions' },
-  { nav: 'History', path: '/history', heading: 'History' },
-  { nav: 'Git', path: '/git', heading: 'Git Efficiency' },
-  { nav: 'Audit', path: '/audit', heading: 'Audit' },
-  { nav: 'Settings', path: '/settings', heading: 'Settings' },
-  { nav: 'Alerts', path: '/alerts', heading: 'Alerts' },
+  { nav: 'Today', path: '/', heading: 'Today', query: /^\/api\/sessions\/today\/aggregate$/ },
+  { nav: 'Sessions', path: '/sessions', heading: 'Sessions', query: /^\/api\/sessions$/ },
+  { nav: 'History', path: '/history', heading: 'History', query: /^\/api\/weekly$/ },
+  { nav: 'Git', path: '/git', heading: 'Git Efficiency', query: /^\/api\/git-efficiency$/ },
+  { nav: 'Audit', path: '/audit', heading: 'Audit', query: /^\/api\/audit$/ },
+  { nav: 'Settings', path: '/settings', heading: 'Settings', query: /^\/api\/settings$/ },
+  { nav: 'Alerts', path: '/alerts', heading: 'Alerts', query: /^\/api\/budget$/ },
 ];
+
+/** The request Sessions and History both render their session lists from. */
+const SESSIONS_LIST = /^\/api\/sessions$/;
 
 /**
  * Error responses the dashboard requests and handles as a normal state, each with the
@@ -37,10 +45,10 @@ const EXPECTED_ERROR_RESPONSES: readonly { readonly status: number; readonly pat
 interface ErrorLog {
   readonly errors: string[];
   /**
-   * Resolves once the current document has had at least one /api/ response and no request
-   * other than the SSE stream is in flight.
+   * Resolves once the current document has answered a request matching each of `required`
+   * and no request other than the SSE stream is in flight.
    */
-  settle(): Promise<void>;
+  settle(required: readonly RegExp[]): Promise<void>;
 }
 
 /**
@@ -51,7 +59,8 @@ interface ErrorLog {
 function collectErrors(page: Page): ErrorLog {
   const errors: string[] = [];
   const inFlight = new Set<Request>();
-  let apiResponses = 0;
+  // Pathnames answered on the current document.
+  const answered = new Set<string>();
   page.on('console', (msg) => {
     // Chromium logs every failed fetch as a console error with no URL in it. Responses and
     // transport failures are checked below instead, where the URL is known and a handled
@@ -71,7 +80,7 @@ function collectErrors(page: Page): ErrorLog {
   page.on('framenavigated', (frame) => {
     if (frame !== page.mainFrame()) return;
     inFlight.clear();
-    apiResponses = 0;
+    answered.clear();
   });
   page.on('requestfailed', (req) => {
     inFlight.delete(req);
@@ -87,7 +96,7 @@ function collectErrors(page: Page): ErrorLog {
     // never reads the body of an error response, so a handled 404 would stay in flight.
     inFlight.delete(res.request());
     const { pathname } = new URL(res.url());
-    if (pathname.startsWith('/api/')) apiResponses++;
+    answered.add(pathname);
     if (res.status() < 400) return;
     const expected = EXPECTED_ERROR_RESPONSES.some(
       (e) => e.status === res.status() && e.path.test(pathname),
@@ -97,20 +106,22 @@ function collectErrors(page: Page): ErrorLog {
   return {
     errors,
     // Not waitForLoadState('networkidle'): the SSE stream never closes and Today's queries
-    // poll, so the page is never idle for the 500ms that requires. The response count keeps
-    // an empty set from passing before the view has issued its queries at all, and two quiet
-    // samples in a row (polls are at least 100ms apart) keep the gap between a query and the
-    // dependent ones its response enables — Today's session-scoped wave — from passing too.
+    // poll, so the page is never idle for the 500ms that requires. `required` names requests
+    // the view itself makes — the App shell answers a couple of /api/ fetches on every route,
+    // so "some response arrived" proves nothing about the view — and two quiet samples in a
+    // row (polls are at least 100ms apart) keep the gap between a query and the dependent
+    // ones its response enables, such as Today's session-scoped wave, from passing too.
     // Polls a description rather than a boolean, so a timeout says what it was waiting on.
-    settle: () => {
+    settle: (required) => {
       let quietSamples = 0;
       return expect
         .poll(
           () => {
-            quietSamples = apiResponses > 0 && inFlight.size === 0 ? quietSamples + 1 : 0;
+            const missing = required.filter((re) => ![...answered].some((p) => re.test(p)));
+            quietSamples = missing.length === 0 && inFlight.size === 0 ? quietSamples + 1 : 0;
             return quietSamples >= 2
               ? 'settled'
-              : `${apiResponses} /api/ responses; in flight: ${[...inFlight].map((r) => r.url()).join(', ')}`;
+              : `not yet answered: ${missing.join(', ') || 'none'}; in flight: ${[...inFlight].map((r) => r.url()).join(', ') || 'none'}`;
           },
           { timeout: 10_000 },
         )
@@ -121,7 +132,9 @@ function collectErrors(page: Page): ErrorLog {
 
 async function expectView(page: Page, view: ViewCase): Promise<void> {
   await expect(page).toHaveURL((url) => url.pathname === view.path);
-  await expect(page.getByRole('heading', { level: 1, name: view.heading })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { level: 1, name: view.heading, exact: true }),
+  ).toBeVisible();
   // Exact, so a view's own 'Session not found' state is not mistaken for the router's.
   await expect(page.getByText('Not found', { exact: true })).toHaveCount(0);
 }
@@ -130,10 +143,11 @@ test('VIEWS lists every sidebar entry, in order', async ({ page }) => {
   // The router and the sidebar are edited together when a view is added; this is what makes
   // leaving VIEWS behind fail instead of silently skipping the new view's smoke test.
   await page.goto('/');
-  // The label span, not the whole button, which also holds Today's alert-count badge.
-  await expect(page.getByRole('navigation').locator('button > span:first-of-type')).toHaveText(
-    VIEWS.map((v) => v.nav),
-  );
+  // Counted on buttons, so an entry built without a label span still counts; labels read
+  // from the span, not the whole button, which also holds Today's alert-count badge.
+  const nav = page.getByRole('navigation');
+  await expect(nav.getByRole('button')).toHaveCount(VIEWS.length);
+  await expect(nav.locator('button > span:first-of-type')).toHaveText(VIEWS.map((v) => v.nav));
 });
 
 // Each test reaches its view twice — from the sidebar, then by reloading on the view's own
@@ -155,7 +169,7 @@ for (const store of [
         await page.reload();
         await expectView(page, view);
         // Let the view's queries settle, so an error from a failed fetch is caught here too.
-        await log.settle();
+        await log.settle([view.query]);
         expect(log.errors).toEqual([]);
       });
     }
@@ -170,7 +184,7 @@ test.describe('empty store', () => {
     await page.goto('/sessions');
     await expect(page.getByText('No sessions yet')).toBeVisible();
     await expect(page.getByText(FIXTURE_SESSION_NAME)).toHaveCount(0);
-    await log.settle();
+    await log.settle([SESSIONS_LIST]);
     expect(log.errors).toEqual([]);
   });
 
@@ -179,7 +193,7 @@ test.describe('empty store', () => {
     await page.goto('/history');
     // Settle first: History renders both strings from `sessions.data ?? []` at first paint,
     // before /api/sessions answers, so asserting them earlier would pass on any store.
-    await log.settle();
+    await log.settle([SESSIONS_LIST]);
     expect(log.errors).toEqual([]);
     await expect(page.getByText('No model data yet')).toBeVisible();
     await expect(page.getByText('0 sessions', { exact: true })).toBeVisible();
@@ -196,7 +210,7 @@ test.describe('store with one session', () => {
       page.getByRole('button', { name: new RegExp(FIXTURE_SESSION_NAME) }),
     ).toBeVisible();
     await expect(page.getByText('No sessions yet')).toHaveCount(0);
-    await log.settle();
+    await log.settle([SESSIONS_LIST]);
     expect(log.errors).toEqual([]);
   });
 
@@ -206,7 +220,7 @@ test.describe('store with one session', () => {
     await expect(page.getByText('1 sessions', { exact: true })).toBeVisible();
     await expect(page.getByRole('cell', { name: FIXTURE_MODEL })).toBeVisible();
     await expect(page.getByText('No model data yet')).toHaveCount(0);
-    await log.settle();
+    await log.settle([SESSIONS_LIST]);
     expect(log.errors).toEqual([]);
   });
 });
