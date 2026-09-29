@@ -364,11 +364,11 @@ describe('Local alerts — cost.window today/week via BudgetTracker', () => {
   }
 
   it.each([
-    ['today', 25, 5],
-    ['week', 5, 25],
+    ['today', 25, 5, 25],
+    ['week', 5, 25, 25],
   ] as const)(
     "fires a costPeriod='%s' rule once BudgetTracker's spend crosses the threshold",
-    (costPeriod, dailyUsd, weeklyUsd) => {
+    (costPeriod, dailyUsd, weeklyUsd, expectedValue) => {
       const tracker = new BudgetTracker({
         sessionBudgetUsd: null,
         dailyBudgetUsd: null,
@@ -379,16 +379,20 @@ describe('Local alerts — cost.window today/week via BudgetTracker', () => {
       engine.loadRules([makeCostRule(costPeriod)]);
 
       const t0 = 1700000000000;
-      tracker.updateCost(1, 1, 1);
-      expect(engine.evaluate(collector.snapshot(t0, []), t0)).toHaveLength(0);
+      tracker.updateCost(0, 1, 1);
+      const before = collector.snapshot(t0, engine.getRequiredWindows());
+      expect(engine.evaluate(before, t0)).toHaveLength(0);
 
       // Only the bucket the rule names crosses the threshold; the other stays under it.
-      tracker.updateCost(1, dailyUsd, weeklyUsd);
-      const events = engine.evaluate(collector.snapshot(t0 + 1000, []), t0 + 1000);
+      tracker.updateCost(0, dailyUsd, weeklyUsd);
+      const events = engine.evaluate(
+        collector.snapshot(t0 + 1000, engine.getRequiredWindows()),
+        t0 + 1000,
+      );
       expect(events).toHaveLength(1);
       expect(events[0]!.id).toBe(`${costPeriod}-cost`);
       expect(events[0]!.state).toBe('firing');
-      expect(events[0]!.value).toBe(25);
+      expect(events[0]!.value).toBe(expectedValue);
     },
   );
 });
