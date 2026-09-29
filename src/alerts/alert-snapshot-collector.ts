@@ -63,8 +63,8 @@ export interface AlertSnapshotCollectorDeps {
    * snapshot's `cost.todayUsd` and `cost.weekUsd` reflect prior-session +
    * current-session today/weekly totals (the same numbers fed to
    * BudgetTracker.updateCost), enabling cost.window rules with `today`/
-   * `week` periods to fire. Without this, today/week fall back to 0, so
-   * cost.window rules with non-session periods effectively become no-ops.
+   * `week` periods to fire. Without this, today/week always read 0, so an
+   * `above` rule never fires and a `below` rule fires immediately.
    */
   readonly budgetTracker?: {
     getStatus(): {
