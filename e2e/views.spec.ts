@@ -36,21 +36,26 @@ const EXPECTED_ERROR_RESPONSES: readonly { readonly status: number; readonly pat
 
 interface ErrorLog {
   readonly errors: string[];
-  /** Resolves once no request other than the SSE stream is in flight. */
+  /**
+   * Resolves once the current document has had at least one /api/ response and no request
+   * other than the SSE stream is in flight.
+   */
   settle(): Promise<void>;
 }
 
 /**
- * Collects console errors, uncaught exceptions and unexpected error responses from the
- * moment it is called. Attach it before the first navigation, or errors thrown during
- * initial load are missed.
+ * Collects console errors, uncaught exceptions, unexpected error responses and transport
+ * failures from the moment it is called. Attach it before the first navigation, or errors
+ * thrown during initial load are missed.
  */
 function collectErrors(page: Page): ErrorLog {
   const errors: string[] = [];
   const inFlight = new Set<Request>();
+  let apiResponses = 0;
   page.on('console', (msg) => {
-    // Chromium logs every non-2xx fetch as a console error with no URL in it. Responses are
-    // checked below instead, where the URL is known and a handled 404 can be told apart.
+    // Chromium logs every failed fetch as a console error with no URL in it. Responses and
+    // transport failures are checked below instead, where the URL is known and a handled
+    // 404 can be told apart.
     if (msg.type() === 'error' && !msg.text().startsWith('Failed to load resource')) {
       errors.push(`console.error: ${msg.text()}`);
     }
@@ -59,17 +64,31 @@ function collectErrors(page: Page): ErrorLog {
   page.on('request', (req) => {
     if (req.resourceType() !== 'eventsource') inFlight.add(req);
   });
-  page.on('requestfailed', (req) => inFlight.delete(req));
-  // A reload cancels the old document's fetches without always reporting them as failed.
+  // A committed navigation starts a new count. Reset here, not on the navigation request:
+  // the old document keeps running until the new one commits, and fetches it starts in that
+  // window are dropped with it without being reported as failed. Same-document navigations
+  // (a sidebar click) reset too, which only makes a settle() before a reload more lenient.
   page.on('framenavigated', (frame) => {
-    if (frame === page.mainFrame()) inFlight.clear();
+    if (frame !== page.mainFrame()) return;
+    inFlight.clear();
+    apiResponses = 0;
+  });
+  page.on('requestfailed', (req) => {
+    inFlight.delete(req);
+    const reason = req.failure()?.errorText ?? 'unknown';
+    // ERR_ABORTED is a cancellation — a reload, or React Query aborting an unmounted
+    // view's queries — not a failure of the request itself.
+    if (reason !== 'net::ERR_ABORTED') {
+      errors.push(`request failed (${reason}): ${new URL(req.url()).pathname}`);
+    }
   });
   page.on('response', (res) => {
     // Answered is settled. Not 'requestfinished': that waits for the body, and the client
     // never reads the body of an error response, so a handled 404 would stay in flight.
     inFlight.delete(res.request());
-    if (res.status() < 400) return;
     const { pathname } = new URL(res.url());
+    if (pathname.startsWith('/api/')) apiResponses++;
+    if (res.status() < 400) return;
     const expected = EXPECTED_ERROR_RESPONSES.some(
       (e) => e.status === res.status() && e.path.test(pathname),
     );
@@ -78,15 +97,27 @@ function collectErrors(page: Page): ErrorLog {
   return {
     errors,
     // Not waitForLoadState('networkidle'): the SSE stream never closes and Today's queries
-    // poll, so the page is never idle for the 500ms that requires.
-    settle: () => expect.poll(() => inFlight.size, { timeout: 10_000 }).toBe(0),
+    // poll, so the page is never idle for the 500ms that requires. The response count keeps
+    // an empty set from passing before the view has issued its queries at all.
+    // Polls a description rather than a boolean, so a timeout says what it was waiting on.
+    settle: () =>
+      expect
+        .poll(
+          () =>
+            apiResponses > 0 && inFlight.size === 0
+              ? 'settled'
+              : `${apiResponses} /api/ responses; in flight: ${[...inFlight].map((r) => r.url()).join(', ')}`,
+          { timeout: 10_000 },
+        )
+        .toBe('settled'),
   };
 }
 
 async function expectView(page: Page, view: ViewCase): Promise<void> {
   await expect(page).toHaveURL((url) => url.pathname === view.path);
   await expect(page.getByRole('heading', { level: 1, name: view.heading })).toBeVisible();
-  await expect(page.getByText('Not found')).toHaveCount(0);
+  // Exact, so a view's own 'Session not found' state is not mistaken for the router's.
+  await expect(page.getByText('Not found', { exact: true })).toHaveCount(0);
 }
 
 // Each test reaches its view twice — from the sidebar, then by reloading on the view's own

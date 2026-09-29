@@ -1,6 +1,8 @@
 // The one persisted session the seeded e2e server starts with. Specs assert against these
 // values, so they are exported rather than repeated.
 
+import type { SessionSummary } from '../../src/storage/types.js';
+
 export const FIXTURE_SESSION_ID = 'e2e-fixture-session-0001';
 export const FIXTURE_SESSION_NAME = 'e2e fixture session';
 export const FIXTURE_MODEL = 'claude-sonnet-4-5';
@@ -13,7 +15,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * view's empty-state gate reads today's totals, and a run just after midnight would
  * otherwise flip between the two.
  */
-export function buildFixtureSession(now: number): Record<string, unknown> {
+export function buildFixtureSession(now: number): SessionSummary {
   const startTime = now - 2 * DAY_MS;
   const durationMs = 20 * 60 * 1000;
   return {
@@ -22,6 +24,7 @@ export function buildFixtureSession(now: number): Record<string, unknown> {
     startTime,
     endTime: startTime + durationMs,
     durationMs,
+    developer: 'e2e',
     model: FIXTURE_MODEL,
     // /api/sessions drops sessions with no tool calls, so this has to be non-zero.
     toolCallCount: 12,

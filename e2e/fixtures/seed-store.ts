@@ -19,7 +19,7 @@ const session = buildFixtureSession(Date.now());
 const sessionsDir = join(storageDir, 'sessions');
 mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
 // SessionStore names files YYYY-MM-DD_<sessionId>.json after the UTC start date.
-const date = new Date(session.startTime as number).toISOString().slice(0, 10);
+const date = new Date(session.startTime).toISOString().slice(0, 10);
 writeFileSync(
   join(sessionsDir, `${date}_${FIXTURE_SESSION_ID}.json`),
   JSON.stringify(session, null, 2) + '\n',
