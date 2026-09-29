@@ -384,6 +384,8 @@ describe('Local alerts — cost.window today/week via BudgetTracker', () => {
       expect(engine.evaluate(before, t0)).toHaveLength(0);
 
       // Only the bucket the rule names crosses the threshold; the other stays under it.
+      // today > week can't happen for real, but it's what makes each row fail
+      // if the engine reads the wrong bucket — don't make the pair consistent.
       tracker.updateCost(0, dailyUsd, weeklyUsd);
       const events = engine.evaluate(
         collector.snapshot(t0 + 1000, engine.getRequiredWindows()),

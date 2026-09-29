@@ -48,10 +48,10 @@ const antiPatternTypeSchema = z.enum([
 
 const percentileSchema = z.union([z.literal(50), z.literal(95), z.literal(99)]);
 
-// Default to 'session'. today/week periods need the snapshot collector to
-// be constructed with a `budgetTracker` dep (see AlertSnapshotCollectorDeps
-// in alert-snapshot-collector.ts) — without it, today/week read 0 forever
-// and the rule silently never fires.
+// Default to 'session'. today/week read BudgetTracker's daily/weekly totals,
+// which src/index.ts wires into the snapshot collector. Any other collector
+// must pass a `budgetTracker` dep too (see AlertSnapshotCollectorDeps in
+// alert-snapshot-collector.ts), or today/week read 0 and never fire.
 const costPeriodSchema = z.enum(['session', 'today', 'week']).default('session');
 
 // ---------------------------------------------------------------------------
