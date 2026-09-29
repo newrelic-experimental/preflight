@@ -104,15 +104,24 @@ jobs:
       - uses: actions/checkout@v5
 
       # The image tag above is written out because `container:` is resolved before any step
-      # runs; this is what keeps it from drifting from package.json, which
-      # e2e/record-linux-baselines.sh reads. Fails on a range pin too, which has no image.
+      # runs; this keeps its version from drifting from package.json. It reads the tag the
+      # same way e2e/record-linux-baselines.sh does, so the two always record and compare in
+      # one image. Fails on a range pin too, which has no image.
       - name: Check image matches @playwright/test
         run: |
-          want="mcr.microsoft.com/playwright:v$(node -p "require('./package.json').devDependencies['@playwright/test']")-noble"
-          if ! grep -qxF "      image: $want" .github/workflows/ci.yml; then
-            echo "::error file=.github/workflows/ci.yml::e2e container image must be $want to match @playwright/test in package.json"
+          images="$(sed -n 's/^ *image: *\(mcr\.microsoft\.com\/playwright:[^ ]*\)$/\1/p' .github/workflows/ci.yml)"
+          version="$(node -p "require('./package.json').devDependencies['@playwright/test']")"
+          if [ "$(printf '%s\n' "$images" | grep -c .)" -ne 1 ]; then
+            echo "::error file=.github/workflows/ci.yml::expected exactly one mcr.microsoft.com/playwright image, found: $images"
             exit 1
           fi
+          case "$images" in
+            "mcr.microsoft.com/playwright:v$version-"*) ;;
+            *)
+              echo "::error file=.github/workflows/ci.yml::e2e image $images does not match @playwright/test $version in package.json"
+              exit 1
+              ;;
+          esac
 
       - name: Install dependencies
         run: npm ci

@@ -9,13 +9,13 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-version="$(cd "$repo" && node -p "require('./package.json').devDependencies['@playwright/test']")"
-# The image tag is the exact version; a range like ^1.62.1 has no image.
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "@playwright/test must be pinned to an exact version, got '$version'" >&2
+# The image CI's e2e job declares, read from ci.yml rather than rebuilt here, so the two can
+# never disagree. CI's own first step checks that tag against @playwright/test.
+image="$(sed -n 's/^ *image: *\(mcr\.microsoft\.com\/playwright:[^ ]*\)$/\1/p' "$repo/.github/workflows/ci.yml")"
+if [[ -z "$image" || "$image" == *$'\n'* ]]; then
+  echo "expected exactly one mcr.microsoft.com/playwright image in .github/workflows/ci.yml" >&2
   exit 1
 fi
-image="mcr.microsoft.com/playwright:v${version}-noble"
 
 # linux/amd64 is what ubuntu-latest runs; on Apple Silicon this runs emulated, slower but
 # pixel-identical to CI. Running as the host user keeps the PNGs it writes owned by you on
@@ -31,8 +31,15 @@ docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" -e HOME=/tmp \
   npm ci --no-audit --no-fund
   rm -f e2e/*-snapshots/*-linux.png
   npm run test:e2e:update
+  # Collect before touching the host, so a run that wrote nothing leaves its baselines alone.
+  shopt -s nullglob
+  recorded=(e2e/*-snapshots/*-linux.png)
+  if (( ${#recorded[@]} == 0 )); then
+    echo "the run wrote no -linux baselines; leaving the host tree untouched" >&2
+    exit 1
+  fi
   rm -f /src/e2e/*-snapshots/*-linux.png
-  for f in e2e/*-snapshots/*-linux.png; do mkdir -p "/src/$(dirname "$f")" && cp "$f" "/src/$f"; done
+  for f in "${recorded[@]}"; do mkdir -p "/src/$(dirname "$f")" && cp "$f" "/src/$f"; done
 '
 
 echo "Recorded in $image:"
