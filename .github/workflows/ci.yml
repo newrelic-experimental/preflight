@@ -95,12 +95,24 @@ jobs:
     runs-on: ubuntu-latest
     # The committed *-linux.png baselines were recorded in this image, so the fonts and
     # rasterizer here are the ones they were drawn with. Its tag must match the
-    # @playwright/test version in package.json; bump both together, and re-record the
-    # Linux baselines in the new image (see "The three suites" in CONTRIBUTING.md).
+    # @playwright/test version in package.json (checked below); bump both together, and
+    # re-record the Linux baselines in the new image (see "The three suites" in
+    # CONTRIBUTING.md).
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble
     steps:
       - uses: actions/checkout@v5
+
+      # The image tag above is written out because `container:` is resolved before any step
+      # runs; this is what keeps it from drifting from package.json, which
+      # e2e/record-linux-baselines.sh reads. Fails on a range pin too, which has no image.
+      - name: Check image matches @playwright/test
+        run: |
+          want="mcr.microsoft.com/playwright:v$(node -p "require('./package.json').devDependencies['@playwright/test']")-noble"
+          if ! grep -qxF "      image: $want" .github/workflows/ci.yml; then
+            echo "::error file=.github/workflows/ci.yml::e2e container image must be $want to match @playwright/test in package.json"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
