@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.2] - 2026-09-29
+
+### Fixed
+
+- Crossing a budget threshold no longer clears other local alerts that are still true. A firing `cost.window` rule reported "cleared" and could not fire again for its `deduplicateSeconds`, and a firing `budget.session` rule cleared whenever a daily or weekly threshold crossed. Budget-threshold crossings are now evaluated against live cost, efficiency, and latency values, like the periodic alert check.
+
 ## [1.57.0] - 2026-09-17
 
 ### Added
