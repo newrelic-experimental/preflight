@@ -46,6 +46,23 @@ export interface LocalAlertEngineOptions {
 
 type BudgetPeriod = 'session' | 'daily' | 'weekly';
 
+function isBudgetRule(
+  rule: LocalAlertRule,
+): rule is BudgetSessionRule | BudgetDailyRule | BudgetWeeklyRule {
+  switch (rule.type) {
+    case 'budget.session':
+    case 'budget.daily':
+    case 'budget.weekly':
+      return true;
+    case 'cost.window':
+    case 'efficiency.below':
+    case 'antipattern.count':
+    case 'latency.percentile':
+    case 'tool.failure':
+      return false;
+  }
+}
+
 function budgetPeriodForRule(
   rule: BudgetSessionRule | BudgetDailyRule | BudgetWeeklyRule,
 ): BudgetPeriod {
@@ -144,20 +161,17 @@ export class LocalAlertEngine {
 
   /**
    * Evaluate a BudgetTracker threshold crossing. Only budget rules run: the
-   * crossing is edge-triggered, and resampling the level-triggered windowed
-   * rules off-cycle could clear one during a transient zero or reset
-   * efficiency.below's sustained window (#813). The snapshot carries no cost,
-   * so budget.session's reset check waits for the periodic tick.
+   * crossing is edge-triggered, and every other rule type is level-triggered
+   * and belongs to the periodic tick. Evaluating them here against zeroed
+   * cost cleared firing cost.window rules (#813). The snapshot carries no
+   * cost, so budget.session's reset check waits for the periodic tick.
    */
   evaluateBudgetThreshold(
     threshold: NonNullable<AlertSnapshot['budgetThresholds']>[number],
     now: number,
   ): readonly AlertEvent[] {
-    const budgetRules = this.rules.filter(
-      (r) => r.type === 'budget.session' || r.type === 'budget.daily' || r.type === 'budget.weekly',
-    );
     return this.evaluateRules(
-      budgetRules,
+      this.rules.filter(isBudgetRule),
       {
         timestamp: now,
         cost: null,

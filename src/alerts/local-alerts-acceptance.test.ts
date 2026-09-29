@@ -44,26 +44,9 @@ describe('Local alerts — simple acceptance', () => {
       weeklyBudgetUsd: null,
     });
 
+    // Same wiring as src/index.ts's setOnThreshold callback.
     tracker.setOnThreshold((event) => {
-      engine.evaluate(
-        {
-          timestamp: event.timestamp,
-          cost: { sessionUsd: event.spentUsd, todayUsd: 0, weekUsd: 0 },
-          efficiency: { score: null },
-          antiPatterns: [],
-          latency: [],
-          toolFailures: [],
-          budgetThresholds: [
-            {
-              period: event.period,
-              thresholdPct: event.thresholdPct,
-              spentUsd: event.spentUsd,
-              budgetUsd: event.budgetUsd,
-            },
-          ],
-        },
-        Date.now(),
-      );
+      engine.evaluateBudgetThreshold(event, Date.now());
     });
 
     const received: AlertEvent[] = [];
