@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.1] - 2026-09-29
+
+### Fixed
+
+- Loading an alert rules file no longer warns that `cost.window` rules with `costPeriod: "today"` or `"week"` are not yet implemented. Those periods have worked since the snapshot collector started reading daily and weekly spend from the budget tracker, so the warning was false and appeared on every load and reload of the rules file.
+
 ## [1.57.0] - 2026-09-17
 
 ### Added
