@@ -6,7 +6,10 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
-import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
+import {
+  AlertSnapshotCollector,
+  evaluateBudgetThreshold,
+} from './alerts/alert-snapshot-collector.js';
 import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
@@ -2016,24 +2019,11 @@ async function main(): Promise<void> {
         budgetUsd: event.budgetUsd.toFixed(2),
       });
       // Route into the local alert engine so configured rules can fire.
-      if (capturedAlertEngine) {
-        capturedAlertEngine.evaluate(
-          {
-            timestamp: event.timestamp,
-            cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 0 },
-            efficiency: { score: null },
-            antiPatterns: [],
-            latency: [],
-            toolFailures: [],
-            budgetThresholds: [
-              {
-                period: event.period,
-                thresholdPct: event.thresholdPct,
-                spentUsd: event.spentUsd,
-                budgetUsd: event.budgetUsd,
-              },
-            ],
-          },
+      if (capturedAlertEngine && capturedAlertSnapshotCollector) {
+        evaluateBudgetThreshold(
+          capturedAlertEngine,
+          capturedAlertSnapshotCollector,
+          event,
           Date.now(),
         );
       }

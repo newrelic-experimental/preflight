@@ -1,9 +1,14 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import type { AlertEvent } from '../dashboard/live-event-bus.js';
+import { BudgetTracker } from '../metrics/budget-tracker.js';
 import {
   AlertSnapshotCollector,
+  evaluateBudgetThreshold,
   type AlertSnapshotCollectorDeps,
   type SnapshotWindowSpec,
 } from './alert-snapshot-collector.js';
+import { LocalAlertEngine } from './local-alert-engine.js';
+import type { LocalAlertRule } from './local-alert-rule.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -314,5 +319,96 @@ describe('AlertSnapshotCollector — tracker reads', () => {
     };
     const collector = new AlertSnapshotCollector(deps);
     expect(collector.snapshot(NOW, []).cost).toEqual({ sessionUsd: 0, todayUsd: 0, weekUsd: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Budget-threshold evaluation
+// ---------------------------------------------------------------------------
+
+describe('AlertSnapshotCollector — budgetThresholds passthrough', () => {
+  it('attaches budgetThresholds only when supplied', () => {
+    const collector = new AlertSnapshotCollector();
+    const thresholds = [
+      { period: 'daily' as const, thresholdPct: 80 as const, spentUsd: 8, budgetUsd: 10 },
+    ];
+    expect(collector.snapshot(NOW, [], thresholds).budgetThresholds).toEqual(thresholds);
+    expect(collector.snapshot(NOW, [])).not.toHaveProperty('budgetThresholds');
+  });
+});
+
+describe('evaluateBudgetThreshold', () => {
+  function makeHarness(rules: LocalAlertRule[]) {
+    const cost = { sessionUsd: 0 };
+    const tracker = new BudgetTracker({
+      sessionBudgetUsd: 10,
+      dailyBudgetUsd: 10,
+      weeklyBudgetUsd: null,
+    });
+    const collector = new AlertSnapshotCollector({
+      costTracker: { getMetrics: () => ({ sessionTotalCostUsd: cost.sessionUsd }) },
+      budgetTracker: tracker,
+    });
+    const engine = new LocalAlertEngine();
+    engine.loadRules(rules);
+    const events: AlertEvent[] = [];
+    engine.setOnAlert((ev) => events.push(ev));
+    tracker.setOnThreshold((ev) => evaluateBudgetThreshold(engine, collector, ev, Date.now()));
+    // Mirrors the production order: CostTracker moves first, then
+    // BudgetTracker.updateCost() emits any threshold crossing.
+    const spend = (sessionUsd: number, dailyUsd: number): void => {
+      cost.sessionUsd = sessionUsd;
+      tracker.updateCost(sessionUsd, dailyUsd, dailyUsd);
+    };
+    return { collector, engine, events, spend };
+  }
+
+  it('keeps a firing cost.window rule firing across a budget-threshold crossing', () => {
+    const { collector, engine, events, spend } = makeHarness([
+      {
+        id: 'session-cost',
+        name: 'Session cost > $3',
+        type: 'cost.window',
+        severity: 'warning',
+        enabled: true,
+        threshold: 3,
+        operator: 'above',
+        deduplicateSeconds: 0,
+        windowSeconds: 3600,
+        costPeriod: 'session',
+        channels: ['banner'],
+      },
+    ]);
+    spend(4, 4);
+    const now = Date.now();
+    engine.evaluate(collector.snapshot(now, engine.getRequiredWindows()), now);
+    expect(events.map((e) => e.state)).toEqual(['firing']);
+
+    // Crosses the 50% session and daily thresholds.
+    spend(6, 6);
+    expect(events.map((e) => e.state)).toEqual(['firing']);
+  });
+
+  it('keeps a firing budget.session rule firing when a daily threshold crosses', () => {
+    const { events, spend } = makeHarness([
+      {
+        id: 'session-budget',
+        name: 'Session budget',
+        type: 'budget.session',
+        severity: 'warning',
+        enabled: true,
+        threshold: 50,
+        operator: 'above',
+        deduplicateSeconds: 300,
+        channels: ['banner'],
+      },
+    ]);
+    // Session 60% fires the rule; daily stays under 50%.
+    spend(6, 1);
+    expect(events.map((e) => [e.id, e.state])).toEqual([['session-budget', 'firing']]);
+
+    // Only the daily bucket crosses 50%; the session is still at 70%, not reset.
+    spend(7, 6);
+    expect(events.map((e) => [e.id, e.state])).toEqual([['session-budget', 'firing']]);
   });
 });
