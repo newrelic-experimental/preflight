@@ -48,7 +48,7 @@
     "test": "jest",
     "test:integration": "jest --testPathPatterns='src/multi-instance\\.integration\\.test\\.ts' --testPathIgnorePatterns=/node_modules/ --testTimeout=120000",
     "test:web": "vitest run",
-    "setup:e2e": "npx playwright install chromium && npm run build",
+    "setup:e2e": "playwright install chromium && npm run build",
     "pretest:e2e": "npm run setup:e2e",
     "test:e2e": "playwright test",
     "pretest:e2e:update": "npm run setup:e2e",

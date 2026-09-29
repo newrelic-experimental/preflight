@@ -16,11 +16,18 @@ if [[ -z "$image" || "$image" == *$'\n'* ]]; then
   echo "expected exactly one mcr.microsoft.com/playwright image in .github/workflows/ci.yml" >&2
   exit 1
 fi
+# The zone CI compares in, also from ci.yml, so a baseline is drawn with the same local
+# dates and times CI will render.
+tz="$(sed -n 's/^  TZ: *\([^ ]*\)$/\1/p' "$repo/.github/workflows/ci.yml")"
+if [[ -z "$tz" || "$tz" == *$'\n'* ]]; then
+  echo "expected exactly one workflow-level TZ in .github/workflows/ci.yml" >&2
+  exit 1
+fi
 
 # linux/amd64 is what ubuntu-latest runs; on Apple Silicon this runs emulated, slower but
 # pixel-identical to CI. Running as the host user keeps the PNGs it writes owned by you on
 # a Linux host; HOME points npm's cache somewhere that user can write.
-docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" -e HOME=/tmp \
+docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" -e HOME=/tmp -e TZ="$tz" \
   -v "$repo":/src "$image" bash -c '
   set -euo pipefail
   mkdir /tmp/work
@@ -30,9 +37,12 @@ docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" -e HOME=/tmp \
   cd /tmp/work
   npm ci --no-audit --no-fund
   rm -f e2e/*-snapshots/*-linux.png
-  npm run test:e2e:update
-  # Only reached when the suite passed (set -e), so the recorded set is complete, even when
-  # it is empty because the last screenshot test was removed: replace the host set with it.
+  # --forbid-only: a stray test.only would narrow the run and pass without recording the
+  # other baselines, which the host set would then lose. A test.skip on a screenshot test
+  # still drops its baseline; the git status below shows any deletion.
+  npm run test:e2e:update -- --forbid-only
+  # Only reached when the whole suite passed (set -e), so the recorded set replaces the host
+  # set, including emptying it when the last screenshot test was removed.
   shopt -s nullglob
   recorded=(e2e/*-snapshots/*-linux.png)
   rm -f /src/e2e/*-snapshots/*-linux.png
