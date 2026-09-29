@@ -2007,16 +2007,23 @@ async function main(): Promise<void> {
 
     const capturedAlertEngine = alertEngine;
     const capturedAlertSnapshotCollector = alertSnapshotCollector;
+    // BudgetTracker invokes this from inside updateCost(), so an uncaught
+    // throw would skip its remaining periods and abort the caller's record
+    // handling. Guard it like the periodic evaluation tick.
     budgetTracker.setOnThreshold((event) => {
-      capturedNrIngest?.ingestBudgetWarning(event);
-      logger.warn('Budget threshold reached', {
-        period: event.period,
-        pct: event.thresholdPct,
-        spentUsd: event.spentUsd.toFixed(4),
-        budgetUsd: event.budgetUsd.toFixed(2),
-      });
-      // Route into the local alert engine so budget rules can fire.
-      capturedAlertEngine?.evaluateBudgetThreshold(event, Date.now());
+      try {
+        capturedNrIngest?.ingestBudgetWarning(event);
+        logger.warn('Budget threshold reached', {
+          period: event.period,
+          pct: event.thresholdPct,
+          spentUsd: event.spentUsd.toFixed(4),
+          budgetUsd: event.budgetUsd.toFixed(2),
+        });
+        // Route into the local alert engine so budget rules can fire.
+        capturedAlertEngine?.evaluateBudgetThreshold(event, Date.now());
+      } catch (err) {
+        logger.warn('Budget threshold handler failed', { error: String(err) });
+      }
     });
     // Cross-references a subagent's type against its `agentId` — the ONLY link
     // between the native hook pipeline and the transcript-derived
