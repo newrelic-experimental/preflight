@@ -210,53 +210,6 @@ function emptySnapshot(timestamp: number, overrides: Partial<AlertSnapshot> = {}
   };
 }
 
-describe('Local alerts — cost.window today/week via BudgetTracker', () => {
-  function makeCostRule(costPeriod: 'today' | 'week'): LocalAlertRule {
-    return {
-      id: `${costPeriod}-cost`,
-      name: `${costPeriod} cost > $20`,
-      type: 'cost.window',
-      severity: 'critical',
-      enabled: true,
-      threshold: 20,
-      operator: 'above',
-      deduplicateSeconds: 0,
-      windowSeconds: 3600,
-      costPeriod,
-      channels: ['banner'],
-    };
-  }
-
-  it.each([
-    ['today', 25, 25],
-    ['week', 5, 25],
-  ] as const)(
-    "fires a costPeriod='%s' rule once BudgetTracker's spend crosses the threshold",
-    (costPeriod, dailyUsd, weeklyUsd) => {
-      const tracker = new BudgetTracker({
-        sessionBudgetUsd: null,
-        dailyBudgetUsd: null,
-        weeklyBudgetUsd: null,
-      });
-      const collector = new AlertSnapshotCollector({ budgetTracker: tracker });
-      const engine = new LocalAlertEngine();
-      engine.loadRules([makeCostRule(costPeriod)]);
-
-      const t0 = 1700000000000;
-      tracker.updateCost(1, 1, 1);
-      expect(engine.evaluate(collector.snapshot(t0, []), t0)).toHaveLength(0);
-
-      // Session spend stays under the threshold; only the day/week bucket crosses.
-      tracker.updateCost(1, dailyUsd, weeklyUsd);
-      const events = engine.evaluate(collector.snapshot(t0 + 1000, []), t0 + 1000);
-      expect(events).toHaveLength(1);
-      expect(events[0]!.id).toBe(`${costPeriod}-cost`);
-      expect(events[0]!.state).toBe('firing');
-      expect(events[0]!.value).toBe(25);
-    },
-  );
-});
-
 describe('Local alerts — acceptance (full starter rule set)', () => {
   it('drives a sequence of synthetic snapshots and emits expected fire/clear events', () => {
     const bus = new LiveEventBus();
@@ -391,4 +344,51 @@ describe('Local alerts — acceptance (full starter rule set)', () => {
       ]),
     );
   });
+});
+
+describe('Local alerts — cost.window today/week via BudgetTracker', () => {
+  function makeCostRule(costPeriod: 'today' | 'week'): LocalAlertRule {
+    return {
+      id: `${costPeriod}-cost`,
+      name: `${costPeriod} cost > $20`,
+      type: 'cost.window',
+      severity: 'critical',
+      enabled: true,
+      threshold: 20,
+      operator: 'above',
+      deduplicateSeconds: 0,
+      windowSeconds: 3600,
+      costPeriod,
+      channels: ['banner'],
+    };
+  }
+
+  it.each([
+    ['today', 25, 5],
+    ['week', 5, 25],
+  ] as const)(
+    "fires a costPeriod='%s' rule once BudgetTracker's spend crosses the threshold",
+    (costPeriod, dailyUsd, weeklyUsd) => {
+      const tracker = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: null,
+      });
+      const collector = new AlertSnapshotCollector({ budgetTracker: tracker });
+      const engine = new LocalAlertEngine();
+      engine.loadRules([makeCostRule(costPeriod)]);
+
+      const t0 = 1700000000000;
+      tracker.updateCost(1, 1, 1);
+      expect(engine.evaluate(collector.snapshot(t0, []), t0)).toHaveLength(0);
+
+      // Only the bucket the rule names crosses the threshold; the other stays under it.
+      tracker.updateCost(1, dailyUsd, weeklyUsd);
+      const events = engine.evaluate(collector.snapshot(t0 + 1000, []), t0 + 1000);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.id).toBe(`${costPeriod}-cost`);
+      expect(events[0]!.state).toBe('firing');
+      expect(events[0]!.value).toBe(25);
+    },
+  );
 });
