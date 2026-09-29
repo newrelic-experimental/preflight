@@ -53,6 +53,7 @@
     "test:e2e": "playwright test",
     "pretest:e2e:update": "npm run setup:e2e",
     "test:e2e:update": "playwright test --update-snapshots",
+    "test:e2e:update:linux": "bash e2e/record-linux-baselines.sh",
     "lint": "eslint src/ scripts/ e2e/ *.config.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
