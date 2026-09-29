@@ -125,6 +125,65 @@ jobs:
           echo "@newrelic/preflight@$VERSION never became visible on npm" >&2
           exit 1
 
+      # homebrew/Formula/preflight.rb points at the npm tarball, so this must
+      # run after the npm availability wait above — update-homebrew.sh curls
+      # the tarball to hash it. This mutates the local checkout only (same
+      # reasoning as the server.json sync below: main's ruleset means this
+      # job can't push the bump back). The tap repo lives outside this job's
+      # default GITHUB_TOKEN scope, so it needs the separately-scoped
+      # HOMEBREW_TAP_TOKEN — and that repo's own org-wide ruleset requires a
+      # PR with one approving review on its default branch, so this opens a
+      # PR and arms auto-merge rather than pushing to main directly; a
+      # maintainer still needs to approve it once before it merges.
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          scripts/update-homebrew.sh "$VERSION"
+
+          # gh auth setup-git configures a credential helper backed by
+          # GH_TOKEN, so the PAT never lands in the clone URL or on-disk
+          # git config the way an embedded x-access-token URL would.
+          gh auth setup-git
+          TAP_DIR="$(mktemp -d)"
+          git clone --depth 1 "https://github.com/newrelic-experimental/homebrew-preflight.git" "$TAP_DIR"
+          cp homebrew/Formula/preflight.rb "$TAP_DIR/Formula/preflight.rb"
+
+          cd "$TAP_DIR"
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+
+          # Stage before diffing: a plain `git diff` can't see a file that
+          # doesn't exist in the tap yet (e.g. right after one-time setup),
+          # so it would report "clean" and silently skip a real update.
+          git add Formula/preflight.rb
+          if git diff --cached --quiet; then
+            echo "Tap formula already up to date for $VERSION, skipping"
+            exit 0
+          fi
+
+          # BRANCH is deterministic per version so a re-run of this workflow
+          # (e.g. after the npm-propagation retries above) converges on the
+          # same tap PR instead of failing a non-fast-forward push or piling
+          # up duplicate PRs.
+          BRANCH="bump-${VERSION}"
+          git checkout -b "$BRANCH"
+          git commit -m "preflight $VERSION"
+          git push --force origin "$BRANCH"
+
+          EXISTING_PR="$(gh pr list --repo newrelic-experimental/homebrew-preflight --head "$BRANCH" --json number --jq '.[0].number // empty')"
+          if [ -z "$EXISTING_PR" ]; then
+            gh pr create --repo newrelic-experimental/homebrew-preflight \
+              --title "preflight $VERSION" \
+              --body "Automated formula bump for the $VERSION release. Needs one approval before auto-merge lands it." \
+              --base main --head "$BRANCH"
+          fi
+          gh pr merge "$BRANCH" --repo newrelic-experimental/homebrew-preflight --auto --squash || true
+
       # The MCP Registry (registry.modelcontextprotocol.io) verifies that the
       # npm package carries a matching `mcpName`, so this must run after the
       # npm publish above. GitHub OIDC auth covers the

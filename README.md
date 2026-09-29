@@ -116,6 +116,13 @@ Restart your AI tool — hooks and the MCP server load at session start. Every t
 
 **Cursor** — [Add to Cursor](https://cursor.com/en/install-mcp?name=newrelic-preflight&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBuZXdyZWxpYy9wcmVmbGlnaHQiLCItLXN0ZGlvIl19) installs the MCP server via a one-click deeplink; run `preflight setup` afterwards for hook capture.
 
+**Homebrew (macOS)**:
+
+```bash
+brew tap newrelic-experimental/preflight
+brew install preflight
+```
+
 ---
 
 ## Works With
