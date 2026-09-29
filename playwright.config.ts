@@ -58,6 +58,10 @@ function isolatedServer(name: string, port: number, prelude?: (dir: string) => s
       // Set when the run is launched from inside a Claude Code session; the server would
       // adopt that session's id from its state.json.
       CLAUDE_JOB_DIR: '',
+      // inferDeveloper() falls back to these, which would stamp the run's sessions with the
+      // developer's login name and make the stores differ from machine to machine.
+      USER: 'e2e',
+      USERNAME: 'e2e',
       NR_AI_ALERTS_RULES_PATH: '',
     },
     reuseExistingServer: !process.env.CI,

@@ -82,7 +82,7 @@ npx playwright test e2e/views.spec.ts     # One spec, against an existing build
 
 ### Adding a view smoke test
 
-`e2e/views.spec.ts` holds one smoke test per dashboard route. Each reaches the view from the sidebar, then again by reloading on its URL, and asserts the view's `<h1>`, no "Not found", and no console error, uncaught exception or unexpected 4xx/5xx while it loads. A new view needs one row in `VIEWS`:
+`e2e/views.spec.ts` holds a smoke test per dashboard route, run once against each server. Each reaches the view from the sidebar, then again by reloading on its URL, and asserts the view's `<h1>`, no "Not found", and no console error, uncaught exception, failed request or unexpected 4xx/5xx while it loads. A new view needs one row in `VIEWS`; a test comparing `VIEWS` against the sidebar fails until it has one:
 
 ```typescript
 { nav: 'Workflows', path: '/workflows', heading: 'Workflows' },

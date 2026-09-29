@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Request } from '@playwright/test';
 
 import { FIXTURE_MODEL, FIXTURE_SESSION_NAME } from './fixtures/session-fixture.js';
-import { SEEDED_URL } from './servers.js';
+import { EMPTY_URL, SEEDED_URL } from './servers.js';
 
 // One smoke test per dashboard route: it loads in a real browser against a real --local
 // server, renders its heading, and logs no console error on the way. Kept cheap on
@@ -98,18 +98,24 @@ function collectErrors(page: Page): ErrorLog {
     errors,
     // Not waitForLoadState('networkidle'): the SSE stream never closes and Today's queries
     // poll, so the page is never idle for the 500ms that requires. The response count keeps
-    // an empty set from passing before the view has issued its queries at all.
+    // an empty set from passing before the view has issued its queries at all, and two quiet
+    // samples in a row (polls are at least 100ms apart) keep the gap between a query and the
+    // dependent ones its response enables — Today's session-scoped wave — from passing too.
     // Polls a description rather than a boolean, so a timeout says what it was waiting on.
-    settle: () =>
-      expect
+    settle: () => {
+      let quietSamples = 0;
+      return expect
         .poll(
-          () =>
-            apiResponses > 0 && inFlight.size === 0
+          () => {
+            quietSamples = apiResponses > 0 && inFlight.size === 0 ? quietSamples + 1 : 0;
+            return quietSamples >= 2
               ? 'settled'
-              : `${apiResponses} /api/ responses; in flight: ${[...inFlight].map((r) => r.url()).join(', ')}`,
+              : `${apiResponses} /api/ responses; in flight: ${[...inFlight].map((r) => r.url()).join(', ')}`;
+          },
           { timeout: 10_000 },
         )
-        .toBe('settled'),
+        .toBe('settled');
+    },
   };
 }
 
@@ -120,35 +126,60 @@ async function expectView(page: Page, view: ViewCase): Promise<void> {
   await expect(page.getByText('Not found', { exact: true })).toHaveCount(0);
 }
 
-// Each test reaches its view twice — from the sidebar, then by reloading on the view's own
-// URL — so a broken route fails that view's test and no other.
-test.describe('every view loads', () => {
-  for (const view of VIEWS) {
-    test(`${view.nav} (${view.path})`, async ({ page }) => {
-      const log = collectErrors(page);
-      await page.goto('/');
-      await page.getByRole('navigation').getByRole('button', { name: view.nav }).click();
-      await expectView(page, view);
-      await page.reload();
-      await expectView(page, view);
-      // Let the view's queries settle, so an error from a failed fetch is caught here too.
-      await log.settle();
-      expect(log.errors).toEqual([]);
-    });
-  }
+test('VIEWS lists every sidebar entry, in order', async ({ page }) => {
+  // The router and the sidebar are edited together when a view is added; this is what makes
+  // leaving VIEWS behind fail instead of silently skipping the new view's smoke test.
+  await page.goto('/');
+  await expect(page.getByRole('navigation').getByRole('button')).toHaveText(
+    VIEWS.map((v) => v.nav),
+  );
 });
 
+// Each test reaches its view twice — from the sidebar, then by reloading on the view's own
+// URL — so a broken route fails that view's tests and no others. Every view runs against both
+// stores, so the views that read persisted sessions are loaded with one as well as without.
+for (const store of [
+  { name: 'empty', url: EMPTY_URL },
+  { name: 'seeded', url: SEEDED_URL },
+]) {
+  test.describe(`every view loads (${store.name} store)`, () => {
+    test.use({ baseURL: store.url });
+
+    for (const view of VIEWS) {
+      test(`${view.nav} (${view.path})`, async ({ page }) => {
+        const log = collectErrors(page);
+        await page.goto('/');
+        await page.getByRole('navigation').getByRole('button', { name: view.nav }).click();
+        await expectView(page, view);
+        await page.reload();
+        await expectView(page, view);
+        // Let the view's queries settle, so an error from a failed fetch is caught here too.
+        await log.settle();
+        expect(log.errors).toEqual([]);
+      });
+    }
+  });
+}
+
 test.describe('empty store', () => {
+  // Both empty states also render while loading and on a failed fetch, so each test checks
+  // for errors too; otherwise a 500 from /api/sessions would satisfy it.
   test('Sessions shows its empty state', async ({ page }) => {
+    const log = collectErrors(page);
     await page.goto('/sessions');
     await expect(page.getByText('No sessions yet')).toBeVisible();
     await expect(page.getByText(FIXTURE_SESSION_NAME)).toHaveCount(0);
+    await log.settle();
+    expect(log.errors).toEqual([]);
   });
 
   test('History shows its empty state', async ({ page }) => {
+    const log = collectErrors(page);
     await page.goto('/history');
     await expect(page.getByText('No model data yet')).toBeVisible();
     await expect(page.getByText('0 sessions', { exact: true })).toBeVisible();
+    await log.settle();
+    expect(log.errors).toEqual([]);
   });
 });
 
