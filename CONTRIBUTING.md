@@ -57,7 +57,8 @@ preflight update
 | `npm run test:e2e:update`           | Rewrite the Playwright screenshot snapshots                                                  |
 | `npm run test:integration`          | Run `src/multi-instance.integration.test.ts`                                                 |
 | `npx tsc -p tsconfig.web.json`      | Typecheck `src/web`, tests included (`npm run build` checks source only)                     |
-| `npm run lint`                      | ESLint over `src/`                                                                           |
+| `npx tsc -p tsconfig.tools.json`    | Typecheck `scripts/`, `e2e/` and the root `*.config.ts` files, which no other config reaches |
+| `npm run lint`                      | ESLint over `src/`, `scripts/`, `e2e/` and the root `*.config.ts` files                      |
 | `npm run format`                    | Prettier write                                                                               |
 | `npm run format:check`              | Prettier check (no writes)                                                                   |
 | `npm run deploy:dashboard`          | Deploy the default NR dashboard                                                              |
@@ -296,6 +297,7 @@ See [TEST_PATTERNS.md](./docs/TEST_PATTERNS.md) for the full testing guide.
 - [ ] `npm run test:web` passes (if you touched `src/web`)
 - [ ] `npm run test:e2e` passes (if you changed the dashboard UI; on a non-macOS first run, see [The three suites](#the-three-suites) about recording your platform's baseline)
 - [ ] `npx tsc -p tsconfig.web.json` passes (if you touched `src/web`; `npm run build` checks source only)
+- [ ] `npx tsc -p tsconfig.tools.json` passes (if you touched `scripts/`, `e2e/` or a root `*.config.ts`)
 - [ ] `npm run lint` passes
 - [ ] `npm run format:check` passes (the `pre-commit` hook runs this too)
 - [ ] You've reviewed your own diff

@@ -67,6 +67,11 @@ jobs:
       - name: Typecheck (web)
         run: npx tsc -p tsconfig.web.json
 
+      # scripts/, e2e/ and the root *.config.ts files — including the two drift
+      # checkers below, which tsx runs without typechecking.
+      - name: Typecheck (tools)
+        run: npx tsc -p tsconfig.tools.json
+
       - name: Build
         run: npm run build
 

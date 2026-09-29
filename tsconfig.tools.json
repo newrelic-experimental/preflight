@@ -1,0 +1,20 @@
+{
+  // Typechecks the TypeScript that neither tsconfig.json (src/ only) nor tsconfig.web.json
+  // (src/web only) reaches: the scripts CI runs through tsx, the Playwright suite, and the
+  // root runner configs. tsx, Playwright and the runners' config loaders all strip types
+  // without checking them, so this is the only gate these files have. Files under src/ that
+  // they import are pulled into the program and checked here too, under the same options
+  // the server build uses. Wired into CI as the Typecheck (tools) step.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["scripts/**/*.ts", "e2e/**/*.ts", "*.config.ts"]
+}
