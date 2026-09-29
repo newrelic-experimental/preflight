@@ -130,7 +130,8 @@ test('VIEWS lists every sidebar entry, in order', async ({ page }) => {
   // The router and the sidebar are edited together when a view is added; this is what makes
   // leaving VIEWS behind fail instead of silently skipping the new view's smoke test.
   await page.goto('/');
-  await expect(page.getByRole('navigation').getByRole('button')).toHaveText(
+  // The label span, not the whole button, which also holds Today's alert-count badge.
+  await expect(page.getByRole('navigation').locator('button > span:first-of-type')).toHaveText(
     VIEWS.map((v) => v.nav),
   );
 });
@@ -176,10 +177,12 @@ test.describe('empty store', () => {
   test('History shows its empty state', async ({ page }) => {
     const log = collectErrors(page);
     await page.goto('/history');
-    await expect(page.getByText('No model data yet')).toBeVisible();
-    await expect(page.getByText('0 sessions', { exact: true })).toBeVisible();
+    // Settle first: History renders both strings from `sessions.data ?? []` at first paint,
+    // before /api/sessions answers, so asserting them earlier would pass on any store.
     await log.settle();
     expect(log.errors).toEqual([]);
+    await expect(page.getByText('No model data yet')).toBeVisible();
+    await expect(page.getByText('0 sessions', { exact: true })).toBeVisible();
   });
 });
 

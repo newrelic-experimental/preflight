@@ -11,7 +11,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * A session summary in the on-disk shape `SessionStore` reads. Started two days ago, so it
- * falls inside History's default 7-day window without ever counting as today — the Today
+ * falls inside History's default window (30 days) without ever counting as today — the Today
  * view's empty-state gate reads today's totals, and a run just after midnight would
  * otherwise flip between the two.
  */
