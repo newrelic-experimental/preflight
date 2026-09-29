@@ -3,8 +3,9 @@
   // (src/web only) reaches: the scripts CI runs through tsx, the Playwright suite, and the
   // root runner configs. tsx, Playwright and the runners' config loaders all strip types
   // without checking them, so this is the only gate these files have. Extends the server
-  // config, so the src/ files these import are checked under the options the build uses and
-  // tightening tsconfig.json tightens this too. Wired into CI as the Typecheck (tools) step.
+  // config, so the src/ files these import are checked under the same checking options as
+  // the build (emit options aside) and tightening tsconfig.json tightens this too. Wired into
+  // CI as the Typecheck (tools) step.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "composite": false,
@@ -16,6 +17,5 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["scripts/**/*.ts", "e2e/**/*.ts", "*.config.ts"],
-  "exclude": []
+  "include": ["scripts/**/*.ts", "e2e/**/*.ts", "*.config.ts"]
 }

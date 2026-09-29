@@ -116,7 +116,9 @@ jobs:
             exit 1
           fi
           case "$images" in
-            "mcr.microsoft.com/playwright:v$version-"*) ;;
+            # -noble included: the baselines depend on the distro's fonts as much as on the
+            # Playwright version. Moving distros means re-recording, then changing both.
+            "mcr.microsoft.com/playwright:v$version-noble") ;;
             *)
               echo "::error file=.github/workflows/ci.yml::e2e image $images does not match @playwright/test $version in package.json"
               exit 1

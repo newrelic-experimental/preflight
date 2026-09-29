@@ -278,7 +278,8 @@ A Linux desktop run compares against the committed `-linux` baseline and may fai
 differences alone; the container is the reference. There is no Windows baseline: a first run
 on Windows writes one and fails, and later runs compare against it. Keep it uncommitted, since
 nothing in CI checks it. Adding a new screenshot means committing its `-darwin` and `-linux`
-files together, or CI's `e2e` job fails on the missing one.
+files together. CI's `e2e` job fails on a missing `-linux` one; it runs Linux only, so nothing
+catches a missing or stale `-darwin` one but the next macOS run.
 
 ### Writing tests
 

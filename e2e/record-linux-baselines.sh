@@ -31,13 +31,10 @@ docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" -e HOME=/tmp \
   npm ci --no-audit --no-fund
   rm -f e2e/*-snapshots/*-linux.png
   npm run test:e2e:update
-  # Collect before touching the host, so a run that wrote nothing leaves its baselines alone.
+  # Only reached when the suite passed (set -e), so the recorded set is complete, even when
+  # it is empty because the last screenshot test was removed: replace the host set with it.
   shopt -s nullglob
   recorded=(e2e/*-snapshots/*-linux.png)
-  if (( ${#recorded[@]} == 0 )); then
-    echo "the run wrote no -linux baselines; leaving the host tree untouched" >&2
-    exit 1
-  fi
   rm -f /src/e2e/*-snapshots/*-linux.png
   for f in "${recorded[@]}"; do mkdir -p "/src/$(dirname "$f")" && cp "$f" "/src/$f"; done
 '
