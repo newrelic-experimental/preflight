@@ -1,5 +1,4 @@
 import { createLogger } from '../shared/index.js';
-import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import type { CostForecast } from '../metrics/cost-forecast.js';
 
 const logger = createLogger('alert-snapshot-collector');
@@ -25,7 +24,12 @@ const logger = createLogger('alert-snapshot-collector');
  */
 export interface AlertSnapshot {
   readonly timestamp: number;
-  readonly cost: { sessionUsd: number; todayUsd: number; weekUsd: number };
+  /**
+   * `null` when the cost trackers could not be read. Rules that need cost skip
+   * the cycle instead of reading a zero that looks like spend dropping to
+   * nothing (#813).
+   */
+  readonly cost: { sessionUsd: number; todayUsd: number; weekUsd: number } | null;
   readonly efficiency: { score: number | null };
   readonly antiPatterns: ReadonlyArray<{
     type: string;
@@ -189,15 +193,9 @@ export class AlertSnapshotCollector {
    * by default; older buffer entries are pruned during the call.
    *
    * Returns one entry per requested (type, windowMs) for anti-patterns and
-   * (tool, windowMs) for tool failures. `budgetThresholds` is passed through
-   * unchanged; the budget-threshold callback supplies it so budget rules can
-   * fire while every other rule still sees live values.
+   * (tool, windowMs) for tool failures.
    */
-  snapshot(
-    now: number,
-    windows: ReadonlyArray<SnapshotWindowSpec>,
-    budgetThresholds?: AlertSnapshot['budgetThresholds'],
-  ): AlertSnapshot {
+  snapshot(now: number, windows: ReadonlyArray<SnapshotWindowSpec>): AlertSnapshot {
     // Determine the longest window so we know how far back to keep events.
     let maxWindowMs = DEFAULT_MAX_WINDOW_MS;
     for (const w of windows) {
@@ -217,7 +215,6 @@ export class AlertSnapshotCollector {
       antiPatterns,
       latency: this.readLatency(),
       toolFailures,
-      ...(budgetThresholds ? { budgetThresholds } : {}),
     };
   }
 
@@ -283,7 +280,7 @@ export class AlertSnapshotCollector {
   // Internal — tracker reads (defensive: missing deps yield neutral values)
   // ---------------------------------------------------------------------------
 
-  private readCost(): { sessionUsd: number; todayUsd: number; weekUsd: number } {
+  private readCost(): AlertSnapshot['cost'] {
     try {
       const m = this.deps.costTracker?.getMetrics();
       const sessionUsd = m?.sessionTotalCostUsd ?? 0;
@@ -299,10 +296,10 @@ export class AlertSnapshotCollector {
         weekUsd: status?.weekly.spentUsd ?? 0,
       };
     } catch (err) {
-      logger.warn('costTracker.getMetrics() threw — defaulting to 0', {
+      logger.warn('Cost tracker read threw — cost unavailable this snapshot', {
         error: String(err),
       });
-      return { sessionUsd: 0, todayUsd: 0, weekUsd: 0 };
+      return null;
     }
   }
 
@@ -401,31 +398,4 @@ export class AlertSnapshotCollector {
   now(): number {
     return this.clock();
   }
-}
-
-/**
- * Route a BudgetTracker threshold crossing into the alert engine. The snapshot
- * is built from the collector like a periodic tick, with the crossing attached
- * as `budgetThresholds`: evaluate() runs every rule, so a snapshot with zeroed
- * cost buckets would clear a firing cost.window rule and read as a session
- * reset to a firing budget.session rule (#813).
- */
-export function evaluateBudgetThreshold(
-  engine: {
-    getRequiredWindows(): ReadonlyArray<SnapshotWindowSpec>;
-    evaluate(snapshot: AlertSnapshot, now: number): unknown;
-  },
-  collector: AlertSnapshotCollector,
-  event: BudgetThresholdEvent,
-  now: number,
-): void {
-  const snapshot = collector.snapshot(now, engine.getRequiredWindows(), [
-    {
-      period: event.period,
-      thresholdPct: event.thresholdPct,
-      spentUsd: event.spentUsd,
-      budgetUsd: event.budgetUsd,
-    },
-  ]);
-  engine.evaluate(snapshot, now);
 }

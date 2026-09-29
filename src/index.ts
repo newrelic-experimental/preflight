@@ -6,10 +6,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { AlertLog } from './alerts/alert-log.js';
-import {
-  AlertSnapshotCollector,
-  evaluateBudgetThreshold,
-} from './alerts/alert-snapshot-collector.js';
+import { AlertSnapshotCollector } from './alerts/alert-snapshot-collector.js';
 import { LocalAlertEngine } from './alerts/local-alert-engine.js';
 import { parseLocalAlertRules } from './alerts/local-alert-rule.js';
 import { OsNotifier } from './alerts/os-notifier.js';
@@ -2018,15 +2015,8 @@ async function main(): Promise<void> {
         spentUsd: event.spentUsd.toFixed(4),
         budgetUsd: event.budgetUsd.toFixed(2),
       });
-      // Route into the local alert engine so configured rules can fire.
-      if (capturedAlertEngine && capturedAlertSnapshotCollector) {
-        evaluateBudgetThreshold(
-          capturedAlertEngine,
-          capturedAlertSnapshotCollector,
-          event,
-          Date.now(),
-        );
-      }
+      // Route into the local alert engine so budget rules can fire.
+      capturedAlertEngine?.evaluateBudgetThreshold(event, Date.now());
     });
     // Cross-references a subagent's type against its `agentId` — the ONLY link
     // between the native hook pipeline and the transcript-derived
