@@ -18,8 +18,9 @@ let tmpDir: string;
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   savedEnv = { ...process.env };
-  tmpDir = resolve(tmpdir(), `nr-mcp-test-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
+  // mkdtempSync, not a `Date.now()` name: two jest processes starting a test
+  // in the same millisecond would otherwise share (and delete) one directory.
+  tmpDir = mkdtempSync(resolve(tmpdir(), 'nr-mcp-test-'));
 
   // Clear all relevant env vars to isolate tests
   delete process.env.NEW_RELIC_LICENSE_KEY;
