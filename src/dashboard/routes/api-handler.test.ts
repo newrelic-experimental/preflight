@@ -5,6 +5,7 @@ import {
   computeCrossProcessTodaySessionIds,
   buildContextReplayEvents,
 } from './api-handler.js';
+import { spawnSync } from 'node:child_process';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
@@ -4138,6 +4139,110 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     const parsed = JSON.parse(body()) as SessionStatusPayload;
     expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
     expect(parsed.sessionStatus.sessionIds.completed).toEqual(['pr-merged-1']);
+  });
+
+  const prSession = (
+    sessionId: string,
+    offsetMs: number,
+    command: string,
+    extra: { repoName?: string; cwd?: string; createdPrNumber?: string },
+  ) => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    return {
+      sessionId,
+      repoName: extra.repoName,
+      timeline: [
+        {
+          timestamp: startOfDay.getTime() + offsetMs,
+          durationMs: 500,
+          toolName: 'Bash',
+          success: true,
+          command,
+          cwd: extra.cwd,
+          createdPrNumber: extra.createdPrNumber,
+        },
+      ],
+    };
+  };
+
+  const statusFor = async (sessions: unknown[]): Promise<SessionStatusPayload> => {
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => sessions,
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    return JSON.parse(body()) as SessionStatusPayload;
+  };
+
+  it('clears ready_for_review when the same repo merges the PR from another session', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42 --squash', { repoName: 'acme/app' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+  });
+
+  it('keeps ready_for_review when the same PR number is merged in a different repo', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+      }),
+      prSession('merger', 20_000, 'gh pr merge 42', { repoName: 'acme/other' }),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+  });
+
+  it('matches a merge run from the primary checkout to a PR created in a linked worktree', async () => {
+    const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+    const git = (cwd: string, ...args: string[]) =>
+      spawnSync('git', args, { cwd, env, stdio: 'ignore' });
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-773-')));
+    const primary = path.join(root, 'primary');
+    const linked = path.join(root, 'linked');
+    try {
+      fs.mkdirSync(primary);
+      git(primary, 'init', '-q');
+      git(
+        primary,
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'i',
+      );
+      git(primary, 'worktree', 'add', '-q', linked);
+
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: linked, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: primary }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not match a merge to a create across sessions when neither has a repo', async () => {
+    const parsed = await statusFor([
+      prSession('creator', 10_000, 'gh pr create --fill', { createdPrNumber: '42' }),
+      prSession('merger', 20_000, 'gh pr merge 42', {}),
+    ]);
+    expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
   });
 
   it('marks a live session with ordinary tool calls as working', async () => {
