@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.2] - 2026-09-30
+
+### Fixed
+
+- A session in the "Sessions today" tile no longer stays "Ready for review" after its pull request merges, including when the merge runs from a different session or worktree of the same repo. Preflight now records the number of the pull request that `gh pr create` opened, read from the PR URL in its output (only the number is kept). Sessions saved before this release have no recorded number, so their pull requests still read as open.
+
 ## [1.57.1] - 2026-09-29
 
 ### Fixed
