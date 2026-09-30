@@ -1552,6 +1552,71 @@ describe('GitEfficiencyTracker', () => {
     });
   });
 
+  // Same rule as the weekly/30-day panel's isCountedCommit
+  // (git-workspace-report.ts), so both views agree on the same activity.
+  describe('counted commits', () => {
+    it('does not count a failed commit, e.g. a pre-commit hook rejection', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "b"', success: false, error: 'hook failed' }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+      // Still visible in the timeline, just not counted as history added.
+      expect(metrics.gitCommandTimeline.filter((e) => e.type === 'commit')).toHaveLength(2);
+    });
+
+    it('does not count an amend, which rewrites a commit instead of adding one', () => {
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"' }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit --amend --no-edit' }));
+      const metrics = tracker.getMetrics();
+      expect(metrics.commitCount).toBe(1);
+      expect(metrics.riskIndicators.commitsSinceLastSync).toBe(1);
+    });
+
+    it('leaves failed and amended commits out of velocity gaps and bursts', () => {
+      const t = Date.now();
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "a"', timestamp: t }));
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "b"', timestamp: t + 5_000, success: false }),
+      );
+      tracker.recordToolCall(makeRecord({ command: 'git commit --amend', timestamp: t + 6_000 }));
+      tracker.recordToolCall(makeRecord({ command: 'git commit -m "c"', timestamp: t + 20_000 }));
+      const { velocityMetrics } = tracker.getMetrics();
+      expect(velocityMetrics.avgTimeBetweenCommitsMs).toBe(20_000);
+      expect(velocityMetrics.commitBurstCount).toBe(0);
+    });
+
+    it('does not let a failed commit resolve a pending conflict', () => {
+      const t = Date.now();
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git merge main',
+          success: false,
+          error: 'CONFLICT (content): Merge conflict in a.ts',
+          timestamp: t,
+        }),
+      );
+      tracker.recordToolCall(
+        makeRecord({
+          command: 'git commit -m "merge"',
+          success: false,
+          error: 'error: Committing is not possible because you have unmerged files.',
+          timestamp: t + 1_000,
+        }),
+      );
+      expect(tracker.getMetrics().conflictHistory.map((c) => c.resolution)).toEqual(['pending']);
+
+      tracker.recordToolCall(
+        makeRecord({ command: 'git commit -m "merge"', timestamp: t + 60_000 }),
+      );
+      const metrics = tracker.getMetrics();
+      expect(metrics.conflictHistory.map((c) => c.resolution)).toEqual(['resolved']);
+      expect(metrics.conflictHistory[0]!.resolutionTimeMs).toBe(60_000);
+    });
+  });
+
   describe('velocity metrics', () => {
     it('computes avg/longest gap and detects a 3-commit burst', () => {
       const t = Date.now();
