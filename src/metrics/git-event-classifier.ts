@@ -250,25 +250,59 @@ export interface ClassifiedGitSegment {
   readonly event: GitEvent;
 }
 
+// Git verbs whose own output can report a merge/rebase conflict.
+const GIT_CONFLICT_CAPABLE_RE =
+  /\bgit\s+(?:merge|rebase|pull|cherry-pick|revert|am|apply|stash|checkout|switch)\b/;
+
+/**
+ * Index of the git segment that `error` belongs to, or -1 when none does.
+ *
+ * The hook payload carries one error for the whole command, not one per
+ * segment. Conflict and rejection text names the kind of git command that
+ * printed it, so it goes to the last segment that can print it:
+ * `git pull && git push` hands a conflict to the pull. Text no git segment
+ * explains goes to the last git segment only when nothing runs after it; in
+ * `git fetch && gh pr checkout 12` the text may be gh's, so no segment gets it.
+ */
+function errorSegmentIndex(
+  gitSegments: readonly string[],
+  lastGitIsFinal: boolean,
+  error: string,
+): number {
+  const hasConflict =
+    MERGE_CONFLICT_INDICATORS.some((re) => re.test(error)) || REBASE_CONFLICT_RE.test(error);
+  const hasRejection = REJECT_INDICATORS.some((re) => re.test(error));
+  for (let i = gitSegments.length - 1; i >= 0; i--) {
+    const segment = gitSegments[i]!;
+    if (hasConflict && GIT_CONFLICT_CAPABLE_RE.test(segment)) return i;
+    if (hasRejection && GIT_PUSH_RE.test(segment)) return i;
+  }
+  return lastGitIsFinal ? gitSegments.length - 1 : -1;
+}
+
 /**
  * Classifies every git segment of a heredoc-stripped shell command, so a
  * chained `git commit -m x && git push` yields a commit AND a push instead
  * of whichever verb `classifyGitCommand` ranks first.
  *
- * Conflict and rejection text in `record.error` belongs to the segment that
- * ran last, since `&&` stops at the first failure, so only the last git
- * segment sees it. The target directory comes from the whole command, so a
- * `cd dir &&` in an earlier segment still attributes every git segment.
+ * `record.error` goes to at most one segment (see `errorSegmentIndex`);
+ * `record.success` is command-level and applies to every segment. The target
+ * directory comes from the whole command, so a `cd dir &&` in an earlier
+ * segment still attributes every git segment.
  */
 export function classifyGitSegments(
   command: string,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
 ): ClassifiedGitSegment[] {
-  const segments = splitShellSegments(command).filter((s) => GIT_SEGMENT_RE.test(s));
+  const all = splitShellSegments(command);
+  const gitIndexes = all.flatMap((s, i) => (GIT_SEGMENT_RE.test(s) ? [i] : []));
+  const segments = gitIndexes.map((i) => all[i]!);
+  const lastGitIsFinal = all.slice((gitIndexes.at(-1) ?? 0) + 1).every((s) => s.trim() === '');
+  const owner = errorSegmentIndex(segments, lastGitIsFinal, (record.error as string) ?? '');
   const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
   return segments.map((segment, i) => {
-    const forSegment = i === segments.length - 1 ? record : { ...record, error: undefined };
+    const forSegment = i === owner ? record : { ...record, error: undefined };
     return { segment, event: classifyGitCommand(segment, forSegment, resolveRepo, targetDir) };
   });
 }

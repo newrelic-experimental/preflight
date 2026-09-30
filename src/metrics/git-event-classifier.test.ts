@@ -1,4 +1,4 @@
-import { classifyGitCommand } from './git-event-classifier.js';
+import { classifyGitCommand, classifyGitSegments } from './git-event-classifier.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 const makeRecord = (overrides?: Partial<ToolCallRecord>): ToolCallRecord => ({
@@ -280,5 +280,70 @@ describe('classifyGitCommand', () => {
 
       expect(event.type).toBe('push_rejected');
     });
+  });
+});
+
+describe('classifyGitSegments error attribution', () => {
+  const resolveRepo = (): string | null => null;
+  const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
+  const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
+
+  const classify = (command: string, error: string): string[] =>
+    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
+      ({ event }) => event.type,
+    );
+
+  it('hands conflict text to the segment that can conflict, not a later push', () => {
+    expect(classify('git pull && git push', CONFLICT)).toEqual(['merge_conflict', 'push']);
+  });
+
+  it('keeps conflicted files on the segment the conflict is attributed to', () => {
+    const command = 'git merge feature && git push && gh pr create --fill';
+    const events = classifyGitSegments(
+      command,
+      makeRecord({ command, success: false, error: CONFLICT }),
+      resolveRepo,
+    ).map(({ event }) => event);
+    expect(events.map((e) => e.type)).toEqual(['merge_conflict', 'push']);
+    expect(events[0]!.files).toEqual(['a.ts']);
+    expect(events[1]!.files).toBeUndefined();
+  });
+
+  it('attributes rebase conflict text to a pull --rebase before a push', () => {
+    expect(
+      classify('git pull --rebase && git push', 'error: rebase could not apply abc123'),
+    ).toEqual(['rebase_conflict', 'push']);
+  });
+
+  it('attributes push rejection text to the push, not a later git segment', () => {
+    expect(classify('git push && git status', REJECTED)).toEqual(['push_rejected', 'status']);
+  });
+
+  it('leaves a git segment unattributed when a following gh command could own the error', () => {
+    // `gh pr checkout` runs its own git merge; its conflict text is not the fetch's.
+    expect(classify('git fetch && gh pr checkout 12', CONFLICT)).toEqual(['fetch']);
+    expect(classify('git status && gh pr view', 'both modified:   a.ts')).toEqual(['status']);
+  });
+
+  it('does not flag a push as rejected when a following gh step fails without rejection text', () => {
+    expect(
+      classify(
+        'git push && gh pr create --fill',
+        'pull request create failed: GraphQL: No commits between main and feature',
+      ),
+    ).toEqual(['push']);
+  });
+
+  it('still attributes push rejection text to a push followed by gh', () => {
+    expect(classify('git push && gh pr create --fill', REJECTED)).toEqual(['push_rejected']);
+  });
+
+  it('gives the last git segment the error when nothing runs after it', () => {
+    expect(classify('git commit -m x && git push', REJECTED)).toEqual(['commit', 'push_rejected']);
+    expect(classify('git rebase main && npm test', 'error: rebase could not apply abc')).toEqual([
+      'rebase_conflict',
+    ]);
+    // Single-segment behavior is unchanged, even for text no verb explains.
+    expect(classify('git status', 'both modified:   a.ts')).toEqual(['merge_conflict']);
   });
 });
