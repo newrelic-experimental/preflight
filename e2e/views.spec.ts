@@ -17,9 +17,11 @@ interface ViewCase {
   readonly path: string;
   readonly heading: string;
   /**
-   * A request only this view makes on mount. settle() waits until it has been answered, so
-   * a view whose queries never fire fails instead of passing on the App shell's own fetches
-   * (/api/session/current, /api/anti-patterns, /api/health and /sse, on every route).
+   * A request this view makes on mount and the App shell does not (it fetches
+   * /api/session/current, /api/anti-patterns and /api/health and opens /sse on every route).
+   * settle() waits until it has been answered, so a view whose queries never fire fails
+   * instead of passing on the shell's fetches. Other views may share it: settle() runs after
+   * a reload, which clears what was answered, so only the mounted view can satisfy it.
    */
   readonly query: RegExp;
 }
@@ -170,7 +172,10 @@ for (const store of [
       test(`${view.nav} (${view.path})`, async ({ page }) => {
         const log = collectErrors(page);
         await page.goto('/');
-        await page.getByRole('navigation').getByRole('button', { name: view.nav }).click();
+        await page
+          .getByRole('navigation')
+          .getByRole('button', { name: view.nav, exact: true })
+          .click();
         await expectView(page, view);
         await page.reload();
         await expectView(page, view);
