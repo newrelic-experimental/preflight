@@ -41,7 +41,7 @@ import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
-import { backfillAgentId, backfillAgentType } from './metrics/agent-partition.js';
+import { SubagentAttributionIndex } from './metrics/subagent-attribution.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
 import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
@@ -2038,18 +2038,12 @@ async function main(): Promise<void> {
         );
       }
     });
-    // Cross-references a subagent's type against its `agentId` — the ONLY link
-    // between the native hook pipeline and the transcript-derived
-    // subagent-token pipeline (onSubagentTurn below), which has no type of its
-    // own. Populated from the parent's own Agent tool call (see onRecord), the
-    // one record that carries both signals. Best effort: a subagent whose
-    // spawning Agent call was never paired by the hook processor has no entry
-    // here, so its cost is still counted but not broken out by type.
-    const agentTypeByAgentId = new Map<string, string>();
-    // toolUseId -> agentId, built from SubagentWatcher's tool_use extraction
-    // (see agent-partition.ts's backfillAgentId doc comment for why this join
-    // exists instead of trusting the hook envelope's own agent_id field).
-    const toolUseIdToAgentId = new Map<string, string>();
+    // Attributes hook records to the subagent that made them (agentId via a
+    // toolUseId join against SubagentWatcher's transcript tail, agentType via
+    // the parent's own Agent tool call) and gives onSubagentTurn the type for
+    // cost breakdown. Size-capped with idle expiry so a long-running --local
+    // daemon doesn't keep one entry per subagent call forever (#682).
+    const subagentAttribution = new SubagentAttributionIndex();
     eventProcessor = new HookEventProcessor({
       store: localStore,
       // --local mode and the provisional --stdio window own no specific Claude
@@ -2060,10 +2054,7 @@ async function main(): Promise<void> {
       onRecord: (incomingRecord) => {
         // Backfilled before any consumer (notably auditTrail below) sees the
         // record, so audit/security events carry agentId and agentType (#681).
-        const rawRecord = backfillAgentType(
-          backfillAgentId(incomingRecord, toolUseIdToAgentId),
-          agentTypeByAgentId,
-        );
+        const rawRecord = subagentAttribution.backfill(incomingRecord);
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2079,20 +2070,12 @@ async function main(): Promise<void> {
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
-        // The hook envelope's own agent_id/agent_type never populate in practice
-        // — correlate via the Agent tool's own record instead: its
-        // subagentType (tool_input.subagent_type, already captured) and
-        // spawnedAgentId (tool_response.agentId) are both real, working signals
-        // that live on the same ToolCallRecord.
-        if (rawRecord.toolName === 'Agent') {
-          const spawnedAgentId =
-            typeof rawRecord.spawnedAgentId === 'string' ? rawRecord.spawnedAgentId : undefined;
-          const subagentType =
-            typeof rawRecord.subagentType === 'string' ? rawRecord.subagentType : undefined;
-          if (spawnedAgentId && subagentType) {
-            agentTypeByAgentId.set(spawnedAgentId, subagentType);
-          }
-        }
+        // Learns agentId -> subagent type from the parent's Agent call. Its
+        // PostToolUse (the one carrying spawnedAgentId) normally fires only
+        // after a foreground subagent returns, so that subagent's own calls
+        // usually reach intake (and the audit trail) before their type is
+        // known; the task-close re-backfill below does see it.
+        subagentAttribution.recordAgentToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
           // Emit tool call span — parent is the active task span (or session span if no task)
@@ -2289,9 +2272,7 @@ async function main(): Promise<void> {
             platform: typeof firstRecord?.platform === 'string' ? firstRecord.platform : undefined,
             taskId: task.taskId,
           };
-          const enrichedToolCalls = task.toolCalls.map((r) =>
-            backfillAgentType(backfillAgentId(r, toolUseIdToAgentId), agentTypeByAgentId),
-          );
+          const enrichedToolCalls = task.toolCalls.map((r) => subagentAttribution.backfill(r));
           const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
           efficiencyScorer.computeScore(task, patterns);
           for (const pattern of patterns) {
@@ -2423,11 +2404,9 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
-        for (const toolUseId of turn.toolUseIds) {
-          toolUseIdToAgentId.set(toolUseId, turn.agentId);
-        }
-        // Best-effort — see agentTypeByAgentId's doc comment above.
-        const agentType = agentTypeByAgentId.get(turn.agentId);
+        subagentAttribution.recordSubagentToolUses(turn.agentId, turn.toolUseIds);
+        // Best effort: absent until the spawning Agent call has been recorded.
+        const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         const usage: TokenUsage = {
           inputTokens: turn.inputTokens,
           outputTokens: turn.outputTokens,
