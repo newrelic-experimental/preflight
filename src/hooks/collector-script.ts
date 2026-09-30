@@ -452,9 +452,10 @@ interface HookInput {
   trajectory_id?: string;
   tool_info?: Record<string, unknown>;
   // Antigravity (https://antigravity.google/docs/hooks, identical on
-  // /docs/ide/hooks) sends no field naming which event fired at all —
-  // PreToolUse payloads carry `toolCall`/`stepIdx`; PostToolUse payloads
-  // carry only `stepIdx`/`error`. `conversationId` is Antigravity's closest
+  // /docs/ide/hooks) sends no field naming which event fired at all — per
+  // its Input/Output Contract both PreToolUse and PostToolUse payloads carry
+  // `toolCall`/`stepIdx`; PostToolUse adds only an optional `error`
+  // ("Empty if successful"). `conversationId` is Antigravity's closest
   // analog to session_id (never sends session_id, same situation as
   // Cursor's conversation_id and Windsurf's trajectory_id).
   toolCall?: { name?: string; args?: Record<string, unknown> };
@@ -691,7 +692,13 @@ function getWindsurfToolInfo(data: HookInput): Record<string, unknown> {
   return data.tool_info !== null && typeof data.tool_info === 'object' ? data.tool_info : {};
 }
 
-function processHook(raw: string): void {
+/**
+ * @param cliEvent The hook command's first argument (`process.argv[2]`), if
+ *   any. Only consulted for Antigravity, whose payloads never name their own
+ *   event — see isAntigravityPre below. Every other platform's payload names
+ *   its event, and this argument is ignored for them.
+ */
+function processHook(raw: string, cliEvent?: string): void {
   let data: HookInput;
   try {
     data = JSON.parse(raw) as HookInput;
@@ -749,17 +756,29 @@ function processHook(raw: string): void {
   const isGeminiCli =
     process.env.MCP_CLIENT === 'gemini-cli' || process.env.NEW_RELIC_AI_PLATFORM === 'gemini-cli';
 
-  // Antigravity (https://antigravity.google/docs/hooks) sends no field
-  // naming which event fired — payload shape is the only signal. Hoisted
-  // once so the dispatch branch below and the required-stdout-reply block
-  // further down can never diverge on which event they think this is, same
-  // precedent as isGeminiCli above.
-  const isAntigravityPre = data.toolCall !== undefined;
-  const isAntigravityPost =
-    !isAntigravityPre &&
-    typeof data.stepIdx === 'number' &&
+  // Antigravity (https://antigravity.google/docs/hooks#inputoutput-contract)
+  // sends no field naming which event fired, and both PreToolUse and
+  // PostToolUse carry `toolCall` and `stepIdx`, so payload shape cannot tell
+  // them apart (#793). hooks.json registers a separate `command` per event,
+  // so the documented setup (docs/ADAPTERS.md) passes the event name as the
+  // command's argument: `preflight-collector PreToolUse` / `PostToolUse`.
+  // Without that argument (a hooks.json written before #793), the only
+  // PostToolUse-specific key is the optional `error`, so its presence is the
+  // fallback. A successful PostToolUse that omits `error` is then misread as
+  // PreToolUse — the reason the argument is required in the setup docs.
+  // Hoisted once so the dispatch branch below and the required-stdout-reply
+  // block further down can never diverge on which event they think this is,
+  // same precedent as isGeminiCli above.
+  const isAntigravityShape =
     data.hook_event_name === undefined &&
-    data.agent_action_name === undefined;
+    data.agent_action_name === undefined &&
+    (data.toolCall !== undefined || typeof data.stepIdx === 'number');
+  const agyCliEvent = cliEvent?.toLowerCase();
+  const isAntigravityPost =
+    isAntigravityShape &&
+    (agyCliEvent === 'posttooluse' ||
+      (agyCliEvent !== 'pretooluse' && (data.error !== undefined || data.toolCall === undefined)));
+  const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
 
   let event: Record<string, unknown>;
 
@@ -1105,10 +1124,8 @@ function processHook(raw: string): void {
       success: true,
     };
   } else if (isAntigravityPre) {
-    // Antigravity PreToolUse — no self-describing event-name field exists
-    // (see HookInput's comment above); presence of `toolCall` is
-    // Antigravity's own signal that this is PreToolUse, since PostToolUse
-    // never carries that key.
+    // Antigravity PreToolUse — see isAntigravityPre above for how it is told
+    // apart from PostToolUse.
     const agyToolName = data.toolCall?.name ?? 'unknown';
     event = {
       mode: 'pre' as const,
@@ -1130,16 +1147,15 @@ function processHook(raw: string): void {
       event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
     }
   } else if (isAntigravityPost) {
-    // Antigravity PostToolUse — carries no tool-name field at all, only
-    // stepIdx/error. toolUseId-based pairing in event-processor.ts recovers
-    // the real tool name from the matched pre-event (confirmed by reading
-    // HookEventProcessor.handlePostEvent(): the merged record's toolName
-    // always comes from the pre-event, never the post-event's own tool
-    // field) — 'unknown' here is a safe placeholder, not a broken mapping.
+    // Antigravity PostToolUse — carries the same `toolCall` as PreToolUse
+    // plus an optional `error`. Pairing with the pre-event is by toolUseId
+    // (stepIdx), and HookEventProcessor.handlePostEvent() takes the merged
+    // record's toolName from the pre-event, so the 'unknown' fallback here
+    // only matters for a payload with no `toolCall`.
     const hasError = typeof data.error === 'string' && data.error !== '';
     event = {
       mode: 'post' as const,
-      tool: 'unknown',
+      tool: data.toolCall?.name ?? 'unknown',
       timestamp,
       success: !hasError,
       toolUseId: String(data.stepIdx),
@@ -1315,9 +1331,11 @@ function processHook(raw: string): void {
   }
 
   // Antigravity requires a stdout reply on every PreToolUse/PostToolUse hook
-  // invocation (https://antigravity.google/docs/hooks) — a required
-  // `decision` field for PreToolUse, an empty object for PostToolUse.
-  // Preflight is observation-only, so this always allows.
+  // invocation (https://antigravity.google/docs/hooks#inputoutput-contract) —
+  // a required `decision` field for PreToolUse, an empty object for
+  // PostToolUse. PostToolUse's schema has no `decision` field, so sending one
+  // fails protojson unmarshaling and the host's tool call with it (#793).
+  // Preflight is observation-only, so PreToolUse always allows.
   if (isAntigravityPre) {
     try {
       process.stdout.write('{"decision":"allow"}\n');
@@ -1421,7 +1439,7 @@ if (_isDirectExecution) {
   try {
     const stdin = readStdinSync();
     if (stdin.trim()) {
-      processHook(stdin);
+      processHook(stdin, process.argv[2]);
     }
   } catch {
     // Silent failure — never block Claude Code
