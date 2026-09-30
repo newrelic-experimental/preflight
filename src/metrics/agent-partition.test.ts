@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { partitionByAgent, backfillAgentId } from './agent-partition.js';
+import { partitionByAgent, backfillAgentId, backfillAgentType } from './agent-partition.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
@@ -76,5 +76,47 @@ describe('backfillAgentId', () => {
     const result = backfillAgentId(record, map);
 
     expect(result).toBe(record);
+  });
+});
+
+describe('backfillAgentType', () => {
+  it('backfills agentType from the agentId map once agentId is known', () => {
+    const record = makeRecord({ agentId: 'agent-a', agentType: undefined });
+    const map = new Map([['agent-a', 'Explore']]);
+
+    const result = backfillAgentType(record, map);
+
+    expect(result.agentType).toBe('Explore');
+    expect(result.agentId).toBe('agent-a');
+  });
+
+  it('never overwrites a non-empty envelope-provided agentType', () => {
+    const record = makeRecord({ agentId: 'agent-a', agentType: 'from-envelope' });
+    const map = new Map([['agent-a', 'Explore']]);
+
+    const result = backfillAgentType(record, map);
+
+    expect(result).toBe(record);
+  });
+
+  it('treats an empty-string agentType as absent', () => {
+    const record = makeRecord({ agentId: 'agent-a', agentType: '' });
+    const map = new Map([['agent-a', 'Explore']]);
+
+    expect(backfillAgentType(record, map).agentType).toBe('Explore');
+  });
+
+  it('leaves the record unchanged when agentId is not yet known', () => {
+    const record = makeRecord({ agentId: undefined });
+    const map = new Map([['agent-a', 'Explore']]);
+
+    expect(backfillAgentType(record, map)).toBe(record);
+  });
+
+  it('leaves the record unchanged when the agentId has no type entry', () => {
+    const record = makeRecord({ agentId: 'agent-unknown' });
+    const map = new Map([['agent-a', 'Explore']]);
+
+    expect(backfillAgentType(record, map)).toBe(record);
   });
 });

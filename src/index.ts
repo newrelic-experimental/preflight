@@ -41,7 +41,7 @@ import { WorkflowWatcher } from './hooks/workflow-watcher.js';
 import { migrateStoragePath } from './install/migrate.js';
 import { checkNodeVersion } from './install/node-version-check.js';
 import { localDateKey, todayPortionOfSessionCost } from './lib/date.js';
-import { backfillAgentId } from './metrics/agent-partition.js';
+import { backfillAgentId, backfillAgentType } from './metrics/agent-partition.js';
 import { AntiPatternDetector } from './metrics/anti-patterns.js';
 import { ApiFailureTracker, mapClaudeCodeErrorType } from './metrics/api-failure-tracker.js';
 import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
@@ -2058,7 +2058,12 @@ async function main(): Promise<void> {
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
       onRecord: (incomingRecord) => {
-        const rawRecord = backfillAgentId(incomingRecord, toolUseIdToAgentId);
+        // Backfilled before any consumer (notably auditTrail below) sees the
+        // record, so audit/security events carry agentId and agentType (#681).
+        const rawRecord = backfillAgentType(
+          backfillAgentId(incomingRecord, toolUseIdToAgentId),
+          agentTypeByAgentId,
+        );
         if (!config || !sessionTracker || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
@@ -2285,7 +2290,7 @@ async function main(): Promise<void> {
             taskId: task.taskId,
           };
           const enrichedToolCalls = task.toolCalls.map((r) =>
-            backfillAgentId(r, toolUseIdToAgentId),
+            backfillAgentType(backfillAgentId(r, toolUseIdToAgentId), agentTypeByAgentId),
           );
           const { patterns } = antiPatternDetector.analyze(enrichedToolCalls);
           efficiencyScorer.computeScore(task, patterns);

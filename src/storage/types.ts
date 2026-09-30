@@ -332,7 +332,14 @@ export interface ToolCallRecord {
    * hasn't caught up with yet (best-effort, not persisted retroactively).
    */
   readonly agentId?: string;
-  /** Never populates in practice, same as agentId above — see its doc comment. */
+  /**
+   * Subagent type (e.g. `Explore`). The hook envelope's `agent_type` never
+   * populates in practice, same as `agent_id`; backfilled instead via
+   * `backfillAgentType()` (agent-partition.ts) from the parent's own `Agent`
+   * tool call once `agentId` is known. Best-effort like `agentId`: that Agent
+   * call usually completes after the subagent's own calls, so records seen
+   * at intake often lack it.
+   */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */
   readonly skillName?: string;

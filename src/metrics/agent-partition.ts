@@ -1,5 +1,10 @@
 import type { ToolCallRecord } from '../storage/types.js';
 
+/** The read side of a string-keyed lookup — satisfied by `Map` and `BoundedMap`. */
+export interface StringLookup {
+  get(key: string): string | undefined;
+}
+
 /**
  * Splits a flat, timestamp-ordered sequence into one group per agent — the
  * parent/orchestrator session (`agentId` absent) plus one per distinct
@@ -48,11 +53,32 @@ export function partitionByAgent<T extends { readonly agentId?: string }>(
  */
 export function backfillAgentId(
   record: ToolCallRecord,
-  toolUseIdToAgentId: ReadonlyMap<string, string>,
+  toolUseIdToAgentId: StringLookup,
 ): ToolCallRecord {
   if (record.agentId !== undefined) return record;
   if (typeof record.toolUseId !== 'string') return record;
   const agentId = toolUseIdToAgentId.get(record.toolUseId);
   if (agentId === undefined) return record;
   return { ...record, agentId };
+}
+
+/**
+ * Fills in `ToolCallRecord.agentType` from an `agentId → subagent type` map
+ * once the record's `agentId` is known (either from the envelope or from
+ * `backfillAgentId()`, so run that first). The hook envelope's own
+ * `agent_type` never populates in practice, for the same reason `agent_id`
+ * doesn't; the type comes instead from the parent's own `Agent` tool call,
+ * which carries both `subagentType` and `spawnedAgentId`. A non-empty
+ * envelope-provided `agentType` is never overwritten. Returns the same object
+ * reference when no backfill applies.
+ */
+export function backfillAgentType(
+  record: ToolCallRecord,
+  agentTypeByAgentId: StringLookup,
+): ToolCallRecord {
+  if (typeof record.agentType === 'string' && record.agentType.length > 0) return record;
+  if (typeof record.agentId !== 'string') return record;
+  const agentType = agentTypeByAgentId.get(record.agentId);
+  if (agentType === undefined) return record;
+  return { ...record, agentType };
 }
