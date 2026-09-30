@@ -85,10 +85,10 @@ npx playwright test e2e/views.spec.ts     # One spec, against an existing build
 `e2e/views.spec.ts` holds a smoke test per dashboard route, run once against each server. Each reaches the view from the sidebar, then again by reloading on its URL, and asserts the view's `<h1>`, no "Not found", and no console error, uncaught exception, failed request or unexpected 4xx/5xx while it loads. A new view needs one row in `VIEWS`; a test comparing `VIEWS` against the sidebar fails until it has one:
 
 ```typescript
-{ nav: 'Workflows', path: '/workflows', heading: 'Workflows' },
+{ nav: 'Workflows', path: '/workflows', heading: 'Workflows', query: /^\/api\/workflows$/ },
 ```
 
-`nav` is the Sidebar button's label and `heading` the view's `<h1>` text. If the view requests something that legitimately answers with an error status, add it to `EXPECTED_ERROR_RESPONSES` with a comment saying why, rather than loosening the check.
+`nav` is the Sidebar button's label and `heading` the view's `<h1>` text. `query` matches the pathname of a request only that view issues on mount; the test waits for it to be answered, so it must not be one another view or the App shell also makes (the shell fetches `/api/session/current`, `/api/anti-patterns` and `/api/health` and opens `/sse` on every route). It proves the request was answered, not that the view rendered its data. If the view requests something that legitimately answers with an error status, add it to `EXPECTED_ERROR_RESPONSES` with a comment saying why, rather than loosening the check.
 
 To assert what a view shows with data, `test.use({ baseURL: SEEDED_URL })` in a `describe` and, if the fixture lacks what you need, extend `buildFixtureSession()`. Import the values you assert on from `session-fixture.ts` instead of repeating them.
 

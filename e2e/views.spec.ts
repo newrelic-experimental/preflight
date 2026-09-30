@@ -1,6 +1,10 @@
 import { test, expect, type Page, type Request } from '@playwright/test';
 
-import { FIXTURE_MODEL, FIXTURE_SESSION_NAME } from './fixtures/session-fixture.js';
+import {
+  FIXTURE_MODEL,
+  FIXTURE_SESSION_ID,
+  FIXTURE_SESSION_NAME,
+} from './fixtures/session-fixture.js';
 import { EMPTY_URL, SEEDED_URL } from './servers.js';
 
 // One smoke test per dashboard route: it loads in a real browser against a real --local
@@ -14,7 +18,8 @@ interface ViewCase {
   readonly heading: string;
   /**
    * A request only this view makes on mount. settle() waits until it has been answered, so
-   * a view whose queries never fire fails instead of passing on the App shell's own fetches.
+   * a view whose queries never fire fails instead of passing on the App shell's own fetches
+   * (/api/session/current, /api/anti-patterns, /api/health and /sse, on every route).
    */
   readonly query: RegExp;
 }
@@ -108,9 +113,10 @@ function collectErrors(page: Page): ErrorLog {
     // Not waitForLoadState('networkidle'): the SSE stream never closes and Today's queries
     // poll, so the page is never idle for the 500ms that requires. `required` names requests
     // the view itself makes — the App shell answers a couple of /api/ fetches on every route,
-    // so "some response arrived" proves nothing about the view — and two quiet samples in a
-    // row (polls are at least 100ms apart) keep the gap between a query and the dependent
-    // ones its response enables, such as Today's session-scoped wave, from passing too.
+    // so "some response arrived" proves nothing about the view. Two quiet samples in a row
+    // (at least 100ms apart) narrow, but do not close, the gap between a query and the
+    // dependent ones its response enables: a request that must be checked belongs in
+    // `required`, not left to the quiet window.
     // Polls a description rather than a boolean, so a timeout says what it was waiting on.
     settle: (required) => {
       let quietSamples = 0;
@@ -210,7 +216,8 @@ test.describe('store with one session', () => {
       page.getByRole('button', { name: new RegExp(FIXTURE_SESSION_NAME) }),
     ).toBeVisible();
     await expect(page.getByText('No sessions yet')).toHaveCount(0);
-    await log.settle([SESSIONS_LIST]);
+    // The first row is selected once the list answers, which issues its detail request.
+    await log.settle([SESSIONS_LIST, new RegExp(`^/api/sessions/${FIXTURE_SESSION_ID}$`)]);
     expect(log.errors).toEqual([]);
   });
 
