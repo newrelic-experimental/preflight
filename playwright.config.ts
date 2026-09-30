@@ -77,6 +77,8 @@ export default defineConfig({
   snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}-{projectName}-{platform}{ext}',
   timeout: 30_000,
   retries: 0,
+  // A committed test.only would otherwise pass the e2e job on the one test it kept.
+  forbidOnly: !!process.env.CI,
   // In CI, a missing baseline is a failure, not an invitation to write one: the file it
   // would write lands on a throwaway runner, and the run should say which one is absent.
   updateSnapshots: process.env.CI ? 'none' : 'missing',
