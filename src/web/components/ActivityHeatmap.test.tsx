@@ -13,7 +13,10 @@ describe('ActivityHeatmap grid variant — timezone handling', () => {
   });
 
   afterEach(() => {
-    process.env.TZ = originalTZ;
+    // Assigning `undefined` would store the string "undefined", an invalid
+    // zone, for the rest of the worker; delete the key instead.
+    if (originalTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTZ;
   });
 
   it('places a UTC day-key in its correct weekday row, not one day early', () => {
