@@ -66,6 +66,9 @@ const WARN_AFTER_MS = 60_000;
  */
 const READ_ANCESTOR_MAX_DEPTH = 4;
 
+/** How far above our own ppid watchPpidBreadcrumb() looks; see its doc comment. */
+const CORRECTION_ANCESTOR_MAX_DEPTH = 1;
+
 /** Which of the sources produced a resolveSessionId() result. */
 export type SessionIdSource = 'jobdir' | 'ppid' | 'ppid-ancestor' | 'cwd';
 
@@ -450,14 +453,33 @@ export async function resolveSessionId(
  * already adopted and is worth acting on — this function doesn't know or
  * care. No 60s WARN log: a cwd-sourced session working fine while the ppid
  * breadcrumb stays silent is expected, not alarming.
+ *
+ * With `includeParentOfPpid`, each tick also checks the breadcrumb of our
+ * ppid's own parent. That covers an `npx`-launched engine, whose ppid is the
+ * `npm exec` wrapper and never gets a breadcrumb, so the direct watch alone
+ * can never correct a wrong cwd guess (#479: a Copilot engine started in a
+ * directory where Claude Code is active adopts the Claude session's id).
+ * Deliberately one level only, unlike resolveSessionId's walk: one level
+ * reaches the host that launched `npx`, whose breadcrumb only that host's own
+ * hooks write, while deeper ancestors (a shell, a terminal multiplexer) can be
+ * shared with the very session the cwd guess named. On Linux the collector
+ * writes breadcrumbs for those too, and a correction watch that could adopt
+ * them would replace a right guess with a neighbour's id. For an engine the
+ * host launched directly, that one level is the host's own parent, consulted
+ * only on ticks where the host's breadcrumb is still missing.
  */
 export async function watchPpidBreadcrumb(
-  options: SessionResolverOptions & { signal?: AbortSignal } = {},
+  options: SessionResolverOptions & {
+    signal?: AbortSignal;
+    readonly includeParentOfPpid?: boolean;
+  } = {},
 ): Promise<string> {
   const ppid = options.ppid ?? process.ppid;
   const storagePath = options.storagePath ?? DEFAULT_STORAGE_DIR;
 
   let attempt = 0;
+  // Computed lazily, at most once, as in resolveSessionId.
+  let ancestorPids: readonly number[] | undefined;
 
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const onAbort = () => {
@@ -486,6 +508,22 @@ export async function watchPpidBreadcrumb(
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(sid);
         return;
+      }
+      if (options.includeParentOfPpid) {
+        // [ppid, parent]; resolveFromAncestorBreadcrumb skips index 0.
+        ancestorPids ??= (
+          options.ancestorPids ?? getAncestorPids(ppid, { maxDepth: CORRECTION_ANCESTOR_MAX_DEPTH })
+        ).slice(0, CORRECTION_ANCESTOR_MAX_DEPTH + 1);
+        const fromParent = resolveFromAncestorBreadcrumb(storagePath, ancestorPids);
+        if (fromParent) {
+          logger.debug('Resolved corrected session_id from the ppid parent breadcrumb', {
+            sessionId: fromParent.sessionId,
+            pid: fromParent.pid,
+          });
+          if (options.signal) options.signal.removeEventListener('abort', onAbort);
+          resolvePromise(fromParent.sessionId);
+          return;
+        }
       }
       const delay = nextDelayMs(attempt++);
       const handle = setTimeout(tick, delay);

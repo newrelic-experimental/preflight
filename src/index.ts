@@ -3116,6 +3116,7 @@ async function main(): Promise<void> {
       void watchPpidBreadcrumb({
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
+        includeParentOfPpid: true,
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
