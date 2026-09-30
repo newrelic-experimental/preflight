@@ -66,7 +66,32 @@ const TARGETED_UNDO_RE = new RegExp(
 
 /** Correction phrasing that doesn't require a trigger word at the start of the message. */
 const EMBEDDED_CORRECTION_RE =
-  /\b(won'?t work|you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+  /\b(you (missed|forgot|broke)|that'?s (not (right|correct|what)|wrong|incorrect)|not what (i|you)'?d? (meant|asked|wanted|said)|this is the (\d+|second|third|fourth|fifth|\w+th) time)\b/i;
+
+const WONT_WORK_RE = /\bwon'?t work\b/i;
+
+/** Proposing the next option ("..., let's use Y instead") marks design discussion rather than a rejection of the assistant's output. "because"/"since" are not signals either way: both forms give reasons. */
+const FORWARD_LOOKING_RE =
+  /\b(let'?s|let us|instead|we (should|could|can|need to|might|may)|we'?ll (need|have)|so we|should we|how about|what if|maybe we|i'?d (rather|prefer))\b/i;
+
+/** References to something already built or tried, which override a forward-looking cue ("your version won't work, let's go back"). */
+const PAST_REFERENCE_RE =
+  /\b(still|anymore|again|your|you'?(ve|re)|you (just |have )?(wrote|written|added|made|changed|did|done|used|tried)|fail(s|ing|ed))\b/i;
+
+/** A sentence boundary, so a forward-looking cue in one sentence doesn't suppress a correction in another. */
+const SENTENCE_SPLIT_RE = /[.!?]+(?:\s|$)|\n/;
+
+/** "won't work" is a correction unless every sentence using it proposes an alternative without pointing back at prior output. */
+function hasWontWorkCorrection(text: string): boolean {
+  if (!WONT_WORK_RE.test(text)) return false;
+  return text
+    .split(SENTENCE_SPLIT_RE)
+    .some(
+      (sentence) =>
+        WONT_WORK_RE.test(sentence) &&
+        (!FORWARD_LOOKING_RE.test(sentence) || PAST_REFERENCE_RE.test(sentence)),
+    );
+}
 
 function isCorrectionMessage(text: string): boolean {
   return (
@@ -75,7 +100,8 @@ function isCorrectionMessage(text: string): boolean {
     EXPLICIT_REJECTION_RE.test(text) ||
     LEADING_INTERJECTION_RE.test(text) ||
     TARGETED_UNDO_RE.test(text) ||
-    EMBEDDED_CORRECTION_RE.test(text)
+    EMBEDDED_CORRECTION_RE.test(text) ||
+    hasWontWorkCorrection(text)
   );
 }
 

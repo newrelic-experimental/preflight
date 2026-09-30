@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.2] - 2026-09-30
+
+### Fixed
+
+- A message that rules out an option and proposes another, such as "That approach won't work for X, let's use Y instead", no longer counts as a correction of the assistant. "won't work" still counts when the sentence proposes nothing, or when it points back at prior output ("your fix still won't work, let's go back"). Correction rate, the high-correction-rate recommendation, and the CLAUDE.md-change verdict were inflated by design discussion that used the phrase.
+
 ## [1.57.1] - 2026-09-29
 
 ### Fixed

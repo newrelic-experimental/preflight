@@ -182,6 +182,85 @@ describe('TranscriptMessageTracker', () => {
     expect(tracker.getMetrics().userCorrections).toBe(0);
   });
 
+  // #677: labeled corpus for the "won't work" clause. Corrections reject
+  // something the assistant already produced; design discussion rules out an
+  // option before anything was built and proposes the next one.
+  describe("won't work corpus (#677)", () => {
+    const WONT_WORK_CORRECTIONS = [
+      "That approach won't work because there's a race condition.",
+      "That won't work.",
+      "This still won't work.",
+      "Your fix won't work because the cache is never invalidated.",
+      "It won't work, the test still fails.",
+      "That wont work, you're reading the wrong file.",
+      'This still wont work — same error as before.',
+      "The change you made won't work since the handler is never registered.",
+      "It still won't work after your last edit.",
+      "That won't work, let's try again.",
+      "That won't work for empty arrays — the loop skips index 0.",
+      "Your version won't work for us, let's go back to the old one.",
+    ];
+
+    const WONT_WORK_DESIGN_DISCUSSION = [
+      "That approach won't work for X, let's use Y instead",
+      "A cache won't work here since we need fresh reads — let's query the DB directly.",
+      "Polling won't work on Windows, so we should use fs.watch.",
+      "Redis won't work for us; we could use SQLite instead.",
+      "I think a regex won't work for nested brackets, so let's write a small parser.",
+      "A global lock won't work at scale — instead we should shard by key.",
+      "Symlinks won't work on Windows so we should copy the files.",
+      "Webhooks won't work behind the firewall, we'll need to poll instead.",
+      "A cron job won't work because we need sub-minute latency, so we should use a queue.",
+      "If we do it that way it won't work offline, so let's cache the manifest.",
+    ];
+
+    it.each(WONT_WORK_CORRECTIONS)('detects a correction for %j', (text) => {
+      writeLines([userLine(text)]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics().userCorrections).toBe(1);
+    });
+
+    it.each(WONT_WORK_DESIGN_DISCUSSION)('does not count %j as a correction', (text) => {
+      writeLines([userLine(text)]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics().userCorrections).toBe(0);
+    });
+
+    it('scopes the forward-looking cue to the sentence containing "won\'t work"', () => {
+      writeLines([userLine("That won't work. Let's also add a test for the empty case.")]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics().userCorrections).toBe(1);
+    });
+
+    it('still counts a later correcting sentence when an earlier one is design discussion', () => {
+      writeLines([
+        userLine(
+          "Redis won't work for us, let's use SQLite. Also your migration still won't work.",
+        ),
+      ]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      tracker.refresh();
+      expect(tracker.getMetrics().userCorrections).toBe(1);
+    });
+
+    it('stays fast on a long adversarial message', () => {
+      const text = `${"won't work ".repeat(5_000)}${'x '.repeat(50_000)}let's`;
+      writeLines([userLine(text)]);
+      const tracker = new TranscriptMessageTracker();
+      tracker.observeTranscriptPath(transcriptPath);
+      const start = Date.now();
+      tracker.refresh();
+      expect(Date.now() - start).toBeLessThan(1_000);
+    });
+  });
+
   it('only processes new lines across multiple refresh() calls (no double-counting)', () => {
     writeLines([userLine('first message')]);
     const tracker = new TranscriptMessageTracker();
