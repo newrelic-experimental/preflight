@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createLogger } from '../shared/index.js';
+import { normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -132,6 +133,8 @@ export interface SubagentTurnEvent {
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
   readonly toolUseIds: readonly string[];
+  /** Subagent type from the transcript's meta sidecar; absent when unknown or invalid. */
+  readonly agentType?: string;
 }
 
 /** Wire-shape data extracted from a `mode: 'observability_health'` entry. */
@@ -927,6 +930,7 @@ export class HookEventProcessor {
     if (!agentId || !messageId) return;
     if (this.subagentDedupRegistry.hasAndAdd(agentId, messageId)) return;
 
+    const agentType = normalizeAgentType(event.agentType);
     const turn: SubagentTurnEvent = {
       timestampMs:
         typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
@@ -946,6 +950,7 @@ export class HookEventProcessor {
       stopReason: event.stopReason ?? null,
       schemaFingerprint: event.schemaFingerprint ?? '',
       toolUseIds: event.toolUseIds ?? [],
+      ...(agentType !== undefined ? { agentType } : {}),
     };
     if (this.onSubagentTurn) {
       try {

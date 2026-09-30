@@ -121,6 +121,8 @@ export interface SubagentTokenHookEvent extends HookEventBase {
   readonly stopReason?: string | null;
   readonly schemaFingerprint?: string;
   readonly toolUseIds?: readonly string[];
+  /** Subagent type from the transcript's `agent-<id>.meta.json` sidecar, when present. */
+  readonly agentType?: string;
 }
 
 /** Emitted by the WorkflowWatcher / SubagentWatcher with pipeline health counters. */
@@ -335,10 +337,10 @@ export interface ToolCallRecord {
   /**
    * Subagent type (e.g. `Explore`). The hook envelope's `agent_type` never
    * populates in practice, same as `agent_id`; backfilled instead via
-   * `backfillAgentType()` (agent-partition.ts) from the parent's own `Agent`
-   * tool call once `agentId` is known. Best-effort like `agentId`: that Agent
-   * call usually completes after the subagent's own calls, so records seen
-   * at intake often lack it.
+   * `backfillAgentType()` (agent-partition.ts) once `agentId` is known, from
+   * the subagent transcript's `agent-<id>.meta.json` sidecar (written at
+   * spawn) or, failing that, the parent's own `Agent` tool call. Best-effort
+   * with the same timing window as `agentId`.
    */
   readonly agentType?: string;
   /** Skill invoked, from the hook's `tool_input.skill`; only on `toolName === 'Skill'` records. */

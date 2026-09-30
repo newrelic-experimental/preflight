@@ -1627,6 +1627,41 @@ describe('HookEventProcessor', () => {
       expect(turns[0].toolUseIds).toEqual(['toolu_abc']);
     });
 
+    it('passes a valid agentType through to onSubagentTurn and drops invalid ones', () => {
+      const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: () => undefined,
+        onSubagentTurn: (t) => turns.push(t),
+      });
+      const base = {
+        mode: 'subagent_token' as const,
+        tool: 'subagent',
+        timestamp: 1700000000000,
+        sessionId: 'sess-1',
+        agentId: 'a1234567890abcdef',
+        workflowRunId: null,
+        turnUuid: 'u1',
+        model: 'claude-opus-4-7',
+      };
+
+      processor.processEvents([
+        { ...base, messageId: 'msg_1', agentType: 'Explore' } as HookEvent,
+        { ...base, messageId: 'msg_2', agentType: '' } as HookEvent,
+        { ...base, messageId: 'msg_3', agentType: 42 } as unknown as HookEvent,
+        { ...base, messageId: 'msg_4', agentType: 'x'.repeat(500) } as HookEvent,
+        { ...base, messageId: 'msg_5' } as HookEvent,
+      ]);
+
+      expect(turns.map((t) => t.agentType)).toEqual([
+        'Explore',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]);
+    });
+
     it('dedups subagent_token entries by (agentId, messageId)', () => {
       const turns: import('./event-processor.js').SubagentTurnEvent[] = [];
       const processor = new HookEventProcessor({

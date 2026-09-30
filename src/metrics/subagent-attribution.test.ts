@@ -44,6 +44,25 @@ describe('SubagentAttributionIndex', () => {
     expect(index.agentTypeFor('agent-a')).toBe('Explore');
   });
 
+  it("learns a subagent's type from its own transcript metadata", () => {
+    const index = new SubagentAttributionIndex();
+    index.recordSubagentType('agent-a', 'Explore');
+    index.recordSubagentToolUses('agent-a', ['toolu_sub_1']);
+
+    const result = index.backfill(makeRecord({ toolUseId: 'toolu_sub_1' }));
+
+    expect(result.agentId).toBe('agent-a');
+    expect(result.agentType).toBe('Explore');
+  });
+
+  it('ignores an absent or empty transcript-metadata type', () => {
+    const index = new SubagentAttributionIndex();
+    index.recordSubagentType('agent-a', undefined);
+    index.recordSubagentType('agent-b', '');
+
+    expect(index.size.subagents).toBe(0);
+  });
+
   it('ignores non-Agent records and Agent records missing either signal', () => {
     const index = new SubagentAttributionIndex();
     index.recordAgentToolCall(

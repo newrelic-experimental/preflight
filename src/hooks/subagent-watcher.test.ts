@@ -634,6 +634,86 @@ describe('SubagentWatcher', () => {
     expect(tokenLines[1].messageId).toBe('msg_second');
   });
 
+  describe('agentType from the agent-<id>.meta.json sidecar', () => {
+    const metaPath = (): string => join(sessionDir, 'subagents', `agent-${AGENT_ID}.meta.json`);
+
+    function pollTokenLines(watcher: SubagentWatcher): Array<Record<string, unknown>> {
+      watcher.poll();
+      const bufPath = join(storagePath, `buffer-${PARENT_SESSION}.jsonl`);
+      if (!existsSync(bufPath)) return [];
+      return readFileSync(bufPath, 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((l) => l.mode === 'subagent_token');
+    }
+
+    function makeWatcher(): SubagentWatcher {
+      return new SubagentWatcher({ storagePath, projectsDir, parentSessionId: PARENT_SESSION });
+    }
+
+    function twoTurns(): string {
+      return (
+        makeAssistantLine({ messageId: 'msg_1' }) +
+        '\n' +
+        makeAssistantLine({ messageId: 'msg_2' }) +
+        '\n'
+      );
+    }
+
+    it('stamps agentType from the sidecar and copies no other sidecar field', () => {
+      // Shape of a real sidecar written by Claude Code 2.1.284 at spawn time.
+      writeFileSync(
+        metaPath(),
+        JSON.stringify({
+          agentType: 'Explore',
+          description: 'Find the config loader',
+          name: 'explorer',
+          toolUseId: 'toolu_parent_1',
+          spawnDepth: 1,
+        }),
+      );
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+
+      const lines = pollTokenLines(makeWatcher());
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0].agentType).toBe('Explore');
+      expect(lines[0].description).toBeUndefined();
+      expect(lines[0].name).toBeUndefined();
+    });
+
+    it('omits agentType when there is no sidecar', () => {
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+
+      const lines = pollTokenLines(makeWatcher());
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toHaveProperty('agentType');
+    });
+
+    it('omits agentType when the sidecar is malformed or has no usable type', () => {
+      writeFileSync(metaPath(), '{not json');
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      const watcher = makeWatcher();
+      expect(pollTokenLines(watcher)[0]).not.toHaveProperty('agentType');
+
+      writeFileSync(metaPath(), JSON.stringify({ agentType: 7 }));
+      writeFileSync(agentJsonl, twoTurns());
+      expect(pollTokenLines(watcher)[1]).not.toHaveProperty('agentType');
+    });
+
+    it('picks the type up on a later poll when the sidecar appears after the transcript', () => {
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+      const watcher = makeWatcher();
+      expect(pollTokenLines(watcher)[0]).not.toHaveProperty('agentType');
+
+      writeFileSync(metaPath(), JSON.stringify({ agentType: 'Plan' }));
+      writeFileSync(agentJsonl, twoTurns());
+      expect(pollTokenLines(watcher)[1].agentType).toBe('Plan');
+    });
+  });
+
   it('emitted subagent_token events contain no message content or prompt text', () => {
     // The source JSONL line contains a full `message` object with content blocks.
     // The emitted event must strip all content fields — only metadata/counts allowed.

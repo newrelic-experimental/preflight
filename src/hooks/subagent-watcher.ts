@@ -46,7 +46,7 @@ import { dirname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { createLogger } from '../shared/index.js';
-import { AGENT_ID_RE } from '../lib/agent-id.js';
+import { AGENT_ID_RE, normalizeAgentType } from '../lib/agent-id.js';
 import { parseAssistantTurnLine } from '../lib/subagent-transcript-parser.js';
 import type { LocalStore } from '../storage/local-store.js';
 
@@ -119,6 +119,11 @@ export interface SubagentTokenEvent {
   readonly stopReason: string | null;
   readonly schemaFingerprint: string;
   readonly toolUseIds: readonly string[];
+  /**
+   * Subagent type (e.g. `Explore`) from the transcript's `agent-<id>.meta.json`
+   * sidecar. Omitted when the sidecar is absent or has no usable `agentType`.
+   */
+  readonly agentType?: string;
 }
 
 /**
@@ -286,6 +291,10 @@ export class SubagentWatcher {
   // Evicted alongside
   // partialByPath in evictStalePartials() — see that method's comment.
   private readonly decoderByPath = new Map<string, StringDecoder>();
+  // Transcript path -> agentType read from its `.meta.json` sidecar. Only
+  // successful reads are cached (a sidecar that is missing now may appear
+  // later); bounded by the live file set via evictStalePartials().
+  private readonly agentTypeByPath = new Map<string, string>();
 
   // Health counters
   private filesWatched = 0;
@@ -743,6 +752,7 @@ export class SubagentWatcher {
     }
 
     // Emit token events for each parsed assistant turn
+    const agentType = lines.length > 0 ? this.readAgentType(file.path) : undefined;
     for (const line of lines) {
       if (!line) continue;
       this.linesRead += 1;
@@ -773,6 +783,7 @@ export class SubagentWatcher {
         stopReason: parsed.stopReason,
         schemaFingerprint: parsed.usageKeysFingerprint,
         toolUseIds: parsed.toolUseIds,
+        ...(agentType !== undefined ? { agentType } : {}),
       };
       this.appendToParentBuffer(file.parentSessionId, event);
     }
@@ -813,7 +824,13 @@ export class SubagentWatcher {
    * file reappears, we resume from it.
    */
   private evictStalePartials(files: DiscoveredFile[]): void {
-    if (this.partialByPath.size === 0 && this.decoderByPath.size === 0) return;
+    if (
+      this.partialByPath.size === 0 &&
+      this.decoderByPath.size === 0 &&
+      this.agentTypeByPath.size === 0
+    ) {
+      return;
+    }
     const live = new Set<string>();
     for (const f of files) live.add(f.path);
     for (const path of this.partialByPath.keys()) {
@@ -822,6 +839,34 @@ export class SubagentWatcher {
     for (const path of this.decoderByPath.keys()) {
       if (!live.has(path)) this.decoderByPath.delete(path);
     }
+    for (const path of this.agentTypeByPath.keys()) {
+      if (!live.has(path)) this.agentTypeByPath.delete(path);
+    }
+  }
+
+  /**
+   * Reads `agentType` from the transcript's `agent-<id>.meta.json` sidecar.
+   * Claude Code writes that sidecar when it spawns the subagent (its birth
+   * time matches the transcript's first line in observed 2.1.284 data), so the
+   * type is available while the subagent runs, well before the parent's
+   * `Agent` PostToolUse. Only `agentType` is taken; the sidecar's other fields
+   * (`description`, `name`, ...) are never read into events.
+   */
+  private readAgentType(transcriptPath: string): string | undefined {
+    const cached = this.agentTypeByPath.get(transcriptPath);
+    if (cached !== undefined) return cached;
+    const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
+    let agentType: string | undefined;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      if (parsed !== null && typeof parsed === 'object') {
+        agentType = normalizeAgentType((parsed as { agentType?: unknown }).agentType);
+      }
+    } catch {
+      return undefined; // absent (older Claude Code or not yet written) or malformed
+    }
+    if (agentType !== undefined) this.agentTypeByPath.set(transcriptPath, agentType);
+    return agentType;
   }
 
   /**

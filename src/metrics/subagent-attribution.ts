@@ -42,9 +42,11 @@ export interface SubagentAttributionIndexSize {
  *
  * - `toolUseId → agentId`, from `tool_use` blocks `SubagentWatcher` finds
  *   while tailing each subagent's transcript (see `backfillAgentId()`).
- * - `agentId → subagent type`, from the parent's own `Agent` tool call, the
- *   one record carrying both `spawnedAgentId` (`tool_response.agentId`) and
- *   `subagentType` (`tool_input.subagent_type`).
+ * - `agentId → subagent type`, from the subagent transcript's
+ *   `agent-<id>.meta.json` sidecar (written at spawn, carried on each
+ *   `SubagentWatcher` turn), and as a fallback from the parent's own `Agent`
+ *   tool call, the one record carrying both `spawnedAgentId`
+ *   (`tool_response.agentId`) and `subagentType` (`tool_input.subagent_type`).
  *
  * Both indexes are size-capped LRU maps with idle expiry so a long-running
  * `--local` daemon doesn't accumulate one entry per subagent call forever.
@@ -76,6 +78,15 @@ export class SubagentAttributionIndex {
     if (spawnedAgentId && subagentType) {
       this.agentTypeByAgentId.set(spawnedAgentId, subagentType);
     }
+  }
+
+  /**
+   * Learns a subagent's type from its own transcript's meta sidecar, which
+   * exists from spawn time. This is the earlier of the two type signals: the
+   * parent's `Agent` call normally completes only after the subagent returns.
+   */
+  recordSubagentType(agentId: string, agentType: string | undefined): void {
+    if (agentType) this.agentTypeByAgentId.set(agentId, agentType);
   }
 
   /** Records the `tool_use` ids a subagent transcript turn contained. */

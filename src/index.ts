@@ -2070,11 +2070,9 @@ async function main(): Promise<void> {
         if (rawRecord.sessionId) {
           liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
         }
-        // Learns agentId -> subagent type from the parent's Agent call. Its
-        // PostToolUse (the one carrying spawnedAgentId) normally fires only
-        // after a foreground subagent returns, so that subagent's own calls
-        // usually reach intake (and the audit trail) before their type is
-        // known; the task-close re-backfill below does see it.
+        // Fallback type source: the parent's Agent call, for subagents whose
+        // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
+        // normally fires only after a foreground subagent returns.
         subagentAttribution.recordAgentToolCall(rawRecord);
 
         if (config.otlp.transport !== 'nr-events-api' && taskSpanTracker && sessionSpan) {
@@ -2404,8 +2402,12 @@ async function main(): Promise<void> {
       // `AiSubagentTurn` event per turn for NR-side queryability.
       onSubagentTurn: (turn) => {
         if (!costTracker || !config) return;
+        // The transcript's meta sidecar gives the type from spawn time, so it
+        // arrives with the toolUseId join: a subagent's own hook record is
+        // attributed by type at intake whenever the watcher has already seen
+        // its tool_use block (the same best-effort window as agentId).
+        subagentAttribution.recordSubagentType(turn.agentId, turn.agentType);
         subagentAttribution.recordSubagentToolUses(turn.agentId, turn.toolUseIds);
-        // Best effort: absent until the spawning Agent call has been recorded.
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         const usage: TokenUsage = {
           inputTokens: turn.inputTokens,
