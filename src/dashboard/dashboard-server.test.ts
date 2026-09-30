@@ -7,6 +7,7 @@ import { LiveEventBus } from './live-event-bus.js';
 import { LocalAlertEngine } from '../alerts/local-alert-engine.js';
 import { AlertLog } from '../alerts/alert-log.js';
 import { VERSION } from '../version.js';
+import { UnforwardedSessionMonitor } from '../transport/unforwarded-session-monitor.js';
 
 describe('DashboardServer', () => {
   let server: DashboardServer;
@@ -75,6 +76,32 @@ describe('DashboardServer', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(typeof body.uptime).toBe('number');
+    expect(body).not.toHaveProperty('unforwardedSessions');
+  });
+
+  it('reports unforwarded sessions in /api/health when a provider is wired', async () => {
+    const monitor = new UnforwardedSessionMonitor({
+      gap: { reason: 'missing-license-key', requestedMode: 'both' },
+      warn: () => {},
+    });
+    monitor.recordToolCall('copilot-session-1');
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      unforwardedSessions: () => monitor.getSnapshot(),
+    });
+    const addr = await server.start();
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.unforwardedSessions).toMatchObject({
+      reason: 'missing-license-key',
+      requestedMode: 'both',
+      count: 1,
+      toolCalls: 1,
+      sessions: [{ sessionId: 'copilot-session-1', toolCalls: 1 }],
+    });
   });
 
   it('includes the package version in /api/health', async () => {

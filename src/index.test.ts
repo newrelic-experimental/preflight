@@ -1596,6 +1596,102 @@ describe('stdio integration', () => {
   }, 30000);
 });
 
+describe('--local with cloud export configured but no credentials (#479)', () => {
+  it('reports the ownerless sessions it drains as unforwarded on /api/health', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-unfwd-storage-'));
+    const tmpConfigDir = mkdtempSync(join(tmpdir(), 'nr-local-unfwd-config-'));
+    const configPath = resolve(tmpConfigDir, 'config.json');
+    // Cloud export requested, credentials left to the (absent) environment —
+    // the dashboard LaunchAgent case.
+    writeFileSync(configPath, JSON.stringify({ mode: 'both' }));
+
+    // An ownerless buffer: no active-<id>.pid heartbeat, so --local drains it.
+    const sessionId = 'copilot-orphan-session';
+    const ts = Date.now() - 1000;
+    writeFileSync(
+      resolve(tmpStoragePath, `buffer-${sessionId}.jsonl`),
+      [
+        { mode: 'pre', tool: 'Bash', timestamp: ts, sessionId, toolUseId: 'toolu_1' },
+        {
+          mode: 'post',
+          tool: 'Bash',
+          timestamp: ts + 1,
+          sessionId,
+          toolUseId: 'toolu_1',
+          success: true,
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+      { mode: 0o600 },
+    );
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    delete env.NR_AI_MODE;
+
+    const child = spawn(process.execPath, [binPath, '--local', '--config', configPath], {
+      env,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    try {
+      let unforwarded: Record<string, unknown> | undefined;
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+          const body = (await res.json()) as { unforwardedSessions?: Record<string, unknown> };
+          if ((body.unforwardedSessions?.count as number | undefined) === 1) {
+            unforwarded = body.unforwardedSessions;
+            break;
+          }
+        } catch {
+          // Not listening yet.
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      expect(unforwarded).toMatchObject({
+        reason: 'missing-license-key',
+        requestedMode: 'both',
+        count: 1,
+        sessions: [{ sessionId, toolCalls: 1 }],
+      });
+      expect(stderr).toContain(
+        'Session has no owning --stdio engine and is not reaching New Relic',
+      );
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpStoragePath, { recursive: true, force: true });
+      rmSync(tmpConfigDir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
 describe('deploy-dashboards/deploy-alerts --staging is hidden from --help', () => {
   async function expectHelpHidesStaging(sub: 'deploy-dashboards' | 'deploy-alerts'): Promise<void> {
     const exitSpy = jest
